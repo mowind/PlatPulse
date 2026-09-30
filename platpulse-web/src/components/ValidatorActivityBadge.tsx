@@ -150,9 +150,11 @@ function activityReason(
 export function ValidatorActivityBadge({
   validator,
   identityReason,
+  variant = 'badge',
 }: {
   validator: PublicValidatorInsight | null | undefined
   identityReason?: string | null
+  variant?: 'badge' | 'inline'
 }) {
   const { presentation, value } = resolveActivity(validator)
   const stale = validator?.activityState === 'stale'
@@ -175,7 +177,7 @@ export function ValidatorActivityBadge({
       placement="bottom"
       width={224}
       contentClassName="leading-snug"
-      className="z-10 ml-auto min-w-0 max-w-full"
+      className={cn('z-10 min-w-0 max-w-full', variant === 'badge' && 'ml-auto')}
       contentNode={
         <>
           <span className="block">Source: {activitySource(validator)}</span>
@@ -193,11 +195,11 @@ export function ValidatorActivityBadge({
         tabIndex={0}
         aria-label={accessibleName}
         className={cn(
-          'inline-flex min-w-0 max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] leading-4 outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50',
-          TONE_CLASS[presentation.tone],
+          'inline-flex min-w-0 max-w-full items-center gap-1 rounded text-[11px] leading-4 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50',
+          variant === 'badge' ? cn('border px-1.5 py-0.5 focus-visible:border-ring', TONE_CLASS[presentation.tone]) : 'text-muted-foreground',
         )}
       >
-        <span className="relative inline-flex shrink-0" aria-hidden="true">
+        {variant === 'badge' && <span className="relative inline-flex shrink-0" aria-hidden="true">
           <Icon size={14} strokeWidth={2} aria-hidden="true" focusable="false" />
           {stale && (
             <span
@@ -205,8 +207,8 @@ export function ValidatorActivityBadge({
               className="absolute -top-1 -right-1 size-1 rounded-full bg-muted-foreground/70"
             />
           )}
-        </span>
-        <span className="relative grid min-w-0 text-left">
+        </span>}
+        {variant === 'inline' ? <span>{presentation.label}{stale ? ' (stale)' : ''}</span> : <span className="relative grid min-w-0 text-left">
           {SIZERS.map(({ label: candidate, className }) => (
             <span
               key={candidate}
@@ -222,7 +224,7 @@ export function ValidatorActivityBadge({
           >
             {presentation.label}
           </span>
-        </span>
+        </span>}
       </span>
     </DataTooltip>
   )

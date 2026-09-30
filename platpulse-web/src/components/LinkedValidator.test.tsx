@@ -57,7 +57,7 @@ afterEach(() => {
 
 const renderCard = (value: Partial<PublicNode> = {}) => render(<LinkedValidatorSection node={{ ...node, validator: insight, ...value }} />)
 const renderDetail = (value: Partial<PublicNode> = {}) => render(<LinkedValidatorSection node={{ ...node, validator: insight, ...value }} variant="detail" />)
-const detailRegion = () => screen.getByRole('region', { name: 'Linked Validator' })
+const detailRegion = () => screen.getByRole('region', { name: 'Validator performance' })
 
 /** The rendered value of a Linked Validator metric cell, in either the
  *  emphasized label-over-value form or the compact key-value form. */
@@ -277,8 +277,8 @@ describe('LinkedValidatorSection Node detail', () => {
     vi.stubGlobal('navigator', { clipboard: { writeText } })
     renderDetail({ validator: { ...insight, validatorNodeId: identifier } })
     const region = detailRegion()
-    expect(within(region).getByText('Linked Validator')).toBeTruthy()
-    expect(within(region).getByText('Validator One')).toBeTruthy()
+    expect(within(region).getByRole('heading', { name: 'Validator performance' })).toBeTruthy()
+    expect(within(region).getByText('Validator One').closest('details')).toBe(region.querySelector('details'))
     expect(within(region).queryByText(identifier, { exact: true })).toBeNull()
     fireEvent.click(within(region).getByRole('button', { name: 'Show full ID' }))
     expect(within(region).getByText(identifier, { exact: true })).toBeTruthy()
@@ -298,15 +298,39 @@ describe('LinkedValidatorSection Node detail', () => {
     expect(screen.getByText(identifier, { exact: true })).toBeTruthy()
   })
 
-  it('keeps independent staking and Activity badges and a static responsive metric surface', () => {
+  it('leaves routine identity statuses to the page header and keeps one compact responsive grid', () => {
     renderDetail({ validator: { ...insight, currentValidatorStatusQualifier: 'locked', activity: 'verifying' } })
-    const header = detailRegion().querySelector('header')!
-    expect(within(header).getByText('Validator', { exact: true })).toBeTruthy()
-    expect(within(header).getByLabelText('Validator Provider state: Current')).toBeTruthy()
-    expect(within(header).getByText('Locked', { exact: true })).toBeTruthy()
-    expect(within(header).getByLabelText(/PlatScan status: Verifying/)).toBeTruthy()
-    expect(detailRegion().className).not.toMatch(/hover:|transition/)
-    expect(screen.getByRole('group', { name: 'Linked Validator metrics' }).className).toContain('lg:grid-cols-3')
+    const region = detailRegion()
+    const header = region.querySelector('header')!
+    expect(header.textContent).toBe('Validator performance')
+    expect(within(region).queryByText('Validator', { exact: true })).toBeNull()
+    expect(within(region).queryByText('Current', { exact: true })).toBeNull()
+    expect(within(region).queryByText('Locked', { exact: true })).toBeNull()
+    expect(within(region).queryByLabelText(/PlatScan status:/)).toBeNull()
+    expect(region.className).not.toMatch(/hover:|transition/)
+    const metrics = screen.getByRole('group', { name: 'Validator performance metrics' })
+    expect(metrics.className).toContain('grid-cols-2')
+    expect(metrics.className).toContain('lg:grid-cols-3')
+    expect(metrics.querySelectorAll('[data-slot="metric-row"]')).toHaveLength(6)
+    expect(region.querySelectorAll('[data-slot="card"]')).toHaveLength(0)
+    const diagnostics = region.querySelector('details')!
+    expect(within(diagnostics).getByText('Staking qualifier').nextElementSibling?.textContent).toBe('locked')
+    expect(within(diagnostics).getByText('Activity').nextElementSibling?.textContent).toBe('verifying')
+  })
+
+  it('lets long numbers span the row without clipping or losing source precision', () => {
+    const rewards = '123456789012345678901234567890.123456789'
+    const rate = '123456789012345678901234567890.123456789'
+    renderDetail({ validator: { ...insight, blockCount: Number.MAX_SAFE_INTEGER, rewardAmount: rewards, genBlocksRate: rate } })
+    const row = (label: string) => screen.getByText(label, { exact: true }).closest('[data-slot="metric-row"]')!
+    expect(row('Cumulative blocks').className).toContain('col-span-full sm:col-span-1')
+    expect(row('Cumulative rewards').className).toContain('col-span-full')
+    expect(row('Cumulative rewards').className).not.toContain('sm:col-span-1')
+    expect(row('PlatScan 24h rate').className).toContain('col-span-full')
+    expect(metricValue('Cumulative blocks')).toBe(Number.MAX_SAFE_INTEGER.toLocaleString())
+    expect(metricValue('Cumulative rewards')).toBe('123,456,789,012,345,678,901,234,567,890.1234')
+    expect(metricValue('PlatScan 24h rate')).toBe(rate + '%')
+    expect(screen.getByText('Cumulative rewards (full precision)').nextElementSibling?.textContent).toBe('123,456,789,012,345,678,901,234,567,890.123456789')
   })
 
   it('defaults diagnostics closed and toggles the full ID independently', () => {
@@ -405,8 +429,8 @@ describe('LinkedValidatorSection Node detail', () => {
 
   it('keeps the locked qualifier and the unknown-staking explanation', () => {
     renderDetail({ validator: { ...insight, currentValidatorStatus: 'validator', currentValidatorStatusQualifier: 'locked' } })
-    expect(screen.getByText('Locked')).toBeTruthy()
-    expect(screen.getByText(/confirmed-valid staking identity but is locked/)).toBeTruthy()
+    expect(screen.queryByText('Locked')).toBeNull()
+    expect(screen.getByText(/confirmed-valid staking identity but is locked/).closest('details')).toBe(detailRegion().querySelector('details'))
     cleanup()
     renderDetail({ validator: { ...insight, currentValidatorStatus: 'unknown', currentValidatorStatusState: 'unknown', currentValidatorStatusQualifier: null } })
     expect(screen.getByText(/not a negative conclusion/)).toBeTruthy()

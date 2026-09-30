@@ -17,7 +17,7 @@ const CHART_HEADINGS = [
   'Host network',
   'Peer connections',
   'Block interval',
-  'Transactions per block',
+  'Transactions / block',
 ] as const
 const SCENARIOS = ['normal', 'unknown', 'stale', 'single-cpu-failure'] as const
 const THEMES = ['light', 'dark'] as const
@@ -114,7 +114,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
               return element ? element.getBoundingClientRect().top + window.scrollY : Number.NaN
             }
             // The Validator diagnostics are one of the same shared disclosures but
-            // they sit inside the Linked Validator card, so the reading-order
+            // they sit inside the Validator performance card, so the reading-order
             // assertion names the page-level one it means.
             const disclosureTop = (title: string) => {
               const found = Array.from(document.querySelectorAll('details[data-slot="disclosure"]'))
@@ -133,10 +133,10 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           expect(order.metrics, JSON.stringify(order)).toBeLessThan(order.technical)
 
           // The accepted A container (issue #151): an uncarded identity block,
-          // four summary tiles, and three parallel observation panels that sit
+          // six summary tiles, and three parallel observation panels that sit
           // on one row at lg and stack to one column below 1024px.
           await expect(page.locator('[data-slot="node-hero-card"]')).toHaveCount(0)
-          await expect(page.getByLabel('Node key summary').locator('[data-slot="node-summary-tile"]')).toHaveCount(4)
+          await expect(page.getByLabel('Node key summary').locator('[data-slot="node-summary-tile"]')).toHaveCount(6)
           await expect(page.locator('[data-slot="node-info-group"]')).toHaveCount(3)
           const panelBoxes = await page.locator('[data-slot="node-info-group"]').evaluateAll((nodes) => nodes.map((node) => {
             const box = node.getBoundingClientRect()
@@ -258,7 +258,6 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
 
           // Low-frequency technical details open by keyboard and stay in the
           // Public Projection.
-          const technicalDisclosure = page.locator('details[data-slot="disclosure"]', { hasText: 'Identifiers and technical details' })
           await technicalDisclosure.locator('summary').focus()
           await page.keyboard.press('Enter')
           await expect(technicalDisclosure).toHaveAttribute('open', '')
@@ -283,7 +282,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
     }
   })
 
-  test('uses timestamp-shaped Public freshness and Server evidence for independent height deltas', async ({ page }) => {
+  test('compares Head only with current Server evidence and keeps absolute chain heights', async ({ page }) => {
     let mode: 'current' | 'unconfirmed' | 'low-confidence' = 'current'
     await page.route(nodeRoute, async route => {
       const response = await route.fetch()
@@ -298,25 +297,112 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
     })
     await loginAs(page)
     await openNodeDetail(page)
-    const headDelta = page.locator('[data-slot="head-delta"]')
-    // Each height names its own reference, and an exact match is a state rather
-    // than a zero delta.
-    const heightOffset = (name: string) => page.getByRole('group', { name: name + ' height' }).locator('[data-slot="height-offset"]')
-    await expect(headDelta).toHaveText('+2 from Observed Network Head')
-    await expect(heightOffset('QC')).toHaveText('+2 from Node Head')
-    await expect(heightOffset('Locked')).toHaveText('+1 from Node Head')
-    await expect(heightOffset('Committed')).toHaveText('At Node Head')
+    const chain = page.getByRole('region', { name: 'Node chain state' })
+    const head = page.getByLabel('Node key summary').locator('[data-slot="node-summary-tile"]').filter({ has: page.getByText('Head', { exact: true }) })
+    const qc = chain.locator('[data-slot="metric-row"]').filter({ has: page.getByText('QC Head', { exact: true }) })
+    await expect(head).toContainText('2 blocks ahead')
+    await expect(qc).toContainText('102')
     mode = 'unconfirmed'
     await page.reload()
-    await expect(headDelta).toContainText('—')
-    await expect(headDelta).toContainText('Current Node Head not confirmed by Server')
-    await expect(page.getByRole('group', { name: 'QC height' })).toContainText('102')
-    await expect(heightOffset('QC')).toHaveText('—')
+    await expect(head).not.toContainText('2 blocks ahead')
+    await expect(qc).toContainText('102')
     mode = 'low-confidence'
     await page.reload()
-    await expect(headDelta).toContainText('Observed Network Head confidence low')
-    await expect(heightOffset('QC')).toHaveText('+2 from Node Head')
+    await expect(head).not.toContainText('2 blocks ahead')
+    await expect(qc).toContainText('102')
+    await expect(chain).not.toContainText('At network head')
     await expectNoHorizontalOverflow(page)
+  })
+
+  test('role changes preserve the shared header, KPI, map, panels and chart geometry', async ({ page }) => {
+    let role: 'validator' | 'not_validator' | 'unknown' = 'validator'
+    await page.route(nodeRoute, async route => {
+      const response = await route.fetch()
+      const body = await response.json()
+      await route.fulfill({ response, json: {
+        ...body, health: 'healthy', healthReason: '', freshness: new Date().toISOString(),
+        rpcState: 'ok', syncState: 'ok', processState: 'ok', lastReportAt: new Date().toISOString(),
+        currentHead: 100, networkReferenceHead: 100, networkReferenceConfidence: 'high',
+        validator: {
+          ...body.validator, validatorId: 'layout-validator', validatorNodeId: '0x' + 'a'.repeat(128),
+          nodeId: PUBLIC_NODE_ID, state: 'fresh', freshness: 'current', source: 'platscan',
+          activity: role === 'validator' ? 'active' : 'observing', activityState: 'current',
+          currentValidatorStatus: role, currentValidatorStatusState: role === 'unknown' ? 'unknown' : 'current',
+          blockCount: 34509, rewardAmount: '320404.1586', blockRateState: 'ok', blockRate: '100.026',
+          counterState: 'normal', rank: 151, rankState: 'ranked', rankFreshness: 'current',
+        },
+      } })
+    })
+    await page.route(metricsRoute, async route => {
+      const response = await route.fetch()
+      const body = await response.json()
+      await route.fulfill({ response, json: { ...body,
+        processCpuPercent: [{ sampledAt: body.from, value: 0.3 }, { sampledAt: body.to, value: 0.4 }],
+        processMemoryPercent: [{ sampledAt: body.from, value: 2 }, { sampledAt: body.to, value: 2.1 }],
+      } })
+    })
+    await loginAs(page)
+    let baseline: Awaited<ReturnType<typeof geometry>> | undefined
+    async function geometry() {
+      return page.evaluate(() => {
+        const rect = (selector: string) => {
+          const element = document.querySelector(selector)
+          if (!element) throw new Error('Missing shared layout element: ' + selector)
+          const box = element.getBoundingClientRect()
+          return { top: Math.round(box.top + scrollY), left: Math.round(box.left), width: Math.round(box.width), height: Math.round(box.height) }
+        }
+        return {
+          summary: rect('[aria-label="Node key summary"]'),
+          map: rect('[data-slot="node-map"]'),
+          panels: Array.from(document.querySelectorAll('[data-slot="node-info-group"]')).map(element => {
+            const box = element.getBoundingClientRect()
+            return { top: Math.round(box.top + scrollY), left: Math.round(box.left), width: Math.round(box.width), height: Math.round(box.height) }
+          }),
+          charts: Array.from(document.querySelectorAll('[data-slot="node-metric-card"]')).map(element => {
+            const box = element.getBoundingClientRect()
+            return { width: Math.round(box.width), height: Math.round(box.height) }
+          }),
+        }
+      })
+    }
+    for (const next of ['validator', 'not_validator', 'unknown', 'validator'] as const) {
+      role = next
+      await openNodeDetail(page)
+      const header = page.locator('header[aria-labelledby="node-detail-title"]')
+      await expect(header.getByRole('button', { name: 'Copy full Node ID' })).toBeVisible()
+      await expect(header.getByText(PUBLIC_NODE_ID, { exact: true })).toBeVisible()
+      await expect(header.getByText('Observer', { exact: true })).toHaveCount(role === 'not_validator' ? 1 : 0)
+      await expect(header.getByText('Validator', { exact: true })).toHaveCount(role === 'validator' ? 1 : 0)
+      const performance = page.getByRole('region', { name: 'Validator performance' })
+      await expect(performance).toHaveCount(role === 'validator' ? 1 : 0)
+      await expect(page.getByText('Validator diagnostics', { exact: true })).toHaveCount(role === 'validator' ? 1 : 0)
+      if (role === 'validator') {
+        await expect(header.getByText('Active', { exact: true })).toBeVisible()
+        await expect(performance.locator('header').getByText('Active', { exact: true })).toHaveCount(0)
+      }
+      const summary = page.getByRole('group', { name: 'Node key summary' })
+      expect(await summary.locator('[data-slot="node-summary-tile"] > div > span').allTextContents()).toEqual(['Head', 'Sync', 'Peers', 'Uptime', 'Block interval', 'Transactions / block'])
+      for (const name of ['Node chain state', 'PlatON process', 'Shared Host resources']) {
+        await expect(page.getByRole('region', { name })).toBeVisible()
+      }
+      const process = page.getByRole('region', { name: 'PlatON process' })
+      await expect(process.getByText('Collection', { exact: true })).toBeVisible()
+      await expect(process.getByText('Successful', { exact: true })).toBeVisible()
+      await expect(process.getByText('Current', { exact: true })).toHaveCount(0)
+      await expect(process.getByText('Running', { exact: true })).toHaveCount(0)
+      const metrics = page.locator('[data-slot="node-metrics-section"]')
+      expect(await metrics.locator('[data-slot="node-metric-card"] h3').allTextContents()).toEqual([...CHART_HEADINGS])
+      for (const heading of ['Process CPU', 'Process memory']) {
+        const card = metrics.getByRole('article').filter({ has: page.getByRole('heading', { name: heading, exact: true }) })
+        await expect(card.locator('[data-slot="node-metric-chart-line"]')).toHaveCount(1)
+        await expect(card.getByText('5.0%', { exact: true })).toBeVisible()
+        await expect(card.getByText('100%', { exact: true })).toHaveCount(0)
+      }
+      const current = await geometry()
+      if (baseline) expect(current, role + ' keeps the same shared layout geometry').toEqual(baseline)
+      else baseline = current
+      await expectNoHorizontalOverflow(page)
+    }
   })
 
   test('reduced motion removes the disclosure and chart transitions', async ({ page }) => {
@@ -455,10 +541,23 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
       if (viewportWidth >= 1024) {
         // From lg the tiles and the wider map share one row, tiles left.
         expect(layout.map.left, step.mode).toBeGreaterThan(layout.summary.left)
-        expect(layout.map.width, step.mode).toBeGreaterThan(layout.summary.width)
+        expect(layout.map.width / layout.summary.width, step.mode + ' uses 5:6 tracks').toBeCloseTo(6 / 5, 1)
+        // Home parity: the fixed 22rem map band sets the row height and the KPI
+        // grid stretches to it, so both columns share top and bottom edges.
+        expect(Math.abs(layout.map.top - layout.summary.top), step.mode + ' top-aligns the KPI grid with the map band').toBeLessThanOrEqual(1)
+        expect(
+          Math.abs((layout.map.top + layout.map.height) - (layout.summary.top + layout.summary.height)),
+          step.mode + ' stretches the KPI grid to the map band',
+        ).toBeLessThanOrEqual(1)
+        // Home parity: proportional 2:1 below xl, the fixed 22rem band from xl.
+        if (viewportWidth >= 1280) {
+          expect(Math.round(layout.map.height), step.mode + ' keeps the fixed 22rem band').toBe(352)
+        } else {
+          expect(Math.abs(layout.map.height - layout.map.width / 2), step.mode + ' keeps the 2:1 track').toBeLessThanOrEqual(1)
+        }
       } else {
-        // Below lg the map sits above the tiles, both full width.
-        expect(layout.map.top, step.mode).toBeLessThan(layout.summary.top)
+        // Below lg both roles keep the map after the six tiles.
+        expect(layout.map.top, step.mode).toBeGreaterThanOrEqual(layout.summary.top + layout.summary.height)
         expect(Math.abs(layout.map.left - layout.summary.left), step.mode).toBeLessThanOrEqual(1)
       }
       // Uncarded: the map introduces neither a fourth card surface nor a

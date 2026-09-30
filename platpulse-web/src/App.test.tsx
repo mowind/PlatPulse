@@ -194,15 +194,20 @@ describe('App shell with private Home', () => {
         window.history.pushState({}, '', '/nodes/node-1')
         window.dispatchEvent(new PopStateEvent('popstate'))
       })
-      const directory = await screen.findByRole('group', { name: 'Node data directory' })
-      expect(within(directory).getByText(usage, { exact: true })).toBeTruthy()
-      expect(directory.textContent).not.toContain('undefined')
-      expect(within(directory).getByText(bytes + ' · directory size against the hosting filesystem capacity, not whole-Host disk usage', { exact: true })).toBeTruthy()
-      if (usage === 'Unknown') {
-        expect(within(directory).queryByRole('progressbar')).toBeNull()
-        expect(directory.textContent).not.toContain('0%')
+      const process = await screen.findByRole('region', { name: 'PlatON process' })
+      expect(process.textContent).not.toMatch(/undefined|NaN/)
+      expect(within(process).queryByText('Started', { exact: true })).toBeNull()
+      if (bytes === 'Unknown') {
+        expect(within(process).queryByText('Storage', { exact: true })).toBeNull()
       } else {
-        expect(within(directory).getByRole('progressbar').getAttribute('aria-valuenow')).toBe(String(parseFloat(usage)))
+        expect(within(process).getByText(bytes, { exact: true })).toBeTruthy()
+      }
+      if (usage === 'Unknown') {
+        expect(within(process).queryByText('Data usage', { exact: true })).toBeNull()
+        expect(within(process).queryByRole('progressbar')).toBeNull()
+      } else {
+        expect(within(process).getByText(usage, { exact: true })).toBeTruthy()
+        expect(within(process).queryByRole('progressbar')).toBeNull()
       }
     } finally {
       await act(async () => {
@@ -226,9 +231,11 @@ describe('App shell with private Home', () => {
     currentValidatorStatusState: 'current',
   }
   it.each([
-    { label: 'no Node Validator Link', validator: undefined },
-    { label: 'an authoritative not_validator verdict', validator: notValidatorInsight },
-  ])('renders the ordinary Node Detail layout with $label and no Linked Validator region', async ({ validator: validatorInsight }) => {
+    { label: 'no Node Validator Link', validator: undefined, observer: false },
+    { label: 'an authoritative not_validator verdict', validator: notValidatorInsight, observer: true },
+    { label: 'an unknown staking verdict', validator: { ...notValidatorInsight, state: 'fresh', currentValidatorStatus: 'unknown', currentValidatorStatusState: 'unknown' }, observer: false },
+    { label: 'a stale negative verdict', validator: { ...notValidatorInsight, state: 'stale', freshness: 'stale', currentValidatorStatusState: 'stale' }, observer: false },
+  ])('renders the shared Node Detail with $label and no Validator performance', async ({ validator: validatorInsight, observer }) => {
     window.history.replaceState({}, '', '/')
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
@@ -324,30 +331,41 @@ describe('App shell with private Home', () => {
     })
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Sync One' })).toBeTruthy()
-    // No Linked Validator region and none of its Unknown-heavy Validator noise.
+    // Neither absent evidence nor a stale negative verdict proves Observer.
+    const header = screen.getByRole('heading', { level: 1, name: 'Sync One' }).closest('header')!
+    expect(within(header).queryByText('Observer') != null).toBe(observer)
+    expect(within(header).queryByText('Validator', { exact: true })).toBeNull()
+    expect(within(header).getByText('node-2', { exact: true })).toBeTruthy()
+    expect(within(header).getByRole('button', { name: 'Copy full Node ID' })).toBeTruthy()
+    expect(screen.queryByRole('region', { name: 'Validator performance' })).toBeNull()
     expect(screen.queryByRole('region', { name: 'Linked Validator' })).toBeNull()
     expect(screen.queryByText('Linked Validator')).toBeNull()
     expect(screen.queryByText('Not a Validator')).toBeNull()
     expect(screen.queryByText('Validator diagnostics')).toBeNull()
-    expect(screen.queryByText('Validator')).toBeNull()
+    expect(within(header).queryByText('Validator')).toBeNull()
 
     const summary = screen.getByRole('group', { name: 'Node key summary' })
     for (const label of ['Head', 'Sync', 'Peers', 'Uptime', 'Block interval', 'Transactions / block']) {
       expect(within(summary).getByText(label)).toBeTruthy()
     }
     expect(summary.querySelectorAll('[data-slot="node-summary-tile"]')).toHaveLength(6)
-    expect(within(summary).getByText('1 block behind')).toBeTruthy()
+    expect(within(summary).getAllByText('1 block behind').length).toBeGreaterThan(0)
     expect(within(summary).getByText('10 inbound · 20 outbound')).toBeTruthy()
 
     const chainState = screen.getByRole('region', { name: 'Node chain state' })
     for (const label of ['QC Head', 'Locked Head', 'Committed Head', 'Observed Head', 'Network Head', 'Head lag']) {
       expect(within(chainState).getByText(label)).toBeTruthy()
     }
-    expect(within(chainState).getByText('1 block')).toBeTruthy()
+    expect(within(chainState).getByText('1 block behind')).toBeTruthy()
     expect(chainState.textContent).not.toContain('Unknown')
 
     const process = screen.getByRole('region', { name: 'PlatON process' })
-    expect(within(process).getByText('State')).toBeTruthy()
+    expect(within(process).getByText('Collection')).toBeTruthy()
+    expect(within(process).getByText('Successful')).toBeTruthy()
+    expect(within(process).queryByText('Current')).toBeNull()
+    expect(within(process).queryByText('Running')).toBeNull()
+    expect(process.textContent).toContain('UTC')
+    expect(process.textContent).not.toContain('ago')
     expect(within(process).getByText('Storage')).toBeTruthy()
     expect(within(process).getByText('Data usage')).toBeTruthy()
     expect(within(process).queryByText('CPU')).toBeNull()
@@ -365,6 +383,95 @@ describe('App shell with private Home', () => {
       await Promise.resolve()
     })
     await screen.findByRole('region', { name: 'Home' })
+  })
+
+  it('changes only the Validator region while navigating roles and preserves full Node ID copy', async () => {
+    const validator: PublicValidatorInsight = {
+      validatorId: 'validator-role', validatorNodeId: '0x' + 'c'.repeat(128),
+      nodeId: 'role-validator', state: 'fresh', freshness: 'current', source: 'platscan',
+      activity: 'active', activityState: 'current', currentValidatorStatus: 'validator',
+      currentValidatorStatusState: 'current', blockCount: 0, rewardAmount: '0',
+      blockRateState: 'unknown', counterState: 'normal', rankState: 'unknown', rankFreshness: 'unknown',
+    }
+    const cases = [
+      { id: 'role-validator', validator, role: 'Validator', performance: true, process: 'ok', collection: 'Successful' },
+      { id: 'role-observer', validator: { ...validator, currentValidatorStatus: 'not_validator', activity: 'observing' }, role: 'Observer', performance: false, process: 'error', collection: 'Error' },
+      { id: 'role-unknown', validator: { ...validator, currentValidatorStatus: 'unknown', currentValidatorStatusState: 'unknown' }, role: null, performance: false, process: 'disabled', collection: 'Disabled' },
+      { id: 'role-stale-positive', validator: { ...validator, state: 'stale', freshness: 'stale', currentValidatorStatusState: 'stale', activityState: 'stale' }, role: 'Validator', performance: true, process: 'unsupported', collection: 'Unsupported' },
+      { id: 'role-stale-negative', validator: { ...validator, currentValidatorStatus: 'not_validator', currentValidatorStatusState: 'stale', activity: 'observing' }, role: null, performance: false, process: 'starting', collection: 'Starting' },
+      { id: 'role-no-link', validator: null, role: null, performance: false, process: 'unknown', collection: 'Unknown' },
+    ]
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      ...Object.fromEntries(cases.map(entry => ['/api/public/v1/nodes/' + entry.id, () => jsonResponse({
+        nodeId: entry.id, displayName: 'Shared node', networkKey: 'mainnet',
+        health: 'healthy', healthReason: '', freshness: '2026-08-20T00:00:00Z',
+        rpcState: 'ok', syncState: 'ok', consensusState: 'ok', processState: entry.process,
+        currentHead: 100, networkReferenceHead: 100, networkReferenceConfidence: 'high',
+        consensus: { state: 'ok', freshness: 'current', highestQcBlock: 102, highestLockBlock: 101, highestCommitBlock: 100 },
+        peers: { state: 'ok', freshness: 'current', peerCount: 0, inboundCount: 0, outboundCount: 0 },
+        geo: { state: 'disabled', scope: 'unavailable', countries: null },
+        validator: entry.validator, validatorIdentityReason: entry.role == null ? 'Staking validity has not been confirmed.' : null,
+      }, 200)])),
+    })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    render(<App />)
+    await screen.findByRole('region', { name: 'Home' })
+    let sharedShape: string | undefined
+    try {
+      for (const entry of cases) {
+        await act(async () => {
+          window.history.pushState({}, '', '/nodes/' + entry.id)
+          window.dispatchEvent(new PopStateEvent('popstate'))
+        })
+        const heading = await screen.findByRole('heading', { name: 'Shared node', level: 1 })
+        const header = heading.closest('header')!
+        await waitFor(() => expect(within(header).getByText(entry.id, { exact: true })).toBeTruthy())
+        expect(within(header).queryByText(/^Validator(?: \(.*\))?$/) != null).toBe(entry.role === 'Validator')
+        expect(within(header).queryByText('Observer', { exact: true }) != null).toBe(entry.role === 'Observer')
+        fireEvent.click(within(header).getByRole('button', { name: 'Copy full Node ID' }))
+        await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(entry.id))
+        const performance = screen.queryByRole('region', { name: 'Validator performance' })
+        expect(performance != null).toBe(entry.performance)
+        expect(screen.queryByText('Validator diagnostics') != null).toBe(entry.performance)
+        if (entry.id === 'role-stale-positive') {
+          expect(performance?.textContent).toMatch(/stale|last confirmed|last successful/i)
+        }
+        if (entry.role == null) {
+          const technical = screen.getByText('Identifiers and technical details').closest('details')!
+          expect(technical.textContent).toContain('Staking validity has not been confirmed.')
+        }
+        const process = screen.getByRole('region', { name: 'PlatON process' })
+        expect(within(process).getByText('Collection')).toBeTruthy()
+        expect(within(process).getByText(entry.collection, { exact: true })).toBeTruthy()
+        expect(within(process).queryByText('Started')).toBeNull()
+        expect(within(process).queryByText('Running')).toBeNull()
+        expect(within(process).queryByText('Current')).toBeNull()
+        const summary = screen.getByRole('group', { name: 'Node key summary' })
+        const shape = JSON.stringify({
+          headerClass: header.className,
+          tiles: Array.from(summary.querySelectorAll('[data-slot="node-summary-tile"]')).map(tile => ({ label: tile.querySelector('span')?.textContent, className: tile.className })),
+          mapClass: document.querySelector('[data-slot="node-map"]')?.className,
+          panels: Array.from(document.querySelectorAll('[data-slot="node-info-group"]')).map(panel => ({ title: panel.querySelector('h2')?.textContent, className: panel.className })),
+          charts: Array.from(document.querySelectorAll('[data-slot="node-metric-card"] h3')).map(title => title.textContent),
+        })
+        if (sharedShape == null) sharedShape = shape
+        else expect(shape).toBe(sharedShape)
+        expect(summary.querySelectorAll('[data-slot="node-summary-tile"]')).toHaveLength(6)
+        expect(document.querySelectorAll('[data-slot="node-metric-card"]')).toHaveLength(6)
+      }
+    } finally {
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+      else Reflect.deleteProperty(navigator, 'clipboard')
+      await act(async () => {
+        window.history.pushState({}, '', '/')
+        window.dispatchEvent(new PopStateEvent('popstate'))
+      })
+      await screen.findByRole('region', { name: 'Home' })
+    }
   })
 
   it('renders the production public Node Detail continuous reading contract', async () => {
@@ -396,6 +503,9 @@ describe('App shell with private Home', () => {
         lastReportAt: '2026-08-20T00:00:05Z',
         nodeDataDirectorySizeBytes: 2_147_483_648,
         nodeDataDirectoryCapacityBytes: 8_589_934_592,
+        hostCpuPercent: 16.4,
+        hostMemoryPercent: 34.9,
+        hostStoragePercent: 29.3,
         hostNetworkRxBytesPerSec: 4096,
         hostNetworkTxBytesPerSec: 2048,
         consensus: {
@@ -509,52 +619,63 @@ describe('App shell with private Home', () => {
     const identity = screen.getByRole('heading', { level: 1, name: 'Validator A' }).closest('header')!
     expect(within(identity).getByText('Producing')).toBeTruthy()
     expect(within(identity).getByLabelText(/PlatScan status: Producing/)).toBeTruthy()
-    expect(screen.getByText('Process uptime')).toBeTruthy()
+    expect(screen.getByText('Uptime')).toBeTruthy()
     expect(screen.getByText('1h 2m')).toBeTruthy()
-    expect(screen.getByText('Head')).toBeTruthy()
-    expect(screen.getByText('QC')).toBeTruthy()
-    expect(screen.getByText('Locked')).toBeTruthy()
-    expect(screen.getByText('Committed')).toBeTruthy()
-    expect(within(screen.getByLabelText('Node chain and consensus observations')).getByText('Validator')).toBeTruthy()
-    expect(screen.getByText('True')).toBeTruthy()
+    const chain = screen.getByRole('region', { name: 'Node chain state' })
+    for (const label of ['QC Head', 'Locked Head', 'Committed Head', 'Observed Head']) {
+      expect(within(chain).getByText(label)).toBeTruthy()
+    }
+    expect(within(chain).queryByText('Validator')).toBeNull()
+    expect(within(chain).queryByText('Resync')).toBeNull()
+    expect(screen.queryByText('True')).toBeNull()
     expect(screen.queryByText('False')).toBeNull()
     expect(screen.getByText('RPC observation failed')).toBeTruthy()
-    expect(screen.getByText('Started')).toBeTruthy()
-    expect(screen.getByText('Last report')).toBeTruthy()
+    expect(within(identity).queryByText('Last report')).toBeNull()
+    expect(within(identity).getByRole('button', { name: 'Copy full Node ID' })).toBeTruthy()
+    expect(within(identity).getByText('node-1', { exact: true })).toBeTruthy()
+    const performance = screen.getByRole('region', { name: 'Validator performance' })
+    expect(within(performance.querySelector('header')!).queryByText('Producing')).toBeNull()
+    expect(within(performance.querySelector('header')!).queryByText('Current', { exact: true })).toBeNull()
+    expect(within(performance).getByText('Validator diagnostics')).toBeTruthy()
     const summary = screen.getByLabelText('Node key summary')
-    expect(summary.textContent).toContain('Head')
-    expect(summary.textContent).toContain('Sync')
-    expect(summary.textContent).toContain('Peers')
-    expect(summary.textContent).toContain('Process uptime')
-    const processGroup = screen.getByLabelText('PlatON process resources')
-    expect(processGroup.textContent).toContain('CPU')
-    expect(processGroup.textContent).toContain('12.5%')
-    expect(processGroup.textContent).toContain('Memory')
-    expect(processGroup.textContent).toContain('6.3%')
-    // The accepted A container merges PlatON process resources and the Node
-    // Data directory into one panel, so the panel carries all three tracks
-    // while the Node Data directory keeps its own labelled region.
-    expect(processGroup.querySelectorAll('[data-slot="progress-thin"]')).toHaveLength(3)
+    for (const label of ['Head', 'Sync', 'Peers', 'Uptime', 'Block interval', 'Transactions / block']) {
+      expect(within(summary).getByText(label)).toBeTruthy()
+    }
+    const peerTile = within(summary).getByText('Peers', { exact: true }).closest('[data-slot="node-summary-tile"]')!
+    expect(peerTile.textContent).toContain('Collection failed')
+    expect(peerTile.textContent).toContain('Stale')
+    expect(peerTile.textContent).toContain('8 inbound · 4 outbound')
+    const processGroup = screen.getByRole('region', { name: 'PlatON process' })
+    expect(within(processGroup).getByText('Collection')).toBeTruthy()
+    expect(within(processGroup).getByText('Successful')).toBeTruthy()
+    expect(within(processGroup).getByText('Started')).toBeTruthy()
+    expect(processGroup.textContent).toContain('UTC')
+    expect(processGroup.textContent).not.toContain('ago')
+    for (const label of ['CPU', 'Memory', 'Current', 'Running']) {
+      expect(within(processGroup).queryByText(label, { exact: true })).toBeNull()
+    }
+    // Process is static; CPU/memory tracks are not repeated above the charts.
+    expect(processGroup.querySelectorAll('[data-slot="progress-thin"]')).toHaveLength(0)
     const nodeDataGroup = screen.getByLabelText('Node data directory')
     expect(processGroup.contains(nodeDataGroup)).toBe(true)
-    expect(nodeDataGroup.textContent).toContain('Directory usage')
+    expect(nodeDataGroup.textContent).toContain('Data usage')
     expect(nodeDataGroup.textContent).toContain('25.0%')
     expect(nodeDataGroup.textContent).toContain('2.00 GiB / 8.00 GiB')
-    expect(nodeDataGroup.querySelectorAll('[data-slot="progress-thin"]')).toHaveLength(1)
     const hostGroup = screen.getByLabelText('Shared Host resources')
-    expect(hostGroup.textContent).toContain('Host CPU')
-    expect(hostGroup.textContent).toContain('Host upload')
+    expect(within(hostGroup).getByText('Network')).toBeTruthy()
+    expect(hostGroup.textContent).toContain('↑ 2.00 KiB/s')
+    expect(hostGroup.textContent).toContain('↓ 4.00 KiB/s')
     expect(hostGroup.textContent).toContain('shared by every Node')
 
     // The container contract is the accepted A calibration rather than the
-    // earlier single-hero-card composition: an uncarded identity block, four
+    // earlier single-hero-card composition: an uncarded identity block, six
     // summary tiles, and three parallel observation panels.
     expect(document.querySelector('[data-slot="node-hero-card"]')).toBeNull()
-    expect(summary.querySelectorAll('[data-slot="node-summary-tile"]')).toHaveLength(4)
+    expect(summary.querySelectorAll('[data-slot="node-summary-tile"]')).toHaveLength(6)
     expect(document.querySelectorAll('[data-slot="node-info-group"]')).toHaveLength(3)
-    // The first row pairs the four tiles with the uncarded Node Peer Country
-    // View. Reading order keeps the tiles first, CSS lifts the map above them
-    // below lg, and the Node scope names its own unit so it cannot be read as
+    // The first row pairs six tiles with the uncarded Node Peer Country
+    // View. Both visual and DOM mobile order keep the tiles before the map,
+    // and the Node scope names its own unit so it cannot be read as
     // Home's Network map.
     const overviewRow = document.querySelector('[data-slot="node-overview"]')
     if (!overviewRow) throw new Error('Node overview row is missing')
@@ -565,11 +686,11 @@ describe('App shell with private Home', () => {
     expect(nodeMap.getAttribute('data-network-filter')).toBeNull()
     expect(nodeMap.textContent).toContain('Peer countries · Disabled by server')
     const mapSlot = overviewRow.querySelector('[data-slot="node-map"]')
-    expect(mapSlot?.className).toContain('order-first')
+    expect(mapSlot?.className).not.toContain('order-first')
     expect(mapSlot?.className).toContain('aspect-[2/1]')
     expect(mapSlot?.contains(nodeMap)).toBe(true)
     expect(summary.compareDocumentPosition(nodeMap) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    for (const title of ['Chain & consensus', 'PlatON process & Node Data', /^Host resources/]) {
+    for (const title of ['Chain state', 'Process', /^Host resources/]) {
       expect(screen.getByRole('heading', { level: 2, name: title })).toBeTruthy()
     }
     // The final six-chart order is process CPU %, process memory %, shared
@@ -579,7 +700,7 @@ describe('App shell with private Home', () => {
     // and shares one row with the title, leaving at most one weak note.
     const metricsSection = screen.getByRole('heading', { level: 2, name: 'Latest 60 seconds' }).closest('section')
     if (!metricsSection) throw new Error('Latest 60 seconds section is missing')
-    for (const heading of ['Process CPU', 'Process memory', 'Host network', 'Peer connections', 'Block interval', 'Transactions per block']) {
+    for (const heading of ['Process CPU', 'Process memory', 'Host network', 'Peer connections', 'Block interval', 'Transactions / block']) {
       const card = within(metricsSection).getByRole('heading', { level: 3, name: heading }).closest('[data-slot="node-metric-card"]')
       if (!card) throw new Error(heading + ' card is missing')
       const value = card.querySelector('[data-slot="node-metric-header"] [data-slot="node-metric-value"]')
@@ -594,7 +715,7 @@ describe('App shell with private Home', () => {
     expect(within(metricsSection).queryByText('count')).toBeNull()
     expect(within(metricsSection).queryByText('tx/block')).toBeNull()
     expect(screen.getAllByText('2.00 KiB/s').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('4.00 KiB/s').length).toBeGreaterThan(0)
+    expect(within(hostGroup).getByText('↓ 4.00 KiB/s')).toBeTruthy()
     const networkLegend = screen.getByLabelText('Host network chart legend')
     expect(networkLegend.textContent).toContain('Upload')
     expect(networkLegend.textContent).toContain('Download')
@@ -627,7 +748,7 @@ describe('App shell with private Home', () => {
       expect(svg.compareDocumentPosition(legend) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     }
     expect(screen.getAllByText('12.5%').length).toBeGreaterThan(0)
-    expect(screen.getByText('2.00 s')).toBeTruthy()
+    expect(within(summary).getByText('2.00 s')).toBeTruthy()
     expect(screen.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeTruthy()
     expect(screen.getAllByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveLength(4)
     expect(screen.getAllByRole('img', { name: /bar chart over the last 60 seconds/ })).toHaveLength(2)

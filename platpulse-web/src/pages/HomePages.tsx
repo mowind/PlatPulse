@@ -20,7 +20,7 @@ import { formatDuration } from '../formatDuration'
 import { nodeDataProgress } from '../nodeData'
 import { MetricRow } from '../components/MetricRow'
 import { ValidatorActivityBadge } from '../components/ValidatorActivityBadge'
-import { ConsensusHeights, HeadDelta, LastReportAge, syncOffsetLabel, validHeight } from '../components/NodeDetailObservations'
+import { LastReportAge, networkHeadComparison, validHeight } from '../components/NodeDetailObservations'
 import { geoMapStatus, nodeGeoOverview } from '../homeGeo'
 import { NODE_PEER_COUNTRIES_HEADING } from '../components/geoPresentation'
 import { CardX } from '../components/ui/card-x'
@@ -65,7 +65,8 @@ export function NodePage() {
       : metricsQuery.error
         ? 'Metric history unavailable'
         : undefined
-  const nodeDataProgressValue = nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
+  const nodeDataProgressValue = finiteNonNegative(node.nodeDataDirectorySizeBytes) && finiteNonNegative(node.nodeDataDirectoryCapacityBytes)
+    ? nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes) : null
   const metricWindowTitle = describeMetricWindow(metricHistory)
   const validatorNode = nodeUsesValidatorComposition(node)
 
@@ -80,86 +81,36 @@ export function NodePage() {
     </div>
     {nodeQuery.isRefetchError && <p role="status" className="mt-2 text-sm text-destructive">Node refresh failed; showing the last successful Node data.</p>}
 
-    {validatorNode ? <ValidatorIdentityHeader node={node} /> : <CompactNodeHeader node={node} />}
+    <NodeIdentityHeader node={node} />
 
     {health.tone !== 'ok' && <p className="m-0 mt-2 break-words text-sm text-warning-foreground dark:text-warning">{node.healthReason}</p>}
 
-    {/* The first row pairs the summary tiles with the Node Peer Country View. A
-        Validator keeps its established composition; an ordinary Node leads with
-        six compact operational tiles and its Chain state, so the map never
-        becomes the first thing read. The map is uncarded, so §11.1's
-        card-container rule is unchanged. */}
-    {validatorNode ? (
-      <div data-slot="node-overview" className="mt-4 grid min-w-0 items-end gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
-        <div className="grid min-w-0 auto-rows-fr grid-cols-2 gap-3" role="group" aria-label="Node key summary">
-          <SummaryTile label="Head" value={formatNumber(node.currentHead)} detail={<HeadDelta node={node} />} />
-          <SummaryTile label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={syncOffsetLabel(node)} />
-          <SummaryTile label="Peers" value={peerCount(node.peers)} detail={peerBreakdown(node.peers)} />
-          <SummaryTile label="Process uptime" value={formatDuration(node.processUptimeMs)} />
-        </div>
-        <div data-slot="node-map" className="order-first min-w-0 aspect-[2/1] lg:order-none xl:aspect-auto xl:h-64">
-          <GeoMapBoundary label={NODE_PEER_COUNTRIES_HEADING}>
-            <GeoWorldMap overview={nodeGeo} status={nodeGeoStatus} heading={NODE_PEER_COUNTRIES_HEADING} />
-          </GeoMapBoundary>
-        </div>
+    {/* Both roles share geometry and DOM order; only performance is conditional. */}
+    <div data-slot="node-overview" className="mt-4 grid min-w-0 items-stretch gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
+      <div className="grid min-w-0 auto-rows-fr grid-cols-2 gap-3 sm:grid-cols-3" role="group" aria-label="Node key summary">
+        <SummaryTile label="Head" value={formatNumber(node.currentHead)} detail={headLagDetail(node)} />
+        <SummaryTile label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={headLagDetail(node)} />
+        <SummaryTile label="Peers" value={peerCount(node.peers)} detail={peerDirectionSummary(node.peers)} />
+        <SummaryTile label="Uptime" value={formatDuration(node.processUptimeMs)} />
+        <SummaryTile label="Block interval" value={blockInterval.value} detail={blockInterval.value === 'Unknown' ? blockInterval.detail : undefined} />
+        <SummaryTile label="Transactions / block" value={formatNumber(node.latestBlockTransactionCount)} />
       </div>
-    ) : (
-      <div data-slot="node-overview" className="mt-4 grid min-w-0 items-end gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
-        <div className="grid min-w-0 auto-rows-fr grid-cols-2 gap-3 sm:grid-cols-3" role="group" aria-label="Node key summary">
-          <SummaryTile dense label="Head" value={formatNumber(node.currentHead)} detail={headLagDetail(node)} />
-          <SummaryTile dense label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={syncLagDetail(node)} />
-          <SummaryTile dense label="Peers" value={peerCount(node.peers)} detail={peerDirectionSummary(node.peers)} />
-          <SummaryTile dense label="Uptime" value={formatDuration(node.processUptimeMs)} />
-          <SummaryTile dense label="Block interval" value={blockInterval.value} detail={blockInterval.value === 'Unknown' ? blockInterval.detail : undefined} />
-          <SummaryTile dense label="Transactions / block" value={formatNumber(node.latestBlockTransactionCount)} />
-        </div>
-        <div data-slot="node-map" className="min-w-0 aspect-[2/1] xl:aspect-auto xl:h-64">
-          <GeoMapBoundary label={NODE_PEER_COUNTRIES_HEADING}>
-            <GeoWorldMap overview={nodeGeo} status={nodeGeoStatus} heading={NODE_PEER_COUNTRIES_HEADING} />
-          </GeoMapBoundary>
-        </div>
+      {/* Home parity: below xl the track is proportional at 2:1 and from xl it uses
+          the same fixed 22rem band as Home. The map band sets the row height and the
+          KPI grid stretches to it (auto-rows-fr above), so the map never collapses to
+          the KPI stack height and the two columns stay flush top and bottom. */}
+      <div data-slot="node-map" className="min-w-0 aspect-[2/1] xl:aspect-auto xl:h-88">
+        <GeoMapBoundary label={NODE_PEER_COUNTRIES_HEADING}>
+          <GeoWorldMap overview={nodeGeo} status={nodeGeoStatus} heading={NODE_PEER_COUNTRIES_HEADING} />
+        </GeoMapBoundary>
       </div>
-    )}
+    </div>
 
-    {validatorNode ? (
-      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
-        <NodeInfoGroup title="Chain & consensus" label="Node chain and consensus observations">
-          <ConsensusHeights node={node} />
-          <MetricRow label="Validator" value={formatValidatorMembership(node)} />
-          <MetricRow label="Resync" value={nodeComponentStateLabel(node.resyncState)} detail={formatResyncDetail(node)} />
-          <MetricRow label="Network reference" value={formatReferenceHead(node)} detail={formatReferenceDetail(node)} />
-        </NodeInfoGroup>
-
-        <NodeInfoGroup title="PlatON process & Node Data" label="PlatON process resources">
-          <MetricRow label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent} />
-          <MetricRow label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent} />
-          <MetricRow label="Started" value={formatUtcDateTime(node.processStartedAt)} />
-          <MetricRow label="Process state" value={nodeComponentStateLabel(node.processState)} />
-          <div className="mt-1 grid grid-cols-1 gap-2 border-t border-dashed border-border/60 pt-2" role="group" aria-label="Node data directory">
-            <MetricRow
-              label="Directory usage"
-              value={formatPercent(nodeDataProgressValue)}
-              detail={(formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes) ?? 'Unknown') + ' · directory size against the hosting filesystem capacity, not whole-Host disk usage'}
-              progress={nodeDataProgressValue}
-            />
-          </div>
-        </NodeInfoGroup>
-
-        <NodeInfoGroup title="Host resources" label="Shared Host resources" note="Collected once per Agent; shared by every Node it monitors">
-          <MetricRow label="Host CPU" value={formatPercent(node.hostCpuPercent)} progress={node.hostCpuPercent} />
-          <MetricRow label="Host memory" value={formatPercent(node.hostMemoryPercent)} progress={node.hostMemoryPercent} />
-          <MetricRow label="Host storage" value={formatPercent(node.hostStoragePercent)} progress={node.hostStoragePercent} />
-          <MetricRow label="Host upload" value={formatRate(node.hostNetworkTxBytesPerSec)} />
-          <MetricRow label="Host download" value={formatRate(node.hostNetworkRxBytesPerSec)} />
-        </NodeInfoGroup>
-      </div>
-    ) : (
-      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
-        <ChainStateGroup node={node} />
-        <ProcessGroup node={node} nodeDataProgressValue={nodeDataProgressValue} />
-        <HostResourcesGroup node={node} />
-      </div>
-    )}
+    <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
+      <ChainStateGroup node={node} />
+      <ProcessGroup node={node} nodeDataProgressValue={nodeDataProgressValue} />
+      <HostResourcesGroup node={node} />
+    </div>
 
     {validatorNode && <LinkedValidatorSection node={node} variant="detail" />}
 
@@ -242,10 +193,10 @@ export function NodePage() {
           chartKind="bar"
         />
         <NodeMetricCard
-          label="Transactions per block"
+          label="Transactions / block"
           value={formatNumber(node.latestBlockTransactionCount)}
           tone="violet"
-          series={[{ label: 'Transactions per block', points: metricHistory?.transactionCount ?? [] }]}
+          series={[{ label: 'Transactions / block', points: metricHistory?.transactionCount ?? [] }]}
           from={metricHistory?.from}
           to={metricHistory?.to}
           windowSeconds={metricHistory?.windowSeconds}
@@ -263,7 +214,20 @@ export function NodePage() {
         <TechnicalFact label="RPC state" value={nodeComponentStateLabel(node.rpcState)} />
         <TechnicalFact label="Sync state" value={nodeComponentStateLabel(node.syncState)} />
         <TechnicalFact label="Consensus state" value={nodeComponentStateLabel(node.consensusState)} />
-        <TechnicalFact label="Process state" value={nodeComponentStateLabel(node.processState)} />
+        <TechnicalFact label="Process collection state" value={node.processState || 'Unknown'} />
+        <TechnicalFact label="Raw sync state" value={node.syncState || 'Unknown'} />
+        <TechnicalFact label="Resync state" value={node.resyncState || 'Unknown'} />
+        {node.resyncProgress && <TechnicalFact label="Resync progress" value={node.resyncProgress} />}
+        {node.resyncLastProgressAt && <TechnicalFact label="Resync last progress" value={formatUtcDateTime(node.resyncLastProgressAt)} />}
+        <TechnicalFact label="Last report" value={formatUtcDateTime(node.lastReportAt)} />
+        <TechnicalFact label="Observation receipt" value={formatUtcDateTime(node.freshness)} />
+        {node.validatorIdentityState && <TechnicalFact label="Identity discovery" value={node.validatorIdentityState} />}
+        {node.validatorIdentityReason && <TechnicalFact label="Identity context" value={node.validatorIdentityReason} />}
+        {!validatorNode && node.validator && <>
+          <TechnicalFact label="Chain identity" value={<code className="break-all font-mono">{node.validator.validatorNodeId}</code>} />
+          <TechnicalFact label="Staking verdict" value={node.validator.currentValidatorStatus ?? 'Unknown'} />
+          <TechnicalFact label="Verdict currency" value={node.validator.currentValidatorStatusState ?? 'Unknown'} />
+        </>}
         <TechnicalFact label="Historical high watermark" value={formatNumber(node.historicalHighWatermark)} />
         <TechnicalFact label="Observed Network Head" value={formatNumber(node.networkReferenceHead)} />
         <TechnicalFact label="Reference confidence" value={node.networkReferenceConfidence || 'Unknown'} />
@@ -281,12 +245,12 @@ function TechnicalFact({ label, value }: { label: string; value: ReactNode }) {
   )
 }
 
-function SummaryTile({ label, value, detail, dense = false }: { label: string; value: ReactNode; detail?: ReactNode; dense?: boolean }) {
+function SummaryTile({ label, value, detail }: { label: string; value: ReactNode; detail?: ReactNode }) {
   return (
-    <CardX bordered={false} data-slot="node-summary-tile" className={cn('group min-w-0', SUMMARY_CARD)} contentClassName="flex h-full flex-col gap-1">
-      <span className={cn('break-words font-medium tracking-wider text-muted-foreground', dense ? 'text-[11px]' : 'text-xs')}>{label}</span>
-      <strong className={cn('min-w-0 break-words font-bold leading-none tracking-tight tabular-nums', dense ? 'text-base md:text-lg' : 'text-lg md:text-2xl')}>{value}</strong>
-      {detail != null && detail !== '' && <small className={cn('break-words text-muted-foreground', dense ? 'text-[10px]' : 'text-[11px]')}>{detail}</small>}
+    <CardX bordered={false} data-slot="node-summary-tile" className={cn('group min-w-0', SUMMARY_CARD)} size="small" contentClassName="flex h-full min-h-24 flex-col gap-1">
+      <span className={'break-words text-[11px] font-medium tracking-wider text-muted-foreground'}>{label}</span>
+      <strong className={'min-w-0 break-words text-base font-bold leading-none tracking-tight tabular-nums md:text-lg'}>{value}</strong>
+      {detail != null && detail !== '' && <small className={'break-words text-[10px] text-muted-foreground'}>{detail}</small>}
     </CardX>
   )
 }
@@ -303,9 +267,9 @@ function NodeInfoGroup({ title, label, note, children }: { title: string; label:
     >
       <h2 className="m-0 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm font-medium">
         {title}
-        {note && <span className="text-[11px] font-normal text-muted-foreground">{note}</span>}
       </h2>
       <div className="grid grid-cols-1 gap-2">{children}</div>
+      {note && <p className="m-0 mt-auto pt-1 text-[11px] text-muted-foreground">{note}</p>}
     </CardX>
   )
 }
@@ -313,24 +277,15 @@ function NodeInfoGroup({ title, label, note, children }: { title: string; label:
 
 
 function nodeUsesValidatorComposition(node: PublicNode): boolean {
-  const validator = node.validator
-  // Only an explicit Node Validator Link proves a staking identity, and the
-  // Server's Current Validator Status is the only staking verdict (ADR
-  // 0005/0006); consensus membership is never used. An authoritative
-  // `not_validator` verdict means the chain key has no current staking
-  // identity, so the Node takes the ordinary composition and renders no Linked
-  // Validator region at all — never a "Not a Validator" card. An unestablished
-  // `unknown` verdict is not a negative one, so a linked identity keeps its
-  // region and the existing non-verdict presentation.
-  return validator != null && (validator.currentValidatorStatus ?? '').toLowerCase() !== 'not_validator'
+  // Identity correspondence alone is not a staking verdict. Retain a last-good
+  // positive verdict, but qualify its currency in the header and diagnostics.
+  return node.validator?.currentValidatorStatus === 'validator'
 }
 
-function nodeRoleLabel(node: PublicNode): string {
-  const activity = typeof node.validator?.activity === 'string' ? node.validator.activity.trim().toLowerCase() : ''
-  if (activity === 'exiting' || activity === 'exited' || activity === 'locked' || activity === 'candidate') {
-    return activity[0].toUpperCase() + activity.slice(1)
-  }
-  return 'Observer'
+function nodeRoleLabel(node: PublicNode): string | null {
+  if (nodeUsesValidatorComposition(node)) return 'Validator'
+  return node.validator?.currentValidatorStatus === 'not_validator'
+    && node.validator.currentValidatorStatusState === 'current' ? 'Observer' : null
 }
 
 function nodeSyncStateLabel(node: PublicNode): string | null {
@@ -344,50 +299,25 @@ const TONE_ERROR = 'text-destructive'
 const TONE_MUTED = 'text-muted-foreground'
 const HEAD_LAG_WARNING_MAX = 10
 
-type HeadLagPresentation = { blocks: number; label: string; detail?: string; toneClass: string }
+type HeadLagPresentation = { label: string; toneClass: string }
 
-/** Head lag = Observed Network Head − this Node's Head, computed from the two
- *  heights the Server already publishes. Without both heights there is no lag
- *  row at all. A reference the Server has not rated high-confidence is reported
- *  without a health verdict, so the number is never asserted from weak evidence. */
+/** Never certify a last-good or low-confidence comparison as at network head. */
 function headLagPresentation(node: PublicNode): HeadLagPresentation | null {
-  if (!validHeight(node.currentHead) || !validHeight(node.networkReferenceHead)) return null
+  if (networkHeadComparison(node).reason || !validHeight(node.currentHead) || !validHeight(node.networkReferenceHead)) return null
   const blocks = node.networkReferenceHead - node.currentHead
-  const confirmed = node.networkReferenceConfidence === 'high'
-  const toneClass = !confirmed
-    ? TONE_MUTED
-    : blocks <= 1
-      ? TONE_OK
-      : blocks <= HEAD_LAG_WARNING_MAX
-        ? TONE_WARNING
-        : TONE_ERROR
-  const label = blocks === 0
-    ? 'At network head'
-    : blocks < 0
-      ? Math.abs(blocks).toLocaleString() + ' block' + (blocks === -1 ? '' : 's') + ' ahead'
-      : blocks.toLocaleString() + ' block' + (blocks === 1 ? '' : 's')
-  const detail = confirmed ? undefined : 'Network Head confidence ' + (node.networkReferenceConfidence || 'unknown')
-  return { blocks, label, detail, toneClass }
+  const toneClass = blocks < 0 ? TONE_MUTED : blocks === 0 ? TONE_OK
+    : blocks <= HEAD_LAG_WARNING_MAX ? TONE_WARNING : TONE_ERROR
+  const label = blocks === 0 ? 'At network head'
+    : Math.abs(blocks).toLocaleString() + ' block' + (Math.abs(blocks) === 1 ? '' : 's') + (blocks > 0 ? ' behind' : ' ahead')
+  return { label, toneClass }
 }
 
 function headLagDetail(node: PublicNode): string | undefined {
-  const lag = headLagPresentation(node)
-  if (!lag) return undefined
-  if (lag.blocks === 0) return 'At network head'
-  return Math.abs(lag.blocks).toLocaleString() + (lag.blocks > 0 ? ' from network head' : ' ahead of network head')
-}
-
-function syncLagDetail(node: PublicNode): string | undefined {
-  const lag = headLagPresentation(node)
-  if (!lag) return undefined
-  if (lag.blocks === 0) return 'At network head'
-  return Math.abs(lag.blocks).toLocaleString() + ' block' + (Math.abs(lag.blocks) === 1 ? '' : 's') + (lag.blocks > 0 ? ' behind' : ' ahead')
+  return headLagPresentation(node)?.label ?? networkHeadComparison(node).reason
 }
 
 function peerDirectionSummary(insight: PublicNode['peers']): string {
-  if (insight.inboundCount != null && insight.outboundCount != null) {
-    return insight.inboundCount.toLocaleString() + ' inbound · ' + insight.outboundCount.toLocaleString() + ' outbound'
-  }
+  // Keep collection/freshness warnings even when retained counts are available.
   return peerBreakdown(insight)
 }
 
@@ -409,42 +339,23 @@ function processStateDot(state: string | null | undefined): string {
   return 'bg-muted-foreground'
 }
 
-function ValidatorIdentityHeader({ node }: { node: PublicNode }) {
-  return <header className="mt-2 flex min-w-0 flex-col gap-3 md:flex-row md:items-start md:justify-between" aria-labelledby="node-detail-title">
-    <div data-slot="node-identity-main" className="flex min-w-0 flex-1 items-start gap-2">
-      <NodeHealthMarker health={node.health} />
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 id="node-detail-title" className="m-0 min-w-0 max-w-full break-words text-lg font-semibold leading-tight md:text-2xl">{nodeDisplayName(node)}</h1>
-          <span className="inline-flex min-w-0"><ValidatorActivityBadge validator={node.validator} identityReason={node.validatorIdentityReason} /></span>
-        </div>
-        <p className="m-0 mt-1 break-words text-[11px] text-muted-foreground">Node ID <code className="font-mono">{node.nodeId}</code></p>
-      </div>
-    </div>
-    <dl className="m-0 flex flex-wrap gap-x-5 gap-y-2" aria-label="Node identity facts">
-      <div className="min-w-0">
-        <dt className="text-xs font-medium tracking-wider text-muted-foreground">Last report</dt>
-        <dd className="m-0 text-sm tabular-nums"><LastReportAge timestamp={node.lastReportAt} /></dd>
-      </div>
-    </dl>
-  </header>
-}
-
-function CompactNodeHeader({ node }: { node: PublicNode }) {
+function NodeIdentityHeader({ node }: { node: PublicNode }) {
   const syncStateLabel = nodeSyncStateLabel(node)
+  const role = nodeRoleLabel(node)
+  const validatorNode = nodeUsesValidatorComposition(node)
+  const verdictState = node.validator?.currentValidatorStatusState
   return <header className="mt-2 flex min-w-0 flex-col gap-1" aria-labelledby="node-detail-title">
     <div data-slot="node-identity-main" className="flex min-w-0 flex-1 items-start gap-2">
       <NodeHealthMarker health={node.health} />
       <div className="min-w-0">
-        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-          <h1 id="node-detail-title" className="m-0 min-w-0 max-w-full break-words text-lg font-semibold leading-tight md:text-2xl">{nodeDisplayName(node)}</h1>
-          {syncStateLabel != null && <span className="text-sm font-medium text-muted-foreground">{syncStateLabel}</span>}
-          {syncStateLabel != null && <span aria-hidden="true" className="text-muted-foreground">·</span>}
-          <span className="text-xs text-muted-foreground">{nodeRoleLabel(node)}</span>
-          <span aria-hidden="true" className="text-muted-foreground">·</span>
+        <h1 id="node-detail-title" className="m-0 min-w-0 max-w-full break-words text-lg font-semibold leading-tight md:text-2xl">{nodeDisplayName(node)}</h1>
+        <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
+          {syncStateLabel && <><span>{syncStateLabel}</span><span aria-hidden="true">·</span></>}
+          {role && <><span>{role}{validatorNode && verdictState !== 'current' ? (verdictState === 'stale' ? ' (last confirmed · stale)' : ' (currency unconfirmed)') : ''}</span><span aria-hidden="true">·</span></>}
+          {validatorNode && <><ValidatorActivityBadge validator={node.validator} identityReason={node.validatorIdentityReason} variant="inline" /><span aria-hidden="true">·</span></>}
           <LastReportAge timestamp={node.lastReportAt} variant="inline" />
         </div>
-        <NodeIdLine nodeId={node.nodeId} />
+        <NodeIdLine key={node.nodeId} nodeId={node.nodeId} />
       </div>
     </div>
   </header>
@@ -496,42 +407,41 @@ function ChainStateGroup({ node }: { node: PublicNode }) {
     {committed != null && <MetricRow label="Committed Head" value={committed.toLocaleString()} />}
     {observed != null && <MetricRow label="Observed Head" value={observed.toLocaleString()} />}
     {network != null && <MetricRow label="Network Head" value={network.toLocaleString()} />}
-    {lag != null && <MetricRow label="Head lag" value={<span className={lag.toneClass}>{lag.label}</span>} detail={lag.detail} />}
+    {lag != null && <MetricRow label="Head lag" value={<span className={lag.toneClass}>{lag.label}</span>} />}
     {!hasRows && <p className="m-0 text-[11px] text-muted-foreground">Chain state has not been observed yet.</p>}
     {staleParts.length > 0 && <p data-slot="chain-state-stale" className="m-0 text-[11px] text-muted-foreground">Last-good consensus observation · {staleParts.join(' · ')}</p>}
   </NodeInfoGroup>
 }
 
+function processCollectionLabel(state: string | null | undefined): string {
+  return state?.trim().toLowerCase() === 'ok' ? 'Successful' : nodeComponentStateLabel(state)
+}
+
 function ProcessGroup({ node, nodeDataProgressValue }: { node: PublicNode; nodeDataProgressValue: number | null }) {
-  const bytes = formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
-  const uptime = formatDuration(node.processUptimeMs)
-  return <NodeInfoGroup title="Process" label="PlatON process">
-    <MetricRow
-      label="State"
-      value={<span className="inline-flex items-center gap-1.5"><span className={cn('inline-block size-2 shrink-0 rounded-full', processStateDot(node.processState))} aria-hidden="true" />{nodeComponentStateLabel(node.processState)}</span>}
-    />
-    {uptime !== 'Unknown' && <MetricRow label="Started" value={uptime + ' ago'} detail={node.processStartedAt != null ? formatUtcDateTime(node.processStartedAt) : undefined} />}
-    <div className="mt-1 grid grid-cols-1 gap-2 border-t border-dashed border-border/60 pt-2" role="group" aria-label="Node data directory">
+  const bytes = formatNodeDataBytes(finiteNonNegative(node.nodeDataDirectorySizeBytes) ? node.nodeDataDirectorySizeBytes : null, finiteNonNegative(node.nodeDataDirectoryCapacityBytes) ? node.nodeDataDirectoryCapacityBytes : null)
+  const started = formatUtcDateTime(node.processStartedAt)
+  return <NodeInfoGroup title="Process" label="PlatON process" note="Last collection result; not a live process status">
+    <MetricRow label="Collection" value={<span className="inline-flex items-center gap-1.5"><span className={cn('inline-block size-2 shrink-0 rounded-full', processStateDot(node.processState))} aria-hidden="true" />{processCollectionLabel(node.processState)}</span>} />
+    {started !== 'Unknown' && <MetricRow label="Started" value={started} />}
+    {(bytes != null || nodeDataProgressValue != null) && <div className="grid grid-cols-1 gap-2" role="group" aria-label="Node data directory">
       {bytes != null && <MetricRow label="Storage" value={bytes} />}
-      <MetricRow
-        label="Data usage"
-        value={formatPercent(nodeDataProgressValue)}
-        detail={(bytes ?? 'Unknown') + ' · directory size against the hosting filesystem capacity, not whole-Host disk usage'}
-        progress={nodeDataProgressValue}
-      />
-    </div>
+      {nodeDataProgressValue != null && <MetricRow label="Data usage" value={formatPercent(nodeDataProgressValue)} detail="Directory size against its filesystem capacity, not whole-Host disk usage" />}
+    </div>}
   </NodeInfoGroup>
 }
 
+function finiteNonNegative(value: number | null | undefined): value is number {
+  return value != null && Number.isFinite(value) && value >= 0
+}
+
 function HostResourcesGroup({ node }: { node: PublicNode }) {
+  const resources = [['CPU', node.hostCpuPercent], ['Memory', node.hostMemoryPercent], ['Storage', node.hostStoragePercent]] as const
+  const upload = finiteNonNegative(node.hostNetworkTxBytesPerSec)
+  const download = finiteNonNegative(node.hostNetworkRxBytesPerSec)
   return <NodeInfoGroup title="Host resources" label="Shared Host resources" note="Collected once per Agent; shared by every Node it monitors">
-    <MetricRow label="CPU" value={formatPercent(node.hostCpuPercent)} progress={node.hostCpuPercent} />
-    <MetricRow label="Memory" value={formatPercent(node.hostMemoryPercent)} progress={node.hostMemoryPercent} />
-    <MetricRow label="Storage" value={formatPercent(node.hostStoragePercent)} progress={node.hostStoragePercent} />
-    <MetricRow
-      label="Network"
-      value={<span className="inline-flex flex-wrap items-center justify-end gap-x-2 tabular-nums"><span>↑ {formatRate(node.hostNetworkTxBytesPerSec)}</span><span>↓ {formatRate(node.hostNetworkRxBytesPerSec)}</span></span>}
-    />
+    {resources.map(([label, value]) => finiteNonNegative(value) ? <MetricRow key={label} label={label} value={formatPercent(value)} progress={value} /> : null)}
+    {(upload || download) && <MetricRow label="Network" value={<span className="inline-flex flex-wrap items-center justify-end gap-x-2 tabular-nums">{upload && <span>↑ {formatRate(node.hostNetworkTxBytesPerSec)}</span>}{download && <span>↓ {formatRate(node.hostNetworkRxBytesPerSec)}</span>}</span>} />}
+    {!resources.some(([, value]) => finiteNonNegative(value)) && !upload && !download && <p className="m-0 text-[11px] text-muted-foreground">Host resources have not been observed yet.</p>}
   </NodeInfoGroup>
 }
 
@@ -595,7 +505,7 @@ function NodeMetricCard({ label, unit, value, valueLabel, detail, tone, series, 
   const legend = showLegend ? <MetricSeriesLegend label={label} series={series} toneClass={toneClass} /> : undefined
   return (
     <CardX bordered={false} role="article" data-slot="node-metric-card" className={cn('min-w-0', CARD, className)} contentClassName="flex h-full min-w-0 flex-col gap-2">
-      <div data-slot="node-metric-header" className="flex min-w-0 items-start justify-between gap-3">
+      <div data-slot="node-metric-header" className="flex min-h-10 min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="m-0 text-sm font-medium">{label}</h3>
           {unit && <p className="m-0 mt-0.5 text-[11px] leading-4 text-muted-foreground">{unit}</p>}
@@ -605,8 +515,10 @@ function NodeMetricCard({ label, unit, value, valueLabel, detail, tone, series, 
           {valueLabel && <span className="text-[10px] leading-none text-muted-foreground">{valueLabel}</span>}
         </div>
       </div>
-      {detail && <p className="m-0 break-words text-[11px] leading-4 text-muted-foreground">{detail}</p>}
-      {missingDirections.length > 0 && <p className="m-0 text-[11px] italic text-muted-foreground">{missingDirections.join(' and ')} unavailable in this window</p>}
+      <div className="min-h-8 flex-1">
+        {detail && <p className="m-0 break-words text-[11px] leading-4 text-muted-foreground">{detail}</p>}
+        {missingDirections.length > 0 && <p className="m-0 text-[11px] italic text-muted-foreground">{missingDirections.join(' and ')} unavailable in this window</p>}
+      </div>
       <MetricChart label={label} series={series} from={from} to={to} fixedMax={fixedMax} axisFormat={axisFormat} message={historyMessage} kind={chartKind} windowSeconds={windowSeconds} toneClass={toneClass} legend={legend} />
     </CardX>
   )
@@ -685,7 +597,7 @@ function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, k
       {chartMessage && <text data-slot="node-metric-chart-empty" className="fill-muted-foreground text-[22px]" x="300" y="78" textAnchor="middle">{chartMessage}</text>}
     </svg>
     <div className="col-start-2 row-start-2 flex justify-between pt-1 text-[11px] tabular-nums text-muted-foreground" aria-hidden="true"><span>{seconds}s</span><span>0s</span></div>
-    {legend && <div data-slot="node-metric-legend" className="col-start-2 row-start-3 pt-1.5">{legend}</div>}
+    <div data-slot="node-metric-legend" className="col-start-2 row-start-3 min-h-6 pt-1.5">{legend}</div>
   </div>
 }
 
@@ -741,14 +653,8 @@ function niceChartMax(value: number): number {
   return step * magnitude
 }
 
-function formatValidatorMembership(node: PublicNode): string {
-  const consensus = node.consensus
-  if (!consensus || consensus.validator == null || consensus.freshness === 'unknown' || ['starting', 'disabled', 'unsupported'].includes(consensus.state)) return 'Unknown'
-  return consensus.validator ? 'True' : 'False'
-}
-
 function formatRate(value: number | null | undefined): string {
-  if (value == null) return 'Unknown'
+  if (!finiteNonNegative(value)) return 'Unknown'
   const units = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s']
   let scaled = value
   let unit = 0
@@ -794,7 +700,7 @@ function latestBlockInterval(history: ReturnType<typeof usePublicNodeHistory>['d
   const elapsed = latest.blockTimeMs - previous.blockTimeMs
   if (elapsed < 0) return { value: 'Unknown', detail: 'Block timestamps are inconsistent' }
   const value = elapsed < 1000 ? elapsed + ' ms' : (elapsed / 1000).toFixed(2) + ' s'
-  return { value, detail: 'Block ' + latest.height.toLocaleString() + ' − ' + previous.height.toLocaleString() }
+  return { value, detail: latest.height.toLocaleString() + ' → ' + previous.height.toLocaleString() }
 }
 
 /** A process value is the retained current Public Projection value; when the
@@ -803,20 +709,6 @@ function processStatusDetail(state: string | null | undefined): string | undefin
   const label = nodeComponentStateLabel(state)
   if (label === 'Current') return undefined
   return 'last-good value retained · collection ' + label
-}
-
-function formatResyncDetail(node: PublicNode): string {
-  if (node.resyncProgress) return node.resyncProgress
-  return node.resyncState === 'normal' ? 'No resync in progress' : 'Resync progress is Unknown'
-}
-
-function formatReferenceHead(node: PublicNode): string {
-  return node.networkReferenceHead == null ? 'Unknown' : node.networkReferenceHead.toLocaleString()
-}
-
-function formatReferenceDetail(node: PublicNode): string {
-  if (node.networkReferenceHead == null) return 'Observed Network Head unavailable'
-  return 'Observed Network Head · ' + (node.networkReferenceConfidence || 'unknown') + ' confidence'
 }
 
 function nodeComponentStateLabel(value: string | null | undefined): string {
@@ -851,11 +743,11 @@ function nodeDisplayName(node: Pick<PublicNode, 'displayName' | 'nodeId'>): stri
 }
 
 function formatNumber(value: number | null | undefined): string {
-  return value == null ? 'Unknown' : value.toLocaleString()
+  return !finiteNonNegative(value) ? 'Unknown' : value.toLocaleString()
 }
 
 function formatPercent(value: number | null | undefined): string {
-  return value == null ? 'Unknown' : value.toFixed(1) + '%'
+  return !finiteNonNegative(value) ? 'Unknown' : value.toFixed(1) + '%'
 }
 
 function peerCount(insight: PublicNode['peers']): string {
