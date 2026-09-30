@@ -19,17 +19,13 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(page).toHaveURL(/\/nodes\/0195f2a1-0014-4014-8014-000000000014$/)
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 15_000 })
     await expect(page.getByText('Head', { exact: true })).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByText('Process uptime', { exact: true })).toBeVisible()
-    await expect(page.getByLabel('PlatON process resources').getByText('CPU', { exact: true })).toBeVisible()
+    await expect(page.getByText('Uptime', { exact: true })).toBeVisible()
+    await expect(page.getByLabel('Shared Host resources').getByText('CPU', { exact: true })).toBeVisible()
     // Continuous reading (issue #149) replaces the Details/Network tabs with a
     // single page and keyboard-operable disclosures.
     await expect(page.getByRole('tab')).toHaveCount(0)
     await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
     await expect(page.getByText('Peer diagnostics')).toHaveCount(0)
-    const technicalDisclosure = page.locator('details[data-slot="disclosure"]', { hasText: 'Identifiers and technical details' })
-    await technicalDisclosure.locator('summary').focus()
-    await page.keyboard.press('Enter')
-    await expect(technicalDisclosure).toHaveAttribute('open', '')
     await expectVisibleInteractiveTargets(page)
     await setPageZoom(page, 2)
     await expectNoHorizontalOverflow(page)
@@ -163,45 +159,50 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await page.getByRole('link', { name: /Node A/ }).click()
     await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 15_000 })
 
-    await expect(page.getByText('Process uptime')).toBeVisible()
+    await expect(page.getByText('Uptime')).toBeVisible()
     const observationPanel = page.locator('[data-slot="node-info-group"]').first()
     await expect.poll(() => observationPanel.evaluate((card) => getComputedStyle(card, '::before').content)).toBe('none')
     // Continuous reading (issue #149): every group is visible in one page and
     // no Details/Network tab survives.
     await expect(page.getByRole('tab')).toHaveCount(0)
-    for (const label of ['Node key summary', 'Node chain and consensus observations', 'PlatON process resources', 'Node data directory', 'Shared Host resources']) {
+    for (const label of ['Node key summary', 'Node chain state', 'PlatON process', 'Node data directory', 'Shared Host resources']) {
       await expect(page.getByLabel(label)).toBeVisible()
     }
-    // The accepted A container (issue #151): an uncarded identity block, four
+    // The accepted A container (issue #151): an uncarded identity block, six
     // summary tiles, and three parallel observation panels with the Node Data
     // directory merged into the process panel.
     await expect(page.locator('[data-slot="node-hero-card"]')).toHaveCount(0)
     await expect(page.locator('[data-slot="node-info-group"]')).toHaveCount(3)
-    await expect(page.getByLabel('Node key summary').locator('[data-slot="node-summary-tile"]')).toHaveCount(4)
-    const chainGroup = page.getByLabel('Node chain and consensus observations')
+    await expect(page.getByLabel('Node key summary').locator('[data-slot="node-summary-tile"]')).toHaveCount(6)
+    const chainGroup = page.getByLabel('Node chain state')
     await expect(page.getByLabel('Node key summary').getByText('Head', { exact: true })).toBeVisible()
-    await expect(chainGroup.getByText('QC', { exact: true })).toBeVisible()
-    await expect(chainGroup.getByText('Locked', { exact: true })).toBeVisible()
-    await expect(chainGroup.getByText('Committed', { exact: true })).toBeVisible()
-    await expect(chainGroup.getByText('Validator', { exact: true })).toBeVisible()
-    await expect(chainGroup.getByText('True', { exact: true })).toHaveCount(1)
+    for (const label of ['QC Head', 'Locked Head', 'Committed Head', 'Observed Head']) {
+      await expect(chainGroup.getByText(label, { exact: true })).toBeVisible()
+    }
+    await expect(chainGroup.getByText('QC', { exact: true })).toHaveCount(0)
+    await expect(chainGroup.getByText('Locked', { exact: true })).toHaveCount(0)
+    await expect(chainGroup.getByText('Committed', { exact: true })).toHaveCount(0)
     await expect(page.getByText('Server updates arrive as invalidations; REST data stays authoritative.', { exact: true })).toHaveCount(0)
     await expect(page.getByText('RPC, sync, and consensus are current', { exact: true })).toHaveCount(0)
-    const resources = page.getByLabel('PlatON process resources')
+    // CPU/memory/storage live in the shared Host resources panel; the Process
+    // panel keeps the collection result and the merged Node Data directory.
+    const host = page.getByLabel('Shared Host resources')
     for (const label of ['CPU', 'Memory']) {
-      await expect(resources.getByText(label, { exact: true })).toBeVisible()
+      await expect(host.getByText(label, { exact: true })).toBeVisible()
     }
-    // Process CPU + process memory + the merged Node Data directory.
-    await expect(resources.locator('[data-slot="progress-thin"]')).toHaveCount(3)
-    await expectMetricRowsAligned(resources)
+    // Node A's Host reports no storage figure, so only CPU and Memory carry a bar.
+    await expect(host.getByText('Storage', { exact: true })).toHaveCount(0)
+    await expect(host.locator('[data-slot="progress-thin"]')).toHaveCount(2)
+    await expectMetricRowsAligned(host)
+    await expectMetricRowsAligned(page.getByLabel('PlatON process'))
     await expectMetricRowsAligned(chainGroup)
     await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
     // Six charts in the agreed order, from the fixed metrics response.
-    for (const heading of ['Process CPU', 'Process memory', 'Host network', 'Peer connections', 'Block interval', 'Transactions per block']) {
+    for (const heading of ['Process CPU', 'Process memory', 'Host network', 'Peer connections', 'Block interval', 'Transactions / block']) {
       await expect(page.getByRole('heading', { level: 3, name: heading })).toBeVisible()
     }
-    await expect(page.getByText('2.00 s')).toBeVisible()
     const metrics = page.locator('[data-slot="node-metrics-section"]')
+    await expect(metrics.getByText('2.00 s', { exact: true })).toBeVisible()
     await expect(metrics.getByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveCount(4)
     await expect(metrics.getByRole('img', { name: /bar chart over the last 60 seconds/ })).toHaveCount(2)
     await expect(metrics.locator('[data-slot="node-metric-chart-bar"]')).not.toHaveCount(0)
@@ -213,7 +214,10 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     expect(cardSizes).toHaveLength(6)
     expect(new Set(cardSizes.map(({ width }) => width)).size).toBe(1)
     expect(new Set(cardSizes.map(({ height }) => height)).size, JSON.stringify(cardSizes)).toBe(1)
-    expect(Math.max(...cardSizes.map(({ height }) => height))).toBeLessThanOrEqual(270)
+    // Small screens carry the taller 7.25rem chart; lg shortens it to 6.25rem,
+    // so the compact bound is width-dependent.
+    const maxCardHeight = (page.viewportSize()?.width ?? 0) >= 1024 ? 270 : 290
+    expect(Math.max(...cardSizes.map(({ height }) => height))).toBeLessThanOrEqual(maxCardHeight)
     await expect(metrics.getByText('No samples in the last minute', { exact: true })).toHaveCount(0)
     await expect.poll(() => metrics.locator('[data-slot="node-metric-card"]').first().evaluate((card) => getComputedStyle(card, '::before').content)).toBe('none')
     await expect(page.getByText('Bounded Block History')).toHaveCount(0)

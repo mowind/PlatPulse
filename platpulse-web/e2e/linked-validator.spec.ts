@@ -63,9 +63,10 @@ async function expectCardMetrics(scope: Locator) {
   expect(overflowing, 'metric labels and values must wrap within their cells').toEqual([])
 }
 
-/** Six independent metrics: one mobile column, two tablet columns, strict desktop 3×2. */
+/** Six independent metrics: two columns on phones and tablets, strict desktop 3×2.
+ *  A value too long for one column spans the whole row, so geometry is checked per row. */
 async function expectDetailMetrics(scope: Locator) {
-  const metrics = scope.getByRole('group', { name: 'Linked Validator metrics' })
+  const metrics = scope.getByRole('group', { name: 'Validator performance metrics' })
   const cells = metrics.locator(':scope > [data-slot="metric-row"]')
   await expect(cells).toHaveCount(6)
   for (const value of await cells.locator('[data-slot="metric-row-value"]').all()) {
@@ -81,27 +82,38 @@ async function expectDetailMetrics(scope: Locator) {
     expect(gap, 'each value sits directly beneath its own label, even beside a warning').toBeGreaterThanOrEqual(0)
     expect(gap).toBeLessThanOrEqual(8)
   }
-  const columns = await metrics.evaluate(() => window.innerWidth >= 1024 ? 3 : window.innerWidth >= 640 ? 2 : 1)
+  const columns = await metrics.evaluate(() => window.innerWidth >= 1024 ? 3 : 2)
   await expect(cells.locator('[data-slot="metric-row-label"]')).toHaveText([
     'Cumulative blocks', 'Cumulative rewards', 'Network rank',
     'Production rate', 'PlatScan 24h rate', 'Delegation reward share',
   ])
-  await expect(metrics).toHaveCSS('column-gap', '40px')
+  await expect(metrics).toHaveCSS('column-gap', '16px')
   const metricsBox = (await metrics.boundingBox())!
-  const columnWidth = (metricsBox.width - 40 * (columns - 1)) / columns
+  const columnGap = 16
+  const columnWidth = (metricsBox.width - columnGap * (columns - 1)) / columns
   const boxes = await cells.evaluateAll(elements => elements.map(element => {
     const box = element.getBoundingClientRect()
     return { x: box.x, y: box.y, bottom: box.bottom, width: box.width }
   }))
-  for (let index = 0; index < boxes.length; index++) {
-    const box = boxes[index]
-    const column = index % columns
-    const rowStart = index - column
-    expect(box.width, 'every metric occupies exactly one column, even for long rewards').toBeCloseTo(columnWidth, 0)
-    expect(box.x).toBeCloseTo(metricsBox.x + column * (columnWidth + 40), 0)
-    expect(box.y, 'metrics preserve the prescribed row-major order').toBeCloseTo(boxes[rowStart].y, 0)
-    if (rowStart >= columns) expect(box.y).toBeGreaterThanOrEqual(Math.max(...boxes.slice(rowStart - columns, rowStart).map(previous => previous.bottom)))
+  // Walk each rendered row: a metric fills its column, and one whose value
+  // cannot fit spans the whole row; either way rows fill left to right in order.
+  let row: typeof boxes = []
+  const checkRow = () => {
+    if (row.length === 0) return
+    let expectedX = metricsBox.x
+    for (const box of row) {
+      const full = Math.abs(box.width - metricsBox.width) <= 1
+      expect(box.x, 'metrics fill their row from the left in row-major order').toBeCloseTo(expectedX, 0)
+      expect(box.width, 'a metric occupies one column unless a long value spans the row').toBeCloseTo(full ? metricsBox.width : columnWidth, 0)
+      expectedX += full ? metricsBox.width : columnWidth + columnGap
+    }
+    row = []
   }
+  for (const box of boxes) {
+    if (row.length > 0 && Math.abs(box.y - row[0].y) > 1) checkRow()
+    row.push(box)
+  }
+  checkRow()
   const overflowing = await metrics.locator('*').evaluateAll(elements => elements
     .filter(element => element.scrollWidth > element.clientWidth + 1)
     .map(element => element.textContent))
@@ -134,9 +146,8 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     // Node detail keeps the identity, the full identifier with its copy
     // control, all six metrics at source precision and the provenance.
     await page.goto('/nodes/' + PUBLIC_NODE_ID)
-    const detail = page.getByRole('region', { name: 'Linked Validator' })
+    const detail = page.getByRole('region', { name: 'Validator performance' })
     await expect(detail).toBeVisible()
-    await expect(detail.getByText('E2E Validator')).toBeVisible()
     await expect(detail.getByRole('button', { name: 'Copy full Validator identifier' })).toBeVisible()
     await expect(detail.getByLabel(/Validator identifier: 0x/)).toHaveCount(0)
     await detail.getByRole('button', { name: 'Show full ID' }).click()
@@ -147,11 +158,12 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await detail.locator('summary').click()
     // The public state vocabulary and provenance remain available on demand.
     await expect(detail.getByLabel('Public Validator states')).toBeVisible()
+    await expect(detail.getByText('E2E Validator', { exact: true })).toBeVisible()
     await expect(detail.getByText('Data freshness', { exact: true })).toBeVisible()
     await expect(detail.getByText('Cumulative blocks')).toBeVisible()
     await expect(detail.getByText('Cumulative rewards', { exact: true })).toBeVisible()
     await expect(metricValue(detail, 'Cumulative rewards')).toHaveText(LINKED_REWARD)
-    await expect(detail.getByText('Validator', { exact: true })).toBeVisible()
+    await expect(detail.getByLabel('Public Validator states').getByText('Current staking status', { exact: true })).toBeVisible()
     await expect(detail.getByText('Last success', { exact: true })).toBeVisible()
     await expect(metricValue(detail, 'Network rank')).toHaveText(LINKED_RANK)
     await expect(metricValue(detail, 'Production rate')).toHaveText(LINKED_BLOCK_RATE_DETAIL)
@@ -197,7 +209,7 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await expectNoHorizontalOverflow(page)
 
     await page.goto('/nodes/' + PUBLIC_NODE_ID)
-    const detail = page.getByRole('region', { name: 'Linked Validator' })
+    const detail = page.getByRole('region', { name: 'Validator performance' })
     await detail.getByRole('button', { name: 'Show full ID' }).click()
     await expect(detail.getByText(identity, { exact: true })).toBeVisible()
     await expect(metricValue(detail, 'Cumulative rewards')).toHaveText('123,456,789,012,345,678,901,234,567,890.1234')
@@ -222,10 +234,10 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
       })
       await loginAs(page)
       await page.goto('/nodes/' + PUBLIC_NODE_ID)
-      const detail = page.getByRole('region', { name: 'Linked Validator' })
+      const detail = page.getByRole('region', { name: 'Validator performance' })
       await expect(detail).toBeVisible()
-      const summaries = page.locator('summary').filter({ hasText: /Validator diagnostics|Identifiers and technical details/ })
-      await expect(summaries).toHaveCount(2)
+      const summaries = page.locator('summary').filter({ hasText: 'Validator diagnostics' })
+      await expect(summaries).toHaveCount(1)
       const disclosures = summaries.locator('..')
       const fullReward = detail.locator('details').getByText('Cumulative rewards (full precision)', { exact: true }).locator('xpath=following-sibling::dd')
       await expect(fullReward).toHaveText(reward === '10' ? '10' : '305,614.775625389856')
@@ -260,6 +272,7 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
       const width = page.viewportSize()!.width
       expect((await detail.boundingBox())!.height, 'closed overview stays compact').toBeLessThanOrEqual(width >= 1024 ? 360 : width >= 640 ? 440 : 640)
       const identity = detail.locator('code').first()
+      const identityLabel = detail.getByText('Validator ID', { exact: true })
       const copy = detail.getByRole('button', { name: 'Copy full Validator identifier' })
       const show = detail.getByRole('button', { name: 'Show full ID' })
       const textBox = await identity.evaluate(element => {
@@ -271,24 +284,22 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
         const wrapped = rect.height > parseFloat(getComputedStyle(element).lineHeight) + 1
         return { right: wrapped ? element.getBoundingClientRect().right : rect.right, y: rect.y, bottom: rect.bottom }
       })
+      const labelBox = (await identityLabel.boundingBox())!
       const copyBox = (await copy.boundingBox())!
       const showBox = (await show.boundingBox())!
-      expect(copyBox.x - textBox.right, 'copy stays adjacent to the shortened ID, not at the far edge').toBeGreaterThanOrEqual(0)
-      expect(copyBox.x - textBox.right).toBeLessThanOrEqual(12)
-      expect(copyBox.y).toBeLessThanOrEqual(textBox.bottom)
-      expect(copyBox.y + copyBox.height).toBeGreaterThanOrEqual(textBox.y)
+      if (copyBox.y >= textBox.bottom - 1) {
+        // Narrow widths wrap the paired controls beneath the ID; they keep the
+        // row start rather than drifting to the far edge.
+        expect(copyBox.x, 'wrapped copy aligns with the identity row start').toBeCloseTo(labelBox.x, 0)
+      } else {
+        expect(copyBox.x - textBox.right, 'copy stays adjacent to the shortened ID, not at the far edge').toBeGreaterThanOrEqual(0)
+        expect(copyBox.x - textBox.right).toBeLessThanOrEqual(12)
+        expect(copyBox.y).toBeLessThanOrEqual(textBox.bottom)
+        expect(copyBox.y + copyBox.height).toBeGreaterThanOrEqual(textBox.y)
+      }
       expect(showBox.x - copyBox.x - copyBox.width).toBeGreaterThanOrEqual(0)
       expect(showBox.x - copyBox.x - copyBox.width).toBeLessThanOrEqual(12)
       expect(showBox.y).toBeCloseTo(copyBox.y, 0)
-      const styles = await summaries.evaluateAll(elements => elements.map(element => {
-        const properties = ['display', 'min-height', 'cursor', 'align-items', 'flex-wrap', 'column-gap',
-          'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'font-size', 'font-weight', 'line-height', 'color']
-        const read = (target: Element) => properties.map(property => getComputedStyle(target).getPropertyValue(property))
-        return { summary: read(element), title: read(element.querySelector('span')!),
-          description: read(element.querySelector('span:last-child')!), marker: read(element.querySelector('svg')!) }
-      }))
-      expect(styles[0], 'nested and page-level disclosures share computed presentation, including padding').toEqual(styles[1])
-      expect(styles[0]).toEqual(styles[2])
       await show.click()
       for (const summary of await summaries.all()) await summary.click()
       for (const disclosure of await disclosures.all()) {
@@ -328,13 +339,14 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
       const response = await route.fetch()
       const node: PublicNode = await response.json()
       await route.fulfill({ response, json: { ...node, validatorIdentityReason: 'Identity discovery failed.', validator: { ...node.validator,
-        validatorNodeId: identity, state: 'error', freshness: 'stale', currentValidatorStatus: 'unknown',
+        validatorNodeId: identity, state: 'error', freshness: 'stale', currentValidatorStatus: 'validator',
+        currentValidatorStatusState: 'current', currentValidatorStatusQualifier: null,
         rankState: 'error', blockRateState: 'not_applicable', blockRate: null, counterState: 'counter_reset',
       } } })
     })
     await loginAs(page)
     await page.goto('/nodes/' + PUBLIC_NODE_ID)
-    const detail = page.getByRole('region', { name: 'Linked Validator' })
+    const detail = page.getByRole('region', { name: 'Validator performance' })
     const summary = detail.locator('summary')
     const touch = Boolean(testInfo.project.use.hasTouch || isMobile)
     await expect(detail.getByText(identity, { exact: true })).toHaveCount(0)
@@ -352,7 +364,7 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await expect(detail.getByText(identity, { exact: true })).toBeVisible()
     await expect(detail.getByText(identity, { exact: true })).toHaveCSS('user-select', 'text')
     for (const reason of [/source could not be read.*retained and stale/, /last established association/,
-      /not a negative conclusion/, /last successful rank is retained/, /zero scheduled-block denominator/, /prior value was not treated as normal growth/]) {
+      /last successful rank is retained/, /zero scheduled-block denominator/, /prior value was not treated as normal growth/]) {
       await expect(detail.getByText(reason)).toBeVisible()
     }
     await expect(detail.getByLabel('Public Validator states')).toBeHidden()
@@ -384,7 +396,7 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await expect(metricValue(nCard, 'Network rank')).toHaveText('#2')
     await expect(nCard.getByRole('status', { name: /Validator data: Failed/ })).toBeVisible()
     await nCard.getByRole('link', { name: /Node N/ }).click()
-    const detail = page.getByRole('region', { name: 'Linked Validator' })
+    const detail = page.getByRole('region', { name: 'Validator performance' })
     await expect(detail.getByText(/last successful rank is retained/)).toBeVisible()
 
     await expectNoHorizontalOverflow(page)

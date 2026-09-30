@@ -320,7 +320,7 @@ test('keeps Home and the public Node Detail readable in both themes', async ({ p
   // stay readable against their composed surfaces.
   await page.getByRole('link', { name: /Node A/ }).click()
   await expect(page.getByRole('heading', { level: 1, name: /Node A/ })).toBeVisible({ timeout: 15_000 })
-  await expectReadable(page, page.getByText('Process uptime').first())
+  await expectReadable(page, page.getByText('Uptime').first())
   await expectReadable(page, page.getByRole('heading', { level: 3, name: 'Host network' }))
   await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
   await expect(page.getByText('Peer diagnostics')).toHaveCount(0)
@@ -330,7 +330,7 @@ test('keeps Home and the public Node Detail readable in both themes', async ({ p
   await themeButton(page).click()
   await themeButton(page).click()
   expect((await resolvedTheme(page)).dark).toBe(true)
-  await expectReadable(page, page.getByText('Process uptime').first())
+  await expectReadable(page, page.getByText('Uptime').first())
   await expectReadable(page, page.getByRole('heading', { level: 3, name: 'Host network' }))
   await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
   await expectNoHorizontalOverflow(page)
@@ -384,11 +384,9 @@ for (const theme of ['light', 'dark'] as const) {
       ? 'rgba(255, 255, 255, 0.6)' : 'oklch(0.141 0.005 285.823 / 0.6)')
     const opaque = await normalizedStyle(page, 'background-color', theme === 'light'
       ? 'rgb(255, 255, 255)' : 'oklch(0.141 0.005 285.823)')
-    // Node Detail's three reading tiers: 60% summary, 50% info/chart, 40% disclosure.
+    // Node Detail's two reading tiers: 60% summary, 50% info/chart.
     const background50 = await normalizedStyle(page, 'background-color', theme === 'light'
       ? 'rgba(255, 255, 255, 0.5)' : 'oklch(0.141 0.005 285.823 / 0.5)')
-    const background40 = await normalizedStyle(page, 'background-color', theme === 'light'
-      ? 'rgba(255, 255, 255, 0.4)' : 'oklch(0.141 0.005 285.823 / 0.4)')
     const font = await normalizedStyle(page, 'font-family', PUBLIC_FONT)
     const glow = await normalizedStyle(page, 'box-shadow',
       '0 0 20px oklch(0.596 0.145 163.225 / 10%), 0 0 0 1px oklch(0.596 0.145 163.225 / 10%)')
@@ -453,7 +451,6 @@ for (const theme of ['light', 'dark'] as const) {
       ['[data-slot="node-info-group"]', background50],
       ['[data-slot="node-metric-card"]', background50],
       ['[data-slot="linked-validator"]', background50],
-      ['details[data-slot="disclosure"][data-surface="card"]', background40],
     ] as Array<[string, string]>) {
       const cards = page.locator('[data-slot="home-shell"] ' + selector)
       expect(await cards.count(), selector + ' fixture coverage').toBeGreaterThan(0)
