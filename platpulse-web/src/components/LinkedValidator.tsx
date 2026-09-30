@@ -44,16 +44,27 @@ const UNKNOWN_STATUS_LABEL = 'Validator status unknown'
  *  the same domain state. */
 const UNKNOWN_STAKING_TOOLTIP = 'This does not indicate a negative validator state.'
 
+/** Both identifier controls are secondary to the identifier text they act on,
+ *  so they share one resting tone instead of each hand-rolling it. */
+const IDENTIFIER_CONTROL_CLASS = 'text-muted-foreground'
+
 /**
- * The Node Detail metric grid: two columns on mobile and three at lg,
- * with every cell stacking its caption above the value, left aligned and
+ * The Node Detail metric grid: two columns on mobile and three at lg, with
+ * every cell stacking its muted caption above a clearer value, left aligned and
  * wrapping rather than reserving a compact one-line slot. Held as one named
  * recipe because all six cells need the identical override set, and kept off
  * the card component so the Home card's container-query anatomy is untouched.
- * The 10px row gap keeps the two desktop rows visually grouped instead of the
- * 16px whitespace the grid used to reserve between them.
+ * The 8px row gap and 2px caption/value gap read as one stats matrix instead of
+ * the 16px whitespace the grid used to reserve between rows. The column-gap
+ * stays 16px (the geometry test measures it), and the faint lg column rules are
+ * placement-aware classes from detailMetricColumnRules rather than a pseudo
+ * separator, so a full-width value cannot leave a rule on the wrong column.
+ * The cells stretch to the row so those rules span its full height (a warning
+ * caption on one metric would otherwise leave a shorter rule beside it), while
+ * content-start keeps each cell's own rows at their natural height instead of
+ * letting the stretch reopen the caption/value gap the tests bound.
  */
-const DETAIL_METRICS_GRID = 'grid grid-cols-2 items-start gap-x-4 gap-y-2.5 lg:grid-cols-3 [&>[data-slot=metric-row]]:grid-cols-1 [&_[data-slot=metric-row-label]]:min-w-0 [&_[data-slot=metric-row-label]]:whitespace-normal [&_[data-slot=metric-row-label]]:[overflow-wrap:anywhere] [&_[data-slot=metric-row-value]]:text-left [&_[data-slot=metric-row-value]]:text-sm [&_[data-slot=metric-row-value]]:font-semibold [&_[data-slot=metric-row-value]]:justify-start [&_[data-slot=metric-row-value]]:before:hidden [&_[data-slot=metric-row-detail]]:col-span-1 [&_[data-slot=metric-row-detail]]:whitespace-normal [&_[data-slot=metric-row-detail]]:overflow-visible [&_[data-slot=metric-row-detail]]:[overflow-wrap:anywhere]'
+const DETAIL_METRICS_GRID = 'grid grid-cols-2 items-stretch gap-x-4 gap-y-2 lg:grid-cols-3 [&>[data-slot=metric-row]]:grid-cols-1 [&>[data-slot=metric-row]]:gap-y-0.5 [&>[data-slot=metric-row]]:content-start [&_[data-slot=metric-row-label]]:min-w-0 [&_[data-slot=metric-row-label]]:whitespace-normal [&_[data-slot=metric-row-label]]:text-[11px] [&_[data-slot=metric-row-label]]:leading-4 [&_[data-slot=metric-row-label]]:[overflow-wrap:anywhere] [&_[data-slot=metric-row-value]]:text-left [&_[data-slot=metric-row-value]]:text-sm [&_[data-slot=metric-row-value]]:font-semibold [&_[data-slot=metric-row-value]]:justify-start [&_[data-slot=metric-row-value]]:before:hidden [&_[data-slot=metric-row-detail]]:col-span-1 [&_[data-slot=metric-row-detail]]:whitespace-normal [&_[data-slot=metric-row-detail]]:overflow-visible [&_[data-slot=metric-row-detail]]:[overflow-wrap:anywhere]'
 
 /** Keep normal values paired on phones; unusually long exact values get the
  * whole row before they can squeeze or overflow a column. The last-resort wrap
@@ -61,6 +72,30 @@ const DETAIL_METRICS_GRID = 'grid grid-cols-2 items-start gap-x-4 gap-y-2.5 lg:g
 function detailMetricSpan(value: string): string | undefined {
   if (value.length > 24) return 'col-span-full'
   if (value.length > 15) return 'col-span-full sm:col-span-1'
+}
+
+/** The faint rule that turns the desktop 3x2 metric grid into a stats matrix.
+ *  Whether a cell spans the whole row is detailMetricSpan's decision, and only
+ *  its unprefixed `col-span-full` spans at lg (the mid-length case falls back
+ *  to a single column from sm up), so the column walk restarts exactly where
+ *  the lg grid restarts. Asking detailMetricSpan keeps that one rule in one
+ *  place. The rules are lg-only: below the three-column breakpoint the cells
+ *  are paired and a separator would only add noise. The rule is the cell's own
+ *  1px left border, drawn inside its border-box so every cell keeps the width
+ *  the geometry test measures, and the 16px left padding restores the shared
+ *  content offset that the 16px column gap gives the unruled columns. */
+function detailMetricColumnRules(values: string[]): (string | undefined)[] {
+  let column = 0
+  return values.map(value => {
+    if (detailMetricSpan(value) === 'col-span-full') {
+      column = 0
+      return undefined
+    }
+    column = column === 0 ? 1 : column + 1
+    const rule = column > 1 ? 'lg:border-l lg:border-border/60 lg:pl-4' : undefined
+    if (column === 3) column = 0
+    return rule
+  })
 }
 
 /** The explicit special state of a confirmed-valid identity. */
@@ -350,6 +385,7 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
   const production = blockRateLabel(validator, 'detail')
   const platscanRate = genBlocksRateLabel(validator, 'detail')
   const rewardShare = delegationRewardShareLabel(validator, 'detail')
+  const metricColumnRules = detailMetricColumnRules([blocks, overviewRewards, rank, production, platscanRate, rewardShare])
   const identifier = validator.validatorNodeId
   const identifierId = useId()
   const [identifierOpen, setIdentifierOpen] = useState(false)
@@ -402,10 +438,10 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
     aria-label="Validator performance"
     data-slot="linked-validator"
     className={cn('mt-4 min-w-0 rounded-md border-none', SURFACE_CARD_STATIC)}
-    contentClassName="flex min-w-0 flex-col gap-2"
+    contentClassName="flex min-w-0 flex-col gap-1.5"
   >
     <header>
-      <h2 className="m-0 text-sm font-medium">Validator performance</h2>
+      <h2 className="m-0 text-sm font-medium leading-5">Validator performance</h2>
     </header>
     {overviewNotes.length > 0 && <div className="grid gap-1">
       {overviewNotes.map(note => <p key={note} className="m-0 text-[11px] text-muted-foreground" role="status">{note}</p>)}
@@ -418,27 +454,27 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
         </span>
       </DataTooltip>
     </p>}
-    <div className={DETAIL_METRICS_GRID} role="group" aria-label="Validator performance metrics">
-      <MetricRow label="Cumulative blocks" className={detailMetricSpan(blocks)} value={<ExactAmount value={blocks} />} detail={metricNote(counterWarning)} />
-      <MetricRow label="Cumulative rewards" className={detailMetricSpan(overviewRewards)} value={<span title={rewards}><ExactAmount value={overviewRewards} muteFraction /></span>} />
-      <MetricRow label="Network rank" className={detailMetricSpan(rank)} value={rank} detail={metricNote(rankWarning)} />
-      <MetricRow label="Production rate" className={detailMetricSpan(production)} value={production} detail={metricNote(rateWarning)} />
-      <MetricRow label="PlatScan 24h rate" className={detailMetricSpan(platscanRate)} value={platscanRate} />
-      <MetricRow label="Delegation reward share" className={detailMetricSpan(rewardShare)} value={rewardShare} />
+    <div data-slot="validator-performance-metrics" className={DETAIL_METRICS_GRID} role="group" aria-label="Validator performance metrics">
+      <MetricRow label="Cumulative blocks" className={cn(detailMetricSpan(blocks), metricColumnRules[0])} value={<ExactAmount value={blocks} />} detail={metricNote(counterWarning)} />
+      <MetricRow label="Cumulative rewards" className={cn(detailMetricSpan(overviewRewards), metricColumnRules[1])} value={<span title={rewards}><ExactAmount value={overviewRewards} muteFraction /></span>} />
+      <MetricRow label="Network rank" className={cn(detailMetricSpan(rank), metricColumnRules[2])} value={rank} detail={metricNote(rankWarning)} />
+      <MetricRow label="Production rate" className={cn(detailMetricSpan(production), metricColumnRules[3])} value={production} detail={metricNote(rateWarning)} />
+      <MetricRow label="PlatScan 24h rate" className={cn(detailMetricSpan(platscanRate), metricColumnRules[4])} value={platscanRate} />
+      <MetricRow label="Delegation reward share" className={cn(detailMetricSpan(rewardShare), metricColumnRules[5])} value={rewardShare} />
     </div>
     {emptyNote && <p className="m-0 text-xs text-muted-foreground" role="status">{emptyNote}</p>}
     <div className="flex min-w-0 flex-col gap-1">
-      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
         <span className="shrink-0 text-xs text-muted-foreground">Validator ID</span>
         <code className="min-w-0 font-mono text-xs [overflow-wrap:anywhere]">{identifier.length > 24 ? identifier.slice(0, 12) + '…' + identifier.slice(-8) : identifier}</code>
         <span className="inline-flex shrink-0 items-center gap-1">
           <DataTooltip as="span" content="Copy full Validator identifier">
-            <Button variant="ghost" size="icon-sm" aria-label="Copy full Validator identifier" onClick={() => { void copyIdentifier() }}>
+            <Button variant="ghost" size="icon-sm" aria-label="Copy full Validator identifier" className={IDENTIFIER_CONTROL_CLASS} onClick={() => { void copyIdentifier() }}>
               <Copy className="size-3.5" aria-hidden="true" />
             </Button>
           </DataTooltip>
           <DataTooltip as="span" content={identifierOpen ? 'Hide full ID' : 'Show full ID'}>
-            <Button variant="ghost" size="icon-sm" aria-label={identifierOpen ? 'Hide full ID' : 'Show full ID'} aria-expanded={identifierOpen} aria-controls={identifierId} onClick={() => setIdentifierOpen(open => !open)}>
+            <Button variant="ghost" size="icon-sm" aria-label={identifierOpen ? 'Hide full ID' : 'Show full ID'} className={IDENTIFIER_CONTROL_CLASS} aria-expanded={identifierOpen} aria-controls={identifierId} onClick={() => setIdentifierOpen(open => !open)}>
               {identifierOpen ? <EyeOff className="size-3.5" aria-hidden="true" /> : <Eye className="size-3.5" aria-hidden="true" />}
             </Button>
           </DataTooltip>
@@ -452,7 +488,7 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
         padding tighten; the primitive stays unaware of the Validator variant. */}
     <Disclosure
       surface="none"
-      className="-mx-4 border-none"
+      className="-mx-4 border-t border-border/60"
       title="Validator diagnostics"
       description="Provider, freshness, ranking and source details"
     >

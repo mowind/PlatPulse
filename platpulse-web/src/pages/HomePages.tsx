@@ -226,13 +226,13 @@ function NodeInfoGroup({ title, label, note, children }: { title: string; label:
       aria-label={label}
       data-slot="node-info-group"
       className={CARD}
-      contentClassName="flex h-full min-w-0 flex-col gap-2"
+      contentClassName="flex h-full min-w-0 flex-col gap-1.5"
     >
-      <h2 className="m-0 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm font-medium">
+      <h2 className="m-0 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm font-medium leading-5">
         {title}
       </h2>
-      <div className="grid grid-cols-1 gap-2">{children}</div>
-      {note && <p className="m-0 mt-auto pt-1 text-[11px] text-muted-foreground">{note}</p>}
+      <div className="grid grid-cols-1 gap-1.5">{children}</div>
+      {note && <div className="mt-auto border-t border-border/60 pt-2"><p className="m-0 text-[11px] leading-4 text-muted-foreground">{note}</p></div>}
     </CardX>
   )
 }
@@ -307,12 +307,12 @@ function NodeIdentityHeader({ node }: { node: PublicNode }) {
   const role = nodeRoleLabel(node)
   const validatorNode = nodeUsesValidatorComposition(node)
   const verdictState = node.validator?.currentValidatorStatusState
-  return <header className="mt-2 flex min-w-0 flex-col gap-1" aria-labelledby="node-detail-title">
+  return <header className="mt-1 flex min-w-0 flex-col gap-1" aria-labelledby="node-detail-title">
     <div data-slot="node-identity-main" className="flex min-w-0 flex-1 items-start gap-2">
       <NodeHealthMarker health={node.health} />
       <div className="min-w-0">
         <h1 id="node-detail-title" className="m-0 min-w-0 max-w-full break-words text-lg font-semibold leading-tight md:text-2xl">{nodeDisplayName(node)}</h1>
-        <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
           {syncStateLabel && <><span>{syncStateLabel}</span><span aria-hidden="true">·</span></>}
           {role && <><span>{role}{validatorNode && verdictState !== 'current' ? (verdictState === 'stale' ? ' (last confirmed · stale)' : ' (currency unconfirmed)') : ''}</span><span aria-hidden="true">·</span></>}
           {validatorNode && <><ValidatorActivityBadge validator={node.validator} identityReason={node.validatorIdentityReason} variant="inline" /><span aria-hidden="true">·</span></>}
@@ -335,7 +335,7 @@ function NodeIdLine({ nodeId }: { nodeId: string }) {
       // Clipboard access can be denied; the full identifier stays selectable.
     }
   }
-  return <p className="m-0 mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+  return <p className="m-0 mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-muted-foreground">
     <span>Node ID</span>
     <code className="break-all font-mono">{nodeId}</code>
     <DataTooltip as="span" content="Copy full Node ID">
@@ -386,7 +386,7 @@ function ProcessGroup({ node, nodeDataProgressValue }: { node: PublicNode; nodeD
   return <NodeInfoGroup title="Process" label="PlatON process" note="Last collection result; not a live process status">
     <MetricRow label="Collection" value={<span className="inline-flex items-center gap-1.5"><span className={cn('inline-block size-2 shrink-0 rounded-full', processStateDot(node.processState))} aria-hidden="true" />{processCollectionLabel(node.processState)}</span>} />
     {started !== 'Unknown' && <MetricRow label="Started" value={started} />}
-    {(bytes != null || nodeDataProgressValue != null) && <div className="grid grid-cols-1 gap-2" role="group" aria-label="Node data directory">
+    {(bytes != null || nodeDataProgressValue != null) && <div className="grid grid-cols-1 gap-1.5" role="group" aria-label="Node data directory">
       {bytes != null && <MetricRow label="Storage" value={bytes} />}
       {nodeDataProgressValue != null && <MetricRow label="Data usage" value={formatPercent(nodeDataProgressValue)} detail="Directory size against its filesystem capacity, not whole-Host disk usage" />}
     </div>}
@@ -467,7 +467,7 @@ function NodeMetricCard({ label, unit, value, valueLabel, detail, tone, series, 
   // title, so the header stays title-left / current-value-right on every card.
   const legend = showLegend ? <MetricSeriesLegend label={label} series={series} toneClass={toneClass} /> : undefined
   return (
-    <CardX bordered={false} role="article" data-slot="node-metric-card" className={cn('min-w-0', CARD, className)} contentClassName="flex h-full min-w-0 flex-col gap-2">
+    <CardX bordered={false} role="article" data-slot="node-metric-card" className={cn('min-w-0', CARD, className)} contentClassName="flex h-full min-w-0 flex-col gap-1.5">
       <div data-slot="node-metric-header" className="flex min-h-10 min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="m-0 text-sm font-medium">{label}</h3>
@@ -560,7 +560,7 @@ function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, k
       {chartMessage && <text data-slot="node-metric-chart-empty" className="fill-muted-foreground text-[22px]" x="300" y="78" textAnchor="middle">{chartMessage}</text>}
     </svg>
     <div className="col-start-2 row-start-2 flex justify-between pt-1 text-[11px] tabular-nums text-muted-foreground" aria-hidden="true"><span>{seconds}s</span><span>0s</span></div>
-    <div data-slot="node-metric-legend" className="col-start-2 row-start-3 min-h-6 pt-1.5">{legend}</div>
+    <div data-slot="node-metric-legend" className="col-start-2 row-start-3 min-h-6 pt-1">{legend}</div>
   </div>
 }
 
