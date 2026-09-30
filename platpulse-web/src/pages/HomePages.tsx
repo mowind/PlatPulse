@@ -87,12 +87,14 @@ export function NodePage() {
     {health.tone !== 'ok' && <p className="m-0 mt-2 break-words text-sm text-warning-foreground dark:text-warning">{node.healthReason}</p>}
 
     {/* Both roles share geometry and DOM order; only performance is conditional.
-        The band is Home's own OverviewBand, so card size, the 5:6 column split
-        and the map track cannot drift between the two pages. */}
+        The band is Home's own OverviewBand, so card size, the 5:6 column split,
+        the map track and the below-lg map-first order cannot drift between the
+        two pages. */}
     <OverviewBand
       className="mt-4"
       dataSlot="node-overview"
       mapSlot="node-map"
+      mapFirst
       metricsLabel="Node key summary"
       metrics={<>
         <SummaryTile label="Head" value={formatNumber(node.currentHead)} detail={headLagDetail(node)} />

@@ -674,9 +674,9 @@ describe('App shell with private Home', () => {
     expect(summary.querySelectorAll('[data-slot="node-summary-tile"]')).toHaveLength(6)
     expect(document.querySelectorAll('[data-slot="node-info-group"]')).toHaveLength(3)
     // The first row pairs six tiles with the uncarded Node Peer Country
-    // View. Both visual and DOM mobile order keep the tiles before the map,
-    // and the Node scope names its own unit so it cannot be read as
-    // Home's Network map.
+    // View. Below lg the map leads visually exactly as on Home, while the
+    // tiles keep their earlier DOM order, and the Node scope names its own
+    // unit so it cannot be read as Home's Network map.
     const overviewRow = document.querySelector('[data-slot="node-overview"]')
     if (!overviewRow) throw new Error('Node overview row is missing')
     expect(overviewRow.contains(summary)).toBe(true)
@@ -686,7 +686,7 @@ describe('App shell with private Home', () => {
     expect(nodeMap.getAttribute('data-network-filter')).toBeNull()
     expect(nodeMap.textContent).toContain('Peer countries · Disabled by server')
     const mapSlot = overviewRow.querySelector('[data-slot="node-map"]')
-    expect(mapSlot?.className).not.toContain('order-first')
+    expect(mapSlot?.className).toContain('order-first')
     expect(mapSlot?.className).toContain('aspect-[2/1]')
     expect(mapSlot?.contains(nodeMap)).toBe(true)
     expect(summary.compareDocumentPosition(nodeMap) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()

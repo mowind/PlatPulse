@@ -557,8 +557,9 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           expect(Math.abs(layout.map.height - layout.map.width / 2), step.mode + ' keeps the 2:1 track').toBeLessThanOrEqual(1)
         }
       } else {
-        // Below lg both roles keep the map after the six tiles.
-        expect(layout.map.top, step.mode).toBeGreaterThanOrEqual(layout.summary.top + layout.summary.height)
+        // Below lg the map leads the band and the six tiles follow it, the
+        // same visual order Home uses; the DOM order stays tiles-then-map.
+        expect(layout.map.top + layout.map.height, step.mode).toBeLessThanOrEqual(layout.summary.top + 1)
         expect(Math.abs(layout.map.left - layout.summary.left), step.mode).toBeLessThanOrEqual(1)
       }
       // Uncarded: the map introduces neither a fourth card surface nor a
