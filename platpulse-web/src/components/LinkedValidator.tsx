@@ -431,16 +431,18 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
         <span className="shrink-0 text-xs text-muted-foreground">Validator ID</span>
         <code className="min-w-0 font-mono text-xs [overflow-wrap:anywhere]">{identifier.length > 24 ? identifier.slice(0, 12) + '…' + identifier.slice(-8) : identifier}</code>
-        <DataTooltip as="span" content="Copy full Validator identifier">
-          <Button variant="ghost" size="icon-sm" aria-label="Copy full Validator identifier" onClick={() => { void copyIdentifier() }}>
-            <Copy className="size-3.5" aria-hidden="true" />
-          </Button>
-        </DataTooltip>
-        <DataTooltip as="span" content={identifierOpen ? 'Hide full ID' : 'Show full ID'}>
-          <Button variant="ghost" size="icon-sm" aria-label={identifierOpen ? 'Hide full ID' : 'Show full ID'} aria-expanded={identifierOpen} aria-controls={identifierId} onClick={() => setIdentifierOpen(open => !open)}>
-            {identifierOpen ? <EyeOff className="size-3.5" aria-hidden="true" /> : <Eye className="size-3.5" aria-hidden="true" />}
-          </Button>
-        </DataTooltip>
+        <span className="inline-flex shrink-0 items-center gap-1">
+          <DataTooltip as="span" content="Copy full Validator identifier">
+            <Button variant="ghost" size="icon-sm" aria-label="Copy full Validator identifier" onClick={() => { void copyIdentifier() }}>
+              <Copy className="size-3.5" aria-hidden="true" />
+            </Button>
+          </DataTooltip>
+          <DataTooltip as="span" content={identifierOpen ? 'Hide full ID' : 'Show full ID'}>
+            <Button variant="ghost" size="icon-sm" aria-label={identifierOpen ? 'Hide full ID' : 'Show full ID'} aria-expanded={identifierOpen} aria-controls={identifierId} onClick={() => setIdentifierOpen(open => !open)}>
+              {identifierOpen ? <EyeOff className="size-3.5" aria-hidden="true" /> : <Eye className="size-3.5" aria-hidden="true" />}
+            </Button>
+          </DataTooltip>
+        </span>
       </div>
       {identifierOpen && <code id={identifierId} className="min-w-0 select-text rounded-md border border-border bg-background p-2 font-mono text-xs [overflow-wrap:anywhere]" aria-label={'Validator identifier: ' + identifier}>{identifier}</code>}
       <p role="status" aria-label="Identifier copy status" className={cn('m-0 text-xs text-muted-foreground', !copyStatus && 'sr-only')}>{copyStatus}</p>
