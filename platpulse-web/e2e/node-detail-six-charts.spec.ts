@@ -113,24 +113,14 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
               const element = document.querySelector(selector)
               return element ? element.getBoundingClientRect().top + window.scrollY : Number.NaN
             }
-            // The Validator diagnostics are one of the same shared disclosures but
-            // they sit inside the Validator performance card, so the reading-order
-            // assertion names the page-level one it means.
-            const disclosureTop = (title: string) => {
-              const found = Array.from(document.querySelectorAll('details[data-slot="disclosure"]'))
-                .find(element => element.querySelector('summary')?.textContent?.includes(title))
-              return found ? found.getBoundingClientRect().top + window.scrollY : Number.NaN
-            }
             return {
               identity: top('[data-slot="node-identity-main"]'),
               summary: top('[aria-label="Node key summary"]'),
               metrics: top('[data-slot="node-metrics-section"]'),
-              technical: disclosureTop('Identifiers and technical details'),
             }
           })
           expect(order.identity, JSON.stringify(order)).toBeLessThan(order.summary)
           expect(order.summary, JSON.stringify(order)).toBeLessThan(order.metrics)
-          expect(order.metrics, JSON.stringify(order)).toBeLessThan(order.technical)
 
           // The accepted A container (issue #151): an uncarded identity block,
           // six summary tiles, and three parallel observation panels that sit
@@ -196,17 +186,17 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             await expect(hostCard.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(0)
           }
 
-          // Disclosure is keyboard-operable in both directions, and the retired
-          // Peer diagnostics region no longer renders.
+          // The remaining disclosure is keyboard-operable in both directions, and
+          // the retired Peer diagnostics region no longer renders.
           await expect(page.getByText('Peer diagnostics')).toHaveCount(0)
-          const technicalDisclosure = page.locator('details[data-slot="disclosure"]', { hasText: 'Identifiers and technical details' })
-          const technicalSummary = technicalDisclosure.locator('summary')
-          await technicalSummary.focus()
+          const diagnosticsDisclosure = page.locator('details[data-slot="disclosure"]', { hasText: 'Validator diagnostics' })
+          const diagnosticsSummary = diagnosticsDisclosure.locator('summary').first()
+          await diagnosticsSummary.focus()
           await page.keyboard.press('Enter')
-          await expect(technicalDisclosure).toHaveAttribute('open', '')
-          await technicalSummary.focus()
+          await expect(diagnosticsDisclosure).toHaveAttribute('open', '')
+          await diagnosticsSummary.focus()
           await page.keyboard.press('Enter')
-          await expect(technicalDisclosure).not.toHaveAttribute('open', '')
+          await expect(diagnosticsDisclosure).not.toHaveAttribute('open', '')
 
           // Accessibility, touch targets, and no page-level horizontal scroll.
           await expectVisibleInteractiveTargets(page)
@@ -256,14 +246,6 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           await expect(observationPanel).toHaveCSS('box-shadow', 'none')
           await expect(observationPanel).toHaveCSS('transform', 'none')
 
-          // Low-frequency technical details open by keyboard and stay in the
-          // Public Projection.
-          await technicalDisclosure.locator('summary').focus()
-          await page.keyboard.press('Enter')
-          await expect(technicalDisclosure).toHaveAttribute('open', '')
-          await expect(technicalDisclosure.getByText('Reference confidence')).toBeVisible()
-          await page.keyboard.press('Enter')
-          await expect(technicalDisclosure).not.toHaveAttribute('open', '')
 
           // Desktop 1280 lays the six charts out three columns by two rows.
           const viewportWidth = page.viewportSize()?.width ?? 0

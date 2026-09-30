@@ -29,7 +29,6 @@ import { CardX } from '../components/ui/card-x'
 import { Alert, AlertDescription } from '../components/ui/alert'
 import { Spinner } from '../components/ui/spinner'
 import { SURFACE_CARD_STATIC } from '../lib/surface'
-import { Disclosure } from '../components/ui/disclosure'
 import { DataTooltip } from '../components/ui/data-tooltip'
 import { Button } from '../components/ui/button'
 import { cn } from '../lib/utils'
@@ -210,42 +209,7 @@ export function NodePage() {
       </div>
     </section>
 
-    <Disclosure title="Identifiers and technical details" description="Node ID, component states, and reference context">
-      <dl className="m-0 grid grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-x-4 gap-y-2">
-        <TechnicalFact label="Node ID" value={<code className="break-all font-mono">{node.nodeId}</code>} />
-        <TechnicalFact label="Network key" value={<code className="break-all font-mono">{node.networkKey}</code>} />
-        <TechnicalFact label="RPC state" value={nodeComponentStateLabel(node.rpcState)} />
-        <TechnicalFact label="Sync state" value={nodeComponentStateLabel(node.syncState)} />
-        <TechnicalFact label="Consensus state" value={nodeComponentStateLabel(node.consensusState)} />
-        <TechnicalFact label="Process collection state" value={node.processState || 'Unknown'} />
-        <TechnicalFact label="Raw sync state" value={node.syncState || 'Unknown'} />
-        <TechnicalFact label="Resync state" value={node.resyncState || 'Unknown'} />
-        {node.resyncProgress && <TechnicalFact label="Resync progress" value={node.resyncProgress} />}
-        {node.resyncLastProgressAt && <TechnicalFact label="Resync last progress" value={formatUtcDateTime(node.resyncLastProgressAt)} />}
-        <TechnicalFact label="Last report" value={formatUtcDateTime(node.lastReportAt)} />
-        <TechnicalFact label="Observation receipt" value={formatUtcDateTime(node.freshness)} />
-        {node.validatorIdentityState && <TechnicalFact label="Identity discovery" value={node.validatorIdentityState} />}
-        {node.validatorIdentityReason && <TechnicalFact label="Identity context" value={node.validatorIdentityReason} />}
-        {!validatorNode && node.validator && <>
-          <TechnicalFact label="Chain identity" value={<code className="break-all font-mono">{node.validator.validatorNodeId}</code>} />
-          <TechnicalFact label="Staking verdict" value={node.validator.currentValidatorStatus ?? 'Unknown'} />
-          <TechnicalFact label="Verdict currency" value={node.validator.currentValidatorStatusState ?? 'Unknown'} />
-        </>}
-        <TechnicalFact label="Historical high watermark" value={formatNumber(node.historicalHighWatermark)} />
-        <TechnicalFact label="Observed Network Head" value={formatNumber(node.networkReferenceHead)} />
-        <TechnicalFact label="Reference confidence" value={node.networkReferenceConfidence || 'Unknown'} />
-      </dl>
-    </Disclosure>
   </section>
-}
-
-function TechnicalFact({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-xs font-medium tracking-wider text-muted-foreground">{label}</dt>
-      <dd className="m-0 break-words text-sm tabular-nums">{value}</dd>
-    </div>
-  )
 }
 
 /** Node Detail's six key metrics: Home's exact summary card, read-only (no

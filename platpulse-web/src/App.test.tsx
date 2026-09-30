@@ -440,10 +440,6 @@ describe('App shell with private Home', () => {
         if (entry.id === 'role-stale-positive') {
           expect(performance?.textContent).toMatch(/stale|last confirmed|last successful/i)
         }
-        if (entry.role == null) {
-          const technical = screen.getByText('Identifiers and technical details').closest('details')!
-          expect(technical.textContent).toContain('Staking validity has not been confirmed.')
-        }
         const process = screen.getByRole('region', { name: 'PlatON process' })
         expect(within(process).getByText('Collection')).toBeTruthy()
         expect(within(process).getByText(entry.collection, { exact: true })).toBeTruthy()
@@ -774,14 +770,12 @@ describe('App shell with private Home', () => {
     }
 
     // Continuous reading replaces the Details/Network tabs. Validator
-    // diagnostics and low-frequency technical details are keyboard-operable
-    // disclosures; the retired Peer diagnostics region no longer renders.
+    // diagnostics remains the only page-level disclosure; the retired Peer
+    // diagnostics region and the low-frequency technical details card are gone.
     expect(screen.queryByRole('tab')).toBeNull()
     expect(screen.queryByText('Peer diagnostics')).toBeNull()
     expect(screen.queryByRole('heading', { name: 'Peer history' })).toBeNull()
-    const technicalDisclosure = screen.getByText('Identifiers and technical details').closest('details')
-    if (!technicalDisclosure) throw new Error('Technical details disclosure is missing')
-    expect(within(technicalDisclosure).getByText('Reference confidence')).toBeTruthy()
+    expect(screen.queryByText('Identifiers and technical details')).toBeNull()
   })
 
   it('guides an unauthenticated visitor to the login page', async () => {
