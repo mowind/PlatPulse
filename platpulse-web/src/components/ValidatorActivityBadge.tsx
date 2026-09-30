@@ -177,7 +177,11 @@ export function ValidatorActivityBadge({
       placement="bottom"
       width={224}
       contentClassName="leading-snug"
-      className={cn('z-10 min-w-0 max-w-full', variant === 'badge' && 'ml-auto')}
+      // The inline variant sits inside a flex row whose strut is 12px/16px while
+      // the badge itself is 11px/16px. A block wrapper would let the two baselines
+      // mix into a 17px line box for some fonts (FreeSans, IPAGothic), shifting the
+      // whole Node Detail page down by 1px. inline-flex removes that line box.
+      className={cn('z-10 min-w-0 max-w-full', variant === 'badge' ? 'ml-auto' : 'inline-flex items-center')}
       contentNode={
         <>
           <span className="block">Source: {activitySource(validator)}</span>

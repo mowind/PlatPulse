@@ -28,6 +28,28 @@ type Theme = (typeof THEMES)[number]
 const nodeRoute = '**/api/public/v1/nodes/' + PUBLIC_NODE_ID
 const metricsRoute = nodeRoute + '/metrics'
 
+/**
+ * The inline Validator activity badge is 11px inside the 12px meta row. With
+ * some Linux font metrics (FreeSans/IPAGothic/FreeSerif/FreeMono, installed by
+ * Playwright's `install --with-deps`) its data-tooltip wrapper used to add 1px
+ * to the identity header, which shifted the summary, map and panels below it.
+ * Pinning the font here keeps the role-geometry assertion red-capable off CI
+ * instead of depending on whatever the runner's fontconfig picks.
+ */
+const FRAGILE_HEADER_FONTS = 'FreeSans, IPAGothic, FreeSerif, FreeMono, sans-serif'
+
+async function forceFragileHeaderFont(page: Page) {
+  await page.addInitScript((fonts: string) => {
+    const apply = () => {
+      const style = document.createElement('style')
+      style.textContent = `:root{--font-sans:${fonts} !important}`
+      document.documentElement.appendChild(style)
+    }
+    if (document.documentElement) apply()
+    else document.addEventListener('DOMContentLoaded', apply)
+  }, FRAGILE_HEADER_FONTS)
+}
+
 /** Cycle the production theme control to the requested explicit theme. */
 async function setTheme(page: Page, theme: Theme) {
   const button = page.locator('[data-slot="theme-toggle"]')
@@ -297,6 +319,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
   })
 
   test('role changes preserve the shared header, KPI, map, panels and chart geometry', async ({ page }) => {
+    await forceFragileHeaderFont(page)
     let role: 'validator' | 'not_validator' | 'unknown' = 'validator'
     await page.route(nodeRoute, async route => {
       const response = await route.fetch()
