@@ -306,13 +306,16 @@
    * the card's available width, never on the viewport. Named so the per-row
    * metric-row container below stays usable for its own label vocabulary.
    *
-   * 22.5rem (360px at the default 16px root) is the measured switch point, and
-   * HomeDashboard's node-grid minimum track is the same 22.5rem on purpose:
-   * auto-fill can then never produce a card narrower than the two-column grids
-   * need, so a multi-column Home always uses the card's width instead of falling
-   * back to one full-width row per metric. Both stay in rem so the threshold
-   * keeps scaling with the root font size alongside the card's own padding and
-   * type, instead of overflowing a larger text setting. */
+   * 22.5rem (360px at the default 16px root) is the measured switch point: below
+   * it an 11-character chain height and its label cannot share one compact
+   * key-value cell without overflow. It is deliberately independent of
+   * HomeDashboard's node-grid minimum track, which is Emerald's own 300px
+   * (HomeView.vue's `minmax(300px, 1fr)`): an auto-filled 300-303px card is
+   * narrower than this switch, so each chain count and each ordinary Validator
+   * parameter takes one full-width line (paired rows stay paired), while a wider
+   * card uses its width. The threshold stays in
+   * rem so it keeps scaling with the root font size alongside the card's own
+   * padding and type, instead of overflowing a larger text setting. */
   [data-slot='node-card'] { container-type: inline-size; container-name: node-card; }
   [data-slot='node-card-frame'] { container-type: inline-size; container-name: node-card-frame; }
   [data-slot='metric-row'] { container-type: inline-size; }

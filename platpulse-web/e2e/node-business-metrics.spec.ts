@@ -204,11 +204,11 @@ test('Linked Validator keeps two emphasized cells and four compact parameter row
 })
 
 /**
- * Density regression for the auto-fill minimum track. The grid minimum is the
- * card's own 22.5rem container switch (360px at the default root): every
- * auto-filled card is wide enough for its width-driven rules (an over-long
- * value still falls back on purpose), and only a genuinely narrow card
- * (mobile, where the grid is one column) keeps one full-width row per metric.
+ * Density regression for the auto-fill minimum track. The grid minimum is
+ * Emerald's own 300px (HomeView.vue's `minmax(300px, 1fr)`), so a desktop card
+ * is about 303px and the card's own measured 22.5rem width switch stays in
+ * charge: below it each chain count and each ordinary Validator parameter takes
+ * one full-width line, and an over-long value falls back further on purpose.
  * The assertions read geometry, not the CSS rule, and adapt to every fixed
  * project instead of hardcoding a desktop column count.
  */

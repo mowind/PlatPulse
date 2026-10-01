@@ -72,13 +72,13 @@ async function overviewGeometry(page: Page) {
     const style = getComputedStyle(el)
     return { columns: style.gridTemplateColumns.split(' ').length, gap: parseFloat(style.columnGap) }
   })
-  // The auto-fill minimum track is the same 22.5rem (360px at the default root)
-  // a card's own container query needs for its two-column consensus and
-  // Validator grids, so an auto-filled card is never narrower than its
-  // width-driven rules require (an over-long value still falls back on purpose).
-  // Four columns are exposed only when the content column can hold four of those
-  // tracks; since Home is capped at max-w-1280 (1248px of content), desktop
-  // yields three wide cards rather than four narrow ones. Never hardcoded.
+  // The auto-fill minimum track is Emerald's own 300px (HomeView.vue's
+  // `minmax(300px, 1fr)`), so the grid resolves to floor division on the
+  // measured content width and never hardcodes a column count. Home is capped at
+  // max-w-1280 (1248px of content), which fits four 303px tracks at desktop. A
+  // 303px card is below the card's own measured 22.5rem two-column switch, so
+  // its chain counts and ordinary Validator parameters drop to one full-width
+  // line each (an over-long value falls back further on purpose).
   const expectedColumns = homeNodeColumns(gridBox.width, geometry.gap)
   expect(geometry.columns).toBe(expectedColumns)
   const nodes = grid.locator('[data-slot="node-card"]')

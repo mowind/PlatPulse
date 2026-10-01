@@ -59,6 +59,11 @@ Locked/Committed, Txs/Peers. The existing narrow-card safety fallback below the
 22.5rem container threshold is retained (five rows, with Txs/Peers paired); those
 rows changed from 39px to 22px. Long-number fallback also remains unchanged.
 
+The card widths above are the deviation-23 22.5rem grid track. Deviation 26 later
+returned the grid minimum to Emerald's own 300px; the 22.5rem container threshold
+described here is unchanged, so a 303px auto-filled card now takes the narrow
+five-row fallback.
+
 The two major content-region gaps remain 10px. Section top offsets relative to
 card top, shared by every card:
 

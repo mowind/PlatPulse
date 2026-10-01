@@ -32,12 +32,16 @@ export async function loginAs(
 
 /**
  * Auto-fill track count for the Home Node grid at a measured content width.
- * The grid's minimum track equals the card's own 22.5rem container switch, whose
- * resolved pixel value is 360 at the default root font size; the grid exposes
- * four columns only when the content column can hold four of those tracks.
+ * The grid's minimum track is Emerald's own 300px (HomeView.vue's
+ * `minmax(300px, 1fr)`), so the column count is auto-fill floor division with
+ * no viewport guard: two 300px tracks plus the 12px gap already need 612px,
+ * which is wider than the content column at the `sm` breakpoint, so below it
+ * the formula resolves to one column just as `grid-cols-1` does. A content
+ * column narrower than one 300px track floors to zero, and CSS Grid treats a
+ * zero auto-fill repetition count as one, so the result is clamped to one.
  */
 export function homeNodeColumns(gridWidth: number, gap: number): number {
-  return gridWidth < 640 ? 1 : Math.floor((gridWidth + gap) / (360 + gap))
+  return Math.max(1, Math.floor((gridWidth + gap) / (300 + gap)))
 }
 
 /** The document must never overflow the viewport horizontally. */

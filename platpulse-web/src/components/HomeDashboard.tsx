@@ -185,21 +185,21 @@ export default function HomeDashboard({
         </div>
 
         <div className="mt-4">
-          {/* 22.5rem (360px at the default root font size) is the same width at
-              which the card's own container query turns on the two-column
-              consensus and Validator-parameter grids (see the node-card rules
-              in emerald.css). Aligning the minimum track with that switch means
-              every auto-filled card is wide enough to use its width, and the
-              grid still exposes four columns on a container that can hold four
-              of them. Both use rem so the threshold scales with the root font
-              size. */}
+          {/* 300px is Emerald's own auto-fill minimum track (HomeView.vue's
+              minmax(300px, 1fr)), so the Home grid keeps the reference's card
+              size. The card's own two-column switch is an independent, measured
+              22.5rem (see the node-card rules in emerald.css): a 303px
+              auto-filled card is narrower than it, so each chain count and each
+              ordinary Validator parameter takes one full-width line (Txs/Peers
+              and the two cumulative Validator cells stay paired), while a wider
+              card uses its width. */}
           {loading || (error && !hasLastGood) ? null : visibleRecords.length === 0 ? (
             <Empty description="No Active Nodes in this view.">
               <span className="text-xs">Retired Nodes are not listed on Home.</span>
             </Empty>
           ) : (
             <div
-              className="grid auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(22.5rem,1fr))]"
+              className="grid auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(300px,1fr))]"
               ref={nodeGridRef}
               data-slot="node-grid"
               aria-label="Active Nodes"
