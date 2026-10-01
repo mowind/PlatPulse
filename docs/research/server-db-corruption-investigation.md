@@ -28,7 +28,7 @@
 | --- | --- |
 | 17:19:34 | 部署重启：停止 + 启动 `platpulse-server`（commit `1076718`，2026-09-17 17:18:01）。旧进程 Consumed `1h 11min 12.541s` CPU / `22h 38min` wall，峰值 243.7M |
 | 17:19:38 | 新进程 `platpulse-server[1514740] 0.1.0` 监听 `127.0.0.1:8080` |
-| 17:47:04–05 | 从损坏叶页恢复的行时间戳（见 §3.1）：损坏发生在**实时写入过程中** |
+| 17:47:04–05 | 从损坏叶页恢复的行时间戳（见 §3.1）：损坏涉及的数据在**实时摄取过程中写入**；行时间戳只定位数据时间，不等于损坏时刻 |
 | 17:47:56.141287 | 首条损坏错误：`raw block retention cleanup deferred after ingestion: error returned from database: (code: 779) database disk image is malformed`（每秒重复） |
 | 17:48:08 起 | `save_current error: error returned from database: (code: 11) database disk image is malformed`（每秒重复）；Agent 随后记录 `server returned HTTP 503` |
 | 17:51–18:14 | 人工多次停启（17:51:57/17:52:57、17:54:04/17:55:29、18:09:16/18:09:21、18:13:14/18:14:07、18:14:52/18:14:56） |
@@ -59,8 +59,8 @@
 - **首条完整性错误**：`*** in database main ***` / `Tree 64576 page 6804 cell 17: Rowid 1232489 out of order`。
 - **重复行证明双链**：`SELECT rowid FROM host_metric_samples WHERE rowid BETWEEN 1232470 AND 1232495 ORDER BY rowid` 先返回 `1232472..1232489`，随后**再次**返回 `1232487,1232488,1232489,1232490..1232495` —— 即 rowid 1232487/1232488/1232489 存在于两个叶页；`SELECT count(*)` = 128。`dbstat WHERE pageno=6804` = `6804|host_metric_samples|/000/`。
 - **页本身结构完好**：page 6804 为 type 13（表叶），ncell 18，cell 指针数组严格递减，每个 cell 都能解析出合法的 payload/rowid varint，rowid 严格递增 1232472..1232489，cell 无重叠。→ 缺陷是**叶页被双链**，不是坏 cell。
-- **孤儿页**：三个 `never used` 页（447099 / 447103 / 447115）经原始字节解析均为结构合法、刚写入的 B-tree 叶页（447115 的 rowid 家族 1232588..1232592 与损坏页 6804 同族），但未挂入任何树、也不在 freelist → **事务的部分页已持久化，但父/兄弟指针未更新**。
-- **损坏行内容与时间**：rowid 1232487 = agent `2f7c5c72-6654-4ab5-8e94-97c208a7e07b` `network_rx_bytes_per_sec` observed 2026-09-17T09:47:03Z received 09:47:04Z；1232488 = 同 agent `network_tx_bytes_per_sec`；1232489 = `network_rx_bytes_per_sec` observed 09:47:04Z。→ 损坏发生在 09-17 17:47:04–05（本地），**距首条报错 51 秒，处于活跃摄取中**。
+- **孤儿页**：三个 `never used` 页（447099 / 447103 / 447115）经原始字节解析均为结构合法、刚写入的 B-tree 叶页（447115 的 rowid 家族 1232588..1232592 与损坏页 6804 同族），但未挂入任何树、也不在 freelist → 与「事务的部分页已持久化、但父/兄弟指针未更新」的**推断**一致（推断，非直接观测）。
+- **损坏行内容与时间**：rowid 1232487 = agent `2f7c5c72-6654-4ab5-8e94-97c208a7e07b` `network_rx_bytes_per_sec` observed 2026-09-17T09:47:03Z received 09:47:04Z；1232488 = 同 agent `network_tx_bytes_per_sec`；1232489 = `network_rx_bytes_per_sec` observed 09:47:04Z。→ 损坏行写入于 09-17 17:47:04–05（本地），**距首条报错 51 秒，处于活跃摄取中**（行时间戳仅定位数据写入时间，损坏时刻本身不可由它确定）。
 - **受影响的表族**：`host_metric_samples`、`node_metric_samples`、`block_summaries`、`agent_report_receipts` —— 正是高翻动的 `INSERT ... ON CONFLICT DO UPDATE` + 有界 `DELETE` 表（HEAD：`crates/platpulse-server/src/http/report_ingestion.rs:830` 的 upsert、`:838` 的 `DELETE ... ORDER BY received_at DESC LIMIT -1 OFFSET ?`；`crates/platpulse-server/src/retention.rs:281` 的批量 `DELETE`）。
 
 ### 3.2 产物与首条错误
@@ -97,7 +97,7 @@
 
 - `nvme1n1`（承载 `/` 与现场库）：WD SN560E PW 232141WD，SMART overall-health **PASSED**，Critical Warning 0x00，Available Spare 100%，Percentage Used 0%，**Media and Data Integrity Errors 0**，Error Information Log Entries 1，Unsafe Shutdowns 61，Data Written 9.61 TB。
 - `nvme0n1`（`/data`）：WD SN560E，PASSED，Critical Warning 0x00，Percentage Used 4%，Media/Data Integrity Errors 0，Unsafe Shutdowns 25，Data Written 46.5 TB。
-- `/proc/diskstats` 两盘 I/O-error 与 discard 列为 0；`journalctl -k` 自 2026-09-01 起无 nvme/ext4/IO/remount/corrupt 错误。`/` 挂载 `ext4 rw,relatime`（ordered data mode）。
+- `/proc/diskstats` 共 20 个字段、**不含 I/O 错误计数器**（故不能据它排除介质错误）；其 discard 相关计数两盘均为 0；`journalctl -k` 自 2026-09-01 起无 nvme/ext4/IO/remount/corrupt 错误。`/` 挂载 `ext4 rw,relatime`（ordered data mode）。
 - 唯一硬件侧异常：`nvme1n1` 的 61 次 Unsafe Shutdown。无任何介质错误证据。
 
 ## 4. 已排除 / 已澄清
@@ -106,7 +106,7 @@
 - **09-17 外部进程**：17:19–17:47:56 之间无外部 sqlite3 / 备份 / gdb / 拷贝；当日 sudo 命令均在损坏之后（§2.1）。
 - **09-23 的 `Fatal error: glibc detected an invalid stdio handle`**：来自取证 gdb 会话注入的 `fopen/malloc_info/fclose`（12:31:08 `audit ANOM_ABEND sig=6`），**是操作/取证行为所致，不是服务端代码的损坏源**。
 - **09-23 12:50 的外部只读查询**（`#137` 记录的 `-shm` 截断 SIGBUS 风险）发生在**首次观察到损坏（12:42–12:44）之后**，不能解释该次损坏本身。
-- **#194 评论中已较强排除**：`bounded_integrity_query` 用 progress handler 取消进行中的 `integrity_check(1)`（只读语句，中断不写回页面；且已重写为 `sqlite_check::bounded_scalar_query`，运行时不再对主库做周期整库扫描）；`VACUUM INTO` 与并发摄取共用同一写连接（池 `max_connections = 1`，语句串行；`VACUUM INTO` 不写源库）。
+- **#194 评论中已较强排除**：`bounded_integrity_query` 用 progress handler 取消进行中的 `integrity_check(1)`（只读语句，中断不写回任何页面，该论证不依赖具体实现；#194 另将其重写为 `sqlite_check::bounded_scalar_query`，运行时不再对主库做周期整库扫描，属额外加固）；`VACUUM INTO` 与并发摄取共用同一写连接（池 `max_connections = 1`，语句串行；`VACUUM INTO` 不写源库）。
 - **09-11 的 4 次 SIGBUS coredump** 属于 `walFindFrame` / `-shm` 截断一类（#137），与本次页级损坏形态不同；09-17 与 09-22 无 platpulse-server core。
 
 ## 5. 根因机制
