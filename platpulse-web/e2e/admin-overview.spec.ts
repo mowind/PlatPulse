@@ -241,4 +241,81 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await expect(page.getByRole('heading', { level: 2, name: 'Node Health Summary' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })
+
+  test('read-only Overview panels stay static under hover while summary links keep their feedback', async ({ page }) => {
+    await openOverview(page)
+
+    // A read-only panel must not gain a hover glow, opacity change, or lift.
+    const panel = page.locator('[data-slot="overview-panel"]').first()
+    const panelStyle = () =>
+      panel.evaluate((element) => {
+        const style = getComputedStyle(element)
+        return {
+          boxShadow: style.boxShadow,
+          transform: style.transform,
+          translate: style.translate,
+          backgroundColor: style.backgroundColor,
+        }
+      })
+    const before = await panelStyle()
+    await panel.hover()
+    await page.waitForTimeout(250)
+    const after = await panelStyle()
+    expect(after.boxShadow).toBe('none')
+    expect(after.transform).toBe('none')
+    expect(after.translate).toBe('none')
+    expect(after.backgroundColor).toBe(before.backgroundColor)
+
+    // The Overview summary band is genuine navigation, so hover-capable devices
+    // keep its emerald glow and 2px lift. Touch devices intentionally receive no
+    // hover feedback at all (Tailwind gates hover: behind (hover: hover)).
+    const hoverCapable = await page.evaluate(() => window.matchMedia('(hover: hover)').matches)
+    if (!hoverCapable) return
+    const link = page.getByRole('navigation', { name: 'Overview summaries' }).getByRole('link').first()
+    const linkStyle = () =>
+      link.evaluate((element) => {
+        const style = getComputedStyle(element)
+        return {
+          boxShadow: style.boxShadow,
+          transform: style.transform,
+          translate: style.translate,
+        }
+      })
+    expect((await linkStyle()).boxShadow).toBe('none')
+    await link.hover()
+    await expect.poll(async () => (await linkStyle()).boxShadow).not.toBe('none')
+    // Tailwind v4 emits the standalone `translate` property; older output uses
+    // `transform`. Accept either so the lift assertion is robust.
+    await expect
+      .poll(async () => {
+        const style = await linkStyle()
+        return style.translate !== 'none' || style.transform !== 'none'
+      })
+      .toBe(true)
+  })
+
+  test('read-only panels keep their reading order without overlap', async ({ page }) => {
+    await openOverview(page)
+
+    // The workbench is a single column, so every read-only region must appear
+    // in document order and never overlap the one before it: removing the
+    // decorative hover affordance must not collapse the reading hierarchy.
+    const regions = [
+      page.getByRole('heading', { level: 2, name: 'Attention queue' }).locator('xpath=ancestor::article[1]'),
+      page.getByRole('navigation', { name: 'Overview summaries' }),
+      page.getByRole('heading', { level: 2, name: 'Node Health Summary' }).locator('xpath=ancestor::article[1]'),
+      page.getByRole('heading', { level: 2, name: 'Agent inventory' }).locator('xpath=ancestor::article[1]'),
+    ]
+    const boxes: { top: number; bottom: number }[] = []
+    for (const region of regions) {
+      await expect(region).toBeVisible()
+      const box = (await region.boundingBox())!
+      boxes.push({ top: box.y, bottom: box.y + box.height })
+    }
+    for (let index = 1; index < boxes.length; index += 1) {
+      expect(boxes[index].top, `region ${index} overlaps the previous region`).toBeGreaterThanOrEqual(boxes[index - 1].bottom - 1)
+    }
+    await expect(page.locator('[data-slot="overview-panel"]')).toHaveCount(3)
+    await expectNoHorizontalOverflow(page)
+  })
 })

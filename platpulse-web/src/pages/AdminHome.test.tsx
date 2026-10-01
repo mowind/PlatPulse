@@ -5,6 +5,7 @@ import { prioritizeAgents } from './AdminHome'
 import type { AgentDiagnostic, HostDiagnostic } from '../api/generated'
 import { adminQueryClient } from '../api/admin'
 import { client } from '../api/generated/client.gen'
+import { expectStaticReadOnlySurface } from '../test/static-surface'
 
 const OWNER_SESSION = {
   session: {
@@ -512,6 +513,28 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     )
     expect(requestedUrls.filter((url) => url.includes('/api/admin/v1/overview'))).toHaveLength(1)
     expect(requestedUrls.some((url) => url.includes('/api/admin/v1/networks'))).toBe(false)
+  })
+
+  it('keeps read-only Overview panels static while interactive summary links keep their feedback', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
+      '/api/admin/v1/nodes': () => jsonResponse([NODE], 200),
+      '/api/admin/v1/agents': () => jsonResponse([AGENT], 200),
+    })
+    await renderAt('/admin')
+
+    const panels = document.querySelectorAll('[data-slot="overview-panel"]')
+    expect(panels).toHaveLength(3)
+    for (const panel of panels) {
+      expectStaticReadOnlySurface(panel)
+    }
+
+    const summary = await screen.findByRole('navigation', { name: 'Overview summaries' })
+    for (const link of within(summary).getAllByRole('link')) {
+      expect(link.className).toContain('hover:bg-background')
+      expect(link.className).toContain('hover:shadow-emerald-600/10')
+    }
   })
 
   it('separates the snapshot refresh time from the attention observation time', async () => {

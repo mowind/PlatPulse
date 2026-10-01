@@ -29,7 +29,7 @@ export function SummaryMetricCard({ label, value, icon: Icon, tone = 'green', ac
   /** `data-slot` of the tile; Node Detail keeps `node-summary-tile`. */
   dataSlot?: string
 }) {
-  return <CardX hoverable={hoverable} bordered={false} role="article" aria-label={label} size="small"
+  return <CardX bordered={false} role="article" aria-label={label} size="small"
     data-slot={dataSlot} data-tone={tone}
     className={cn('min-w-0 rounded-md transition-all', hoverable ? SURFACE_CARD : SURFACE_CARD_SUMMARY)}
     contentClassName="flex h-full min-w-0 flex-col gap-1 !p-3">

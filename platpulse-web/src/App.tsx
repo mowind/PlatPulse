@@ -19,7 +19,7 @@ import { AuthProvider, useAuth } from './auth/AuthContext'
 import { ThemeProvider } from './theme/ThemeProvider'
 import { ensureSiteAccessModeKnown, subscribeSiteAccessMode } from './api/public'
 import { CardX } from './components/ui/card-x'
-import { SURFACE_CARD } from './lib/surface'
+import { SURFACE_CARD_STATIC } from './lib/surface'
 import HomeDashboard from './components/HomeDashboard'
 import { useHomeRealtimeContext } from './layouts/HomeLayout'
 
@@ -110,7 +110,7 @@ function RequireOwner({ children }: { children: ReactNode }) {
 function OwnerRequiredPanel() {
   return (
     <section className="mx-auto max-w-[1280px] p-4">
-      <CardX bordered={false} className={SURFACE_CARD}>
+      <CardX bordered={false} className={SURFACE_CARD_STATIC}>
         <h1 className="text-lg font-semibold">Owner access required</h1>
         <p className="mt-2 text-sm">The Admin dashboard is restricted to Owners.</p>
         <p className="mt-2 text-sm text-muted-foreground">
@@ -200,7 +200,7 @@ function HomeIndex() {
 function AdminSectionFallback() {
   return (
     <section className="mx-auto max-w-[1280px] p-4">
-      <CardX bordered={false} className={SURFACE_CARD}>
+      <CardX bordered={false} className={SURFACE_CARD_STATIC}>
         <h1 className="text-lg font-semibold">Section not found</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           This Admin section is not part of the current MVP surface.

@@ -16,7 +16,7 @@ import { CardX } from '../components/ui/card-x'
 import { Empty } from '../components/ui/empty'
 import { Input } from '../components/ui/input'
 import { cn } from '../lib/utils'
-import { SURFACE_CARD } from '../lib/surface'
+import { SURFACE_CARD_STATIC } from '../lib/surface'
 import type { AdminNetwork, AdminNetworkNode } from '../api/generated'
 
 /**
@@ -28,7 +28,7 @@ import type { AdminNetwork, AdminNetworkNode } from '../api/generated'
  * outcomes stay typed, audited, and visible.
  */
 
-const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD)
+const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD_STATIC)
 
 function shortId(id: string): string {
   return id.length > 11 ? id.slice(0, 8) + '…' : id

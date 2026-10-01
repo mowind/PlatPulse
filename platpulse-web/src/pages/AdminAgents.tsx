@@ -28,7 +28,7 @@ import { CardX } from '../components/ui/card-x'
 import { Checkbox, Input, Select, Textarea } from '../components/ui/input'
 import { Empty } from '../components/ui/empty'
 import { cn } from '../lib/utils'
-import { SURFACE_CARD } from '../lib/surface'
+import { SURFACE_CARD_STATIC } from '../lib/surface'
 import type {
   AdminAgentRemovalImpact,
   AgentAuditItem,
@@ -48,7 +48,7 @@ import type {
  * and are gone when the view is left — never in URLs, history, or Audit.
  */
 
-const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD)
+const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD_STATIC)
 
 function shortId(id: string): string {
   return id.length > 14 ? id.slice(0, 8) + '…' + id.slice(-4) : id
@@ -807,7 +807,7 @@ function AgentDetailSummary({
   }
   return (
     <section
-      className={cn('space-y-3 rounded-md border-none p-4', SURFACE_CARD)}
+      className={cn('space-y-3 rounded-md border-none p-4', SURFACE_CARD_STATIC)}
       aria-labelledby="agent-summary-heading"
     >
       <div className="flex flex-wrap items-start justify-between gap-3">

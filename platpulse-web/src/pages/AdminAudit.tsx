@@ -10,7 +10,7 @@ import { DataTooltip } from '../components/ui/data-tooltip'
 import { Empty } from '../components/ui/empty'
 import { Select } from '../components/ui/input'
 import { cn } from '../lib/utils'
-import { SURFACE_CARD } from '../lib/surface'
+import { SURFACE_CARD_STATIC } from '../lib/surface'
 import type { AuditItem } from '../api/generated'
 
 const TH = 'px-3 py-2 text-left text-xs font-medium text-muted-foreground'
@@ -150,7 +150,7 @@ export default function AdminAudit() {
         bordered={false}
         segmented
         data-slot="audit-panel"
-        className={cn('mt-4 rounded-md', SURFACE_CARD)}
+        className={cn('mt-4 rounded-md', SURFACE_CARD_STATIC)}
         header={
           <div className="flex w-full items-center gap-2">
             <h2 className="min-w-0 flex-1 truncate text-sm font-medium">Events</h2>

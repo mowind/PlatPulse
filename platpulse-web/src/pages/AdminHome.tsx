@@ -23,7 +23,7 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { DataTooltip } from '../components/ui/data-tooltip'
 import { Empty } from '../components/ui/empty'
-import { SURFACE_CARD } from '../lib/surface'
+import { SURFACE_CARD, SURFACE_CARD_STATIC } from '../lib/surface'
 import { cn } from '../lib/utils'
 import type {
   AdminOverview,
@@ -33,12 +33,13 @@ import type {
   NodeDiagnostic,
 } from '../api/generated'
 
-/** Emerald's card surface, applied to every Overview panel. Upstream passes
- * border-none and leans on the surface recipe plus the hover glow. */
+/** The read-only Overview panels are static: they carry the working surface
+ * tier and no hover glow, opacity change, or lift, so a non-clickable panel
+ * never reads as clickable (webui.md §11.1). Only the Overview summary links
+ * below opt into interactive-card feedback. */
 const PANEL = cn(
-  'min-w-0 rounded-md border-none p-4 text-foreground transition-all',
-  SURFACE_CARD,
-  'hover:shadow-[0_0_20px,0_0_0_1px] hover:shadow-emerald-600/10',
+  'min-w-0 rounded-md border-none p-4 text-foreground',
+  SURFACE_CARD_STATIC,
 )
 const PANEL_HEADING = 'flex min-w-0 items-start justify-between gap-3 border-b pb-3'
 const PANEL_TITLE = 'text-sm font-medium'

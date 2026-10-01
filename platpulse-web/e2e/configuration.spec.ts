@@ -11,6 +11,27 @@ async function openAdmin(page: Page, section: string) {
 }
 
 test.describe('Admin Settings workflows (issues #111 and #113)', () => {
+  test('read-only Settings blocks keep their reading order at every width', async ({ page }) => {
+    await openAdmin(page, 'Settings')
+    await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible({ timeout: 15_000 })
+
+    // Issue #199: the static configuration cards gain no hover affordance, but
+    // they must still stack in their documented reading order without overlap.
+    const headings = ['History Window', 'Site Access Mode', 'Geo provider']
+    const blocks = await page.locator('[data-slot="settings-block"]').all()
+    expect(blocks).toHaveLength(headings.length)
+    const boxes: { top: number; bottom: number }[] = []
+    for (let index = 0; index < blocks.length; index += 1) {
+      await expect(blocks[index].getByRole('heading', { level: 2, name: headings[index] })).toBeVisible()
+      const box = (await blocks[index].boundingBox())!
+      boxes.push({ top: box.y, bottom: box.y + box.height })
+    }
+    for (let index = 1; index < boxes.length; index += 1) {
+      expect(boxes[index].top, `${headings[index]} overlaps the previous block`).toBeGreaterThanOrEqual(boxes[index - 1].bottom - 1)
+    }
+    await expectNoHorizontalOverflow(page)
+  })
+
   test('History Window exposes bounds, consequences, and typed confirmation', async ({ page }) => {
     await openAdmin(page, 'Settings')
     await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible({ timeout: 15_000 })

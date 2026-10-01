@@ -29,14 +29,15 @@ import {
   DialogTitle,
 } from '../components/ui/dialog'
 import { Input, Radio } from '../components/ui/input'
-import { SURFACE_CARD } from '../lib/surface'
+import { SURFACE_CARD_STATIC } from '../lib/surface'
 import { cn } from '../lib/utils'
 
-/** Emerald's card shell for the ordered Settings cards. */
+/** The ordered Settings cards are read-only containers: the working surface
+ * tier with no hover glow, opacity change, or lift (webui.md §11.1). The form
+ * controls inside them keep their own focus and hover feedback. */
 const CARD = cn(
-  'min-w-0 rounded-md border-none transition-all',
-  SURFACE_CARD,
-  'hover:shadow-[0_0_20px,0_0_0_1px] hover:shadow-emerald-600/10',
+  'min-w-0 rounded-md border-none',
+  SURFACE_CARD_STATIC,
 )
 const CARD_HEADER = 'flex min-w-0 flex-1 flex-wrap items-start justify-between gap-2'
 const LABEL = 'text-xs font-medium tracking-wider text-muted-foreground'

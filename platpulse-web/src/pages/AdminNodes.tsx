@@ -37,7 +37,7 @@ import { CardX } from '../components/ui/card-x'
 import { Empty } from '../components/ui/empty'
 import { Input, Select } from '../components/ui/input'
 import { cn } from '../lib/utils'
-import { SURFACE_CARD, SURFACE_TOOLBAR } from '../lib/surface'
+import { SURFACE_CARD_STATIC, SURFACE_TOOLBAR } from '../lib/surface'
 import type {
   AdminNodeDetail as AdminNodeDetailDto,
   AdminNodeListItem,
@@ -55,7 +55,7 @@ import type {
  * Home's full observation view.
  */
 
-const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD)
+const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD_STATIC)
 
 function shortId(value: string): string {
   return value.length > 12 ? value.slice(0, 8) + '…' + value.slice(-4) : value

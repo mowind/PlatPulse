@@ -4,6 +4,7 @@ import App from '../App'
 import { adminQueryClient } from '../api/admin'
 import { client } from '../api/generated/client.gen'
 import { publicQueryClient } from '../api/public'
+import { expectStaticReadOnlySurface } from '../test/static-surface'
 
 const SESSION = {
   session: {
@@ -161,6 +162,12 @@ describe('Admin Settings workflows', () => {
     expect(within(cards[0]).getByRole('heading', { level: 2, name: 'History Window' })).toBeTruthy()
     expect(within(cards[1]).getByRole('heading', { level: 2, name: 'Site Access Mode' })).toBeTruthy()
     expect(within(cards[2]).getByRole('heading', { level: 2, name: 'Geo provider' })).toBeTruthy()
+
+    // The ordered Settings cards are read-only containers: the static working
+    // surface without hover glow, opacity change, or lift (issue #199).
+    for (const card of cards) {
+      expectStaticReadOnlySurface(card)
+    }
 
     const historyCard = within(cards[0])
     expect(historyCard.getByText('7 days')).toBeTruthy()
