@@ -238,10 +238,12 @@ export default function GeoWorldMap({ overview, status, heading = PEER_COUNTRIES
     : formatGeoCount(scopedPeerCount) + ' Peer records in scope for ' + overview.scopeLabel +
       (shownUnknownCount === null
         ? ''
-        : ', ' + formatGeoCount(shownUnknownCount) + ' with no retained country attribution')
+        : ', ' + formatGeoCount(shownUnknownCount) + ' with no retained country attribution' +
+          (unknownReasons.length > 0 ? ': ' + unknownReasons.join('; ') : ''))
   const countersTitle = scopedPeerCount === null
     ? null
-    : 'Peer records in scope for ' + overview.scopeLabel + '; not unique Peers or Node locations.' +
+    : formatGeoCount(scopedPeerCount) + ' Peer records in scope for ' + overview.scopeLabel +
+      '; not unique Peers or Node locations.' +
       (shownUnknownCount === null
         ? ''
         : ' ' + geoUnknownLocationLabel(shownUnknownCount) +

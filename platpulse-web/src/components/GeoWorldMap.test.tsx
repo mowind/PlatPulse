@@ -139,7 +139,7 @@ describe('GeoWorldMap', () => {
     const counters = container.querySelector('[data-slot="geo-counters"]')
     expect(counters?.textContent).toContain('7')
     expect(counters?.getAttribute('aria-label'))
-      .toBe('7 Peer records in scope for All Networks, 1 with no retained country attribution')
+      .toBe('7 Peer records in scope for All Networks, 1 with no retained country attribution: 1 without a usable public remote IP')
     expect(counters?.getAttribute('title')).toContain('not unique Peers or Node locations')
     expect(counters?.getAttribute('title')).toContain('1 unknown location: 1 without a usable public remote IP')
     expect(counters?.className).toContain('pointer-events-none')
@@ -296,7 +296,7 @@ describe('GeoWorldMap', () => {
     expect(container.querySelector('[data-slot="geo-counters"]')?.getAttribute('aria-label'))
       .toBe('6 Peer records in scope for All Networks')
     expect(container.querySelector('[data-slot="geo-counters"]')?.getAttribute('title'))
-      .toBe('Peer records in scope for All Networks; not unique Peers or Node locations.')
+      .toBe('6 Peer records in scope for All Networks; not unique Peers or Node locations.')
   })
 
   it('states the empty map plainly when no country was resolved', async () => {
@@ -338,7 +338,7 @@ describe('GeoWorldMap', () => {
     expect(region.getAttribute('data-network-filter')).toBeNull()
     expect(await screen.findByRole('img', { name: /^Node Peer countries map/ })).toBeTruthy()
     expect(container.querySelector('[data-slot="geo-counters"]')?.getAttribute('aria-label'))
-      .toBe('6 Peer records in scope for Validator A, 1 with no retained country attribution')
+      .toBe('6 Peer records in scope for Validator A, 1 with no retained country attribution: 1 without a usable public remote IP')
   })
 
   it('keeps the rest of the page alive when the map cannot render', async () => {

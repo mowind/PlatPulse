@@ -451,7 +451,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           availablePeerCount: 3,
         },
         notice: null as string | null,
-        counters: '3 Peer records in scope for Node A, 2 with no retained country attribution',
+        counters: '3 Peer records in scope for Node A, 2 with no retained country attribution: 2 without a usable public remote IP',
       },
       {
         mode: 'stale',
@@ -463,7 +463,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           availablePeerCount: 3,
         },
         notice: 'Map data stale',
-        counters: '3 Peer records in scope for Node A, 2 with no retained country attribution',
+        counters: '3 Peer records in scope for Node A, 2 with no retained country attribution: 2 without a usable public remote IP',
       },
       {
         mode: 'all-unknown',
@@ -474,7 +474,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           availablePeerCount: 3,
         },
         notice: 'No locations to show',
-        counters: '3 Peer records in scope for Node A, 3 with no retained country attribution',
+        counters: '3 Peer records in scope for Node A, 3 with no retained country attribution: 3 without a retained country result',
       },
       {
         mode: 'unobserved',
