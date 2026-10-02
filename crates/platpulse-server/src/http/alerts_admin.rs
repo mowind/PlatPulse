@@ -257,6 +257,36 @@ pub struct RulePreviewResponse {
     pub subjects: Vec<RulePreviewSubject>,
 }
 
+/// The durable, shared Owner confirmation recorded against one Incident
+/// occurrence (parent #202, issue #203). The identity and time are the
+/// accountable facts: the first successful request is authoritative and later
+/// requests never overwrite them.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IncidentAcknowledgment {
+    pub acknowledged_by_user_id: Option<String>,
+    pub acknowledged_by_username: String,
+    pub acknowledged_at: String,
+}
+
+/// Build the acknowledgment from a LEFT JOIN's nullable columns. A row exists
+/// only after a successful acknowledgment, so any missing column means no
+/// acknowledgment was recorded for this Incident.
+fn incident_acknowledgment(
+    acknowledged_by_user_id: Option<String>,
+    acknowledged_by_username: Option<String>,
+    acknowledged_at: Option<String>,
+) -> Option<IncidentAcknowledgment> {
+    match (acknowledged_by_username, acknowledged_at) {
+        (Some(acknowledged_by_username), Some(acknowledged_at)) => Some(IncidentAcknowledgment {
+            acknowledged_by_user_id,
+            acknowledged_by_username,
+            acknowledged_at,
+        }),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct IncidentListItem {
@@ -274,6 +304,8 @@ pub struct IncidentListItem {
     /// Incident keeps its original facts and open/resolved state; the
     /// annotation only records that the subject is gone (design §15.7).
     pub subject_deleted_at: Option<String>,
+    /// Present once an Owner durably confirmed this Incident occurrence.
+    pub acknowledgment: Option<IncidentAcknowledgment>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -283,13 +315,24 @@ pub struct IncidentListResponse {
     pub total: i64,
 }
 
+/// Query filters for the Incident list. The wire names are the snake_case
+/// names declared in the OpenAPI operation (and therefore sent by the
+/// generated client); the camelCase aliases are accepted for compatibility.
+/// A serde `rename_all = "camelCase"` here silently ignored the real
+/// `rule_key`/`subject_kind` query parameters.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct IncidentFilters {
     pub state: Option<String>,
     pub severity: Option<String>,
+    #[serde(alias = "ruleKey")]
     pub rule_key: Option<String>,
+    #[serde(alias = "subjectKind")]
     pub subject_kind: Option<String>,
+    /// Exact subject key (node id, agent id, or network key). Paired with
+    /// subject_kind it backs the contextual Node/Agent shortcut into the
+    /// Incident surface (issue #202 Story 2).
+    #[serde(alias = "subjectKey")]
+    pub subject_key: Option<String>,
     pub limit: Option<i64>,
 }
 
@@ -324,7 +367,28 @@ pub struct IncidentDetail {
     pub opened_evidence: serde_json::Value,
     pub resolved_evidence: Option<serde_json::Value>,
     pub evaluation: Option<RuleStateDto>,
+    /// Effective enabled state of the Incident's Rule for this subject, after
+    /// Network/Node override resolution. `false` means the Rule is currently
+    /// disabled: the evaluation row, when present, is the last recorded
+    /// assessment and not a current one. `None` when the Rule or subject kind
+    /// cannot be resolved.
+    pub rule_enabled: Option<bool>,
     pub suppressions: Vec<SuppressionMatch>,
+    /// Present once an Owner durably confirmed this Incident occurrence.
+    pub acknowledgment: Option<IncidentAcknowledgment>,
+}
+
+/// The authoritative result of an Owner acknowledgment request.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IncidentAcknowledgmentResponse {
+    pub incident_id: String,
+    pub acknowledgment: IncidentAcknowledgment,
+    /// True when this request recorded the acknowledgment; false when an
+    /// earlier request had already confirmed the same Incident occurrence.
+    pub recorded: bool,
+    /// Audit Event id of the first confirmation; absent on a no-op repeat.
+    pub audit_event_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -898,6 +962,12 @@ pub(crate) async fn update_alert_rule(
         .bind(&rule_key)
         .execute(&mut *tx)
         .await?;
+        // A Rule whose effective enabled flag changes was not observed while
+        // the change was in effect, so any in-flight recovery window is stale
+        // (issue #203 review R1).
+        if next_enabled != current_enabled {
+            crate::alerts::invalidate_recovery_windows_for_rule(&mut tx, &rule_key).await?;
+        }
         let after = serde_json::json!({
             "enabled": next_enabled,
             "severity": next_severity,
@@ -1418,6 +1488,19 @@ pub(crate) async fn upsert_rule_override(
     };
     let outcome: Result<Vec<RuleOverrideDto>, AlertError> = async {
         let updated_at = format_rfc3339(now_utc());
+        // Replacing an override is a full replace. Clearing an explicit enabled
+        // value back to inheritance (Some -> None) changes the effective flag
+        // just as much as setting one, so the previous value must be read before
+        // the upsert to decide whether recovery windows are invalidated (issue
+        // #203 review B1).
+        let previous_enabled: Option<Option<bool>> = sqlx::query_scalar(
+            "SELECT enabled FROM alert_rule_overrides WHERE rule_key = ? AND scope_kind = ? AND scope_value = ?",
+        )
+        .bind(&rule_key)
+        .bind(&body.scope_kind)
+        .bind(&body.scope_value)
+        .fetch_optional(&mut *tx)
+        .await?;
         let condition_json = body
             .condition
             .as_ref()
@@ -1435,6 +1518,30 @@ pub(crate) async fn upsert_rule_override(
         .bind(&updated_at)
         .execute(&mut *tx)
         .await?;
+        // An override that can change the effective enabled flag of its
+        // subjects invalidates their in-flight recovery windows (issue #203
+        // review R1).
+        if body.enabled.is_some() || matches!(previous_enabled, Some(Some(_))) {
+            match body.scope_kind.as_str() {
+                "node" => {
+                    crate::alerts::invalidate_recovery_windows_for_subject(
+                        &mut tx,
+                        &rule_key,
+                        &body.scope_value,
+                    )
+                    .await?;
+                }
+                "network" => {
+                    crate::alerts::invalidate_recovery_windows_for_network(
+                        &mut tx,
+                        &rule_key,
+                        &body.scope_value,
+                    )
+                    .await?;
+                }
+                _ => {}
+            }
+        }
         let after = serde_json::json!({
             "scope_kind": body.scope_kind,
             "scope_value": body.scope_value,
@@ -1539,6 +1646,17 @@ pub(crate) async fn delete_rule_override(
         }
     };
     let outcome: Result<Option<Vec<RuleOverrideDto>>, AlertError> = async {
+        // Whether the removed override could have flipped an effective
+        // enabled flag decides whether recovery windows must be invalidated
+        // (issue #203 review R1).
+        let existing_enabled: Option<Option<bool>> = sqlx::query_scalar(
+            "SELECT enabled FROM alert_rule_overrides WHERE rule_key = ? AND scope_kind = ? AND scope_value = ?",
+        )
+        .bind(&rule_key)
+        .bind(&scope_kind)
+        .bind(&scope_value)
+        .fetch_optional(&mut *tx)
+        .await?;
         let deleted = sqlx::query(
             "DELETE FROM alert_rule_overrides WHERE rule_key = ? AND scope_kind = ? AND scope_value = ?",
         )
@@ -1549,6 +1667,27 @@ pub(crate) async fn delete_rule_override(
         .await?;
         if deleted.rows_affected() == 0 {
             return Ok(None);
+        }
+        if matches!(existing_enabled, Some(Some(_))) {
+            match scope_kind.as_str() {
+                "node" => {
+                    crate::alerts::invalidate_recovery_windows_for_subject(
+                        &mut tx,
+                        &rule_key,
+                        &scope_value,
+                    )
+                    .await?;
+                }
+                "network" => {
+                    crate::alerts::invalidate_recovery_windows_for_network(
+                        &mut tx,
+                        &rule_key,
+                        &scope_value,
+                    )
+                    .await?;
+                }
+                _ => {}
+            }
         }
         crate::auth::insert_audit_event(
             &mut *tx,
@@ -1624,6 +1763,7 @@ pub(crate) async fn delete_rule_override(
         ("severity" = Option<String>, Query, description = "Filter by severity"),
         ("rule_key" = Option<String>, Query, description = "Filter by Rule key"),
         ("subject_kind" = Option<String>, Query, description = "Filter by subject kind"),
+        ("subject_key" = Option<String>, Query, description = "Filter by exact subject key"),
         ("limit" = Option<i64>, Query, description = "Maximum rows (1..=500)"),
     ),
     responses((status = 200, body = IncidentListResponse), (status = 503, body = crate::http::ApiErrorBody))
@@ -1644,7 +1784,7 @@ pub(crate) async fn alert_incidents(
                 "incident state filter must be open or resolved",
             );
         }
-        conditions.push("state = ?".to_owned());
+        conditions.push("i.state = ?".to_owned());
         params.push(state_filter.clone());
     }
     if let Some(severity) = &filters.severity {
@@ -1659,7 +1799,7 @@ pub(crate) async fn alert_incidents(
             )
                 .into_response();
         }
-        conditions.push("severity = ?".to_owned());
+        conditions.push("i.severity = ?".to_owned());
         params.push(severity.clone());
     }
     if let Some(rule_key) = &filters.rule_key {
@@ -1671,7 +1811,7 @@ pub(crate) async fn alert_incidents(
                 "unknown alert rule",
             );
         }
-        conditions.push("rule_key = ?".to_owned());
+        conditions.push("i.rule_key = ?".to_owned());
         params.push(rule_key.clone());
     }
     if let Some(subject_kind) = &filters.subject_kind {
@@ -1683,8 +1823,20 @@ pub(crate) async fn alert_incidents(
                 "invalid subject kind",
             );
         }
-        conditions.push("subject_kind = ?".to_owned());
+        conditions.push("i.subject_kind = ?".to_owned());
         params.push(subject_kind.clone());
+    }
+    if let Some(subject_key) = &filters.subject_key {
+        if subject_key.trim().is_empty() {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "alert_validation",
+                "incident subject key filter must not be empty",
+            );
+        }
+        conditions.push("i.subject_key = ?".to_owned());
+        params.push(subject_key.clone());
     }
     let limit = filters.limit.unwrap_or(100).clamp(1, 500);
     let where_clause = if conditions.is_empty() {
@@ -1693,9 +1845,9 @@ pub(crate) async fn alert_incidents(
         format!(" WHERE {}", conditions.join(" AND "))
     };
     let sql = format!(
-        "SELECT incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, resolved_at, subject_deleted_at FROM alert_incidents{where_clause} ORDER BY opened_at DESC, incident_id LIMIT ?"
+        "SELECT i.incident_id, i.rule_key, i.rule_version, i.subject_kind, i.subject_key, i.severity, i.state, i.sequence, i.opened_at, i.resolved_at, i.subject_deleted_at, a.acknowledged_by_user_id, a.acknowledged_by_username, a.acknowledged_at FROM alert_incidents i LEFT JOIN incident_acknowledgments a ON a.incident_id = i.incident_id{where_clause} ORDER BY i.opened_at DESC, i.incident_id LIMIT ?"
     );
-    let count_sql = format!("SELECT COUNT(*) FROM alert_incidents{where_clause}");
+    let count_sql = format!("SELECT COUNT(*) FROM alert_incidents i{where_clause}");
     let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
     for param in &params {
         count_query = count_query.bind(param);
@@ -1723,6 +1875,9 @@ pub(crate) async fn alert_incidents(
             String,
             i64,
             String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
             Option<String>,
             Option<String>,
         ),
@@ -1757,6 +1912,9 @@ pub(crate) async fn alert_incidents(
                     opened_at,
                     resolved_at,
                     subject_deleted_at,
+                    acknowledged_by_user_id,
+                    acknowledged_by_username,
+                    acknowledged_at,
                 )| IncidentListItem {
                     incident_id,
                     rule_key,
@@ -1769,6 +1927,11 @@ pub(crate) async fn alert_incidents(
                     opened_at,
                     resolved_at,
                     subject_deleted_at,
+                    acknowledgment: incident_acknowledgment(
+                        acknowledged_by_user_id,
+                        acknowledged_by_username,
+                        acknowledged_at,
+                    ),
                 },
             )
             .collect(),
@@ -1792,8 +1955,8 @@ pub(crate) async fn alert_incident_detail(
     Path(incident_id): Path<String>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    let row = match sqlx::query_as::<_, (String, i64, String, String, String, String, i64, String, Option<String>, String, Option<String>, Option<String>)>(
-        "SELECT rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, resolved_at, opened_evidence_json, resolved_evidence_json, subject_deleted_at FROM alert_incidents WHERE incident_id = ?",
+    let row = match sqlx::query_as::<_, (String, i64, String, String, String, String, i64, String, Option<String>, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)>(
+        "SELECT i.rule_key, i.rule_version, i.subject_kind, i.subject_key, i.severity, i.state, i.sequence, i.opened_at, i.resolved_at, i.opened_evidence_json, i.resolved_evidence_json, i.subject_deleted_at, a.acknowledged_by_user_id, a.acknowledged_by_username, a.acknowledged_at FROM alert_incidents i LEFT JOIN incident_acknowledgments a ON a.incident_id = i.incident_id WHERE i.incident_id = ?",
     )
     .bind(&incident_id)
     .fetch_optional(state.db().pool())
@@ -1822,6 +1985,9 @@ pub(crate) async fn alert_incident_detail(
         opened_evidence_json,
         resolved_evidence_json,
         subject_deleted_at,
+        acknowledged_by_user_id,
+        acknowledged_by_username,
+        acknowledged_at,
     )) = row
     else {
         return mutation_error(
@@ -1868,6 +2034,27 @@ pub(crate) async fn alert_incident_detail(
             );
         }
     };
+    // Project the Rule's current effective enabled state next to the
+    // evaluation row: a disabled Rule keeps history, so the row alone must
+    // never be presented as a current assessment (issue #203 review B5). A
+    // lookup failure is a server error, not an unknown state: only an
+    // unrecognized subject_kind yields None (issue #203 review C1).
+    let rule_enabled = match subject_kind_enum {
+        Some(kind) => {
+            match crate::alerts::effective_rule(&mut conn, &rule_key, kind, &subject_key).await {
+                Ok(rule) => rule.map(|rule| rule.enabled),
+                Err(_) => {
+                    return mutation_error(
+                        &request_id.0,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "unavailable",
+                        "Server database is unavailable",
+                    );
+                }
+            }
+        }
+        None => None,
+    };
     let suppressions = match subject_kind_enum {
         Some(kind) => {
             crate::alerts::suppressions_for_subject(&mut conn, &rule_key, kind, &subject_key, now)
@@ -1892,7 +2079,190 @@ pub(crate) async fn alert_incident_detail(
         opened_evidence,
         resolved_evidence,
         evaluation,
+        rule_enabled,
         suppressions,
+        acknowledgment: incident_acknowledgment(
+            acknowledged_by_user_id,
+            acknowledged_by_username,
+            acknowledged_at,
+        ),
+    })
+    .into_response()
+}
+
+/// PAGE-ADMIN-INCIDENT: record the Owner's durable confirmation of one
+/// Incident occurrence (parent #202, issue #203). The first successful request
+/// is authoritative; a repeat or concurrent request for the same Incident is a
+/// no-op that returns the stored identity and time. The acknowledgment is never
+/// retracted, does not resolve the Incident, and does not change health,
+/// recovery, evaluation, or notification behavior. The durable row and its
+/// Audit Event commit in one transaction.
+#[utoipa::path(
+    post,
+    path = "/api/admin/v1/alerts/incidents/{incident_id}/acknowledgments",
+    tag = "admin",
+    responses(
+        (status = 200, body = IncidentAcknowledgmentResponse),
+        (status = 403, body = crate::http::ApiErrorBody),
+        (status = 404, body = crate::http::ApiErrorBody),
+        (status = 503, body = crate::http::ApiErrorBody),
+    )
+)]
+pub(crate) async fn acknowledge_incident(
+    State(state): State<AppState>,
+    Path(incident_id): Path<String>,
+    headers: HeaderMap,
+    Extension(principal): Extension<AuthenticatedSession>,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    // The acknowledgment request carries no body, so the generated browser
+    // client omits Content-Type. Reuse the shared trust boundary with
+    // `require_json_body = false`: Origin and CSRF are still mandatory.
+    if crate::http::admin::mutation_guard(&headers, &principal, state.auth(), &request_id, false)
+        .is_some()
+    {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::FORBIDDEN,
+            "csrf_validation_failed",
+            "mutation validation failed",
+        );
+    }
+    let mut tx = match state.db().pool().begin().await {
+        Ok(tx) => tx,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
+    let exists: Option<(String,)> =
+        match sqlx::query_as("SELECT incident_id FROM alert_incidents WHERE incident_id = ?")
+            .bind(&incident_id)
+            .fetch_optional(&mut *tx)
+            .await
+        {
+            Ok(row) => row,
+            Err(_) => {
+                return mutation_error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Server database is unavailable",
+                );
+            }
+        };
+    if exists.is_none() {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "incident_not_found",
+            "Incident not found",
+        );
+    }
+    let acknowledged_at = format_rfc3339(now_utc());
+    // First-write-wins: the primary key makes the first successful confirmation
+    // authoritative and every later request a no-op.
+    let recorded = match sqlx::query(
+        "INSERT INTO incident_acknowledgments (incident_id, acknowledged_by_user_id, acknowledged_by_username, acknowledged_at) VALUES (?, ?, ?, ?) ON CONFLICT(incident_id) DO NOTHING",
+    )
+    .bind(&incident_id)
+    .bind(&principal.0.user_id)
+    .bind(&principal.0.username)
+    .bind(&acknowledged_at)
+    .execute(&mut *tx)
+    .await
+    {
+        Ok(result) => result.rows_affected() > 0,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
+    let stored = match sqlx::query_as::<_, (Option<String>, String, String)>(
+        "SELECT acknowledged_by_user_id, acknowledged_by_username, acknowledged_at FROM incident_acknowledgments WHERE incident_id = ?",
+    )
+    .bind(&incident_id)
+    .fetch_one(&mut *tx)
+    .await
+    {
+        Ok(row) => row,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
+    let audit_event_id = if recorded {
+        let after = serde_json::json!({
+            "incidentId": &incident_id,
+            "acknowledgedByUserId": &stored.0,
+            "acknowledgedByUsername": &stored.1,
+            "acknowledgedAt": &stored.2,
+        });
+        if crate::auth::insert_audit_event(
+            &mut *tx,
+            Some(&principal.0.user_id),
+            "incident_acknowledged",
+            "incident",
+            &incident_id,
+            Some(&after),
+        )
+        .await
+        .is_err()
+        {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+        match sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
+            .fetch_one(&mut *tx)
+            .await
+        {
+            Ok(id) => Some(id),
+            Err(_) => {
+                return mutation_error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Server database is unavailable",
+                );
+            }
+        }
+    } else {
+        None
+    };
+    if tx.commit().await.is_err() {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        );
+    }
+    state.admin_realtime().publish("alerts", None::<String>, 0);
+    Json(IncidentAcknowledgmentResponse {
+        incident_id,
+        acknowledgment: IncidentAcknowledgment {
+            acknowledged_by_user_id: stored.0,
+            acknowledged_by_username: stored.1,
+            acknowledged_at: stored.2,
+        },
+        recorded,
+        audit_event_id,
     })
     .into_response()
 }
@@ -2971,6 +3341,10 @@ pub fn router() -> Router<AppState> {
             "/alerts/incidents/{incident_id}",
             get(alert_incident_detail),
         )
+        .route(
+            "/alerts/incidents/{incident_id}/acknowledgments",
+            post(acknowledge_incident),
+        )
         .route("/alerts/silences", get(alert_silences))
         .route("/alerts/silences", post(create_silence))
         .route("/alerts/silences/{silence_id}", get(alert_silence_detail))
@@ -3543,6 +3917,7 @@ mod tests {
                 severity: None,
                 rule_key: Some("node.rpc_unreachable".to_owned()),
                 subject_kind: None,
+                subject_key: None,
                 limit: None,
             }),
             Extension(request_id()),
@@ -3594,11 +3969,1020 @@ mod tests {
                 severity: None,
                 rule_key: None,
                 subject_kind: None,
+                subject_key: None,
                 limit: None,
             }),
             Extension(request_id()),
         )
         .await;
         assert_eq!(body_json(response).await["total"], 0);
+    }
+
+    /// Drive the real evaluator until an Incident opens for node-a.
+    async fn open_node_incident(state: &AppState, observed_at: OffsetDateTime) -> String {
+        set_rpc_error(state.db().pool(), "error", observed_at).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            observed_at,
+        )
+        .await
+        .unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            observed_at + time::Duration::seconds(61),
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        sqlx::query_scalar::<_, String>(
+            "SELECT incident_id FROM alert_incidents WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a' AND state = 'open' ORDER BY sequence DESC LIMIT 1",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap()
+    }
+
+    fn owner_session(user_id: &str) -> AuthenticatedSession {
+        AuthenticatedSession(crate::auth::SessionInfo {
+            user_id: user_id.to_owned(),
+            username: user_id.to_owned(),
+            ..session().0
+        })
+    }
+
+    async fn acknowledge(
+        state: &AppState,
+        incident_id: &str,
+        csrf: &str,
+        principal: AuthenticatedSession,
+    ) -> Response {
+        acknowledge_incident(
+            State(state.clone()),
+            Path(incident_id.to_owned()),
+            mutation_headers(csrf),
+            Extension(principal),
+            Extension(request_id()),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn acknowledge_incident_records_the_first_owner_and_rejects_a_second() {
+        let (_dir, state) = test_state().await;
+        let now = base_time();
+        let incident_id = open_node_incident(&state, now).await;
+        sqlx::query("INSERT INTO users (user_id, username, role, password_hash, created_at, updated_at) VALUES ('owner-2', 'owner-2', 'owner', 'hash', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let response = acknowledge(&state, &incident_id, "csrf", session()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value = body_json(response).await;
+        assert_eq!(value["recorded"], true);
+        assert_eq!(value["acknowledgment"]["acknowledgedByUserId"], "owner");
+        assert_eq!(value["acknowledgment"]["acknowledgedByUsername"], "owner");
+        let acknowledged_at = value["acknowledgment"]["acknowledgedAt"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(value["auditEventId"].as_i64().unwrap() > 0);
+
+        // A second Owner's request is a no-op: same identity and time, no new
+        // Audit Event.
+        let response = acknowledge(&state, &incident_id, "csrf", owner_session("owner-2")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value = body_json(response).await;
+        assert_eq!(value["recorded"], false);
+        assert!(value["auditEventId"].is_null());
+        assert_eq!(value["acknowledgment"]["acknowledgedByUserId"], "owner");
+        assert_eq!(value["acknowledgment"]["acknowledgedByUsername"], "owner");
+        assert_eq!(
+            value["acknowledgment"]["acknowledgedAt"],
+            acknowledged_at.clone()
+        );
+
+        let audit_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'incident_acknowledged' AND target_id = ?",
+        )
+        .bind(&incident_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(audit_count, 1);
+
+        // List and detail both expose the authoritative acknowledgment.
+        let response = alert_incidents(
+            State(state.clone()),
+            Query(IncidentFilters {
+                state: None,
+                severity: None,
+                rule_key: None,
+                subject_kind: None,
+                subject_key: None,
+                limit: None,
+            }),
+            Extension(request_id()),
+        )
+        .await;
+        let value = body_json(response).await;
+        assert_eq!(
+            value["incidents"][0]["acknowledgment"]["acknowledgedByUsername"],
+            "owner"
+        );
+        let response = alert_incident_detail(
+            State(state.clone()),
+            Path(incident_id.clone()),
+            Extension(request_id()),
+        )
+        .await;
+        let value = body_json(response).await;
+        assert_eq!(value["acknowledgment"]["acknowledgedByUsername"], "owner");
+        assert_eq!(value["acknowledgment"]["acknowledgedAt"], acknowledged_at);
+    }
+
+    #[tokio::test]
+    async fn acknowledging_an_incident_does_not_change_health_rule_state_or_notification_rows() {
+        let (_dir, state) = test_state().await;
+        let now = base_time();
+        let incident_id = open_node_incident(&state, now).await;
+        let pool = state.db().pool();
+
+        async fn dump(pool: &sqlx::SqlitePool, sql: &str) -> Vec<String> {
+            sqlx::query_scalar::<_, String>(sql)
+                .fetch_all(pool)
+                .await
+                .unwrap()
+        }
+
+        let rule_state_sql = "SELECT rule_key || '|' || subject_kind || '|' || subject_key || '|' || state || '|' || since || '|' || COALESCE(pending_since, '') || '|' || COALESCE(firing_since, '') || '|' || COALESCE(recovering_since, '') || '|' || input_kind || '|' || COALESCE(input_value, '') || '|' || COALESCE(input_detail, '') || '|' || COALESCE(evidence_json, '') || '|' || evaluation_unavailable || '|' || last_evaluated_at FROM alert_rule_state ORDER BY rule_key, subject_key";
+        let incident_sql = "SELECT incident_id || '|' || rule_key || '|' || rule_version || '|' || subject_kind || '|' || subject_key || '|' || severity || '|' || state || '|' || sequence || '|' || opened_at || '|' || COALESCE(resolved_at, '') || '|' || opened_evidence_json || '|' || COALESCE(resolved_evidence_json, '') FROM alert_incidents ORDER BY incident_id";
+        let event_sql = "SELECT event_id || '|' || event_kind || '|' || COALESCE(incident_id, '') || '|' || COALESCE(rule_key, '') || '|' || COALESCE(subject_kind, '') || '|' || COALESCE(subject_key, '') || '|' || severity || '|' || summary || '|' || created_at FROM notification_events ORDER BY event_id";
+        let delivery_sql = "SELECT delivery_id || '|' || event_id || '|' || channel_kind || '|' || destination || '|' || state || '|' || attempt_count || '|' || COALESCE(next_attempt_at, '') || '|' || COALESCE(last_attempt_at, '') || '|' || COALESCE(last_result, '') || '|' || COALESCE(last_error_kind, '') || '|' || COALESCE(retry_after_seconds, '') || '|' || created_at || '|' || updated_at FROM notification_deliveries ORDER BY delivery_id";
+
+        let rule_state_before = dump(pool, rule_state_sql).await;
+        let incidents_before = dump(pool, incident_sql).await;
+        let events_before = dump(pool, event_sql).await;
+        let deliveries_before = dump(pool, delivery_sql).await;
+        assert!(!rule_state_before.is_empty());
+        assert!(!incidents_before.is_empty());
+
+        let response = acknowledge(&state, &incident_id, "csrf", session()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["recorded"], true);
+
+        // Acknowledging one occurrence is a pure additive fact: the derived
+        // health projection (Rule state and open Incidents) and every
+        // Notification Event/Delivery row are byte-for-byte unchanged.
+        assert_eq!(rule_state_before, dump(pool, rule_state_sql).await);
+        assert_eq!(incidents_before, dump(pool, incident_sql).await);
+        assert_eq!(events_before, dump(pool, event_sql).await);
+        assert_eq!(deliveries_before, dump(pool, delivery_sql).await);
+
+        // The acknowledgment is durable and audited; nothing else was written.
+        let stored: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM incident_acknowledgments WHERE incident_id = ?",
+        )
+        .bind(&incident_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, 1);
+        let audit_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'incident_acknowledged' AND target_id = ?",
+        )
+        .bind(&incident_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(audit_count, 1);
+    }
+
+    #[tokio::test]
+    async fn acknowledge_incident_survives_restart_and_recovery_and_does_not_carry_over() {
+        let (dir, state) = test_state().await;
+        let now = base_time();
+        let incident_id = open_node_incident(&state, now).await;
+        let response = acknowledge(&state, &incident_id, "csrf", session()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value = body_json(response).await;
+        let acknowledged_at = value["acknowledgment"]["acknowledgedAt"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        drop(state);
+
+        // Server restart: a fresh database handle on the same file (new
+        // migrations are idempotent) sees the same durable facts.
+        let db_path = dir.path().join("server.db");
+        let database =
+            crate::database::initialize(crate::database::ServerDatabaseConfig::new(&db_path))
+                .await
+                .unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&dir.path().join("pepper")).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let state = AppState::new(database, None, auth);
+        let response = alert_incident_detail(
+            State(state.clone()),
+            Path(incident_id.clone()),
+            Extension(request_id()),
+        )
+        .await;
+        let value = body_json(response).await;
+        assert_eq!(value["acknowledgment"]["acknowledgedByUserId"], "owner");
+        assert_eq!(value["acknowledgment"]["acknowledgedAt"], acknowledged_at);
+
+        // Genuine recovery resolves the old Incident; its acknowledgment stays.
+        // Recovery needs a fresh ok observation kept current across the whole
+        // recovery duration (fresh-Known contract).
+        let recovering_at = now + time::Duration::seconds(120);
+        set_rpc_error(state.db().pool(), "ok", recovering_at).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            recovering_at,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        set_rpc_error(state.db().pool(), "ok", now + time::Duration::seconds(250)).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            now + time::Duration::seconds(260),
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let response = alert_incident_detail(
+            State(state.clone()),
+            Path(incident_id.clone()),
+            Extension(request_id()),
+        )
+        .await;
+        let value = body_json(response).await;
+        assert_eq!(value["state"], "resolved");
+        assert_eq!(value["acknowledgment"]["acknowledgedByUserId"], "owner");
+
+        // A genuinely recurring fault opens a NEW Incident that does not
+        // inherit the acknowledgment.
+        let recurrence = now + time::Duration::seconds(300);
+        let new_incident_id = open_node_incident(&state, recurrence).await;
+        assert_ne!(new_incident_id, incident_id);
+        let response = alert_incident_detail(
+            State(state.clone()),
+            Path(new_incident_id.clone()),
+            Extension(request_id()),
+        )
+        .await;
+        let value = body_json(response).await;
+        assert_eq!(value["state"], "open");
+        assert!(value["acknowledgment"].is_null());
+        assert_eq!(value["sequence"], 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_acknowledgments_keep_exactly_one_first_success() {
+        let (_dir, state) = test_state().await;
+        let incident_id = open_node_incident(&state, base_time()).await;
+        sqlx::query("INSERT INTO users (user_id, username, role, password_hash, created_at, updated_at) VALUES ('owner-2', 'owner-2', 'owner', 'hash', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let (first, second) = tokio::join!(
+            acknowledge(&state, &incident_id, "csrf", session()),
+            acknowledge(&state, &incident_id, "csrf", owner_session("owner-2")),
+        );
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::OK);
+        let first = body_json(first).await;
+        let second = body_json(second).await;
+        let recorded = [&first["recorded"], &second["recorded"]]
+            .iter()
+            .filter(|value| value.as_bool() == Some(true))
+            .count();
+        assert_eq!(
+            recorded, 1,
+            "exactly one request records the acknowledgment"
+        );
+        assert_eq!(
+            first["acknowledgment"]["acknowledgedByUserId"],
+            second["acknowledgment"]["acknowledgedByUserId"]
+        );
+        assert_eq!(
+            first["acknowledgment"]["acknowledgedAt"],
+            second["acknowledgment"]["acknowledgedAt"]
+        );
+        let audit_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'incident_acknowledged' AND target_id = ?",
+        )
+        .bind(&incident_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(audit_count, 1);
+    }
+
+    #[tokio::test]
+    async fn acknowledge_incident_rejects_unknown_incident_and_bad_csrf() {
+        let (_dir, state) = test_state().await;
+        let response = acknowledge(&state, "no-such-incident", "csrf", session()).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let value = body_json(response).await;
+        assert_eq!(value["error"]["code"], "incident_not_found");
+
+        let incident_id = open_node_incident(&state, base_time()).await;
+        let response = acknowledge(&state, &incident_id, "wrong", session()).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM incident_acknowledgments")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    /// Issue #203 review R1: disabling and re-enabling a Rule through the real
+    /// Admin endpoint with no evaluation in between must invalidate the
+    /// in-flight recovery window. Otherwise evaluation simply stops while the
+    /// window matures, and the next fresh Known observation falsely resolves a
+    /// recovery that was never observed as sustained.
+    #[tokio::test]
+    async fn rule_reenable_without_an_evaluation_restarts_the_recovery_window() {
+        let (_dir, state) = test_state().await;
+        let now = base_time();
+        let incident_id = open_node_incident(&state, now).await;
+        let response = acknowledge(&state, &incident_id, "csrf", session()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let acknowledged_at = body_json(response).await["acknowledgment"]["acknowledgedAt"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // Fresh ok evidence at +120s starts the recovery window.
+        let recovering_at = now + time::Duration::seconds(120);
+        set_rpc_error(state.db().pool(), "ok", recovering_at).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            recovering_at,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+            "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
+             WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            recovering_since.as_deref(),
+            Some(format_rfc3339(recovering_at).as_str())
+        );
+        assert!(!unavailable);
+
+        // Disable through the Admin endpoint. No evaluation runs while the Rule
+        // is disabled, so only the configuration change can clear the window.
+        let disable = update_alert_rule(
+            State(state.clone()),
+            Path("node.rpc_unreachable".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"enabled":false}"#),
+        )
+        .await;
+        assert_eq!(disable.status(), StatusCode::OK);
+        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+            "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
+             WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert!(
+            recovering_since.is_none(),
+            "disabling without an evaluation invalidates the in-flight window"
+        );
+        assert!(unavailable);
+
+        // Re-enable, still with no evaluation.
+        let enable = update_alert_rule(
+            State(state.clone()),
+            Path("node.rpc_unreachable".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"enabled":true}"#),
+        )
+        .await;
+        assert_eq!(enable.status(), StatusCode::OK);
+
+        // The next fresh Known observation must start a new window rather than
+        // complete the pre-disable one.
+        let fresh_at = now + time::Duration::seconds(400);
+        set_rpc_error(state.db().pool(), "ok", fresh_at).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            fresh_at,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let (state_text, recovering_since): (String, Option<String>) = sqlx::query_as(
+            "SELECT state, recovering_since FROM alert_rule_state \
+             WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(state_text, "recovering");
+        assert_eq!(
+            recovering_since.as_deref(),
+            Some(format_rfc3339(fresh_at).as_str()),
+            "re-enabling without an evaluation restarts the recovery window"
+        );
+        let response = alert_incident_detail(
+            State(state.clone()),
+            Path(incident_id.clone()),
+            Extension(request_id()),
+        )
+        .await;
+        let value = body_json(response).await;
+        assert_eq!(value["state"], "open");
+        assert_eq!(value["ruleEnabled"], true);
+        assert_eq!(value["acknowledgment"]["acknowledgedAt"], acknowledged_at);
+    }
+
+    /// Issue #203 review R1: Node and Network overrides that can flip the
+    /// effective enabled flag invalidate the affected subject's recovery
+    /// window when they are upserted, and again when they are deleted.
+    #[tokio::test]
+    async fn override_enabled_changes_invalidate_the_recovery_window() {
+        let (_dir, state) = test_state().await;
+        let now = base_time();
+        let incident_id = open_node_incident(&state, now).await;
+        let response = acknowledge(&state, &incident_id, "csrf", session()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let acknowledged_at = body_json(response).await["acknowledgment"]["acknowledgedAt"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let recovering_at = now + time::Duration::seconds(120);
+        set_rpc_error(state.db().pool(), "ok", recovering_at).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            recovering_at,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+
+        // A Node override that disables the Rule clears the window.
+        let upsert_node = upsert_rule_override(
+            State(state.clone()),
+            Path("node.rpc_unreachable".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(
+                br#"{"scopeKind":"node","scopeValue":"node-a","enabled":false}"#,
+            ),
+        )
+        .await;
+        assert_eq!(upsert_node.status(), StatusCode::OK);
+        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+            "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
+             WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert!(
+            recovering_since.is_none(),
+            "a disabling Node override invalidates the recovery window"
+        );
+        assert!(unavailable);
+
+        // Deleting the override restores the global enabled flag and clears the
+        // window again (still no evaluation in between).
+        let delete_node = delete_rule_override(
+            State(state.clone()),
+            Path((
+                "node.rpc_unreachable".to_owned(),
+                "node".to_owned(),
+                "node-a".to_owned(),
+            )),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(delete_node.status(), StatusCode::OK);
+        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+            "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
+             WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert!(recovering_since.is_none());
+        assert!(unavailable);
+
+        // A Network override on the subject's Network invalidates it too.
+        let upsert_network = upsert_rule_override(
+            State(state.clone()),
+            Path("node.rpc_unreachable".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(
+                br#"{"scopeKind":"network","scopeValue":"mainnet","enabled":false}"#,
+            ),
+        )
+        .await;
+        assert_eq!(upsert_network.status(), StatusCode::OK);
+        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+            "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
+             WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert!(recovering_since.is_none());
+        assert!(unavailable);
+
+        // While the Network override keeps the Rule disabled, a fresh Known
+        // observation is skipped and restores no window.
+        let fresh_at = now + time::Duration::seconds(400);
+        set_rpc_error(state.db().pool(), "ok", fresh_at).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            fresh_at,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let (recovering_since, _): (Option<String>, bool) = sqlx::query_as(
+            "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
+             WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert!(
+            recovering_since.is_none(),
+            "a disabled Rule keeps no recovery continuity while the override is active"
+        );
+
+        let delete_network = delete_rule_override(
+            State(state.clone()),
+            Path((
+                "node.rpc_unreachable".to_owned(),
+                "network".to_owned(),
+                "mainnet".to_owned(),
+            )),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(delete_network.status(), StatusCode::OK);
+
+        let reopened_at = now + time::Duration::seconds(700);
+        set_rpc_error(state.db().pool(), "ok", reopened_at).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            reopened_at,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let (state_text, recovering_since): (String, Option<String>) = sqlx::query_as(
+            "SELECT state, recovering_since FROM alert_rule_state \
+             WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(state_text, "recovering");
+        assert_eq!(
+            recovering_since.as_deref(),
+            Some(format_rfc3339(reopened_at).as_str())
+        );
+        let response = alert_incident_detail(
+            State(state.clone()),
+            Path(incident_id.clone()),
+            Extension(request_id()),
+        )
+        .await;
+        let value = body_json(response).await;
+        assert_eq!(value["state"], "open");
+        assert_eq!(value["acknowledgment"]["acknowledgedAt"], acknowledged_at);
+    }
+
+    /// Issue #203 review B1: replacing an override with a request that omits
+    /// `enabled` clears the explicit value back to inheritance. That can change
+    /// the effective enabled flag through the Network/Node layering, so it must
+    /// invalidate the recovery window even though the new request carries no
+    /// `enabled` field.
+    #[tokio::test]
+    async fn override_inheritance_change_invalidates_the_recovery_window() {
+        let (_dir, state) = test_state().await;
+        let now = base_time();
+        let incident_id = open_node_incident(&state, now).await;
+        let response = acknowledge(&state, &incident_id, "csrf", session()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let acknowledged_at = body_json(response).await["acknowledgment"]["acknowledgedAt"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // Global enabled, Network disabled, Node explicitly enabled: node-a is
+        // effectively enabled by the Node override alone.
+        let upsert_network = upsert_rule_override(
+            State(state.clone()),
+            Path("node.rpc_unreachable".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(
+                br#"{"scopeKind":"network","scopeValue":"mainnet","enabled":false}"#,
+            ),
+        )
+        .await;
+        assert_eq!(upsert_network.status(), StatusCode::OK);
+        let upsert_node = upsert_rule_override(
+            State(state.clone()),
+            Path("node.rpc_unreachable".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(
+                br#"{"scopeKind":"node","scopeValue":"node-a","enabled":true}"#,
+            ),
+        )
+        .await;
+        assert_eq!(upsert_node.status(), StatusCode::OK);
+
+        let recovering_at = now + time::Duration::seconds(120);
+        set_rpc_error(state.db().pool(), "ok", recovering_at).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            recovering_at,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let (recovering_since, _): (Option<String>, bool) = sqlx::query_as(
+            "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
+             WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            recovering_since.as_deref(),
+            Some(format_rfc3339(recovering_at).as_str())
+        );
+
+        // Dropping the Node override's `enabled` makes node-a inherit the
+        // disabled Network override, so the window must not survive.
+        let upsert_node_inherit = upsert_rule_override(
+            State(state.clone()),
+            Path("node.rpc_unreachable".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(
+                br#"{"scopeKind":"node","scopeValue":"node-a","severity":"warning"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(upsert_node_inherit.status(), StatusCode::OK);
+        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+            "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
+             WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert!(
+            recovering_since.is_none(),
+            "clearing an explicit enabled override invalidates the recovery window"
+        );
+        assert!(unavailable);
+
+        // The Incident keeps its original facts and confirmation.
+        let response = alert_incident_detail(
+            State(state.clone()),
+            Path(incident_id.clone()),
+            Extension(request_id()),
+        )
+        .await;
+        let value = body_json(response).await;
+        assert_eq!(value["state"], "open");
+        assert_eq!(value["acknowledgment"]["acknowledgedAt"], acknowledged_at);
+    }
+
+    /// Issue #203 review B2: a disabled Rule must not let a later fresh Known
+    /// observation borrow a recovery window recorded before evaluation stopped.
+    #[tokio::test]
+    async fn disabled_rule_does_not_borrow_recovery_continuity() {
+        let (_dir, state) = test_state().await;
+        let now = base_time();
+        let incident_id = open_node_incident(&state, now).await;
+
+        let response = acknowledge(&state, &incident_id, "csrf", session()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let acknowledged_at = body_json(response).await["acknowledgment"]["acknowledgedAt"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // Fresh ok evidence starts the recovery window.
+        let recovering_at = now + time::Duration::seconds(120);
+        set_rpc_error(state.db().pool(), "ok", recovering_at).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            recovering_at,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+            "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
+             WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            recovering_since.as_deref(),
+            Some(format_rfc3339(recovering_at).as_str())
+        );
+        assert!(!unavailable);
+
+        // Disable the Rule: evaluation stops and the in-flight window must be
+        // invalidated rather than left to mature while nothing is observed.
+        sqlx::query("UPDATE alert_rules SET enabled = 0 WHERE rule_key = 'node.rpc_unreachable'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let disabled_at = recovering_at + time::Duration::seconds(30);
+        set_rpc_error(state.db().pool(), "ok", disabled_at).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            disabled_at,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+            "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
+             WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert!(recovering_since.is_none());
+        assert!(unavailable);
+        let response = alert_incident_detail(
+            State(state.clone()),
+            Path(incident_id.clone()),
+            Extension(request_id()),
+        )
+        .await;
+        let value = body_json(response).await;
+        assert_eq!(value["state"], "open");
+        assert_eq!(value["ruleEnabled"], false);
+        assert_eq!(value["acknowledgment"]["acknowledgedAt"], acknowledged_at);
+
+        // Re-enable: the next fresh Known observation restarts the full
+        // recovery duration instead of resolving on pre-disable continuity.
+        sqlx::query("UPDATE alert_rules SET enabled = 1 WHERE rule_key = 'node.rpc_unreachable'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let fresh_at = now + time::Duration::seconds(400);
+        set_rpc_error(state.db().pool(), "ok", fresh_at).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            fresh_at,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let (state_text, recovering_since): (String, Option<String>) = sqlx::query_as(
+            "SELECT state, recovering_since FROM alert_rule_state \
+             WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(state_text, "recovering");
+        assert_eq!(
+            recovering_since.as_deref(),
+            Some(format_rfc3339(fresh_at).as_str())
+        );
+        let response = alert_incident_detail(
+            State(state.clone()),
+            Path(incident_id.clone()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(body_json(response).await["state"], "open");
+
+        // Sustained fresh Known recovery after re-enabling still resolves.
+        let resolved_at = fresh_at + time::Duration::seconds(121);
+        set_rpc_error(state.db().pool(), "ok", resolved_at).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            resolved_at,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let response = alert_incident_detail(
+            State(state.clone()),
+            Path(incident_id.clone()),
+            Extension(request_id()),
+        )
+        .await;
+        let value = body_json(response).await;
+        assert_eq!(value["state"], "resolved");
+        assert_eq!(value["ruleEnabled"], true);
+        assert_eq!(value["acknowledgment"]["acknowledgedAt"], acknowledged_at);
+    }
+
+    /// Issue #203 review B2: a Server restart is an observation gap, so an
+    /// in-flight recovery window does not survive it.
+    #[tokio::test]
+    async fn recovery_window_does_not_survive_a_server_restart() {
+        let (dir, state) = test_state().await;
+        let now = base_time();
+        let incident_id = open_node_incident(&state, now).await;
+        let response = acknowledge(&state, &incident_id, "csrf", session()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let acknowledged_at = body_json(response).await["acknowledgment"]["acknowledgedAt"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let recovering_at = now + time::Duration::seconds(120);
+        set_rpc_error(state.db().pool(), "ok", recovering_at).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            recovering_at,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        drop(state);
+
+        // Restart on the same database file.
+        let db_path = dir.path().join("server.db");
+        let database =
+            crate::database::initialize(crate::database::ServerDatabaseConfig::new(&db_path))
+                .await
+                .unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&dir.path().join("pepper")).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let state = AppState::new(database, None, auth);
+
+        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+            "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
+             WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert!(recovering_since.is_none());
+        assert!(unavailable);
+
+        // The first fresh Known observation after the restart restarts the
+        // window; it must not resolve on timestamps from before the gap.
+        let fresh_at = now + time::Duration::seconds(250);
+        set_rpc_error(state.db().pool(), "ok", fresh_at).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            fresh_at,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let (state_text, recovering_since): (String, Option<String>) = sqlx::query_as(
+            "SELECT state, recovering_since FROM alert_rule_state \
+             WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(state_text, "recovering");
+        assert_eq!(
+            recovering_since.as_deref(),
+            Some(format_rfc3339(fresh_at).as_str())
+        );
+        let response = alert_incident_detail(
+            State(state.clone()),
+            Path(incident_id.clone()),
+            Extension(request_id()),
+        )
+        .await;
+        let value = body_json(response).await;
+        assert_eq!(value["state"], "open");
+        assert_eq!(value["acknowledgment"]["acknowledgedAt"], acknowledged_at);
+
+        // Sustained fresh evidence after the restart resolves normally.
+        let resolved_at = fresh_at + time::Duration::seconds(121);
+        set_rpc_error(state.db().pool(), "ok", resolved_at).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            SubjectKind::Node,
+            "node-a",
+            resolved_at,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let response = alert_incident_detail(
+            State(state.clone()),
+            Path(incident_id.clone()),
+            Extension(request_id()),
+        )
+        .await;
+        let value = body_json(response).await;
+        assert_eq!(value["state"], "resolved");
+        assert_eq!(value["acknowledgment"]["acknowledgedAt"], acknowledged_at);
     }
 }

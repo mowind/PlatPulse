@@ -15,6 +15,7 @@ import AdminNetworksList, {
 import AdminSessions from './pages/AdminSessions'
 import AdminAudit from './pages/AdminAudit'
 import AdminSettings from './pages/AdminSettings'
+import AdminIncidentsList, { AdminIncidentDetailPage } from './pages/AdminIncidents'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { ThemeProvider } from './theme/ThemeProvider'
 import { ensureSiteAccessModeKnown, subscribeSiteAccessMode } from './api/public'
@@ -158,6 +159,8 @@ const router = createBrowserRouter([
       { path: 'networks', element: <AdminNetworksList /> },
       { path: 'networks/:networkKey', element: <AdminNetworkDetailPage /> },
       { path: 'settings', element: <AdminSettings /> },
+      { path: 'alerts/incidents', element: <AdminIncidentsList /> },
+      { path: 'alerts/incidents/:incidentId', element: <AdminIncidentDetailPage /> },
       { path: 'access/sessions', element: <AdminSessions /> },
       { path: 'access/audit', element: <AdminAudit /> },
       // Safe Admin fallback (issue #92): removed legacy/deferred routes

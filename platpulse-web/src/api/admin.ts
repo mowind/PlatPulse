@@ -23,6 +23,7 @@ import {
 } from './public'
 import {
   acknowledgeAgentAttention as acknowledgeAgentAttentionApi,
+  acknowledgeIncident as acknowledgeIncidentApi,
   adminAgentAudit,
   adminAgentDetail,
   adminAgentRemovalPreview,
@@ -97,7 +98,10 @@ import {
   type AlertRuleSummary,
   type AlertRuleUpdateRequest,
   type AlertRuleUpdateResponse,
+  type IncidentAcknowledgment,
+  type IncidentAcknowledgmentResponse,
   type IncidentDetail,
+  type IncidentListItem,
   type IncidentListResponse,
   type MaintenanceCreateRequest,
   type MaintenanceDto,
@@ -1744,6 +1748,9 @@ export type IncidentFilters = {
   severity?: string
   ruleKey?: string
   subjectKind?: string
+  /** Exact subject key: the contextual Node/Agent shortcut into the Incident
+   * surface (issue #202 Story 2). */
+  subjectKey?: string
   limit?: number
 }
 
@@ -1762,6 +1769,7 @@ export async function fetchAdminIncidents(
           severity: filters.severity,
           rule_key: filters.ruleKey,
           subject_kind: filters.subjectKind,
+          subject_key: filters.subjectKey,
           limit: filters.limit,
         },
         signal,
@@ -1794,6 +1802,63 @@ export function useAdminIncidentDetail(generation: number, incidentId: string) {
     // No placeholder: one Incident's DTO must never render under another.
     enabled: incidentId.length > 0,
   })
+}
+
+/** Fold a write-returned acknowledgment into whatever Incident DTO a cached
+ * query already holds. The Server ignores repeats and keeps the first
+ * successful request authoritative, so a remount or a failed follow-up read
+ * must keep showing that result instead of reverting to a stale unacknowledged
+ * read. Non-Incident data passes through untouched. */
+function foldIncidentAcknowledgment(
+  current: unknown,
+  incidentId: string,
+  acknowledgment: IncidentAcknowledgment,
+): unknown {
+  if (current === null || typeof current !== 'object') return current
+  const candidate = current as { incidentId?: string; incidents?: IncidentListItem[] }
+  if (candidate.incidentId === incidentId) {
+    return { ...candidate, acknowledgment }
+  }
+  if (Array.isArray(candidate.incidents)) {
+    return {
+      ...candidate,
+      incidents: candidate.incidents.map((incident) =>
+        incident.incidentId === incidentId ? { ...incident, acknowledgment } : incident,
+      ),
+    }
+  }
+  return current
+}
+
+/** Owner's durable confirmation of one Incident occurrence (issue #203). The
+ * Server records the first successful request and ignores repeats; the
+ * acknowledgment never resolves the Incident or changes health, recovery, or
+ * notification policy. */
+export async function acknowledgeIncidentEntry(
+  incidentId: string,
+  csrfToken: string,
+): Promise<IncidentAcknowledgmentResponse> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        acknowledgeIncidentApi({
+          path: { incident_id: incidentId },
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to acknowledge the Incident',
+    )
+    // Keep the authoritative write in the cache before refetching: a later
+    // remount whose read fails still shows the recorded identity and time.
+    adminQueryClient.setQueriesData<unknown>(
+      { queryKey: adminKeys.alertIncidents },
+      (current: unknown) => foldIncidentAcknowledgment(current, incidentId, response.acknowledgment),
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.all })
+    throw error
+  }
 }
 
 export type SilenceFilters = { status?: string }

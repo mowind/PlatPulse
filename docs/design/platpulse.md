@@ -671,7 +671,7 @@ PlatPulse 当前实现是：
 
 ### 15.1 状态、范围与依据
 
-本节来自已完成的 `/grill-with-docs` 访谈（Q1–Q22）及 Owner 的最终共识确认，是目标设计。后续实现规格按仓库约定进入 GitHub Issues，本节不代替具体接口设计或实现工单。实现状态：§15.2 第 1、2 项（Agent 接入引导、显示名称/备注）已由 issue #169 交付；§15.3 Node Purge 已单独交付；§15.2 第 3–5 项 Agent Removal 已由 issue #171 交付（含所属 Node 权威列表、未处理 Transfer 阻止、全凭证撤销、子 Node 级联清理与删除身份边界）；§15.6 Agent Attention Acknowledgment 已由 issue #172 交付（Server-owned occurrence/evidence 边界、共享持久确认、Overview 与 Agent Detail 的逐条与批量操作、失败可重试与审计）；§15.4 自动 Validator 身份与 Current Validator Status 已由 issue #173 交付（Server 从已校验 Network 与观测到的完整 P2P 公钥自动建立 Node Validator Link、换键关闭旧区间、Public/Node 视图消费 Server 投影，不再展示手工 role）。手工注册/绑定/角色写入端点已退役并返回明确的 GONE 状态。一次性 Validator 模型迁移（§15.5）已由 issue #174 交付：Server 启动迁移在同一 SQLite 事务内识别无 automatic Link 的旧手工一代，删除其 Link、current insight、ranking/counter history、daily/monthly 聚合与 Validator 身份本身，并写入 validator_model_migration 一次性标记；automatic 一代身份与数据保留，旧分类/变化基线同步失效，Node 监控历史、既有 Incident 与必要审计保留；§15.7 删除主体的通知取消与 Incident 标注已由 issue #175 交付（被删 Node/Agent/Host 退出当前评估并标注 subject_deleted_at 而不伪造恢复，未发送通知——含无 incident_id 的恢复事件——被取消，已发送事实保留，其他主体与共享 Validator 通知策略不受影响）。
+本节来自已完成的 `/grill-with-docs` 访谈（Q1–Q22）及 Owner 的最终共识确认，是目标设计。后续实现规格按仓库约定进入 GitHub Issues，本节不代替具体接口设计或实现工单。实现状态：§15.2 第 1、2 项（Agent 接入引导、显示名称/备注）已由 issue #169 交付；§15.3 Node Purge 已单独交付；§15.2 第 3–5 项 Agent Removal 已由 issue #171 交付（含所属 Node 权威列表、未处理 Transfer 阻止、全凭证撤销、子 Node 级联清理与删除身份边界）；§15.6 Agent Attention Acknowledgment 已由 issue #172 交付（Server-owned occurrence/evidence 边界、共享持久确认、Overview 与 Agent Detail 的逐条与批量操作、失败可重试与审计）；§15.4 自动 Validator 身份与 Current Validator Status 已由 issue #173 交付（Server 从已校验 Network 与观测到的完整 P2P 公钥自动建立 Node Validator Link、换键关闭旧区间、Public/Node 视图消费 Server 投影，不再展示手工 role）。手工注册/绑定/角色写入端点已退役并返回明确的 GONE 状态。一次性 Validator 模型迁移（§15.5）已由 issue #174 交付：Server 启动迁移在同一 SQLite 事务内识别无 automatic Link 的旧手工一代，删除其 Link、current insight、ranking/counter history、daily/monthly 聚合与 Validator 身份本身，并写入 validator_model_migration 一次性标记；automatic 一代身份与数据保留，旧分类/变化基线同步失效，Node 监控历史、既有 Incident 与必要审计保留；§15.7 删除主体的通知取消与 Incident 标注已由 issue #175 交付（被删 Node/Agent/Host 退出当前评估并标注 subject_deleted_at 而不伪造恢复，未发送通知——含无 incident_id 的恢复事件——被取消，已发送事实保留，其他主体与共享 Validator 通知策略不受影响）；§15.7 的 Incident 列表、详情与持久确认已由 issue #203 交付（Owner 仅可对一次 occurrence 做共享、不可撤回、不可覆盖的确认，记录确认者与时间且不改健康/恢复/通知策略，恢复后复发为新的未确认 occurrence，主体删除与恢复相互区分；列表支持精确 `subject_key` 过滤，Node/Agent 详情提供跳转到该 subject 的 Incident 历史快捷入口，父 issue #202 Story 2）。
 
 - Agent：Owner 接入引导、显示名称/备注修改、Agent Removal。
 - Node：保留已有重命名，只扩展 Owner 显式 Node Purge；不提供 Admin 新建 Node 或远端采集配置编辑。
@@ -738,7 +738,7 @@ PlatPulse 当前实现是：
 - 当前 DTO 的 kind + subject 只标识问题类型/主体，不足以标识发生次数。目标需要 Server-owned 的发生/证据边界；历史 count/range 的确认不能用永远隐藏该稳定 ID 代替，也不能只用会随普通 Host 更新漂移的时间戳。计数回落、Epoch/Boot 变化与状态恢复不能使新证据被旧确认误吞。
 - Overview 提供 Agent 提示逐条确认；Agent Detail 提供逐条及“确认当前全部提示”。批量只覆盖 Owner 本次明确看到的 Agent 提示及其证据边界，不包括随后新增内容，不连带确认所属 Node。
 - 原始证据留在可主动展开的诊断区域，确认记录包含谁在何时确认什么范围。失败不隐藏提示；并发确认可以安全重试，但不能确认客户端未看到的新证据。返回成功后重取权威投影，不用浏览器永久隐藏列表。
-- 本次不增加 Node 提示确认、永久关闭某类提示、Silence/Maintenance 页面或完整 Incident 历史页面。
+- 本次（§15.6 Agent Attention Acknowledgment，issue #172）不增加 Node 提示确认、永久关闭某类提示或 Silence/Maintenance 页面；当时也尚未提供完整 Incident 历史页面，该页面已由后续 issue #203 交付，见 §15.7 与 [WebUI §15](webui.md#accepted-management-ui-target)。
 
 ### 15.7 恢复、确认、主体删除与通知
 
@@ -748,7 +748,7 @@ PlatPulse 当前实现是：
 | Owner 确认提示 | 同次提示退出醒目区域，持续故障的真实状态不变 | 证据与 Incident 保留；不暂停通知、不发虚假恢复 |
 | Agent/Node 删除 | 主体退出当前待处理问题和后续告警评估；保留 Incident 原有事实并标注主体已删除 | 保留既有 Incident/必要审计；取消尚未发送通知，不因删除发恢复通知 |
 
-Incident 保留证据不等于继续把它当作当前待处理故障；删除主体不把 open Incident 改成声称已知恢复的 resolved。当前 SPA 没有 Incident 管理页面，本节不承诺新增。常规 Retention 保护 Incident 历史；Notification Event 有独立保留策略，不能把二者混淆。
+Incident 保留证据不等于继续把它当作当前待处理故障；删除主体不把 open Incident 改成声称已知恢复的 resolved。Incident 列表、详情与持久确认页面已由 issue #203 交付（Agent 提示确认与 Incident 确认是两个独立边界，见 §15.6）。常规 Retention 保护 Incident 历史；Notification Event 有独立保留策略，不能把二者混淆。
 
 取消通知按主体覆盖所有未发送项，不能只通过 incident_id 找关联：当前恢复 Notification Event 可以没有 incident_id。实现需协调 worker claim/发送前检查；已发送或已交给外部通道且无法撤回的发送不能宣称已撤回。保留已有交付事实，不影响其他 Agent/Node 或共享 Validator 主体的通知策略。
 

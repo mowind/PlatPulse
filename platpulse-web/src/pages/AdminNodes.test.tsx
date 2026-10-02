@@ -328,6 +328,13 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
       screen.getByRole('heading', { level: 2, name: 'Node Inventory & lifecycle' }),
     ).toBeTruthy()
     expect(screen.getByRole('link', { name: 'Open the Audit log' })).toBeTruthy()
+    // Contextual shortcut from a Node detail to its Incident history
+    // (issue #202 Story 2): a bound subject filter, not a generic entry.
+    expect(
+      screen.getByRole('link', { name: 'Incidents for this Node' }).getAttribute('href'),
+    ).toBe(
+      '/admin/alerts/incidents?subject=node&subject_key=0195f2a1-0014-4014-8014-000000000014',
+    )
     expect(screen.getByText('Network identity')).toBeTruthy()
     expect(screen.getByText('Observed chain ID / P2P network')).toBeTruthy()
     expect(screen.getByText(/210425 \/ 1/)).toBeTruthy()

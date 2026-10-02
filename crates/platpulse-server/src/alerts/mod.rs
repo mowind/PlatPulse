@@ -369,6 +369,82 @@ pub async fn seed_catalog(executor: &mut sqlx::SqliteConnection) -> Result<(), s
     Ok(())
 }
 
+/// Invalidate recovery windows that were in flight when the previous Server
+/// process stopped. A restart is an observation gap: neither the downtime nor
+/// the moment before it can count as continuously sustained recovery, so only
+/// fresh Known evidence collected by the new process may complete a recovery.
+/// Open Incidents, their evidence, and their acknowledgments are untouched
+/// (issue #203 review B2).
+pub async fn invalidate_recovery_windows_on_startup(
+    executor: &mut sqlx::SqliteConnection,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE alert_rule_state SET recovering_since = NULL, evaluation_unavailable = 1 \
+         WHERE state = 'recovering'",
+    )
+    .execute(&mut *executor)
+    .await?;
+    Ok(())
+}
+
+/// Invalidate the in-flight recovery window for every subject of one Rule.
+///
+/// Changing a Rule's effective configuration — its global enabled flag, or a
+/// Network/Node override that can flip enabled — is an observation gap
+/// exactly like a restart: continuity recorded before the change must not
+/// complete a recovery after it. A disabled Rule is not evaluated at all, so if
+/// the Admin mutation did not invalidate here, disabling and re-enabling a Rule
+/// between two evaluations would leave a window to mature while nothing was
+/// observed (issue #203 review R1). Incidents, their evidence, and their
+/// acknowledgments are untouched.
+pub async fn invalidate_recovery_windows_for_rule(
+    executor: &mut sqlx::SqliteConnection,
+    rule_key: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE alert_rule_state SET recovering_since = NULL, evaluation_unavailable = 1 WHERE rule_key = ? AND state = 'recovering'",
+    )
+    .bind(rule_key)
+    .execute(&mut *executor)
+    .await?;
+    Ok(())
+}
+
+/// Same as invalidate_recovery_windows_for_rule, limited to one Node subject
+/// (Network/Node override scope_kind = "node").
+pub async fn invalidate_recovery_windows_for_subject(
+    executor: &mut sqlx::SqliteConnection,
+    rule_key: &str,
+    subject_key: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE alert_rule_state SET recovering_since = NULL, evaluation_unavailable = 1 WHERE rule_key = ? AND subject_key = ? AND state = 'recovering'",
+    )
+    .bind(rule_key)
+    .bind(subject_key)
+    .execute(&mut *executor)
+    .await?;
+    Ok(())
+}
+
+/// Same as invalidate_recovery_windows_for_rule, limited to every Node in one
+/// Network (override scope_kind = "network") — the subjects such an override
+/// resolves for.
+pub async fn invalidate_recovery_windows_for_network(
+    executor: &mut sqlx::SqliteConnection,
+    rule_key: &str,
+    network_key: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE alert_rule_state SET recovering_since = NULL, evaluation_unavailable = 1 WHERE rule_key = ? AND state = 'recovering' AND subject_key IN (SELECT node_id FROM nodes WHERE network_key = ?)",
+    )
+    .bind(rule_key)
+    .bind(network_key)
+    .execute(&mut *executor)
+    .await?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Evaluation input
 // ---------------------------------------------------------------------------
@@ -643,10 +719,16 @@ pub fn project_transition(
                     transition.note = "input unknown/stale; Open Incident stays open".to_owned();
                 }
                 "recovering" => {
-                    transition.recovering_since = Some(now_text.clone());
+                    // Unknown/Stale is not fresh Known evidence: invalidate the
+                    // in-flight recovery window entirely so a later Known input
+                    // must sustain recovery from its own arrival, never from
+                    // timestamps recorded before or during the unknown period
+                    // (continuous-evidence contract).
+                    transition.evaluation_unavailable = true;
+                    transition.recovering_since = None;
                     transition.since = now_text.clone();
                     transition.note =
-                        "input unknown/stale; recovery timer restarts on fresh known evidence"
+                        "input unknown/stale; recovery timer invalidated until fresh known evidence"
                             .to_owned();
                 }
                 _ => {
@@ -1523,8 +1605,10 @@ async fn load_state_inner(
 }
 
 /// Evaluate one `(rule, subject)` and persist the resulting state machine
-/// transition and any Incident open/resolve. Disabled rules are skipped and
-/// their persisted state is left untouched (history is never deleted).
+/// transition and any Incident open/resolve. A disabled rule receives no fresh
+/// evidence: evaluation is skipped, but any in-flight recovery window is
+/// invalidated so re-enabling cannot resolve on pre-disable continuity. The
+/// Incident, its evidence, and its acknowledgment history are never deleted.
 pub async fn evaluate_rule(
     executor: &mut sqlx::SqliteConnection,
 
@@ -1539,6 +1623,19 @@ pub async fn evaluate_rule(
         return Ok(outcome);
     };
     if !effective.enabled {
+        // A disabled rule receives no fresh evidence. Invalidate any in-flight
+        // recovery window so re-enabling the rule cannot resolve an Incident on
+        // continuity recorded before evaluation stopped: only fresh Known
+        // recovery evidence observed after re-enabling may resolve it. The
+        // Incident, its opened evidence, and its acknowledgment are untouched.
+        sqlx::query(
+            "UPDATE alert_rule_state SET recovering_since = NULL, evaluation_unavailable = 1 \
+             WHERE rule_key = ? AND subject_key = ? AND state = 'recovering'",
+        )
+        .bind(rule_key)
+        .bind(subject_key)
+        .execute(&mut *executor)
+        .await?;
         return Ok(outcome);
     }
     let stale_after_secs = freshness_bound(&mut *executor).await?;
@@ -2454,8 +2551,10 @@ mod tests {
         assert!(transition.evaluation_unavailable);
         assert!(!transition.resolves_incident);
 
-        // Stale during recovery restarts the recovery timer: only fresh
-        // Known recovery can resolve.
+        // Stale during recovery invalidates the whole recovery window: a
+        // stale value may be ancient, so it cannot count as continuous fresh
+        // evidence, and the later fresh Known recovery must sustain the full
+        // duration from its own arrival time.
         let recovering = RuleState {
             state: "recovering".to_owned(),
             since: format_rfc3339(now),
@@ -2474,13 +2573,71 @@ mod tests {
             age_secs: 9999,
             detail: "last value 20.0".to_owned(),
         };
-        let t = now + time::Duration::seconds(500);
-        let transition = project_transition(&recovering, &stale, &condition, t);
+        let t_stale = now + time::Duration::seconds(500);
+        let transition = project_transition(&recovering, &stale, &condition, t_stale);
         assert_eq!(transition.state, "recovering");
+        assert!(transition.evaluation_unavailable);
+        assert!(transition.recovering_since.is_none());
+        assert!(!transition.resolves_incident);
+
+        // A fresh Known recovery after the stale gap starts a NEW window: the
+        // pre-stale timer (recorded at `now`, 500s earlier) must not be reused.
+        let stale_state = RuleState {
+            state: "recovering".to_owned(),
+            since: transition.since.clone(),
+            pending_since: None,
+            firing_since: None,
+            recovering_since: None,
+            input_kind: "stale".to_owned(),
+            input_value: Some(20.0),
+            input_detail: None,
+            evidence_json: None,
+            evaluation_unavailable: true,
+            last_evaluated_at: format_rfc3339(t_stale),
+        };
+        let fresh = EvalInput::Known {
+            value: 20.0,
+            detail: "fresh recovery".to_owned(),
+        };
+        let t_fresh = t_stale + time::Duration::seconds(1);
+        let started = project_transition(&stale_state, &fresh, &condition, t_fresh);
+        assert_eq!(started.state, "recovering");
         assert_eq!(
-            transition.recovering_since.as_deref(),
-            Some(format_rfc3339(t).as_str())
+            started.recovering_since.as_deref(),
+            Some(format_rfc3339(t_fresh).as_str())
         );
+        assert!(!started.resolves_incident);
+
+        // The recovery window is 120s from the fresh arrival: 100s later is
+        // too early even though the old timer is long exhausted.
+        let sustained_state = RuleState {
+            state: started.state.clone(),
+            since: started.since.clone(),
+            pending_since: None,
+            firing_since: None,
+            recovering_since: started.recovering_since.clone(),
+            input_kind: "known".to_owned(),
+            input_value: Some(20.0),
+            input_detail: None,
+            evidence_json: None,
+            evaluation_unavailable: false,
+            last_evaluated_at: format_rfc3339(t_fresh),
+        };
+        let too_early = project_transition(
+            &sustained_state,
+            &fresh,
+            &condition,
+            t_fresh + time::Duration::seconds(100),
+        );
+        assert!(!too_early.resolves_incident);
+        let resolved = project_transition(
+            &sustained_state,
+            &fresh,
+            &condition,
+            t_fresh + time::Duration::seconds(121),
+        );
+        assert_eq!(resolved.state, "normal");
+        assert!(resolved.resolves_incident);
 
         // Unsupported never alerts and never changes state.
         let unsupported = EvalInput::Unsupported {

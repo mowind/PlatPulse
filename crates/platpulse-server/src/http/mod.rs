@@ -2371,6 +2371,247 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn incident_acknowledgment_route_requires_owner_and_csrf() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+        let uri = "/api/admin/v1/alerts/incidents/i-1/acknowledgments";
+
+        // Anonymous requests are refused before routing.
+        let anonymous = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ORIGIN, "http://127.0.0.1:8080")
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = json(app.clone().oneshot(anonymous).await.unwrap()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "auth_required");
+
+        let login = app.clone().oneshot(login_request()).await.unwrap();
+        let cookie = login.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let (_, login_body) = json(login).await;
+        let csrf = login_body["csrfToken"].as_str().unwrap();
+
+        // Owner without the CSRF token is refused by the shared mutation guard.
+        let missing_csrf = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::COOKIE, &cookie)
+            .header(header::ORIGIN, "http://127.0.0.1:8080")
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = json(app.clone().oneshot(missing_csrf).await.unwrap()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"]["code"], "csrf_validation_failed");
+
+        // The route is registered on the real admin router: a well-formed Owner
+        // request reaches the handler and reports the sanitized not-found error.
+        // The acknowledgment POST is bodyless and the production generated client
+        // omits Content-Type for it, so this request must NOT set a JSON
+        // Content-Type: otherwise the test would hide a guard mismatch that
+        // rejects every real Owner acknowledgment.
+        let owner = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::COOKIE, &cookie)
+            .header(header::ORIGIN, "http://127.0.0.1:8080")
+            .header("x-csrf-token", csrf)
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = json(app.clone().oneshot(owner).await.unwrap()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "incident_not_found");
+
+        // A Viewer session never crosses the Owner guard, even with a CSRF token.
+        crate::auth::create_viewer(
+            state.db(),
+            "viewer1",
+            &hash_password(b"correct horse battery").unwrap(),
+        )
+        .await
+        .unwrap();
+        let viewer_login = Request::builder()
+            .method("POST")
+            .uri("/api/public/v1/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ORIGIN, "http://127.0.0.1:8080")
+            .body(Body::from(
+                r#"{"username":"viewer1","password":"correct horse battery"}"#,
+            ))
+            .unwrap();
+        let viewer_login = app.clone().oneshot(viewer_login).await.unwrap();
+        assert_eq!(viewer_login.status(), StatusCode::OK);
+        let viewer_cookie = viewer_login.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let (_, viewer_body) = json(viewer_login).await;
+        let viewer_csrf = viewer_body["csrfToken"].as_str().unwrap();
+        let viewer = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::COOKIE, &viewer_cookie)
+            .header(header::ORIGIN, "http://127.0.0.1:8080")
+            .header("x-csrf-token", viewer_csrf)
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = json(app.oneshot(viewer).await.unwrap()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"]["code"], "owner_required");
+    }
+
+    /// Issue #203 review B3: the Incident list must honor the snake_case query
+    /// parameter names declared in OpenAPI (and sent by the generated client).
+    /// A serde `rename_all = "camelCase"` previously expected ruleKey/subjectKind
+    /// and silently ignored both filters on the real router.
+    #[tokio::test]
+    async fn incident_list_honors_rule_key_and_subject_kind_query_parameters() {
+        let (_db_dir, _web_dir, state) = test_state().await;
+        seed_owner(&state).await;
+        let app = build_app(state.clone());
+
+        let pool = state.db().pool();
+        for rule_key in ["node.rpc_unreachable", "agent.offline"] {
+            sqlx::query(
+                "INSERT OR IGNORE INTO alert_rules \
+                 (rule_key, enabled, severity, version, condition_json, created_at, updated_at) \
+                 VALUES (?, 1, 'critical', 1, '{}', ?, ?)",
+            )
+            .bind(rule_key)
+            .bind("2026-01-01T00:00:00Z")
+            .bind("2026-01-01T00:00:00Z")
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        let incidents = [
+            (
+                "inc-node-1",
+                "node.rpc_unreachable",
+                "node",
+                "node-a",
+                "2026-01-01T00:00:01Z",
+            ),
+            (
+                "inc-node-2",
+                "node.rpc_unreachable",
+                "node",
+                "node-b",
+                "2026-01-01T00:00:02Z",
+            ),
+            (
+                "inc-agent-1",
+                "agent.offline",
+                "agent",
+                "agent-a",
+                "2026-01-01T00:00:03Z",
+            ),
+        ];
+        for (incident_id, rule_key, subject_kind, subject_key, opened_at) in incidents {
+            sqlx::query(
+                "INSERT INTO alert_incidents \
+                 (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, \
+                  state, sequence, opened_at, opened_evidence_json) \
+                 VALUES (?, ?, 1, ?, ?, 'critical', 'open', 1, ?, '{}')",
+            )
+            .bind(incident_id)
+            .bind(rule_key)
+            .bind(subject_kind)
+            .bind(subject_key)
+            .bind(opened_at)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        let cookie = login_cookie(app.clone()).await;
+        let fetch = |uri: String| {
+            let cookie = cookie.clone();
+            let app = app.clone();
+            async move {
+                let request = Request::builder()
+                    .uri(uri)
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap();
+                json(app.oneshot(request).await.unwrap()).await
+            }
+        };
+
+        // Unfiltered: every Incident is visible with its total.
+        let (status, body) = fetch("/api/admin/v1/alerts/incidents".to_owned()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["total"], 3);
+        assert_eq!(body["incidents"].as_array().unwrap().len(), 3);
+
+        // rule_key (the OpenAPI name) narrows to the Node Rule and keeps order.
+        let (status, body) =
+            fetch("/api/admin/v1/alerts/incidents?rule_key=node.rpc_unreachable".to_owned()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["total"], 2);
+        let ids = body["incidents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|incident| incident["incidentId"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["inc-node-2", "inc-node-1"]);
+
+        // subject_kind narrows to the Agent Rule.
+        let (status, body) =
+            fetch("/api/admin/v1/alerts/incidents?subject_kind=agent".to_owned()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["total"], 1);
+        assert_eq!(body["incidents"][0]["incidentId"], "inc-agent-1");
+
+        // subject_key narrows to one exact subject: the contextual Node/Agent
+        // shortcut into the Incident surface (issue #202 Story 2).
+        let (status, body) =
+            fetch("/api/admin/v1/alerts/incidents?subject_kind=node&subject_key=node-a".to_owned())
+                .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["total"], 1);
+        assert_eq!(body["incidents"][0]["incidentId"], "inc-node-1");
+
+        // An empty subject_key is rejected rather than silently ignored.
+        let (status, _) = fetch("/api/admin/v1/alerts/incidents?subject_key=".to_owned()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // The camelCase subjectKey alias resolves too.
+        let (status, body) =
+            fetch("/api/admin/v1/alerts/incidents?subjectKey=node-b".to_owned()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["total"], 1);
+        assert_eq!(body["incidents"][0]["incidentId"], "inc-node-2");
+
+        // Both snake_case filters combine.
+        let (status, body) = fetch(
+            "/api/admin/v1/alerts/incidents?rule_key=node.rpc_unreachable&subject_kind=node&limit=1"
+                .to_owned(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["total"], 2);
+        assert_eq!(body["incidents"].as_array().unwrap().len(), 1);
+
+        // The camelCase compatibility aliases still resolve.
+        let (status, body) = fetch(
+            "/api/admin/v1/alerts/incidents?ruleKey=agent.offline&subjectKind=agent".to_owned(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["total"], 1);
+        assert_eq!(body["incidents"][0]["incidentId"], "inc-agent-1");
+    }
+
+    #[tokio::test]
     async fn agent_group_is_blocked_until_an_owner_exists() {
         let (_, _, state) = test_state().await;
         let app = build_app(state.clone());

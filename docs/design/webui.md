@@ -1,6 +1,6 @@
 # PlatPulse WebUI Design and Current Routed Surface
 
-**Status:** Current routed WebUI contract with the explicitly approved Node Detail presentation target in [§11.1](#node-detail-composition-page-home-node), reconciled with [App.tsx](../../platpulse-web/src/App.tsx) and the Server DTOs, plus an explicitly **accepted, not implemented** evolution in [§15](#accepted-management-ui-target). Existing route tables describe today's SPA, not delivery of the new controls.
+**Status:** Current routed WebUI contract with the explicitly approved Node Detail presentation target in [§11.1](#node-detail-composition-page-home-node), reconciled with [App.tsx](../../platpulse-web/src/App.tsx) and the Server DTOs, plus an explicitly **accepted, not implemented** evolution in [§15](#accepted-management-ui-target). The §15 controls already delivered — Agent enrollment and metadata (§15.1, issue #169), Agent Removal (§15.2, issue #171), Agent Attention Acknowledgment (§15.3, issue #172), the Validator identity/model changes (issues #173/#174), and the Incident history and detail surface (§15.6, issue #203) — are routed and appear in the route tables; the remaining §15 controls are still not implemented, and the route tables describe today's SPA rather than delivery of those.
 
 **Scope:** The production React SPA surface currently registered in `platpulse-web`, plus the read-only Public projections it consumes. Server/API extensions that have no SPA route are documented as available-but-unrouted, not silently treated as pages.
 
@@ -10,7 +10,7 @@
 - `docs/design/platpulse.md` for Server, Agent, API, security, and deployment boundaries;
 - generated OpenAPI artifacts for DTOs, operations, error envelopes, and client behavior.
 
-This document is the WebUI UX and interaction authority for the current routed surface. It does not replace OpenAPI and does not define Server policy. The current Home consumes the Network list, Node detail with its history and metrics, the Peer country map, and selected-Node Peer Insight/Peer History; the Owner selects the Geo provider (Disabled, Local MMDB, IPinfo, or GeoJS) on Settings. Server-side Alert, Notification, Retention, Backup/Restore, Doctor, Node Transfer, People, Validator management, and Agent Enrollment/Recovery/Rotation operations exist, but their management pages are not registered in the current SPA; older page drafts are historical and must not be linked as live routes.
+This document is the WebUI UX and interaction authority for the current routed surface. It does not replace OpenAPI and does not define Server policy. The current Home consumes the Network list, Node detail with its history and metrics, the Peer country map, and selected-Node Peer Insight/Peer History; the Owner selects the Geo provider (Disabled, Local MMDB, IPinfo, or GeoJS) on Settings. Server-side Alert, Notification, Retention, Backup/Restore, Doctor, Node Transfer, People, Validator management, and Agent Enrollment/Recovery/Rotation operations exist; of these the delivered Agent enrollment/metadata/removal/attention surfaces (§15.1–§15.3) and the Incident history and detail pages (§15.6, issue #203) are routed, and the rest have no management page registered in the current SPA. Older page drafts are historical and must not be linked as live routes.
 
 ## 1. Purpose and non-goals
 
@@ -29,13 +29,13 @@ PlatPulse WebUI presents operational truth from the Server and gives the Owner s
 
 ### 1.2 Out of scope
 
-These are current-surface exclusions. §15 specifically accepts future Agent enrollment guidance, editable Agent metadata, Agent Removal, Node Purge, and Agent Attention Acknowledgment; it does not add remote control or the other deferred management pages.
+These are current-surface exclusions. §15.1–§15.3 already route Agent enrollment guidance, editable Agent metadata, Agent Removal, and Agent Attention Acknowledgment; the items below that remain out of the current surface are remote control and the other deferred management pages.
 
 - Agent, Server, SQLite, or evaluation implementation;
 - a duplicated full Node Detail inside Admin;
 - RPC Endpoint editing, RPC Endpoint failover, remote commands, restart, upgrade, Docker control, or terminal access;
 - TUI, arbitrary scripts, SQL/DSL alert rules, or remote-control UI;
-- Validator/Alert/Notification/Retention/Backup/Restore/Doctor/Node Transfer/People/Enrollment/Recovery/Rotation management pages (their Server/API operations exist but are not currently routed); Geo provider selection and the global Geo refresh are both routed on Settings;
+- Validator/Notification/Retention/Backup/Restore/Doctor/Node Transfer/People/Recovery/Rotation management pages (their Server/API operations exist but are not currently routed); the routed Agent enrollment/metadata/removal/attention surfaces (§15.1–§15.3) and the Incident history and detail pages (§15.6) are the standing exceptions, and Geo provider selection and the global Geo refresh are both routed on Settings;
 - raw Peer identity/addresses, complete Peer Snapshot browsing, multi-tenant, HA, PostgreSQL, SSO/OIDC/TOTP/WebAuthn;
 - runtime theme/script injection or a second frontend framework.
 
@@ -118,7 +118,8 @@ Admin groups:
 3. Nodes;
 4. Networks;
 5. Settings;
-6. Sessions and Audit.
+6. Incidents (the Alerts group; issue #203);
+7. Sessions and Audit.
 
 Admin covers configuration and diagnostics; it must not duplicate Home's full Node Detail card/chart deck. The Admin Node endpoint returns the full administrative `AdminNodeDetail` DTO (health, freshness, process/data/RPC/Sync/Consensus/Peer diagnostics, identity, high-watermark/resync, and transfer context); the current page renders the approved administrative/diagnostic subset and does not turn it into a second Home view.
 
@@ -175,8 +176,10 @@ Each page has a stable ID. IDs are semantic and do not prescribe React filenames
 | `PAGE-ADMIN-NETWORKS` | `/admin/networks` | Network Registry metadata and Nodes | Owner |
 | `PAGE-ADMIN-NETWORK-DETAIL` | `/admin/networks/:networkKey` | Expected identity, metadata, mismatch diagnostics | Owner |
 | `PAGE-ADMIN-SETTINGS` | `/admin/settings` | Global Block History window and Site Access Mode configuration | Owner |
+| `PAGE-ADMIN-INCIDENTS` | `/admin/alerts/incidents` | Alert Incident history with state, severity, subject, evidence and durable Owner acknowledgment | Owner |
+| `PAGE-ADMIN-INCIDENT-DETAIL` | `/admin/alerts/incidents/:incidentId` | One Incident occurrence: occurrence, acknowledgment, evaluation, suppressions and evidence | Owner |
 
-The table above is the complete set of concrete SPA page routes; unknown paths under `/admin` use the registered Admin wildcard fallback rather than a legacy page. The Server/Admin APIs additionally expose People, Validator management/links/analytics, Alerts, Notifications, Operations, Retention, Backups/Restore, Doctor, Node Transfer, and Agent recovery/credential operations; these are available DTO/operation surfaces, not current SPA pages. Geo provider status and selection are consumed by the Settings page.
+The table above is the complete set of concrete SPA page routes; unknown paths under `/admin` use the registered Admin wildcard fallback rather than a legacy page. The Server/Admin APIs additionally expose People, Validator management/links/analytics, Notifications, Operations, Retention, Backups/Restore, Doctor, Node Transfer, and Agent recovery/credential operations; these are available DTO/operation surfaces, not current SPA pages. Alert Rule, Silence and Maintenance Window management remain API-only surfaces; the Incident history pages above (issue #203) only read Incidents and record an Owner acknowledgment. Geo provider status and selection are consumed by the Settings page.
 
 The current SPA has no generic `returnTo`/`return_to` mutation contract. When a protected Home route sends a Guest to `/login`, it carries the internal router pathname as `location.state.from`; a successful login navigates back to that pathname, or `/` when absent. Admin mutations stay on their current route and invalidate/refetch authoritative data.
 
@@ -225,7 +228,7 @@ Where Home or Node Detail mark a Node by name, a two-state marker sits before th
 
 ### 5.5 Server-side state machines without current pages
 
-Alert Rule/Incident/Silence/Maintenance evaluation and long-running Operation states are implemented in the Server and exposed through Admin APIs, but the current SPA has no routed management pages for them. They remain independent of the WebUI's Node Health Summary; a future page must consume the typed DTOs rather than recreate those state machines in the browser.
+Alert Rule/Incident/Silence/Maintenance evaluation and long-running Operation states are implemented in the Server and exposed through Admin APIs. The read-side Incident history and detail pages, including the Owner acknowledgment, are routed per §15.6 (issue #203); Rule, Silence, and Maintenance management pages are still not routed, and no page resolves or suppresses the underlying state machines. They remain independent of the WebUI's Node Health Summary; a future page must consume the typed DTOs rather than recreate those state machines in the browser.
 
 ## 6. REST, query cache, and SSE
 
@@ -988,7 +991,7 @@ Changes to a settled contract require a new decision record and must update the 
 
 ## 15. Accepted Agent/Node management and Attention Acknowledgment (partially implemented)
 
-**Status:** Accepted through the management/Validator/acknowledgment design interview and final Owner approval; no implementation, route registration, generated API, data purge, or migration is delivered by this document update. The current routes and DTO limitations in §§4 and 8 remain factual baseline. This section supersedes their no-new-actions scope only for the accepted future controls below; it does not declare the deferred pages live. Implemented so far: the §15.1 Add Agent enrollment guidance and Server-backed display name/notes (`PAGE-ADMIN-ENROLL`, `PAGE-ADMIN-AGENT-DETAIL`, issue #169); the §15.2 explicit permanent Node Purge is delivered separately; the §15.2 explicit Agent Removal with owned-Node cascade is delivered (`PAGE-ADMIN-AGENT-DETAIL`, issue #171); and the §15.3 shared Agent Attention Acknowledgment is delivered (`PAGE-ADMIN-OVERVIEW`, `PAGE-ADMIN-AGENT-DETAIL`, issue #172). Automatic Validator identity and Current Validator Status are delivered by issue #173 (Public rendering consumes the Server-projected automatic correspondence with no manual role badge), and the one-time Validator model migration is delivered by issue #174 (the startup migration deletes the legacy manual Links and the old Validator snapshots/history/aggregates while preserving Node monitoring history, existing Incidents and Audit).
+**Status:** Accepted through the management/Validator/acknowledgment design interview and final Owner approval; no implementation, route registration, generated API, data purge, or migration is delivered by this document update. The current routes and DTO limitations in §§4 and 8 remain factual baseline. This section supersedes their no-new-actions scope only for the accepted future controls below; it does not declare the deferred pages live. Implemented so far: the §15.1 Add Agent enrollment guidance and Server-backed display name/notes (`PAGE-ADMIN-ENROLL`, `PAGE-ADMIN-AGENT-DETAIL`, issue #169); the §15.2 explicit permanent Node Purge is delivered separately; the §15.2 explicit Agent Removal with owned-Node cascade is delivered (`PAGE-ADMIN-AGENT-DETAIL`, issue #171); and the §15.3 shared Agent Attention Acknowledgment is delivered (`PAGE-ADMIN-OVERVIEW`, `PAGE-ADMIN-AGENT-DETAIL`, issue #172). Automatic Validator identity and Current Validator Status are delivered by issue #173 (Public rendering consumes the Server-projected automatic correspondence with no manual role badge), and the one-time Validator model migration is delivered by issue #174 (the startup migration deletes the legacy manual Links and the old Validator snapshots/history/aggregates while preserving Node monitoring history, existing Incidents and Audit); and the §15.6 routed Incident history list/detail with durable per-occurrence Acknowledgment is delivered (issue #203).
 
 Server ownership, lifecycle, data boundaries, and acceptance are in [main design §15](platpulse.md#accepted-management-target). [ADR 0004](../adr/0004-owner-removal-and-node-purge.md) explains irreversible removal; [ADR 0005](../adr/0005-automatic-validator-identity.md) explains automatic identity and the one-time Validator history reset. Preserve the Emerald shell, mobile behavior, and public/admin separation; this is not another visual migration.
 
@@ -1031,7 +1034,7 @@ Applies to `PAGE-ADMIN-OVERVIEW` and `PAGE-ADMIN-AGENT-DETAIL`:
 - Show Current Validator Status separately from Node Health and consensus participation. Preserve locked/exiting qualifiers when validity is confirmed, explicit non-current status after completed exit/authoritative absence, and Unknown/Stale when evidence cannot establish a fresh conclusion. Do not reintroduce manual role badges. Activity placement follows existing page composition; this does not authorize an unrelated Home redesign.
 - The one-time model migration clears old Validator Link/history/snapshot/daily/monthly data, not Node monitoring history. A temporarily Unknown or lower selection total is legitimate; no client fallback to old manual results, fabricated full-month coverage, or forced zero lifetime totals. See [Provider](validator-provider.md) and [metrics](validator-metrics.md) for the target evidence contract and pending primary-source verification.
 - Daily Node deletion does not clear independent Validator history, even after its last monitored Node is removed. Existing Incident evidence is retained and marked with deleted-subject context, excluded from current actionable problems, not relabeled as known recovery. Cancel unsent subject notifications; delivered messages cannot be recalled.
-- Current problems disappear from Attention when their predicates genuinely clear; historical prompts can remain until acknowledgment. Sustained known recovery resolves a durable Incident without deleting it. The current SPA has no full Incident history page and this scope adds none; do not imply history is displayed on a route that remains a fallback.
+- Current problems disappear from Attention when their predicates genuinely clear; historical prompts can remain until acknowledgment. Sustained known recovery resolves a durable Incident without deleting it. The routed Incident history page is delivered by §15.6 (issue #203); deleting a subject keeps the original Incident facts and open/resolved state, annotated rather than relabeled as recovery.
 
 ### 15.5 State, accessibility and target acceptance
 
@@ -1053,3 +1056,20 @@ The following extend the future acceptance matrix; they are not claims of implem
 | `SCN-AGENT-ATTENTION-BULK-RACE` | Agent Detail | Only displayed Agent evidence acknowledged; newly arriving evidence, unseen items and Node prompts survive; failure/conflict is visible |
 | `SCN-AUTO-VALIDATOR-PRESENTATION` | Home / Node diagnostics | Automatic correspondence, special states and stale/unknown remain explicit; no role/manual fallback or guessed lifetime zeros |
 | `SCN-MANAGEMENT-ACCESS-RESPONSIVE` | All affected pages | Owner-only controls, safe Public state, fixed viewports/themes, keyboard/touch/focus, error recovery and no primary overflow |
+| `SCN-INCIDENT-HISTORY` | Incidents / Incident Detail | One row per occurrence with Server-owned state/severity/subject/evidence; Unknown, Stale, disabled and deleted subjects are never shown as recovered |
+| `SCN-INCIDENT-ACK` | Incidents / Incident Detail | The first Owner confirmation is authoritative and shared; refresh, a second Owner, and a Server restart keep the same identity/time, and repeats or concurrent requests never replace the first |
+| `SCN-INCIDENT-ACK-RECURRENCE` | Incidents | A resolved occurrence keeps its acknowledgment; a genuinely recurring fault opens a new unacknowledged occurrence, and subject deletion stays distinct from recovery |
+| `SCN-INCIDENT-SUBJECT-SHORTCUT` | Node/Agent Detail / Incidents | Node and Agent detail carry a contextual shortcut into the Incident history narrowed to that exact subject key, and the active Subject key is visible and clearable |
+
+### 15.6 Incident history and durable acknowledgment (issue #203, delivered)
+
+Applies to `PAGE-ADMIN-INCIDENTS` and `PAGE-ADMIN-INCIDENT-DETAIL`:
+
+- The routed Incidents page lists one row per Incident occurrence with its Server-owned state, severity, subject, Rule key/version, sequence, opened/resolved/subject-deleted times, and durable acknowledgment; the row's disclosure shows that occurrence's durable acknowledgment and a link to inspect it, and the detail shows the full opened/resolved evidence plus the current Rule evaluation and the matching Silence/Maintenance suppressions. The WebUI rewrites no evidence, infers no cause, and never fabricates recovery for Unknown, Stale, disabled, or deleted subjects.
+- The list requests the newest 200 matching occurrences and says so on the page: a filter that still matches more than 200 occurrences cannot reach older rows until cursor pagination exists (issue #203 review C3).
+- The list accepts an exact `subject_key` (paired with `subject_kind`) narrowing. Node and Agent detail carry a contextual "Incidents for this Node/Agent" shortcut into `/admin/alerts/incidents?subject=<kind>&subject_key=<id>`, and the page shows the active Subject key as a clearable chip, so an Owner can move from an observed problem to that subject's Incident history (parent #202 Story 2; issue #203 review B2).
+- A long unbroken Owner username wraps inside its own list cell and detail paragraph rather than overflowing the page, verified at the 360/390 viewports (issue #203 review B1).
+- `Acknowledge` records the first successful Owner request as the durable, shared confirmation of that occurrence: who confirmed it and when. It does not resolve the Incident, mark the subject healthy, change recovery, or suppress notifications, and it stays separate from Agent Attention Acknowledgment.
+- The confirmation is reachable from the list and the detail, always behind an explicit confirmation step. Refresh, a second Owner, and a Server restart show the same authoritative identity and time; a repeat or concurrent request reports the first identity instead of replacing it, and the winner is visible to every Owner client.
+- A resolved occurrence keeps its acknowledgment. A genuinely recurring fault opens a new unacknowledged occurrence with its own sequence; Rule edits/disabling and subject deletion never silently resolve or acknowledge an Incident.
+- Only Owner authorization applies, through the existing CSRF/Origin boundary, with Audit; the confirmation is never stored in browser local storage.

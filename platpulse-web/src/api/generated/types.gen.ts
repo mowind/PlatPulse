@@ -1238,13 +1238,51 @@ export type HostDiagnostic = {
     updated_at: string;
 };
 
+/**
+ * The durable, shared Owner confirmation recorded against one Incident
+ * occurrence (parent #202, issue #203). The identity and time are the
+ * accountable facts: the first successful request is authoritative and later
+ * requests never overwrite them.
+ */
+export type IncidentAcknowledgment = {
+    acknowledgedAt: string;
+    acknowledgedByUserId?: string | null;
+    acknowledgedByUsername: string;
+};
+
+/**
+ * The authoritative result of an Owner acknowledgment request.
+ */
+export type IncidentAcknowledgmentResponse = {
+    acknowledgment: IncidentAcknowledgment;
+    /**
+     * Audit Event id of the first confirmation; absent on a no-op repeat.
+     */
+    auditEventId?: number | null;
+    incidentId: string;
+    /**
+     * True when this request recorded the acknowledgment; false when an
+     * earlier request had already confirmed the same Incident occurrence.
+     */
+    recorded: boolean;
+};
+
 export type IncidentDetail = {
+    acknowledgment?: null | IncidentAcknowledgment;
     evaluation?: null | RuleStateDto;
     incidentId: string;
     openedAt: string;
     openedEvidence: unknown;
     resolvedAt?: string | null;
     resolvedEvidence?: unknown;
+    /**
+     * Effective enabled state of the Incident's Rule for this subject, after
+     * Network/Node override resolution. `false` means the Rule is currently
+     * disabled: the evaluation row, when present, is the last recorded
+     * assessment and not a current one. `None` when the Rule or subject kind
+     * cannot be resolved.
+     */
+    ruleEnabled?: boolean | null;
     ruleKey: string;
     ruleVersion: number;
     sequence: number;
@@ -1261,6 +1299,7 @@ export type IncidentDetail = {
 };
 
 export type IncidentListItem = {
+    acknowledgment?: null | IncidentAcknowledgment;
     incidentId: string;
     openedAt: string;
     resolvedAt?: string | null;
@@ -3035,6 +3074,10 @@ export type AlertIncidentsData = {
          */
         subject_kind?: string;
         /**
+         * Filter by exact subject key
+         */
+        subject_key?: string;
+        /**
          * Maximum rows (1..=500)
          */
         limit?: number;
@@ -3075,6 +3118,29 @@ export type AlertIncidentDetailResponses = {
 };
 
 export type AlertIncidentDetailResponse = AlertIncidentDetailResponses[keyof AlertIncidentDetailResponses];
+
+export type AcknowledgeIncidentData = {
+    body?: never;
+    path: {
+        incident_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/alerts/incidents/{incident_id}/acknowledgments';
+};
+
+export type AcknowledgeIncidentErrors = {
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AcknowledgeIncidentError = AcknowledgeIncidentErrors[keyof AcknowledgeIncidentErrors];
+
+export type AcknowledgeIncidentResponses = {
+    200: IncidentAcknowledgmentResponse;
+};
+
+export type AcknowledgeIncidentResponse = AcknowledgeIncidentResponses[keyof AcknowledgeIncidentResponses];
 
 export type AlertMaintenanceData = {
     body?: never;

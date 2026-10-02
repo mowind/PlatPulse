@@ -814,6 +814,15 @@
             }
           },
           {
+            "name": "subject_key",
+            "in": "query",
+            "description": "Filter by exact subject key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "description": "Maximum rows (1..=500)",
@@ -872,6 +881,67 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/IncidentDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/alerts/incidents/{incident_id}/acknowledgments": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "PAGE-ADMIN-INCIDENT: record the Owner's durable confirmation of one\nIncident occurrence (parent #202, issue #203). The first successful request\nis authoritative; a repeat or concurrent request for the same Incident is a\nno-op that returns the stored identity and time. The acknowledgment is never\nretracted, does not resolve the Incident, and does not change health,\nrecovery, evaluation, or notification behavior. The durable row and its\nAudit Event commit in one transaction.",
+        "operationId": "acknowledge_incident",
+        "parameters": [
+          {
+            "name": "incident_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentAcknowledgmentResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
                 }
               }
             }
@@ -10291,6 +10361,57 @@
           }
         }
       },
+      "IncidentAcknowledgment": {
+        "type": "object",
+        "description": "The durable, shared Owner confirmation recorded against one Incident\noccurrence (parent #202, issue #203). The identity and time are the\naccountable facts: the first successful request is authoritative and later\nrequests never overwrite them.",
+        "required": [
+          "acknowledgedByUsername",
+          "acknowledgedAt"
+        ],
+        "properties": {
+          "acknowledgedAt": {
+            "type": "string"
+          },
+          "acknowledgedByUserId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "acknowledgedByUsername": {
+            "type": "string"
+          }
+        }
+      },
+      "IncidentAcknowledgmentResponse": {
+        "type": "object",
+        "description": "The authoritative result of an Owner acknowledgment request.",
+        "required": [
+          "incidentId",
+          "acknowledgment",
+          "recorded"
+        ],
+        "properties": {
+          "acknowledgment": {
+            "$ref": "#/components/schemas/IncidentAcknowledgment"
+          },
+          "auditEventId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Audit Event id of the first confirmation; absent on a no-op repeat."
+          },
+          "incidentId": {
+            "type": "string"
+          },
+          "recorded": {
+            "type": "boolean",
+            "description": "True when this request recorded the acknowledgment; false when an\nearlier request had already confirmed the same Incident occurrence."
+          }
+        }
+      },
       "IncidentDetail": {
         "type": "object",
         "required": [
@@ -10307,6 +10428,17 @@
           "suppressions"
         ],
         "properties": {
+          "acknowledgment": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IncidentAcknowledgment",
+                "description": "Present once an Owner durably confirmed this Incident occurrence."
+              }
+            ]
+          },
           "evaluation": {
             "oneOf": [
               {
@@ -10331,6 +10463,13 @@
             ]
           },
           "resolvedEvidence": {},
+          "ruleEnabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Effective enabled state of the Incident's Rule for this subject, after\nNetwork/Node override resolution. `false` means the Rule is currently\ndisabled: the evaluation row, when present, is the last recorded\nassessment and not a current one. `None` when the Rule or subject kind\ncannot be resolved."
+          },
           "ruleKey": {
             "type": "string"
           },
@@ -10383,6 +10522,17 @@
           "openedAt"
         ],
         "properties": {
+          "acknowledgment": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IncidentAcknowledgment",
+                "description": "Present once an Owner durably confirmed this Incident occurrence."
+              }
+            ]
+          },
           "incidentId": {
             "type": "string"
           },

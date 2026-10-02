@@ -17,7 +17,7 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use serde_json::Value;
-use sqlx::SqlitePool;
+use sqlx::{Column, Row, SqlitePool};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -493,6 +493,24 @@ async fn purge_cancels_unsent_notifications_and_annotates_incidents_without_fals
         .await
         .unwrap();
 
+    // An Owner acknowledgment recorded before deletion is a durable fact about
+    // the occurrence: the Purge annotates the Incident as subject-deleted but
+    // must never retract or rewrite the confirmation.
+    let response = harness
+        .send(admin_post(
+            "/api/admin/v1/alerts/incidents/inc-node/acknowledgments",
+            &owner,
+            "",
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let acknowledged_at: String = sqlx::query_scalar(
+        "SELECT acknowledged_at FROM incident_acknowledgments WHERE incident_id = 'inc-node'",
+    )
+    .fetch_one(harness.pool())
+    .await
+    .unwrap();
+
     purge_node(&harness, &owner, &node_id).await;
 
     // Unsent Deliveries are cancelled; the resolution Event with no
@@ -541,6 +559,16 @@ async fn purge_cancels_unsent_notifications_and_annotates_incidents_without_fals
         "an open Incident is never faked into resolved"
     );
 
+    // The acknowledgment survives the deletion unchanged.
+    let (ack_username, ack_at_after): (String, String) = sqlx::query_as(
+        "SELECT acknowledged_by_username, acknowledged_at FROM incident_acknowledgments WHERE incident_id = 'inc-node'",
+    )
+    .fetch_one(harness.pool())
+    .await
+    .unwrap();
+    assert_eq!(ack_username, "admin");
+    assert_eq!(ack_at_after, acknowledged_at);
+
     // The Node leaves current evaluation; other subjects keep theirs.
     let node_states: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM alert_rule_state WHERE subject_kind = 'node' AND subject_key = ?",
@@ -578,6 +606,11 @@ async fn purge_cancels_unsent_notifications_and_annotates_incidents_without_fals
         .expect("retained Incident evidence must still be listed");
     assert_eq!(listed["state"], "open");
     assert!(listed["subjectDeletedAt"].is_string());
+    assert_eq!(listed["acknowledgment"]["acknowledgedByUsername"], "admin");
+    assert_eq!(
+        listed["acknowledgment"]["acknowledgedAt"],
+        acknowledged_at.as_str()
+    );
 
     let rules = body_json(
         harness
@@ -756,4 +789,167 @@ async fn delivery_worker_never_hands_a_deleted_subjects_message_to_a_provider() 
     assert_eq!(deleted_state, "cancelled");
     assert_eq!(deleted_result.as_deref(), Some("cancelled_subject_deleted"));
     assert_eq!(delivery_state(&harness, &live_event).await.0, "succeeded");
+}
+
+async fn snapshot_table(pool: &SqlitePool, sql: &str) -> Vec<String> {
+    let rows = sqlx::query(sql).fetch_all(pool).await.unwrap();
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut fields = Vec::with_capacity(row.columns().len());
+        for (index, column) in row.columns().iter().enumerate() {
+            let value = match row.try_get::<Option<String>, _>(index) {
+                Ok(Some(text)) => text,
+                Ok(None) => "null".to_owned(),
+                Err(_) => match row.try_get::<i64, _>(index) {
+                    Ok(number) => number.to_string(),
+                    Err(_) => match row.try_get::<f64, _>(index) {
+                        Ok(number) => number.to_string(),
+                        Err(_) => "<unreadable>".to_owned(),
+                    },
+                },
+            };
+            fields.push(format!("{}={}", column.name(), value));
+        }
+        out.push(fields.join("|"));
+    }
+    out
+}
+
+/// Issue #203 review B3: acknowledging an Incident through the real router
+/// writes only the acknowledgment and its audit entry. Existing Rule State,
+/// Incidents, Notification Events, and Deliveries — including non-empty ones —
+/// are unchanged by the first request and by a repeat.
+#[tokio::test]
+async fn acknowledging_an_incident_leaves_existing_rows_untouched() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness).await;
+    seed_incident(
+        &harness,
+        "inc-ack",
+        "node.rpc_unreachable",
+        "node",
+        "node-ack",
+    )
+    .await;
+    seed_rule_state(&harness, "node.rpc_unreachable", "node", "node-ack").await;
+    let event = seed_event(
+        &harness,
+        Some("inc-ack"),
+        Some((SubjectKind::Node, "node-ack")),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE notification_deliveries SET state = 'succeeded', last_result = 'ok', next_attempt_at = NULL WHERE event_id = ?",
+    )
+    .bind(&event)
+    .execute(harness.pool())
+    .await
+    .unwrap();
+
+    let tables = [
+        "SELECT * FROM alert_rule_state ORDER BY rule_key, subject_kind, subject_key",
+        "SELECT * FROM alert_incidents ORDER BY incident_id",
+        "SELECT * FROM notification_events ORDER BY event_id",
+        "SELECT * FROM notification_deliveries ORDER BY delivery_id",
+    ];
+    let mut before = Vec::new();
+    for sql in tables {
+        before.push(snapshot_table(harness.pool(), sql).await);
+    }
+    assert!(!before[2].is_empty(), "the Event fixture must be non-empty");
+    assert!(
+        !before[3].is_empty(),
+        "the Delivery fixture must be non-empty"
+    );
+
+    let first = harness
+        .send(admin_post(
+            "/api/admin/v1/alerts/incidents/inc-ack/acknowledgments",
+            &owner,
+            "",
+        ))
+        .await;
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(body_json(first).await["recorded"], true);
+    let mut after_first = Vec::new();
+    for sql in tables {
+        after_first.push(snapshot_table(harness.pool(), sql).await);
+    }
+    assert_eq!(
+        before, after_first,
+        "the first acknowledgment changed durable rows it must not touch"
+    );
+
+    let repeat = harness
+        .send(admin_post(
+            "/api/admin/v1/alerts/incidents/inc-ack/acknowledgments",
+            &owner,
+            "",
+        ))
+        .await;
+    assert_eq!(repeat.status(), StatusCode::OK);
+    assert_eq!(body_json(repeat).await["recorded"], false);
+    let mut after_repeat = Vec::new();
+    for sql in tables {
+        after_repeat.push(snapshot_table(harness.pool(), sql).await);
+    }
+    assert_eq!(
+        before, after_repeat,
+        "the repeat acknowledgment changed durable rows it must not touch"
+    );
+
+    let acknowledgments: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM incident_acknowledgments WHERE incident_id = 'inc-ack'",
+    )
+    .fetch_one(harness.pool())
+    .await
+    .unwrap();
+    assert_eq!(acknowledgments, 1);
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events WHERE event_kind = 'incident_acknowledged' AND target_id = 'inc-ack'",
+    )
+    .fetch_one(harness.pool())
+    .await
+    .unwrap();
+    assert_eq!(audits, 1);
+}
+/// A failed effective-Rule lookup is a server failure, not an unknown state:
+/// the detail endpoint answers with a sanitized 503 and never leaks the
+/// SQLite error (issue #203 review C1/N3).
+#[tokio::test]
+async fn incident_detail_reports_an_effective_rule_lookup_failure_as_a_sanitized_503() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness).await;
+    seed_incident(
+        &harness,
+        "inc-lookup-fail",
+        "node.rpc_unreachable",
+        "node",
+        "node-lookup-fail",
+    )
+    .await;
+
+    // Simulate a database that cannot resolve the Node override layer.
+    sqlx::query("DROP TABLE alert_rule_overrides")
+        .execute(harness.pool())
+        .await
+        .unwrap();
+
+    let response = harness
+        .send(admin_get(
+            "/api/admin/v1/alerts/incidents/inc-lookup-fail",
+            &owner,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let value = body_json(response).await;
+    assert_eq!(value["error"]["code"], "unavailable");
+    assert_eq!(value["error"]["message"], "Server database is unavailable");
+    let rendered = value.to_string();
+    for leak in ["alert_rule_overrides", "no such table", "sqlx", "SQL"] {
+        assert!(
+            !rendered.contains(leak),
+            "the error envelope leaked an internal detail: {rendered}"
+        );
+    }
 }

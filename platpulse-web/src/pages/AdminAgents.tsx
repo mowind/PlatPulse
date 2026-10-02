@@ -634,6 +634,13 @@ export function AdminAgentDetail() {
           >
             All Agents
           </Link>{' '}
+          ·{' '}
+          <Link
+            className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
+            to={`/admin/alerts/incidents?subject=agent&subject_key=${encodeURIComponent(agentId)}`}
+          >
+            Incidents for this Agent
+          </Link>{' '}
           · identity, liveness, boot/report state, Inventory, credentials, and diagnostics
           stay separate.
         </p>

@@ -21,7 +21,7 @@ use thiserror::Error;
 pub static SERVER_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Server binary.
-pub const SERVER_SCHEMA_VERSION: i64 = 60;
+pub const SERVER_SCHEMA_VERSION: i64 = 61;
 
 /// The Server currently serializes all SQLite operations through one pool
 /// connection. Read scaling can be added with a concrete query need; it is
@@ -74,6 +74,7 @@ const REQUIRED_TABLES: &[&str] = &[
     "node_validator_identity_status",
     "deleted_nodes",
     "agent_attention_acknowledgments",
+    "incident_acknowledgments",
     "current_validator_insights",
     "validator_ranking_history",
     "validator_counter_history",
@@ -270,6 +271,11 @@ impl ServerDatabase {
                 .await
                 .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))?;
             crate::alerts::seed_catalog(&mut conn)
+                .await
+                .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))?;
+            // A restart is an observation gap; no recovery window may be
+            // carried across it (issue #203 review B2).
+            crate::alerts::invalidate_recovery_windows_on_startup(&mut conn)
                 .await
                 .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))
         }

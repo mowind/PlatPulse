@@ -536,6 +536,11 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
     // The panels arrive with the authoritative REST data.
     await screen.findByText('Identity')
+    // Contextual shortcut from an Agent detail to its Incident history
+    // (issue #202 Story 2): a bound subject filter, not a generic entry.
+    expect(
+      screen.getByRole('link', { name: 'Incidents for this Agent' }).getAttribute('href'),
+    ).toBe(`/admin/alerts/incidents?subject=agent&subject_key=${AGENT_ID}`)
     for (const heading of ['Overview', 'Runtime and reporting', 'Credentials', 'Diagnostics', 'Audit']) {
       expect(screen.getByRole('heading', { level: 2, name: heading })).toBeTruthy()
     }

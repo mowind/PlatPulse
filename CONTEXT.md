@@ -61,7 +61,7 @@ A Network-scoped PlatON validator identity keyed by the registered Network and i
 _Avoid_: PlatPulse Node, Agent validator
 
 **Node Validator Link**:
-An automatically identified relationship between a monitored Node and a Validator with the same Network and observed chain node identifier. It expresses identity correspondence, not a manually assigned primary, standby, or observer role or proof of ownership.
+An automatically identified relationship between a monitored Node and a Validator with the same Network and observed chain node identifier, whose intervals describe Server-recorded correspondence rather than actual on-chain key-change times. It expresses identity correspondence, not a manually assigned primary, standby, or observer role, proof of ownership, or continuous identity evidence through missing observations.
 _Avoid_: Manual validator binding, Positional mapping, Inferred validator ownership
 
 **Current Validator Status**:
@@ -335,6 +335,10 @@ _Avoid_: User script, Agent alert
 **Alert Incident**:
 A durable occurrence opened after an Alert Rule remains firing and resolved only after known recovery conditions hold. Unknown input, Attention Acknowledgment, and removal of the monitored subject do not establish recovery or erase the Incident's evidence.
 _Avoid_: Notification message, Current health color
+
+**Incident Acknowledgment**:
+An Owner's durable, shared, non-retractable record that one Alert Incident occurrence has been reviewed, identifying who acknowledged it and when; it remains part of that occurrence's history after recovery and does not carry over to a new occurrence. It is separate from Incident recovery, Agent Attention Acknowledgment, and notification suppression; acknowledging an Incident neither establishes recovery nor stops notifications.
+_Avoid_: Incident resolution, Attention Acknowledgment, Silence, Health override
 
 **Notification Event**:
 A durable consequence of an Incident or scheduled summary transition that creates one or more idempotent delivery rows in the same Server transaction.

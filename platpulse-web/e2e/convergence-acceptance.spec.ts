@@ -45,6 +45,11 @@ const MVP_ADMIN_SECTIONS: Array<{
     primaryHeading: 'History Window',
   },
   {
+    link: 'Incidents',
+    url: '/admin/alerts/incidents',
+    heading: 'Incidents',
+  },
+  {
     link: 'Sessions',
     url: '/admin/access/sessions',
     heading: 'Sessions',
@@ -66,7 +71,6 @@ const REMOVED_ADMIN_LABELS = [
   'Validators',
   'People',
   'Alert Rules',
-  'Incidents',
   'Silences',
   'Maintenance',
   'Deliveries',
@@ -93,7 +97,6 @@ const REMOVED_ADMIN_ROUTES: Array<{ route: string; heading?: string | RegExp }> 
   { route: '/admin/validators/v-1', heading: /Validators/ },
   { route: '/admin/access/people', heading: 'People' },
   { route: '/admin/alerts/rules', heading: 'Alert Rules' },
-  { route: '/admin/alerts/incidents', heading: 'Incidents' },
   { route: '/admin/alerts/silences', heading: 'Silences' },
   { route: '/admin/alerts/maintenance', heading: 'Maintenance Windows' },
   { route: '/admin/alerts/deliveries', heading: 'Deliveries' },
@@ -294,7 +297,7 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
       await openAdminNav(page)
     }
 
-    // The MVP nav holds exactly the seven retained groups and nothing else.
+    // The MVP nav holds exactly the eight retained groups and nothing else.
     // Re-open the drawer on touch viewports so the closed navigation cannot
     // leave the accessibility tree mid-transition during the assertion.
     await expect(adminNav.getByRole('link')).toHaveCount(MVP_ADMIN_SECTIONS.length)

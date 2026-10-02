@@ -486,9 +486,9 @@ for (const theme of ['light', 'dark'] as const) {
     const adminCard = page.locator('#network-create-form')
     await expect(adminCard).toBeVisible({ timeout: 15_000 })
     await expect(adminCard).toHaveCSS('font-family', font)
-    // Admin panels now use Emerald's single card surface too, so they
-    // resolve to the same 60% background the public cards do (deviation 2).
-    await expectComputedColor(adminCard, 'background-color', background)
+    // Static read-only Admin panels use the non-hovering card surface (issue
+    // #199), so they resolve to the 50% background tier (deviation 2).
+    await expectComputedColor(adminCard, 'background-color', background50)
     // Emerald cards are borderless - its own components pass border-none - while
     // the retired Admin panel carried a 1px border. Asserting all four sides is
     // stronger than the single-side colour check this replaces.

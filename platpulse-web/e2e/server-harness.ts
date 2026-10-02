@@ -24,6 +24,9 @@ import { dirname, join } from 'node:path'
 
 export const HARNESS_OWNER_USERNAME = 'admin'
 export const HARNESS_OWNER_PASSWORD = 'platpulse-harness-admin-2026'
+/** A second Owner account: proves first-write-wins is shared across Owners. */
+export const HARNESS_SECOND_OWNER_USERNAME = 'owner-two'
+export const HARNESS_SECOND_OWNER_PASSWORD = 'platpulse-harness-owner-two-2026'
 
 // The report fixture declares the `platon-mainnet` key but a genesis hash that
 // deliberately contradicts the Registry tuple, exactly like the Rust transfer
@@ -51,6 +54,25 @@ export interface EnrolledAgent {
 export interface DisposableServer {
   /** Origin the disposable Server listens on. */
   readonly baseUrl: string
+  /** Absolute temporary state directory; {@link dispose} deletes it. */
+  readonly stateDir: string
+  /** Absolute path of the disposable SQLite database. */
+  readonly dbPath: string
+  /**
+   * POST the bodyless acknowledgment route with the Owner session, returning
+   * the status and parsed body so a test can prove first-write-wins without
+   * driving the UI.
+   */
+  acknowledgeIncident(incidentId: string): Promise<{ status: number; body: unknown }>
+  /**
+   * POST the same bodyless acknowledgment route as a different Owner account,
+   * so a test can prove the first confirmation is shared across Owners.
+   */
+  acknowledgeIncidentAs(
+    username: string,
+    password: string,
+    incidentId: string,
+  ): Promise<{ status: number; body: unknown }>
   /** Mint an Enrollment Token and exchange it for a real Agent credential. */
   enrollAgent(): Promise<EnrolledAgent>
   /**
@@ -166,13 +188,27 @@ async function readJson(response: Response): Promise<unknown> {
   return JSON.parse(text) as unknown
 }
 
+export interface DisposableServerOptions {
+  /**
+   * SQL applied while the database is closed, before the Server starts. Seed
+   * here rather than through {@link DisposableServer.execSql}: an external
+   * SQLite connection that closes against a running WAL Server unlinks the
+   * `-wal`/`-shm` sidecars and the live Server then loses un-checkpointed
+   * rows (Sessions), failing closed with 401/503 at random.
+   */
+  seedSql?: string
+}
+
 /** Boot a disposable Server; delete it with {@link DisposableServer.dispose}. */
-export async function startDisposableServer(): Promise<DisposableServer> {
+export async function startDisposableServer(
+  options: DisposableServerOptions = {},
+): Promise<DisposableServer> {
   ensureBuildInputs()
 
   const port = await freePort()
   const baseUrl = `http://127.0.0.1:${port}`
   const stateDir = mkdtempSync(join(tmpdir(), 'platpulse-e2e-disposable-'))
+  const dbPath = join(stateDir, 'platpulse.db')
   const logs: string[] = []
   let child: ChildProcess | undefined
 
@@ -205,7 +241,7 @@ export async function startDisposableServer(): Promise<DisposableServer> {
       configPath,
       [
         `state_dir = "${stateDir}"`,
-        `db_path = "${join(stateDir, 'platpulse.db')}"`,
+        `db_path = "${dbPath}"`,
         `pepper_file = "${join(stateDir, 'server-pepper')}"`,
         `backup_dir = "${backupDir}"`,
         `web_root = "${WEB_ROOT}"`,
@@ -239,6 +275,34 @@ export async function startDisposableServer(): Promise<DisposableServer> {
       ['owner', 'create', '--config', configPath, '--username', HARNESS_OWNER_USERNAME],
       `${HARNESS_OWNER_PASSWORD}\n`,
     )
+    runCli(
+      ['owner', 'create', '--config', configPath, '--username', HARNESS_SECOND_OWNER_USERNAME],
+      `${HARNESS_SECOND_OWNER_PASSWORD}\n`,
+    )
+
+    const execSql = async (sql: string): Promise<void> => {
+      try {
+        execFileSync(
+          'python3',
+          [
+            '-c',
+            'import sqlite3, sys; con = sqlite3.connect(sys.argv[1]); con.executescript(sys.stdin.read()); con.commit(); con.close()',
+            dbPath,
+          ],
+          { input: sql, stdio: ['pipe', 'pipe', 'pipe'] },
+        )
+      } catch (error) {
+        const failure = error as { stderr?: Buffer; stdout?: Buffer; message: string }
+        throw new Error(
+          `seeding the disposable SQLite database failed: ${failure.stderr?.toString().trim() || failure.message}`,
+          { cause: error },
+        )
+      }
+    }
+
+    if (options.seedSql !== undefined) {
+      await execSql(options.seedSql)
+    }
 
     const spawnServe = async (): Promise<ChildProcess> => {
       const serverProcess = spawn(SERVER_BINARY, ['serve', '--config', configPath], {
@@ -267,19 +331,19 @@ export async function startDisposableServer(): Promise<DisposableServer> {
 
     child = await spawnServe()
 
-    const login = async () => {
+    const loginAs = async (username: string, password: string) => {
       const response = await fetch(`${baseUrl}/api/public/v1/login`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', origin: baseUrl },
-        body: JSON.stringify({
-          username: HARNESS_OWNER_USERNAME,
-          password: HARNESS_OWNER_PASSWORD,
-        }),
+        body: JSON.stringify({ username, password }),
       })
-      if (!response.ok) throw new Error(`harness login failed: ${response.status}`)
+      if (!response.ok) {
+        throw new Error(`harness login failed for ${username}: ${response.status}`)
+      }
       const body = (await readJson(response)) as { csrfToken: string }
       return { cookie: sessionCookie(response), csrf: body.csrfToken }
     }
+    const login = () => loginAs(HARNESS_OWNER_USERNAME, HARNESS_OWNER_PASSWORD)
 
     const adminRequest = async (
       method: 'GET' | 'POST',
@@ -345,8 +409,37 @@ export async function startDisposableServer(): Promise<DisposableServer> {
       return response.body
     }
 
+    const acknowledgeIncident = async (
+      incidentId: string,
+    ): Promise<{ status: number; body: unknown }> =>
+      adminRequest(
+        'POST',
+        `/api/admin/v1/alerts/incidents/${incidentId}/acknowledgments`,
+      )
+
+    /** Acknowledge as a specific Owner account, without the WebUI. */
+    const acknowledgeIncidentAs = async (
+      username: string,
+      password: string,
+      incidentId: string,
+    ): Promise<{ status: number; body: unknown }> => {
+      const { cookie, csrf } = await loginAs(username, password)
+      const response = await fetch(
+        `${baseUrl}/api/admin/v1/alerts/incidents/${incidentId}/acknowledgments`,
+        {
+          method: 'POST',
+          headers: { cookie, origin: baseUrl, 'x-csrf-token': csrf },
+        },
+      )
+      return { status: response.status, body: await readJson(response) }
+    }
+
     return {
       baseUrl,
+      stateDir,
+      dbPath,
+      acknowledgeIncident,
+      acknowledgeIncidentAs,
       enrollAgent,
       submitReport,
       expectAdminGet,

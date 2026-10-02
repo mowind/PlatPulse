@@ -1,4 +1,4 @@
-import { Menu, LayoutDashboard, Cpu, Server, Network, Settings, PanelsTopLeft, ListChecks } from 'lucide-react'
+import { Menu, LayoutDashboard, Cpu, Server, Network, Settings, PanelsTopLeft, ListChecks, TriangleAlert } from 'lucide-react'
 import BackgroundDecoration from '../components/BackgroundDecoration'
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link, NavLink, Outlet, useOutletContext } from 'react-router'
@@ -263,6 +263,19 @@ export default function AdminLayout() {
             Settings
           </NavLink>
           <p className="px-3 pt-3 pb-1 text-xs font-medium tracking-wider text-muted-foreground">
+            Alerts
+          </p>
+          <NavLink
+            to="/admin/alerts/incidents"
+            onClick={closeNav}
+            className={({ isActive }) => cn(NAV_LINK, isActive && NAV_LINK_ACTIVE)}
+          >
+            <span data-slot="admin-nav-icon" className="flex w-6 shrink-0 justify-center" aria-hidden="true">
+              <TriangleAlert size={18} strokeWidth={2} data-icon="TriangleAlert" />
+            </span>
+            Incidents
+          </NavLink>
+          <p className="px-3 pt-3 pb-1 text-xs font-medium tracking-wider text-muted-foreground">
             Access
           </p>
           <NavLink
@@ -287,9 +300,10 @@ export default function AdminLayout() {
             </span>
             Audit
           </NavLink>
-          {/* MVP Admin surface (issue #92): deferred groups (alerts,
-              operations, data/maintenance, validators, people, transfer,
-              enrollment/recovery/rotation) are not linked here. */}
+          {/* MVP Admin surface (issue #92): deferred groups (alert rules,
+              Silences/Maintenance, operations, data/maintenance, validators,
+              people, transfer, enrollment/recovery/rotation) are not linked
+              here. Incidents (issue #203) is the first Alerts entry. */}
         </nav>
         <div
           data-slot="admin-nav-scrim"
