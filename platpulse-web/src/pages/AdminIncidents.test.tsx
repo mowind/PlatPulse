@@ -51,7 +51,13 @@ const RESOLVED_INCIDENT = {
 
 const OPEN_INCIDENT_DETAIL = {
   ...OPEN_INCIDENT,
-  ruleEnabled: true,
+  currentRule: {
+    ruleKey: 'node.rpc_unreachable',
+    enabled: true,
+    severity: 'warning',
+    version: 1,
+    condition: { for_secs: 60, recovery_for_secs: 60 },
+  },
   openedEvidence: { input_kind: 'boolean', input_detail: 'connect refused' },
   resolvedEvidence: null,
   evaluation: {
@@ -362,7 +368,13 @@ describe('PAGE-ADMIN-INCIDENTS (Incident history)', () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       ['/api/admin/v1/alerts/incidents/' + OPEN_INCIDENT_ID]: () =>
-        jsonResponse({ ...OPEN_INCIDENT_DETAIL, ruleEnabled: false }, 200),
+        jsonResponse(
+          {
+            ...OPEN_INCIDENT_DETAIL,
+            currentRule: { ...OPEN_INCIDENT_DETAIL.currentRule, enabled: false, version: 2 },
+          },
+          200,
+        ),
     })
     renderAt('/admin/alerts/incidents/' + OPEN_INCIDENT_ID)
 
@@ -434,7 +446,7 @@ describe('PAGE-ADMIN-INCIDENTS (Incident history)', () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       ['/api/admin/v1/alerts/incidents/' + OPEN_INCIDENT_ID]: () =>
-        jsonResponse({ ...OPEN_INCIDENT_DETAIL, ruleEnabled: null }, 200),
+        jsonResponse({ ...OPEN_INCIDENT_DETAIL, currentRule: null }, 200),
     })
     renderAt('/admin/alerts/incidents/' + OPEN_INCIDENT_ID)
 

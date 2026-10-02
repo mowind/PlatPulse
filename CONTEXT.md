@@ -340,6 +340,22 @@ _Avoid_: Notification message, Current health color
 An Owner's durable, shared, non-retractable record that one Alert Incident occurrence has been reviewed, identifying who acknowledged it and when; it remains part of that occurrence's history after recovery and does not carry over to a new occurrence. It is separate from Incident recovery, Agent Attention Acknowledgment, and notification suppression; acknowledging an Incident neither establishes recovery nor stops notifications.
 _Avoid_: Incident resolution, Attention Acknowledgment, Silence, Health override
 
+**Rule Override**:
+A Server-owned, per-scope narrowing of one Alert Rule, limited to Network and Node scope. Each unset field inherits the baseline (or an outer scope) instead of repeating it, and the most specific set value wins.
+_Avoid_: Arbitrary Agent or Host override, Copied baseline value
+
+**Effective Rule Configuration**:
+The enabled flag, severity, and condition a subject actually evaluates under after its baseline and Network and Node overrides are composed, together with the composed version those values came from. It is projected separately from an Alert Incident opening rule version and opened evidence, and an unresolvable configuration is unknown rather than disabled, recovered, or healthy.
+_Avoid_: Opening rule version, Current health state
+
+**Rule Version Conflict**:
+The Server rejection (409, code alert_rule_version_conflict) of a save whose expected version no longer matches the stored composed version. The save writes nothing, and the Owner must reload the current configuration and review before saving again.
+_Avoid_: Merge conflict, Last-write-wins
+
+**Rule Preview**:
+A non-committing evaluation of an unsaved Alert Rule draft against the eligible subjects that reports each projected state and whether it would fire. It creates, resolves, and acknowledges nothing and promises no immediate Incident.
+_Avoid_: Dry-run save, Guaranteed Incident
+
 **Notification Event**:
 A durable consequence of an Incident or scheduled summary transition that creates one or more idempotent delivery rows in the same Server transaction.
 _Avoid_: Direct provider call, Alert incident

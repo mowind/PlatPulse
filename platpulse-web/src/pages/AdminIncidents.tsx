@@ -885,6 +885,12 @@ export function AdminIncidentDetailPage() {
 
   const incident: IncidentDetail = query.data
   const evaluation = incident.evaluation ?? null
+  // The current effective Rule configuration, resolved through the baseline and
+  // any Network/Node override. It is deliberately separate from the opening
+  // rule version and evidence: null means "unknown", never "disabled", and a
+  // later Rule edit or disable never rewrites the opening facts.
+  const currentRule = incident.currentRule ?? null
+  const ruleEnabled: boolean | null = currentRule === null ? null : currentRule.enabled
   const acknowledgment = ackOverrides[incident.incidentId] ?? incident.acknowledgment ?? null
 
   return (
@@ -936,6 +942,45 @@ export function AdminIncidentDetailPage() {
           occurrence with its own sequence and its own unacknowledged record.
         </p>
       </CardX>
+      <CardX size="medium" className={CARD_SURFACE} title="Current Rule configuration">
+        {currentRule ? (
+          <>
+            <DetailList>
+              <DetailItem label="Rule">
+                <Link
+                  className="underline-offset-4 hover:underline"
+                  to={'/admin/alerts/rules/' + encodeURIComponent(currentRule.ruleKey)}
+                >
+                  <span className="break-all">{currentRule.ruleKey}</span>
+                </Link>
+              </DetailItem>
+              <DetailItem label="Current effective version">v{currentRule.version}</DetailItem>
+              <DetailItem label="Current enabled">{currentRule.enabled ? 'Enabled' : 'Disabled'}</DetailItem>
+              <DetailItem label="Current effective severity">{severityLabel(currentRule.severity)}</DetailItem>
+              <DetailItem label="Current effective condition">
+                for {currentRule.condition.for_secs}s · recovery{' '}
+                {currentRule.condition.recovery_for_secs}s
+                {currentRule.condition.threshold == null
+                  ? ''
+                  : ' · threshold ' + currentRule.condition.threshold}
+              </DetailItem>
+            </DetailList>
+            <p className="mt-3 text-xs text-muted-foreground">
+              This is the configuration the Server resolves for this subject now, applying the
+              baseline and then any Network/Node override, most specific winning. It is separate from
+              the opening rule version (v{incident.ruleVersion}) and the opened evidence: editing or
+              disabling the Rule never rewrites the opening facts and never clears the
+              acknowledgment.
+            </p>
+          </>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            The current effective Rule configuration could not be resolved for this subject. This is
+            reported as unknown — never as a disabled Rule, a recovered subject, or an escalation.
+            The opening rule version (v{incident.ruleVersion}) and its evidence are unaffected.
+          </p>
+        )}
+      </CardX>
       <CardX size="medium" className={CARD_SURFACE} title="Acknowledgment">
         <IncidentAcknowledgmentPanel
           key={incident.incidentId}
@@ -951,14 +996,14 @@ export function AdminIncidentDetailPage() {
       <CardX size="medium" className={CARD_SURFACE} title="Evaluation">
         {evaluation ? (
           <>
-            {incident.ruleEnabled === false && (
+            {ruleEnabled === false && (
               <p className="mb-3 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                 <StatusBadge status="Rule disabled" tone="neutral" />
                 This Rule is disabled, so the values below are its last recorded assessment
                 ({formatObservedAt(evaluation.lastEvaluatedAt)}), not the current Rule state.
               </p>
             )}
-            {incident.ruleEnabled == null && (
+            {ruleEnabled == null && (
               <p className="mb-3 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                 <StatusBadge status="Current Rule state unknown" tone="neutral" />
                 The current Rule state could not be resolved for this subject, so the values below
@@ -969,9 +1014,9 @@ export function AdminIncidentDetailPage() {
             <DetailList>
               <DetailItem label="Rule state">{evaluation.state}</DetailItem>
               <DetailItem label="Evaluation available">
-                {incident.ruleEnabled === false
+                {ruleEnabled === false
                   ? 'Not currently — the Rule is disabled'
-                  : incident.ruleEnabled == null
+                  : ruleEnabled == null
                     ? 'Unknown — the current Rule state could not be resolved'
                     : evaluation.evaluationUnavailable
                       ? 'No — evaluation is unavailable'
@@ -990,9 +1035,9 @@ export function AdminIncidentDetailPage() {
               <DetailItem label="Open Incidents for this subject">{evaluation.openIncidents}</DetailItem>
             </DetailList>
             <p className="mt-3 text-xs text-muted-foreground">
-              {incident.ruleEnabled === false
+              {ruleEnabled === false
                 ? 'A disabled Rule receives no fresh evidence, so these values are the last recorded assessment — never a claim that the subject recovered.'
-                : incident.ruleEnabled == null
+                : ruleEnabled == null
                   ? 'The current Rule state could not be resolved, so these values are the last recorded assessment and may not describe the present.'
                   : 'The evaluation is the current Rule state, not the historical trigger for this occurrence. An unavailable evaluation is reported as unavailable and never as a recovered subject.'}
             </p>

@@ -746,6 +746,12 @@ export type AlertRuleSummary = {
 export type AlertRuleUpdateRequest = {
     condition?: null | RuleCondition;
     enabled?: boolean | null;
+    /**
+     * Version of the Rule that this edit was composed against. The save is
+     * rejected when it no longer matches the stored version (issue #204,
+     * Story 19): a stale tab can never silently overwrite a newer edit.
+     */
+    expectedVersion: number;
     severity?: string | null;
 };
 
@@ -979,6 +985,20 @@ export type DoctorCheckDto = {
 export type DoctorOverview = {
     checks: Array<DoctorCheckDto>;
     lastRun?: null | OperationSummary;
+};
+
+/**
+ * The Rule configuration that currently applies to one subject after
+ * Network/Node override resolution (issue #204, Story 20). This is the
+ * current effective configuration and is deliberately separate from the
+ * Incident's immutable opening rule version and evidence.
+ */
+export type EffectiveRuleDto = {
+    condition: RuleCondition;
+    enabled: boolean;
+    ruleKey: string;
+    severity: string;
+    version: number;
 };
 
 /**
@@ -1269,20 +1289,13 @@ export type IncidentAcknowledgmentResponse = {
 
 export type IncidentDetail = {
     acknowledgment?: null | IncidentAcknowledgment;
+    currentRule?: null | EffectiveRuleDto;
     evaluation?: null | RuleStateDto;
     incidentId: string;
     openedAt: string;
     openedEvidence: unknown;
     resolvedAt?: string | null;
     resolvedEvidence?: unknown;
-    /**
-     * Effective enabled state of the Incident's Rule for this subject, after
-     * Network/Node override resolution. `false` means the Rule is currently
-     * disabled: the evaluation row, when present, is the last recorded
-     * assessment and not a current one. `None` when the Rule or subject kind
-     * cannot be resolved.
-     */
-    ruleEnabled?: boolean | null;
     ruleKey: string;
     ruleVersion: number;
     sequence: number;
@@ -2555,6 +2568,11 @@ export type RuleOverrideResponse = {
 export type RuleOverrideUpsertRequest = {
     condition?: null | RuleCondition;
     enabled?: boolean | null;
+    /**
+     * Version of the Rule that this override edit was composed against. The
+     * save is rejected when the Rule has changed since (issue #204).
+     */
+    expectedVersion: number;
     scopeKind: string;
     scopeValue: string;
     severity?: string | null;
@@ -3284,6 +3302,7 @@ export type UpdateAlertRuleData = {
 export type UpdateAlertRuleErrors = {
     400: ApiErrorBody;
     404: ApiErrorBody;
+    409: ApiErrorBody;
     503: ApiErrorBody;
 };
 
@@ -3307,6 +3326,7 @@ export type UpsertRuleOverrideData = {
 export type UpsertRuleOverrideErrors = {
     400: ApiErrorBody;
     404: ApiErrorBody;
+    409: ApiErrorBody;
     503: ApiErrorBody;
 };
 

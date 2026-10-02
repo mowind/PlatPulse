@@ -190,6 +190,10 @@ pub struct AlertRuleDetail {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AlertRuleUpdateRequest {
+    /// Version of the Rule that this edit was composed against. The save is
+    /// rejected when it no longer matches the stored version (issue #204,
+    /// Story 19): a stale tab can never silently overwrite a newer edit.
+    pub expected_version: i64,
     pub enabled: Option<bool>,
     pub severity: Option<String>,
     pub condition: Option<RuleCondition>,
@@ -202,9 +206,27 @@ pub struct AlertRuleUpdateResponse {
     pub audit_event_id: i64,
 }
 
+/// Transactional outcome of a version-checked Rule edit (issue #204).
+enum RuleUpdateOutcome {
+    Updated(Box<AlertRuleDetail>),
+    NotFound,
+    /// The declared expectedVersion no longer matches the stored version.
+    StaleVersion,
+}
+
+/// Transactional outcome of a version-checked override upsert.
+enum RuleOverrideOutcome {
+    Updated(Vec<RuleOverrideDto>),
+    NotFound,
+    StaleVersion,
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuleOverrideUpsertRequest {
+    /// Version of the Rule that this override edit was composed against. The
+    /// save is rejected when the Rule has changed since (issue #204).
+    pub expected_version: i64,
     pub scope_kind: String,
     pub scope_value: String,
     pub enabled: Option<bool>,
@@ -348,6 +370,20 @@ pub struct MaintenanceFilters {
     pub status: Option<String>,
 }
 
+/// The Rule configuration that currently applies to one subject after
+/// Network/Node override resolution (issue #204, Story 20). This is the
+/// current effective configuration and is deliberately separate from the
+/// Incident's immutable opening rule version and evidence.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveRuleDto {
+    pub rule_key: String,
+    pub enabled: bool,
+    pub severity: String,
+    pub condition: RuleCondition,
+    pub version: i64,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct IncidentDetail {
@@ -367,12 +403,13 @@ pub struct IncidentDetail {
     pub opened_evidence: serde_json::Value,
     pub resolved_evidence: Option<serde_json::Value>,
     pub evaluation: Option<RuleStateDto>,
-    /// Effective enabled state of the Incident's Rule for this subject, after
-    /// Network/Node override resolution. `false` means the Rule is currently
-    /// disabled: the evaluation row, when present, is the last recorded
-    /// assessment and not a current one. `None` when the Rule or subject kind
-    /// cannot be resolved.
-    pub rule_enabled: Option<bool>,
+    /// Current effective Rule configuration for this subject, after
+    /// Network/Node override resolution (issue #204, Story 20). None when the
+    /// Rule or subject kind cannot be resolved. A disabled current Rule means
+    /// the evaluation row, when present, is the last recorded assessment
+    /// rather than a current one; this never rewrites the Incident's opening
+    /// rule version or evidence.
+    pub current_rule: Option<EffectiveRuleDto>,
     pub suppressions: Vec<SuppressionMatch>,
     /// Present once an Owner durably confirmed this Incident occurrence.
     pub acknowledgment: Option<IncidentAcknowledgment>,
@@ -851,7 +888,7 @@ pub(crate) async fn alert_rule_detail(
     path = "/api/admin/v1/alerts/rules/{rule_key}",
     tag = "admin",
     request_body = AlertRuleUpdateRequest,
-    responses((status = 200, body = AlertRuleUpdateResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+    responses((status = 200, body = AlertRuleUpdateResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn update_alert_rule(
     State(state): State<AppState>,
@@ -925,12 +962,18 @@ pub(crate) async fn update_alert_rule(
             );
         }
     };
-    let outcome: Result<Option<AlertRuleDetail>, AlertError> = async {
+    let outcome: Result<RuleUpdateOutcome, AlertError> = async {
         let Some((current_enabled, current_severity, current_version, current_condition, _, _)) =
             load_rule_row(&mut *tx, &rule_key).await?
         else {
-            return Ok(None);
+            return Ok(RuleUpdateOutcome::NotFound);
         };
+        // Version-safe edit (issue #204, Story 19): reject a save composed
+        // against a version that has since changed instead of overwriting the
+        // newer configuration. The Owner must refetch and review again.
+        if body.expected_version != current_version {
+            return Ok(RuleUpdateOutcome::StaleVersion);
+        }
         let new_version = current_version + 1;
         let next_enabled = body.enabled.unwrap_or(current_enabled);
         let next_severity = body.severity.unwrap_or(current_severity);
@@ -998,7 +1041,7 @@ pub(crate) async fn update_alert_rule(
             .map(|(_, _, count)| *count)
             .sum();
         let definition = catalog_rule(&rule_key).expect("validated");
-        Ok(Some(AlertRuleDetail {
+        Ok(RuleUpdateOutcome::Updated(Box::new(AlertRuleDetail {
             rule_key: rule_key.clone(),
             subject_kind: definition.subject_kind.as_str().to_owned(),
             enabled: next_enabled,
@@ -1012,11 +1055,11 @@ pub(crate) async fn update_alert_rule(
             overrides,
             states,
             open_incidents,
-        }))
+        })))
     }
     .await;
     match outcome {
-        Ok(Some(detail)) => {
+        Ok(RuleUpdateOutcome::Updated(detail)) => {
             let audit_event_id: i64 = match sqlx::query_scalar("SELECT last_insert_rowid()")
                 .fetch_one(&mut *tx)
                 .await
@@ -1041,18 +1084,27 @@ pub(crate) async fn update_alert_rule(
             }
             state.admin_realtime().publish("alerts", None::<String>, 0);
             Json(AlertRuleUpdateResponse {
-                rule: detail,
+                rule: *detail,
                 audit_event_id,
             })
             .into_response()
         }
-        Ok(None) => {
+        Ok(RuleUpdateOutcome::NotFound) => {
             let _ = tx.rollback().await;
             mutation_error(
                 &request_id.0,
                 StatusCode::NOT_FOUND,
                 "alert_rule_not_found",
                 "unknown alert rule",
+            )
+        }
+        Ok(RuleUpdateOutcome::StaleVersion) => {
+            let _ = tx.rollback().await;
+            mutation_error(
+                &request_id.0,
+                StatusCode::CONFLICT,
+                "alert_rule_version_conflict",
+                "the rule changed since it was read; reload the current configuration and review before saving",
             )
         }
         Err(AlertError::Validation(message)) => {
@@ -1372,7 +1424,7 @@ fn apply_preview_override(
     path = "/api/admin/v1/alerts/rules/{rule_key}/overrides",
     tag = "admin",
     request_body = RuleOverrideUpsertRequest,
-    responses((status = 200, body = RuleOverrideResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+    responses((status = 200, body = RuleOverrideResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn upsert_rule_override(
     State(state): State<AppState>,
@@ -1486,7 +1538,16 @@ pub(crate) async fn upsert_rule_override(
             );
         }
     };
-    let outcome: Result<Vec<RuleOverrideDto>, AlertError> = async {
+    let outcome: Result<RuleOverrideOutcome, AlertError> = async {
+        // Version-safe override save (issue #204): a stale tab must reload and
+        // review before replacing an override on a Rule that has since changed.
+        let Some((_, _, current_version, _, _, _)) = load_rule_row(&mut *tx, &rule_key).await?
+        else {
+            return Ok(RuleOverrideOutcome::NotFound);
+        };
+        if body.expected_version != current_version {
+            return Ok(RuleOverrideOutcome::StaleVersion);
+        }
         let updated_at = format_rfc3339(now_utc());
         // Replacing an override is a full replace. Clearing an explicit enabled
         // value back to inheritance (Some -> None) changes the effective flag
@@ -1558,11 +1619,13 @@ pub(crate) async fn upsert_rule_override(
             Some(&after),
         )
         .await?;
-        rule_overrides_dto(&mut *tx, &rule_key).await
+        Ok(RuleOverrideOutcome::Updated(
+            rule_overrides_dto(&mut *tx, &rule_key).await?,
+        ))
     }
     .await;
     match outcome {
-        Ok(overrides) => {
+        Ok(RuleOverrideOutcome::Updated(overrides)) => {
             if tx.commit().await.is_err() {
                 return mutation_error(
                     &request_id.0,
@@ -1577,6 +1640,24 @@ pub(crate) async fn upsert_rule_override(
                 overrides,
             })
             .into_response()
+        }
+        Ok(RuleOverrideOutcome::NotFound) => {
+            let _ = tx.rollback().await;
+            mutation_error(
+                &request_id.0,
+                StatusCode::NOT_FOUND,
+                "alert_rule_not_found",
+                "unknown alert rule",
+            )
+        }
+        Ok(RuleOverrideOutcome::StaleVersion) => {
+            let _ = tx.rollback().await;
+            mutation_error(
+                &request_id.0,
+                StatusCode::CONFLICT,
+                "alert_rule_version_conflict",
+                "the rule changed since it was read; reload the current configuration and review before saving",
+            )
         }
         Err(AlertError::Database(_)) => {
             let _ = tx.rollback().await;
@@ -2034,15 +2115,23 @@ pub(crate) async fn alert_incident_detail(
             );
         }
     };
-    // Project the Rule's current effective enabled state next to the
+    // Project the Rule's current effective configuration next to the
     // evaluation row: a disabled Rule keeps history, so the row alone must
-    // never be presented as a current assessment (issue #203 review B5). A
-    // lookup failure is a server error, not an unknown state: only an
-    // unrecognized subject_kind yields None (issue #203 review C1).
-    let rule_enabled = match subject_kind_enum {
+    // never be presented as a current assessment (issue #203 review B5), and
+    // the immutable opening rule version/evidence must stay visibly distinct
+    // from what applies now (issue #204, Story 20). A lookup failure is a
+    // server error, not an unknown state: only an unrecognized subject_kind
+    // yields None (issue #203 review C1).
+    let current_rule = match subject_kind_enum {
         Some(kind) => {
             match crate::alerts::effective_rule(&mut conn, &rule_key, kind, &subject_key).await {
-                Ok(rule) => rule.map(|rule| rule.enabled),
+                Ok(rule) => rule.map(|rule| EffectiveRuleDto {
+                    rule_key: rule.rule_key,
+                    enabled: rule.enabled,
+                    severity: rule.severity,
+                    condition: rule.condition,
+                    version: rule.version,
+                }),
                 Err(_) => {
                     return mutation_error(
                         &request_id.0,
@@ -2079,7 +2168,7 @@ pub(crate) async fn alert_incident_detail(
         opened_evidence,
         resolved_evidence,
         evaluation,
-        rule_enabled,
+        current_rule,
         suppressions,
         acknowledgment: incident_acknowledgment(
             acknowledged_by_user_id,
@@ -3467,7 +3556,7 @@ mod tests {
             Extension(session()),
             Extension(request_id()),
             axum::body::Bytes::from_static(
-                br#"{"enabled":false,"severity":"critical","condition":{"for_secs":30,"recovery_for_secs":60,"threshold":180.0}}"#,
+                br#"{"expectedVersion":1,"enabled":false,"severity":"critical","condition":{"for_secs":30,"recovery_for_secs":60,"threshold":180.0}}"#,
             ),
         )
         .await;
@@ -3519,7 +3608,7 @@ mod tests {
             Extension(session()),
             Extension(request_id()),
             axum::body::Bytes::from_static(
-                br#"{"condition":{"for_secs":30,"recovery_for_secs":60,"threshold":90.0}}"#,
+                br#"{"expectedVersion":1,"condition":{"for_secs":30,"recovery_for_secs":60,"threshold":90.0}}"#,
             ),
         )
         .await;
@@ -3534,7 +3623,7 @@ mod tests {
             mutation_headers("csrf"),
             Extension(session()),
             Extension(request_id()),
-            axum::body::Bytes::from_static(br#"{"enabled":true}"#),
+            axum::body::Bytes::from_static(br#"{"expectedVersion":1,"enabled":true}"#),
         )
         .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -3561,6 +3650,163 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Issue #204: a save composed against a stale Rule version is rejected and
+    /// leaves the stored Rule untouched (no silent overwrite, no new version).
+    #[tokio::test]
+    async fn rule_update_rejects_a_stale_expected_version() {
+        let (_dir, state) = test_state().await;
+        let first = update_alert_rule(
+            State(state.clone()),
+            Path("agent.offline".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"expectedVersion":1,"severity":"critical"}"#),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(body_json(first).await["rule"]["version"], 2);
+        let before: (i64, String, bool) = sqlx::query_as(
+            "SELECT version, severity, enabled FROM alert_rules WHERE rule_key = 'agent.offline'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!((before.0, before.1.as_str()), (2, "critical"));
+
+        // A second save composed against version 1 must not overwrite version 2.
+        let stale = update_alert_rule(
+            State(state.clone()),
+            Path("agent.offline".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"expectedVersion":1,"enabled":false}"#),
+        )
+        .await;
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            body_json(stale).await["error"]["code"],
+            "alert_rule_version_conflict"
+        );
+        let after: (i64, String, bool) = sqlx::query_as(
+            "SELECT version, severity, enabled FROM alert_rules WHERE rule_key = 'agent.offline'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            after, before,
+            "the stale save must leave the Rule unchanged"
+        );
+        let versions: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM alert_rule_versions WHERE rule_key = 'agent.offline'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            versions, 2,
+            "the rejected save writes no immutable version row"
+        );
+    }
+
+    /// Issue #204: an override save composed against a stale Rule version is
+    /// rejected so a stale tab cannot overwrite newer inheritance state.
+    #[tokio::test]
+    async fn override_upsert_rejects_a_stale_expected_version() {
+        let (_dir, state) = test_state().await;
+        let bump = update_alert_rule(
+            State(state.clone()),
+            Path("node.rpc_unreachable".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(br#"{"expectedVersion":1,"severity":"critical"}"#),
+        )
+        .await;
+        assert_eq!(bump.status(), StatusCode::OK);
+        assert_eq!(body_json(bump).await["rule"]["version"], 2);
+
+        let stale = upsert_rule_override(
+            State(state.clone()),
+            Path("node.rpc_unreachable".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(
+                br#"{"expectedVersion":1,"scopeKind":"node","scopeValue":"node-a","enabled":false}"#,
+            ),
+        )
+        .await;
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            body_json(stale).await["error"]["code"],
+            "alert_rule_version_conflict"
+        );
+        let overrides: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM alert_rule_overrides")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(overrides, 0, "the rejected override writes no row");
+    }
+
+    /// Issue #204 Stories 20 and 21: a Rule edit and disable leave the
+    /// Incident opening rule version, evidence, and acknowledgment intact
+    /// while the separately projected current configuration moves on.
+    #[tokio::test]
+    async fn rule_edit_and_disable_preserve_incident_opening_facts_and_acknowledgment() {
+        let (_dir, state) = test_state().await;
+        let now = base_time();
+        let incident_id = open_node_incident(&state, now).await;
+        let ack = acknowledge(&state, &incident_id, "csrf", session()).await;
+        assert_eq!(ack.status(), StatusCode::OK);
+
+        let before = alert_incident_detail(
+            State(state.clone()),
+            Path(incident_id.clone()),
+            Extension(request_id()),
+        )
+        .await;
+        let before = body_json(before).await;
+        assert_eq!(before["ruleVersion"], 1);
+        assert_eq!(before["currentRule"]["version"], 1);
+        assert_eq!(before["state"], "open");
+        let opened_evidence = before["openedEvidence"].clone();
+        let acknowledged_at = before["acknowledgment"]["acknowledgedAt"].clone();
+
+        // Edit the Rule (version 1 -> 2) and disable it in one save.
+        let edit = update_alert_rule(
+            State(state.clone()),
+            Path("node.rpc_unreachable".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(
+                br#"{"expectedVersion":1,"enabled":false,"severity":"warning"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(edit.status(), StatusCode::OK);
+
+        let after = alert_incident_detail(
+            State(state.clone()),
+            Path(incident_id.clone()),
+            Extension(request_id()),
+        )
+        .await;
+        let after = body_json(after).await;
+        // Opening facts are frozen at the version that opened the Incident.
+        assert_eq!(after["ruleVersion"], 1);
+        assert_eq!(after["openedEvidence"], opened_evidence);
+        assert_eq!(after["state"], "open");
+        assert_eq!(after["acknowledgment"]["acknowledgedAt"], acknowledged_at);
+        // The separately projected current configuration reflects the edit.
+        assert_eq!(after["currentRule"]["version"], 2);
+        assert_eq!(after["currentRule"]["enabled"], false);
+        assert_eq!(after["currentRule"]["severity"], "warning");
     }
 
     #[tokio::test]
@@ -3623,7 +3869,7 @@ mod tests {
             Extension(session()),
             Extension(request_id()),
             axum::body::Bytes::from_static(
-                br#"{"scopeKind":"node","scopeValue":"node-a","enabled":false}"#,
+                br#"{"expectedVersion":1,"scopeKind":"node","scopeValue":"node-a","enabled":false}"#,
             ),
         )
         .await;
@@ -3639,7 +3885,7 @@ mod tests {
             Extension(session()),
             Extension(request_id()),
             axum::body::Bytes::from_static(
-                br#"{"scopeKind":"node","scopeValue":"ghost","enabled":true}"#,
+                br#"{"expectedVersion":1,"scopeKind":"node","scopeValue":"ghost","enabled":true}"#,
             ),
         )
         .await;
@@ -3652,7 +3898,9 @@ mod tests {
             mutation_headers("csrf"),
             Extension(session()),
             Extension(request_id()),
-            axum::body::Bytes::from_static(br#"{"scopeKind":"node","scopeValue":"node-a"}"#),
+            axum::body::Bytes::from_static(
+                br#"{"expectedVersion":1,"scopeKind":"node","scopeValue":"node-a"}"#,
+            ),
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -4370,7 +4618,7 @@ mod tests {
             mutation_headers("csrf"),
             Extension(session()),
             Extension(request_id()),
-            axum::body::Bytes::from_static(br#"{"enabled":false}"#),
+            axum::body::Bytes::from_static(br#"{"expectedVersion":1,"enabled":false}"#),
         )
         .await;
         assert_eq!(disable.status(), StatusCode::OK);
@@ -4394,7 +4642,7 @@ mod tests {
             mutation_headers("csrf"),
             Extension(session()),
             Extension(request_id()),
-            axum::body::Bytes::from_static(br#"{"enabled":true}"#),
+            axum::body::Bytes::from_static(br#"{"expectedVersion":2,"enabled":true}"#),
         )
         .await;
         assert_eq!(enable.status(), StatusCode::OK);
@@ -4435,7 +4683,7 @@ mod tests {
         .await;
         let value = body_json(response).await;
         assert_eq!(value["state"], "open");
-        assert_eq!(value["ruleEnabled"], true);
+        assert_eq!(value["currentRule"]["enabled"], true);
         assert_eq!(value["acknowledgment"]["acknowledgedAt"], acknowledged_at);
     }
 
@@ -4476,7 +4724,7 @@ mod tests {
             Extension(session()),
             Extension(request_id()),
             axum::body::Bytes::from_static(
-                br#"{"scopeKind":"node","scopeValue":"node-a","enabled":false}"#,
+                br#"{"expectedVersion":1,"scopeKind":"node","scopeValue":"node-a","enabled":false}"#,
             ),
         )
         .await;
@@ -4527,7 +4775,7 @@ mod tests {
             Extension(session()),
             Extension(request_id()),
             axum::body::Bytes::from_static(
-                br#"{"scopeKind":"network","scopeValue":"mainnet","enabled":false}"#,
+                br#"{"expectedVersion":1,"scopeKind":"network","scopeValue":"mainnet","enabled":false}"#,
             ),
         )
         .await;
@@ -4645,7 +4893,7 @@ mod tests {
             Extension(session()),
             Extension(request_id()),
             axum::body::Bytes::from_static(
-                br#"{"scopeKind":"network","scopeValue":"mainnet","enabled":false}"#,
+                br#"{"expectedVersion":1,"scopeKind":"network","scopeValue":"mainnet","enabled":false}"#,
             ),
         )
         .await;
@@ -4657,7 +4905,7 @@ mod tests {
             Extension(session()),
             Extension(request_id()),
             axum::body::Bytes::from_static(
-                br#"{"scopeKind":"node","scopeValue":"node-a","enabled":true}"#,
+                br#"{"expectedVersion":1,"scopeKind":"node","scopeValue":"node-a","enabled":true}"#,
             ),
         )
         .await;
@@ -4697,7 +4945,7 @@ mod tests {
             Extension(session()),
             Extension(request_id()),
             axum::body::Bytes::from_static(
-                br#"{"scopeKind":"node","scopeValue":"node-a","severity":"warning"}"#,
+                br#"{"expectedVersion":1,"scopeKind":"node","scopeValue":"node-a","severity":"warning"}"#,
             ),
         )
         .await;
@@ -4805,7 +5053,7 @@ mod tests {
         .await;
         let value = body_json(response).await;
         assert_eq!(value["state"], "open");
-        assert_eq!(value["ruleEnabled"], false);
+        assert_eq!(value["currentRule"]["enabled"], false);
         assert_eq!(value["acknowledgment"]["acknowledgedAt"], acknowledged_at);
 
         // Re-enable: the next fresh Known observation restarts the full
@@ -4869,7 +5117,7 @@ mod tests {
         .await;
         let value = body_json(response).await;
         assert_eq!(value["state"], "resolved");
-        assert_eq!(value["ruleEnabled"], true);
+        assert_eq!(value["currentRule"]["enabled"], true);
         assert_eq!(value["acknowledgment"]["acknowledgedAt"], acknowledged_at);
     }
 

@@ -1310,6 +1310,16 @@
               }
             }
           },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
           "503": {
             "description": "",
             "content": {
@@ -1372,6 +1382,16 @@
             }
           },
           "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
             "description": "",
             "content": {
               "application/json": {
@@ -8756,6 +8776,9 @@
       },
       "AlertRuleUpdateRequest": {
         "type": "object",
+        "required": [
+          "expectedVersion"
+        ],
         "properties": {
           "condition": {
             "oneOf": [
@@ -8772,6 +8795,11 @@
               "boolean",
               "null"
             ]
+          },
+          "expectedVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Version of the Rule that this edit was composed against. The save is\nrejected when it no longer matches the stored version (issue #204,\nStory 19): a stale tab can never silently overwrite a newer edit."
           },
           "severity": {
             "type": [
@@ -9582,6 +9610,35 @@
                 "$ref": "#/components/schemas/OperationSummary"
               }
             ]
+          }
+        }
+      },
+      "EffectiveRuleDto": {
+        "type": "object",
+        "description": "The Rule configuration that currently applies to one subject after\nNetwork/Node override resolution (issue #204, Story 20). This is the\ncurrent effective configuration and is deliberately separate from the\nIncident's immutable opening rule version and evidence.",
+        "required": [
+          "ruleKey",
+          "enabled",
+          "severity",
+          "condition",
+          "version"
+        ],
+        "properties": {
+          "condition": {
+            "$ref": "#/components/schemas/RuleCondition"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "ruleKey": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -10439,6 +10496,17 @@
               }
             ]
           },
+          "currentRule": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/EffectiveRuleDto",
+                "description": "Current effective Rule configuration for this subject, after\nNetwork/Node override resolution (issue #204, Story 20). None when the\nRule or subject kind cannot be resolved. A disabled current Rule means\nthe evaluation row, when present, is the last recorded assessment\nrather than a current one; this never rewrites the Incident's opening\nrule version or evidence."
+              }
+            ]
+          },
           "evaluation": {
             "oneOf": [
               {
@@ -10463,13 +10531,6 @@
             ]
           },
           "resolvedEvidence": {},
-          "ruleEnabled": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "Effective enabled state of the Incident's Rule for this subject, after\nNetwork/Node override resolution. `false` means the Rule is currently\ndisabled: the evaluation row, when present, is the last recorded\nassessment and not a current one. `None` when the Rule or subject kind\ncannot be resolved."
-          },
           "ruleKey": {
             "type": "string"
           },
@@ -14049,6 +14110,7 @@
       "RuleOverrideUpsertRequest": {
         "type": "object",
         "required": [
+          "expectedVersion",
           "scopeKind",
           "scopeValue"
         ],
@@ -14068,6 +14130,11 @@
               "boolean",
               "null"
             ]
+          },
+          "expectedVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Version of the Rule that this override edit was composed against. The\nsave is rejected when the Rule has changed since (issue #204)."
           },
           "scopeKind": {
             "type": "string"

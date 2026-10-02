@@ -178,8 +178,10 @@ Each page has a stable ID. IDs are semantic and do not prescribe React filenames
 | `PAGE-ADMIN-SETTINGS` | `/admin/settings` | Global Block History window and Site Access Mode configuration | Owner |
 | `PAGE-ADMIN-INCIDENTS` | `/admin/alerts/incidents` | Alert Incident history with state, severity, subject, evidence and durable Owner acknowledgment | Owner |
 | `PAGE-ADMIN-INCIDENT-DETAIL` | `/admin/alerts/incidents/:incidentId` | One Incident occurrence: occurrence, acknowledgment, evaluation, suppressions and evidence | Owner |
+| `PAGE-ADMIN-RULES` | `/admin/alerts/rules` | Typed Alert Rule catalog with baseline version, state, severity and evaluated counts | Owner |
+| `PAGE-ADMIN-RULE-DETAIL` | `/admin/alerts/rules/:ruleKey` | One Rule: baseline, effective inheritance and overrides, typed edit, preview, immutable versions and subject state | Owner |
 
-The table above is the complete set of concrete SPA page routes; unknown paths under `/admin` use the registered Admin wildcard fallback rather than a legacy page. The Server/Admin APIs additionally expose People, Validator management/links/analytics, Notifications, Operations, Retention, Backups/Restore, Doctor, Node Transfer, and Agent recovery/credential operations; these are available DTO/operation surfaces, not current SPA pages. Alert Rule, Silence and Maintenance Window management remain API-only surfaces; the Incident history pages above (issue #203) only read Incidents and record an Owner acknowledgment. Geo provider status and selection are consumed by the Settings page.
+The table above is the complete set of concrete SPA page routes; unknown paths under `/admin` use the registered Admin wildcard fallback rather than a legacy page. The Server/Admin APIs additionally expose People, Validator management/links/analytics, Notifications, Operations, Retention, Backups/Restore, Doctor, Node Transfer, and Agent recovery/credential operations; these are available DTO/operation surfaces, not current SPA pages. Alert Rule management is routed as read/edit/preview with Network and Node overrides and version-safe saves (issue #204, §15.7); Silence and Maintenance Window management remain API-only surfaces. The Incident history pages above (issue #203) only read Incidents and record an Owner acknowledgment. Geo provider status and selection are consumed by the Settings page.
 
 The current SPA has no generic `returnTo`/`return_to` mutation contract. When a protected Home route sends a Guest to `/login`, it carries the internal router pathname as `location.state.from`; a successful login navigates back to that pathname, or `/` when absent. Admin mutations stay on their current route and invalidate/refetch authoritative data.
 
@@ -228,7 +230,7 @@ Where Home or Node Detail mark a Node by name, a two-state marker sits before th
 
 ### 5.5 Server-side state machines without current pages
 
-Alert Rule/Incident/Silence/Maintenance evaluation and long-running Operation states are implemented in the Server and exposed through Admin APIs. The read-side Incident history and detail pages, including the Owner acknowledgment, are routed per §15.6 (issue #203); Rule, Silence, and Maintenance management pages are still not routed, and no page resolves or suppresses the underlying state machines. They remain independent of the WebUI's Node Health Summary; a future page must consume the typed DTOs rather than recreate those state machines in the browser.
+Alert Rule/Incident/Silence/Maintenance evaluation and long-running Operation states are implemented in the Server and exposed through Admin APIs. The read-side Incident history and detail pages, including the Owner acknowledgment, are routed per §15.6 (issue #203), and Alert Rule read/edit/preview with Network/Node overrides is routed per §15.7 (issue #204); Silence and Maintenance management pages are still not routed, and no page resolves or suppresses the underlying state machines. They remain independent of the WebUI's Node Health Summary; a future page must consume the typed DTOs rather than recreate those state machines in the browser.
 
 ## 6. REST, query cache, and SSE
 
@@ -1060,6 +1062,10 @@ The following extend the future acceptance matrix; they are not claims of implem
 | `SCN-INCIDENT-ACK` | Incidents / Incident Detail | The first Owner confirmation is authoritative and shared; refresh, a second Owner, and a Server restart keep the same identity/time, and repeats or concurrent requests never replace the first |
 | `SCN-INCIDENT-ACK-RECURRENCE` | Incidents | A resolved occurrence keeps its acknowledgment; a genuinely recurring fault opens a new unacknowledged occurrence, and subject deletion stays distinct from recovery |
 | `SCN-INCIDENT-SUBJECT-SHORTCUT` | Node/Agent Detail / Incidents | Node and Agent detail carry a contextual shortcut into the Incident history narrowed to that exact subject key, and the active Subject key is visible and clearable |
+| `SCN-RULE-INHERITANCE` | Rules / Rule Detail | The baseline plus Network and Node overrides resolve most-specific-wins; unset override fields read as inherited, never as defaults, and Unknown is never 0 |
+| `SCN-RULE-VERSION-CONFLICT` | Rule Detail | A save carrying an older composed version is rejected by the Server; the UI reloads the current configuration and requires review before saving, and never overwrites the newer Rule |
+| `SCN-RULE-PREVIEW` | Rule Detail | Preview evaluates unsaved values, writes nothing, and states that it creates, resolves, and acknowledges no Incident and promises none |
+| `SCN-RULE-INCIDENT-INTEGRITY` | Rule Detail / Incident Detail | Editing or disabling a Rule leaves an existing Incident's opening rule version and evidence and its acknowledgment intact, while the current effective configuration is projected separately |
 
 ### 15.6 Incident history and durable acknowledgment (issue #203, delivered)
 
@@ -1073,3 +1079,14 @@ Applies to `PAGE-ADMIN-INCIDENTS` and `PAGE-ADMIN-INCIDENT-DETAIL`:
 - The confirmation is reachable from the list and the detail, always behind an explicit confirmation step. Refresh, a second Owner, and a Server restart show the same authoritative identity and time; a repeat or concurrent request reports the first identity instead of replacing it, and the winner is visible to every Owner client.
 - A resolved occurrence keeps its acknowledgment. A genuinely recurring fault opens a new unacknowledged occurrence with its own sequence; Rule edits/disabling and subject deletion never silently resolve or acknowledge an Incident.
 - Only Owner authorization applies, through the existing CSRF/Origin boundary, with Audit; the confirmation is never stored in browser local storage.
+
+### 15.7 Alert Rule management and inherited overrides (issue #204, delivered)
+
+- /admin/alerts/rules lists the typed Alert Rule catalog and /admin/alerts/rules/:ruleKey reads one Rule: the baseline enabled flag, severity, and schema-declared condition parameters, the immutable version history in alert_rule_versions, the per-scope overrides, and the current evaluation state per subject. The catalog is fixed: the pages read and edit existing keys and never create, delete, or accept a free-form DSL.
+- The detail page shows the effective resolution explicitly instead of flattening it: the baseline applies to every subject, a Network override narrows it for that network, and a Node override narrows it for that node, with the most specific value winning. Only Network and Node scopes are supported; there is no arbitrary Agent or Host override. An override row renders an unset field as Inherited rather than repeating the baseline value, so inheritance stays visible as inheritance.
+- Editing writes enabled, severity, and the condition parameters the Rule schema declares (threshold only where the schema declares one). Every save carries the composed expectedVersion the page was read at: the baseline version for a baseline edit, and the same composed version for an override save.
+- The Server rejects a save whose expectedVersion no longer matches the stored version with 409 and alert_rule_version_conflict. The page then shows "This Rule changed since you read it", disables saving, and requires the Owner to reload the current configuration and review before saving again. A background refetch never silently promotes the stored version into the open draft, so a genuine stale write is always surfaced rather than smuggled through.
+- Preview evaluates the unsaved draft against every eligible subject and reports each subject current state, projected state, whether it would fire, and the note. It is not a save: it creates, resolves, and acknowledges nothing, and it does not promise that an Incident will open immediately.
+- Rule edits and disabling never rewrite an Incident opening rule version or opened evidence and never clear an acknowledgment. The Incident detail keeps the opening facts and projects the current effective Rule configuration separately; an unresolvable current configuration is shown as unknown, never as a disabled Rule, a recovered subject, or a healthy one.
+- The Rules surfaces are Owner-only behind the existing CSRF/Origin boundary, with Audit for every edit and override change, and the version history stays read-only. Silence and Maintenance Window management remain API-only.
+

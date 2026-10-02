@@ -50,6 +50,11 @@ const MVP_ADMIN_SECTIONS: Array<{
     heading: 'Incidents',
   },
   {
+    link: 'Rules',
+    url: '/admin/alerts/rules',
+    heading: 'Alert Rules',
+  },
+  {
     link: 'Sessions',
     url: '/admin/access/sessions',
     heading: 'Sessions',
@@ -70,7 +75,6 @@ const REMOVED_ADMIN_LABELS = [
   'Site Access',
   'Validators',
   'People',
-  'Alert Rules',
   'Silences',
   'Maintenance',
   'Deliveries',
@@ -96,7 +100,6 @@ const REMOVED_ADMIN_ROUTES: Array<{ route: string; heading?: string | RegExp }> 
   { route: '/admin/validators', heading: 'Validators' },
   { route: '/admin/validators/v-1', heading: /Validators/ },
   { route: '/admin/access/people', heading: 'People' },
-  { route: '/admin/alerts/rules', heading: 'Alert Rules' },
   { route: '/admin/alerts/silences', heading: 'Silences' },
   { route: '/admin/alerts/maintenance', heading: 'Maintenance Windows' },
   { route: '/admin/alerts/deliveries', heading: 'Deliveries' },

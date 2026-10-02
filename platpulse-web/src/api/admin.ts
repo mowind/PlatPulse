@@ -146,6 +146,7 @@ import {
   type NotificationEventsResponse,
   type RuleOverrideResponse,
   type RuleOverrideUpsertRequest,
+  type RulePreviewRequest,
   type RulePreviewResponse,
   type SilenceCreateRequest,
   type SilenceDto,
@@ -1679,7 +1680,7 @@ export async function updateAlertRuleEntry(
  * rows. Never invalidates anything. */
 export async function previewAlertRuleEntry(
   ruleKey: string,
-  request: AlertRuleUpdateRequest,
+  request: RulePreviewRequest,
   csrfToken: string,
   signal?: AbortSignal,
 ): Promise<RulePreviewResponse> {
