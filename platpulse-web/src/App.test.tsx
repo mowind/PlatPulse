@@ -1409,13 +1409,16 @@ describe('Admin MVP route inventory (issue #92)', () => {
     })
   }
 
-  // Complete MVP Admin inventory (issues #92, #111, #203, #204, #205):
+  // Complete MVP Admin inventory (issues #92, #111, #203, #204, #205, #206):
   // Overview, Agents, Agent Detail, Nodes, Node Detail, Networks, Network
   // Detail, Settings, Incidents, Incident Detail, Alert Rules, Alert Rule
-  // Detail, Silences, Maintenance Windows, Sessions and Audit. Each route
-  // renders its own
+  // Detail, Silences, Maintenance Windows, Notification Overview, Events,
+  // Event Detail, Deliveries, Delivery Detail, Channels, Sessions and Audit.
+  // Each route renders its own
   // page shell under the Owner gate; the Server REST mock answers 404s so the
-  // pages' headings are asserted without seeding page data.
+  // pages' headings are asserted without seeding page data. The two detail
+  // routes therefore assert the parent noun only: an unknown id legitimately
+  // resolves to the not-found heading, which names the same page group.
   const MVP_ROUTES: Array<[path: string, heading: RegExp]> = [
     ['/admin', /Overview/],
     ['/admin/agents', /Agents/],
@@ -1432,6 +1435,12 @@ describe('Admin MVP route inventory (issue #92)', () => {
     ['/admin/alerts/rules/node.rpc_unreachable', /Alert Rule/],
     ['/admin/alerts/silences', /Silences/],
     ['/admin/alerts/maintenance', /Maintenance/],
+    ['/admin/notifications', /Notifications/],
+    ['/admin/notifications/events', /Notification Events/],
+    ['/admin/notifications/events/event-1', /Notification Event/],
+    ['/admin/notifications/deliveries', /Notification Deliveries/],
+    ['/admin/notifications/deliveries/delivery-1', /Notification Delivery/],
+    ['/admin/notifications/channels', /Notification Channels/],
     ['/admin/access/sessions', /Sessions/],
     ['/admin/access/audit', /Audit log/],
   ]
@@ -1457,8 +1466,10 @@ describe('Admin MVP route inventory (issue #92)', () => {
       // oriented without coupling this contract to CSS classes.
       expect(screen.getByRole('main')).toBeTruthy()
       const adminNav = screen.getByRole('navigation', { name: 'Admin' })
-      expect(within(adminNav).getAllByRole('link')).toHaveLength(11)
-      const activeHref = path.startsWith('/admin/agents')
+      expect(within(adminNav).getAllByRole('link')).toHaveLength(12)
+      const activeHref = path.startsWith('/admin/notifications')
+        ? '/admin/notifications'
+        : path.startsWith('/admin/agents')
         ? '/admin/agents'
         : path.startsWith('/admin/nodes')
           ? '/admin/nodes'
@@ -1489,6 +1500,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
         '/admin/alerts/incidents': 'Incidents',
         '/admin/alerts/silences': 'Silences',
         '/admin/alerts/maintenance': 'Maintenance',
+        '/admin/notifications': 'Notifications',
         '/admin/access/sessions': 'Sessions',
         '/admin/access/audit': 'Audit',
       }[activeHref]
@@ -1579,6 +1591,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
       { name: 'Rules', href: '/admin/alerts/rules', glyph: 'SlidersHorizontal' },
       { name: 'Silences', href: '/admin/alerts/silences', glyph: 'BellOff' },
       { name: 'Maintenance', href: '/admin/alerts/maintenance', glyph: 'CalendarClock' },
+      { name: 'Notifications', href: '/admin/notifications', glyph: 'BellRing' },
       { name: 'Sessions', href: '/admin/access/sessions', glyph: 'PanelsTopLeft' },
       { name: 'Audit', href: '/admin/access/audit', glyph: 'ListChecks' },
     ]

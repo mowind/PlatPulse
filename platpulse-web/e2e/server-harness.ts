@@ -86,6 +86,10 @@ export interface DisposableServer {
   ): Promise<ReportEnvelope>
   /** Assert an authenticated Admin GET status, returning the parsed body. */
   expectAdminGet(path: string, status: number): Promise<unknown>
+  /** GET any Admin API route with the Owner session without asserting status. */
+  adminGet(path: string): Promise<{ status: number; body: unknown }>
+  /** POST any Admin API route with the Owner session without asserting status. */
+  adminPost(path: string, payload?: unknown): Promise<{ status: number; body: unknown }>
   /** Kill and respawn the Server on the same state directory. */
   restart(): Promise<void>
   /** Stop the Server and delete every temporary artifact. */
@@ -188,6 +192,35 @@ async function readJson(response: Response): Promise<unknown> {
   return JSON.parse(text) as unknown
 }
 
+export interface DisposableNotificationOptions {
+  /** Write a `[notifications.telegram]` section with a dummy secret file. */
+  telegram?: {
+    enabled?: boolean
+    /** `notifications.test_cooldown_seconds`; defaults to the Server's 30s. */
+    testCooldownSeconds?: number
+    /** `notifications.dedup_retention_seconds`; defaults to 86400s. */
+    dedupRetentionSeconds?: number
+    /** Chat id whose last four characters are the only ones ever displayed. */
+    chatId?: string
+  }
+}
+
+/**
+ * The chat id the harness configures by default. Only its last four characters
+ * (`****7890`) can ever reach a DTO, the WebUI, or the Audit log, so an
+ * acceptance test can assert the mask without inventing the value server-side.
+ */
+export const HARNESS_TELEGRAM_CHAT_ID = '1001234567890'
+
+/**
+ * Secret file the harness writes for the Telegram channel. It is never a real
+ * bot token and never leaves the temporary state directory: `development =
+ * true` swaps the provider for the fixed-failure `DevNullProvider`, so a
+ * driven test exercises the real ledger, cooldown, and state machine while
+ * the delivery deterministically ends `failed` (issue #206).
+ */
+export const HARNESS_TELEGRAM_TOKEN = 'platpulse-e2e-dummy-bot-token'
+
 export interface DisposableServerOptions {
   /**
    * SQL applied while the database is closed, before the Server starts. Seed
@@ -197,6 +230,8 @@ export interface DisposableServerOptions {
    * rows (Sessions), failing closed with 401/503 at random.
    */
   seedSql?: string
+  /** Configure the notification channel and request policy (issue #206). */
+  notifications?: DisposableNotificationOptions
 }
 
 /** Boot a disposable Server; delete it with {@link DisposableServer.dispose}. */
@@ -237,6 +272,31 @@ export async function startDisposableServer(
     const backupDir = join(stateDir, 'backups')
     mkdirSync(backupDir, { recursive: true })
     const configPath = join(stateDir, 'server.toml')
+    const notifications = options.notifications?.telegram
+    const tokenPath = join(stateDir, 'telegram-token')
+    const notificationConfig: string[] = []
+    if (notifications !== undefined) {
+      // The provider reads the token lazily, but writing the file keeps the
+      // harness honest about the operator-side secret layout (design §18.1).
+      writeFileSync(tokenPath, HARNESS_TELEGRAM_TOKEN, { mode: 0o600 })
+      if (notifications.testCooldownSeconds !== undefined) {
+        notificationConfig.push(
+          `[notifications]\ntest_cooldown_seconds = ${notifications.testCooldownSeconds}` +
+            (notifications.dedupRetentionSeconds === undefined
+              ? ''
+              : `\ndedup_retention_seconds = ${notifications.dedupRetentionSeconds}`),
+        )
+      } else if (notifications.dedupRetentionSeconds !== undefined) {
+        notificationConfig.push(
+          `[notifications]\ndedup_retention_seconds = ${notifications.dedupRetentionSeconds}`,
+        )
+      }
+      notificationConfig.push(
+        `[notifications.telegram]\nenabled = ${notifications.enabled ?? true}` +
+          `\ntoken_file = "${tokenPath}"` +
+          `\nchat_id = "${notifications.chatId ?? HARNESS_TELEGRAM_CHAT_ID}"`,
+      )
+    }
     writeFileSync(
       configPath,
       [
@@ -248,6 +308,7 @@ export async function startDisposableServer(
         `listen = "127.0.0.1:${port}"`,
         `public_base_url = "${baseUrl}"`,
         'development = true',
+        ...notificationConfig,
         '',
       ].join('\n'),
     )
@@ -443,6 +504,8 @@ export async function startDisposableServer(
       enrollAgent,
       submitReport,
       expectAdminGet,
+      adminGet: (path: string) => adminRequest('GET', path),
+      adminPost: (path: string, payload?: unknown) => adminRequest('POST', path, payload),
       async restart() {
         await stop(child)
         child = await spawnServe()

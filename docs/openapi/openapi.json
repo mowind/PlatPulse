@@ -3495,7 +3495,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Send a test notification through a channel. Test Notifications are\nclearly separate from business Incidents (event kind `test`), always\nproduce an Audit Event, and send synchronously so the response carries\nthe resulting Delivery state. Provider tokens never enter the request,\nresponse, Audit body, or logs.",
+        "summary": "Send a controlled test notification through a channel. Test Notifications\nare clearly separate from business Incidents (event kind `test`). The\nOwner supplies an opaque request id: the Server records the Notification\nEvent, Delivery, Audit Event, and request association together before any\nexternal handoff, so replaying the id reconciles to the same Server command\ninstead of sending again, a reused id with a different intent is refused\n(409), and a second test inside the configured cooldown is refused (429\nwith `Retry-After`). This is Server request-level dedup, never a Telegram\nexactly-once promise; the Delivery state carries the real provider outcome.\nProvider tokens never enter the request, response, Audit body, or logs.",
         "operationId": "test_notification_channel",
         "parameters": [
           {
@@ -3508,6 +3508,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestIdBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "",
@@ -3515,6 +3525,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ChannelTestResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
                 }
               }
             }
@@ -3540,6 +3560,16 @@
             }
           },
           "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
             "description": "",
             "content": {
               "application/json": {
@@ -3712,6 +3742,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestIdBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "",
@@ -3719,6 +3759,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeliveryRetryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
                 }
               }
             }
@@ -3862,6 +3912,58 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NotificationEventDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/notifications/requests/{request_id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Look up the durable Server result of one test/retry command by its opaque\nrequest id. This is how the browser reconciles an HTTP timeout or lost\nresponse without re-sending: it reports the Server's recorded command\nassociation and the Delivery's provider outcome, and never triggers a new\nexternal action. An unknown or expired request id is reported as unknown.",
+        "operationId": "notification_request_result",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "description": "Owner-supplied opaque request ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationRequestResult"
                 }
               }
             }
@@ -9206,15 +9308,25 @@
             "type": "object",
             "required": [
               "eventId",
-              "auditEventId"
+              "auditEventId",
+              "requestId",
+              "deduplicated"
             ],
             "properties": {
               "auditEventId": {
                 "type": "integer",
                 "format": "int64"
               },
+              "deduplicated": {
+                "type": "boolean",
+                "description": "True when the Server reconciled to an existing command result instead\nof performing another external send."
+              },
               "eventId": {
                 "type": "string"
+              },
+              "requestId": {
+                "type": "string",
+                "description": "The Owner-supplied request id this Server command is keyed by."
               }
             }
           }
@@ -9455,12 +9567,22 @@
           {
             "type": "object",
             "required": [
-              "auditEventId"
+              "auditEventId",
+              "requestId",
+              "deduplicated"
             ],
             "properties": {
               "auditEventId": {
                 "type": "integer",
                 "format": "int64"
+              },
+              "deduplicated": {
+                "type": "boolean",
+                "description": "True when the Server reconciled to an existing command result instead\nof re-arming another external action."
+              },
+              "requestId": {
+                "type": "string",
+                "description": "The Owner-supplied request id this Server command is keyed by."
               }
             }
           }
@@ -11475,6 +11597,45 @@
           }
         }
       },
+      "NotificationRequestResult": {
+        "type": "object",
+        "description": "The durable Server result of one Owner test/retry command, looked up by its\nopaque request id after an HTTP timeout or lost response. It deliberately\nexposes only the Server's own association: the Delivery's provider outcome\nis at-least-once, never exactly-once.",
+        "required": [
+          "requestId",
+          "commandKind",
+          "delivery",
+          "auditEventId",
+          "createdAt",
+          "expiresAt"
+        ],
+        "properties": {
+          "auditEventId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "commandKind": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "delivery": {
+            "$ref": "#/components/schemas/DeliveryRow"
+          },
+          "eventId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          }
+        }
+      },
       "ObservedNetworkIdentity": {
         "type": "object",
         "description": "Agent-observed Network identity tuple (design §7.1). Never overwrites the\nRegistry: it is presented as a typed observation with a match state.",
@@ -13467,6 +13628,18 @@
             "type": "string"
           },
           "token_id": {
+            "type": "string"
+          }
+        }
+      },
+      "RequestIdBody": {
+        "type": "object",
+        "description": "Mutation body carrying the Owner's opaque request id. The browser\ngenerates it once per Owner intent; the Server uses it for request-level\ndedup and stable result lookup.",
+        "required": [
+          "requestId"
+        ],
+        "properties": {
+          "requestId": {
             "type": "string"
           }
         }

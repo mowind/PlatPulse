@@ -903,7 +903,16 @@ export type ChannelDto = {
 
 export type ChannelTestResponse = DeliveryRow & {
     auditEventId: number;
+    /**
+     * True when the Server reconciled to an existing command result instead
+     * of performing another external send.
+     */
+    deduplicated: boolean;
     eventId: string;
+    /**
+     * The Owner-supplied request id this Server command is keyed by.
+     */
+    requestId: string;
 };
 
 export type ConsensusDiagnostic = {
@@ -944,6 +953,15 @@ export type DataDirectoryDiagnostic = {
 
 export type DeliveryRetryResponse = DeliveryRow & {
     auditEventId: number;
+    /**
+     * True when the Server reconciled to an existing command result instead
+     * of re-arming another external action.
+     */
+    deduplicated: boolean;
+    /**
+     * The Owner-supplied request id this Server command is keyed by.
+     */
+    requestId: string;
 };
 
 /**
@@ -1590,6 +1608,22 @@ export type NotificationEventItem = EventRow & {
 export type NotificationEventsResponse = {
     items: Array<NotificationEventItem>;
     nextBefore?: string | null;
+};
+
+/**
+ * The durable Server result of one Owner test/retry command, looked up by its
+ * opaque request id after an HTTP timeout or lost response. It deliberately
+ * exposes only the Server's own association: the Delivery's provider outcome
+ * is at-least-once, never exactly-once.
+ */
+export type NotificationRequestResult = {
+    auditEventId: number;
+    commandKind: string;
+    createdAt: string;
+    delivery: DeliveryRow;
+    eventId?: string | null;
+    expiresAt: string;
+    requestId: string;
 };
 
 /**
@@ -2350,6 +2384,15 @@ export type RecoveryTokenResponse = {
     request_id: string;
     token: string;
     token_id: string;
+};
+
+/**
+ * Mutation body carrying the Owner's opaque request id. The browser
+ * generates it once per Owner intent; the Server uses it for request-level
+ * dedup and stable result lookup.
+ */
+export type RequestIdBody = {
+    requestId: string;
 };
 
 export type ResetPasswordRequest = {
@@ -4266,7 +4309,7 @@ export type NotificationChannelDetailResponses = {
 export type NotificationChannelDetailResponse = NotificationChannelDetailResponses[keyof NotificationChannelDetailResponses];
 
 export type TestNotificationChannelData = {
-    body?: never;
+    body: RequestIdBody;
     path: {
         /**
          * Channel ID (telegram)
@@ -4278,9 +4321,11 @@ export type TestNotificationChannelData = {
 };
 
 export type TestNotificationChannelErrors = {
+    400: ApiErrorBody;
     403: ApiErrorBody;
     404: ApiErrorBody;
     409: ApiErrorBody;
+    429: ApiErrorBody;
     503: ApiErrorBody;
 };
 
@@ -4355,7 +4400,7 @@ export type NotificationDeliveryDetailResponses = {
 export type NotificationDeliveryDetailResponse = NotificationDeliveryDetailResponses[keyof NotificationDeliveryDetailResponses];
 
 export type RetryDeliveryData = {
-    body?: never;
+    body: RequestIdBody;
     path: {
         /**
          * Notification Delivery ID
@@ -4367,6 +4412,7 @@ export type RetryDeliveryData = {
 };
 
 export type RetryDeliveryErrors = {
+    400: ApiErrorBody;
     403: ApiErrorBody;
     404: ApiErrorBody;
     409: ApiErrorBody;
@@ -4438,6 +4484,31 @@ export type NotificationEventDetailResponses = {
 };
 
 export type NotificationEventDetailResponse = NotificationEventDetailResponses[keyof NotificationEventDetailResponses];
+
+export type NotificationRequestResultData = {
+    body?: never;
+    path: {
+        /**
+         * Owner-supplied opaque request ID
+         */
+        request_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/notifications/requests/{request_id}';
+};
+
+export type NotificationRequestResultErrors = {
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type NotificationRequestResultError = NotificationRequestResultErrors[keyof NotificationRequestResultErrors];
+
+export type NotificationRequestResultResponses = {
+    200: NotificationRequestResult;
+};
+
+export type NotificationRequestResultResponse = NotificationRequestResultResponses[keyof NotificationRequestResultResponses];
 
 export type OperationsListData = {
     body?: never;

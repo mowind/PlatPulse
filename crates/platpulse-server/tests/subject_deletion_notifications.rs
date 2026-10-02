@@ -96,6 +96,7 @@ impl Harness {
                 max_attempts: 3,
                 retry_base_seconds: 60,
             }),
+            ..Default::default()
         };
         let state = AppState::new_with_proxy_policy(
             database,

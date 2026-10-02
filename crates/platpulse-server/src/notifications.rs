@@ -16,7 +16,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::alerts::{SubjectKind, suppressions_for_subject};
-use crate::auth::{format_rfc3339, now_utc};
+use crate::auth::{format_rfc3339, insert_audit_event, now_utc, parse_rfc3339};
 use crate::config::{NotificationChannels, TelegramChannel};
 use async_trait::async_trait;
 use serde::Serialize;
@@ -514,6 +514,126 @@ pub async fn attempts_for_delivery(
     Ok(rows)
 }
 
+// ---------------------------------------------------------------------------
+// Owner command request ledger (issue #206, design §17.4/§17.5)
+// ---------------------------------------------------------------------------
+
+/// Longest accepted Owner-supplied request id; mirrors the ledger CHECK.
+pub const REQUEST_ID_MAX_LEN: usize = 128;
+
+/// One durable Server command/result association created by an Owner test or
+/// manual retry. The Server uses it for request-level dedup and the Audit
+/// link; the referenced Delivery remains the authoritative provider outcome.
+/// It is never a claim that the external provider delivered exactly once.
+#[derive(Debug, Clone, Serialize, ToSchema, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationRequestRow {
+    pub request_id: String,
+    pub command_kind: String,
+    pub intent_fingerprint: String,
+    pub event_id: Option<String>,
+    pub delivery_id: String,
+    pub audit_event_id: i64,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+/// The intent a request id is pinned to: a test targets a channel, a retry
+/// targets one exact Delivery. Reusing a request id for a different intent is
+/// a conflict, never a silent second external action.
+pub fn request_intent_fingerprint(command_kind: &str, target: &str) -> String {
+    format!("{command_kind}:{target}")
+}
+
+/// An Owner-supplied request id is opaque to the Server; only its shape is
+/// validated so ledger keys stay bounded.
+pub fn validate_request_id(request_id: &str) -> bool {
+    !request_id.is_empty() && request_id.len() <= REQUEST_ID_MAX_LEN
+}
+
+/// Delete request rows whose result is no longer queryable. Called inside an
+/// accepted command's transaction, so pruning never races a lookup.
+pub async fn prune_expired_notification_requests(
+    executor: &mut SqliteConnection,
+    now: OffsetDateTime,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM notification_requests WHERE expires_at <= ?")
+        .bind(format_rfc3339(now))
+        .execute(&mut *executor)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+/// Load a still-queryable request row. An expired row reads as absent, so a
+/// read-only result lookup never has to write.
+pub async fn load_notification_request(
+    executor: &mut SqliteConnection,
+    request_id: &str,
+    now: OffsetDateTime,
+) -> Result<Option<NotificationRequestRow>, sqlx::Error> {
+    sqlx::query_as::<_, NotificationRequestRow>(
+        "SELECT request_id, command_kind, intent_fingerprint, event_id, delivery_id, audit_event_id, created_at, expires_at FROM notification_requests WHERE request_id = ? AND expires_at > ?",
+    )
+    .bind(request_id)
+    .bind(format_rfc3339(now))
+    .fetch_optional(&mut *executor)
+    .await
+}
+
+/// Insert one request row inside the caller's transaction.
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_notification_request(
+    executor: &mut SqliteConnection,
+    request_id: &str,
+    command_kind: &str,
+    intent_fingerprint: &str,
+    event_id: Option<&str>,
+    delivery_id: &str,
+    audit_event_id: i64,
+    now: OffsetDateTime,
+    retention_seconds: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO notification_requests (request_id, command_kind, intent_fingerprint, event_id, delivery_id, audit_event_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(request_id)
+    .bind(command_kind)
+    .bind(intent_fingerprint)
+    .bind(event_id)
+    .bind(delivery_id)
+    .bind(audit_event_id)
+    .bind(format_rfc3339(now))
+    .bind(format_rfc3339(now + Duration::from_secs(retention_seconds.max(0) as u64)))
+    .execute(&mut *executor)
+    .await?;
+    Ok(())
+}
+
+/// The most recent accepted test command time (the durable cooldown clock).
+/// `created_at` is RFC3339 UTC, so the lexical maximum is chronological.
+pub async fn last_test_request_created_at(
+    executor: &mut SqliteConnection,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT MAX(created_at) FROM notification_requests WHERE command_kind = 'test'",
+    )
+    .fetch_one(&mut *executor)
+    .await
+}
+
+/// Remaining cooldown, in whole seconds, before another test may be sent.
+/// Returns `None` when the cooldown has elapsed or no test is recorded.
+pub fn cooldown_remaining_seconds(
+    last_test_created_at: Option<&str>,
+    now: OffsetDateTime,
+    cooldown_seconds: u32,
+) -> Option<i64> {
+    let last = parse_rfc3339(last_test_created_at?)?;
+    let elapsed = (now - last).whole_seconds().max(0);
+    let remaining = i64::from(cooldown_seconds) - elapsed;
+    (remaining > 0).then_some(remaining)
+}
+
 /// Cancel every not-yet-sent Delivery of one deleted subject inside the
 /// caller's deletion transaction (design §15.7, issue #175). Matching is by
 /// the Event's subject, so resolution Events that carry no incident_id are
@@ -842,29 +962,88 @@ pub async fn process_due_deliveries(
     Ok(processed)
 }
 
-/// Synchronous send path used by the Owner test action: creates the test
-/// Event + Delivery, then immediately claims and sends it so the response
-/// carries the resulting state. Returns `(event_id, delivery)`.
+/// Outcome of one Owner test command, including the request-ledger identity
+/// so a replay can return the same Server result.
+#[derive(Debug)]
+pub struct TestSendOutcome {
+    pub event_id: String,
+    pub delivery: DeliveryRow,
+    pub audit_event_id: i64,
+    /// True when this call reconciled to an existing Server command result and
+    /// performed no further external handoff.
+    pub deduplicated: bool,
+}
+
+/// Synchronous send path used by the Owner test action. The test Event,
+/// Delivery, Audit row, and request-ledger row are committed together BEFORE
+/// any external handoff, so a lost response or restart reconciles to the same
+/// Server command; the Delivery remains the authoritative provider outcome
+/// (at-least-once, never exactly-once). A replayed request id returns the
+/// stored result without resending; a fresh test inside the configured
+/// cooldown is refused with the remaining seconds.
 pub async fn send_test_delivery(
     state: &crate::http::AppState,
     provider: &dyn DeliveryProvider,
     severity: &str,
     summary: &str,
-) -> Result<(String, DeliveryRow), TestSendError> {
+    request_id: &str,
+    actor_user_id: &str,
+) -> Result<TestSendOutcome, TestSendError> {
+    if !validate_request_id(request_id) {
+        return Err(TestSendError::InvalidRequestId);
+    }
     let now = now_utc();
-    let Some(telegram) = state.channels().telegram() else {
+    let channels = state.channels();
+    let Some(telegram) = channels.telegram() else {
         return Err(TestSendError::NotConfigured);
     };
     if !telegram.enabled {
         return Err(TestSendError::Disabled);
     }
+    let fingerprint = request_intent_fingerprint("test", "telegram");
     let mut tx = state
         .db()
         .pool()
         .begin()
         .await
         .map_err(|_| TestSendError::Unavailable)?;
-    let event_id = record_test_event(&mut tx, severity, summary, state.channels(), now)
+    prune_expired_notification_requests(&mut tx, now)
+        .await
+        .map_err(|_| TestSendError::Unavailable)?;
+    // Same request id: same Server command result, or an explicit conflict.
+    if let Some(existing) = load_notification_request(&mut tx, request_id, now)
+        .await
+        .map_err(|_| TestSendError::Unavailable)?
+    {
+        if existing.intent_fingerprint != fingerprint {
+            let _ = tx.rollback().await;
+            return Err(TestSendError::RequestConflict);
+        }
+        let delivery = load_delivery(&mut tx, &existing.delivery_id)
+            .await
+            .map_err(|_| TestSendError::Unavailable)?
+            .ok_or(TestSendError::Unavailable)?;
+        let event_id = existing.event_id.ok_or(TestSendError::Unavailable)?;
+        tx.commit().await.map_err(|_| TestSendError::Unavailable)?;
+        return Ok(TestSendOutcome {
+            event_id,
+            delivery,
+            audit_event_id: existing.audit_event_id,
+            deduplicated: true,
+        });
+    }
+    let last_test = last_test_request_created_at(&mut tx)
+        .await
+        .map_err(|_| TestSendError::Unavailable)?;
+    if let Some(retry_after_seconds) =
+        cooldown_remaining_seconds(last_test.as_deref(), now, channels.test_cooldown_seconds)
+    {
+        let _ = tx.rollback().await;
+        return Err(TestSendError::CooldownActive {
+            retry_after_seconds,
+        });
+    }
+    let event_id = record_test_event(&mut tx, severity, summary, channels, now)
         .await
         .map_err(|_| TestSendError::Unavailable)?;
     let delivery_id: String =
@@ -873,6 +1052,44 @@ pub async fn send_test_delivery(
             .fetch_one(&mut *tx)
             .await
             .map_err(|_| TestSendError::Unavailable)?;
+    // Audit acceptance in the same transaction as the Event and the ledger,
+    // so an Audit-persistence failure fails the command before any send.
+    if insert_audit_event(
+        &mut *tx,
+        Some(actor_user_id),
+        "notification_test_sent",
+        "notification_event",
+        &event_id,
+        Some(&serde_json::json!({
+            "channel": "telegram",
+            "eventId": event_id,
+            "deliveryId": delivery_id,
+            "requestId": request_id,
+        })),
+    )
+    .await
+    .is_err()
+    {
+        let _ = tx.rollback().await;
+        return Err(TestSendError::Unavailable);
+    }
+    let audit_event_id: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| TestSendError::Unavailable)?;
+    insert_notification_request(
+        &mut tx,
+        request_id,
+        "test",
+        &fingerprint,
+        Some(&event_id),
+        &delivery_id,
+        audit_event_id,
+        now,
+        i64::from(channels.dedup_retention_seconds),
+    )
+    .await
+    .map_err(|_| TestSendError::Unavailable)?;
     tx.commit().await.map_err(|_| TestSendError::Unavailable)?;
 
     // Claim and send synchronously. If the worker already claimed the
@@ -978,7 +1195,12 @@ pub async fn send_test_delivery(
         .await
         .map_err(|_| TestSendError::Unavailable)?
         .expect("delivery exists");
-    Ok((event_id, delivery))
+    Ok(TestSendOutcome {
+        event_id,
+        delivery,
+        audit_event_id,
+        deduplicated: false,
+    })
 }
 
 #[derive(Debug)]
@@ -986,6 +1208,26 @@ pub enum TestSendError {
     NotConfigured,
     Disabled,
     Unavailable,
+    /// The Owner-supplied request id was missing or out of bounds.
+    InvalidRequestId,
+    /// The same request id was reused for a different command intent.
+    RequestConflict,
+    /// Another test was accepted recently; retry after the remaining seconds.
+    CooldownActive {
+        retry_after_seconds: i64,
+    },
+}
+
+impl TestSendError {
+    /// The Retry-After hint for a cooldown refusal, in whole seconds.
+    pub fn retry_after_seconds(&self) -> Option<i64> {
+        match self {
+            Self::CooldownActive {
+                retry_after_seconds,
+            } => Some(*retry_after_seconds),
+            _ => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1037,7 +1279,10 @@ mod tests {
     }
 
     fn channels(telegram: Option<TelegramChannel>) -> NotificationChannels {
-        NotificationChannels { telegram }
+        NotificationChannels {
+            telegram,
+            ..Default::default()
+        }
     }
 
     #[tokio::test]

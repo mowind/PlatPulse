@@ -153,6 +153,10 @@ pub struct TelegramChannelFile {
 #[serde(deny_unknown_fields, default)]
 pub struct NotificationsSectionFile {
     pub telegram: Option<TelegramChannelFile>,
+    /// Minimum seconds between accepted Owner test requests; defaults to 30.
+    pub test_cooldown_seconds: Option<u32>,
+    /// Seconds a Server request result stays queryable; defaults to 86400.
+    pub dedup_retention_seconds: Option<u32>,
 }
 
 /// Per-setting overrides from the `serve` CLI flags.
@@ -243,12 +247,43 @@ pub struct TelegramChannel {
     pub retry_base_seconds: u32,
 }
 
-/// Resolved notification channels. A channel is present only when it is
-/// configured in `server.toml`; unconfigured channels create no
-/// Deliveries. Provider tokens never enter the WebUI, logs, or Audit.
-#[derive(Debug, Clone, Default)]
+/// Default seconds between Owner test requests. A test performs a real
+/// external Telegram send, so a cooldown prevents a double-click or a
+/// repeated HTTP request from producing a second message while still letting
+/// an Owner retry after reading the previous result. The upper bound matches
+/// `retry_base_seconds` so operators reason in one unit.
+pub const DEFAULT_TEST_COOLDOWN_SECONDS: u32 = 30;
+pub const MIN_TEST_COOLDOWN_SECONDS: u32 = 1;
+pub const MAX_TEST_COOLDOWN_SECONDS: u32 = 3600;
+
+/// Default seconds a Server request/result association stays queryable. A
+/// lost response or a Server restart must still reconcile to the original
+/// command, so the window is long (24h) but bounded (7d) to keep the small
+/// ledger prunable.
+pub const DEFAULT_DEDUP_RETENTION_SECONDS: u32 = 86_400;
+pub const MIN_DEDUP_RETENTION_SECONDS: u32 = 60;
+pub const MAX_DEDUP_RETENTION_SECONDS: u32 = 604_800;
+
+/// Resolved notification channels and request policy. A channel is present
+/// only when it is configured in `server.toml`; unconfigured channels create
+/// no Deliveries. Provider tokens never enter the WebUI, logs, or Audit.
+#[derive(Debug, Clone)]
 pub struct NotificationChannels {
     pub telegram: Option<TelegramChannel>,
+    /// Minimum seconds between accepted Owner test requests (design §17.4).
+    pub test_cooldown_seconds: u32,
+    /// Seconds a Server request/result association stays queryable.
+    pub dedup_retention_seconds: u32,
+}
+
+impl Default for NotificationChannels {
+    fn default() -> Self {
+        Self {
+            telegram: None,
+            test_cooldown_seconds: DEFAULT_TEST_COOLDOWN_SECONDS,
+            dedup_retention_seconds: DEFAULT_DEDUP_RETENTION_SECONDS,
+        }
+    }
 }
 
 impl NotificationChannels {
@@ -626,15 +661,60 @@ fn resolve_notification_channels(
     file: Option<&ServerConfigFile>,
     config_path: &Option<PathBuf>,
 ) -> Result<NotificationChannels, ConfigError> {
-    let Some(section) = file.and_then(|value| value.notifications.as_ref()) else {
-        return Ok(NotificationChannels::default());
-    };
-    let Some(telegram) = section.telegram.as_ref() else {
-        return Ok(NotificationChannels::default());
-    };
     let path = config_path
         .clone()
         .unwrap_or_else(|| PathBuf::from("<cli>"));
+    let section = file.and_then(|value| value.notifications.as_ref());
+    // Request policy is independent of whether a channel is configured: the
+    // Server still owns dedup/cooldown semantics for the Admin API.
+    let test_cooldown_seconds = section
+        .and_then(|value| value.test_cooldown_seconds)
+        .unwrap_or(DEFAULT_TEST_COOLDOWN_SECONDS);
+    if !(MIN_TEST_COOLDOWN_SECONDS..=MAX_TEST_COOLDOWN_SECONDS).contains(&test_cooldown_seconds) {
+        return Err(ConfigError::InvalidNotificationPolicy {
+            path: path.clone(),
+            reason: format!(
+                "notifications.test_cooldown_seconds must be between {MIN_TEST_COOLDOWN_SECONDS} and {MAX_TEST_COOLDOWN_SECONDS}"
+            ),
+        });
+    }
+    let dedup_retention_seconds = section
+        .and_then(|value| value.dedup_retention_seconds)
+        .unwrap_or(DEFAULT_DEDUP_RETENTION_SECONDS);
+    if !(MIN_DEDUP_RETENTION_SECONDS..=MAX_DEDUP_RETENTION_SECONDS)
+        .contains(&dedup_retention_seconds)
+    {
+        return Err(ConfigError::InvalidNotificationPolicy {
+            path: path.clone(),
+            reason: format!(
+                "notifications.dedup_retention_seconds must be between {MIN_DEDUP_RETENTION_SECONDS} and {MAX_DEDUP_RETENTION_SECONDS}"
+            ),
+        });
+    }
+    if dedup_retention_seconds < test_cooldown_seconds {
+        return Err(ConfigError::InvalidNotificationPolicy {
+            path: path.clone(),
+            reason: "notifications.dedup_retention_seconds must be at least \
+                     notifications.test_cooldown_seconds"
+                .to_owned(),
+        });
+    }
+    let telegram = section
+        .and_then(|value| value.telegram.as_ref())
+        .map(|telegram| resolve_telegram_channel(telegram, &path))
+        .transpose()?;
+    Ok(NotificationChannels {
+        telegram,
+        test_cooldown_seconds,
+        dedup_retention_seconds,
+    })
+}
+
+fn resolve_telegram_channel(
+    telegram: &TelegramChannelFile,
+    path: &Path,
+) -> Result<TelegramChannel, ConfigError> {
+    let path = path.to_path_buf();
     let token_file = telegram
         .token_file
         .clone()
@@ -664,14 +744,12 @@ fn resolve_notification_channels(
                 .to_owned(),
         });
     }
-    Ok(NotificationChannels {
-        telegram: Some(TelegramChannel {
-            enabled: telegram.enabled.unwrap_or(true),
-            token_file,
-            chat_id,
-            max_attempts,
-            retry_base_seconds,
-        }),
+    Ok(TelegramChannel {
+        enabled: telegram.enabled.unwrap_or(true),
+        token_file,
+        chat_id,
+        max_attempts,
+        retry_base_seconds,
     })
 }
 
@@ -936,6 +1014,8 @@ development = false
         assert_eq!(telegram.chat_id, "123456789");
         assert_eq!(telegram.max_attempts, 5);
         assert_eq!(telegram.retry_base_seconds, 60);
+        assert_eq!(config.notifications.test_cooldown_seconds, 30);
+        assert_eq!(config.notifications.dedup_retention_seconds, 86_400);
 
         let path = write_config(
             dir.path(),
@@ -956,6 +1036,37 @@ development = false
             error,
             ConfigError::InvalidNotificationPolicy { .. }
         ));
+    }
+
+    #[test]
+    fn notification_request_policy_is_configurable_and_bounded() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            "state_dir = \"/srv/platpulse\"\n[notifications]\ntest_cooldown_seconds = 5\ndedup_retention_seconds = 120\n",
+        );
+        let config = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap();
+        assert_eq!(config.notifications.test_cooldown_seconds, 5);
+        assert_eq!(config.notifications.dedup_retention_seconds, 120);
+        assert!(config.notifications.telegram().is_none());
+
+        for reason in [
+            "test_cooldown_seconds = 0\n",
+            "test_cooldown_seconds = 3601\n",
+            "dedup_retention_seconds = 59\n",
+            "dedup_retention_seconds = 604801\n",
+            "test_cooldown_seconds = 120\ndedup_retention_seconds = 60\n",
+        ] {
+            let path = write_config(
+                dir.path(),
+                &format!("state_dir = \"/srv/platpulse\"\n[notifications]\n{reason}"),
+            );
+            let error = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap_err();
+            assert!(
+                matches!(error, ConfigError::InvalidNotificationPolicy { .. }),
+                "{reason} must be rejected"
+            );
+        }
     }
 
     #[test]

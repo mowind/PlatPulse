@@ -112,6 +112,7 @@ import {
   notificationDeliveryDetail,
   notificationEventDetail,
   notificationEvents,
+  notificationRequestResult,
   retryDelivery,
   testNotificationChannel,
   backupArtifactDetail,
@@ -144,6 +145,7 @@ import {
   type NotificationDeliveriesResponse,
   type NotificationEventDetail,
   type NotificationEventsResponse,
+  type NotificationRequestResult,
   type RuleOverrideResponse,
   type RuleOverrideUpsertRequest,
   type RulePreviewRequest,
@@ -255,6 +257,8 @@ const adminKeys = {
   notificationChannels: ['admin', 'notifications', 'channels'] as const,
   notificationChannelDetail: (channelId: string) =>
     ['admin', 'notifications', 'channels', channelId] as const,
+  notificationRequest: (requestId: string) =>
+    ['admin', 'notifications', 'requests', requestId] as const,
   operationsRoot: ['admin', 'operations'] as const,
   operations: (filters: OperationFilters) => ['admin', 'operations', filters] as const,
   operationDetail: (operationId: string) =>
@@ -2163,12 +2167,42 @@ export function useAdminChannelDetail(generation: number, channelId: string) {
   })
 }
 
+/** A fresh opaque Owner command identity (webui.md §15.9). The Server, not
+ * the browser busy state, is authoritative for dedup/cooldown; callers reuse
+ * this id when reconciling a lost response instead of issuing a new command. */
+export function newNotificationRequestId(): string {
+  return crypto.randomUUID()
+}
+
+/** The durable Server result of one test/retry command, looked up by its
+ * opaque request id. Used to reconcile an HTTP timeout or lost response
+ * without re-sending. An unknown or expired id is a typed 404. */
+export async function fetchAdminNotificationRequest(
+  requestId: string,
+  signal?: AbortSignal,
+): Promise<NotificationRequestResult> {
+  return requestAdmin(
+    () => notificationRequestResult({ path: { request_id: requestId }, signal }),
+    'Unable to look up the notification request',
+  )
+}
+
+export function useAdminNotificationRequest(generation: number, requestId: string) {
+  return useQuery({
+    queryKey: [...adminKeys.notificationRequest(requestId), generation],
+    queryFn: ({ signal }) => fetchAdminNotificationRequest(requestId, signal),
+    enabled: requestId.length > 0,
+  })
+}
+
 /** Manual retry: re-arms one Delivery (new attempt on the next worker pass,
  * never a duplicate Event/Incident/transition). Duplicate parallel retries
  * and non-retryable states are typed 409s; the failure path refetches
- * authoritative state. */
+ * authoritative state. Reusing the same requestId returns the recorded Server
+ * result without re-arming again. */
 export async function retryDeliveryEntry(
   deliveryId: string,
+  requestId: string,
   csrfToken: string,
 ): Promise<DeliveryRetryResponse> {
   try {
@@ -2176,6 +2210,7 @@ export async function retryDeliveryEntry(
       () =>
         retryDelivery({
           path: { delivery_id: deliveryId },
+          body: { requestId },
           headers: { 'X-CSRF-Token': csrfToken },
         }),
       'Unable to retry the Delivery',
@@ -2191,9 +2226,12 @@ export async function retryDeliveryEntry(
 }
 
 /** Owner test notification: creates a `test` Event (clearly separate from
- * business Incidents), sends synchronously, audits, and refetches. */
+ * business Incidents), sends synchronously, audits, and refetches. A repeated
+ * requestId returns the recorded result; a fresh requestId inside the Server
+ * test cooldown is a typed 429. */
 export async function testNotificationChannelEntry(
   channelId: string,
+  requestId: string,
   csrfToken: string,
 ): Promise<ChannelTestResponse> {
   try {
@@ -2201,6 +2239,7 @@ export async function testNotificationChannelEntry(
       () =>
         testNotificationChannel({
           path: { channel_id: channelId },
+          body: { requestId },
           headers: { 'X-CSRF-Token': csrfToken },
         }),
       'Unable to send the test notification',

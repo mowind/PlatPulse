@@ -19,6 +19,14 @@ import AdminIncidentsList, { AdminIncidentDetailPage } from './pages/AdminIncide
 import AdminRulesList, { AdminRuleDetailPage } from './pages/AdminRules'
 import AdminSilencesList from './pages/AdminSilences'
 import AdminMaintenanceList from './pages/AdminMaintenance'
+import AdminNotifications from './pages/AdminNotifications'
+import AdminNotificationEvents, {
+  AdminNotificationEventDetailPage,
+} from './pages/AdminNotificationEvents'
+import AdminNotificationDeliveries, {
+  AdminNotificationDeliveryDetailPage,
+} from './pages/AdminNotificationDeliveries'
+import AdminNotificationChannels from './pages/AdminNotificationChannels'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { ThemeProvider } from './theme/ThemeProvider'
 import { ensureSiteAccessModeKnown, subscribeSiteAccessMode } from './api/public'
@@ -168,6 +176,15 @@ const router = createBrowserRouter([
       { path: 'alerts/rules/:ruleKey', element: <AdminRuleDetailPage /> },
       { path: 'alerts/silences', element: <AdminSilencesList /> },
       { path: 'alerts/maintenance', element: <AdminMaintenanceList /> },
+      // Notification surface (issue #206): one Admin nav entry, with the
+      // event/delivery history and the controlled channel test as their own
+      // routes so each is linkable and survives a reload.
+      { path: 'notifications', element: <AdminNotifications /> },
+      { path: 'notifications/events', element: <AdminNotificationEvents /> },
+      { path: 'notifications/events/:eventId', element: <AdminNotificationEventDetailPage /> },
+      { path: 'notifications/deliveries', element: <AdminNotificationDeliveries /> },
+      { path: 'notifications/deliveries/:deliveryId', element: <AdminNotificationDeliveryDetailPage /> },
+      { path: 'notifications/channels', element: <AdminNotificationChannels /> },
       { path: 'access/sessions', element: <AdminSessions /> },
       { path: 'access/audit', element: <AdminAudit /> },
       // Safe Admin fallback (issue #92): removed legacy/deferred routes

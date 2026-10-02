@@ -470,6 +470,8 @@ GET  /api/public/v1/nodes/{node_id}/peer-history
 
 这些 family 表示当前实际 route 集合；每个 operation 的 GET/POST/PUT/PATCH/DELETE 方法、参数和响应以源 handler/OpenAPI operation 为准。备份创建与恢复是**离线操作**（[ADR 0008](../adr/0008-offline-server-backup.md)）：服务进程不创建 backup artifact，因此 `/api/admin/v1/backups` 只保留列表/详情/verify，`POST /api/admin/v1/backups` 随 `backup_create` Operation 一起移除。Session 撤销是 `POST /api/admin/v1/sessions/{session_id}/revoke`，不是 DELETE。运行时 handlers 还可能返回 OpenAPI 未列出的 typed `ApiErrorBody`（特别是 503/500），客户端必须把任何非 2xx 当作错误处理。 规则编辑与 Network/Node 继承覆盖的保存是版本安全的（issue #204）：`PUT /api/admin/v1/alerts/rules/{rule_key}` 与 `PUT /api/admin/v1/alerts/rules/{rule_key}/overrides` 都要求请求体携带 `expectedVersion`；与当前 composed version 不匹配时返回 `409` 加 `alert_rule_version_conflict` 的 `ApiErrorBody`，并在同一事务中不写入任何规则或覆盖变更。composed version 是整个规则聚合（baseline 加全部 Network/Node 覆盖）的并发令牌：baseline 编辑与覆盖 upsert 成功时都会追加一条不可变的历史记录并把 `alert_rules.version` 推进到新版本；`DELETE /api/admin/v1/alerts/rules/{rule_key}/overrides/{scope_kind}/{scope_value}` 只删除显式、可重建的覆盖、不带版本前置条件，但删除同样推进 composed version，持有旧版本的写入者必须重载后重审。
 
+通知测试与命令对账由 issue #206 交付：`POST /api/admin/v1/notifications/channels/{channel_id}/test` 与 `POST /api/admin/v1/notifications/deliveries/{delivery_id}/retry` 的请求体都必须携带 `requestId`（1..128 字符，空白或超长返回 400 `notification_request_id_invalid`），`GET /api/admin/v1/notifications/requests/{request_id}` 返回该 request id 的持久 Server 命令结果。Server 用 `notification_requests` 台账做**请求级**去重：同一 request id 加同一意图重放时返回已记录的结果且不重发（`deduplicated: true`），同一 id 换意图返回 409 `notification_request_id_conflict`；被拒绝的命令（冷却、未配置、禁用等）不写台账，因此查不到结果。测试命令还受 `[notifications] test_cooldown_seconds`（默认 30，范围 1..3600）约束，命中时返回 429 `notification_test_cooldown_active` 并带 `Retry-After`；台账保留期由 `dedup_retention_seconds`（默认 86400，范围 60..604800，且不得小于冷却）决定，过期行在读写时按不存在处理。这一层只保证 Server 命令不重复，**不等于**外部通道的 exactly-once 投递：delivery 仍是 at-least-once，重放只保证「同一条命令得到同一个 Server 结果」。retry 只接受 `retry_scheduled`/`failed`/`dead_letter`，`pending`/`in_flight` 返回 409 `notification_delivery_already_queued`，终态或 suppressed 返回 409 `notification_delivery_not_retryable`。
+
 ### 8.5 Admin Overview 契约
 
 以下为 §8.5 的当前实现。§15.6 的 Attention Acknowledgment 已由 issue #172 交付：`GET /api/admin/v1/overview` 的 Agent Item 现在带 Server-owned 的 occurrence/evidence 边界（`evidence_key`），已确认的同一次发生不再出现；它不是浏览器隐藏规则或 Alert Incident 恢复。
@@ -520,7 +522,7 @@ Home 不展示：凭证、RPC Endpoint 原文、内部错误堆栈、Agent/Host 
 5. Settings（按顺序包含 History Window 与 Site Access Mode）；
 6. Sessions 与 Audit。
 
-Server Admin API 另有 People、Validator、Alert、Notification、Operation、Retention、Backup/Restore、Doctor、Transfer 和 Agent credential operations；当前 SPA 没有对应注册路由。
+Server Admin API 另有 People、Validator、Operation、Retention、Backup/Restore、Doctor、Transfer 和 Agent credential operations；当前 SPA 没有对应注册路由。Alert/Incident/Rule/Silence/Maintenance 与 Notification 的测试、Event/Delivery 历史和请求对账页面已分别由 issue #203、#204、#205、#206 路由（见 WebUI §15.6–§15.9）。
 
 Settings 是当前 SPA 全局配置的唯一 canonical route（`/admin/settings`）；旧的 `/admin/history-window` 与 `/admin/site-access` 不重定向，而是进入 Admin 的 Section not found fallback。Server API 仍分别提供 `/api/admin/v1/history-window` 与 `/api/admin/v1/access-mode`。
 
@@ -750,6 +752,7 @@ PlatPulse 当前实现是：
 
 Incident 保留证据不等于继续把它当作当前待处理故障；删除主体不把 open Incident 改成声称已知恢复的 resolved。Incident 列表、详情与持久确认页面已由 issue #203 交付（Agent 提示确认与 Incident 确认是两个独立边界，见 §15.6）。常规 Retention 保护 Incident 历史；Notification Event 有独立保留策略，不能把二者混淆。 版本安全的 Alert Rule 管理与 Network/Node 继承覆盖页面已由 issue #204 交付（[WebUI §15.7](webui.md#157-alert-rule-management-and-inherited-overrides-issue-204-delivered)）：typed catalog 只能读取/编辑既有 key，保存携带 composed `expectedVersion`（覆盖 upsert/删除同样推进该版本），陈旧保存被 Server 以 `alert_rule_version_conflict` 拒绝后必须重载当前配置并重新复核；preview 不提交、不创建/解决/确认 Incident，也不承诺立即生成 Incident；Rule 编辑或禁用绝不改写 Incident 的 opening rule version 与 opened evidence，也不清除确认，Incident 详情另行投影当前 effective 配置，无法解析时按 unknown 处理而不是认为 Rule 已禁用或主体已恢复。
 
+通知侧的测试命令、请求级去重台账、测试冷却、Delivery 重试与 request id 对账页面已由 issue #206 交付（见 WebUI §15.9）：HTTP 超时或网络错误必须呈现为结果未知并对账原 request id，绝不换一个身份自动重发；Channel 状态与 Destination 一律掩码，bot token 不出 Server 主机。
 取消通知按主体覆盖所有未发送项，不能只通过 incident_id 找关联：当前恢复 Notification Event 可以没有 incident_id。实现需协调 worker claim/发送前检查；已发送或已交给外部通道且无法撤回的发送不能宣称已撤回。保留已有交付事实，不影响其他 Agent/Node 或共享 Validator 主体的通知策略。
 
 ### 15.8 待实现验收与技术核实

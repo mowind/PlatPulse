@@ -1,4 +1,4 @@
-import { Menu, LayoutDashboard, Cpu, Server, Network, Settings, PanelsTopLeft, ListChecks, SlidersHorizontal, TriangleAlert, BellOff, CalendarClock } from 'lucide-react'
+import { Menu, LayoutDashboard, Cpu, Server, Network, Settings, PanelsTopLeft, ListChecks, SlidersHorizontal, TriangleAlert, BellOff, BellRing, CalendarClock } from 'lucide-react'
 import BackgroundDecoration from '../components/BackgroundDecoration'
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link, NavLink, Outlet, useOutletContext } from 'react-router'
@@ -305,6 +305,16 @@ export default function AdminLayout() {
             </span>
             Maintenance
           </NavLink>
+          <NavLink
+            to="/admin/notifications"
+            onClick={closeNav}
+            className={({ isActive }) => cn(NAV_LINK, isActive && NAV_LINK_ACTIVE)}
+          >
+            <span data-slot="admin-nav-icon" className="flex w-6 shrink-0 justify-center" aria-hidden="true">
+              <BellRing size={18} strokeWidth={2} data-icon="BellRing" />
+            </span>
+            Notifications
+          </NavLink>
           <p className="px-3 pt-3 pb-1 text-xs font-medium tracking-wider text-muted-foreground">
             Access
           </p>
@@ -334,7 +344,10 @@ export default function AdminLayout() {
               data/maintenance, validators, people, transfer,
               enrollment/recovery/rotation) are not linked here. Incidents
               (issue #203), Rules (issue #204), Silences, and Maintenance
-              Windows (issue #205) are the routed Alerts entries. */}
+              Windows (issue #205), and Notifications (issue #206) are the
+              routed Alerts entries. The single Notifications entry keeps the
+              section inventory at one link while the event, delivery and
+              channel pages stay reachable through that route. */}
         </nav>
         <div
           data-slot="admin-nav-scrim"

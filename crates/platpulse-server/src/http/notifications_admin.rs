@@ -16,12 +16,14 @@
 //! handle: the Server pool has one connection, so pool queries inside a
 //! transaction would deadlock.
 
+use axum::body::Bytes;
 use axum::extract::{Extension, Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 use utoipa::ToSchema;
 
 use crate::auth::now_utc;
@@ -29,9 +31,10 @@ use crate::config::NotificationChannels;
 use crate::http::admin::{mutation_error, mutation_guard};
 use crate::http::{AppState, AuthenticatedSession, RequestId};
 use crate::notifications::{
-    AttemptRow, DeliveryRow, EventRow, RetryError, TestSendError, attempts_for_delivery,
-    deliveries_for_event, load_delivery, load_event, provider_reference, rearm_delivery,
-    redact_destination, send_test_delivery,
+    AttemptRow, DeliveryRow, EventRow, NotificationRequestRow, RetryError, TestSendError,
+    attempts_for_delivery, deliveries_for_event, insert_notification_request, load_delivery,
+    load_event, load_notification_request, provider_reference, prune_expired_notification_requests,
+    rearm_delivery, redact_destination, request_intent_fingerprint, send_test_delivery,
 };
 
 const MAX_PAGE: i64 = 100;
@@ -138,6 +141,11 @@ pub struct DeliveryRetryResponse {
     #[serde(flatten)]
     pub delivery: DeliveryRow,
     pub audit_event_id: i64,
+    /// The Owner-supplied request id this Server command is keyed by.
+    pub request_id: String,
+    /// True when the Server reconciled to an existing command result instead
+    /// of re-arming another external action.
+    pub deduplicated: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -147,6 +155,92 @@ pub struct ChannelTestResponse {
     #[serde(flatten)]
     pub delivery: DeliveryRow,
     pub audit_event_id: i64,
+    /// The Owner-supplied request id this Server command is keyed by.
+    pub request_id: String,
+    /// True when the Server reconciled to an existing command result instead
+    /// of performing another external send.
+    pub deduplicated: bool,
+}
+
+/// The durable Server result of one Owner test/retry command, looked up by its
+/// opaque request id after an HTTP timeout or lost response. It deliberately
+/// exposes only the Server's own association: the Delivery's provider outcome
+/// is at-least-once, never exactly-once.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationRequestResult {
+    pub request_id: String,
+    pub command_kind: String,
+    pub event_id: Option<String>,
+    pub delivery: DeliveryRow,
+    pub audit_event_id: i64,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+/// Mutation body carrying the Owner's opaque request id. The browser
+/// generates it once per Owner intent; the Server uses it for request-level
+/// dedup and stable result lookup.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestIdBody {
+    pub request_id: String,
+}
+
+/// Why a replayed request id could not be reconciled.
+enum RequestReplayError {
+    /// The same request id is recorded for a different command intent.
+    Conflict,
+    Unavailable,
+}
+
+/// Reconcile a mutation's request id against the ledger. `Ok(Some(row))` is a
+/// replay of the same intent; `Err(Conflict)` is a changed intent;
+/// `Ok(None)` means the request id is new.
+async fn resolve_request_replay(
+    tx: &mut sqlx::SqliteConnection,
+    request_id: &str,
+    fingerprint: &str,
+    now: OffsetDateTime,
+) -> Result<Option<NotificationRequestRow>, RequestReplayError> {
+    match load_notification_request(tx, request_id, now).await {
+        Ok(Some(row)) if row.intent_fingerprint == fingerprint => Ok(Some(row)),
+        Ok(Some(_)) => Err(RequestReplayError::Conflict),
+        Ok(None) => Ok(None),
+        Err(_) => Err(RequestReplayError::Unavailable),
+    }
+}
+
+/// A Server persistence failure during a mutation: the command did not take
+/// effect and the Owner may retry it with the same request id.
+fn unavailable_error(request_id: &str) -> Response {
+    mutation_error(
+        request_id,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "unavailable",
+        "Server database is unavailable",
+    )
+}
+
+/// The mutation body did not carry a usable opaque request id.
+fn request_id_invalid(request_id: &str) -> Response {
+    mutation_error(
+        request_id,
+        StatusCode::BAD_REQUEST,
+        "request_id_invalid",
+        "a non-empty requestId of at most 128 characters is required",
+    )
+}
+
+/// The same request id was already recorded for a different command intent.
+/// The Server refuses instead of silently performing the new intent.
+fn request_id_conflict(request_id: &str) -> Response {
+    mutation_error(
+        request_id,
+        StatusCode::CONFLICT,
+        "request_id_conflict",
+        "this requestId was already used for a different command",
+    )
 }
 
 fn channel_dto(channels: &NotificationChannels) -> Option<ChannelDto> {
@@ -491,7 +585,8 @@ pub(crate) async fn notification_delivery_detail(
     path = "/api/admin/v1/notifications/deliveries/{delivery_id}/retry",
     tag = "admin",
     params(("delivery_id" = String, Path, description = "Notification Delivery ID")),
-    responses((status = 200, body = DeliveryRetryResponse), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+    request_body = RequestIdBody,
+    responses((status = 200, body = DeliveryRetryResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn retry_delivery(
     State(state): State<AppState>,
@@ -499,22 +594,55 @@ pub(crate) async fn retry_delivery(
     headers: HeaderMap,
     Extension(principal): Extension<AuthenticatedSession>,
     Extension(request_id): Extension<RequestId>,
+    body: Bytes,
 ) -> Response {
-    if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, false) {
+    if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, true) {
         return response;
     }
+    let Ok(payload) = serde_json::from_slice::<RequestIdBody>(&body) else {
+        return request_id_invalid(&request_id.0);
+    };
     let now = now_utc();
+    let fingerprint = request_intent_fingerprint("retry", &delivery_id);
     let mut tx = match state.db().pool().begin().await {
         Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
+        Err(_) => return unavailable_error(&request_id.0),
     };
+    if prune_expired_notification_requests(&mut tx, now)
+        .await
+        .is_err()
+    {
+        let _ = tx.rollback().await;
+        return unavailable_error(&request_id.0);
+    }
+    match resolve_request_replay(&mut tx, &payload.request_id, &fingerprint, now).await {
+        Err(RequestReplayError::Conflict) => {
+            let _ = tx.rollback().await;
+            return request_id_conflict(&request_id.0);
+        }
+        Err(RequestReplayError::Unavailable) => {
+            let _ = tx.rollback().await;
+            return unavailable_error(&request_id.0);
+        }
+        Ok(Some(existing)) => {
+            let delivery = match load_delivery(&mut tx, &existing.delivery_id).await {
+                Ok(Some(delivery)) => delivery,
+                _ => {
+                    let _ = tx.rollback().await;
+                    return unavailable_error(&request_id.0);
+                }
+            };
+            let _ = tx.rollback().await;
+            return Json(DeliveryRetryResponse {
+                delivery,
+                audit_event_id: existing.audit_event_id,
+                request_id: payload.request_id,
+                deduplicated: true,
+            })
+            .into_response();
+        }
+        Ok(None) => {}
+    }
     let delivery = match rearm_delivery(&mut tx, &delivery_id, now).await {
         Ok(delivery) => delivery,
         Err(RetryError::NotFound) => {
@@ -562,18 +690,14 @@ pub(crate) async fn retry_delivery(
         Some(&serde_json::json!({
             "deliveryId": delivery_id,
             "state": delivery.state,
+            "requestId": payload.request_id,
         })),
     )
     .await
     .is_err()
     {
         let _ = tx.rollback().await;
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+        return unavailable_error(&request_id.0);
     }
     let audit_event_id: i64 = match sqlx::query_scalar("SELECT last_insert_rowid()")
         .fetch_one(&mut *tx)
@@ -582,21 +706,28 @@ pub(crate) async fn retry_delivery(
         Ok(value) => value,
         Err(_) => {
             let _ = tx.rollback().await;
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+            return unavailable_error(&request_id.0);
         }
     };
+    if insert_notification_request(
+        &mut tx,
+        &payload.request_id,
+        "retry",
+        &fingerprint,
+        Some(&delivery.event_id),
+        &delivery.delivery_id,
+        audit_event_id,
+        now,
+        i64::from(state.channels().dedup_retention_seconds),
+    )
+    .await
+    .is_err()
+    {
+        let _ = tx.rollback().await;
+        return unavailable_error(&request_id.0);
+    }
     if tx.commit().await.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+        return unavailable_error(&request_id.0);
     }
     state
         .admin_realtime()
@@ -604,6 +735,8 @@ pub(crate) async fn retry_delivery(
     Json(DeliveryRetryResponse {
         delivery,
         audit_event_id,
+        request_id: payload.request_id,
+        deduplicated: false,
     })
     .into_response()
 }
@@ -662,17 +795,23 @@ pub(crate) async fn notification_channel_detail(
     }
 }
 
-/// Send a test notification through a channel. Test Notifications are
-/// clearly separate from business Incidents (event kind `test`), always
-/// produce an Audit Event, and send synchronously so the response carries
-/// the resulting Delivery state. Provider tokens never enter the request,
-/// response, Audit body, or logs.
+/// Send a controlled test notification through a channel. Test Notifications
+/// are clearly separate from business Incidents (event kind `test`). The
+/// Owner supplies an opaque request id: the Server records the Notification
+/// Event, Delivery, Audit Event, and request association together before any
+/// external handoff, so replaying the id reconciles to the same Server command
+/// instead of sending again, a reused id with a different intent is refused
+/// (409), and a second test inside the configured cooldown is refused (429
+/// with `Retry-After`). This is Server request-level dedup, never a Telegram
+/// exactly-once promise; the Delivery state carries the real provider outcome.
+/// Provider tokens never enter the request, response, Audit body, or logs.
 #[utoipa::path(
     post,
     path = "/api/admin/v1/notifications/channels/{channel_id}/test",
     tag = "admin",
     params(("channel_id" = String, Path, description = "Channel ID (telegram)")),
-    responses((status = 200, body = ChannelTestResponse), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+    request_body = RequestIdBody,
+    responses((status = 200, body = ChannelTestResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 429, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn test_notification_channel(
     State(state): State<AppState>,
@@ -680,8 +819,9 @@ pub(crate) async fn test_notification_channel(
     headers: HeaderMap,
     Extension(principal): Extension<AuthenticatedSession>,
     Extension(request_id): Extension<RequestId>,
+    body: Bytes,
 ) -> Response {
-    if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, false) {
+    if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, true) {
         return response;
     }
     if channel_id != "telegram" {
@@ -692,10 +832,21 @@ pub(crate) async fn test_notification_channel(
             "unknown notification channel",
         );
     }
+    let Ok(payload) = serde_json::from_slice::<RequestIdBody>(&body) else {
+        return request_id_invalid(&request_id.0);
+    };
     let summary = format!("Test notification via {channel_id}");
-    let result = send_test_delivery(&state, &*state.delivery_provider(), "info", &summary).await;
-    let (event_id, delivery) = match result {
-        Ok(value) => value,
+    let outcome = match send_test_delivery(
+        &state,
+        &*state.delivery_provider(),
+        "info",
+        &summary,
+        &payload.request_id,
+        &principal.0.user_id,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
         Err(TestSendError::NotConfigured) => {
             return mutation_error(
                 &request_id.0,
@@ -716,80 +867,92 @@ pub(crate) async fn test_notification_channel(
             )
                 .into_response();
         }
-        Err(TestSendError::Unavailable) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+        Err(TestSendError::InvalidRequestId) => return request_id_invalid(&request_id.0),
+        Err(TestSendError::RequestConflict) => return request_id_conflict(&request_id.0),
+        Err(TestSendError::CooldownActive {
+            retry_after_seconds,
+        }) => {
+            let mut response = (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(crate::http::ApiErrorBody::with_message(
+                    "test_cooldown_active",
+                    format!(
+                        "a test notification was sent recently; retry after {} seconds",
+                        retry_after_seconds.max(0)
+                    ),
+                    &request_id.0,
+                )),
+            )
+                .into_response();
+            if let Ok(value) = HeaderValue::from_str(&retry_after_seconds.max(0).to_string()) {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
+            return response;
         }
+        Err(TestSendError::Unavailable) => return unavailable_error(&request_id.0),
     };
-    let mut tx = match state.db().pool().begin().await {
-        Ok(tx) => tx,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
-    };
-    if crate::auth::insert_audit_event(
-        &mut *tx,
-        Some(&principal.0.user_id),
-        "notification_test_sent",
-        "notification_event",
-        &event_id,
-        Some(&serde_json::json!({
-            "channel": channel_id,
-            "eventId": event_id,
-            "deliveryId": delivery.delivery_id,
-            "state": delivery.state,
-        })),
-    )
-    .await
-    .is_err()
-    {
-        let _ = tx.rollback().await;
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    if !outcome.deduplicated {
+        state
+            .admin_realtime()
+            .publish("notifications", None::<String>, 0);
     }
-    let audit_event_id: i64 = match sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(value) => value,
-        Err(_) => {
-            let _ = tx.rollback().await;
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
-    };
-    if tx.commit().await.is_err() {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
-    }
-    state
-        .admin_realtime()
-        .publish("notifications", None::<String>, 0);
     Json(ChannelTestResponse {
-        event_id,
+        event_id: outcome.event_id,
+        delivery: outcome.delivery,
+        audit_event_id: outcome.audit_event_id,
+        request_id: payload.request_id,
+        deduplicated: outcome.deduplicated,
+    })
+    .into_response()
+}
+
+/// Look up the durable Server result of one test/retry command by its opaque
+/// request id. This is how the browser reconciles an HTTP timeout or lost
+/// response without re-sending: it reports the Server's recorded command
+/// association and the Delivery's provider outcome, and never triggers a new
+/// external action. An unknown or expired request id is reported as unknown.
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/notifications/requests/{request_id}",
+    tag = "admin",
+    params(("request_id" = String, Path, description = "Owner-supplied opaque request ID")),
+    responses((status = 200, body = NotificationRequestResult), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn notification_request_result(
+    State(state): State<AppState>,
+    Path(request_id): Path<String>,
+    Extension(_session): Extension<AuthenticatedSession>,
+    Extension(extension_request_id): Extension<RequestId>,
+) -> Response {
+    let now = now_utc();
+    let mut conn = match state.db().pool().acquire().await {
+        Ok(conn) => conn,
+        Err(_) => return unavailable_error(&extension_request_id.0),
+    };
+    let row = match load_notification_request(&mut conn, &request_id, now).await {
+        Ok(row) => row,
+        Err(_) => return unavailable_error(&extension_request_id.0),
+    };
+    let Some(row) = row else {
+        return mutation_error(
+            &extension_request_id.0,
+            StatusCode::NOT_FOUND,
+            "notification_request_not_found",
+            "unknown or expired notification request",
+        );
+    };
+    let delivery = match load_delivery(&mut conn, &row.delivery_id).await {
+        Ok(Some(delivery)) => delivery,
+        _ => return unavailable_error(&extension_request_id.0),
+    };
+    Json(NotificationRequestResult {
+        request_id: row.request_id,
+        command_kind: row.command_kind,
+        event_id: row.event_id,
         delivery,
-        audit_event_id,
+        audit_event_id: row.audit_event_id,
+        created_at: row.created_at,
+        expires_at: row.expires_at,
     })
     .into_response()
 }
@@ -833,6 +996,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/notifications/channels/{channel_id}/test",
             axum::routing::post(test_notification_channel),
+        )
+        .route(
+            "/notifications/requests/{request_id}",
+            get(notification_request_result),
         )
 }
 
@@ -895,6 +1062,7 @@ mod tests {
                 max_attempts: 3,
                 retry_base_seconds: 60,
             }),
+            ..Default::default()
         })
         .await
     }
@@ -956,6 +1124,11 @@ mod tests {
         RequestId(std::sync::Arc::from("req-123"))
     }
 
+    /// A mutation body carrying the Owner's opaque request id.
+    fn json_body(request_id: &str) -> Bytes {
+        Bytes::from(serde_json::json!({ "requestId": request_id }).to_string())
+    }
+
     async fn body_json(response: Response) -> Value {
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
     }
@@ -974,6 +1147,7 @@ mod tests {
                 max_attempts: 3,
                 retry_base_seconds: 60,
             }),
+            ..Default::default()
         };
         crate::notifications::record_notification_event(
             &mut conn,
@@ -1189,6 +1363,7 @@ mod tests {
             mutation_headers(),
             Extension(session()),
             Extension(request_id()),
+            json_body("req-1"),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -1196,6 +1371,8 @@ mod tests {
         assert_eq!(value["deliveryId"], delivery_id);
         assert_eq!(value["state"], "pending");
         assert!(value["auditEventId"].as_i64().unwrap() > 0);
+        assert_eq!(value["requestId"], "req-1");
+        assert_eq!(value["deduplicated"], false);
 
         // The Event count is unchanged: retry never duplicates the Event.
         let events = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM notification_events")
@@ -1240,6 +1417,7 @@ mod tests {
             mutation_headers(),
             Extension(session()),
             Extension(request_id()),
+            json_body("req-1"),
         )
         .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
@@ -1261,6 +1439,7 @@ mod tests {
             mutation_headers(),
             Extension(session()),
             Extension(request_id()),
+            json_body("req-1"),
         )
         .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
@@ -1278,6 +1457,7 @@ mod tests {
             mutation_headers(),
             Extension(session()),
             Extension(request_id()),
+            json_body("req-1"),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -1286,6 +1466,8 @@ mod tests {
         assert_eq!(value["lastResult"], "telegram_api_error 429");
         assert_eq!(value["lastErrorKind"], "telegram_api");
         assert_eq!(value["retryAfterSeconds"], 5);
+        assert_eq!(value["requestId"], "req-1");
+        assert_eq!(value["deduplicated"], false);
         let event_id = value["eventId"].as_str().unwrap().to_owned();
 
         let event = {
@@ -1316,7 +1498,8 @@ mod tests {
         .unwrap();
         assert!(!audit.contains("fake-token"));
         assert!(!audit.contains("123456789"));
-        assert!(audit.contains("\"state\":\"failed\""));
+        assert!(audit.contains("\"requestId\""));
+        assert!(audit.contains("\"eventId\""));
     }
 
     #[tokio::test]
@@ -1330,6 +1513,7 @@ mod tests {
                     max_attempts: 3,
                     retry_base_seconds: 60,
                 }),
+                ..Default::default()
             })
             .await;
         let response = test_notification_channel(
@@ -1338,6 +1522,7 @@ mod tests {
             mutation_headers(),
             Extension(session()),
             Extension(request_id()),
+            json_body("req-1"),
         )
         .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
@@ -1373,6 +1558,329 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // ---- Owner request ledger: dedup, conflict, cooldown, lookup --------
+
+    async fn delivery_id_for(state: &AppState, event_id: &str) -> String {
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::notifications::deliveries_for_event(&mut conn, event_id)
+            .await
+            .unwrap()[0]
+            .delivery_id
+            .clone()
+    }
+
+    async fn test_command(state: &AppState, command_id: &str) -> Response {
+        test_notification_channel(
+            State(state.clone()),
+            Path("telegram".to_owned()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+            json_body(command_id),
+        )
+        .await
+    }
+
+    async fn retry_command(state: &AppState, delivery_id: &str, command_id: &str) -> Response {
+        retry_delivery(
+            State(state.clone()),
+            Path(delivery_id.to_owned()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+            json_body(command_id),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn replayed_test_request_returns_the_same_server_result() {
+        let (_dir, state, provider) = test_state().await;
+        let first = test_command(&state, "req-replay").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_value = body_json(first).await;
+        assert_eq!(first_value["deduplicated"], false);
+        let event_id = first_value["eventId"].as_str().unwrap().to_owned();
+        let delivery_id = first_value["deliveryId"].as_str().unwrap().to_owned();
+        let audit_event_id = first_value["auditEventId"].as_i64().unwrap();
+
+        let second = test_command(&state, "req-replay").await;
+        assert_eq!(second.status(), StatusCode::OK);
+        let second_value = body_json(second).await;
+        assert_eq!(second_value["deduplicated"], true);
+        assert_eq!(second_value["eventId"].as_str().unwrap(), event_id);
+        assert_eq!(second_value["deliveryId"].as_str().unwrap(), delivery_id);
+        assert_eq!(
+            second_value["auditEventId"].as_i64().unwrap(),
+            audit_event_id
+        );
+        assert_eq!(second_value["lastResult"], first_value["lastResult"]);
+
+        // Exactly one Server command and one external handoff.
+        assert_eq!(provider.texts.lock().unwrap().len(), 1);
+        let events = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM notification_events")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(events, 1);
+        let requests = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM notification_requests")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(requests, 1);
+    }
+
+    #[tokio::test]
+    async fn a_request_id_reused_for_another_command_is_refused() {
+        let (_dir, state, _provider) = test_state().await;
+        let event_id = seed_event(state.db().pool()).await;
+        let delivery_id = delivery_id_for(&state, &event_id).await;
+        assert_eq!(
+            test_command(&state, "req-shared").await.status(),
+            StatusCode::OK
+        );
+
+        let response = retry_command(&state, &delivery_id, "req-shared").await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let value = body_json(response).await;
+        assert_eq!(value["error"]["code"], "request_id_conflict");
+    }
+
+    #[tokio::test]
+    async fn a_second_test_inside_the_cooldown_is_refused_with_retry_after() {
+        let (_dir, state, provider) = test_state().await;
+        assert_eq!(
+            test_command(&state, "req-cooldown-1").await.status(),
+            StatusCode::OK
+        );
+
+        let second = test_command(&state, "req-cooldown-2").await;
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry_after = second
+            .headers()
+            .get(header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap();
+        assert!(retry_after > 0 && retry_after <= 30);
+        let value = body_json(second).await;
+        assert_eq!(value["error"]["code"], "test_cooldown_active");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("seconds")
+        );
+
+        // The refused command never reached the provider or created an Event.
+        assert_eq!(provider.texts.lock().unwrap().len(), 1);
+        let events = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM notification_events")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(events, 1);
+    }
+
+    #[tokio::test]
+    async fn the_configured_cooldown_expires() {
+        let (_dir, state, _provider) =
+            test_state_with_channels(crate::config::NotificationChannels {
+                telegram: Some(crate::config::TelegramChannel {
+                    enabled: true,
+                    token_file: tempfile::tempdir().unwrap().path().join("telegram-token"),
+                    chat_id: "123456789".to_owned(),
+                    max_attempts: 3,
+                    retry_base_seconds: 60,
+                }),
+                test_cooldown_seconds: 1,
+                dedup_retention_seconds: 60,
+            })
+            .await;
+        let event_id = seed_event(state.db().pool()).await;
+        let delivery_id = delivery_id_for(&state, &event_id).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::notifications::insert_notification_request(
+            &mut conn,
+            "req-old",
+            "test",
+            "test:telegram",
+            Some(&event_id),
+            &delivery_id,
+            0,
+            now_utc() - time::Duration::seconds(30),
+            60,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+
+        let response = test_command(&state, "req-new").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value = body_json(response).await;
+        assert_eq!(value["deduplicated"], false);
+    }
+
+    #[tokio::test]
+    async fn replayed_retry_request_does_not_rearm_again() {
+        let (_dir, state, _provider) = test_state().await;
+        let event_id = seed_event(state.db().pool()).await;
+        let delivery_id = delivery_id_for(&state, &event_id).await;
+        sqlx::query("UPDATE notification_deliveries SET state = 'dead_letter', attempt_count = 3 WHERE delivery_id = ?")
+            .bind(&delivery_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let first = retry_command(&state, &delivery_id, "req-retry").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_value = body_json(first).await;
+        assert_eq!(first_value["deduplicated"], false);
+        assert_eq!(first_value["state"], "pending");
+
+        let second = retry_command(&state, &delivery_id, "req-retry").await;
+        assert_eq!(second.status(), StatusCode::OK);
+        let second_value = body_json(second).await;
+        assert_eq!(second_value["deduplicated"], true);
+        assert_eq!(second_value["state"], "pending");
+
+        let retries = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'notification_delivery_retried'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(retries, 1);
+        let audit = sqlx::query_scalar::<_, String>(
+            "SELECT after_json FROM audit_events WHERE event_kind = 'notification_delivery_retried'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert!(audit.contains("req-retry"));
+    }
+
+    #[tokio::test]
+    async fn request_result_lookup_returns_the_recorded_command() {
+        let (_dir, state, _provider) = test_state().await;
+        let response = test_command(&state, "req-lookup").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value = body_json(response).await;
+        let event_id = value["eventId"].as_str().unwrap().to_owned();
+        let delivery_id = value["deliveryId"].as_str().unwrap().to_owned();
+        let audit_event_id = value["auditEventId"].as_i64().unwrap();
+
+        let lookup = notification_request_result(
+            State(state.clone()),
+            Path("req-lookup".to_owned()),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(lookup.status(), StatusCode::OK);
+        let body = body_json(lookup).await;
+        assert_eq!(body["requestId"], "req-lookup");
+        assert_eq!(body["commandKind"], "test");
+        assert_eq!(body["eventId"].as_str().unwrap(), event_id);
+        assert_eq!(
+            body["delivery"]["deliveryId"].as_str().unwrap(),
+            delivery_id
+        );
+        assert_eq!(body["auditEventId"].as_i64().unwrap(), audit_event_id);
+        assert!(body["expiresAt"].as_str().unwrap() > body["createdAt"].as_str().unwrap());
+
+        let unknown = notification_request_result(
+            State(state),
+            Path("req-unknown".to_owned()),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        let body = body_json(unknown).await;
+        assert_eq!(body["error"]["code"], "notification_request_not_found");
+    }
+
+    #[tokio::test]
+    async fn an_expired_request_result_is_reported_as_unknown() {
+        let (_dir, state, _provider) = test_state().await;
+        let event_id = seed_event(state.db().pool()).await;
+        let delivery_id = delivery_id_for(&state, &event_id).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::notifications::insert_notification_request(
+            &mut conn,
+            "req-expired",
+            "test",
+            "test:telegram",
+            Some(&event_id),
+            &delivery_id,
+            0,
+            now_utc() - time::Duration::seconds(120),
+            60,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+
+        let lookup = notification_request_result(
+            State(state),
+            Path("req-expired".to_owned()),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(lookup.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_missing_or_blank_request_id_is_rejected() {
+        let (_dir, state, _provider) = test_state().await;
+        let bodies = [
+            Bytes::from_static(b"{}"),
+            json_body(""),
+            json_body(&"a".repeat(129)),
+        ];
+        for body in bodies {
+            let response = test_notification_channel(
+                State(state.clone()),
+                Path("telegram".to_owned()),
+                mutation_headers(),
+                Extension(session()),
+                Extension(request_id()),
+                body,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let value = body_json(response).await;
+            assert_eq!(value["error"]["code"], "request_id_invalid");
+        }
+        let events = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM notification_events")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(events, 0);
+    }
+
+    #[tokio::test]
+    async fn concurrent_identical_requests_produce_one_command() {
+        let (_dir, state, provider) = test_state().await;
+        let (first, second) = tokio::join!(
+            test_command(&state, "req-concurrent"),
+            test_command(&state, "req-concurrent"),
+        );
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::OK);
+        let first_value = body_json(first).await;
+        let second_value = body_json(second).await;
+        let deduplicated = [
+            first_value["deduplicated"].clone(),
+            second_value["deduplicated"].clone(),
+        ];
+        assert!(deduplicated.contains(&Value::Bool(false)));
+        assert!(deduplicated.contains(&Value::Bool(true)));
+        assert_eq!(first_value["eventId"], second_value["eventId"]);
+        assert_eq!(provider.texts.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -1544,6 +2052,7 @@ mod tests {
                     max_attempts: 3,
                     retry_base_seconds: 60,
                 }),
+                ..Default::default()
             })
             .await;
         let mut conn = state.db().pool().acquire().await.unwrap();
