@@ -2563,6 +2563,13 @@ export type RuleOverrideDto = {
 export type RuleOverrideResponse = {
     overrides: Array<RuleOverrideDto>;
     ruleKey: string;
+    /**
+     * Composed configuration revision after this write. Override writes advance
+     * it exactly like a baseline edit, so a second writer still holding the
+     * previous revision is rejected instead of silently overwriting it
+     * (issue #204, Story 19).
+     */
+    version: number;
 };
 
 export type RuleOverrideUpsertRequest = {

@@ -19,6 +19,7 @@ import { Checkbox, Input, Select } from '../components/ui/input'
 import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
 import { cn } from '../lib/utils'
 import { SURFACE_CARD_STATIC, SURFACE_TOOLBAR } from '../lib/surface'
+import { severityLabel, severityTone } from '../lib/severity'
 import type {
   AlertRuleDetail,
   AlertRuleSummary,
@@ -60,17 +61,25 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.length > 0 ? error.message : fallback
 }
 
-function severityLabel(severity: string): string {
-  if (severity === 'critical') return 'Critical'
-  if (severity === 'warning') return 'Warning'
-  if (severity === 'info') return 'Info'
-  return severity
-}
+type FormFeedback = { tone: 'ok' | 'error'; message: string }
 
-function severityTone(severity: string): 'error' | 'warning' | 'neutral' {
-  if (severity === 'critical') return 'error'
-  if (severity === 'warning') return 'warning'
-  return 'neutral'
+/** One rendering of a save or preview result for every Rule form, so the forms
+ * cannot drift on how a success, a rejection, or a conflict is announced
+ * (issue #204 review, Standards #4). */
+function FormFeedbackNote({ feedback }: { feedback: FormFeedback | null }) {
+  if (feedback === null) return null
+  return (
+    <p
+      role={feedback.tone === 'error' ? 'alert' : 'status'}
+      className={cn(
+        'rounded-md border p-3 text-sm',
+        feedback.tone === 'ok' && 'border-border/60 bg-muted/30',
+        feedback.tone === 'error' && 'border-destructive/40 bg-destructive/5 text-destructive',
+      )}
+    >
+      {feedback.message}
+    </p>
+  )
 }
 
 function conditionSummary(condition: RuleCondition): string {
@@ -120,14 +129,28 @@ function hasThresholdParam(rule: AlertRuleDetail): boolean {
   return rule.schema.some((parameter) => parameter.key === 'threshold')
 }
 
-function conditionFromDraft(rule: AlertRuleDetail, draft: RuleDraft): RuleCondition {
+/** One condition builder for both the baseline form and the override form, so
+ * the two surfaces cannot drift on whether an absent threshold is omitted or
+ * explicitly nulled: a Rule whose schema declares a threshold keeps the key. */
+function conditionFromParts(
+  rule: AlertRuleDetail,
+  parts: { forSecs: string; recoveryForSecs: string; threshold: string },
+): RuleCondition {
   const base: RuleCondition = {
-    for_secs: Number(draft.forSecs),
-    recovery_for_secs: Number(draft.recoveryForSecs),
+    for_secs: Number(parts.forSecs),
+    recovery_for_secs: Number(parts.recoveryForSecs),
   }
   if (!hasThresholdParam(rule)) return base
-  if (draft.threshold.trim() === '') return { ...base, threshold: null }
-  return { ...base, threshold: Number(draft.threshold) }
+  if (parts.threshold.trim() === '') return { ...base, threshold: null }
+  return { ...base, threshold: Number(parts.threshold) }
+}
+
+function conditionFromDraft(rule: AlertRuleDetail, draft: RuleDraft): RuleCondition {
+  return conditionFromParts(rule, {
+    forSecs: draft.forSecs,
+    recoveryForSecs: draft.recoveryForSecs,
+    threshold: draft.threshold,
+  })
 }
 
 /** PAGE-ADMIN-RULES: the typed Rule catalog with each Rule's baseline version
@@ -171,7 +194,7 @@ export default function AdminRulesList() {
 
       {rules.length > 0 && (
         <div className="overflow-x-auto rounded-md border border-border/60">
-          <table className="w-full min-w-[44rem] text-left text-sm" aria-label="Alert Rules">
+          <table data-stack className="w-full text-left text-sm" aria-label="Alert Rules">
             <thead className={cn('text-xs uppercase tracking-wide text-muted-foreground', SURFACE_TOOLBAR)}>
               <tr>
                 <th scope="col" className="px-3 py-2 font-medium">Rule</th>
@@ -186,7 +209,7 @@ export default function AdminRulesList() {
             <tbody>
               {rules.map((rule) => (
                 <tr key={rule.ruleKey} className="border-t border-border/60">
-                  <th scope="row" className="px-3 py-2 font-medium">
+                  <th scope="row" data-label="Rule" className="min-w-0 px-3 py-2 font-medium">
                     <Link
                       className="inline-flex min-h-11 items-center underline-offset-4 hover:underline"
                       to={'/admin/alerts/rules/' + encodeURIComponent(rule.ruleKey)}
@@ -194,19 +217,19 @@ export default function AdminRulesList() {
                       {rule.ruleKey}
                     </Link>
                   </th>
-                  <td className="px-3 py-2">{rule.subjectKind}</td>
-                  <td className="px-3 py-2">
+                  <td data-label="Subject" className="min-w-0 px-3 py-2">{rule.subjectKind}</td>
+                  <td data-label="State" className="min-w-0 px-3 py-2">
                     <StatusBadge
                       status={rule.enabled ? 'Enabled' : 'Disabled'}
                       tone={rule.enabled ? 'ok' : 'neutral'}
                     />
                   </td>
-                  <td className="px-3 py-2">
+                  <td data-label="Severity" className="min-w-0 px-3 py-2">
                     <StatusBadge status={severityLabel(rule.severity)} tone={severityTone(rule.severity)} />
                   </td>
-                  <td className="px-3 py-2 tabular-nums">{rule.version}</td>
-                  <td className="px-3 py-2 tabular-nums">{rule.openIncidents}</td>
-                  <td className="px-3 py-2 tabular-nums">
+                  <td data-label="Version" className="min-w-0 px-3 py-2 tabular-nums">{rule.version}</td>
+                  <td data-label="Open Incidents" className="min-w-0 px-3 py-2 tabular-nums">{rule.openIncidents}</td>
+                  <td data-label="Subjects firing / pending" className="min-w-0 px-3 py-2 tabular-nums">
                     {rule.evaluation.evaluationUnavailable
                       ? 'Unavailable'
                       : rule.evaluation.firing + ' / ' + rule.evaluation.pending}
@@ -241,11 +264,20 @@ function ConflictNotice({ onReload, busy }: { onReload: () => void; busy: boolea
 function OverridesCard({
   rule,
   csrfToken,
+  composedVersion,
   onConflict,
+  onComposedVersion,
 }: {
   rule: AlertRuleDetail
   csrfToken: string
+  /** The composed revision this page reviewed. The override form sends THIS
+   * version, never the live query's, so a background refetch from another
+   * Owner's save cannot silently bless a stale override. */
+  composedVersion: number
   onConflict: () => void
+  /** The composed revision this write produced; the baseline form adopts it so
+   * its next save does not carry a version the Server already superseded. */
+  onComposedVersion: (version: number) => void
 }) {
   const [scopeKind, setScopeKind] = useState('network')
   const [scopeValue, setScopeValue] = useState('')
@@ -256,17 +288,13 @@ function OverridesCard({
   const [recoveryForSecs, setRecoveryForSecs] = useState('')
   const [threshold, setThreshold] = useState('')
   const [busy, setBusy] = useState(false)
-  const [feedback, setFeedback] = useState<{ tone: 'ok' | 'error'; message: string } | null>(null)
+  const [feedback, setFeedback] = useState<FormFeedback | null>(null)
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
 
   const condition: RuleCondition | null =
     conditionMode === 'inherit'
       ? null
-      : {
-          for_secs: Number(forSecs),
-          recovery_for_secs: Number(recoveryForSecs),
-          ...(threshold.trim() === '' ? {} : { threshold: Number(threshold) }),
-        }
+      : conditionFromParts(rule, { forSecs, recoveryForSecs, threshold })
 
   const everythingInherits =
     enabledChoice === 'inherit' && severityChoice === 'inherit' && conditionMode === 'inherit'
@@ -287,10 +315,10 @@ function OverridesCard({
     }
     setBusy(true)
     try {
-      await upsertRuleOverrideEntry(
+      const response = await upsertRuleOverrideEntry(
         rule.ruleKey,
         {
-          expectedVersion: rule.version,
+          expectedVersion: composedVersion,
           scopeKind,
           scopeValue: scopeValue.trim(),
           enabled: enabledChoice === 'inherit' ? null : enabledChoice === 'enabled',
@@ -299,7 +327,12 @@ function OverridesCard({
         },
         csrfToken,
       )
-      setFeedback({ tone: 'ok', message: 'Override saved. The baseline Rule version is unchanged.' })
+      onComposedVersion(response.version)
+      setFeedback({
+        tone: 'ok',
+        message:
+          'Override saved as composed version ' + response.version + '. A reader holding the previous version must reload before saving.',
+      })
       setScopeValue('')
     } catch (error) {
       if (isVersionConflict(error)) {
@@ -319,8 +352,18 @@ function OverridesCard({
     setBusy(true)
     setFeedback(null)
     try {
-      await deleteRuleOverrideEntry(rule.ruleKey, override.scopeKind, override.scopeValue, csrfToken)
-      setFeedback({ tone: 'ok', message: 'Override removed; the affected subjects inherit the layer below.' })
+      const response = await deleteRuleOverrideEntry(
+        rule.ruleKey,
+        override.scopeKind,
+        override.scopeValue,
+        csrfToken,
+      )
+      onComposedVersion(response.version)
+      setFeedback({
+        tone: 'ok',
+        message:
+          'Override removed as composed version ' + response.version + '; the affected subjects inherit the layer below.',
+      })
     } catch (error) {
       if (isVersionConflict(error)) {
         onConflict()
@@ -341,7 +384,7 @@ function OverridesCard({
           <Empty description="No override narrows this Rule; every subject uses the baseline." />
         ) : (
           <div className="overflow-x-auto rounded-md border border-border/60">
-            <table className="w-full min-w-[40rem] text-left text-sm" aria-label="Rule overrides">
+            <table data-stack className="w-full text-left text-sm" aria-label="Rule overrides">
               <thead className={cn('text-xs uppercase tracking-wide text-muted-foreground', SURFACE_TOOLBAR)}>
                 <tr>
                   <th scope="col" className="px-3 py-2 font-medium">Scope</th>
@@ -357,10 +400,10 @@ function OverridesCard({
                   const key = override.scopeKind + '/' + override.scopeValue
                   return (
                     <tr key={key} className="border-t border-border/60 align-top">
-                      <th scope="row" className="px-3 py-2 font-medium">
+                      <th scope="row" data-label="Scope" className="min-w-0 px-3 py-2 font-medium">
                         {override.scopeKind}: <span className="break-all">{override.scopeValue}</span>
                       </th>
-                      <td className="px-3 py-2">
+                      <td data-label="Enabled" className="min-w-0 px-3 py-2">
                         <InheritedOrValue
                           value={
                             override.enabled === null || override.enabled === undefined
@@ -371,12 +414,12 @@ function OverridesCard({
                           }
                         />
                       </td>
-                      <td className="px-3 py-2">
+                      <td data-label="Severity" className="min-w-0 px-3 py-2">
                         <InheritedOrValue
                           value={override.severity === null || override.severity === undefined ? null : severityLabel(override.severity)}
                         />
                       </td>
-                      <td className="px-3 py-2">
+                      <td data-label="Condition" className="min-w-0 px-3 py-2">
                         <InheritedOrValue
                           value={
                             override.condition === null || override.condition === undefined
@@ -385,8 +428,8 @@ function OverridesCard({
                           }
                         />
                       </td>
-                      <td className="px-3 py-2">{formatObservedAt(override.updatedAt)}</td>
-                      <td className="px-3 py-2">
+                      <td data-label="Updated" className="min-w-0 px-3 py-2">{formatObservedAt(override.updatedAt)}</td>
+                      <td data-label="Action" className="min-w-0 px-3 py-2">
                         {confirmingDelete === key ? (
                           <span
                             className="flex flex-wrap items-center gap-2"
@@ -509,18 +552,7 @@ function OverridesCard({
               </label>
             </div>
           )}
-          {feedback && (
-            <p
-              role={feedback.tone === 'error' ? 'alert' : 'status'}
-              className={cn(
-                'rounded-md border p-3 text-sm',
-                feedback.tone === 'ok' && 'border-border/60 bg-muted/30',
-                feedback.tone === 'error' && 'border-destructive/40 bg-destructive/5 text-destructive',
-              )}
-            >
-              {feedback.message}
-            </p>
-          )}
+          <FormFeedbackNote feedback={feedback} />
           <Button type="submit" disabled={busy}>
             Save override
           </Button>
@@ -589,7 +621,7 @@ function PreviewCard({
         )}
         {subjects && subjects.length > 0 && (
           <div className="overflow-x-auto rounded-md border border-border/60">
-            <table className="w-full min-w-[40rem] text-left text-sm" aria-label="Previewed subjects">
+            <table data-stack className="w-full text-left text-sm" aria-label="Previewed subjects">
               <thead className={cn('text-xs uppercase tracking-wide text-muted-foreground', SURFACE_TOOLBAR)}>
                 <tr>
                   <th scope="col" className="px-3 py-2 font-medium">Subject</th>
@@ -602,18 +634,18 @@ function PreviewCard({
               <tbody>
                 {subjects.map((subject) => (
                   <tr key={subject.subjectKind + '/' + subject.subjectKey} className="border-t border-border/60">
-                    <th scope="row" className="px-3 py-2 font-medium break-all">
+                    <th scope="row" data-label="Subject" className="min-w-0 px-3 py-2 font-medium break-all">
                       {subject.subjectKind}: {subject.subjectKey}
                     </th>
-                    <td className="px-3 py-2">{subject.currentState}</td>
-                    <td className="px-3 py-2">{subject.projectedState}</td>
-                    <td className="px-3 py-2">
+                    <td data-label="Current state" className="min-w-0 px-3 py-2">{subject.currentState}</td>
+                    <td data-label="Projected state" className="min-w-0 px-3 py-2">{subject.projectedState}</td>
+                    <td data-label="Would fire" className="min-w-0 px-3 py-2">
                       <StatusBadge
                         status={subject.wouldFire ? 'Yes' : 'No'}
                         tone={subject.wouldFire ? 'warning' : 'neutral'}
                       />
                     </td>
-                    <td className="px-3 py-2">{subject.note}</td>
+                    <td data-label="Note" className="min-w-0 px-3 py-2">{subject.note}</td>
                   </tr>
                 ))}
               </tbody>
@@ -630,10 +662,11 @@ function VersionsCard({ rule }: { rule: AlertRuleDetail }) {
     <CardX size="medium" className={CARD_SURFACE} title="Immutable version history">
       <div className="space-y-2">
         <p className="text-sm text-muted-foreground">
-          Every save appends an immutable version. An Incident keeps the version it opened under.
+          Every configuration change, including an override change, appends an immutable composed
+          revision. An Incident keeps the version it opened under.
         </p>
         <div className="overflow-x-auto rounded-md border border-border/60">
-          <table className="w-full min-w-[32rem] text-left text-sm" aria-label="Rule versions">
+          <table data-stack className="w-full text-left text-sm" aria-label="Rule versions">
             <thead className={cn('text-xs uppercase tracking-wide text-muted-foreground', SURFACE_TOOLBAR)}>
               <tr>
                 <th scope="col" className="px-3 py-2 font-medium">Version</th>
@@ -645,14 +678,14 @@ function VersionsCard({ rule }: { rule: AlertRuleDetail }) {
             <tbody>
               {rule.versions.map((version) => (
                 <tr key={version.version} className="border-t border-border/60">
-                  <th scope="row" className="px-3 py-2 font-medium tabular-nums">
+                  <th scope="row" data-label="Version" className="min-w-0 px-3 py-2 font-medium tabular-nums">
                     {version.version}
                   </th>
-                  <td className="px-3 py-2">
+                  <td data-label="Severity" className="min-w-0 px-3 py-2">
                     <StatusBadge status={severityLabel(version.severity)} tone={severityTone(version.severity)} />
                   </td>
-                  <td className="px-3 py-2">{conditionSummary(version.condition)}</td>
-                  <td className="px-3 py-2">{formatObservedAt(version.createdAt)}</td>
+                  <td data-label="Condition" className="min-w-0 px-3 py-2">{conditionSummary(version.condition)}</td>
+                  <td data-label="Saved" className="min-w-0 px-3 py-2">{formatObservedAt(version.createdAt)}</td>
                 </tr>
               ))}
             </tbody>
@@ -671,7 +704,7 @@ function StatesCard({ rule }: { rule: AlertRuleDetail }) {
         <Empty description="No subject has evaluated state for this Rule yet." />
       ) : (
         <div className="overflow-x-auto rounded-md border border-border/60">
-          <table className="w-full min-w-[40rem] text-left text-sm" aria-label="Rule subject states">
+          <table data-stack className="w-full text-left text-sm" aria-label="Rule subject states">
             <thead className={cn('text-xs uppercase tracking-wide text-muted-foreground', SURFACE_TOOLBAR)}>
               <tr>
                 <th scope="col" className="px-3 py-2 font-medium">Subject</th>
@@ -685,26 +718,26 @@ function StatesCard({ rule }: { rule: AlertRuleDetail }) {
             <tbody>
               {states.map((state) => (
                 <tr key={state.subjectKind + '/' + state.subjectKey} className="border-t border-border/60">
-                  <th scope="row" className="px-3 py-2 font-medium break-all">
+                  <th scope="row" data-label="Subject" className="min-w-0 px-3 py-2 font-medium break-all">
                     {state.subjectKind}: {state.subjectKey}
                   </th>
-                  <td className="px-3 py-2">
+                  <td data-label="State" className="min-w-0 px-3 py-2">
                     {state.evaluationUnavailable ? (
                       <StatusBadge status="Unavailable" tone="neutral" />
                     ) : (
                       state.state
                     )}
                   </td>
-                  <td className="px-3 py-2">
+                  <td data-label="Input" className="min-w-0 px-3 py-2">
                     {state.evaluationUnavailable
                       ? 'Unknown (never treat unknown as 0)'
                       : state.inputValue === null || state.inputValue === undefined
                         ? state.inputKind
                         : state.inputKind + ' = ' + state.inputValue}
                   </td>
-                  <td className="px-3 py-2">{formatObservedAt(state.since)}</td>
-                  <td className="px-3 py-2">{formatObservedAt(state.lastEvaluatedAt)}</td>
-                  <td className="px-3 py-2 tabular-nums">{state.openIncidents}</td>
+                  <td data-label="Since" className="min-w-0 px-3 py-2">{formatObservedAt(state.since)}</td>
+                  <td data-label="Last evaluated" className="min-w-0 px-3 py-2">{formatObservedAt(state.lastEvaluatedAt)}</td>
+                  <td data-label="Open Incidents" className="min-w-0 px-3 py-2 tabular-nums">{state.openIncidents}</td>
                 </tr>
               ))}
             </tbody>
@@ -727,7 +760,7 @@ export function AdminRuleDetailPage() {
   const [conflict, setConflict] = useState(false)
   const [reloading, setReloading] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [feedback, setFeedback] = useState<{ tone: 'ok' | 'error'; message: string } | null>(null)
+  const [feedback, setFeedback] = useState<FormFeedback | null>(null)
   // Only a new Rule identity or an explicit reload re-syncs the form. A
   // background refetch (another Owner saved) must NOT silently adopt the new
   // version, or the stale-writer conflict could never be observed.
@@ -981,18 +1014,7 @@ export function AdminRuleDetailPage() {
             This save carries composed version {draft.expectedVersion}. If another Owner saves first, the
             Server rejects this one and you must reload and review.
           </p>
-          {feedback && (
-            <p
-              role={feedback.tone === 'error' ? 'alert' : 'status'}
-              className={cn(
-                'rounded-md border p-3 text-sm',
-                feedback.tone === 'ok' && 'border-border/60 bg-muted/30',
-                feedback.tone === 'error' && 'border-destructive/40 bg-destructive/5 text-destructive',
-              )}
-            >
-              {feedback.message}
-            </p>
-          )}
+          <FormFeedbackNote feedback={feedback} />
           <Button type="submit" disabled={busy || conflict || reloading}>
             Save Rule
           </Button>
@@ -1001,7 +1023,15 @@ export function AdminRuleDetailPage() {
 
       <PreviewCard rule={rule} draft={draft} csrfToken={csrfToken} disabled={conflict} />
 
-      <OverridesCard rule={rule} csrfToken={csrfToken} onConflict={() => setConflict(true)} />
+      <OverridesCard
+        rule={rule}
+        csrfToken={csrfToken}
+        composedVersion={draft.expectedVersion}
+        onConflict={() => setConflict(true)}
+        onComposedVersion={(version) =>
+          setDraft((current) => (current === null ? current : { ...current, expectedVersion: version }))
+        }
+      />
 
       <VersionsCard rule={rule} />
       <StatesCard rule={rule} />

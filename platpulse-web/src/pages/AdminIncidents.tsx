@@ -15,6 +15,7 @@ import { Input, Select } from '../components/ui/input'
 import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
 import { cn } from '../lib/utils'
 import { SURFACE_CARD_STATIC, SURFACE_TOOLBAR } from '../lib/surface'
+import { severityLabel, severityTone } from '../lib/severity'
 import type {
   IncidentAcknowledgment,
   IncidentDetail,
@@ -48,16 +49,6 @@ function shortId(value: string): string {
 
 function capitalize(value: string): string {
   return value.length === 0 ? value : value.charAt(0).toUpperCase() + value.slice(1)
-}
-
-function severityLabel(severity: string): string {
-  return severity === 'critical' ? 'Critical' : severity === 'warning' ? 'Warning' : capitalize(severity)
-}
-
-function severityTone(severity: string): 'error' | 'warning' | 'neutral' {
-  if (severity === 'critical') return 'error'
-  if (severity === 'warning') return 'warning'
-  return 'neutral'
 }
 
 function stateLabel(state: string): string {

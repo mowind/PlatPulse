@@ -277,7 +277,10 @@ describe('PAGE-ADMIN-RULE-DETAIL (inherited configuration and version-safe editi
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       ['/api/admin/v1/alerts/rules/' + RULE_KEY + '/overrides']: async (request) => {
         upserts.push((await request.json()) as Record<string, unknown>)
-        return jsonResponse({ ruleKey: RULE_KEY, overrides: RULE_DETAIL.overrides }, 200)
+        return jsonResponse(
+          { ruleKey: RULE_KEY, version: 4, overrides: RULE_DETAIL.overrides },
+          200,
+        )
       },
       ['/api/admin/v1/alerts/rules/' + RULE_KEY]: () => jsonResponse(RULE_DETAIL, 200),
     })
@@ -293,7 +296,13 @@ describe('PAGE-ADMIN-RULE-DETAIL (inherited configuration and version-safe editi
 
     fireEvent.change(screen.getByLabelText('Override severity'), { target: { value: 'critical' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save override' }))
-    await screen.findByText('Override saved. The baseline Rule version is unchanged.')
+    await screen.findByText(
+      'Override saved as composed version 4. A reader holding the previous version must reload before saving.',
+    )
+    // The override write advanced the composed version, and the baseline form
+    // adopts it rather than later sending a version the Server superseded
+    // (issue #204 review, Spec FINDING 1).
+    expect(screen.getByText(/This save carries composed version 4\./)).toBeTruthy()
     expect(upserts).toHaveLength(1)
     expect(upserts[0].expectedVersion).toBe(3)
     expect(upserts[0].scopeKind).toBe('network')

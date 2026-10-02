@@ -206,19 +206,74 @@ pub struct AlertRuleUpdateResponse {
     pub audit_event_id: i64,
 }
 
-/// Transactional outcome of a version-checked Rule edit (issue #204).
-enum RuleUpdateOutcome {
-    Updated(Box<AlertRuleDetail>),
+/// Transactional outcome of a version-checked Rule write (issue #204). The
+/// baseline edit and the override upsert share the same conflict rules, so they
+/// share one outcome shape rather than two parallel enums.
+enum RuleWriteOutcome<T> {
+    Updated(T),
     NotFound,
-    /// The declared expectedVersion no longer matches the stored version.
+    /// The declared expectedVersion no longer matches the stored composed version.
     StaleVersion,
 }
 
-/// Transactional outcome of a version-checked override upsert.
-enum RuleOverrideOutcome {
-    Updated(Vec<RuleOverrideDto>),
-    NotFound,
-    StaleVersion,
+/// The overrides a version-checked override write left behind, plus the composed
+/// configuration revision that write produced.
+struct OverrideRevision {
+    overrides: Vec<RuleOverrideDto>,
+    version: i64,
+}
+
+/// The shared response for a version-checked Rule write that named an unknown
+/// Rule (issue #204).
+fn rule_write_not_found(request_id: &str) -> Response {
+    mutation_error(
+        request_id,
+        StatusCode::NOT_FOUND,
+        "alert_rule_not_found",
+        "unknown alert rule",
+    )
+}
+
+/// The shared response for a version-checked Rule write whose expectedVersion no
+/// longer matches the stored composed version (issue #204, Story 19).
+fn rule_write_version_conflict(request_id: &str) -> Response {
+    mutation_error(
+        request_id,
+        StatusCode::CONFLICT,
+        "alert_rule_version_conflict",
+        "the rule changed since it was read; reload the current configuration and review before saving",
+    )
+}
+
+/// Records one composed configuration revision and advances the Rule's stored
+/// version to it. The override surfaces change the effective configuration
+/// without touching the baseline columns, yet their save still has to
+/// invalidate a concurrent reader's expectedVersion (issue #204, Story 19).
+async fn record_composed_revision(
+    executor: &mut sqlx::SqliteConnection,
+    rule_key: &str,
+    new_version: i64,
+    severity: &str,
+    condition_json: &str,
+    updated_at: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO alert_rule_versions (rule_key, version, severity, condition_json, created_at) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(rule_key)
+    .bind(new_version)
+    .bind(severity)
+    .bind(condition_json)
+    .bind(updated_at)
+    .execute(&mut *executor)
+    .await?;
+    sqlx::query("UPDATE alert_rules SET version = ?, updated_at = ? WHERE rule_key = ?")
+        .bind(new_version)
+        .bind(updated_at)
+        .bind(rule_key)
+        .execute(&mut *executor)
+        .await?;
+    Ok(())
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -238,6 +293,11 @@ pub struct RuleOverrideUpsertRequest {
 #[serde(rename_all = "camelCase")]
 pub struct RuleOverrideResponse {
     pub rule_key: String,
+    /// Composed configuration revision after this write. Override writes advance
+    /// it exactly like a baseline edit, so a second writer still holding the
+    /// previous revision is rejected instead of silently overwriting it
+    /// (issue #204, Story 19).
+    pub version: i64,
     pub overrides: Vec<RuleOverrideDto>,
 }
 
@@ -962,17 +1022,17 @@ pub(crate) async fn update_alert_rule(
             );
         }
     };
-    let outcome: Result<RuleUpdateOutcome, AlertError> = async {
+    let outcome: Result<RuleWriteOutcome<Box<AlertRuleDetail>>, AlertError> = async {
         let Some((current_enabled, current_severity, current_version, current_condition, _, _)) =
             load_rule_row(&mut *tx, &rule_key).await?
         else {
-            return Ok(RuleUpdateOutcome::NotFound);
+            return Ok(RuleWriteOutcome::NotFound);
         };
         // Version-safe edit (issue #204, Story 19): reject a save composed
         // against a version that has since changed instead of overwriting the
         // newer configuration. The Owner must refetch and review again.
         if body.expected_version != current_version {
-            return Ok(RuleUpdateOutcome::StaleVersion);
+            return Ok(RuleWriteOutcome::StaleVersion);
         }
         let new_version = current_version + 1;
         let next_enabled = body.enabled.unwrap_or(current_enabled);
@@ -1041,7 +1101,7 @@ pub(crate) async fn update_alert_rule(
             .map(|(_, _, count)| *count)
             .sum();
         let definition = catalog_rule(&rule_key).expect("validated");
-        Ok(RuleUpdateOutcome::Updated(Box::new(AlertRuleDetail {
+        Ok(RuleWriteOutcome::Updated(Box::new(AlertRuleDetail {
             rule_key: rule_key.clone(),
             subject_kind: definition.subject_kind.as_str().to_owned(),
             enabled: next_enabled,
@@ -1059,7 +1119,7 @@ pub(crate) async fn update_alert_rule(
     }
     .await;
     match outcome {
-        Ok(RuleUpdateOutcome::Updated(detail)) => {
+        Ok(RuleWriteOutcome::Updated(detail)) => {
             let audit_event_id: i64 = match sqlx::query_scalar("SELECT last_insert_rowid()")
                 .fetch_one(&mut *tx)
                 .await
@@ -1089,23 +1149,13 @@ pub(crate) async fn update_alert_rule(
             })
             .into_response()
         }
-        Ok(RuleUpdateOutcome::NotFound) => {
+        Ok(RuleWriteOutcome::NotFound) => {
             let _ = tx.rollback().await;
-            mutation_error(
-                &request_id.0,
-                StatusCode::NOT_FOUND,
-                "alert_rule_not_found",
-                "unknown alert rule",
-            )
+            rule_write_not_found(&request_id.0)
         }
-        Ok(RuleUpdateOutcome::StaleVersion) => {
+        Ok(RuleWriteOutcome::StaleVersion) => {
             let _ = tx.rollback().await;
-            mutation_error(
-                &request_id.0,
-                StatusCode::CONFLICT,
-                "alert_rule_version_conflict",
-                "the rule changed since it was read; reload the current configuration and review before saving",
-            )
+            rule_write_version_conflict(&request_id.0)
         }
         Err(AlertError::Validation(message)) => {
             let _ = tx.rollback().await;
@@ -1538,15 +1588,16 @@ pub(crate) async fn upsert_rule_override(
             );
         }
     };
-    let outcome: Result<RuleOverrideOutcome, AlertError> = async {
+    let outcome: Result<RuleWriteOutcome<OverrideRevision>, AlertError> = async {
         // Version-safe override save (issue #204): a stale tab must reload and
         // review before replacing an override on a Rule that has since changed.
-        let Some((_, _, current_version, _, _, _)) = load_rule_row(&mut *tx, &rule_key).await?
+        let Some((_, current_severity, current_version, current_condition, _, _)) =
+            load_rule_row(&mut *tx, &rule_key).await?
         else {
-            return Ok(RuleOverrideOutcome::NotFound);
+            return Ok(RuleWriteOutcome::NotFound);
         };
         if body.expected_version != current_version {
-            return Ok(RuleOverrideOutcome::StaleVersion);
+            return Ok(RuleWriteOutcome::StaleVersion);
         }
         let updated_at = format_rfc3339(now_utc());
         // Replacing an override is a full replace. Clearing an explicit enabled
@@ -1619,13 +1670,24 @@ pub(crate) async fn upsert_rule_override(
             Some(&after),
         )
         .await?;
-        Ok(RuleOverrideOutcome::Updated(
-            rule_overrides_dto(&mut *tx, &rule_key).await?,
-        ))
+        let new_version = current_version + 1;
+        record_composed_revision(
+            &mut tx,
+            &rule_key,
+            new_version,
+            &current_severity,
+            &current_condition,
+            &updated_at,
+        )
+        .await?;
+        Ok(RuleWriteOutcome::Updated(OverrideRevision {
+            overrides: rule_overrides_dto(&mut *tx, &rule_key).await?,
+            version: new_version,
+        }))
     }
     .await;
     match outcome {
-        Ok(RuleOverrideOutcome::Updated(overrides)) => {
+        Ok(RuleWriteOutcome::Updated(OverrideRevision { overrides, version })) => {
             if tx.commit().await.is_err() {
                 return mutation_error(
                     &request_id.0,
@@ -1637,27 +1699,18 @@ pub(crate) async fn upsert_rule_override(
             state.admin_realtime().publish("alerts", None::<String>, 0);
             Json(RuleOverrideResponse {
                 rule_key,
+                version,
                 overrides,
             })
             .into_response()
         }
-        Ok(RuleOverrideOutcome::NotFound) => {
+        Ok(RuleWriteOutcome::NotFound) => {
             let _ = tx.rollback().await;
-            mutation_error(
-                &request_id.0,
-                StatusCode::NOT_FOUND,
-                "alert_rule_not_found",
-                "unknown alert rule",
-            )
+            rule_write_not_found(&request_id.0)
         }
-        Ok(RuleOverrideOutcome::StaleVersion) => {
+        Ok(RuleWriteOutcome::StaleVersion) => {
             let _ = tx.rollback().await;
-            mutation_error(
-                &request_id.0,
-                StatusCode::CONFLICT,
-                "alert_rule_version_conflict",
-                "the rule changed since it was read; reload the current configuration and review before saving",
-            )
+            rule_write_version_conflict(&request_id.0)
         }
         Err(AlertError::Database(_)) => {
             let _ = tx.rollback().await;
@@ -1685,7 +1738,10 @@ pub(crate) async fn upsert_rule_override(
 
 /// DELETE /api/admin/v1/alerts/rules/{rule_key}/overrides/{scope_kind}/{scope_value}:
 /// remove one Network/Node override (audited). The global rule is the only
-/// remaining authority for the subject.
+/// remaining authority for the subject. Removing it is an explicit, rebuildable
+/// change, so it carries no version precondition of its own, but it does
+/// advance the composed version: a writer still holding the previous revision
+/// must reload before saving (issue #204, Story 19).
 #[utoipa::path(
     delete,
     path = "/api/admin/v1/alerts/rules/{rule_key}/overrides/{scope_kind}/{scope_value}",
@@ -1726,7 +1782,12 @@ pub(crate) async fn delete_rule_override(
             );
         }
     };
-    let outcome: Result<Option<Vec<RuleOverrideDto>>, AlertError> = async {
+    let outcome: Result<Option<(Vec<RuleOverrideDto>, i64)>, AlertError> = async {
+        let Some((_, current_severity, current_version, current_condition, _, _)) =
+            load_rule_row(&mut *tx, &rule_key).await?
+        else {
+            return Ok(None);
+        };
         // Whether the removed override could have flipped an effective
         // enabled flag decides whether recovery windows must be invalidated
         // (issue #203 review R1).
@@ -1779,11 +1840,24 @@ pub(crate) async fn delete_rule_override(
             Some(&serde_json::json!({ "scope_kind": scope_kind, "scope_value": scope_value })),
         )
         .await?;
-        Ok(Some(rule_overrides_dto(&mut *tx, &rule_key).await?))
+        let new_version = current_version + 1;
+        record_composed_revision(
+            &mut tx,
+            &rule_key,
+            new_version,
+            &current_severity,
+            &current_condition,
+            &format_rfc3339(now_utc()),
+        )
+        .await?;
+        Ok(Some((
+            rule_overrides_dto(&mut *tx, &rule_key).await?,
+            new_version,
+        )))
     }
     .await;
     match outcome {
-        Ok(Some(overrides)) => {
+        Ok(Some((overrides, version))) => {
             if tx.commit().await.is_err() {
                 return mutation_error(
                     &request_id.0,
@@ -1795,6 +1869,7 @@ pub(crate) async fn delete_rule_override(
             state.admin_realtime().publish("alerts", None::<String>, 0);
             Json(RuleOverrideResponse {
                 rule_key,
+                version,
                 overrides,
             })
             .into_response()
@@ -3753,6 +3828,89 @@ mod tests {
         assert_eq!(overrides, 0, "the rejected override writes no row");
     }
 
+    /// Issue #204 Story 19 for the override surfaces: an override write advances
+    /// the composed configuration revision, so a second writer still holding the
+    /// previous revision is rejected instead of silently overwriting it.
+    #[tokio::test]
+    async fn override_write_advances_the_composed_version() {
+        let (_dir, state) = test_state().await;
+
+        let first = upsert_rule_override(
+            State(state.clone()),
+            Path("node.rpc_unreachable".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(
+                br#"{"expectedVersion":1,"scopeKind":"node","scopeValue":"node-a","enabled":false}"#,
+            ),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(body_json(first).await["version"], 2);
+
+        // A different override, composed against the pre-write revision, is
+        // stale even though the baseline columns did not move.
+        let stale = upsert_rule_override(
+            State(state.clone()),
+            Path("node.rpc_unreachable".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(
+                br#"{"expectedVersion":1,"scopeKind":"network","scopeValue":"mainnet","enabled":false}"#,
+            ),
+        )
+        .await;
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            body_json(stale).await["error"]["code"],
+            "alert_rule_version_conflict"
+        );
+        let overrides: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM alert_rule_overrides")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(overrides, 1, "the rejected override writes no row");
+
+        let second = upsert_rule_override(
+            State(state.clone()),
+            Path("node.rpc_unreachable".to_owned()),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+            axum::body::Bytes::from_static(
+                br#"{"expectedVersion":2,"scopeKind":"network","scopeValue":"mainnet","enabled":false}"#,
+            ),
+        )
+        .await;
+        assert_eq!(second.status(), StatusCode::OK);
+        assert_eq!(body_json(second).await["version"], 3);
+
+        // Removing an override advances the composed revision as well.
+        let removed = delete_rule_override(
+            State(state.clone()),
+            Path((
+                "node.rpc_unreachable".to_owned(),
+                "network".to_owned(),
+                "mainnet".to_owned(),
+            )),
+            mutation_headers("csrf"),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(removed.status(), StatusCode::OK);
+        assert_eq!(body_json(removed).await["version"], 4);
+        let stored: i64 = sqlx::query_scalar(
+            "SELECT version FROM alert_rules WHERE rule_key = 'node.rpc_unreachable'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(stored, 4);
+    }
+
     /// Issue #204 Stories 20 and 21: a Rule edit and disable leave the
     /// Incident opening rule version, evidence, and acknowledgment intact
     /// while the separately projected current configuration moves on.
@@ -4767,7 +4925,9 @@ mod tests {
         assert!(recovering_since.is_none());
         assert!(unavailable);
 
-        // A Network override on the subject's Network invalidates it too.
+        // A Network override on the subject's Network invalidates it too. The
+        // Node upsert and its removal already advanced the composed revision
+        // twice (issue #204 Story 19), so this save carries revision 3.
         let upsert_network = upsert_rule_override(
             State(state.clone()),
             Path("node.rpc_unreachable".to_owned()),
@@ -4775,7 +4935,7 @@ mod tests {
             Extension(session()),
             Extension(request_id()),
             axum::body::Bytes::from_static(
-                br#"{"expectedVersion":1,"scopeKind":"network","scopeValue":"mainnet","enabled":false}"#,
+                br#"{"expectedVersion":3,"scopeKind":"network","scopeValue":"mainnet","enabled":false}"#,
             ),
         )
         .await;
@@ -4898,6 +5058,7 @@ mod tests {
         )
         .await;
         assert_eq!(upsert_network.status(), StatusCode::OK);
+        assert_eq!(body_json(upsert_network).await["version"], 2);
         let upsert_node = upsert_rule_override(
             State(state.clone()),
             Path("node.rpc_unreachable".to_owned()),
@@ -4905,7 +5066,7 @@ mod tests {
             Extension(session()),
             Extension(request_id()),
             axum::body::Bytes::from_static(
-                br#"{"expectedVersion":1,"scopeKind":"node","scopeValue":"node-a","enabled":true}"#,
+                br#"{"expectedVersion":2,"scopeKind":"node","scopeValue":"node-a","enabled":true}"#,
             ),
         )
         .await;
@@ -4945,7 +5106,7 @@ mod tests {
             Extension(session()),
             Extension(request_id()),
             axum::body::Bytes::from_static(
-                br#"{"expectedVersion":1,"scopeKind":"node","scopeValue":"node-a","severity":"warning"}"#,
+                br#"{"expectedVersion":3,"scopeKind":"node","scopeValue":"node-a","severity":"warning"}"#,
             ),
         )
         .await;

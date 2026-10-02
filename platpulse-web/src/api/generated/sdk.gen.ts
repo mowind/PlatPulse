@@ -251,7 +251,10 @@ export const upsertRuleOverride = <ThrowOnError extends boolean = false>(options
 /**
  * DELETE /api/admin/v1/alerts/rules/{rule_key}/overrides/{scope_kind}/{scope_value}:
  * remove one Network/Node override (audited). The global rule is the only
- * remaining authority for the subject.
+ * remaining authority for the subject. Removing it is an explicit, rebuildable
+ * change, so it carries no version precondition of its own, but it does
+ * advance the composed version: a writer still holding the previous revision
+ * must reload before saving (issue #204, Story 19).
  */
 export const deleteRuleOverride = <ThrowOnError extends boolean = false>(options: Options<DeleteRuleOverrideData, ThrowOnError>): RequestResult<DeleteRuleOverrideResponses, DeleteRuleOverrideErrors, ThrowOnError> => (options.client ?? client).delete<DeleteRuleOverrideResponses, DeleteRuleOverrideErrors, ThrowOnError>({ url: '/api/admin/v1/alerts/rules/{rule_key}/overrides/{scope_kind}/{scope_value}', ...options });
 

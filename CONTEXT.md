@@ -341,15 +341,15 @@ An Owner's durable, shared, non-retractable record that one Alert Incident occur
 _Avoid_: Incident resolution, Attention Acknowledgment, Silence, Health override
 
 **Rule Override**:
-A Server-owned, per-scope narrowing of one Alert Rule, limited to Network and Node scope. Each unset field inherits the baseline (or an outer scope) instead of repeating it, and the most specific set value wins.
+A Server-owned, per-scope narrowing of one Alert Rule, limited to Network and Node scope. Each unset field inherits the baseline (or an outer scope) instead of repeating it, and the most specific set value wins. Adding, changing, or removing an override is version-safe exactly like a baseline edit: it advances the Rule composed version.
 _Avoid_: Arbitrary Agent or Host override, Copied baseline value
 
 **Effective Rule Configuration**:
-The enabled flag, severity, and condition a subject actually evaluates under after its baseline and Network and Node overrides are composed, together with the composed version those values came from. It is projected separately from an Alert Incident opening rule version and opened evidence, and an unresolvable configuration is unknown rather than disabled, recovered, or healthy.
+The enabled flag, severity, and condition a subject actually evaluates under after its baseline and Network and Node overrides are composed, together with the composed version those values came from; any baseline edit or override change advances that version. It is projected separately from an Alert Incident opening rule version and opened evidence, and an unresolvable configuration is unknown rather than disabled, recovered, or healthy.
 _Avoid_: Opening rule version, Current health state
 
 **Rule Version Conflict**:
-The Server rejection (409, code alert_rule_version_conflict) of a save whose expected version no longer matches the stored composed version. The save writes nothing, and the Owner must reload the current configuration and review before saving again.
+The Server rejection (409, code alert_rule_version_conflict) of a save whose expected version no longer matches the stored composed version. The save writes nothing, and the Owner must reload the current configuration and review before saving again. An override change advances the same composed version, so two Owners editing different overrides of one Rule cannot silently overwrite each other either.
 _Avoid_: Merge conflict, Last-write-wins
 
 **Rule Preview**:

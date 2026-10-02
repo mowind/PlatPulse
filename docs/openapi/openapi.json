@@ -1419,7 +1419,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "DELETE /api/admin/v1/alerts/rules/{rule_key}/overrides/{scope_kind}/{scope_value}:\nremove one Network/Node override (audited). The global rule is the only\nremaining authority for the subject.",
+        "summary": "DELETE /api/admin/v1/alerts/rules/{rule_key}/overrides/{scope_kind}/{scope_value}:\nremove one Network/Node override (audited). The global rule is the only\nremaining authority for the subject. Removing it is an explicit, rebuildable\nchange, so it carries no version precondition of its own, but it does\nadvance the composed version: a writer still holding the previous revision\nmust reload before saving (issue #204, Story 19).",
         "operationId": "delete_rule_override",
         "parameters": [
           {
@@ -14093,6 +14093,7 @@
         "type": "object",
         "required": [
           "ruleKey",
+          "version",
           "overrides"
         ],
         "properties": {
@@ -14104,6 +14105,11 @@
           },
           "ruleKey": {
             "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Composed configuration revision after this write. Override writes advance\nit exactly like a baseline edit, so a second writer still holding the\nprevious revision is rejected instead of silently overwriting it\n(issue #204, Story 19)."
           }
         }
       },
