@@ -1,0 +1,1904 @@
+# TYPE cbft_counter_consensus_count gauge
+cbft_counter_consensus_count 0
+
+# TYPE cbft_counter_mined_count gauge
+cbft_counter_mined_count 0
+
+# TYPE cbft_counter_view_count gauge
+cbft_counter_view_count 0
+
+# TYPE cbft_gauage_block_commit_number gauge
+cbft_gauage_block_commit_number 160190984
+
+# TYPE cbft_gauage_block_executed gauge
+cbft_gauage_block_executed 2
+
+# TYPE cbft_gauage_block_locked_number gauge
+cbft_gauage_block_locked_number 160190985
+
+# TYPE cbft_gauage_block_mined gauge
+cbft_gauage_block_mined 0
+
+# TYPE cbft_gauage_block_number gauge
+cbft_gauage_block_number 160190984
+
+# TYPE cbft_gauage_block_qc_number gauge
+cbft_gauage_block_qc_number 160190986
+
+# TYPE cbft_gauage_block_qc_collected gauge
+cbft_gauage_block_qc_collected 0
+
+# TYPE cbft_gauage_epoch_number gauge
+cbft_gauage_epoch_number 372538
+
+# TYPE cbft_gauage_peer_value gauge
+cbft_gauage_peer_value 28
+
+# TYPE cbft_gauage_proposer_index gauge
+cbft_gauage_proposer_index 0
+
+# TYPE cbft_gauage_validator_count gauge
+cbft_gauage_validator_count 0
+
+# TYPE cbft_gauage_view_number gauge
+cbft_gauage_view_number 7
+
+# TYPE cbft_meter_block_check_failure gauge
+cbft_meter_block_check_failure 2
+
+# TYPE cbft_meter_block_confirmed gauge
+cbft_meter_block_confirmed 73
+
+# TYPE cbft_meter_block_produce gauge
+cbft_meter_block_produce 0
+
+# TYPE cbft_meter_message_gossip gauge
+cbft_meter_message_gossip 349
+
+# TYPE cbft_meter_message_repeat gauge
+cbft_meter_message_repeat 349
+
+# TYPE cbft_meter_signature_check_failure gauge
+cbft_meter_signature_check_failure 0
+
+# TYPE cbft_misc_in_packets gauge
+cbft_misc_in_packets 512
+
+# TYPE cbft_misc_in_traffic gauge
+cbft_misc_in_traffic 40884
+
+# TYPE cbft_misc_out_packets gauge
+cbft_misc_out_packets 924
+
+# TYPE cbft_misc_out_traffic gauge
+cbft_misc_out_traffic 53535
+
+# TYPE cbft_prop_pong_latency gauge
+cbft_prop_pong_latency 8707
+
+# TYPE cbft_prop_prepare_blocks_in_packets gauge
+cbft_prop_prepare_blocks_in_packets 82
+
+# TYPE cbft_prop_prepare_blocks_in_traffic gauge
+cbft_prop_prepare_blocks_in_traffic 65701
+
+# TYPE cbft_prop_prepare_blocks_out_packets gauge
+cbft_prop_prepare_blocks_out_packets 12
+
+# TYPE cbft_prop_prepare_blocks_out_traffic gauge
+cbft_prop_prepare_blocks_out_traffic 9499
+
+# TYPE cbft_prop_prepare_vote_in_packets gauge
+cbft_prop_prepare_vote_in_packets 4004
+
+# TYPE cbft_prop_prepare_vote_in_traffic gauge
+cbft_prop_prepare_vote_in_traffic 940937
+
+# TYPE cbft_prop_prepare_vote_out_packets gauge
+cbft_prop_prepare_vote_out_packets 7886
+
+# TYPE cbft_prop_prepare_vote_out_traffic gauge
+cbft_prop_prepare_vote_out_traffic 1853210
+
+# TYPE cbft_prop_view_change_in_packets gauge
+cbft_prop_view_change_in_packets 0
+
+# TYPE cbft_prop_view_change_in_traffic gauge
+cbft_prop_view_change_in_traffic 0
+
+# TYPE cbft_prop_view_change_out_packets gauge
+cbft_prop_view_change_out_packets 0
+
+# TYPE cbft_prop_view_change_out_traffic gauge
+cbft_prop_view_change_out_traffic 0
+
+# TYPE cbft_req_block_quorum_cert_in_packets gauge
+cbft_req_block_quorum_cert_in_packets 118
+
+# TYPE cbft_req_block_quorum_cert_in_traffic gauge
+cbft_req_block_quorum_cert_in_traffic 14632
+
+# TYPE cbft_req_block_quorum_cert_out_packets gauge
+cbft_req_block_quorum_cert_out_packets 0
+
+# TYPE cbft_req_block_quorum_cert_out_traffic gauge
+cbft_req_block_quorum_cert_out_traffic 0
+
+# TYPE cbft_req_get_prepare_block_in_packets gauge
+cbft_req_get_prepare_block_in_packets 17
+
+# TYPE cbft_req_get_prepare_block_in_traffic gauge
+cbft_req_get_prepare_block_in_traffic 119
+
+# TYPE cbft_req_get_prepare_block_out_packets gauge
+cbft_req_get_prepare_block_out_packets 0
+
+# TYPE cbft_req_get_prepare_block_out_traffic gauge
+cbft_req_get_prepare_block_out_traffic 0
+
+# TYPE cbft_req_get_prepare_vote_in_packets gauge
+cbft_req_get_prepare_vote_in_packets 0
+
+# TYPE cbft_req_get_prepare_vote_in_traffic gauge
+cbft_req_get_prepare_vote_in_traffic 0
+
+# TYPE cbft_req_get_prepare_vote_out_packets gauge
+cbft_req_get_prepare_vote_out_packets 0
+
+# TYPE cbft_req_get_prepare_vote_out_traffic gauge
+cbft_req_get_prepare_vote_out_traffic 0
+
+# TYPE cbft_req_get_qc_block_list_in_packets gauge
+cbft_req_get_qc_block_list_in_packets 2
+
+# TYPE cbft_req_get_qc_block_list_in_traffic gauge
+cbft_req_get_qc_block_list_in_traffic 78
+
+# TYPE cbft_req_get_qc_block_list_out_packets gauge
+cbft_req_get_qc_block_list_out_packets 0
+
+# TYPE cbft_req_get_qc_block_list_out_traffic gauge
+cbft_req_get_qc_block_list_out_traffic 0
+
+# TYPE cbft_req_get_quorum_cert_in_packets gauge
+cbft_req_get_quorum_cert_in_packets 1
+
+# TYPE cbft_req_get_quorum_cert_in_traffic gauge
+cbft_req_get_quorum_cert_in_traffic 39
+
+# TYPE cbft_req_get_quorum_cert_out_packets gauge
+cbft_req_get_quorum_cert_out_packets 0
+
+# TYPE cbft_req_get_quorum_cert_out_traffic gauge
+cbft_req_get_quorum_cert_out_traffic 0
+
+# TYPE cbft_req_prepare_votes_in_packets gauge
+cbft_req_prepare_votes_in_packets 2
+
+# TYPE cbft_req_prepare_votes_in_traffic gauge
+cbft_req_prepare_votes_in_traffic 6134
+
+# TYPE cbft_req_prepare_votes_out_packets gauge
+cbft_req_prepare_votes_out_packets 0
+
+# TYPE cbft_req_prepare_votes_out_traffic gauge
+cbft_req_prepare_votes_out_traffic 0
+
+# TYPE cbft_req_qc_block_list_in_packets gauge
+cbft_req_qc_block_list_in_packets 44
+
+# TYPE cbft_req_qc_block_list_in_traffic gauge
+cbft_req_qc_block_list_in_traffic 52275
+
+# TYPE cbft_req_qc_block_list_out_packets gauge
+cbft_req_qc_block_list_out_packets 0
+
+# TYPE cbft_req_qc_block_list_out_traffic gauge
+cbft_req_qc_block_list_out_traffic 0
+
+# TYPE cbft_timer_view_changed_count counter
+cbft_timer_view_changed_count 8
+
+# TYPE cbft_timer_view_changed summary
+cbft_timer_view_changed {quantile="0.5"} -9.223372036854776e+18
+cbft_timer_view_changed {quantile="0.75"} -9.223372036854776e+18
+cbft_timer_view_changed {quantile="0.95"} -9.223372036854776e+18
+cbft_timer_view_changed {quantile="0.99"} -9.223372036854776e+18
+cbft_timer_view_changed {quantile="0.999"} -9.223372036854776e+18
+cbft_timer_view_changed {quantile="0.9999"} -9.223372036854776e+18
+
+# TYPE chain_account_commits_count counter
+chain_account_commits_count 73
+
+# TYPE chain_account_commits summary
+chain_account_commits {quantile="0.5"} 0
+chain_account_commits {quantile="0.75"} 0
+chain_account_commits {quantile="0.95"} 0
+chain_account_commits {quantile="0.99"} 0
+chain_account_commits {quantile="0.999"} 0
+chain_account_commits {quantile="0.9999"} 0
+
+# TYPE chain_account_hashes_count counter
+chain_account_hashes_count 73
+
+# TYPE chain_account_hashes summary
+chain_account_hashes {quantile="0.5"} 0
+chain_account_hashes {quantile="0.75"} 0
+chain_account_hashes {quantile="0.95"} 0
+chain_account_hashes {quantile="0.99"} 0
+chain_account_hashes {quantile="0.999"} 0
+chain_account_hashes {quantile="0.9999"} 0
+
+# TYPE chain_account_reads_count counter
+chain_account_reads_count 73
+
+# TYPE chain_account_reads summary
+chain_account_reads {quantile="0.5"} 0
+chain_account_reads {quantile="0.75"} 0
+chain_account_reads {quantile="0.95"} 0
+chain_account_reads {quantile="0.99"} 0
+chain_account_reads {quantile="0.999"} 0
+chain_account_reads {quantile="0.9999"} 0
+
+# TYPE chain_account_updates_count counter
+chain_account_updates_count 73
+
+# TYPE chain_account_updates summary
+chain_account_updates {quantile="0.5"} 0
+chain_account_updates {quantile="0.75"} 0
+chain_account_updates {quantile="0.95"} 0
+chain_account_updates {quantile="0.99"} 0
+chain_account_updates {quantile="0.999"} 0
+chain_account_updates {quantile="0.9999"} 0
+
+# TYPE chain_head_block gauge
+chain_head_block 160190984
+
+# TYPE chain_head_header gauge
+chain_head_header 160190984
+
+# TYPE chain_head_receipt gauge
+chain_head_receipt 160190984
+
+# TYPE chain_inserts_count counter
+chain_inserts_count 18
+
+# TYPE chain_inserts summary
+chain_inserts {quantile="0.5"} 2.0656065e+06
+chain_inserts {quantile="0.75"} 2.61920975e+06
+chain_inserts {quantile="0.95"} 5.900387e+06
+chain_inserts {quantile="0.99"} 5.900387e+06
+chain_inserts {quantile="0.999"} 5.900387e+06
+chain_inserts {quantile="0.9999"} 5.900387e+06
+
+# TYPE chain_reorg_add gauge
+chain_reorg_add 0
+
+# TYPE chain_reorg_drop gauge
+chain_reorg_drop 0
+
+# TYPE chain_snapshot_account_reads_count counter
+chain_snapshot_account_reads_count 73
+
+# TYPE chain_snapshot_account_reads summary
+chain_snapshot_account_reads {quantile="0.5"} 0
+chain_snapshot_account_reads {quantile="0.75"} 0
+chain_snapshot_account_reads {quantile="0.95"} 0
+chain_snapshot_account_reads {quantile="0.99"} 0
+chain_snapshot_account_reads {quantile="0.999"} 0
+chain_snapshot_account_reads {quantile="0.9999"} 0
+
+# TYPE chain_snapshot_commits_count counter
+chain_snapshot_commits_count 73
+
+# TYPE chain_snapshot_commits summary
+chain_snapshot_commits {quantile="0.5"} 0
+chain_snapshot_commits {quantile="0.75"} 0
+chain_snapshot_commits {quantile="0.95"} 0
+chain_snapshot_commits {quantile="0.99"} 0
+chain_snapshot_commits {quantile="0.999"} 0
+chain_snapshot_commits {quantile="0.9999"} 0
+
+# TYPE chain_snapshot_storage_reads_count counter
+chain_snapshot_storage_reads_count 73
+
+# TYPE chain_snapshot_storage_reads summary
+chain_snapshot_storage_reads {quantile="0.5"} 0
+chain_snapshot_storage_reads {quantile="0.75"} 0
+chain_snapshot_storage_reads {quantile="0.95"} 0
+chain_snapshot_storage_reads {quantile="0.99"} 0
+chain_snapshot_storage_reads {quantile="0.999"} 0
+chain_snapshot_storage_reads {quantile="0.9999"} 0
+
+# TYPE chain_storage_commits_count counter
+chain_storage_commits_count 73
+
+# TYPE chain_storage_commits summary
+chain_storage_commits {quantile="0.5"} 0
+chain_storage_commits {quantile="0.75"} 0
+chain_storage_commits {quantile="0.95"} 0
+chain_storage_commits {quantile="0.99"} 0
+chain_storage_commits {quantile="0.999"} 0
+chain_storage_commits {quantile="0.9999"} 0
+
+# TYPE chain_storage_hashes_count counter
+chain_storage_hashes_count 73
+
+# TYPE chain_storage_hashes summary
+chain_storage_hashes {quantile="0.5"} 0
+chain_storage_hashes {quantile="0.75"} 0
+chain_storage_hashes {quantile="0.95"} 0
+chain_storage_hashes {quantile="0.99"} 0
+chain_storage_hashes {quantile="0.999"} 0
+chain_storage_hashes {quantile="0.9999"} 0
+
+# TYPE chain_storage_reads_count counter
+chain_storage_reads_count 73
+
+# TYPE chain_storage_reads summary
+chain_storage_reads {quantile="0.5"} 0
+chain_storage_reads {quantile="0.75"} 0
+chain_storage_reads {quantile="0.95"} 0
+chain_storage_reads {quantile="0.99"} 0
+chain_storage_reads {quantile="0.999"} 0
+chain_storage_reads {quantile="0.9999"} 0
+
+# TYPE chain_storage_updates_count counter
+chain_storage_updates_count 73
+
+# TYPE chain_storage_updates summary
+chain_storage_updates {quantile="0.5"} 0
+chain_storage_updates {quantile="0.75"} 0
+chain_storage_updates {quantile="0.95"} 0
+chain_storage_updates {quantile="0.99"} 0
+chain_storage_updates {quantile="0.999"} 0
+chain_storage_updates {quantile="0.9999"} 0
+
+# TYPE chain_triedb_commits_count counter
+chain_triedb_commits_count 0
+
+# TYPE chain_triedb_commits summary
+chain_triedb_commits {quantile="0.5"} 0
+chain_triedb_commits {quantile="0.75"} 0
+chain_triedb_commits {quantile="0.95"} 0
+chain_triedb_commits {quantile="0.99"} 0
+chain_triedb_commits {quantile="0.999"} 0
+chain_triedb_commits {quantile="0.9999"} 0
+
+# TYPE chain_validation_count counter
+chain_validation_count 76
+
+# TYPE chain_validation summary
+chain_validation {quantile="0.5"} 4845
+chain_validation {quantile="0.75"} 7738.5
+chain_validation {quantile="0.95"} 53733.649999999936
+chain_validation {quantile="0.99"} 124394
+chain_validation {quantile="0.999"} 124394
+chain_validation {quantile="0.9999"} 124394
+
+# TYPE db_preimage_hits gauge
+db_preimage_hits 0
+
+# TYPE db_preimage_total gauge
+db_preimage_total 0
+
+# TYPE eth_db_chaindata_ancient_read gauge
+eth_db_chaindata_ancient_read 0
+
+# TYPE eth_db_chaindata_ancient_size gauge
+eth_db_chaindata_ancient_size 117859533893
+
+# TYPE eth_db_chaindata_ancient_write gauge
+eth_db_chaindata_ancient_write 54963
+
+# TYPE eth_db_chaindata_compact_input gauge
+eth_db_chaindata_compact_input 8254613810
+
+# TYPE eth_db_chaindata_compact_level0 gauge
+eth_db_chaindata_compact_level0 1
+
+# TYPE eth_db_chaindata_compact_memory gauge
+eth_db_chaindata_compact_memory 0
+
+# TYPE eth_db_chaindata_compact_nonlevel0 gauge
+eth_db_chaindata_compact_nonlevel0 936
+
+# TYPE eth_db_chaindata_compact_output gauge
+eth_db_chaindata_compact_output 8253396099
+
+# TYPE eth_db_chaindata_compact_seek gauge
+eth_db_chaindata_compact_seek 0
+
+# TYPE eth_db_chaindata_compact_time gauge
+eth_db_chaindata_compact_time 51911939992
+
+# TYPE eth_db_chaindata_compact_writedelay_counter gauge
+eth_db_chaindata_compact_writedelay_counter 0
+
+# TYPE eth_db_chaindata_compact_writedelay_duration gauge
+eth_db_chaindata_compact_writedelay_duration 0
+
+# TYPE eth_db_chaindata_disk_read gauge
+eth_db_chaindata_disk_read 8338739717
+
+# TYPE eth_db_chaindata_disk_size gauge
+eth_db_chaindata_disk_size 106120356623
+
+# TYPE eth_db_chaindata_disk_write gauge
+eth_db_chaindata_disk_write 8365185893
+
+# TYPE eth_db_chaindata_memory_manualalloc gauge
+eth_db_chaindata_memory_manualalloc 0
+
+# TYPE eth_downloader_bodies_drop gauge
+eth_downloader_bodies_drop 0
+
+# TYPE eth_downloader_bodies_in gauge
+eth_downloader_bodies_in 7
+
+# TYPE eth_downloader_bodies_req_count counter
+eth_downloader_bodies_req_count 7
+
+# TYPE eth_downloader_bodies_req summary
+eth_downloader_bodies_req {quantile="0.5"} 1.54744824e+08
+eth_downloader_bodies_req {quantile="0.75"} 2.36166878e+08
+eth_downloader_bodies_req {quantile="0.95"} 2.39684693e+08
+eth_downloader_bodies_req {quantile="0.99"} 2.39684693e+08
+eth_downloader_bodies_req {quantile="0.999"} 2.39684693e+08
+eth_downloader_bodies_req {quantile="0.9999"} 2.39684693e+08
+
+# TYPE eth_downloader_bodies_timeout gauge
+eth_downloader_bodies_timeout 0
+
+# TYPE eth_downloader_headers_drop gauge
+eth_downloader_headers_drop 0
+
+# TYPE eth_downloader_headers_in gauge
+eth_downloader_headers_in 10
+
+# TYPE eth_downloader_headers_req_count counter
+eth_downloader_headers_req_count 4
+
+# TYPE eth_downloader_headers_req summary
+eth_downloader_headers_req {quantile="0.5"} 1.06540918e+08
+eth_downloader_headers_req {quantile="0.75"} 1.06695965e+08
+eth_downloader_headers_req {quantile="0.95"} 1.06742564e+08
+eth_downloader_headers_req {quantile="0.99"} 1.06742564e+08
+eth_downloader_headers_req {quantile="0.999"} 1.06742564e+08
+eth_downloader_headers_req {quantile="0.9999"} 1.06742564e+08
+
+# TYPE eth_downloader_headers_timeout gauge
+eth_downloader_headers_timeout 0
+
+# TYPE eth_downloader_pposStorage_drop gauge
+eth_downloader_pposStorage_drop 0
+
+# TYPE eth_downloader_pposStorage_in gauge
+eth_downloader_pposStorage_in 0
+
+# TYPE eth_downloader_receipts_drop gauge
+eth_downloader_receipts_drop 0
+
+# TYPE eth_downloader_receipts_in gauge
+eth_downloader_receipts_in 0
+
+# TYPE eth_downloader_receipts_req_count counter
+eth_downloader_receipts_req_count 0
+
+# TYPE eth_downloader_receipts_req summary
+eth_downloader_receipts_req {quantile="0.5"} 0
+eth_downloader_receipts_req {quantile="0.75"} 0
+eth_downloader_receipts_req {quantile="0.95"} 0
+eth_downloader_receipts_req {quantile="0.99"} 0
+eth_downloader_receipts_req {quantile="0.999"} 0
+eth_downloader_receipts_req {quantile="0.9999"} 0
+
+# TYPE eth_downloader_receipts_timeout gauge
+eth_downloader_receipts_timeout 0
+
+# TYPE eth_downloader_throttle gauge
+eth_downloader_throttle 0
+
+# TYPE eth_fetcher_block_announces_dos gauge
+eth_fetcher_block_announces_dos 0
+
+# TYPE eth_fetcher_block_announces_drop gauge
+eth_fetcher_block_announces_drop 0
+
+# TYPE eth_fetcher_block_announces_in gauge
+eth_fetcher_block_announces_in 117
+
+# TYPE eth_fetcher_block_announces_out_count counter
+eth_fetcher_block_announces_out_count 11
+
+# TYPE eth_fetcher_block_announces_out summary
+eth_fetcher_block_announces_out {quantile="0.5"} 3.307447e+06
+eth_fetcher_block_announces_out {quantile="0.75"} 6.84130632e+08
+eth_fetcher_block_announces_out {quantile="0.95"} 2.892439528e+09
+eth_fetcher_block_announces_out {quantile="0.99"} 2.892439528e+09
+eth_fetcher_block_announces_out {quantile="0.999"} 2.892439528e+09
+eth_fetcher_block_announces_out {quantile="0.9999"} 2.892439528e+09
+
+# TYPE eth_fetcher_block_bodies gauge
+eth_fetcher_block_bodies 5
+
+# TYPE eth_fetcher_block_broadcasts_dos gauge
+eth_fetcher_block_broadcasts_dos 0
+
+# TYPE eth_fetcher_block_broadcasts_drop gauge
+eth_fetcher_block_broadcasts_drop 2
+
+# TYPE eth_fetcher_block_broadcasts_in gauge
+eth_fetcher_block_broadcasts_in 21
+
+# TYPE eth_fetcher_block_broadcasts_out_count counter
+eth_fetcher_block_broadcasts_out_count 11
+
+# TYPE eth_fetcher_block_broadcasts_out summary
+eth_fetcher_block_broadcasts_out {quantile="0.5"} 671409
+eth_fetcher_block_broadcasts_out {quantile="0.75"} 6.8038415e+08
+eth_fetcher_block_broadcasts_out {quantile="0.95"} 2.892239812e+09
+eth_fetcher_block_broadcasts_out {quantile="0.99"} 2.892239812e+09
+eth_fetcher_block_broadcasts_out {quantile="0.999"} 2.892239812e+09
+eth_fetcher_block_broadcasts_out {quantile="0.9999"} 2.892239812e+09
+
+# TYPE eth_fetcher_block_filter_bodies_in gauge
+eth_fetcher_block_filter_bodies_in 5
+
+# TYPE eth_fetcher_block_filter_bodies_out gauge
+eth_fetcher_block_filter_bodies_out 1
+
+# TYPE eth_fetcher_block_filter_headers_in gauge
+eth_fetcher_block_filter_headers_in 7
+
+# TYPE eth_fetcher_block_filter_headers_out gauge
+eth_fetcher_block_filter_headers_out 1
+
+# TYPE eth_fetcher_block_headers gauge
+eth_fetcher_block_headers 7
+
+# TYPE eth_fetcher_transaction_announces_dos gauge
+eth_fetcher_transaction_announces_dos 0
+
+# TYPE eth_fetcher_transaction_announces_in gauge
+eth_fetcher_transaction_announces_in 61
+
+# TYPE eth_fetcher_transaction_announces_known gauge
+eth_fetcher_transaction_announces_known 28
+
+# TYPE eth_fetcher_transaction_announces_underpriced gauge
+eth_fetcher_transaction_announces_underpriced 0
+
+# TYPE eth_fetcher_transaction_broadcasts_in gauge
+eth_fetcher_transaction_broadcasts_in 46
+
+# TYPE eth_fetcher_transaction_broadcasts_known gauge
+eth_fetcher_transaction_broadcasts_known 28
+
+# TYPE eth_fetcher_transaction_broadcasts_otherreject gauge
+eth_fetcher_transaction_broadcasts_otherreject 0
+
+# TYPE eth_fetcher_transaction_broadcasts_underpriced gauge
+eth_fetcher_transaction_broadcasts_underpriced 0
+
+# TYPE eth_fetcher_transaction_fetching_hashes gauge
+eth_fetcher_transaction_fetching_hashes 0
+
+# TYPE eth_fetcher_transaction_fetching_peers gauge
+eth_fetcher_transaction_fetching_peers 0
+
+# TYPE eth_fetcher_transaction_queueing_hashes gauge
+eth_fetcher_transaction_queueing_hashes 0
+
+# TYPE eth_fetcher_transaction_queueing_peers gauge
+eth_fetcher_transaction_queueing_peers 0
+
+# TYPE eth_fetcher_transaction_replies_in gauge
+eth_fetcher_transaction_replies_in 2
+
+# TYPE eth_fetcher_transaction_replies_known gauge
+eth_fetcher_transaction_replies_known 0
+
+# TYPE eth_fetcher_transaction_replies_otherreject gauge
+eth_fetcher_transaction_replies_otherreject 0
+
+# TYPE eth_fetcher_transaction_replies_underpriced gauge
+eth_fetcher_transaction_replies_underpriced 0
+
+# TYPE eth_fetcher_transaction_request_done gauge
+eth_fetcher_transaction_request_done 2
+
+# TYPE eth_fetcher_transaction_request_fail gauge
+eth_fetcher_transaction_request_fail 0
+
+# TYPE eth_fetcher_transaction_request_out gauge
+eth_fetcher_transaction_request_out 3
+
+# TYPE eth_fetcher_transaction_request_timeout gauge
+eth_fetcher_transaction_request_timeout 0
+
+# TYPE eth_fetcher_transaction_waiting_hashes gauge
+eth_fetcher_transaction_waiting_hashes 0
+
+# TYPE eth_fetcher_transaction_waiting_peers gauge
+eth_fetcher_transaction_waiting_peers 0
+
+# TYPE p2p_dials gauge
+p2p_dials 37
+
+# TYPE p2p_egress gauge
+p2p_egress 2607770
+
+# TYPE p2p_egress_cbft_1_0x00 gauge
+p2p_egress_cbft_1_0x00 3332
+
+# TYPE p2p_egress_cbft_1_0x00_packets gauge
+p2p_egress_cbft_1_0x00_packets 28
+
+# TYPE p2p_egress_cbft_1_0x01 gauge
+p2p_egress_cbft_1_0x01 6129
+
+# TYPE p2p_egress_cbft_1_0x01_packets gauge
+p2p_egress_cbft_1_0x01_packets 12
+
+# TYPE p2p_egress_cbft_1_0x02 gauge
+p2p_egress_cbft_1_0x02 1808305
+
+# TYPE p2p_egress_cbft_1_0x02_packets gauge
+p2p_egress_cbft_1_0x02_packets 7886
+
+# TYPE p2p_egress_cbft_1_0x04 gauge
+p2p_egress_cbft_1_0x04 783
+
+# TYPE p2p_egress_cbft_1_0x04_packets gauge
+p2p_egress_cbft_1_0x04_packets 87
+
+# TYPE p2p_egress_cbft_1_0x05 gauge
+p2p_egress_cbft_1_0x05 2665
+
+# TYPE p2p_egress_cbft_1_0x05_packets gauge
+p2p_egress_cbft_1_0x05_packets 65
+
+# TYPE p2p_egress_cbft_1_0x06 gauge
+p2p_egress_cbft_1_0x06 238
+
+# TYPE p2p_egress_cbft_1_0x06_packets gauge
+p2p_egress_cbft_1_0x06_packets 2
+
+# TYPE p2p_egress_cbft_1_0x07 gauge
+p2p_egress_cbft_1_0x07 532
+
+# TYPE p2p_egress_cbft_1_0x07_packets gauge
+p2p_egress_cbft_1_0x07_packets 28
+
+# TYPE p2p_egress_cbft_1_0x09 gauge
+p2p_egress_cbft_1_0x09 1804
+
+# TYPE p2p_egress_cbft_1_0x09_packets gauge
+p2p_egress_cbft_1_0x09_packets 44
+
+# TYPE p2p_egress_cbft_1_0x0a gauge
+p2p_egress_cbft_1_0x0a 1318
+
+# TYPE p2p_egress_cbft_1_0x0a_packets gauge
+p2p_egress_cbft_1_0x0a_packets 2
+
+# TYPE p2p_egress_cbft_1_0x0b gauge
+p2p_egress_cbft_1_0x0b 15078
+
+# TYPE p2p_egress_cbft_1_0x0b_packets gauge
+p2p_egress_cbft_1_0x0b_packets 62
+
+# TYPE p2p_egress_cbft_1_0x0c gauge
+p2p_egress_cbft_1_0x0c 731
+
+# TYPE p2p_egress_cbft_1_0x0c_packets gauge
+p2p_egress_cbft_1_0x0c_packets 3
+
+# TYPE p2p_egress_cbft_1_0x0d gauge
+p2p_egress_cbft_1_0x0d 17813
+
+# TYPE p2p_egress_cbft_1_0x0d_packets gauge
+p2p_egress_cbft_1_0x0d_packets 379
+
+# TYPE p2p_egress_cbft_1_0x0f gauge
+p2p_egress_cbft_1_0x0f 2576
+
+# TYPE p2p_egress_cbft_1_0x0f_packets gauge
+p2p_egress_cbft_1_0x0f_packets 112
+
+# TYPE p2p_egress_cbft_1_0x10 gauge
+p2p_egress_cbft_1_0x10 2576
+
+# TYPE p2p_egress_cbft_1_0x10_packets gauge
+p2p_egress_cbft_1_0x10_packets 112
+
+# TYPE p2p_egress_platon_66_0x00 gauge
+p2p_egress_platon_66_0x00 624
+
+# TYPE p2p_egress_platon_66_0x00_packets gauge
+p2p_egress_platon_66_0x00_packets 8
+
+# TYPE p2p_egress_platon_66_0x01 gauge
+p2p_egress_platon_66_0x01 4872
+
+# TYPE p2p_egress_platon_66_0x01_packets gauge
+p2p_egress_platon_66_0x01_packets 116
+
+# TYPE p2p_egress_platon_66_0x02 gauge
+p2p_egress_platon_66_0x02 5454
+
+# TYPE p2p_egress_platon_66_0x02_packets gauge
+p2p_egress_platon_66_0x02_packets 27
+
+# TYPE p2p_egress_platon_66_0x03 gauge
+p2p_egress_platon_66_0x03 263
+
+# TYPE p2p_egress_platon_66_0x03_packets gauge
+p2p_egress_platon_66_0x03_packets 7
+
+# TYPE p2p_egress_platon_66_0x05 gauge
+p2p_egress_platon_66_0x05 184
+
+# TYPE p2p_egress_platon_66_0x05_packets gauge
+p2p_egress_platon_66_0x05_packets 4
+
+# TYPE p2p_egress_platon_66_0x07 gauge
+p2p_egress_platon_66_0x07 37138
+
+# TYPE p2p_egress_platon_66_0x07_packets gauge
+p2p_egress_platon_66_0x07_packets 67
+
+# TYPE p2p_egress_platon_66_0x13 gauge
+p2p_egress_platon_66_0x13 7
+
+# TYPE p2p_egress_platon_66_0x13_packets gauge
+p2p_egress_platon_66_0x13_packets 1
+
+# TYPE p2p_egress_platon_66_0x16 gauge
+p2p_egress_platon_66_0x16 1044
+
+# TYPE p2p_egress_platon_66_0x16_packets gauge
+p2p_egress_platon_66_0x16_packets 29
+
+# TYPE p2p_egress_platon_66_0x18 gauge
+p2p_egress_platon_66_0x18 528
+
+# TYPE p2p_egress_platon_66_0x18_packets gauge
+p2p_egress_platon_66_0x18_packets 4
+
+# TYPE p2p_egress_platon_68_0x00 gauge
+p2p_egress_platon_68_0x00 1560
+
+# TYPE p2p_egress_platon_68_0x00_packets gauge
+p2p_egress_platon_68_0x00_packets 20
+
+# TYPE p2p_egress_platon_68_0x01 gauge
+p2p_egress_platon_68_0x01 13020
+
+# TYPE p2p_egress_platon_68_0x01_packets gauge
+p2p_egress_platon_68_0x01_packets 310
+
+# TYPE p2p_egress_platon_68_0x02 gauge
+p2p_egress_platon_68_0x02 13836
+
+# TYPE p2p_egress_platon_68_0x02_packets gauge
+p2p_egress_platon_68_0x02_packets 72
+
+# TYPE p2p_egress_platon_68_0x03 gauge
+p2p_egress_platon_68_0x03 196
+
+# TYPE p2p_egress_platon_68_0x03_packets gauge
+p2p_egress_platon_68_0x03_packets 4
+
+# TYPE p2p_egress_platon_68_0x05 gauge
+p2p_egress_platon_68_0x05 368
+
+# TYPE p2p_egress_platon_68_0x05_packets gauge
+p2p_egress_platon_68_0x05_packets 8
+
+# TYPE p2p_egress_platon_68_0x07 gauge
+p2p_egress_platon_68_0x07 52732
+
+# TYPE p2p_egress_platon_68_0x07_packets gauge
+p2p_egress_platon_68_0x07_packets 97
+
+# TYPE p2p_egress_platon_68_0x16 gauge
+p2p_egress_platon_68_0x16 3065
+
+# TYPE p2p_egress_platon_68_0x16_packets gauge
+p2p_egress_platon_68_0x16_packets 73
+
+# TYPE p2p_egress_platon_68_0x17 gauge
+p2p_egress_platon_68_0x17 138
+
+# TYPE p2p_egress_platon_68_0x17_packets gauge
+p2p_egress_platon_68_0x17_packets 3
+
+# TYPE p2p_egress_platon_68_0x18 gauge
+p2p_egress_platon_68_0x18 1623
+
+# TYPE p2p_egress_platon_68_0x18_packets gauge
+p2p_egress_platon_68_0x18_packets 15
+
+# TYPE p2p_flow_cbft_BlockQuorumCert_OutboundTraffic gauge
+p2p_flow_cbft_BlockQuorumCert_OutboundTraffic 248
+
+# TYPE p2p_flow_cbft_CBFTStatus_OutboundTraffic gauge
+p2p_flow_cbft_CBFTStatus_OutboundTraffic 3276
+
+# TYPE p2p_flow_cbft_GetBlockQuorumCert_OutboundTraffic gauge
+p2p_flow_cbft_GetBlockQuorumCert_OutboundTraffic 2535
+
+# TYPE p2p_flow_cbft_GetPrepareBlock_OutboundTraffic gauge
+p2p_flow_cbft_GetPrepareBlock_OutboundTraffic 609
+
+# TYPE p2p_flow_cbft_GetPrepareVote_OutboundTraffic gauge
+p2p_flow_cbft_GetPrepareVote_OutboundTraffic 476
+
+# TYPE p2p_flow_cbft_GetQCBlockList_OutboundTraffic gauge
+p2p_flow_cbft_GetQCBlockList_OutboundTraffic 1716
+
+# TYPE p2p_flow_cbft_PrepareBlock_OutboundTraffic gauge
+p2p_flow_cbft_PrepareBlock_OutboundTraffic 9499
+
+# TYPE p2p_flow_cbft_PrepareBlockHash_OutboundTraffic gauge
+p2p_flow_cbft_PrepareBlockHash_OutboundTraffic 17055
+
+# TYPE p2p_flow_cbft_PrepareVote_OutboundTraffic gauge
+p2p_flow_cbft_PrepareVote_OutboundTraffic 1853210
+
+# TYPE p2p_flow_cbft_PrepareVotes_OutboundTraffic gauge
+p2p_flow_cbft_PrepareVotes_OutboundTraffic 0
+
+# TYPE p2p_flow_cbft_QCBlockList_OutboundTraffic gauge
+p2p_flow_cbft_QCBlockList_OutboundTraffic 1856
+
+# TYPE p2p_flow_cbft_ViewChange_OutboundTraffic gauge
+p2p_flow_cbft_ViewChange_OutboundTraffic 0
+
+# TYPE p2p_flow_eth_blockBodies_OutboundTraffic gauge
+p2p_flow_eth_blockBodies_OutboundTraffic 0
+
+# TYPE p2p_flow_eth_blockHeaders_OutboundTraffic gauge
+p2p_flow_eth_blockHeaders_OutboundTraffic 0
+
+# TYPE p2p_flow_eth_blockSignature_OutboundTraffic gauge
+p2p_flow_eth_blockSignature_OutboundTraffic 0
+
+# TYPE p2p_flow_eth_getBlockBodies_OutboundTraffic gauge
+p2p_flow_eth_getBlockBodies_OutboundTraffic 0
+
+# TYPE p2p_flow_eth_getBlockHeaders_OutboundTraffic gauge
+p2p_flow_eth_getBlockHeaders_OutboundTraffic 0
+
+# TYPE p2p_flow_eth_getNodeData_OutboundTraffic gauge
+p2p_flow_eth_getNodeData_OutboundTraffic 0
+
+# TYPE p2p_flow_eth_getReceipts_OutboundTraffic gauge
+p2p_flow_eth_getReceipts_OutboundTraffic 0
+
+# TYPE p2p_flow_eth_newBlock_OutboundTraffic gauge
+p2p_flow_eth_newBlock_OutboundTraffic 0
+
+# TYPE p2p_flow_eth_newBlockHashes_OutboundTraffic gauge
+p2p_flow_eth_newBlockHashes_OutboundTraffic 0
+
+# TYPE p2p_flow_eth_nodeData_OutboundTraffic gauge
+p2p_flow_eth_nodeData_OutboundTraffic 0
+
+# TYPE p2p_flow_eth_pong_OutboundTraffic gauge
+p2p_flow_eth_pong_OutboundTraffic 0
+
+# TYPE p2p_flow_eth_prepareBlock_OutboundTraffic gauge
+p2p_flow_eth_prepareBlock_OutboundTraffic 0
+
+# TYPE p2p_flow_eth_receipts_OutboundTraffic gauge
+p2p_flow_eth_receipts_OutboundTraffic 0
+
+# TYPE p2p_flow_eth_status_OutboundTraffic gauge
+p2p_flow_eth_status_OutboundTraffic 0
+
+# TYPE p2p_flow_eth_tx_OutboundTraffic gauge
+p2p_flow_eth_tx_OutboundTraffic 0
+
+# TYPE p2p_handle_platon_66_0x01_count counter
+p2p_handle_platon_66_0x01_count 339
+
+# TYPE p2p_handle_platon_66_0x01 summary
+p2p_handle_platon_66_0x01 {quantile="0.5"} 48
+p2p_handle_platon_66_0x01 {quantile="0.75"} 64
+p2p_handle_platon_66_0x01 {quantile="0.95"} 101
+p2p_handle_platon_66_0x01 {quantile="0.99"} 124.00000000000011
+p2p_handle_platon_66_0x01 {quantile="0.999"} 132
+p2p_handle_platon_66_0x01 {quantile="0.9999"} 132
+
+# TYPE p2p_handle_platon_66_0x02_count counter
+p2p_handle_platon_66_0x02_count 12
+
+# TYPE p2p_handle_platon_66_0x02 summary
+p2p_handle_platon_66_0x02 {quantile="0.5"} 114.5
+p2p_handle_platon_66_0x02 {quantile="0.75"} 325.25
+p2p_handle_platon_66_0x02 {quantile="0.95"} 452
+p2p_handle_platon_66_0x02 {quantile="0.99"} 452
+p2p_handle_platon_66_0x02 {quantile="0.999"} 452
+p2p_handle_platon_66_0x02 {quantile="0.9999"} 452
+
+# TYPE p2p_handle_platon_66_0x04_count counter
+p2p_handle_platon_66_0x04_count 7
+
+# TYPE p2p_handle_platon_66_0x04 summary
+p2p_handle_platon_66_0x04 {quantile="0.5"} 73
+p2p_handle_platon_66_0x04 {quantile="0.75"} 120
+p2p_handle_platon_66_0x04 {quantile="0.95"} 137
+p2p_handle_platon_66_0x04 {quantile="0.99"} 137
+p2p_handle_platon_66_0x04 {quantile="0.999"} 137
+p2p_handle_platon_66_0x04 {quantile="0.9999"} 137
+
+# TYPE p2p_handle_platon_66_0x06_count counter
+p2p_handle_platon_66_0x06_count 4
+
+# TYPE p2p_handle_platon_66_0x06 summary
+p2p_handle_platon_66_0x06 {quantile="0.5"} 83.5
+p2p_handle_platon_66_0x06 {quantile="0.75"} 110.75
+p2p_handle_platon_66_0x06 {quantile="0.95"} 118
+p2p_handle_platon_66_0x06 {quantile="0.99"} 118
+p2p_handle_platon_66_0x06 {quantile="0.999"} 118
+p2p_handle_platon_66_0x06 {quantile="0.9999"} 118
+
+# TYPE p2p_handle_platon_66_0x07_count counter
+p2p_handle_platon_66_0x07_count 66
+
+# TYPE p2p_handle_platon_66_0x07 summary
+p2p_handle_platon_66_0x07 {quantile="0.5"} 36.5
+p2p_handle_platon_66_0x07 {quantile="0.75"} 50
+p2p_handle_platon_66_0x07 {quantile="0.95"} 75
+p2p_handle_platon_66_0x07 {quantile="0.99"} 119
+p2p_handle_platon_66_0x07 {quantile="0.999"} 119
+p2p_handle_platon_66_0x07 {quantile="0.9999"} 119
+
+# TYPE p2p_handle_platon_66_0x14_count counter
+p2p_handle_platon_66_0x14_count 1
+
+# TYPE p2p_handle_platon_66_0x14 summary
+p2p_handle_platon_66_0x14 {quantile="0.5"} 44
+p2p_handle_platon_66_0x14 {quantile="0.75"} 44
+p2p_handle_platon_66_0x14 {quantile="0.95"} 44
+p2p_handle_platon_66_0x14 {quantile="0.99"} 44
+p2p_handle_platon_66_0x14 {quantile="0.999"} 44
+p2p_handle_platon_66_0x14 {quantile="0.9999"} 44
+
+# TYPE p2p_handle_platon_66_0x16_count counter
+p2p_handle_platon_66_0x16_count 16
+
+# TYPE p2p_handle_platon_66_0x16 summary
+p2p_handle_platon_66_0x16 {quantile="0.5"} 18
+p2p_handle_platon_66_0x16 {quantile="0.75"} 26
+p2p_handle_platon_66_0x16 {quantile="0.95"} 82
+p2p_handle_platon_66_0x16 {quantile="0.99"} 82
+p2p_handle_platon_66_0x16 {quantile="0.999"} 82
+p2p_handle_platon_66_0x16 {quantile="0.9999"} 82
+
+# TYPE p2p_handle_platon_66_0x17_count counter
+p2p_handle_platon_66_0x17_count 4
+
+# TYPE p2p_handle_platon_66_0x17 summary
+p2p_handle_platon_66_0x17 {quantile="0.5"} 62
+p2p_handle_platon_66_0x17 {quantile="0.75"} 106.5
+p2p_handle_platon_66_0x17 {quantile="0.95"} 117
+p2p_handle_platon_66_0x17 {quantile="0.99"} 117
+p2p_handle_platon_66_0x17 {quantile="0.999"} 117
+p2p_handle_platon_66_0x17 {quantile="0.9999"} 117
+
+# TYPE p2p_handle_platon_68_0x01_count counter
+p2p_handle_platon_68_0x01_count 881
+
+# TYPE p2p_handle_platon_68_0x01 summary
+p2p_handle_platon_68_0x01 {quantile="0.5"} 43
+p2p_handle_platon_68_0x01 {quantile="0.75"} 59.5
+p2p_handle_platon_68_0x01 {quantile="0.95"} 94
+p2p_handle_platon_68_0x01 {quantile="0.99"} 115.17999999999995
+p2p_handle_platon_68_0x01 {quantile="0.999"} 240
+p2p_handle_platon_68_0x01 {quantile="0.9999"} 240
+
+# TYPE p2p_handle_platon_68_0x02_count counter
+p2p_handle_platon_68_0x02_count 33
+
+# TYPE p2p_handle_platon_68_0x02 summary
+p2p_handle_platon_68_0x02 {quantile="0.5"} 47
+p2p_handle_platon_68_0x02 {quantile="0.75"} 192
+p2p_handle_platon_68_0x02 {quantile="0.95"} 360.29999999999984
+p2p_handle_platon_68_0x02 {quantile="0.99"} 403
+p2p_handle_platon_68_0x02 {quantile="0.999"} 403
+p2p_handle_platon_68_0x02 {quantile="0.9999"} 403
+
+# TYPE p2p_handle_platon_68_0x04_count counter
+p2p_handle_platon_68_0x04_count 4
+
+# TYPE p2p_handle_platon_68_0x04 summary
+p2p_handle_platon_68_0x04 {quantile="0.5"} 82
+p2p_handle_platon_68_0x04 {quantile="0.75"} 169.75
+p2p_handle_platon_68_0x04 {quantile="0.95"} 197
+p2p_handle_platon_68_0x04 {quantile="0.99"} 197
+p2p_handle_platon_68_0x04 {quantile="0.999"} 197
+p2p_handle_platon_68_0x04 {quantile="0.9999"} 197
+
+# TYPE p2p_handle_platon_68_0x06_count counter
+p2p_handle_platon_68_0x06_count 8
+
+# TYPE p2p_handle_platon_68_0x06 summary
+p2p_handle_platon_68_0x06 {quantile="0.5"} 55.5
+p2p_handle_platon_68_0x06 {quantile="0.75"} 91.5
+p2p_handle_platon_68_0x06 {quantile="0.95"} 126
+p2p_handle_platon_68_0x06 {quantile="0.99"} 126
+p2p_handle_platon_68_0x06 {quantile="0.999"} 126
+p2p_handle_platon_68_0x06 {quantile="0.9999"} 126
+
+# TYPE p2p_handle_platon_68_0x07_count counter
+p2p_handle_platon_68_0x07_count 198
+
+# TYPE p2p_handle_platon_68_0x07 summary
+p2p_handle_platon_68_0x07 {quantile="0.5"} 35
+p2p_handle_platon_68_0x07 {quantile="0.75"} 45
+p2p_handle_platon_68_0x07 {quantile="0.95"} 63.04999999999998
+p2p_handle_platon_68_0x07 {quantile="0.99"} 72.07999999999993
+p2p_handle_platon_68_0x07 {quantile="0.999"} 80
+p2p_handle_platon_68_0x07 {quantile="0.9999"} 80
+
+# TYPE p2p_handle_platon_68_0x16_count counter
+p2p_handle_platon_68_0x16_count 45
+
+# TYPE p2p_handle_platon_68_0x16 summary
+p2p_handle_platon_68_0x16 {quantile="0.5"} 23
+p2p_handle_platon_68_0x16 {quantile="0.75"} 28.5
+p2p_handle_platon_68_0x16 {quantile="0.95"} 41.09999999999999
+p2p_handle_platon_68_0x16 {quantile="0.99"} 118
+p2p_handle_platon_68_0x16 {quantile="0.999"} 118
+p2p_handle_platon_68_0x16 {quantile="0.9999"} 118
+
+# TYPE p2p_handle_platon_68_0x17_count counter
+p2p_handle_platon_68_0x17_count 15
+
+# TYPE p2p_handle_platon_68_0x17 summary
+p2p_handle_platon_68_0x17 {quantile="0.5"} 51
+p2p_handle_platon_68_0x17 {quantile="0.75"} 65
+p2p_handle_platon_68_0x17 {quantile="0.95"} 89
+p2p_handle_platon_68_0x17 {quantile="0.99"} 89
+p2p_handle_platon_68_0x17 {quantile="0.999"} 89
+p2p_handle_platon_68_0x17 {quantile="0.9999"} 89
+
+# TYPE p2p_handle_platon_68_0x18_count counter
+p2p_handle_platon_68_0x18_count 3
+
+# TYPE p2p_handle_platon_68_0x18 summary
+p2p_handle_platon_68_0x18 {quantile="0.5"} 411
+p2p_handle_platon_68_0x18 {quantile="0.75"} 485
+p2p_handle_platon_68_0x18 {quantile="0.95"} 485
+p2p_handle_platon_68_0x18 {quantile="0.99"} 485
+p2p_handle_platon_68_0x18 {quantile="0.999"} 485
+p2p_handle_platon_68_0x18 {quantile="0.9999"} 485
+
+# TYPE p2p_ingress gauge
+p2p_ingress 1680914
+
+# TYPE p2p_ingress_cbft_1_0x00 gauge
+p2p_ingress_cbft_1_0x00 3332
+
+# TYPE p2p_ingress_cbft_1_0x00_packets gauge
+p2p_ingress_cbft_1_0x00_packets 28
+
+# TYPE p2p_ingress_cbft_1_0x01 gauge
+p2p_ingress_cbft_1_0x01 43372
+
+# TYPE p2p_ingress_cbft_1_0x01_packets gauge
+p2p_ingress_cbft_1_0x01_packets 82
+
+# TYPE p2p_ingress_cbft_1_0x02 gauge
+p2p_ingress_cbft_1_0x02 918162
+
+# TYPE p2p_ingress_cbft_1_0x02_packets gauge
+p2p_ingress_cbft_1_0x02_packets 4004
+
+# TYPE p2p_ingress_cbft_1_0x04 gauge
+p2p_ingress_cbft_1_0x04 153
+
+# TYPE p2p_ingress_cbft_1_0x04_packets gauge
+p2p_ingress_cbft_1_0x04_packets 17
+
+# TYPE p2p_ingress_cbft_1_0x05 gauge
+p2p_ingress_cbft_1_0x05 41
+
+# TYPE p2p_ingress_cbft_1_0x05_packets gauge
+p2p_ingress_cbft_1_0x05_packets 1
+
+# TYPE p2p_ingress_cbft_1_0x06 gauge
+p2p_ingress_cbft_1_0x06 14042
+
+# TYPE p2p_ingress_cbft_1_0x06_packets gauge
+p2p_ingress_cbft_1_0x06_packets 118
+
+# TYPE p2p_ingress_cbft_1_0x08 gauge
+p2p_ingress_cbft_1_0x08 2286
+
+# TYPE p2p_ingress_cbft_1_0x08_packets gauge
+p2p_ingress_cbft_1_0x08_packets 2
+
+# TYPE p2p_ingress_cbft_1_0x09 gauge
+p2p_ingress_cbft_1_0x09 82
+
+# TYPE p2p_ingress_cbft_1_0x09_packets gauge
+p2p_ingress_cbft_1_0x09_packets 2
+
+# TYPE p2p_ingress_cbft_1_0x0a gauge
+p2p_ingress_cbft_1_0x0a 32952
+
+# TYPE p2p_ingress_cbft_1_0x0a_packets gauge
+p2p_ingress_cbft_1_0x0a_packets 44
+
+# TYPE p2p_ingress_cbft_1_0x0b gauge
+p2p_ingress_cbft_1_0x0b 6084
+
+# TYPE p2p_ingress_cbft_1_0x0b_packets gauge
+p2p_ingress_cbft_1_0x0b_packets 25
+
+# TYPE p2p_ingress_cbft_1_0x0c gauge
+p2p_ingress_cbft_1_0x0c 12427
+
+# TYPE p2p_ingress_cbft_1_0x0c_packets gauge
+p2p_ingress_cbft_1_0x0c_packets 51
+
+# TYPE p2p_ingress_cbft_1_0x0d gauge
+p2p_ingress_cbft_1_0x0d 8648
+
+# TYPE p2p_ingress_cbft_1_0x0d_packets gauge
+p2p_ingress_cbft_1_0x0d_packets 184
+
+# TYPE p2p_ingress_cbft_1_0x0f gauge
+p2p_ingress_cbft_1_0x0f 2576
+
+# TYPE p2p_ingress_cbft_1_0x0f_packets gauge
+p2p_ingress_cbft_1_0x0f_packets 112
+
+# TYPE p2p_ingress_cbft_1_0x10 gauge
+p2p_ingress_cbft_1_0x10 2576
+
+# TYPE p2p_ingress_cbft_1_0x10_packets gauge
+p2p_ingress_cbft_1_0x10_packets 112
+
+# TYPE p2p_ingress_platon_66_0x00 gauge
+p2p_ingress_platon_66_0x00 624
+
+# TYPE p2p_ingress_platon_66_0x00_packets gauge
+p2p_ingress_platon_66_0x00_packets 8
+
+# TYPE p2p_ingress_platon_66_0x01 gauge
+p2p_ingress_platon_66_0x01 14238
+
+# TYPE p2p_ingress_platon_66_0x01_packets gauge
+p2p_ingress_platon_66_0x01_packets 339
+
+# TYPE p2p_ingress_platon_66_0x02 gauge
+p2p_ingress_platon_66_0x02 2347
+
+# TYPE p2p_ingress_platon_66_0x02_packets gauge
+p2p_ingress_platon_66_0x02_packets 12
+
+# TYPE p2p_ingress_platon_66_0x04 gauge
+p2p_ingress_platon_66_0x04 4002
+
+# TYPE p2p_ingress_platon_66_0x04_packets gauge
+p2p_ingress_platon_66_0x04_packets 7
+
+# TYPE p2p_ingress_platon_66_0x06 gauge
+p2p_ingress_platon_66_0x06 799
+
+# TYPE p2p_ingress_platon_66_0x06_packets gauge
+p2p_ingress_platon_66_0x06_packets 4
+
+# TYPE p2p_ingress_platon_66_0x07 gauge
+p2p_ingress_platon_66_0x07 39049
+
+# TYPE p2p_ingress_platon_66_0x07_packets gauge
+p2p_ingress_platon_66_0x07_packets 66
+
+# TYPE p2p_ingress_platon_66_0x14 gauge
+p2p_ingress_platon_66_0x14 859
+
+# TYPE p2p_ingress_platon_66_0x14_packets gauge
+p2p_ingress_platon_66_0x14_packets 1
+
+# TYPE p2p_ingress_platon_66_0x16 gauge
+p2p_ingress_platon_66_0x16 576
+
+# TYPE p2p_ingress_platon_66_0x16_packets gauge
+p2p_ingress_platon_66_0x16_packets 16
+
+# TYPE p2p_ingress_platon_66_0x17 gauge
+p2p_ingress_platon_66_0x17 184
+
+# TYPE p2p_ingress_platon_66_0x17_packets gauge
+p2p_ingress_platon_66_0x17_packets 4
+
+# TYPE p2p_ingress_platon_68_0x00 gauge
+p2p_ingress_platon_68_0x00 1560
+
+# TYPE p2p_ingress_platon_68_0x00_packets gauge
+p2p_ingress_platon_68_0x00_packets 20
+
+# TYPE p2p_ingress_platon_68_0x01 gauge
+p2p_ingress_platon_68_0x01 37002
+
+# TYPE p2p_ingress_platon_68_0x01_packets gauge
+p2p_ingress_platon_68_0x01_packets 881
+
+# TYPE p2p_ingress_platon_68_0x02 gauge
+p2p_ingress_platon_68_0x02 6574
+
+# TYPE p2p_ingress_platon_68_0x02_packets gauge
+p2p_ingress_platon_68_0x02_packets 33
+
+# TYPE p2p_ingress_platon_68_0x04 gauge
+p2p_ingress_platon_68_0x04 1600
+
+# TYPE p2p_ingress_platon_68_0x04_packets gauge
+p2p_ingress_platon_68_0x04_packets 4
+
+# TYPE p2p_ingress_platon_68_0x06 gauge
+p2p_ingress_platon_68_0x06 2294
+
+# TYPE p2p_ingress_platon_68_0x06_packets gauge
+p2p_ingress_platon_68_0x06_packets 8
+
+# TYPE p2p_ingress_platon_68_0x07 gauge
+p2p_ingress_platon_68_0x07 110056
+
+# TYPE p2p_ingress_platon_68_0x07_packets gauge
+p2p_ingress_platon_68_0x07_packets 198
+
+# TYPE p2p_ingress_platon_68_0x16 gauge
+p2p_ingress_platon_68_0x16 1870
+
+# TYPE p2p_ingress_platon_68_0x16_packets gauge
+p2p_ingress_platon_68_0x16_packets 45
+
+# TYPE p2p_ingress_platon_68_0x17 gauge
+p2p_ingress_platon_68_0x17 726
+
+# TYPE p2p_ingress_platon_68_0x17_packets gauge
+p2p_ingress_platon_68_0x17_packets 15
+
+# TYPE p2p_ingress_platon_68_0x18 gauge
+p2p_ingress_platon_68_0x18 515
+
+# TYPE p2p_ingress_platon_68_0x18_packets gauge
+p2p_ingress_platon_68_0x18_packets 3
+
+# TYPE p2p_peers gauge
+p2p_peers 28
+
+# TYPE p2p_serves gauge
+p2p_serves 14
+
+# TYPE p2p_tracked_platon_66_0x03 gauge
+p2p_tracked_platon_66_0x03 0
+
+# TYPE p2p_tracked_platon_66_0x05 gauge
+p2p_tracked_platon_66_0x05 0
+
+# TYPE p2p_tracked_platon_68_0x03 gauge
+p2p_tracked_platon_68_0x03 0
+
+# TYPE p2p_tracked_platon_68_0x05 gauge
+p2p_tracked_platon_68_0x05 0
+
+# TYPE p2p_tracked_platon_68_0x17 gauge
+p2p_tracked_platon_68_0x17 0
+
+# TYPE p2p_wait_platon_66_0x03_count counter
+p2p_wait_platon_66_0x03_count 7
+
+# TYPE p2p_wait_platon_66_0x03 summary
+p2p_wait_platon_66_0x03 {quantile="0.5"} 106728
+p2p_wait_platon_66_0x03 {quantile="0.75"} 123492
+p2p_wait_platon_66_0x03 {quantile="0.95"} 123577
+p2p_wait_platon_66_0x03 {quantile="0.99"} 123577
+p2p_wait_platon_66_0x03 {quantile="0.999"} 123577
+p2p_wait_platon_66_0x03 {quantile="0.9999"} 123577
+
+# TYPE p2p_wait_platon_66_0x05_count counter
+p2p_wait_platon_66_0x05_count 4
+
+# TYPE p2p_wait_platon_66_0x05 summary
+p2p_wait_platon_66_0x05 {quantile="0.5"} 123174.5
+p2p_wait_platon_66_0x05 {quantile="0.75"} 123395.25
+p2p_wait_platon_66_0x05 {quantile="0.95"} 123437
+p2p_wait_platon_66_0x05 {quantile="0.99"} 123437
+p2p_wait_platon_66_0x05 {quantile="0.999"} 123437
+p2p_wait_platon_66_0x05 {quantile="0.9999"} 123437
+
+# TYPE p2p_wait_platon_68_0x03_count counter
+p2p_wait_platon_68_0x03_count 4
+
+# TYPE p2p_wait_platon_68_0x03 summary
+p2p_wait_platon_68_0x03 {quantile="0.5"} 130793
+p2p_wait_platon_68_0x03 {quantile="0.75"} 160147.5
+p2p_wait_platon_68_0x03 {quantile="0.95"} 161925
+p2p_wait_platon_68_0x03 {quantile="0.99"} 161925
+p2p_wait_platon_68_0x03 {quantile="0.999"} 161925
+p2p_wait_platon_68_0x03 {quantile="0.9999"} 161925
+
+# TYPE p2p_wait_platon_68_0x05_count counter
+p2p_wait_platon_68_0x05_count 8
+
+# TYPE p2p_wait_platon_68_0x05 summary
+p2p_wait_platon_68_0x05 {quantile="0.5"} 154746.5
+p2p_wait_platon_68_0x05 {quantile="0.75"} 235190.25
+p2p_wait_platon_68_0x05 {quantile="0.95"} 239656
+p2p_wait_platon_68_0x05 {quantile="0.99"} 239656
+p2p_wait_platon_68_0x05 {quantile="0.999"} 239656
+p2p_wait_platon_68_0x05 {quantile="0.9999"} 239656
+
+# TYPE p2p_wait_platon_68_0x17_count counter
+p2p_wait_platon_68_0x17_count 3
+
+# TYPE p2p_wait_platon_68_0x17 summary
+p2p_wait_platon_68_0x17 {quantile="0.5"} 113315
+p2p_wait_platon_68_0x17 {quantile="0.75"} 232384
+p2p_wait_platon_68_0x17 {quantile="0.95"} 232384
+p2p_wait_platon_68_0x17 {quantile="0.99"} 232384
+p2p_wait_platon_68_0x17 {quantile="0.999"} 232384
+p2p_wait_platon_68_0x17 {quantile="0.9999"} 232384
+
+# TYPE rpc_duration_admin_nodeInfo_success_count counter
+rpc_duration_admin_nodeInfo_success_count 73
+
+# TYPE rpc_duration_admin_nodeInfo_success summary
+rpc_duration_admin_nodeInfo_success {quantile="0.5"} 348
+rpc_duration_admin_nodeInfo_success {quantile="0.75"} 529.5
+rpc_duration_admin_nodeInfo_success {quantile="0.95"} 614.8999999999999
+rpc_duration_admin_nodeInfo_success {quantile="0.99"} 901
+rpc_duration_admin_nodeInfo_success {quantile="0.999"} 901
+rpc_duration_admin_nodeInfo_success {quantile="0.9999"} 901
+
+# TYPE rpc_duration_admin_peers_success_count counter
+rpc_duration_admin_peers_success_count 73
+
+# TYPE rpc_duration_admin_peers_success summary
+rpc_duration_admin_peers_success {quantile="0.5"} 703
+rpc_duration_admin_peers_success {quantile="0.75"} 963.5
+rpc_duration_admin_peers_success {quantile="0.95"} 1314.4999999999998
+rpc_duration_admin_peers_success {quantile="0.99"} 1819
+rpc_duration_admin_peers_success {quantile="0.999"} 1819
+rpc_duration_admin_peers_success {quantile="0.9999"} 1819
+
+# TYPE rpc_duration_all_count counter
+rpc_duration_all_count 730
+
+# TYPE rpc_duration_all summary
+rpc_duration_all {quantile="0.5"} 51176
+rpc_duration_all {quantile="0.75"} 348050.25
+rpc_duration_all {quantile="0.95"} 7.890109549999981e+06
+rpc_duration_all {quantile="0.99"} 1.6405555289999995e+07
+rpc_duration_all {quantile="0.999"} 1.9786583e+07
+rpc_duration_all {quantile="0.9999"} 1.9786583e+07
+
+# TYPE rpc_duration_debug_consensusStatus_success_count counter
+rpc_duration_debug_consensusStatus_success_count 73
+
+# TYPE rpc_duration_debug_consensusStatus_success summary
+rpc_duration_debug_consensusStatus_success {quantile="0.5"} 7769
+rpc_duration_debug_consensusStatus_success {quantile="0.75"} 12503.5
+rpc_duration_debug_consensusStatus_success {quantile="0.95"} 17794.5
+rpc_duration_debug_consensusStatus_success {quantile="0.99"} 19788
+rpc_duration_debug_consensusStatus_success {quantile="0.999"} 19788
+rpc_duration_debug_consensusStatus_success {quantile="0.9999"} 19788
+
+# TYPE rpc_duration_eth_blockNumber_success_count counter
+rpc_duration_eth_blockNumber_success_count 73
+
+# TYPE rpc_duration_eth_blockNumber_success summary
+rpc_duration_eth_blockNumber_success {quantile="0.5"} 19
+rpc_duration_eth_blockNumber_success {quantile="0.75"} 26.5
+rpc_duration_eth_blockNumber_success {quantile="0.95"} 39.49999999999996
+rpc_duration_eth_blockNumber_success {quantile="0.99"} 63
+rpc_duration_eth_blockNumber_success {quantile="0.999"} 63
+rpc_duration_eth_blockNumber_success {quantile="0.9999"} 63
+
+# TYPE rpc_duration_eth_chainId_success_count counter
+rpc_duration_eth_chainId_success_count 73
+
+# TYPE rpc_duration_eth_chainId_success summary
+rpc_duration_eth_chainId_success {quantile="0.5"} 11
+rpc_duration_eth_chainId_success {quantile="0.75"} 18
+rpc_duration_eth_chainId_success {quantile="0.95"} 28.599999999999994
+rpc_duration_eth_chainId_success {quantile="0.99"} 31
+rpc_duration_eth_chainId_success {quantile="0.999"} 31
+rpc_duration_eth_chainId_success {quantile="0.9999"} 31
+
+# TYPE rpc_duration_eth_getBlockByHash_success_count counter
+rpc_duration_eth_getBlockByHash_success_count 73
+
+# TYPE rpc_duration_eth_getBlockByHash_success summary
+rpc_duration_eth_getBlockByHash_success {quantile="0.5"} 88
+rpc_duration_eth_getBlockByHash_success {quantile="0.75"} 118.5
+rpc_duration_eth_getBlockByHash_success {quantile="0.95"} 178.3
+rpc_duration_eth_getBlockByHash_success {quantile="0.99"} 207
+rpc_duration_eth_getBlockByHash_success {quantile="0.999"} 207
+rpc_duration_eth_getBlockByHash_success {quantile="0.9999"} 207
+
+# TYPE rpc_duration_eth_getBlockByNumber_success_count counter
+rpc_duration_eth_getBlockByNumber_success_count 73
+
+# TYPE rpc_duration_eth_getBlockByNumber_success summary
+rpc_duration_eth_getBlockByNumber_success {quantile="0.5"} 86
+rpc_duration_eth_getBlockByNumber_success {quantile="0.75"} 118
+rpc_duration_eth_getBlockByNumber_success {quantile="0.95"} 153.09999999999997
+rpc_duration_eth_getBlockByNumber_success {quantile="0.99"} 202
+rpc_duration_eth_getBlockByNumber_success {quantile="0.999"} 202
+rpc_duration_eth_getBlockByNumber_success {quantile="0.9999"} 202
+
+# TYPE rpc_duration_eth_syncing_success_count counter
+rpc_duration_eth_syncing_success_count 73
+
+# TYPE rpc_duration_eth_syncing_success summary
+rpc_duration_eth_syncing_success {quantile="0.5"} 13
+rpc_duration_eth_syncing_success {quantile="0.75"} 19
+rpc_duration_eth_syncing_success {quantile="0.95"} 25
+rpc_duration_eth_syncing_success {quantile="0.99"} 28
+rpc_duration_eth_syncing_success {quantile="0.999"} 28
+rpc_duration_eth_syncing_success {quantile="0.9999"} 28
+
+# TYPE rpc_duration_rpc_modules_success_count counter
+rpc_duration_rpc_modules_success_count 73
+
+# TYPE rpc_duration_rpc_modules_success summary
+rpc_duration_rpc_modules_success {quantile="0.5"} 24
+rpc_duration_rpc_modules_success {quantile="0.75"} 30
+rpc_duration_rpc_modules_success {quantile="0.95"} 45.599999999999994
+rpc_duration_rpc_modules_success {quantile="0.99"} 52
+rpc_duration_rpc_modules_success {quantile="0.999"} 52
+rpc_duration_rpc_modules_success {quantile="0.9999"} 52
+
+# TYPE rpc_duration_web3_clientVersion_success_count counter
+rpc_duration_web3_clientVersion_success_count 73
+
+# TYPE rpc_duration_web3_clientVersion_success summary
+rpc_duration_web3_clientVersion_success {quantile="0.5"} 30
+rpc_duration_web3_clientVersion_success {quantile="0.75"} 40
+rpc_duration_web3_clientVersion_success {quantile="0.95"} 51.499999999999986
+rpc_duration_web3_clientVersion_success {quantile="0.99"} 85
+rpc_duration_web3_clientVersion_success {quantile="0.999"} 85
+rpc_duration_web3_clientVersion_success {quantile="0.9999"} 85
+
+# TYPE rpc_failure gauge
+rpc_failure 0
+
+# TYPE rpc_requests gauge
+rpc_requests 730
+
+# TYPE rpc_success gauge
+rpc_success 730
+
+# TYPE snapshotdb_basedb_size gauge
+snapshotdb_basedb_size 118794219
+
+# TYPE snapshotdb_fork gauge
+snapshotdb_fork 0
+
+# TYPE state_delete_account gauge
+state_delete_account 0
+
+# TYPE state_delete_accountnodes gauge
+state_delete_accountnodes 0
+
+# TYPE state_delete_storage gauge
+state_delete_storage 0
+
+# TYPE state_delete_storagenodes gauge
+state_delete_storagenodes 0
+
+# TYPE state_snapshot_bloom_account_falsehit gauge
+state_snapshot_bloom_account_falsehit 0
+
+# TYPE state_snapshot_bloom_account_miss gauge
+state_snapshot_bloom_account_miss 19
+
+# TYPE state_snapshot_bloom_account_truehit gauge
+state_snapshot_bloom_account_truehit 78
+
+# TYPE state_snapshot_bloom_error gauge
+state_snapshot_bloom_error 4.122347500755073e-10
+
+# TYPE state_snapshot_bloom_index_count counter
+state_snapshot_bloom_index_count 333
+
+# TYPE state_snapshot_bloom_index summary
+state_snapshot_bloom_index {quantile="0.50"} 44411
+state_snapshot_bloom_index {quantile="0.95"} 61422
+state_snapshot_bloom_index {quantile="0.99"} 150945
+
+# TYPE state_snapshot_bloom_storage_falsehit gauge
+state_snapshot_bloom_storage_falsehit 0
+
+# TYPE state_snapshot_bloom_storage_miss gauge
+state_snapshot_bloom_storage_miss 97
+
+# TYPE state_snapshot_bloom_storage_truehit gauge
+state_snapshot_bloom_storage_truehit 47
+
+# TYPE state_snapshot_clean_account_hit gauge
+state_snapshot_clean_account_hit 13
+
+# TYPE state_snapshot_clean_account_inex gauge
+state_snapshot_clean_account_inex 2
+
+# TYPE state_snapshot_clean_account_miss gauge
+state_snapshot_clean_account_miss 6
+
+# TYPE state_snapshot_clean_account_read gauge
+state_snapshot_clean_account_read 592
+
+# TYPE state_snapshot_clean_account_write gauge
+state_snapshot_clean_account_write 277
+
+# TYPE state_snapshot_clean_storage_hit gauge
+state_snapshot_clean_storage_hit 43
+
+# TYPE state_snapshot_clean_storage_inex gauge
+state_snapshot_clean_storage_inex 28
+
+# TYPE state_snapshot_clean_storage_miss gauge
+state_snapshot_clean_storage_miss 54
+
+# TYPE state_snapshot_clean_storage_read gauge
+state_snapshot_clean_storage_read 1266
+
+# TYPE state_snapshot_clean_storage_write gauge
+state_snapshot_clean_storage_write 1962
+
+# TYPE state_snapshot_dirty_account_hit gauge
+state_snapshot_dirty_account_hit 78
+
+# TYPE state_snapshot_dirty_account_hit_depth_count counter
+state_snapshot_dirty_account_hit_depth_count 78
+
+# TYPE state_snapshot_dirty_account_hit_depth summary
+state_snapshot_dirty_account_hit_depth {quantile="0.5"} 206.5
+state_snapshot_dirty_account_hit_depth {quantile="0.75"} 258
+state_snapshot_dirty_account_hit_depth {quantile="0.95"} 259
+state_snapshot_dirty_account_hit_depth {quantile="0.99"} 261
+state_snapshot_dirty_account_hit_depth {quantile="0.999"} 261
+state_snapshot_dirty_account_hit_depth {quantile="0.9999"} 261
+
+# TYPE state_snapshot_dirty_account_inex gauge
+state_snapshot_dirty_account_inex 0
+
+# TYPE state_snapshot_dirty_account_miss gauge
+state_snapshot_dirty_account_miss 19
+
+# TYPE state_snapshot_dirty_account_read gauge
+state_snapshot_dirty_account_read 3596
+
+# TYPE state_snapshot_dirty_account_write gauge
+state_snapshot_dirty_account_write 106385
+
+# TYPE state_snapshot_dirty_storage_hit gauge
+state_snapshot_dirty_storage_hit 47
+
+# TYPE state_snapshot_dirty_storage_hit_depth_count counter
+state_snapshot_dirty_storage_hit_depth_count 47
+
+# TYPE state_snapshot_dirty_storage_hit_depth summary
+state_snapshot_dirty_storage_hit_depth {quantile="0.5"} 15
+state_snapshot_dirty_storage_hit_depth {quantile="0.75"} 36
+state_snapshot_dirty_storage_hit_depth {quantile="0.95"} 259.6
+state_snapshot_dirty_storage_hit_depth {quantile="0.99"} 261
+state_snapshot_dirty_storage_hit_depth {quantile="0.999"} 261
+state_snapshot_dirty_storage_hit_depth {quantile="0.9999"} 261
+
+# TYPE state_snapshot_dirty_storage_inex gauge
+state_snapshot_dirty_storage_inex 0
+
+# TYPE state_snapshot_dirty_storage_miss gauge
+state_snapshot_dirty_storage_miss 97
+
+# TYPE state_snapshot_dirty_storage_read gauge
+state_snapshot_dirty_storage_read 3102
+
+# TYPE state_snapshot_dirty_storage_write gauge
+state_snapshot_dirty_storage_write 117678
+
+# TYPE state_snapshot_flush_account_item gauge
+state_snapshot_flush_account_item 0
+
+# TYPE state_snapshot_flush_account_size gauge
+state_snapshot_flush_account_size 0
+
+# TYPE state_snapshot_flush_storage_item gauge
+state_snapshot_flush_storage_item 0
+
+# TYPE state_snapshot_flush_storage_size gauge
+state_snapshot_flush_storage_size 0
+
+# TYPE state_snapshot_generation_account_generated gauge
+state_snapshot_generation_account_generated 0
+
+# TYPE state_snapshot_generation_account_missall gauge
+state_snapshot_generation_account_missall 0
+
+# TYPE state_snapshot_generation_account_recovered gauge
+state_snapshot_generation_account_recovered 0
+
+# TYPE state_snapshot_generation_account_wiped gauge
+state_snapshot_generation_account_wiped 0
+
+# TYPE state_snapshot_generation_duration_account_prove gauge
+state_snapshot_generation_duration_account_prove 0
+
+# TYPE state_snapshot_generation_duration_account_snapread gauge
+state_snapshot_generation_duration_account_snapread 0
+
+# TYPE state_snapshot_generation_duration_account_trieread gauge
+state_snapshot_generation_duration_account_trieread 0
+
+# TYPE state_snapshot_generation_duration_account_write gauge
+state_snapshot_generation_duration_account_write 0
+
+# TYPE state_snapshot_generation_duration_storage_clean gauge
+state_snapshot_generation_duration_storage_clean 0
+
+# TYPE state_snapshot_generation_duration_storage_prove gauge
+state_snapshot_generation_duration_storage_prove 0
+
+# TYPE state_snapshot_generation_duration_storage_snapread gauge
+state_snapshot_generation_duration_storage_snapread 0
+
+# TYPE state_snapshot_generation_duration_storage_trieread gauge
+state_snapshot_generation_duration_storage_trieread 0
+
+# TYPE state_snapshot_generation_duration_storage_write gauge
+state_snapshot_generation_duration_storage_write 0
+
+# TYPE state_snapshot_generation_proof_failure gauge
+state_snapshot_generation_proof_failure 0
+
+# TYPE state_snapshot_generation_proof_success gauge
+state_snapshot_generation_proof_success 0
+
+# TYPE state_snapshot_generation_storage_dangling gauge
+state_snapshot_generation_storage_dangling 0
+
+# TYPE state_snapshot_generation_storage_generated gauge
+state_snapshot_generation_storage_generated 0
+
+# TYPE state_snapshot_generation_storage_missall gauge
+state_snapshot_generation_storage_missall 0
+
+# TYPE state_snapshot_generation_storage_recovered gauge
+state_snapshot_generation_storage_recovered 0
+
+# TYPE state_snapshot_generation_storage_wiped gauge
+state_snapshot_generation_storage_wiped 0
+
+# TYPE state_update_account gauge
+state_update_account 0
+
+# TYPE state_update_accountnodes gauge
+state_update_accountnodes 0
+
+# TYPE state_update_storage gauge
+state_update_storage 0
+
+# TYPE state_update_storagenodes gauge
+state_update_storagenodes 0
+
+# TYPE system_cpu_goroutines gauge
+system_cpu_goroutines 530
+
+# TYPE system_cpu_procload gauge
+system_cpu_procload 18
+
+# TYPE system_cpu_schedlatency_count counter
+system_cpu_schedlatency_count 8567
+
+# TYPE system_cpu_schedlatency summary
+system_cpu_schedlatency {quantile="0.5"} 3584
+system_cpu_schedlatency {quantile="0.75"} 10240
+system_cpu_schedlatency {quantile="0.95"} 65536
+system_cpu_schedlatency {quantile="0.99"} 81920
+system_cpu_schedlatency {quantile="0.999"} 786432
+system_cpu_schedlatency {quantile="0.9999"} 2.62144e+06
+
+# TYPE system_cpu_sysload gauge
+system_cpu_sysload 352
+
+# TYPE system_cpu_syswait gauge
+system_cpu_syswait 3
+
+# TYPE system_cpu_threads gauge
+system_cpu_threads 38
+
+# TYPE system_disk_readbytes gauge
+system_disk_readbytes 9019927981
+
+# TYPE system_disk_readcount gauge
+system_disk_readcount 1980096
+
+# TYPE system_disk_readdata gauge
+system_disk_readdata 9019927981
+
+# TYPE system_disk_writebytes gauge
+system_disk_writebytes 8480286373
+
+# TYPE system_disk_writecount gauge
+system_disk_writecount 1996615
+
+# TYPE system_disk_writedata gauge
+system_disk_writedata 8480286373
+
+# TYPE system_memory_allocs gauge
+system_memory_allocs 6846101584
+
+# TYPE system_memory_frees gauge
+system_memory_frees 6056136840
+
+# TYPE system_memory_held gauge
+system_memory_held 3710555256
+
+# TYPE system_memory_objects gauge
+system_memory_objects 789964744
+
+# TYPE system_memory_pauses_count counter
+system_memory_pauses_count 38
+
+# TYPE system_memory_pauses summary
+system_memory_pauses {quantile="0.5"} 49152
+system_memory_pauses {quantile="0.75"} 65536
+system_memory_pauses {quantile="0.95"} 393216
+system_memory_pauses {quantile="0.99"} 786432
+system_memory_pauses {quantile="0.999"} 786432
+system_memory_pauses {quantile="0.9999"} 786432
+
+# TYPE system_memory_used gauge
+system_memory_used 831159360
+
+# TYPE trie_memcache_clean_hit gauge
+trie_memcache_clean_hit 722
+
+# TYPE trie_memcache_clean_miss gauge
+trie_memcache_clean_miss 38
+
+# TYPE trie_memcache_clean_read gauge
+trie_memcache_clean_read 255123
+
+# TYPE trie_memcache_clean_write gauge
+trie_memcache_clean_write 1024970
+
+# TYPE trie_memcache_commit_nodes gauge
+trie_memcache_commit_nodes 0
+
+# TYPE trie_memcache_commit_size gauge
+trie_memcache_commit_size 0
+
+# TYPE trie_memcache_commit_time_count counter
+trie_memcache_commit_time_count 73
+
+# TYPE trie_memcache_commit_time summary
+trie_memcache_commit_time {quantile="0.50"} 204986
+trie_memcache_commit_time {quantile="0.95"} 461434
+trie_memcache_commit_time {quantile="0.99"} 559397
+
+# TYPE trie_memcache_dirty_hit gauge
+trie_memcache_dirty_hit 0
+
+# TYPE trie_memcache_dirty_miss gauge
+trie_memcache_dirty_miss 39
+
+# TYPE trie_memcache_dirty_read gauge
+trie_memcache_dirty_read 0
+
+# TYPE trie_memcache_dirty_write gauge
+trie_memcache_dirty_write 1009380
+
+# TYPE trie_memcache_flush_nodes gauge
+trie_memcache_flush_nodes 0
+
+# TYPE trie_memcache_flush_size gauge
+trie_memcache_flush_size 0
+
+# TYPE trie_memcache_gc_nodes gauge
+trie_memcache_gc_nodes 0
+
+# TYPE trie_memcache_gc_size gauge
+trie_memcache_gc_size 0
+
+# TYPE txpool_dropbetweenreorg_count counter
+txpool_dropbetweenreorg_count 92
+
+# TYPE txpool_dropbetweenreorg summary
+txpool_dropbetweenreorg {quantile="0.5"} 0
+txpool_dropbetweenreorg {quantile="0.75"} 0
+txpool_dropbetweenreorg {quantile="0.95"} 0
+txpool_dropbetweenreorg {quantile="0.99"} 0
+txpool_dropbetweenreorg {quantile="0.999"} 0
+txpool_dropbetweenreorg {quantile="0.9999"} 0
+
+# TYPE txpool_invalid gauge
+txpool_invalid 0
+
+# TYPE txpool_known gauge
+txpool_known 28
+
+# TYPE txpool_local gauge
+txpool_local 0
+
+# TYPE txpool_overflowed gauge
+txpool_overflowed 0
+
+# TYPE txpool_pending gauge
+txpool_pending 0
+
+# TYPE txpool_pending_discard gauge
+txpool_pending_discard 0
+
+# TYPE txpool_pending_nofunds gauge
+txpool_pending_nofunds 0
+
+# TYPE txpool_pending_ratelimit gauge
+txpool_pending_ratelimit 0
+
+# TYPE txpool_pending_replace gauge
+txpool_pending_replace 0
+
+# TYPE txpool_queued gauge
+txpool_queued 0
+
+# TYPE txpool_queued_discard gauge
+txpool_queued_discard 0
+
+# TYPE txpool_queued_eviction gauge
+txpool_queued_eviction 0
+
+# TYPE txpool_queued_nofunds gauge
+txpool_queued_nofunds 0
+
+# TYPE txpool_queued_ratelimit gauge
+txpool_queued_ratelimit 0
+
+# TYPE txpool_queued_replace gauge
+txpool_queued_replace 0
+
+# TYPE txpool_reheap_count counter
+txpool_reheap_count 91
+
+# TYPE txpool_reheap summary
+txpool_reheap {quantile="0.5"} 1030
+txpool_reheap {quantile="0.75"} 1400
+txpool_reheap {quantile="0.95"} 5051.999999999993
+txpool_reheap {quantile="0.99"} 8420
+txpool_reheap {quantile="0.999"} 8420
+txpool_reheap {quantile="0.9999"} 8420
+
+# TYPE txpool_reorgtime_count counter
+txpool_reorgtime_count 92
+
+# TYPE txpool_reorgtime summary
+txpool_reorgtime {quantile="0.5"} 135884
+txpool_reorgtime {quantile="0.75"} 187778.5
+txpool_reorgtime {quantile="0.95"} 328766.1999999997
+txpool_reorgtime {quantile="0.99"} 409542
+txpool_reorgtime {quantile="0.999"} 409542
+txpool_reorgtime {quantile="0.9999"} 409542
+
+# TYPE txpool_slots gauge
+txpool_slots 0
+
+# TYPE txpool_throttle gauge
+txpool_throttle 0
+
+# TYPE txpool_underpriced gauge
+txpool_underpriced 0
+
+# TYPE txpool_valid gauge
+txpool_valid 20
+
