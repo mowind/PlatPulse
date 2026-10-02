@@ -1,4 +1,4 @@
-import { Menu, LayoutDashboard, Cpu, Server, Network, Settings, PanelsTopLeft, ListChecks, SlidersHorizontal, TriangleAlert } from 'lucide-react'
+import { Menu, LayoutDashboard, Cpu, Server, Network, Settings, PanelsTopLeft, ListChecks, SlidersHorizontal, TriangleAlert, BellOff, CalendarClock } from 'lucide-react'
 import BackgroundDecoration from '../components/BackgroundDecoration'
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link, NavLink, Outlet, useOutletContext } from 'react-router'
@@ -285,6 +285,26 @@ export default function AdminLayout() {
             </span>
             Rules
           </NavLink>
+          <NavLink
+            to="/admin/alerts/silences"
+            onClick={closeNav}
+            className={({ isActive }) => cn(NAV_LINK, isActive && NAV_LINK_ACTIVE)}
+          >
+            <span data-slot="admin-nav-icon" className="flex w-6 shrink-0 justify-center" aria-hidden="true">
+              <BellOff size={18} strokeWidth={2} data-icon="BellOff" />
+            </span>
+            Silences
+          </NavLink>
+          <NavLink
+            to="/admin/alerts/maintenance"
+            onClick={closeNav}
+            className={({ isActive }) => cn(NAV_LINK, isActive && NAV_LINK_ACTIVE)}
+          >
+            <span data-slot="admin-nav-icon" className="flex w-6 shrink-0 justify-center" aria-hidden="true">
+              <CalendarClock size={18} strokeWidth={2} data-icon="CalendarClock" />
+            </span>
+            Maintenance
+          </NavLink>
           <p className="px-3 pt-3 pb-1 text-xs font-medium tracking-wider text-muted-foreground">
             Access
           </p>
@@ -310,11 +330,11 @@ export default function AdminLayout() {
             </span>
             Audit
           </NavLink>
-          {/* MVP Admin surface (issue #92): deferred groups
-              (Silences/Maintenance, operations, data/maintenance, validators,
-              people, transfer, enrollment/recovery/rotation) are not linked
-              here. Incidents (issue #203) and Rules (issue #204) are the two
-              routed Alerts entries. */}
+          {/* MVP Admin surface (issue #92): deferred groups (operations,
+              data/maintenance, validators, people, transfer,
+              enrollment/recovery/rotation) are not linked here. Incidents
+              (issue #203), Rules (issue #204), Silences, and Maintenance
+              Windows (issue #205) are the routed Alerts entries. */}
         </nav>
         <div
           data-slot="admin-nav-scrim"

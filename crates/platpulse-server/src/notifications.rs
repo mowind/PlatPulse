@@ -555,7 +555,8 @@ pub async fn cancel_unsent_for_subject(
 
 /// One pass of the delivery worker:
 /// 1. repair stale `in_flight` rows (crash recovery, at-least-once);
-/// 2. claim due Deliveries and send them through the provider;
+/// 2. claim due Deliveries, re-check Silence/Maintenance suppression and
+///    subject deletion, then send the survivors through the provider;
 /// 3. record one attempt row and the resulting state per Delivery;
 /// 4. publish an Admin invalidation when anything changed.
 ///
@@ -662,6 +663,50 @@ pub async fn process_due_deliveries(
                     processed += 1;
                     continue;
                 }
+            }
+        }
+        // Pre-handoff suppression re-check (design §17.5, issue #205): a
+        // Silence or Maintenance Window can become effective after this
+        // Delivery was queued at Incident-transition time. Re-evaluate the
+        // same matchers before handing the message to the channel, so a
+        // not-yet-sent Delivery is suppressed instead of sent. The row was
+        // claimed (in_flight) but not yet handed off, so this records an
+        // unsent fact; `suppressed` is terminal and a later window expiry
+        // never revives it. A message already handed to the provider cannot
+        // be recalled.
+        let suppression_subject = event.as_ref().and_then(|event| {
+            if event.event_kind != "incident" {
+                return None;
+            }
+            let rule_key = event.rule_key.as_deref()?;
+            let subject_kind = event
+                .subject_kind
+                .as_deref()
+                .and_then(crate::alerts::SubjectKind::parse_str)?;
+            let subject_key = event.subject_key.as_deref()?;
+            Some((rule_key, subject_kind, subject_key))
+        });
+        if let Some((rule_key, subject_kind, subject_key)) = suppression_subject {
+            let matched = {
+                let mut conn = state.db().pool().acquire().await?;
+                suppressions_for_subject(&mut conn, rule_key, subject_kind, subject_key, now_utc())
+                    .await?
+                    .into_iter()
+                    .next()
+            };
+            if let Some(matched) = matched {
+                let mut tx = state.db().pool().begin().await?;
+                sqlx::query(
+                    "UPDATE notification_deliveries SET state = 'suppressed', next_attempt_at = NULL, last_result = ?, last_error_kind = NULL, updated_at = ? WHERE delivery_id = ? AND state = 'in_flight'",
+                )
+                .bind(format!("suppressed_by_{}:{}", matched.kind, matched.id))
+                .bind(format_rfc3339(now_utc()))
+                .bind(&delivery.delivery_id)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                processed += 1;
+                continue;
             }
         }
         let channel = state.channels().telegram();

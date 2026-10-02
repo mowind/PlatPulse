@@ -1588,4 +1588,362 @@ mod tests {
         // The provider was never invoked.
         assert_eq!(provider.texts.lock().unwrap().len(), 0);
     }
+
+    /// Insert a Silence whose window covers the current instant. The test
+    /// fixtures are created at the fixed `base_time()`; the worker's own
+    /// `now_utc()` clock decides effectiveness, so the window is anchored
+    /// to the real clock.
+    async fn insert_active_silence(pool: &sqlx::SqlitePool, silence_id: &str) {
+        let now = time::OffsetDateTime::now_utc();
+        sqlx::query("INSERT INTO silences (silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at) VALUES (?, 'node', 'node-a', 'planned', ?, ?, 'owner', ?)")
+            .bind(silence_id)
+            .bind(crate::auth::format_rfc3339(now - time::Duration::hours(1)))
+            .bind(crate::auth::format_rfc3339(now + time::Duration::hours(1)))
+            .bind(crate::auth::format_rfc3339(now))
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    /// Insert a Maintenance Window for `node-a` covering the current
+    /// instant, expecting `node.rpc_unreachable`.
+    async fn insert_active_maintenance(pool: &sqlx::SqlitePool, window_id: &str) {
+        let now = time::OffsetDateTime::now_utc();
+        sqlx::query("INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES (?, 'node', 'node-a', '[\"node.rpc_unreachable\"]', 'planned', ?, ?, 'owner', ?)")
+            .bind(window_id)
+            .bind(crate::auth::format_rfc3339(now - time::Duration::hours(1)))
+            .bind(crate::auth::format_rfc3339(now + time::Duration::hours(1)))
+            .bind(crate::auth::format_rfc3339(now))
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn only_delivery_id(state: &AppState, event_id: &str) -> String {
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::notifications::deliveries_for_event(&mut conn, event_id)
+            .await
+            .unwrap()[0]
+            .delivery_id
+            .clone()
+    }
+
+    async fn load_test_delivery(
+        state: &AppState,
+        delivery_id: &str,
+    ) -> crate::notifications::DeliveryRow {
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::notifications::load_delivery(&mut conn, delivery_id)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn worker_rechecks_suppression_before_handoff() {
+        let (_dir, state, provider) = test_state().await;
+        provider.results.lock().unwrap().clear();
+        provider.results.lock().unwrap().push(Ok(()));
+        let event_id = seed_event(state.db().pool()).await;
+        // The Delivery was queued with no active policy; this Silence only
+        // becomes effective afterwards.
+        insert_active_silence(state.db().pool(), "sil-handoff").await;
+        let delivery_id = only_delivery_id(&state, &event_id).await;
+
+        let processed = crate::notifications::process_due_deliveries(&state, &*provider)
+            .await
+            .unwrap();
+        assert_eq!(processed, 1);
+        let delivery = load_test_delivery(&state, &delivery_id).await;
+        assert_eq!(delivery.state, "suppressed");
+        assert_eq!(
+            delivery.last_result.as_deref(),
+            Some("suppressed_by_silence:sil-handoff")
+        );
+        // No attempt was made: the message was never handed off.
+        assert_eq!(delivery.attempt_count, 0);
+        assert!(provider.texts.lock().unwrap().is_empty());
+        let attempts = {
+            let mut conn = state.db().pool().acquire().await.unwrap();
+            crate::notifications::attempts_for_delivery(&mut conn, &delivery_id)
+                .await
+                .unwrap()
+        };
+        assert!(attempts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn worker_suppresses_a_scheduled_retry_before_its_next_attempt() {
+        let (_dir, state, provider) = test_state().await;
+        provider.results.lock().unwrap().clear();
+        provider
+            .results
+            .lock()
+            .unwrap()
+            .push(Err(crate::notifications::SendError::Api {
+                code: 429,
+                retry_after: Some(5),
+            }));
+        let event_id = seed_event(state.db().pool()).await;
+        let delivery_id = only_delivery_id(&state, &event_id).await;
+
+        // First pass really hands the message off and schedules a retry.
+        let processed = crate::notifications::process_due_deliveries(&state, &*provider)
+            .await
+            .unwrap();
+        assert_eq!(processed, 1);
+        assert_eq!(
+            load_test_delivery(&state, &delivery_id).await.state,
+            "retry_scheduled"
+        );
+        assert_eq!(provider.texts.lock().unwrap().len(), 1);
+
+        // A Maintenance Window becomes effective before the retry is due.
+        insert_active_maintenance(state.db().pool(), "mnt-handoff").await;
+        sqlx::query("UPDATE notification_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE delivery_id = ?")
+            .bind(&delivery_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let processed = crate::notifications::process_due_deliveries(&state, &*provider)
+            .await
+            .unwrap();
+        assert_eq!(processed, 1);
+        let delivery = load_test_delivery(&state, &delivery_id).await;
+        assert_eq!(delivery.state, "suppressed");
+        assert_eq!(
+            delivery.last_result.as_deref(),
+            Some("suppressed_by_maintenance:mnt-handoff")
+        );
+        // The retry was never handed off a second time; the first, already
+        // handed-off message is not recalled.
+        assert_eq!(provider.texts.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn window_expiry_does_not_replay_a_suppressed_delivery() {
+        let (_dir, state, provider) = test_state().await;
+        provider.results.lock().unwrap().clear();
+        provider.results.lock().unwrap().push(Ok(()));
+        let event_id = seed_event(state.db().pool()).await;
+        insert_active_silence(state.db().pool(), "sil-expiring").await;
+        let delivery_id = only_delivery_id(&state, &event_id).await;
+
+        let processed = crate::notifications::process_due_deliveries(&state, &*provider)
+            .await
+            .unwrap();
+        assert_eq!(processed, 1);
+        assert_eq!(
+            load_test_delivery(&state, &delivery_id).await.state,
+            "suppressed"
+        );
+
+        // The window ends. `suppressed` is terminal: the next pass must
+        // neither replay it nor invent a reminder.
+        sqlx::query("UPDATE silences SET starts_at = '2020-01-01T00:00:00Z', ends_at = '2020-01-02T00:00:00Z' WHERE silence_id = 'sil-expiring'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let processed = crate::notifications::process_due_deliveries(&state, &*provider)
+            .await
+            .unwrap();
+        assert_eq!(processed, 0);
+        let delivery = load_test_delivery(&state, &delivery_id).await;
+        assert_eq!(delivery.state, "suppressed");
+        assert!(provider.texts.lock().unwrap().is_empty());
+        // Exactly one Event and one Delivery: no replay, no new reminder.
+        let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notification_events")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(event_count, 1);
+        let delivery_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM notification_deliveries")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(delivery_count, 1);
+    }
+
+    /// A provider that makes a matching Silence effective while the message is
+    /// being handed to the channel. The attempt has already passed the
+    /// pre-handoff re-check, so it must complete and stay non-retractable.
+    struct WindowOpeningProvider {
+        pool: sqlx::SqlitePool,
+        texts: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::notifications::DeliveryProvider for WindowOpeningProvider {
+        async fn send(
+            &self,
+            channel: &crate::config::TelegramChannel,
+            text: &str,
+        ) -> Result<(), crate::notifications::SendError> {
+            let _ = channel;
+            self.texts.lock().expect("texts").push(text.to_owned());
+            insert_active_silence(&self.pool, "sil-mid-flight").await;
+            Ok(())
+        }
+    }
+
+    async fn incident_facts(state: &AppState) -> (String, String) {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT state, sequence FROM alert_incidents WHERE incident_id = 'inc-1'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap()
+    }
+
+    async fn notification_totals(state: &AppState) -> (i64, i64) {
+        let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notification_events")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        let deliveries: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notification_deliveries")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        (events, deliveries)
+    }
+
+    /// A matching Silence becoming effective while the provider is mid-send
+    /// must not retract the message: the handoff already happened.
+    #[tokio::test]
+    async fn a_window_effective_during_handoff_does_not_retract_the_delivered_message() {
+        let (_dir, state, _provider) = test_state().await;
+        let event_id = seed_event(state.db().pool()).await;
+        let delivery_id = only_delivery_id(&state, &event_id).await;
+        let provider = WindowOpeningProvider {
+            pool: state.db().pool().clone(),
+            texts: std::sync::Mutex::new(Vec::new()),
+        };
+
+        let processed = crate::notifications::process_due_deliveries(&state, &provider)
+            .await
+            .unwrap();
+        assert_eq!(processed, 1);
+        // The Silence became effective during the send, after the re-check, so
+        // the message completed and is non-retractable.
+        let delivery = load_test_delivery(&state, &delivery_id).await;
+        assert_eq!(delivery.state, "succeeded");
+        assert_eq!(delivery.attempt_count, 1);
+        assert_eq!(provider.texts.lock().unwrap().len(), 1);
+
+        // The Silence is now effective, but the terminal success is not rewound
+        // and a later pass sends nothing.
+        let processed = crate::notifications::process_due_deliveries(&state, &provider)
+            .await
+            .unwrap();
+        assert_eq!(processed, 0);
+        assert_eq!(
+            load_test_delivery(&state, &delivery_id).await.state,
+            "succeeded"
+        );
+        assert_eq!(provider.texts.lock().unwrap().len(), 1);
+    }
+
+    /// An explicit, audited end of the matching Silence must not revive the
+    /// terminal `suppressed` Delivery, and evaluation must not invent a
+    /// reminder for the still-open Incident.
+    #[tokio::test]
+    async fn explicit_end_does_not_revive_a_suppressed_delivery_or_invent_a_reminder() {
+        let (_dir, state, provider) = test_state().await;
+        provider.results.lock().unwrap().clear();
+        provider.results.lock().unwrap().push(Ok(()));
+        let event_id = seed_event(state.db().pool()).await;
+        insert_active_silence(state.db().pool(), "sil-ending").await;
+        let delivery_id = only_delivery_id(&state, &event_id).await;
+
+        let processed = crate::notifications::process_due_deliveries(&state, &*provider)
+            .await
+            .unwrap();
+        assert_eq!(processed, 1);
+        assert_eq!(
+            load_test_delivery(&state, &delivery_id).await.state,
+            "suppressed"
+        );
+        let facts_before = incident_facts(&state).await;
+
+        // The Owner explicitly ends the Silence through the audited cancellation.
+        sqlx::query(
+            "UPDATE silences SET cancelled_at = ?, cancelled_by = 'owner' WHERE silence_id = 'sil-ending'",
+        )
+        .bind(crate::auth::format_rfc3339(time::OffsetDateTime::now_utc()))
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+
+        let processed = crate::notifications::process_due_deliveries(&state, &*provider)
+            .await
+            .unwrap();
+        assert_eq!(processed, 0);
+        assert_eq!(
+            load_test_delivery(&state, &delivery_id).await.state,
+            "suppressed"
+        );
+        assert!(provider.texts.lock().unwrap().is_empty());
+
+        // Evaluation is Incident-owned: it neither reruns suppression nor opens
+        // a reminder because the Silence ended.
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::alerts::evaluate_rule(
+            &mut conn,
+            "node.rpc_unreachable",
+            crate::alerts::SubjectKind::Node,
+            "node-a",
+            time::OffsetDateTime::now_utc(),
+        )
+        .await
+        .unwrap();
+        drop(conn);
+
+        assert_eq!(incident_facts(&state).await, facts_before);
+        assert_eq!(notification_totals(&state).await, (1, 1));
+    }
+
+    /// A Maintenance Window that expires after suppressing a Delivery must not
+    /// replay it or create a new reminder.
+    #[tokio::test]
+    async fn maintenance_expiry_does_not_replay_a_suppressed_delivery() {
+        let (_dir, state, provider) = test_state().await;
+        provider.results.lock().unwrap().clear();
+        provider.results.lock().unwrap().push(Ok(()));
+        let event_id = seed_event(state.db().pool()).await;
+        insert_active_maintenance(state.db().pool(), "mnt-expiring").await;
+        let delivery_id = only_delivery_id(&state, &event_id).await;
+        let facts_before = incident_facts(&state).await;
+
+        let processed = crate::notifications::process_due_deliveries(&state, &*provider)
+            .await
+            .unwrap();
+        assert_eq!(processed, 1);
+        let delivery = load_test_delivery(&state, &delivery_id).await;
+        assert_eq!(delivery.state, "suppressed");
+        assert_eq!(
+            delivery.last_result.as_deref(),
+            Some("suppressed_by_maintenance:mnt-expiring")
+        );
+
+        // The Window expires.
+        sqlx::query(
+            "UPDATE maintenance_windows SET starts_at = '2020-01-01T00:00:00Z', ends_at = '2020-01-02T00:00:00Z' WHERE window_id = 'mnt-expiring'",
+        )
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        let processed = crate::notifications::process_due_deliveries(&state, &*provider)
+            .await
+            .unwrap();
+        assert_eq!(processed, 0);
+        assert_eq!(
+            load_test_delivery(&state, &delivery_id).await.state,
+            "suppressed"
+        );
+        assert!(provider.texts.lock().unwrap().is_empty());
+        assert_eq!(incident_facts(&state).await, facts_before);
+        assert_eq!(notification_totals(&state).await, (1, 1));
+    }
 }
