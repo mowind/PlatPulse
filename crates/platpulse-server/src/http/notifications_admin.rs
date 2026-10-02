@@ -227,8 +227,8 @@ fn request_id_invalid(request_id: &str) -> Response {
     mutation_error(
         request_id,
         StatusCode::BAD_REQUEST,
-        "request_id_invalid",
-        "a non-empty requestId of at most 128 characters is required",
+        "notification_request_id_invalid",
+        "a non-blank requestId of at most 128 characters is required",
     )
 }
 
@@ -238,7 +238,7 @@ fn request_id_conflict(request_id: &str) -> Response {
     mutation_error(
         request_id,
         StatusCode::CONFLICT,
-        "request_id_conflict",
+        "notification_request_id_conflict",
         "this requestId was already used for a different command",
     )
 }
@@ -1645,7 +1645,7 @@ mod tests {
         let response = retry_command(&state, &delivery_id, "req-shared").await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
         let value = body_json(response).await;
-        assert_eq!(value["error"]["code"], "request_id_conflict");
+        assert_eq!(value["error"]["code"], "notification_request_id_conflict");
     }
 
     #[tokio::test]
@@ -1839,6 +1839,7 @@ mod tests {
         let bodies = [
             Bytes::from_static(b"{}"),
             json_body(""),
+            json_body("   "),
             json_body(&"a".repeat(129)),
         ];
         for body in bodies {
@@ -1853,7 +1854,7 @@ mod tests {
             .await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
             let value = body_json(response).await;
-            assert_eq!(value["error"]["code"], "request_id_invalid");
+            assert_eq!(value["error"]["code"], "notification_request_id_invalid");
         }
         let events = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM notification_events")
             .fetch_one(state.db().pool())

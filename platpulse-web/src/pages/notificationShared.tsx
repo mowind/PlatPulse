@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from 'react'
+import { useId, useState, type FormEvent, type ReactNode } from 'react'
 import { Link, NavLink } from 'react-router'
 
 import { AdminApiError, useAdminNotificationRequest } from '../api/admin'
@@ -177,6 +177,9 @@ export function NotificationRequestPanel({
   title?: string
 }) {
   const { generation } = useAuth()
+  // The reconciliation panel can sit next to the always-present lookup panel,
+  // so the field identity is per instance rather than a fixed DOM id.
+  const fieldId = useId()
   const [draft, setDraft] = useState(initialRequestId)
   const [lookupId, setLookupId] = useState(initialRequestId)
   const query = useAdminNotificationRequest(generation, lookupId)
@@ -186,7 +189,14 @@ export function NotificationRequestPanel({
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    setLookupId(draft.trim())
+    const next = draft.trim()
+    // The same id again is an explicit re-query: a command accepted after an
+    // earlier lookup is only visible through a fresh read of the ledger.
+    if (next === lookupId) {
+      void query.refetch()
+      return
+    }
+    setLookupId(next)
   }
 
   return (
@@ -199,11 +209,11 @@ export function NotificationRequestPanel({
         </p>
         <form className="flex flex-wrap items-end gap-2" onSubmit={onSubmit}>
           <div className="min-w-0 flex-1">
-            <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="notification-request-id">
+            <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor={fieldId}>
               Request id
             </label>
             <Input
-              id="notification-request-id"
+              id={fieldId}
               value={draft}
               autoComplete="off"
               spellCheck={false}
@@ -222,10 +232,15 @@ export function NotificationRequestPanel({
           </p>
         )}
         {lookupId.length > 0 && !query.data && query.isError && unknownRequest && (
-          <p role="status" className="text-sm">
-            The Server has no unexpired record for this request id. It may never have been accepted, or its retention
-            window has elapsed; nothing was re-sent.
-          </p>
+          <div role="status" className="space-y-2 text-sm">
+            <p>
+              The Server has no unexpired record for this request id. It may never have been accepted, or its retention
+              window has elapsed; nothing was re-sent.
+            </p>
+            <Button variant="link" size="sm" onClick={() => void query.refetch()}>
+              Check again
+            </Button>
+          </div>
         )}
         {lookupId.length > 0 && !query.data && query.isError && !unknownRequest && (
           <div role="alert" className="space-y-2 text-sm">

@@ -65,7 +65,7 @@ export default function AdminNotificationChannels() {
             error.message +
             ' The cooldown bounds how often the channel can be exercised; wait for it to elapse, or look up the request id to confirm the earlier result.',
         })
-      } else if (error instanceof AdminApiError && error.code === 'request_id_conflict') {
+      } else if (error instanceof AdminApiError && error.code === 'notification_request_id_conflict') {
         setFeedback({
           tone: 'error',
           message: error.message + ' Start a new request id before sending a different test.',

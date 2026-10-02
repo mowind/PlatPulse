@@ -546,9 +546,11 @@ pub fn request_intent_fingerprint(command_kind: &str, target: &str) -> String {
 }
 
 /// An Owner-supplied request id is opaque to the Server; only its shape is
-/// validated so ledger keys stay bounded.
+/// validated so ledger keys stay bounded. A blank id is not a usable identity,
+/// and the bound is counted in characters so a non-ASCII id of the documented
+/// length is not rejected on bytes alone.
 pub fn validate_request_id(request_id: &str) -> bool {
-    !request_id.is_empty() && request_id.len() <= REQUEST_ID_MAX_LEN
+    !request_id.trim().is_empty() && request_id.chars().count() <= REQUEST_ID_MAX_LEN
 }
 
 /// Delete request rows whose result is no longer queryable. Called inside an
@@ -1236,6 +1238,18 @@ impl TestSendError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_request_id_is_bounded_in_characters_and_never_blank() {
+        assert!(validate_request_id("req-1"));
+        assert!(validate_request_id(&"a".repeat(REQUEST_ID_MAX_LEN)));
+        // 128 multi-byte characters are within the documented bound even
+        // though they need 384 bytes.
+        assert!(validate_request_id(&"验".repeat(REQUEST_ID_MAX_LEN)));
+        assert!(!validate_request_id(""));
+        assert!(!validate_request_id("   "));
+        assert!(!validate_request_id(&"a".repeat(REQUEST_ID_MAX_LEN + 1)));
+    }
+
     use super::*;
     use crate::auth::format_rfc3339;
     use crate::config::TelegramChannel;

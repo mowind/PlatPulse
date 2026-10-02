@@ -143,7 +143,7 @@ function RetryPanel({ delivery }: { delivery: DeliveryRow }) {
         setFeedback({ tone: 'error', message: INDETERMINATE_OUTCOME })
       } else if (
         error instanceof AdminApiError &&
-        (error.code === 'request_id_conflict' || error.code === 'delivery_already_queued')
+        (error.code === 'notification_request_id_conflict' || error.code === 'delivery_already_queued')
       ) {
         setFeedback({
           tone: 'error',

@@ -344,7 +344,7 @@ describe('PAGE-ADMIN-NOTIFICATIONS (issue #206 notification surface)', () => {
         ...SESSION_ROUTE,
         '/api/admin/v1/notifications/deliveries/d-1/retry': () =>
           errorResponse(
-            'request_id_conflict',
+            'notification_request_id_conflict',
             'this request id is recorded for a different command',
             409,
           ),
@@ -460,12 +460,21 @@ describe('PAGE-ADMIN-NOTIFICATIONS (issue #206 notification surface)', () => {
   })
 
   it('explains an unknown or expired request id without claiming a send happened', async () => {
-    mockFetch({
-      ...SESSION_ROUTE,
-      ...CHANNEL_ROUTE,
-      '/api/admin/v1/notifications/requests*': () =>
-        errorResponse('notification_request_not_found', 'no such request', 404),
-    })
+    const recorded: Recorded[] = []
+    let lookups = 0
+    mockFetch(
+      {
+        ...SESSION_ROUTE,
+        ...CHANNEL_ROUTE,
+        '/api/admin/v1/notifications/requests*': () => {
+          lookups += 1
+          return lookups === 1
+            ? errorResponse('notification_request_not_found', 'no such request', 404)
+            : jsonResponse(REQUEST_RESULT, 200)
+        },
+      },
+      recorded,
+    )
     await renderAt('/admin/notifications/channels')
 
     await screen.findByRole('heading', { level: 1, name: 'Notification Channels' })
@@ -473,6 +482,13 @@ describe('PAGE-ADMIN-NOTIFICATIONS (issue #206 notification surface)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Look up request' }))
 
     await screen.findByText(/no unexpired record for this request id/i)
+    // A command accepted after that read is reconciled by asking again with
+    // the same identity: no new request id, no re-send.
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+
+    await screen.findByText('Command kind')
+    expect(lookups).toBe(2)
+    expect(recorded.filter((entry) => entry.method === 'POST')).toHaveLength(0)
   })
 
   it('does not offer a retry for a terminal suppressed delivery', async () => {
