@@ -1411,9 +1411,10 @@ describe('Admin MVP route inventory (issue #92)', () => {
 
   // Complete MVP Admin inventory (issues #92, #111, #203, #204, #205, #206):
   // Overview, Agents, Agent Detail, Nodes, Node Detail, Networks, Network
-  // Detail, Settings, Incidents, Incident Detail, Alert Rules, Alert Rule
-  // Detail, Silences, Maintenance Windows, Notification Overview, Events,
-  // Event Detail, Deliveries, Delivery Detail, Channels, Sessions and Audit.
+  // Detail, Operations, Operation Detail, Doctor, Settings, Incidents,
+  // Incident Detail, Alert Rules, Alert Rule Detail, Silences, Maintenance
+  // Windows, Notification Overview, Events, Event Detail, Deliveries,
+  // Delivery Detail, Channels, Sessions and Audit.
   // Each route renders its own
   // page shell under the Owner gate; the Server REST mock answers 404s so the
   // pages' headings are asserted without seeding page data. The two detail
@@ -1428,6 +1429,9 @@ describe('Admin MVP route inventory (issue #92)', () => {
     ['/admin/networks', /Networks/],
     ['/admin/networks/mainnet', /mainnet/],
     ['/admin/networks/no-such-network', /Network unavailable/],
+    ['/admin/operations', /Operations/],
+    ['/admin/operations/op-1', /Operation/],
+    ['/admin/doctor', /Doctor/],
     ['/admin/settings', /Settings/],
     ['/admin/alerts/incidents', /Incidents/],
     ['/admin/alerts/incidents/i-1', /Incident/],
@@ -1466,8 +1470,12 @@ describe('Admin MVP route inventory (issue #92)', () => {
       // oriented without coupling this contract to CSS classes.
       expect(screen.getByRole('main')).toBeTruthy()
       const adminNav = screen.getByRole('navigation', { name: 'Admin' })
-      expect(within(adminNav).getAllByRole('link')).toHaveLength(12)
-      const activeHref = path.startsWith('/admin/notifications')
+      expect(within(adminNav).getAllByRole('link')).toHaveLength(14)
+      const activeHref = path.startsWith('/admin/operations')
+        ? '/admin/operations'
+        : path.startsWith('/admin/doctor')
+          ? '/admin/doctor'
+          : path.startsWith('/admin/notifications')
         ? '/admin/notifications'
         : path.startsWith('/admin/agents')
         ? '/admin/agents'
@@ -1495,6 +1503,8 @@ describe('Admin MVP route inventory (issue #92)', () => {
         '/admin/agents': 'Agents',
         '/admin/nodes': 'Nodes',
         '/admin/networks': 'Networks',
+        '/admin/operations': 'Tasks',
+        '/admin/doctor': 'Doctor',
         '/admin/settings': 'Settings',
         '/admin/alerts/rules': 'Rules',
         '/admin/alerts/incidents': 'Incidents',
@@ -1512,7 +1522,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
 
   // Removed legacy/deferred routes (issue #92): Validator administration,
   // People, the bare Alerts landing, Delivery/Channel,
-  // Operations, Data/Retention, Backup/Restore, Doctor, Node Transfer,
+  // Data/Retention, Backup/Restore, Node Transfer,
   // Node Visibility and Agent Enrollment/Recovery/Rotation. Direct
   // navigation must land on the safe Admin fallback — never on a legacy
   // page. `/admin/agents/enroll` is covered separately: it matches the
@@ -1529,8 +1539,6 @@ describe('Admin MVP route inventory (issue #92)', () => {
     ['/admin/alerts/deliveries/d-1', /Deliveries/],
     ['/admin/alerts/channels', /Channels/],
     ['/admin/alerts/channels/c-1', /Channels/],
-    ['/admin/operations', /Operations/],
-    ['/admin/operations/o-1', /Operations/],
     ['/admin/data', /Data/],
     ['/admin/data/retention', /Retention/],
     ['/admin/data/retention/edit', /Retention/],
@@ -1586,6 +1594,8 @@ describe('Admin MVP route inventory (issue #92)', () => {
       { name: 'Agents', href: '/admin/agents', glyph: 'Cpu' },
       { name: 'Nodes', href: '/admin/nodes', glyph: 'Server' },
       { name: 'Networks', href: '/admin/networks', glyph: 'Network' },
+      { name: 'Tasks', href: '/admin/operations', glyph: 'ClipboardList' },
+      { name: 'Doctor', href: '/admin/doctor', glyph: 'Stethoscope' },
       { name: 'Settings', href: '/admin/settings', glyph: 'Settings' },
       { name: 'Incidents', href: '/admin/alerts/incidents', glyph: 'TriangleAlert' },
       { name: 'Rules', href: '/admin/alerts/rules', glyph: 'SlidersHorizontal' },
@@ -1604,7 +1614,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
       expect(icon?.getAttribute('aria-hidden')).toBe('true')
       expect(icon?.querySelector('svg')?.getAttribute('data-icon')).toBe(glyph)
     }
-    for (const removed of ['History Window', 'Site Access', 'Validators', 'People', 'Deliveries', 'Channels', 'Operations', 'Data', 'Retention', 'Backups', 'Restore', 'Doctor', 'Enroll', 'Recover', 'Rotate']) {
+    for (const removed of ['History Window', 'Site Access', 'Validators', 'People', 'Deliveries', 'Channels', 'Data', 'Retention', 'Backups', 'Restore', 'Enroll', 'Recover', 'Rotate']) {
       expect(
         Array.from(adminNav.querySelectorAll('a')).some((element) =>
           element.textContent?.includes(removed),

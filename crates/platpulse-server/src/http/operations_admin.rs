@@ -51,7 +51,8 @@ pub struct OperationDetail {
     pub warnings: Vec<OperationIssue>,
     pub errors: Vec<OperationIssue>,
     pub result: Option<Value>,
-    /// `true` while the Operation is queued or running (cancel is allowed).
+    /// `true` while the Operation is queued or running and no cancel
+    /// request is recorded yet (cancel is still allowed).
     pub cancellable: bool,
 }
 
@@ -526,6 +527,7 @@ pub struct DoctorCheckDto {
 #[serde(rename_all = "camelCase")]
 pub struct DoctorOverview {
     pub last_run: Option<OperationSummary>,
+    pub current_run: Option<OperationSummary>,
     pub checks: Vec<DoctorCheckDto>,
 }
 
@@ -670,7 +672,11 @@ async fn load_operation_detail(
     .bind(operation_id)
     .fetch_one(pool)
     .await?;
-    let cancellable = matches!(summary.status.as_str(), "queued" | "running");
+    // Cancel is only still allowed while the Operation can act on it: a
+    // running Operation that already recorded a cancel request would only
+    // earn a 409 from `cancel_operation`, so the page must not offer it.
+    let cancellable =
+        matches!(summary.status.as_str(), "queued" | "running") && !summary.cancel_requested;
     let parse_issues = |text: &str| -> Vec<OperationIssue> {
         serde_json::from_str::<Vec<OperationIssue>>(text)
             .unwrap_or_default()
@@ -1733,7 +1739,8 @@ pub(crate) async fn restore_submit(
 // ---------------------------------------------------------------------------
 
 /// The most recent read-only Doctor report (previous diagnostic results
-/// survive failed runs) and its checks.
+/// survive failed runs), the single run still queued or running when one
+/// exists, and the checks of the stored report.
 #[utoipa::path(
     get,
     path = "/api/admin/v1/doctor",
@@ -1745,9 +1752,12 @@ pub(crate) async fn doctor_overview(
     Extension(_session): Extension<AuthenticatedSession>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    let last_run = match crate::doctor::last_run(&state).await {
-        Ok(run) => run,
-        Err(_) => {
+    let (last_run, current_run) = match (
+        crate::doctor::last_run(&state).await,
+        crate::doctor::current_run(&state).await,
+    ) {
+        (Ok(last_run), Ok(current_run)) => (last_run, current_run),
+        _ => {
             return mutation_error(
                 &request_id.0,
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1757,7 +1767,7 @@ pub(crate) async fn doctor_overview(
         }
     };
     let (summary, checks) = match last_run {
-        Some((operation_id, status, result)) => {
+        Some((operation_id, result)) => {
             let summary = match load_operation_summary(state.db().pool(), &operation_id).await {
                 Ok(Some(summary)) => summary,
                 _ => {
@@ -1769,7 +1779,6 @@ pub(crate) async fn doctor_overview(
                     );
                 }
             };
-            let _ = status;
             let checks: Vec<DoctorCheckDto> = crate::doctor::checks_from_result(result.as_deref())
                 .into_iter()
                 .filter_map(|check| serde_json::from_value(check).ok())
@@ -1778,8 +1787,27 @@ pub(crate) async fn doctor_overview(
         }
         None => (None, Vec::new()),
     };
+    // The run that has not reached a terminal state yet, so a refresh during a
+    // run shows queued or running instead of only the previous report.
+    let current_run = match current_run {
+        Some(operation_id) => {
+            match load_operation_summary(state.db().pool(), &operation_id).await {
+                Ok(summary) => summary,
+                Err(_) => {
+                    return mutation_error(
+                        &request_id.0,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "unavailable",
+                        "Server database is unavailable",
+                    );
+                }
+            }
+        }
+        None => None,
+    };
     Json(DoctorOverview {
         last_run: summary,
+        current_run,
         checks,
     })
     .into_response()
@@ -2440,7 +2468,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         while crate::operations::process_operations(&state).await.unwrap() > 0 {}
 
-        let (_, _, result) = crate::doctor::last_run(&state).await.unwrap().unwrap();
+        let (_, result) = crate::doctor::last_run(&state).await.unwrap().unwrap();
         let checks = crate::doctor::checks_from_result(result.as_deref());
         let age = checks
             .iter()
@@ -2509,6 +2537,55 @@ mod tests {
         // one creation audit + one completion audit
         assert_eq!(audits, 2);
         assert_eq!(body["lastRun"]["status"], "succeeded_with_warnings");
+    }
+
+    #[tokio::test]
+    async fn doctor_overview_exposes_the_in_flight_run() {
+        let (_dir, state) = test_state().await;
+        let response = doctor_run(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        let operation_id = body["operation"]["operation"]["operationId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // A queued run has no result yet, so lastRun stays absent while
+        // currentRun keeps the in-flight run visible after a refresh.
+        let body = body_json(
+            doctor_overview(
+                State(state.clone()),
+                Extension(session()),
+                Extension(request_id()),
+            )
+            .await,
+        )
+        .await;
+        assert!(body["lastRun"].is_null());
+        assert_eq!(body["currentRun"]["status"], "queued");
+        assert_eq!(body["currentRun"]["operationId"], operation_id);
+        assert_eq!(body["currentRun"]["kind"], "doctor_run");
+
+        while crate::operations::process_operations(&state).await.unwrap() > 0 {}
+        let body = body_json(
+            doctor_overview(
+                State(state.clone()),
+                Extension(session()),
+                Extension(request_id()),
+            )
+            .await,
+        )
+        .await;
+        // Once the run is terminal the page falls back to the stored report.
+        assert!(body["currentRun"].is_null());
+        assert_eq!(body["lastRun"]["status"], "succeeded_with_warnings");
+        assert!(!body["checks"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

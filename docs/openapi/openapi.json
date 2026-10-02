@@ -1975,7 +1975,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "The most recent read-only Doctor report (previous diagnostic results\nsurvive failed runs) and its checks.",
+        "summary": "The most recent read-only Doctor report (previous diagnostic results\nsurvive failed runs), the single run still queued or running when one\nexists, and the checks of the stored report.",
         "operationId": "doctor_overview",
         "responses": {
           "200": {
@@ -9723,6 +9723,16 @@
               "$ref": "#/components/schemas/DoctorCheckDto"
             }
           },
+          "currentRun": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OperationSummary"
+              }
+            ]
+          },
           "lastRun": {
             "oneOf": [
               {
@@ -11679,7 +11689,7 @@
         "properties": {
           "cancellable": {
             "type": "boolean",
-            "description": "`true` while the Operation is queued or running (cancel is allowed)."
+            "description": "`true` while the Operation is queued or running and no cancel\nrequest is recorded yet (cancel is still allowed)."
           },
           "errors": {
             "type": "array",

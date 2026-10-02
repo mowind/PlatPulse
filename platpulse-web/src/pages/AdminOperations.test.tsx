@@ -1,0 +1,367 @@
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import App from '../App'
+import { adminQueryClient } from '../api/admin'
+import { client } from '../api/generated/client.gen'
+
+const OWNER_SESSION = {
+  session: {
+    userId: 'u1',
+    username: 'admin',
+    role: 'owner',
+    createdAt: '2026-08-12T00:00:00Z',
+    lastSeenAt: '2026-08-12T00:00:00Z',
+    expiresAt: '2026-08-19T00:00:00Z',
+  },
+  csrfToken: 'csrf-token',
+}
+
+const RUNNING_OPERATION_ID = '0195f2a1-0200-4100-8100-000000000200'
+const QUEUED_OPERATION_ID = '0195f2a1-0201-4101-8101-000000000201'
+const WARNED_OPERATION_ID = '0195f2a1-0202-4102-8102-000000000202'
+
+/** A retention run in flight, with the Server's own progress record. */
+const RUNNING_OPERATION = {
+  operationId: RUNNING_OPERATION_ID,
+  kind: 'retention_run',
+  status: 'running',
+  progressPercent: 40,
+  progressLabel: 'Pruning expired read samples',
+  requestId: 'req-1',
+  createdAt: '2026-03-01T00:00:00Z',
+  startedAt: '2026-03-01T00:00:05Z',
+  finishedAt: null,
+  auditEventId: 11,
+  cancelRequested: false,
+}
+
+/** A task the Server accepted but has not started. */
+const QUEUED_OPERATION = {
+  ...RUNNING_OPERATION,
+  status: 'queued',
+  progressPercent: 0,
+  progressLabel: null,
+  startedAt: null,
+  auditEventId: 10,
+  cancelRequested: false,
+}
+/** A running task whose cancel request the Server already recorded. */
+const CANCEL_REQUESTED_OPERATION = {
+  ...RUNNING_OPERATION,
+  operationId: QUEUED_OPERATION_ID,
+  cancelRequested: true,
+  auditEventId: 12,
+}
+
+/** A finished Doctor run that recorded warnings and a result payload. */
+const WARNED_OPERATION = {
+  operationId: WARNED_OPERATION_ID,
+  kind: 'doctor_run',
+  status: 'succeeded_with_warnings',
+  progressPercent: 0,
+  progressLabel: null,
+  requestId: 'req-2',
+  createdAt: '2026-03-01T01:00:00Z',
+  startedAt: '2026-03-01T01:00:01Z',
+  finishedAt: '2026-03-01T01:00:06Z',
+  auditEventId: 13,
+  cancelRequested: false,
+}
+
+const DOCTOR_CHECK = {
+  checkId: 'retention.last_run',
+  label: 'Retention ran recently',
+  status: 'warning',
+  detail: 'The last retention run finished with warnings.',
+}
+
+function detailOf(operation: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
+  return {
+    operation,
+    warnings: [],
+    errors: [],
+    result: null,
+    cancellable: operation.status === 'queued' || operation.status === 'running',
+    ...overrides,
+  }
+}
+
+function jsonResponse(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+/** Sanitized ApiErrorBody, as the Server sends it. */
+function apiError(code: string, message: string, status: number): Response {
+  return jsonResponse(
+    { error: { code, message, requestId: 'req-err' } },
+    status,
+  )
+}
+
+const TEST_ORIGIN = 'http://platpulse.test'
+
+function mockFetch(
+  routes: Record<string, (request: Request) => Response | Promise<Response>>,
+) {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(String(input), init)
+    const url = request.url.replace(TEST_ORIGIN, '')
+    for (const [pattern, handler] of Object.entries(routes)) {
+      if (pattern.endsWith('*')) {
+        if (url.startsWith(pattern.slice(0, -1))) return handler(request)
+      } else if (url === pattern) {
+        return handler(request)
+      }
+    }
+    return jsonResponse({ error: { code: 'not_found' } }, 404)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}
+
+async function renderAt(path: string) {
+  render(<App />)
+  await act(async () => {
+    window.history.pushState({}, '', path)
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    await Promise.resolve()
+  })
+}
+
+beforeEach(() => {
+  window.history.replaceState({}, '', '/')
+  client.setConfig({ baseUrl: TEST_ORIGIN })
+})
+
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+  adminQueryClient.clear()
+})
+
+describe('PAGE-ADMIN-OPERATIONS (task ledger)', () => {
+  it('lists each recorded task with its status, kind, and progress', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/operations*': () =>
+        jsonResponse([WARNED_OPERATION, RUNNING_OPERATION, CANCEL_REQUESTED_OPERATION], 200),
+    })
+    await renderAt('/admin/operations')
+
+    await screen.findByRole('heading', { level: 1, name: 'Operations' })
+    const table = await screen.findByRole('table', { name: /Recorded Operations/ })
+    expect(table.textContent).toContain('Doctor')
+    expect(table.textContent).toContain('Retention run')
+    expect(table.textContent).toContain('Succeeded with warnings')
+    expect(table.textContent).toContain('Running')
+    // A recorded cancel request is shown as a request, never as an outcome.
+    expect(table.textContent).toContain('Cancel requested')
+    // A finished task carries an outcome instead of a stale 0%.
+    expect(screen.getByText('Not applicable')).toBeTruthy()
+    expect(table.textContent).toContain('40%')
+  })
+
+  it('asks the Server for the filtered window and keeps the filter in the URL', async () => {
+    const fetchMock = mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/operations*': () => jsonResponse([RUNNING_OPERATION], 200),
+    })
+    await renderAt('/admin/operations?status=running&kind=retention_run')
+
+    await screen.findByRole('table', { name: /Recorded Operations/ })
+    await waitFor(() => {
+      const url = fetchMock.mock.calls
+        .map((call) => String((call[0] as Request).url))
+        .find((url) => url.includes('/api/admin/v1/operations'))
+      expect(url).toContain('status=running')
+      expect(url).toContain('kind=retention_run')
+    })
+  })
+
+  it('asks the Server for the chosen page size instead of the default window', async () => {
+    const fetchMock = mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/operations*': () => jsonResponse([RUNNING_OPERATION], 200),
+    })
+    await renderAt('/admin/operations?limit=25')
+
+    await screen.findByRole('table', { name: /Recorded Operations/ })
+    // The Page size control is a real Server bound, not a local slice, so the
+    // outgoing request must carry the chosen limit.
+    await waitFor(() => {
+      const url = fetchMock.mock.calls
+        .map((call) => String((call[0] as Request).url))
+        .find((url) => url.includes('/api/admin/v1/operations'))
+      expect(url).toContain('limit=25')
+    })
+
+    fireEvent.change(screen.getByLabelText('Page size'), { target: { value: '200' } })
+    await waitFor(() => {
+      const urls = fetchMock.mock.calls.map((call) => String((call[0] as Request).url))
+      expect(urls.some((url) => url.includes('limit=200'))).toBe(true)
+    })
+  })
+  it('names the recorded state when a task id is unknown', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/operations/*': () => apiError('operation_not_found', 'Operation not found', 404),
+    })
+    await renderAt('/admin/operations/op-missing')
+
+    await screen.findByRole('heading', { level: 1, name: 'Operation not found' })
+  })
+
+  it('shows the recorded outcome, the Audit link, and no delete control', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/operations/*': () =>
+        jsonResponse(
+          detailOf(WARNED_OPERATION, {
+            warnings: [{ code: 'doctor_check_failed', message: 'node-1 disk usage is above 90%' }],
+            result: { checks: [DOCTOR_CHECK] },
+          }),
+          200,
+        ),
+    })
+    await renderAt('/admin/operations/' + WARNED_OPERATION_ID)
+
+    await screen.findByRole('heading', { level: 1, name: 'Operation detail' })
+    expect(screen.getByText('doctor_check_failed')).toBeTruthy()
+    expect(screen.getByText('node-1 disk usage is above 90%')).toBeTruthy()
+    expect(
+      screen.getByRole('link', { name: /Audit log|event-13|13/ }).getAttribute('href'),
+    ).toContain('/admin/access/audit')
+    expect(
+      screen.getByRole('region', { name: 'Operation result payload' }).textContent,
+    ).toContain('retention.last_run')
+    // Reading an outcome never deletes anything, so no delete control exists.
+    expect(screen.queryByRole('button', { name: /Delete|Remove/ })).toBeNull()
+  })
+
+  it('never offers a cancel control for a running task that already recorded one', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/operations/*': () =>
+        jsonResponse(detailOf(CANCEL_REQUESTED_OPERATION, { cancellable: false }), 200),
+    })
+    await renderAt('/admin/operations/' + QUEUED_OPERATION_ID)
+
+    await screen.findByRole('heading', { level: 1, name: 'Operation detail' })
+    expect(screen.getByText(/Cancel requested — the task stops/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Cancel task' }).hasAttribute('disabled')).toBe(true)
+    expect(
+      screen.getByText(/will not accept a cancel request for this task/),
+    ).toBeTruthy()
+  })
+
+  it('confirms a cancel request in two steps and renders only the recorded outcome', async () => {
+    let cancelled = false
+    const fetchMock = mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/operations/*': (request) => {
+        // A queued task is cancelled by the Server itself, so the page may
+        // only render what the recorded DTO says.
+        const record = cancelled
+          ? { ...QUEUED_OPERATION, status: 'cancelled', finishedAt: '2026-03-01T00:00:07Z' }
+          : QUEUED_OPERATION
+        if (request.method === 'POST' && request.url.endsWith('/cancel')) {
+          cancelled = true
+          return jsonResponse(
+            {
+              auditEventId: 21,
+              operation: detailOf(
+                { ...QUEUED_OPERATION, status: 'cancelled', finishedAt: '2026-03-01T00:00:07Z' },
+                { cancellable: false },
+              ),
+            },
+            200,
+          )
+        }
+        return jsonResponse(detailOf(record, { cancellable: !cancelled }), 200)
+      },
+    })
+    await renderAt('/admin/operations/' + QUEUED_OPERATION_ID)
+    await screen.findByRole('heading', { level: 1, name: 'Operation detail' })
+    expect(screen.getAllByText('Queued').length).toBeGreaterThan(0)
+
+    // The first click only arms the request; nothing is sent yet.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel task' }))
+    const sent = () =>
+      fetchMock.mock.calls.filter((call) => String((call[0] as Request).url).includes('/cancel'))
+    expect(sent()).toHaveLength(0)
+    expect(screen.getByText(/Request cancellation of/)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm cancel request' }))
+    await screen.findByText(/The Server recorded the cancel request/)
+    const cancelCalls = sent()
+    expect(cancelCalls).toHaveLength(1)
+    expect((cancelCalls[0][0] as Request).method).toBe('POST')
+    expect((cancelCalls[0][0] as Request).headers.get('X-CSRF-Token')).toBe('csrf-token')
+
+    // The terminal status and the finished time come from the Server record,
+    // never from an optimistic local guess.
+    await screen.findByText('Cancelled')
+    expect(screen.queryByText('Queued')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Cancel task' }).hasAttribute('disabled')).toBe(true)
+  })
+  it('explains a refused cancel without claiming the task changed', async () => {
+    const fetchMock = mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/operations/*': (request) => {
+        if (request.method === 'POST') {
+          return apiError(
+            'operation_not_cancellable',
+            'only queued or running Operations can be cancelled',
+            409,
+          )
+        }
+        return jsonResponse(detailOf(RUNNING_OPERATION), 200)
+      },
+    })
+    await renderAt('/admin/operations/' + RUNNING_OPERATION_ID)
+    await screen.findByRole('heading', { level: 1, name: 'Operation detail' })
+
+    // A running task is offered the control, and the Server may still refuse
+    // it between the read and the command. Its conflict answer is the only
+    // thing the Owner learns; nothing local is invented.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel task' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm cancel request' }))
+    await screen.findByText(/only queued or running Operations can be cancelled/)
+    expect(screen.getByText(/The recorded status is authoritative/)).toBeTruthy()
+    expect(screen.getAllByText('Running').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Cancelled')).toBeNull()
+    expect(
+      fetchMock.mock.calls.filter((call) => String((call[0] as Request).url).includes('/cancel')),
+    ).toHaveLength(1)
+  })
+  it('names an unknown outcome when a cancel request may not have reached the Server', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/operations/*': (request) => {
+        if (request.method === 'POST') throw new TypeError('Failed to fetch')
+        return jsonResponse(detailOf(RUNNING_OPERATION), 200)
+      },
+    })
+    await renderAt('/admin/operations/' + RUNNING_OPERATION_ID)
+    await screen.findByRole('heading', { level: 1, name: 'Operation detail' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel task' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm cancel request' }))
+    await screen.findByText(/The request may not have reached the Server/)
+  })
+
+  it('offers a retry when the ledger cannot be loaded', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/operations*': () => apiError('database_unavailable', 'Server database is unavailable', 503),
+    })
+    await renderAt('/admin/operations')
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('Server database is unavailable')
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
+  })
+})

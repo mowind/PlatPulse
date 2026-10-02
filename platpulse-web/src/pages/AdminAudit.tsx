@@ -1,5 +1,5 @@
-import { useEffect, useState, type KeyboardEvent } from 'react'
-import { Link } from 'react-router'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { Link, useLocation } from 'react-router'
 import { useAdminAudit, type AuditFilters } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
 import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
@@ -15,6 +15,12 @@ import type { AuditItem } from '../api/generated'
 
 const TH = 'px-3 py-2 text-left text-xs font-medium text-muted-foreground'
 const TD = 'px-3 py-2 align-top'
+
+/** `#event-13` deep link used by the recorded Operation pages (issue #208). */
+function deepLinkEventId(hash: string): number | null {
+  const match = /^#event-(\d+)$/.exec(hash)
+  return match ? Number.parseInt(match[1], 10) : null
+}
 
 /**
  * PAGE-ACCESS-AUDIT (design §18.2, issue #47): immutable, redacted Audit
@@ -59,6 +65,27 @@ export default function AdminAudit() {
   }, [before, filterKey, query.data, query.isFetching])
 
   const items = history.filterKey === filterKey ? history.items : []
+  const location = useLocation()
+  const deepLinkId = deepLinkEventId(location.hash)
+  const [deepLinkMissing, setDeepLinkMissing] = useState(false)
+  const itemsRef = useRef(items)
+  itemsRef.current = items
+
+  // A recorded Operation links to its Audit event with `#event-<id>`. The
+  // Audit log is loaded one page at a time, so a linked event is expanded and
+  // scrolled to when it is inside the loaded window, and otherwise the Owner
+  // is told plainly that the window does not reach it (issue #208).
+  const itemIds = items.map((item) => item.auditEventId).join(',')
+  useEffect(() => {
+    if (deepLinkId == null || itemsRef.current.length === 0) return
+    if (itemsRef.current.some((item) => item.auditEventId === deepLinkId)) {
+      setDeepLinkMissing(false)
+      setExpanded((current) => (current.has(deepLinkId) ? current : new Set(current).add(deepLinkId)))
+      document.getElementById('event-' + deepLinkId)?.scrollIntoView({ block: 'center' })
+      return
+    }
+    setDeepLinkMissing(true)
+  }, [deepLinkId, itemIds])
 
   function loadOlder() {
     setError(null)
@@ -170,6 +197,12 @@ export default function AdminAudit() {
           </div>
         }
       >
+        {deepLinkMissing && deepLinkId != null && (
+          <p role="status" className="px-3 py-2 text-sm text-muted-foreground">
+            Event {deepLinkId} is older than the events loaded here. Load older events until it appears; the
+            Audit log is append-only and never trimmed by this page.
+          </p>
+        )}
         {!query.data && query.isPending && (
           <div role="status" className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
             <StatusBadge status="Starting" tone="neutral" /> Loading the Audit log…
@@ -284,7 +317,7 @@ function AuditRow({
   }
   return (
     <>
-      <tr className="border-b border-border/60 align-top">
+      <tr id={'event-' + item.auditEventId} className="border-b border-border/60 align-top">
         <td className={cn(TD, 'whitespace-nowrap')} data-label="Time">
           <time dateTime={item.createdAt}>{formatObservedAt(item.createdAt)}</time>
         </td>

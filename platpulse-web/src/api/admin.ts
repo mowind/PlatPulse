@@ -2263,6 +2263,53 @@ export async function testNotificationChannelEntry(
 export type OperationFilters = {
   status?: string
   kind?: string
+  /** Bounded Server page size (1-200, default 50). */
+  limit?: number
+}
+
+/**
+ * Queued and running are the only non-terminal Operation states
+ * (webui.md §5.5). A recorded cancel request does not move an Operation out
+ * of them: the worker stops at its next safe checkpoint and the Server
+ * records the terminal outcome separately, so a surface must never treat
+ * cancelRequested as completion (issue #208).
+ */
+export function operationIsActive(
+  operation: { status?: string | null } | null | undefined,
+): boolean {
+  return operation?.status === 'queued' || operation?.status === 'running'
+}
+
+/** True while any listed Operation is still queued or running. */
+export function hasActiveOperations(
+  operations: ReadonlyArray<{ status?: string | null }> | null | undefined,
+): boolean {
+  return (operations ?? []).some(operationIsActive)
+}
+
+/**
+ * Poll cadence for a surface that watches in-flight Operations. The Admin SSE
+ * stream carries invalidation only, so the poll is what makes progress and the
+ * terminal outcome observable without a manual reload.
+ */
+export const ADMIN_OPERATION_POLL_MS = 2000
+
+/**
+ * Poll while an Operation is queued or running; stop as soon as the Server
+ * reports a terminal state so a finished surface stops refetching.
+ */
+function pollActiveOperation(query: {
+  state: { data: OperationDetail | undefined }
+}): number | false {
+  return query.state.data && operationIsActive(query.state.data.operation)
+    ? ADMIN_OPERATION_POLL_MS
+    : false
+}
+
+function pollActiveOperations(query: {
+  state: { data: OperationSummary[] | undefined }
+}): number | false {
+  return hasActiveOperations(query.state.data) ? ADMIN_OPERATION_POLL_MS : false
 }
 
 /** Fixed display labels for Operation statuses (webui.md §5.5). */
@@ -2313,6 +2360,7 @@ export async function fetchAdminOperations(
         query: {
           status: filters.status || undefined,
           kind: filters.kind || undefined,
+          limit: filters.limit || undefined,
         },
         signal,
       }),
@@ -2320,10 +2368,20 @@ export async function fetchAdminOperations(
   )
 }
 
-export function useAdminOperations(generation: number, filters: OperationFilters) {
+/**
+ * `pollWhileActive` keeps a visible surface current while any listed
+ * Operation is queued or running, then stops polling once every row is
+ * terminal (issue #208).
+ */
+export function useAdminOperations(
+  generation: number,
+  filters: OperationFilters,
+  pollWhileActive = false,
+) {
   return useQuery({
     queryKey: [...adminKeys.operations(filters), generation],
     queryFn: ({ signal }) => fetchAdminOperations(filters, signal),
+    refetchInterval: pollWhileActive ? pollActiveOperations : false,
   })
 }
 
@@ -2339,11 +2397,16 @@ export async function fetchAdminOperation(
   )
 }
 
-export function useAdminOperation(generation: number, operationId: string) {
+export function useAdminOperation(
+  generation: number,
+  operationId: string,
+  pollWhileActive = false,
+) {
   return useQuery({
     queryKey: [...adminKeys.operationDetail(operationId), generation],
     queryFn: ({ signal }) => fetchAdminOperation(operationId, signal),
     enabled: operationId.length > 0,
+    refetchInterval: pollWhileActive ? pollActiveOperation : false,
   })
 }
 
@@ -2589,10 +2652,25 @@ export async function fetchAdminDoctor(signal?: AbortSignal): Promise<DoctorOver
   )
 }
 
+function pollActiveDoctorRun(query: {
+  state: { data: DoctorOverview | undefined }
+}): number | false {
+  const run = query.state.data?.currentRun
+  return run && operationIsActive(run) ? ADMIN_OPERATION_POLL_MS : false
+}
+
+/**
+ * The Doctor report only changes when a run is in flight or finishes, so the
+ * overview polls while `currentRun` is queued or running. Operation progress
+ * events invalidate the Operations ledger, not the Doctor report, so without
+ * this poll a page left open on Doctor would keep showing the Queued row
+ * until the run reached a terminal state (issue #208).
+ */
 export function useAdminDoctor(generation: number) {
   return useQuery({
     queryKey: [...adminKeys.doctor, generation],
     queryFn: ({ signal }) => fetchAdminDoctor(signal),
+    refetchInterval: pollActiveDoctorRun,
   })
 }
 
@@ -2630,6 +2708,29 @@ export function doctorCheckStatusLabel(status: string | null | undefined): strin
       return 'Skipped'
     default:
       return 'Unknown'
+  }
+}
+
+/**
+ * Badge tone for a Doctor check status. The word is Server-owned; only the
+ * tone is WebUI-owned, and an unrecognised status stays neutral Unknown
+ * rather than silently reading as a pass.
+ */
+export function doctorCheckTone(
+  status: string | null | undefined,
+): 'ok' | 'warning' | 'error' | 'neutral' {
+  switch (status) {
+    case 'pass':
+      return 'ok'
+    case 'warning':
+    case 'not_configured':
+      return 'warning'
+    case 'fail':
+      return 'error'
+    case 'skipped':
+      return 'neutral'
+    default:
+      return 'neutral'
   }
 }
 

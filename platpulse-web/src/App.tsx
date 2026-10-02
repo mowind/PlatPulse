@@ -19,6 +19,8 @@ import AdminIncidentsList, { AdminIncidentDetailPage } from './pages/AdminIncide
 import AdminRulesList, { AdminRuleDetailPage } from './pages/AdminRules'
 import AdminSilencesList from './pages/AdminSilences'
 import AdminMaintenanceList from './pages/AdminMaintenance'
+import AdminOperationsList, { AdminOperationDetailPage } from './pages/AdminOperations'
+import AdminDoctor from './pages/AdminDoctor'
 import AdminNotifications from './pages/AdminNotifications'
 import AdminNotificationEvents, {
   AdminNotificationEventDetailPage,
@@ -169,6 +171,15 @@ const router = createBrowserRouter([
       { path: 'nodes/:nodeId', element: <AdminNodeDetail /> },
       { path: 'networks', element: <AdminNetworksList /> },
       { path: 'networks/:networkKey', element: <AdminNetworkDetailPage /> },
+      // Operations surface (issue #208): the durable task ledger and one
+      // task's recorded outcome, so queued, running, and terminal work is
+      // linkable and survives a reload. The static `operations` segment
+      // ranks above `operations/:operationId`, so the ledger is never a
+      // detail lookup.
+      { path: 'operations', element: <AdminOperationsList /> },
+      { path: 'operations/:operationId', element: <AdminOperationDetailPage /> },
+      // Doctor (issue #208): read-only diagnostics; running it never repairs.
+      { path: 'doctor', element: <AdminDoctor /> },
       { path: 'settings', element: <AdminSettings /> },
       { path: 'alerts/incidents', element: <AdminIncidentsList /> },
       { path: 'alerts/incidents/:incidentId', element: <AdminIncidentDetailPage /> },

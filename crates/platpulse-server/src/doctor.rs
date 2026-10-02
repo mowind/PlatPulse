@@ -88,15 +88,25 @@ pub async fn run(
 /// The most recent `doctor_run` Operation row that produced a diagnostic
 /// result: the previous diagnostic result stays available after a failed
 /// run (a failed run has no result and must never hide the last report).
-pub async fn last_run(
-    state: &AppState,
-) -> Result<Option<(String, String, Option<String>)>, sqlx::Error> {
-    let row = sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT operation_id, status, result_json FROM operations WHERE kind = 'doctor_run' AND result_json IS NOT NULL ORDER BY created_at DESC, operation_id DESC LIMIT 1",
+pub async fn last_run(state: &AppState) -> Result<Option<(String, Option<String>)>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT operation_id, result_json FROM operations WHERE kind = 'doctor_run' AND result_json IS NOT NULL ORDER BY created_at DESC, operation_id DESC LIMIT 1",
     )
     .fetch_optional(state.db().pool())
     .await?;
     Ok(row)
+}
+
+/// The newest `doctor_run` Operation that has not reached a terminal state.
+/// Terminal runs stay visible through `last_run`, so the Doctor page can show
+/// exactly one in-flight run after a refresh or a server restart.
+pub async fn current_run(state: &AppState) -> Result<Option<String>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (String,)>(
+        "SELECT operation_id FROM operations WHERE kind = 'doctor_run' AND status IN ('queued', 'running') ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at DESC, operation_id DESC LIMIT 1",
+    )
+    .fetch_optional(state.db().pool())
+    .await?;
+    Ok(row.map(|(operation_id,)| operation_id))
 }
 
 /// Parse the checks array out of a stored doctor result.

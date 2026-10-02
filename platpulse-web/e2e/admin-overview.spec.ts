@@ -194,15 +194,22 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await expect(adminNav.getByRole('link', { name: 'Audit', exact: true })).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(adminNav.getByRole('link', { name: 'Overview', exact: true })).toBeFocused()
-    // Tab stays inside the drawer and wraps at the last item (issue #92:
-    // the MVP navigation holds exactly the eight retained page groups).
+    // Tab stays inside the drawer and wraps at the last item (issues #92 and
+    // #208: the navigation holds exactly the retained page groups, and this
+    // list follows the rendered order so every Tab press is pinned).
     const mvpNav = [
       'Overview',
       'Agents',
       'Nodes',
       'Networks',
+      'Tasks',
+      'Doctor',
       'Settings',
       'Incidents',
+      'Rules',
+      'Silences',
+      'Maintenance',
+      'Notifications',
       'Sessions',
       'Audit',
     ]
@@ -210,7 +217,7 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
       await page.keyboard.press('Tab')
       await expect(adminNav.getByRole('link', { name: item, exact: true })).toBeFocused()
     }
-    for (const deferred of ['Validators', 'Alert Rules', 'Operations', 'Data', 'People']) {
+    for (const deferred of ['Validators', 'Alert Rules', 'Data', 'People']) {
       await expect(adminNav.getByRole('link', { name: deferred, exact: true })).toHaveCount(0)
     }
     // Escape closes the drawer, unlocks the body, and restores focus.

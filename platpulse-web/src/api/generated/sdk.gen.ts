@@ -327,7 +327,8 @@ export const backupVerify = <ThrowOnError extends boolean = false>(options: Opti
 
 /**
  * The most recent read-only Doctor report (previous diagnostic results
- * survive failed runs) and its checks.
+ * survive failed runs), the single run still queued or running when one
+ * exists, and the checks of the stored report.
  */
 export const doctorOverview = <ThrowOnError extends boolean = false>(options?: Options<DoctorOverviewData, ThrowOnError>): RequestResult<DoctorOverviewResponses, DoctorOverviewErrors, ThrowOnError> => (options?.client ?? client).get<DoctorOverviewResponses, DoctorOverviewErrors, ThrowOnError>({ url: '/api/admin/v1/doctor', ...options });
 

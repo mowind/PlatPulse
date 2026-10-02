@@ -1002,6 +1002,7 @@ export type DoctorCheckDto = {
 
 export type DoctorOverview = {
     checks: Array<DoctorCheckDto>;
+    currentRun?: null | OperationSummary;
     lastRun?: null | OperationSummary;
 };
 
@@ -1639,7 +1640,8 @@ export type ObservedNetworkIdentity = {
 
 export type OperationDetail = {
     /**
-     * `true` while the Operation is queued or running (cancel is allowed).
+     * `true` while the Operation is queued or running and no cancel
+     * request is recorded yet (cancel is still allowed).
      */
     cancellable: boolean;
     errors: Array<OperationIssue>;
