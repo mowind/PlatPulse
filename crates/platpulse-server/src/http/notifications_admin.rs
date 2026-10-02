@@ -575,11 +575,23 @@ pub(crate) async fn notification_delivery_detail(
     .into_response()
 }
 
-/// Manual retry: re-arms one Delivery for the worker. It creates a new
-/// Delivery attempt on the next worker pass but never a new Notification
-/// Event, Incident, or business transition. Duplicate parallel retries are
-/// refused (409 `delivery_already_queued`); suppressed and succeeded
-/// Deliveries are not retryable (409 `delivery_not_retryable`).
+/// Explicit, audited retry of a retryable Delivery (issue #207, Stories
+/// 30-33, design webui.md §15.10). It re-arms the same Delivery row for the
+/// worker: it creates a new Delivery attempt on the next worker pass but
+/// never a new Notification Event, Incident, or business transition, and it
+/// never rewrites history - the attempt count, the last provider result, and
+/// every recorded attempt are kept, and the new pass appends attempt N+1.
+/// Parallel retries racing with a *different* request id are refused
+/// (409 `delivery_already_queued`), while identical concurrent retries
+/// carrying one request id are a single command that replays its recorded
+/// result with 200 and `deduplicated: true`; pending and in_flight are
+/// already queued, and succeeded, suppressed, and
+/// cancelled are not retryable (409 `delivery_not_retryable`). The re-armed
+/// Delivery is still re-checked for suppression and subject deletion right
+/// before channel handoff, so an explicit retry never becomes a blind resend.
+/// The body carries the same opaque request id as a test command: a repeated
+/// id with the same intent replays the recorded Server result, a different
+/// intent is a conflict, and the result stays reconcilable after a restart.
 #[utoipa::path(
     post,
     path = "/api/admin/v1/notifications/deliveries/{delivery_id}/retry",
@@ -1398,6 +1410,121 @@ mod tests {
         assert!(audit.contains("deliveryId"));
     }
 
+    /// Story 30 (issue #207): a manual retry re-arms work on the same
+    /// Delivery row; it never overwrites the recorded attempts. The next
+    /// worker pass appends attempt N+1 with its own evidence, and the earlier
+    /// failures stay readable as the reason the retry happened.
+    #[tokio::test]
+    async fn a_manual_retry_keeps_earlier_attempts_and_appends_the_next_one() {
+        let (_dir, state, provider) = test_state().await;
+        provider.results.lock().unwrap().clear();
+        for _ in 0..3 {
+            provider
+                .results
+                .lock()
+                .unwrap()
+                .push(Err(crate::notifications::SendError::Api {
+                    code: 400,
+                    retry_after: None,
+                }));
+        }
+        let event_id = seed_event(state.db().pool()).await;
+        let delivery_id = only_delivery_id(&state, &event_id).await;
+
+        // Three real failed attempts drive the Delivery to dead_letter.
+        for _ in 0..3 {
+            sqlx::query(
+                "UPDATE notification_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE delivery_id = ?",
+            )
+            .bind(&delivery_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+            assert_eq!(
+                crate::notifications::process_due_deliveries(&state, &*provider)
+                    .await
+                    .unwrap(),
+                1
+            );
+        }
+        let dead = load_test_delivery(&state, &delivery_id).await;
+        assert_eq!(dead.state, "dead_letter");
+        assert_eq!(dead.attempt_count, 3);
+        let before = {
+            let mut conn = state.db().pool().acquire().await.unwrap();
+            crate::notifications::attempts_for_delivery(&mut conn, &delivery_id)
+                .await
+                .unwrap()
+        };
+        assert_eq!(before.len(), 3);
+
+        // The Owner's explicit retry only re-arms the row.
+        let response = retry_command(&state, &delivery_id, "req-append").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let rearmed = load_test_delivery(&state, &delivery_id).await;
+        assert_eq!(rearmed.state, "pending");
+        assert_eq!(
+            rearmed.attempt_count, 3,
+            "a retry must not consume or reset an attempt"
+        );
+        assert_eq!(
+            rearmed.last_result.as_deref(),
+            Some("telegram_api_error 400"),
+            "the failure evidence that motivated the retry is still on the row"
+        );
+        assert_eq!(rearmed.last_error_kind.as_deref(), Some("telegram_api"));
+        let still_three = {
+            let mut conn = state.db().pool().acquire().await.unwrap();
+            crate::notifications::attempts_for_delivery(&mut conn, &delivery_id)
+                .await
+                .unwrap()
+        };
+        assert_eq!(
+            serde_json::to_value(&still_three).unwrap(),
+            serde_json::to_value(&before).unwrap(),
+            "re-arming rewrites no attempt row, not even its evidence"
+        );
+
+        // The provider succeeds now, so the next pass appends attempt 4.
+        assert_eq!(
+            crate::notifications::process_due_deliveries(&state, &*provider)
+                .await
+                .unwrap(),
+            1
+        );
+        let after = {
+            let mut conn = state.db().pool().acquire().await.unwrap();
+            crate::notifications::attempts_for_delivery(&mut conn, &delivery_id)
+                .await
+                .unwrap()
+        };
+        assert_eq!(after.len(), 4, "the retry appends one new attempt");
+        assert_eq!(
+            serde_json::to_value(&after[..3]).unwrap(),
+            serde_json::to_value(&before).unwrap(),
+            "the earlier attempts survive in full, including timestamps, error kinds, durations, and Retry-After values"
+        );
+        assert_eq!(after[3].attempt_number, 4);
+        assert_eq!(after[3].outcome, "succeeded");
+        assert_eq!(after[3].provider_result, "ok");
+        let done = load_test_delivery(&state, &delivery_id).await;
+        assert_eq!(done.state, "succeeded");
+        assert_eq!(done.attempt_count, 4);
+        // Still one Event and one Delivery: a retry re-sends, it does not
+        // create new business facts.
+        let events = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM notification_events")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(events, 1);
+        let deliveries =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM notification_deliveries")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(deliveries, 1);
+    }
+
     #[tokio::test]
     async fn duplicate_parallel_retries_are_refused() {
         let (_dir, state, _provider) = test_state().await;
@@ -1646,6 +1773,236 @@ mod tests {
         assert_eq!(response.status(), StatusCode::CONFLICT);
         let value = body_json(response).await;
         assert_eq!(value["error"]["code"], "notification_request_id_conflict");
+    }
+
+    /// Story 31 (issue #207): two Owner tabs that press Retry for the same
+    /// Delivery at the same instant with the same request id collapse into one
+    /// Server command -- one re-arm, one Audit row, one ledger entry.
+    #[tokio::test]
+    async fn concurrent_identical_retries_produce_one_command() {
+        let (_dir, state, _provider) = test_state().await;
+        let event_id = seed_event(state.db().pool()).await;
+        let delivery_id = delivery_id_for(&state, &event_id).await;
+        sqlx::query("UPDATE notification_deliveries SET state = 'dead_letter', attempt_count = 3 WHERE delivery_id = ?")
+            .bind(&delivery_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let (first, second) = tokio::join!(
+            retry_command(&state, &delivery_id, "req-retry-concurrent"),
+            retry_command(&state, &delivery_id, "req-retry-concurrent"),
+        );
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::OK);
+        let first_value = body_json(first).await;
+        let second_value = body_json(second).await;
+        let deduplicated = [
+            first_value["deduplicated"].clone(),
+            second_value["deduplicated"].clone(),
+        ];
+        assert!(deduplicated.contains(&Value::Bool(false)));
+        assert!(deduplicated.contains(&Value::Bool(true)));
+        // Both tabs are told about the same durable command.
+        assert_eq!(first_value["auditEventId"], second_value["auditEventId"]);
+
+        let audits = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'notification_delivery_retried'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(audits, 1, "one intent, one durable Audit row");
+        let requests = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM notification_requests WHERE request_id = 'req-retry-concurrent'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(requests, 1);
+        let rearmed = load_test_delivery(&state, &delivery_id).await;
+        assert_eq!(rearmed.state, "pending");
+        assert_eq!(rearmed.attempt_count, 3, "re-arming costs no attempt");
+    }
+
+    /// Story 32 (issue #207): a retry request id is bound to one intent --
+    /// retrying a *different* Delivery with it is a changed intent, and the
+    /// Server refuses instead of silently re-arming the wrong row.
+    #[tokio::test]
+    async fn a_retry_request_id_reused_for_another_delivery_is_refused() {
+        let (_dir, state, _provider) = test_state().await;
+        let event_id = seed_event(state.db().pool()).await;
+        let first = delivery_id_for(&state, &event_id).await;
+        // A second, independent Event with its own dead-lettered Delivery.
+        sqlx::query(
+            "INSERT INTO notification_events (event_id, event_kind, incident_id, rule_key, subject_kind, subject_key, severity, summary, created_at) VALUES ('evt-other', 'test', NULL, NULL, NULL, NULL, 'info', 'other', '2026-03-01T00:00:00Z')",
+        )
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notification_deliveries (delivery_id, event_id, channel_kind, destination, state, created_at, updated_at) VALUES ('dl-other', 'evt-other', 'telegram', '****6789', 'dead_letter', '2026-03-01T00:00:00Z', '2026-03-01T00:00:00Z')",
+        )
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE notification_deliveries SET state = 'dead_letter' WHERE delivery_id = ?",
+        )
+        .bind(&first)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+
+        assert_eq!(
+            retry_command(&state, &first, "req-two-deliveries")
+                .await
+                .status(),
+            StatusCode::OK
+        );
+
+        let second = retry_command(&state, "dl-other", "req-two-deliveries").await;
+        assert_eq!(second.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            body_json(second).await["error"]["code"],
+            "notification_request_id_conflict"
+        );
+        // The refused command changed nothing about the other Delivery.
+        assert_eq!(
+            load_test_delivery(&state, "dl-other").await.state,
+            "dead_letter"
+        );
+    }
+
+    /// Story 32 (issue #207): a retry request id stays reconcilable for the
+    /// same window as any other command, and an expired one reports Unknown
+    /// rather than replaying a guess.
+    #[tokio::test]
+    async fn an_expired_retry_request_result_is_reported_as_unknown() {
+        let (_dir, state, _provider) = test_state().await;
+        let event_id = seed_event(state.db().pool()).await;
+        let delivery_id = delivery_id_for(&state, &event_id).await;
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        crate::notifications::insert_notification_request(
+            &mut conn,
+            "req-expired-retry",
+            "retry",
+            &format!("retry:{delivery_id}"),
+            Some(&event_id),
+            &delivery_id,
+            0,
+            now_utc() - time::Duration::seconds(120),
+            60,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+
+        let lookup = notification_request_result(
+            State(state),
+            Path("req-expired-retry".to_owned()),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(lookup.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A retry the Owner just asked for is still subject to the pre-handoff
+    /// policy check: a Silence that became effective after the re-arm
+    /// suppresses the message instead of blindly resending it.
+    #[tokio::test]
+    async fn worker_suppresses_a_manually_rearmed_delivery_before_handoff() {
+        let (_dir, state, provider) = test_state().await;
+        provider.results.lock().unwrap().clear();
+        for _ in 0..3 {
+            provider
+                .results
+                .lock()
+                .unwrap()
+                .push(Err(crate::notifications::SendError::Api {
+                    code: 400,
+                    retry_after: None,
+                }));
+        }
+        let event_id = seed_event(state.db().pool()).await;
+        let delivery_id = only_delivery_id(&state, &event_id).await;
+
+        // The Delivery is dead-lettered by three *real* failed handoffs, so
+        // the history the Owner is retrying after actually exists.
+        for _ in 0..3 {
+            sqlx::query(
+                "UPDATE notification_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE delivery_id = ?",
+            )
+            .bind(&delivery_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+            assert_eq!(
+                crate::notifications::process_due_deliveries(&state, &*provider)
+                    .await
+                    .unwrap(),
+                1
+            );
+        }
+        assert_eq!(
+            load_test_delivery(&state, &delivery_id).await.state,
+            "dead_letter"
+        );
+        let before = {
+            let mut conn = state.db().pool().acquire().await.unwrap();
+            crate::notifications::attempts_for_delivery(&mut conn, &delivery_id)
+                .await
+                .unwrap()
+        };
+        assert_eq!(before.len(), 3);
+        let handoffs_before = provider.texts.lock().unwrap().len();
+
+        assert_eq!(
+            retry_command(&state, &delivery_id, "req-rearmed-silence")
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            load_test_delivery(&state, &delivery_id).await.state,
+            "pending"
+        );
+
+        // The Silence only becomes effective after the Owner's retry.
+        insert_active_silence(state.db().pool(), "sil-rearmed").await;
+        assert_eq!(
+            crate::notifications::process_due_deliveries(&state, &*provider)
+                .await
+                .unwrap(),
+            1
+        );
+        let delivery = load_test_delivery(&state, &delivery_id).await;
+        assert_eq!(delivery.state, "suppressed");
+        assert_eq!(
+            delivery.last_result.as_deref(),
+            Some("suppressed_by_silence:sil-rearmed")
+        );
+        // The re-armed work is never handed off, no fourth attempt is
+        // recorded, and the three failures that motivated the retry are left
+        // exactly as they were - a suppression is not a rewrite either.
+        assert_eq!(delivery.attempt_count, 3);
+        assert_eq!(
+            provider.texts.lock().unwrap().len(),
+            handoffs_before,
+            "the re-armed Delivery is suppressed before handoff, so the provider is never called again"
+        );
+        let attempts = {
+            let mut conn = state.db().pool().acquire().await.unwrap();
+            crate::notifications::attempts_for_delivery(&mut conn, &delivery_id)
+                .await
+                .unwrap()
+        };
+        assert_eq!(
+            serde_json::to_value(&attempts).unwrap(),
+            serde_json::to_value(&before).unwrap(),
+            "suppressing a re-armed Delivery records no attempt and rewrites none"
+        );
     }
 
     #[tokio::test]

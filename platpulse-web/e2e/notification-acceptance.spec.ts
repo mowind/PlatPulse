@@ -311,6 +311,18 @@ test.describe('Disposable Server notification test acceptance', () => {
       expect(POST_RETRY_STATES).toContain(await detailValue(afterRestart, 'Delivery state'))
       expect((await readEvents(server)).items, 'a restart must not re-run the recorded command').toHaveLength(1)
 
+      // The retry has its own request id, and it reconciles across the restart
+      // too: an Owner whose retry response was lost can still resolve it in
+      // the WebUI instead of pressing retry again.
+      const retryAfterRestart = await lookupRequestInUi(page, retryRequestId)
+      await expect(retryAfterRestart).toBeVisible()
+      expect(await detailValue(retryAfterRestart, 'Request id')).toBe(retryRequestId)
+      expect(await detailValue(retryAfterRestart, 'Command kind')).toBe('retry')
+      expect(POST_RETRY_STATES).toContain(await detailValue(retryAfterRestart, 'Delivery state'))
+      expect((await readRequest(server, retryRequestId)).delivery.deliveryId).toBe(deliveryId)
+      // Reconciling is a read: it must not queue another attempt.
+      expect((await readDeliveries(server)).items).toHaveLength(1)
+
       // A never-authenticated Guest hits the real route-level Owner gate.
       const anonymous = await browser.newContext()
       try {

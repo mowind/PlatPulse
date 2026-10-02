@@ -564,11 +564,23 @@ export const notificationDeliveries = <ThrowOnError extends boolean = false>(opt
 export const notificationDeliveryDetail = <ThrowOnError extends boolean = false>(options: Options<NotificationDeliveryDetailData, ThrowOnError>): RequestResult<NotificationDeliveryDetailResponses, NotificationDeliveryDetailErrors, ThrowOnError> => (options.client ?? client).get<NotificationDeliveryDetailResponses, NotificationDeliveryDetailErrors, ThrowOnError>({ url: '/api/admin/v1/notifications/deliveries/{delivery_id}', ...options });
 
 /**
- * Manual retry: re-arms one Delivery for the worker. It creates a new
- * Delivery attempt on the next worker pass but never a new Notification
- * Event, Incident, or business transition. Duplicate parallel retries are
- * refused (409 `delivery_already_queued`); suppressed and succeeded
- * Deliveries are not retryable (409 `delivery_not_retryable`).
+ * Explicit, audited retry of a retryable Delivery (issue #207, Stories
+ * 30-33, design webui.md §15.10). It re-arms the same Delivery row for the
+ * worker: it creates a new Delivery attempt on the next worker pass but
+ * never a new Notification Event, Incident, or business transition, and it
+ * never rewrites history - the attempt count, the last provider result, and
+ * every recorded attempt are kept, and the new pass appends attempt N+1.
+ * Parallel retries racing with a *different* request id are refused
+ * (409 `delivery_already_queued`), while identical concurrent retries
+ * carrying one request id are a single command that replays its recorded
+ * result with 200 and `deduplicated: true`; pending and in_flight are
+ * already queued, and succeeded, suppressed, and
+ * cancelled are not retryable (409 `delivery_not_retryable`). The re-armed
+ * Delivery is still re-checked for suppression and subject deletion right
+ * before channel handoff, so an explicit retry never becomes a blind resend.
+ * The body carries the same opaque request id as a test command: a repeated
+ * id with the same intent replays the recorded Server result, a different
+ * intent is a conflict, and the result stays reconcilable after a restart.
  */
 export const retryDelivery = <ThrowOnError extends boolean = false>(options: Options<RetryDeliveryData, ThrowOnError>): RequestResult<RetryDeliveryResponses, RetryDeliveryErrors, ThrowOnError> => (options.client ?? client).post<RetryDeliveryResponses, RetryDeliveryErrors, ThrowOnError>({
     url: '/api/admin/v1/notifications/deliveries/{delivery_id}/retry',

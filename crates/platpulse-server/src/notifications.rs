@@ -1448,6 +1448,14 @@ mod tests {
                     state: "suppressed".into(),
                 },
             ),
+            // A deleted subject's Delivery is terminal: re-sending it would
+            // resurrect a message for a subject that no longer exists.
+            (
+                "cancelled",
+                RetryError::NotRetryable {
+                    state: "cancelled".into(),
+                },
+            ),
             ("in_flight", RetryError::AlreadyQueued),
             ("pending", RetryError::AlreadyQueued),
         ] {

@@ -3729,7 +3729,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Manual retry: re-arms one Delivery for the worker. It creates a new\nDelivery attempt on the next worker pass but never a new Notification\nEvent, Incident, or business transition. Duplicate parallel retries are\nrefused (409 `delivery_already_queued`); suppressed and succeeded\nDeliveries are not retryable (409 `delivery_not_retryable`).",
+        "summary": "Explicit, audited retry of a retryable Delivery (issue #207, Stories\n30-33, design webui.md §15.10). It re-arms the same Delivery row for the\nworker: it creates a new Delivery attempt on the next worker pass but\nnever a new Notification Event, Incident, or business transition, and it\nnever rewrites history - the attempt count, the last provider result, and\nevery recorded attempt are kept, and the new pass appends attempt N+1.\nParallel retries racing with a *different* request id are refused\n(409 `delivery_already_queued`), while identical concurrent retries\ncarrying one request id are a single command that replays its recorded\nresult with 200 and `deduplicated: true`; pending and in_flight are\nalready queued, and succeeded, suppressed, and\ncancelled are not retryable (409 `delivery_not_retryable`). The re-armed\nDelivery is still re-checked for suppression and subject deletion right\nbefore channel handoff, so an explicit retry never becomes a blind resend.\nThe body carries the same opaque request id as a test command: a repeated\nid with the same intent replays the recorded Server result, a different\nintent is a conflict, and the result stays reconcilable after a restart.",
         "operationId": "retry_delivery",
         "parameters": [
           {

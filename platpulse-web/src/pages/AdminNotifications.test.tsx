@@ -491,22 +491,28 @@ describe('PAGE-ADMIN-NOTIFICATIONS (issue #206 notification surface)', () => {
     expect(recorded.filter((entry) => entry.method === 'POST')).toHaveLength(0)
   })
 
-  it('does not offer a retry for a terminal suppressed delivery', async () => {
-    mockFetch({
-      ...SESSION_ROUTE,
-      '/api/admin/v1/notifications/deliveries/d-9': () =>
-        jsonResponse(
-          { ...DELIVERY, deliveryId: 'd-9', state: 'suppressed' , attempts: [], event: EVENT },
-          200,
-        ),
-    })
-    await renderAt('/admin/notifications/deliveries/d-9')
+  it.each(['suppressed', 'cancelled', 'succeeded'])(
+    'does not offer a retry for a terminal %s delivery',
+    async (state) => {
+      const deliveryId = 'd-' + state
+      mockFetch({
+        ...SESSION_ROUTE,
+        ['/api/admin/v1/notifications/deliveries/' + deliveryId]: () =>
+          jsonResponse(
+            { ...DELIVERY, deliveryId, state, attempts: [], event: EVENT },
+            200,
+          ),
+      })
+      await renderAt('/admin/notifications/deliveries/' + deliveryId)
 
-    await screen.findByRole('heading', { level: 1, name: 'Notification Delivery d-9' })
-    const retry = await screen.findByRole('button', { name: 'Queue retry' })
-    expect((retry as HTMLButtonElement).disabled).toBe(true)
-    expect(screen.getByText(/suppressed is not a retryable state/i)).toBeTruthy()
-  })
+      await screen.findByRole('heading', { level: 1, name: 'Notification Delivery ' + deliveryId })
+      const retry = await screen.findByRole('button', { name: 'Queue retry' })
+      expect((retry as HTMLButtonElement).disabled).toBe(true)
+      expect(screen.getByText(new RegExp(state + ' is not a retryable state', 'i'))).toBeTruthy()
+      // The terminal state is stated, not silently hidden, and nothing is sent.
+      expect(screen.getByText(/the Server refuses a retry command/i)).toBeTruthy()
+    },
+  )
 
   it('keeps the notification pages Owner-only', async () => {
     mockFetch({
