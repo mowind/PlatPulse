@@ -35,7 +35,7 @@ export function indeterminateOutcome(error: unknown): boolean {
 }
 
 export const INDETERMINATE_OUTCOME =
-  'The request may not have reached the Server, so the outcome is unknown. The Server recorded the same request id for this command, so look it up below to reconcile the result; the browser never re-sends automatically.'
+  'The request may not have reached the Server, so the outcome is unknown. This request id identifies the command whether or not the Server recorded it, so look it up below to reconcile the result; the browser never re-sends automatically.'
 
 /**
  * Delivery states are Server-owned vocabulary (design §17.4). The word is

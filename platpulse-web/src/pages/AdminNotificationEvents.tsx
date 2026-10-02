@@ -305,7 +305,7 @@ export function AdminNotificationEventDetailPage() {
                 <dt className="text-xs font-medium tracking-wider text-muted-foreground">Incident</dt>
                 <dd className="mt-0.5 min-w-0 break-words text-sm">
                   {event.incidentId ? (
-                    <Link className="underline" to={'/admin/alerts/incidents/' + event.incidentId}>
+                    <Link className="inline-flex min-h-11 items-center underline underline-offset-4" to={'/admin/alerts/incidents/' + event.incidentId}>
                       {shortId(event.incidentId)}
                     </Link>
                   ) : (
