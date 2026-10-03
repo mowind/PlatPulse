@@ -1177,7 +1177,17 @@ const BUCKET_REPLACE_SQL: &str = "UPDATE node_metric_aggregates SET min_value = 
 /// envelope - while an extreme the Server can no longer restate is never
 /// removed. The newest reading is carried forward only when the corrected
 /// instant really is the bucket's newest, and the count is never touched.
-const BUCKET_CARRY_SQL: &str = "UPDATE node_metric_aggregates SET min_value = MIN(node_metric_aggregates.min_value, ?), max_value = MAX(node_metric_aggregates.max_value, ?), last_value = CASE WHEN node_metric_aggregates.last_observed_at <= ? THEN ? ELSE node_metric_aggregates.last_value END, last_received_at = CASE WHEN node_metric_aggregates.last_observed_at <= ? THEN ? ELSE node_metric_aggregates.last_received_at END, updated_at = ? WHERE node_id = ? AND metric = ? AND grain_seconds = ? AND bucket_start = ?";
+///
+/// The newest reading moves as one pair: a bucket states the reading at the
+/// instant it was observed at, so the instant follows the value. In the
+/// ordinary case the corrected instant already is the bucket's newest and
+/// nothing moves; a bucket that counted fewer observations than its window
+/// holds can be corrected at an instant newer than everything it counted, and
+/// letting the value move alone would report that reading under another
+/// observation's instant - a delay and a newest point computed from a pair that
+/// never existed. The instant the value is carried to is a real observation of
+/// the bucket's own window, so the pair names one true reading.
+const BUCKET_CARRY_SQL: &str = "UPDATE node_metric_aggregates SET min_value = MIN(node_metric_aggregates.min_value, ?), max_value = MAX(node_metric_aggregates.max_value, ?), last_value = CASE WHEN node_metric_aggregates.last_observed_at <= ? THEN ? ELSE node_metric_aggregates.last_value END, last_observed_at = CASE WHEN node_metric_aggregates.last_observed_at <= ? THEN ? ELSE node_metric_aggregates.last_observed_at END, last_received_at = CASE WHEN node_metric_aggregates.last_observed_at <= ? THEN ? ELSE node_metric_aggregates.last_received_at END, updated_at = ? WHERE node_id = ? AND metric = ? AND grain_seconds = ? AND bucket_start = ?";
 
 /// Re-derive the buckets that counted a corrected observation.
 ///
@@ -1282,6 +1292,8 @@ pub async fn recompute_aggregates(
                 .bind(observed_at)
                 .bind(value)
                 .bind(observed_at)
+                .bind(observed_at)
+                .bind(observed_at)
                 .bind(received_at)
                 .bind(received_at)
                 .bind(node_id)
@@ -1359,6 +1371,27 @@ pub async fn load_range(
         ),
         None => (to_text.clone(), to_text.clone()),
     };
+    // A window whose floor is above its own ceiling has nothing in it, and the
+    // Admin route really produces one: a request whose whole stretch is older
+    // than the investigation horizon is clamped to that horizon, so a request
+    // that ends just before the horizon arrives here with a floor after its
+    // ceiling (review F3). The tier floor is aligned down to a bucket edge, so
+    // the read answered the bucket that straddles the horizon whole - a point
+    // holding evidence after the ceiling the caller asked for, inside an answer
+    // that reports the stretch as unavailable. An empty window is answered as
+    // empty and consults no tier at all; the ledger still answers, because what
+    // a series observed is a fact about the series and not about this stretch.
+    if from_text.as_str() > aggregate_ceiling.as_str() {
+        return Ok(MetricRange {
+            points: Vec::new(),
+            segments: Vec::new(),
+            ledger: load_ledger(pool, query.node_id, query.metric).await?,
+            gaps: Vec::new(),
+            coverage_seconds: 0,
+            truncated: false,
+            continuation: None,
+        });
+    }
     // Tier boundaries are moved onto real bucket edges before anything is read,
     // because the raw region's own floor is one of them.
     //
@@ -1387,29 +1420,36 @@ pub async fn load_range(
     let raw_handoff = aligned_bucket_end(&raw_cutoff_text, ONE_MINUTE_SECONDS)
         .unwrap_or_else(|| raw_cutoff_text.clone());
     // Handing the straddling minute to the tier is only honest while that tier
-    // really holds its bucket. A series that was counted before issue #214 has
-    // retained raw rows and no buckets at all, because migration 0067 creates the
-    // tier table empty and backfills nothing: moving the raw floor to the minute's
-    // end would drop observations that sit inside the promised raw window, with
-    // no bucket anywhere to answer for them (the read then returned neither the
-    // sample nor a bucket, while a request starting at the cutoff returned the
-    // stored row). The stored evidence is the better answer, and the probe is
-    // what keeps an instant from being answered twice: only a minute the tier can
-    // account for is handed over.
+    // really holds that minute whole. A series that was counted before issue #214
+    // has retained raw rows and no buckets at all, because migration 0067 creates
+    // the tier table empty and backfills nothing: moving the raw floor to the
+    // minute's end would drop observations that sit inside the promised raw
+    // window, with no bucket anywhere to answer for them (the read then returned
+    // neither the sample nor a bucket, while a request starting at the cutoff
+    // returned the stored row). A bucket that exists is not enough either: one
+    // observation delivered after the tiers were introduced opens a bucket of its
+    // own while the row that predates them stays stored and uncounted, so the
+    // minute still holds more observations than its bucket counted. The probe asks
+    // both questions at once - how many observations the minute's bucket counted
+    // and how many raw rows the minute still stores - and only a bucket that
+    // accounts for every stored row is handed over. The stored evidence is the
+    // better answer, and the probe is what keeps an instant from being answered
+    // twice: only a minute the tier can account for leaves the raw region.
     let straddling_minute = aligned_bucket_start(&raw_cutoff_text, ONE_MINUTE_SECONDS);
-    let handed_over = match straddling_minute {
-        Some(minute) if below_raw_cutoff && minute.as_str() < raw_handoff.as_str() => {
-            buckets_hold_evidence(
+    let (handed_over, straddling_minute_counted) = match straddling_minute {
+        Some(ref minute) if below_raw_cutoff && minute.as_str() < raw_handoff.as_str() => {
+            let (counted, stored) = straddling_minute_ledger(
                 pool,
                 query.node_id,
                 query.metric,
                 ONE_MINUTE_SECONDS,
-                &minute,
+                minute,
                 &raw_handoff,
             )
-            .await?
+            .await?;
+            (counted > 0 && counted >= stored, counted > 0)
         }
-        _ => false,
+        _ => (false, false),
     };
     let raw_floor = if handed_over {
         raw_handoff.clone()
@@ -1494,9 +1534,21 @@ pub async fn load_range(
         aligned_bucket_start(&later(&from_text, &one_minute_floor), ONE_MINUTE_SECONDS)
             .unwrap_or_else(|| later(&from_text, &one_minute_floor));
     let one_minute_stretch = later(&one_minute_stretch, &five_minute_handoff);
+    // The minute the raw cutoff falls inside is answered by its bucket only while
+    // the tier counted every observation the minute still stores. When the bucket
+    // is there but short of that, the minute's own stored samples answer it and
+    // the finer region stops at the minute's own start, so that minute is never
+    // answered by both regions at once.
+    let one_minute_edge = if straddling_minute_counted && !handed_over {
+        straddling_minute
+            .clone()
+            .unwrap_or_else(|| raw_handoff.clone())
+    } else {
+        raw_handoff.clone()
+    };
     let (one_minute_ceiling, five_minute_ceiling) = if below_raw_cutoff {
         (
-            earlier(&aggregate_ceiling, &raw_handoff),
+            earlier(&aggregate_ceiling, &one_minute_edge),
             earlier(
                 &earlier(&aggregate_ceiling, &five_minute_handoff),
                 &raw_handoff,
@@ -1665,6 +1717,22 @@ const RANGE_BUCKET_SQL: &str = "SELECT bucket_start, grain_seconds, sample_count
 /// the read itself.
 const BUCKET_EVIDENCE_EXISTS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM node_metric_aggregates WHERE node_id = ? AND metric = ? AND grain_seconds = ? AND bucket_start >= ? AND bucket_start < ?)";
 
+/// What one straddling minute holds on both sides of the tier seam: how many
+/// observations the minute's bucket counted, and how many raw rows the minute
+/// still stores.
+///
+/// A bucket existing is not the same as the tier accounting for the minute.
+/// Migration 0067 backfills nothing, so a series counted before the aggregate
+/// tiers existed keeps the raw rows no tier ever counted, and a single
+/// observation delivered afterwards opens a bucket whose count covers only
+/// itself. Handing such a minute over would move the raw floor past observations
+/// that are still inside the promised raw window and leave them answered by
+/// nobody. Inside that window the tier has released nothing - release happens
+/// years later, at the aggregate family's own cutoff - so a bucket's count is at
+/// least the rows still stored in its minute whenever the tier really counted
+/// the minute, and only that bucket is handed over.
+const STRADDLING_MINUTE_LEDGER_SQL: &str = "SELECT COALESCE((SELECT sample_count FROM node_metric_aggregates WHERE node_id = ? AND metric = ? AND grain_seconds = ? AND bucket_start = ?), 0), (SELECT COUNT(*) FROM node_metric_samples WHERE node_id = ? AND metric = ? AND observed_at >= ? AND observed_at < ?)";
+
 /// The series ledger read on every range request.
 const SERIES_LEDGER_SQL: &str = "SELECT first_observed_at, last_observed_at, last_received_at, observation_count, replayed_count, corrected_count FROM node_metric_series_state WHERE node_id = ? AND metric = ?";
 
@@ -1696,6 +1764,30 @@ async fn read_raw_samples(
         .collect();
     samples.sort_by(|left, right| left.observed_at.cmp(&right.observed_at));
     Ok((samples, truncated))
+}
+
+/// One observation of the seam: the minute's bucket count (0 when the tier holds
+/// no bucket for the minute) and the number of raw rows the minute still stores.
+async fn straddling_minute_ledger(
+    pool: &SqlitePool,
+    node_id: &str,
+    metric: &str,
+    grain_seconds: i64,
+    minute: &str,
+    minute_end: &str,
+) -> Result<(i64, i64), sqlx::Error> {
+    let (counted, stored): (i64, i64) = sqlx::query_as(STRADDLING_MINUTE_LEDGER_SQL)
+        .bind(node_id)
+        .bind(metric)
+        .bind(grain_seconds)
+        .bind(minute)
+        .bind(node_id)
+        .bind(metric)
+        .bind(minute)
+        .bind(minute_end)
+        .fetch_one(pool)
+        .await?;
+    Ok((counted, stored))
 }
 
 /// Whether one aggregate tier holds any bucket inside a stretch the budget could
@@ -2863,6 +2955,170 @@ mod tests {
             instants(&wide),
             "a request that reaches below the cutoff sees the same samples as one that starts at it"
         );
+    }
+
+    /// Issue #214 review: the newest reading of a bucket moves as one pair. A
+    /// bucket that counted fewer observations than its window holds can be
+    /// corrected at an instant newer than everything it counted: the corrected
+    /// reading is folded into the envelope, and the instant it was observed at
+    /// moves with it. Carrying the value alone reports one observation's reading
+    /// under another observation's instant, and the Admin contract reads that
+    /// pair back as the point's value and its observation delay.
+    #[tokio::test]
+    async fn a_carried_correction_keeps_the_newest_reading_with_its_instant() {
+        let (_dir, pool) = tier_store().await;
+        // The bucket counted the older observation; the newer row was stored
+        // before the aggregate tiers existed, so no tier ever counted it.
+        keep_raw(&pool, "2026-03-04T05:06:40Z", 1.0).await;
+        record(&pool, "2026-03-04T05:06:40Z", "2026-03-04T05:06:41Z", 1.0).await;
+        keep_raw(&pool, "2026-03-04T05:06:58Z", 99.0).await;
+
+        correct(&pool, "2026-03-04T05:06:58Z", "2026-03-04T05:07:00Z", 100.0).await;
+        let minute = bucket(&pool, ONE_MINUTE_SECONDS, "2026-03-04T05:06:00Z")
+            .await
+            .expect("the minute bucket exists");
+        assert_eq!(minute.0, 1, "a correction is not another observation");
+        assert_eq!(minute.1, 1.0);
+        assert_eq!(
+            minute.2, 100.0,
+            "the corrected reading is inside the envelope"
+        );
+        assert_eq!(
+            minute.3, 100.0,
+            "the corrected reading is the newest reading"
+        );
+        assert_eq!(
+            minute.5, "2026-03-04T05:06:58Z",
+            "the newest reading names the instant it was observed at"
+        );
+
+        // A correction older than everything the bucket counted moves nothing:
+        // the pair still describes the newest observation of the window.
+        correct(&pool, "2026-03-04T05:06:40Z", "2026-03-04T05:08:00Z", 0.5).await;
+        let minute = bucket(&pool, ONE_MINUTE_SECONDS, "2026-03-04T05:06:00Z")
+            .await
+            .unwrap();
+        assert_eq!(minute.1, 0.5, "a widened minimum is never narrowed back");
+        assert_eq!(minute.3, 100.0);
+        assert_eq!(minute.5, "2026-03-04T05:06:58Z");
+
+        // The point the range reader serves states the same pair, so the newest
+        // reading the Admin contract reports is the one that was observed last.
+        let range = read_at(&pool, TIER_FROM, TIER_NOW, TIER_NOW, TIER_RAW_CUTOFF, 5_000).await;
+        let point = range
+            .points
+            .iter()
+            .find(|point| point.instant == "2026-03-04T05:05:00Z")
+            .expect("the coarse bucket of that window is part of the answer");
+        assert_eq!(point.value, 100.0);
+        assert_eq!(point.last_observed_at, "2026-03-04T05:06:58Z");
+        assert_eq!(point.received_at, "2026-03-04T05:07:00Z");
+    }
+
+    /// Issue #214 review: a bucket in the straddling minute is not proof that the
+    /// tier counted that minute whole. A series counted before the tiers existed
+    /// keeps the raw rows the tier never counted, and one observation delivered
+    /// after them creates a bucket whose count covers only itself - so the minute
+    /// holds two stored observations and a bucket that counted one. Handing the
+    /// minute over on the bucket's mere existence moved the raw floor past both,
+    /// leaving the older stored sample, still inside the promised raw window,
+    /// answered by nobody. The tier keeps the minute only while its own count
+    /// accounts for the rows the minute still stores.
+    #[tokio::test]
+    async fn a_straddling_minute_the_tier_did_not_count_whole_keeps_its_stored_samples() {
+        let (_dir, pool) = tier_store().await;
+        const CUTOFF: &str = "2026-03-30T12:03:37Z";
+        // The cutoff falls inside the 12:03 minute. The first row was stored
+        // before the tiers existed and no tier ever counted it; the second
+        // arrived after them and is the one observation its bucket counted.
+        keep_raw(&pool, "2026-03-30T12:03:50Z", 99.0).await;
+        keep_raw(&pool, "2026-03-30T12:03:55Z", 1.0).await;
+        record(&pool, "2026-03-30T12:03:55Z", "2026-03-30T12:03:56Z", 1.0).await;
+        let minute = bucket(&pool, ONE_MINUTE_SECONDS, "2026-03-30T12:03:00Z")
+            .await
+            .expect("the later observation created its minute bucket");
+        assert_eq!(minute.0, 1, "the bucket counted one of the two stored rows");
+
+        let wide = read_at(&pool, TIER_FROM, TIER_NOW, TIER_NOW, CUTOFF, 5_000).await;
+        assert_eq!(
+            instants(&wide),
+            vec!["2026-03-30T12:03:50Z", "2026-03-30T12:03:55Z"],
+            "both stored observations inside the raw window are served"
+        );
+        assert_eq!(grains(&wide), vec!["raw", "raw"]);
+        assert_eq!(
+            wide.points[0].value, 99.0,
+            "the spike the tier never counted survives in the raw window"
+        );
+        assert!(
+            wide.points
+                .iter()
+                .all(|point| point.grain != GRAIN_ONE_MINUTE),
+            "a minute the tier did not count whole is not also served as its bucket"
+        );
+        assert!(
+            wide.segments
+                .iter()
+                .filter(|segment| segment.grain == GRAIN_ONE_MINUTE)
+                .all(|segment| segment.point_count == 0),
+            "the minute tier answers nothing inside that minute"
+        );
+
+        let narrow = read_at(&pool, CUTOFF, TIER_NOW, TIER_NOW, CUTOFF, 5_000).await;
+        assert_eq!(
+            instants(&narrow),
+            instants(&wide),
+            "a request that reaches below the cutoff sees the same samples as one that starts at it"
+        );
+    }
+
+    /// Issue #214 second review (F3): a request whose whole stretch is older than
+    /// the investigation horizon is clamped to the horizon, so it reaches the
+    /// reader with a floor above its own ceiling. The tier floor is aligned down
+    /// to a bucket edge, so the bucket that straddles the horizon was answered
+    /// whole - a point holding evidence after the ceiling the caller asked for,
+    /// inside an answer that reports the stretch as unavailable. Nothing is read
+    /// from a tier when there is nothing to answer, while the series ledger still
+    /// answers for the series (the HTTP boundary pins that part).
+    #[tokio::test]
+    async fn an_inverted_window_answers_nothing_rather_than_the_bucket_that_straddles_it() {
+        let (_dir, pool) = tier_store().await;
+        // The horizon (now - 30 days) lands inside a bucket, ten seconds after the
+        // ceiling the request asks for.
+        const NOW: &str = "2026-03-31T12:00:30Z";
+        const HORIZON: &str = "2026-03-01T12:00:30Z";
+        const TO: &str = "2026-03-01T12:00:20Z";
+        // The horizon's own bucket holds an observation forty seconds after the
+        // ceiling: real evidence, and none of it inside the requested stretch.
+        record(&pool, "2026-03-01T12:00:40Z", "2026-03-01T12:00:41Z", 100.0).await;
+        let straddling = bucket(&pool, FIVE_MINUTE_SECONDS, "2026-03-01T12:00:00Z")
+            .await
+            .expect("the observation created the bucket that straddles the horizon");
+        assert_eq!(
+            (straddling.0, straddling.2, straddling.5.as_str()),
+            (1, 100.0, "2026-03-01T12:00:40Z"),
+            "the bucket is exactly the evidence that must not be answered"
+        );
+
+        let range = read_at(&pool, HORIZON, TO, NOW, TIER_RAW_CUTOFF, 5_000).await;
+        assert_eq!(
+            range.points.len(),
+            0,
+            "an inverted window answers no point: {:?}",
+            instants(&range)
+        );
+        assert!(
+            range.segments.is_empty(),
+            "no tier answered: {:?}",
+            range.segments
+        );
+        assert!(
+            range.gaps.is_empty(),
+            "an empty stretch measures no silence"
+        );
+        assert_eq!(range.coverage_seconds, 0);
+        assert!(!range.truncated, "nothing was read, so nothing was cut off");
+        assert_eq!(range.continuation, None, "there is no older page to offer");
     }
 
     /// Issue #214: the raw window is the only place a sample can be answered
