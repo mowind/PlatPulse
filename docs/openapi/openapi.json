@@ -4808,6 +4808,67 @@
               }
             }
           },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/v1/retention/preview": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Compose a bound impact preview. Read-only with respect to retained data and\ntherefore never audited; the returned id is the only thing a run accepts, so\nthe estimates the Owner reviewed are the estimates that execute.",
+        "operationId": "retention_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetentionPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetentionPreviewDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
           "503": {
             "description": "",
             "content": {
@@ -4826,7 +4887,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Queue a retention run. Returns immediately with the Operation\nreference; the worker executes it in bounded batches.",
+        "summary": "Queue a retention run for a confirmed preview. Returns immediately with the\nOperation reference; the worker executes the frozen plan in bounded batches.",
         "operationId": "retention_run",
         "requestBody": {
           "content": {
@@ -4850,6 +4911,26 @@
             }
           },
           "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
             "description": "",
             "content": {
               "application/json": {
@@ -13867,6 +13948,17 @@
               "$ref": "#/components/schemas/RetentionPolicyDto"
             }
           },
+          "preview": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RetentionPreviewDto",
+                "description": "The newest preview that still binds, so a reloaded page executes the\nsame reviewed plan instead of composing a new one."
+              }
+            ]
+          },
           "protectedState": {
             "type": "array",
             "items": {
@@ -13886,7 +13978,8 @@
           "defaultDays",
           "supported",
           "enabled",
-          "updatedAt"
+          "updatedAt",
+          "policyVersion"
         ],
         "properties": {
           "defaultDays": {
@@ -13909,6 +14002,10 @@
           "minDays": {
             "type": "integer",
             "format": "int64"
+          },
+          "policyVersion": {
+            "type": "string",
+            "description": "Fingerprint of this exact policy value. The edit form submits it back so\na concurrent edit can never be overwritten silently."
           },
           "retentionDays": {
             "type": "integer",
@@ -13947,16 +14044,125 @@
       "RetentionPolicyUpdateRequest": {
         "type": "object",
         "required": [
-          "retentionDays"
+          "retentionDays",
+          "expectedPolicyVersion"
         ],
         "properties": {
+          "expectedPolicyVersion": {
+            "type": "string",
+            "description": "The `policyVersion` the operator read before previewing. Required so a\nstale tab cannot overwrite a value it never reviewed."
+          },
           "retentionDays": {
             "type": "integer",
             "format": "int64"
           }
         }
       },
-      "RetentionRunRequest": {
+      "RetentionPreviewDto": {
+        "type": "object",
+        "description": "A read-only, expiring impact preview. A run is queued by preview id, so the\nestimates the Owner confirmed are the estimates that execute.",
+        "required": [
+          "previewId",
+          "createdAt",
+          "createdBy",
+          "expiresAt",
+          "policyVersion",
+          "families",
+          "skipped",
+          "estimatedRows",
+          "notes",
+          "protectedState"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "estimatedRows": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Server estimate of the rows the whole preview may release."
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "families": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RetentionPreviewFamily"
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "policyVersion": {
+            "type": "string"
+          },
+          "previewId": {
+            "type": "string"
+          },
+          "protectedState": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scope": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Absent when the preview covers every actionable policy."
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RetentionPreviewSkip"
+            }
+          }
+        }
+      },
+      "RetentionPreviewFamily": {
+        "type": "object",
+        "description": "One actionable family inside a bound impact preview.",
+        "required": [
+          "family",
+          "retentionDays",
+          "policyVersion",
+          "cutoff",
+          "estimatedRows"
+        ],
+        "properties": {
+          "cutoff": {
+            "type": "string",
+            "description": "Rows older than this instant are the only candidates a run may release."
+          },
+          "estimatedRows": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "family": {
+            "type": "string"
+          },
+          "policyVersion": {
+            "type": "string",
+            "description": "Fingerprint of the policy this estimate was composed against."
+          },
+          "retentionDays": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "RetentionPreviewRequest": {
         "type": "object",
         "properties": {
           "families": {
@@ -13967,7 +14173,39 @@
             "items": {
               "type": "string"
             },
-            "description": "Restrict the run to these families; absent means every enabled and\nsupported policy."
+            "description": "Restrict the preview to these families; absent means every enabled and\nsupported policy."
+          }
+        }
+      },
+      "RetentionPreviewSkip": {
+        "type": "object",
+        "description": "A requested family the preview will not act on, with the Server's reason.",
+        "required": [
+          "family",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "family": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "RetentionRunRequest": {
+        "type": "object",
+        "required": [
+          "previewId"
+        ],
+        "properties": {
+          "previewId": {
+            "type": "string",
+            "description": "The confirmed impact preview. A run never re-estimates impact: the plan\nthe preview froze is executed as-is, and a preview that expired or no\nlonger matches the current policies is rejected."
           }
         }
       },

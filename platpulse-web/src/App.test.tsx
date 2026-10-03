@@ -1412,7 +1412,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
   // Complete MVP Admin inventory (issues #92, #111, #203, #204, #205, #206,
   // #209):
   // Overview, Agents, Agent Detail, Nodes, Node Detail, Networks, Network
-  // Detail, Operations, Operation Detail, Doctor, Backups, Backup Artifact
+  // Detail, Operations, Operation Detail, Doctor, Retention, Backups, Backup Artifact
   // Detail, Settings, Incidents,
   // Incident Detail, Alert Rules, Alert Rule Detail, Silences, Maintenance
   // Windows, Notification Overview, Events, Event Detail, Deliveries,
@@ -1434,6 +1434,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
     ['/admin/operations', /Operations/],
     ['/admin/operations/op-1', /Operation/],
     ['/admin/doctor', /Doctor/],
+    ['/admin/retention', /Retention/],
     ['/admin/backups', /Backups/],
     ['/admin/backups/artifact-1', /Backup artifact not found/],
     ['/admin/settings', /Settings/],
@@ -1474,12 +1475,14 @@ describe('Admin MVP route inventory (issue #92)', () => {
       // oriented without coupling this contract to CSS classes.
       expect(screen.getByRole('main')).toBeTruthy()
       const adminNav = screen.getByRole('navigation', { name: 'Admin' })
-      expect(within(adminNav).getAllByRole('link')).toHaveLength(15)
+      expect(within(adminNav).getAllByRole('link')).toHaveLength(16)
       const activeHref = path.startsWith('/admin/operations')
         ? '/admin/operations'
         : path.startsWith('/admin/doctor')
           ? '/admin/doctor'
-          : path.startsWith('/admin/backups')
+          : path.startsWith('/admin/retention')
+            ? '/admin/retention'
+            : path.startsWith('/admin/backups')
             ? '/admin/backups'
             : path.startsWith('/admin/notifications')
         ? '/admin/notifications'
@@ -1511,6 +1514,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
         '/admin/networks': 'Networks',
         '/admin/operations': 'Tasks',
         '/admin/doctor': 'Doctor',
+        '/admin/retention': 'Retention',
         '/admin/backups': 'Backups',
         '/admin/settings': 'Settings',
         '/admin/alerts/rules': 'Rules',
@@ -1603,6 +1607,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
       { name: 'Networks', href: '/admin/networks', glyph: 'Network' },
       { name: 'Tasks', href: '/admin/operations', glyph: 'ClipboardList' },
       { name: 'Doctor', href: '/admin/doctor', glyph: 'Stethoscope' },
+      { name: 'Retention', href: '/admin/retention', glyph: 'Hourglass' },
       { name: 'Backups', href: '/admin/backups', glyph: 'Archive' },
       { name: 'Settings', href: '/admin/settings', glyph: 'Settings' },
       { name: 'Incidents', href: '/admin/alerts/incidents', glyph: 'TriangleAlert' },
@@ -1622,9 +1627,10 @@ describe('Admin MVP route inventory (issue #92)', () => {
       expect(icon?.getAttribute('aria-hidden')).toBe('true')
       expect(icon?.querySelector('svg')?.getAttribute('data-icon')).toBe(glyph)
     }
-    // Backups stopped being removed in issue #209: the artifact surface is
-    // now a routed Owner page group.
-    for (const removed of ['History Window', 'Site Access', 'Validators', 'People', 'Deliveries', 'Channels', 'Data', 'Retention', 'Restore', 'Enroll', 'Recover', 'Rotate']) {
+    // Backups stopped being removed in issue #209 and Retention stopped being
+    // removed in issue #210: both are routed Owner page groups now. The legacy
+    // /admin/data/retention paths stay removed and resolve to the fallback.
+    for (const removed of ['History Window', 'Site Access', 'Validators', 'People', 'Deliveries', 'Channels', 'Data', 'Restore', 'Enroll', 'Recover', 'Rotate']) {
       expect(
         Array.from(adminNav.querySelectorAll('a')).some((element) =>
           element.textContent?.includes(removed),

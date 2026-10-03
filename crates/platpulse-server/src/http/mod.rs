@@ -2467,6 +2467,105 @@ mod tests {
         assert_eq!(body["error"]["code"], "owner_required");
     }
 
+    /// Issue #210: both retention mutations are Owner-only POSTs behind the
+    /// shared Origin/CSRF guard on the real admin router — the preview that
+    /// produces the bound plan and the run that consumes it. The handlers answer
+    /// with sanitized errors, and an unknown preview id is never a leak.
+    #[tokio::test]
+    async fn retention_mutation_routes_require_owner_and_csrf() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+
+        let login = app.clone().oneshot(login_request()).await.unwrap();
+        let cookie = login.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let (_, login_body) = json(login).await;
+        let csrf = login_body["csrfToken"].as_str().unwrap().to_owned();
+
+        // (uri, body, what a well-formed Owner request must observe)
+        let routes = [
+            (
+                "/api/admin/v1/retention/preview",
+                r#"{"families":null}"#,
+                StatusCode::OK,
+                "retention_preview_id",
+            ),
+            (
+                "/api/admin/v1/retention/run",
+                r#"{"previewId":"no-such-preview"}"#,
+                StatusCode::NOT_FOUND,
+                "retention_preview_not_found",
+            ),
+        ];
+
+        for (uri, body_text, expected_status, expected_marker) in routes {
+            // Anonymous requests are refused before routing.
+            let anonymous = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ORIGIN, "http://127.0.0.1:8080")
+                .body(Body::from(body_text))
+                .unwrap();
+            let (status, body) = json(app.clone().oneshot(anonymous).await.unwrap()).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
+            assert_eq!(body["error"]["code"], "auth_required", "{uri}");
+
+            // Owner without the CSRF token is refused by the shared mutation guard.
+            let missing_csrf = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &cookie)
+                .header(header::ORIGIN, "http://127.0.0.1:8080")
+                .body(Body::from(body_text))
+                .unwrap();
+            let (status, body) = json(app.clone().oneshot(missing_csrf).await.unwrap()).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
+            assert_eq!(body["error"]["code"], "csrf_validation_failed", "{uri}");
+
+            // A valid token from another Origin is refused as well.
+            let wrong_origin = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &cookie)
+                .header(header::ORIGIN, "http://127.0.0.1:9999")
+                .header("x-csrf-token", &csrf)
+                .body(Body::from(body_text))
+                .unwrap();
+            let (status, body) = json(app.clone().oneshot(wrong_origin).await.unwrap()).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
+            assert_eq!(body["error"]["code"], "csrf_validation_failed", "{uri}");
+
+            // The route is registered on the real admin router: a well-formed
+            // Owner request passes the guard and reaches the handler.
+            let owner = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &cookie)
+                .header(header::ORIGIN, "http://127.0.0.1:8080")
+                .header("x-csrf-token", &csrf)
+                .body(Body::from(body_text))
+                .unwrap();
+            let (status, body) = json(app.clone().oneshot(owner).await.unwrap()).await;
+            assert_eq!(status, expected_status, "{uri}: {body}");
+            match expected_marker {
+                "retention_preview_id" => {
+                    assert!(
+                        body["previewId"].as_str().is_some_and(|id| !id.is_empty()),
+                        "{uri}: {body}"
+                    );
+                }
+                _ => assert_eq!(body["error"]["code"], expected_marker, "{uri}"),
+            }
+        }
+    }
+
     /// Issue #203 review B3: the Incident list must honor the snake_case query
     /// parameter names declared in OpenAPI (and sent by the generated client).
     /// A serde `rename_all = "camelCase"` previously expected ruleKey/subjectKind
@@ -3000,6 +3099,9 @@ mod tests {
             "/api/admin/v1/agents/any/metadata",
             "/api/admin/v1/agents/any/credentials/rotate",
             "/api/admin/v1/agents/any/credentials/any/revoke",
+            "/api/admin/v1/retention/preview",
+            "/api/admin/v1/retention/run",
+            "/api/admin/v1/retention/policies/raw_block_summary",
         ] {
             let request = Request::builder()
                 .uri(uri)

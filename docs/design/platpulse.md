@@ -11,7 +11,7 @@
   - 不允许：违反即破坏边界或领域不变量；
   - 可以：允许实现，但不是当前核心链路的必需能力；
   - 明确未实现：当前代码和运行时边界均未提供，不应在页面、API 或数据模型中暗示已存在。
-- 本文件区分三种状态：已实现的 Server/Agent/API 能力、当前 `platpulse-web` 实际注册的路由，以及明确未实现的产品边界。Validator、Geo、Peer、Alert、Notification、Backup/Restore、Retention、Operation、Node Transfer、Recovery/Rotation 等不再统一视为“未来功能”：其中 Server/API 和后台工作器已有实现，部分扩展已注册 SPA 页面（例如 Settings 中的 Geo provider），其余仍只有 API；详见 §3、§8、§9 和 `docs/design/webui.md`。
+- 本文件区分三种状态：已实现的 Server/Agent/API 能力、当前 `platpulse-web` 实际注册的路由，以及明确未实现的产品边界。Validator、Geo、Peer、Alert、Notification、Backup/Restore、Retention、Operation、Node Transfer、Recovery/Rotation 等不再统一视为“未来功能”：其中 Server/API 和后台工作器已有实现，部分扩展已注册 SPA 页面（例如 Settings 中的 Geo provider、Retention 策略与绑定影响预览页），其余仍只有 API；详见 §3、§8、§9 和 `docs/design/webui.md`。
 
 ---
 
@@ -20,7 +20,7 @@
 产品分离参照 Komari（<https://github.com/komari-monitor/komari>），但监控对象是 PlatON Node 而不是服务器：
 
 - Home：只读、以 Node 为中心的监控面。根路由 `/` 以 All Networks 展示 Active Node 卡片，并进入 Node Detail 展开公共投影。Node Detail 由最近两个连续 Block Summary 推导出块间隔，但不展示 Bounded Block History 列表。Site Access Mode 为 Public 时匿名 Guest 可读选定 Public GET/SSE 路径；为 Private 时 Owner 或 Viewer 登录后可读。
-- Admin：认证后的 Owner-only 系统概览与配置面。当前 SPA 路由覆盖 Overview、Agents、Nodes、Networks、Settings、Sessions 与 Audit；Settings 现在包含 Geo provider 选择（Disabled / Local MMDB / IPinfo / GeoJS）。Server/Admin API 另外提供 Validator、Alert、Notification、Operation、Retention、Backup/Restore、Doctor、Transfer、People、Enrollment/Recovery/Rotation 等能力，但尚未全部注册为页面（Operation 台账、Task 详情、Doctor 与 Backup artifact 面已注册，见 WebUI §15.11–§15.12）。
+- Admin：认证后的 Owner-only 系统概览与配置面。当前 SPA 路由覆盖 Overview、Agents、Nodes、Networks、Settings、Sessions 与 Audit；Settings 现在包含 Geo provider 选择（Disabled / Local MMDB / IPinfo / GeoJS）。Server/Admin API 另外提供 Validator、Alert、Notification、Operation、Retention、Backup/Restore、Doctor、Transfer、People、Enrollment/Recovery/Rotation 等能力，但尚未全部注册为页面（Operation 台账、Task 详情、Doctor、Backup artifact 面与 Retention 策略/影响预览面已注册，见 WebUI §15.11–§15.13）。
 - 同一个 WebUI 承载 `/` 与 `/admin` 两组路由，使用不同的 DTO、查询缓存、权限和导航。
 - 站点级 Site Access Mode（Public/Private）由 Owner 配置，变更记 Audit；当前默认 Private。Node DTO 和 Admin 页面仍保留 `visibility` 字段与 Owner mutation 作为兼容/诊断字段，但 Public 查询实际按 `lifecycle = active` 过滤，不按该字段隐藏 Home；站点模式才是有效的匿名访问开关。
 
@@ -525,7 +525,7 @@ Home 不展示：凭证、RPC Endpoint 原文、内部错误堆栈、Agent/Host 
 5. Settings（按顺序包含 History Window 与 Site Access Mode）；
 6. Sessions 与 Audit。
 
-Server Admin API 另有 People、Validator、Retention、Backup/Restore、Transfer 和 Agent credential operations；当前 SPA 没有对应注册路由。Alert/Incident/Rule/Silence/Maintenance 与 Notification 的测试、Event/Delivery 历史和请求对账页面已分别由 issue #203、#204、#205、#206 路由（见 WebUI §15.6–§15.9），Operation 台账、Task 详情与 Doctor 页面由 issue #208 路由（见 WebUI §15.11）；Backup artifact 列表、详情与只读校验请求由 issue #209 路由（见 WebUI §15.12），创建与恢复仍是离线命令（ADR 0008）。
+Server Admin API 另有 People、Validator、Backup/Restore、Transfer 和 Agent credential operations；当前 SPA 没有对应注册路由。Retention 策略读取/允许编辑/影响预览已由 issue #210 注册为 `/admin/retention`（见 WebUI §15.13）：Server 权威 preview 绑定 policy version、scope 与固定 cutoff，执行只按 preview id 排队，过时 preview 被拒绝且不排队；计数是估计而非冻结行集。Alert/Incident/Rule/Silence/Maintenance 与 Notification 的测试、Event/Delivery 历史和请求对账页面已分别由 issue #203、#204、#205、#206 路由（见 WebUI §15.6–§15.9），Operation 台账、Task 详情与 Doctor 页面由 issue #208 路由（见 WebUI §15.11）；Backup artifact 列表、详情与只读校验请求由 issue #209 路由（见 WebUI §15.12），创建与恢复仍是离线命令（ADR 0008）。
 
 Settings 是当前 SPA 全局配置的唯一 canonical route（`/admin/settings`）；旧的 `/admin/history-window` 与 `/admin/site-access` 不重定向，而是进入 Admin 的 Section not found fallback。Server API 仍分别提供 `/api/admin/v1/history-window` 与 `/api/admin/v1/access-mode`。
 
@@ -601,6 +601,8 @@ Operations/Audit     Alert/Notification/Operation/Backup/Restore/Doctor 与审�
 ~~~
 
 Server 仍不会用零值填充缺失区间；Retention 按 data family 分别配置，Block History Window 是其中独立的一项。
+
+每个 family 的保留契约由 Server 的 retention catalog 声明（`crates/platpulse-server/src/retention.rs`）：策略类别（raw / investigation / contract）给出安全下限（raw 至少 24h，investigation 与必要的 aggregate/state 至少 30d），family 自有 min/max/default 只能在此之上收紧或放宽，Server 拒绝任何低于下限的值；未启用或未支持的 family 不声明任何 cleanup target，因此不会暗示已保存其未实现的历史。支持的 family 声明其 cleanup target（固定 SQL、有界批量、恰好一个绑定参数），执行时按 preview 冻结的 cutoff 逐批运行；估计计数是 Server 给出的上界而不是冻结行集，也不是执行配额：某批返回的行数少于批量上限即证明该 cutoff 之后已无过期行，视为该目标完成；某批满额则继续；实际释放行数可以超过估计值，结果按 Server 记录的真实释放数报告。plan 在排队瞬间冻结（scope、policy version、每个 family 的 cutoff），执行期间不再读取实时策略，因此运行中的策略变更既不会加长也不会扩大正在执行的范围。preview 的 policy version 由该 family 记录的值与时间戳摘要而成，并使重预览判定同时比较 retention_days 本身，因此任何会改变计划内容的编辑都被判为过时；preview 校验与入队是两条语句，排队瞬间的校验存在极窄窗口，但已冻结的 plan 使该窗口无法扩大或加长将要释放的行（把校验并入同一事务留待后续票据）。已记录的历史在更长保留下不会被自动缩短。
 
 ---
 

@@ -2484,6 +2484,7 @@ export type RetentionImpactRequest = {
 export type RetentionOverview = {
     lastRun?: null | OperationSummary;
     policies: Array<RetentionPolicyDto>;
+    preview?: null | RetentionPreviewDto;
     protectedState: Array<string>;
 };
 
@@ -2494,6 +2495,11 @@ export type RetentionPolicyDto = {
     label: string;
     maxDays: number;
     minDays: number;
+    /**
+     * Fingerprint of this exact policy value. The edit form submits it back so
+     * a concurrent edit can never be overwritten silently.
+     */
+    policyVersion: string;
     retentionDays: number;
     supported: boolean;
     updatedAt: string;
@@ -2506,15 +2512,79 @@ export type RetentionPolicyMutationResponse = {
 };
 
 export type RetentionPolicyUpdateRequest = {
+    /**
+     * The `policyVersion` the operator read before previewing. Required so a
+     * stale tab cannot overwrite a value it never reviewed.
+     */
+    expectedPolicyVersion: string;
     retentionDays: number;
+};
+
+/**
+ * A read-only, expiring impact preview. A run is queued by preview id, so the
+ * estimates the Owner confirmed are the estimates that execute.
+ */
+export type RetentionPreviewDto = {
+    createdAt: string;
+    createdBy: string;
+    /**
+     * Server estimate of the rows the whole preview may release.
+     */
+    estimatedRows: number;
+    expiresAt: string;
+    families: Array<RetentionPreviewFamily>;
+    notes: Array<string>;
+    policyVersion: string;
+    previewId: string;
+    protectedState: Array<string>;
+    /**
+     * Absent when the preview covers every actionable policy.
+     */
+    scope?: Array<string> | null;
+    skipped: Array<RetentionPreviewSkip>;
+};
+
+/**
+ * One actionable family inside a bound impact preview.
+ */
+export type RetentionPreviewFamily = {
+    /**
+     * Rows older than this instant are the only candidates a run may release.
+     */
+    cutoff: string;
+    estimatedRows: number;
+    family: string;
+    /**
+     * Fingerprint of the policy this estimate was composed against.
+     */
+    policyVersion: string;
+    retentionDays: number;
+};
+
+export type RetentionPreviewRequest = {
+    /**
+     * Restrict the preview to these families; absent means every enabled and
+     * supported policy.
+     */
+    families?: Array<string> | null;
+};
+
+/**
+ * A requested family the preview will not act on, with the Server's reason.
+ */
+export type RetentionPreviewSkip = {
+    code: string;
+    family: string;
+    message: string;
 };
 
 export type RetentionRunRequest = {
     /**
-     * Restrict the run to these families; absent means every enabled and
-     * supported policy.
+     * The confirmed impact preview. A run never re-estimates impact: the plan
+     * the preview froze is executed as-is, and a preview that expired or no
+     * longer matches the current policies is rejected.
      */
-    families?: Array<string> | null;
+    previewId: string;
 };
 
 export type RevokeOthersResponse = {
@@ -4831,6 +4901,7 @@ export type UpdateRetentionPolicyData = {
 export type UpdateRetentionPolicyErrors = {
     400: ApiErrorBody;
     404: ApiErrorBody;
+    409: ApiErrorBody;
     503: ApiErrorBody;
 };
 
@@ -4842,6 +4913,26 @@ export type UpdateRetentionPolicyResponses = {
 
 export type UpdateRetentionPolicyResponse = UpdateRetentionPolicyResponses[keyof UpdateRetentionPolicyResponses];
 
+export type RetentionPreviewData = {
+    body: RetentionPreviewRequest;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/retention/preview';
+};
+
+export type RetentionPreviewErrors = {
+    400: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type RetentionPreviewError = RetentionPreviewErrors[keyof RetentionPreviewErrors];
+
+export type RetentionPreviewResponses = {
+    200: RetentionPreviewDto;
+};
+
+export type RetentionPreviewResponse = RetentionPreviewResponses[keyof RetentionPreviewResponses];
+
 export type RetentionRunData = {
     body: RetentionRunRequest;
     path?: never;
@@ -4851,6 +4942,8 @@ export type RetentionRunData = {
 
 export type RetentionRunErrors = {
     400: ApiErrorBody;
+    404: ApiErrorBody;
+    409: ApiErrorBody;
     503: ApiErrorBody;
 };
 

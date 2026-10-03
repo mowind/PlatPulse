@@ -127,6 +127,7 @@ import {
   restoreValidate as restoreValidateApi,
   retentionImpact as retentionImpactApi,
   retentionOverview,
+  retentionPreview as retentionPreviewApi,
   retentionRun as retentionRunApi,
   updateRetentionPolicy as updateRetentionPolicyApi,
   type BackupArtifactDetail as BackupArtifactDetailDto,
@@ -138,6 +139,7 @@ import {
   type RestoreValidation,
   type RetentionOverview,
   type RetentionPolicyDto,
+  type RetentionPreviewDto,
   type ChannelDto,
   type ChannelTestResponse,
   type DeliveryRetryResponse,
@@ -2470,11 +2472,39 @@ export function useRetentionImpact(generation: number, family: string, days: num
   })
 }
 
+/** Compose a bound impact preview. Read-only with respect to retained data
+ * (never audits, never deletes) but it does persist an expiring preview, so the
+ * request carries the CSRF token. A run is queued by the returned previewId,
+ * and the overview is reloaded so the page shows the preview the Server bound. */
+export async function createRetentionPreviewEntry(
+  families: string[] | null,
+  csrfToken: string,
+): Promise<RetentionPreviewDto> {
+  try {
+    const response = await requestAdmin(
+      () =>
+        retentionPreviewApi({
+          body: { families: families ?? undefined },
+          headers: { 'X-CSRF-Token': csrfToken },
+        }),
+      'Unable to compose a retention preview',
+    )
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.retention })
+    return response
+  } catch (error) {
+    void adminQueryClient.invalidateQueries({ queryKey: adminKeys.retention })
+    throw error
+  }
+}
+
 /** Apply a retention policy change within its fixed safety bounds.
+ * `expectedPolicyVersion` is the version the operator read before previewing,
+ * so a concurrent edit is rejected instead of silently overwritten.
  * Confirmed, audited, refetched — never optimistic. */
 export async function updateRetentionPolicyEntry(
   family: string,
   retentionDays: number,
+  expectedPolicyVersion: string,
   csrfToken: string,
 ): Promise<{ policy: RetentionPolicyDto; auditEventId: number }> {
   try {
@@ -2482,7 +2512,7 @@ export async function updateRetentionPolicyEntry(
       () =>
         updateRetentionPolicyApi({
           path: { family },
-          body: { retentionDays },
+          body: { retentionDays, expectedPolicyVersion },
           headers: { 'X-CSRF-Token': csrfToken },
         }),
       'Unable to update the retention policy',
@@ -2495,16 +2525,19 @@ export async function updateRetentionPolicyEntry(
   }
 }
 
-/** Queue a retention run; returns the Operation reference immediately. */
+/** Queue a retention run for one confirmed preview; returns the Operation
+ * reference immediately. The Server never re-estimates here: an expired preview
+ * (409 `retention_preview_stale`) or an unknown one (404
+ * `retention_preview_not_found`) is surfaced to the caller as-is. */
 export async function runRetentionEntry(
-  families: string[] | null,
+  previewId: string,
   csrfToken: string,
 ): Promise<OperationMutationResponse> {
   try {
     const response = await requestAdmin(
       () =>
         retentionRunApi({
-          body: { families: families ?? undefined },
+          body: { previewId },
           headers: { 'X-CSRF-Token': csrfToken },
         }),
       'Unable to start the retention run',

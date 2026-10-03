@@ -159,7 +159,9 @@ test('shared chrome keeps business layout, bundled outline icons and background'
   await expectNoHorizontalOverflow(page)
   if (!process.env.REFINEMENT_BASELINE) {
     await expect(page.locator('[data-slot="background-decoration"]')).toHaveCount(1)
-    await expect(page.locator('[data-slot="admin-nav-icon"] svg')).toHaveCount(14)
+    // 14 sections pinned by issue #92, plus Backups (issue #209) and
+    // Retention (issue #210): every Admin nav entry carries one bundled icon.
+    await expect(page.locator('[data-slot="admin-nav-icon"] svg')).toHaveCount(16)
   }
   await capture('admin')
 })

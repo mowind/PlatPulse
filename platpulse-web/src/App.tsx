@@ -22,6 +22,7 @@ import AdminMaintenanceList from './pages/AdminMaintenance'
 import AdminOperationsList, { AdminOperationDetailPage } from './pages/AdminOperations'
 import AdminBackupsList, { AdminBackupDetailPage } from './pages/AdminBackups'
 import AdminDoctor from './pages/AdminDoctor'
+import AdminRetention from './pages/AdminRetention'
 import AdminNotifications from './pages/AdminNotifications'
 import AdminNotificationEvents, {
   AdminNotificationEventDetailPage,
@@ -180,6 +181,10 @@ const router = createBrowserRouter([
       { path: 'operations', element: <AdminOperationsList /> },
       { path: 'operations/:operationId', element: <AdminOperationDetailPage /> },
       { path: 'doctor', element: <AdminDoctor /> },
+      // Retention surface (issue #210): the policy table, one bounded edit at a
+      // time, and the expiring preview a run is bound to. The run executes the
+      // preview's frozen plan, so this page composes one before offering it.
+      { path: 'retention', element: <AdminRetention /> },
       // Backup artifact surface (issue #209): read the recorded artifacts and
       // request verification. Backups are created offline and restoring is a
       // separate operation, so neither is offered here.

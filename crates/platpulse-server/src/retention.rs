@@ -7,9 +7,16 @@
 //! historical high-water mark, never deletes coverage/gap/divergence state
 //! or cumulative counters, never touches immutable Incident history, and
 //! never removes Audit Events still referenced by Operations.
+//!
+//! Issue #210 adds the contract a later family plugs into — one investigation
+//! floor plus a declarative list of bounded cleanup targets per family — and a
+//! persisted, Server-authoritative impact preview: a retention run may only
+//! execute a preview the Server still accepts, so a stale policy version, a
+//! changed scope, or a moved cutoff can never delete against an unseen plan.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 
 use crate::http::AppState;
@@ -23,6 +30,18 @@ pub const RAW_BLOCK_SUMMARY_CLEANUP_BATCH: i64 = 128;
 pub const RAW_BLOCK_HISTORY_AGGREGATES_SUPPORTED: bool = false;
 /// Maximum number of rows removed by one bounded retention batch.
 pub const RETENTION_BATCH: i64 = 128;
+/// Stage-2 investigation floors (design §11.4, parent spec #202): ordinary
+/// policy editing may not shorten raw history below 24 hours, nor the
+/// aggregate/state history the investigation contract depends on below 30
+/// days. Expressed once here and enforced by validate_policy_days.
+pub const MIN_INVESTIGATION_RAW_HOURS: i64 = 24;
+pub const MIN_INVESTIGATION_RAW_DAYS: i64 = 1;
+pub const MIN_INVESTIGATION_AGGREGATE_DAYS: i64 = 30;
+/// How long a persisted impact preview stays executable. A run must carry a
+/// preview the Server still accepts (issue #210, Story 38).
+pub const PREVIEW_TTL_HOURS: i64 = 24;
+/// Maximum number of expired previews pruned while composing a new one.
+pub const PREVIEW_PRUNE_BATCH: i64 = 128;
 
 pub const FAMILY_RAW_BLOCK_SUMMARY: &str = "raw_block_summary";
 pub const FAMILY_ONE_MINUTE_AGGREGATE: &str = "one_minute_aggregate";
@@ -44,8 +63,73 @@ pub const FAMILY_VALIDATOR_MONTHLY_AGGREGATE: &str = "validator_monthly_aggregat
 pub const FAMILY_REPORT_RECEIPT_BODY: &str = "report_receipt_body";
 pub const RECEIPT_BODY_SLIMMING_DAYS: i64 = 30;
 
-/// Policy defaults and safety bounds (design §11.3). `max_days = 0` means
-/// no upper bound (long-term family); `retention_days = 0` keeps forever.
+/// What kind of history a family holds, and therefore which investigation
+/// floor its safety bound has to respect (issue #210, design §11.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyClass {
+    /// Raw sample history: at least 24 hours must survive ordinary editing.
+    Raw,
+    /// Aggregate or state history the 30-day investigation contract depends
+    /// on: at least 30 days must survive ordinary editing.
+    Investigation,
+    /// A family whose bound is fixed by its own delivered contract (Peer,
+    /// Validator, Audit, Report Receipt bodies, the finer-resolution metric
+    /// tiers). This contract neither lowers nor re-derives those bounds.
+    Contract,
+}
+
+impl PolicyClass {
+    /// The lowest bound an ordinary policy edit may set for this class.
+    pub fn floor_days(self) -> i64 {
+        match self {
+            PolicyClass::Raw => MIN_INVESTIGATION_RAW_DAYS,
+            PolicyClass::Investigation => MIN_INVESTIGATION_AGGREGATE_DAYS,
+            PolicyClass::Contract => 0,
+        }
+    }
+
+    /// Design citation used when the class floor rejects an edit.
+    pub fn floor_reference(self) -> Option<&'static str> {
+        match self {
+            PolicyClass::Raw => Some("24 hours of raw history, design §11.4"),
+            PolicyClass::Investigation => Some("30 days of investigation history, design §11.4"),
+            PolicyClass::Contract => None,
+        }
+    }
+}
+
+/// How a family's expired rows are physically released. Both variants are
+/// bounded, and neither deletes protected state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanupKind {
+    /// Bounded DELETE of rows older than the frozen cutoff.
+    Delete,
+    /// ADR 0009 in-place Report Receipt body slimming: identity survives, only
+    /// the per-Node and per-sample detail is cleared.
+    SlimReceiptBody,
+}
+
+/// One physical storage target inside a family. count_sql is the read-only
+/// estimate (its single placeholder binds the frozen cutoff); delete_sql is the
+/// fixed, bounded statement that releases at most one batch. Cleanup SQL is
+/// never composed from request input, so a new family declares its storage here
+/// and neither the preview nor the executor needs a new branch. A family
+/// spanning two tables (divergence evidence) declares two targets.
+#[derive(Debug, Clone, Copy)]
+pub struct CleanupTarget {
+    pub table: &'static str,
+    pub kind: CleanupKind,
+    pub count_sql: &'static str,
+    pub delete_sql: &'static str,
+}
+
+/// No physical cleanup: nothing bounded to release (unsupported families, and
+/// families kept forever).
+const NO_CLEANUP_TARGETS: &[CleanupTarget] = &[];
+
+/// Policy defaults and safety bounds (design §11.3). max_days = 0 means no
+/// upper bound (long-term family); retention_days = 0 keeps forever. class
+/// carries the investigation floor, targets the bounded cleanup storage.
 pub struct PolicyDefaults {
     pub family: &'static str,
     pub label: &'static str,
@@ -53,7 +137,90 @@ pub struct PolicyDefaults {
     pub min_days: i64,
     pub max_days: i64,
     pub supported: bool,
+    pub class: PolicyClass,
+    pub targets: &'static [CleanupTarget],
 }
+
+impl PolicyDefaults {
+    /// Lowest bound an ordinary edit may set for this family: its own declared
+    /// minimum, or its class floor when that is stricter.
+    pub fn safety_floor_days(&self) -> i64 {
+        self.min_days.max(self.class.floor_days())
+    }
+}
+
+const TARGET_BLOCK_SUMMARIES: &[CleanupTarget] = &[CleanupTarget {
+    table: "block_summaries",
+    kind: CleanupKind::Delete,
+    count_sql: "SELECT COUNT(*) FROM block_summaries WHERE accepted_at < ?",
+    delete_sql: "DELETE FROM block_summaries WHERE rowid IN (SELECT rowid FROM block_summaries WHERE accepted_at < ? ORDER BY accepted_at, node_id, block_number LIMIT 128)",
+}];
+
+const TARGET_HISTORY_GAPS: &[CleanupTarget] = &[CleanupTarget {
+    table: "block_history_gaps",
+    kind: CleanupKind::Delete,
+    count_sql: "SELECT COUNT(*) FROM block_history_gaps WHERE resolved_at IS NOT NULL AND kind != 'permanent_gap' AND resolved_at < ?",
+    delete_sql: "DELETE FROM block_history_gaps WHERE gap_id IN (SELECT gap_id FROM block_history_gaps WHERE resolved_at IS NOT NULL AND kind != 'permanent_gap' AND resolved_at < ? ORDER BY resolved_at LIMIT 128)",
+}];
+
+/// Divergence evidence spans two tables: the observation row and the block
+/// identity window it was proved against.
+const TARGET_DIVERGENCE_EVIDENCE: &[CleanupTarget] = &[
+    CleanupTarget {
+        table: "chain_divergence_observations",
+        kind: CleanupKind::Delete,
+        count_sql: "SELECT COUNT(*) FROM chain_divergence_observations WHERE retained_observed_at < ?",
+        delete_sql: "DELETE FROM chain_divergence_observations WHERE rowid IN (SELECT rowid FROM chain_divergence_observations WHERE retained_observed_at < ? ORDER BY retained_observed_at LIMIT 128)",
+    },
+    CleanupTarget {
+        table: "block_identity_window",
+        kind: CleanupKind::Delete,
+        count_sql: "SELECT COUNT(*) FROM block_identity_window WHERE retained_until < ?",
+        delete_sql: "DELETE FROM block_identity_window WHERE rowid IN (SELECT rowid FROM block_identity_window WHERE retained_until < ? ORDER BY retained_until LIMIT 128)",
+    },
+];
+
+const TARGET_AUDIT_EVENTS: &[CleanupTarget] = &[CleanupTarget {
+    table: "audit_events",
+    kind: CleanupKind::Delete,
+    count_sql: "SELECT COUNT(*) FROM audit_events WHERE created_at < ? AND audit_event_id NOT IN (SELECT audit_event_id FROM operations WHERE audit_event_id IS NOT NULL)",
+    delete_sql: "DELETE FROM audit_events WHERE audit_event_id IN (SELECT audit_event_id FROM audit_events WHERE created_at < ? AND audit_event_id NOT IN (SELECT audit_event_id FROM operations WHERE audit_event_id IS NOT NULL) ORDER BY audit_event_id LIMIT 128)",
+}];
+
+const TARGET_NOTIFICATION_EVENTS: &[CleanupTarget] = &[CleanupTarget {
+    table: "notification_events",
+    kind: CleanupKind::Delete,
+    count_sql: "SELECT COUNT(*) FROM notification_events WHERE created_at < ?",
+    delete_sql: "DELETE FROM notification_events WHERE event_id IN (SELECT event_id FROM notification_events WHERE created_at < ? ORDER BY created_at LIMIT 128)",
+}];
+
+const TARGET_PEER_PRESENCE_INTERVALS: &[CleanupTarget] = &[CleanupTarget {
+    table: "peer_presence_intervals",
+    kind: CleanupKind::Delete,
+    count_sql: "SELECT COUNT(*) FROM peer_presence_intervals WHERE closed_at IS NOT NULL AND closed_at < ?",
+    delete_sql: "DELETE FROM peer_presence_intervals WHERE interval_id IN (SELECT interval_id FROM peer_presence_intervals WHERE closed_at IS NOT NULL AND closed_at < ? ORDER BY closed_at, interval_id LIMIT 128)",
+}];
+
+const TARGET_PEER_AGGREGATE_5M: &[CleanupTarget] = &[CleanupTarget {
+    table: "peer_aggregate_5m",
+    kind: CleanupKind::Delete,
+    count_sql: "SELECT COUNT(*) FROM peer_aggregate_5m WHERE bucket_start < ?",
+    delete_sql: "DELETE FROM peer_aggregate_5m WHERE aggregate_id IN (SELECT aggregate_id FROM peer_aggregate_5m WHERE bucket_start < ? ORDER BY bucket_start, aggregate_id LIMIT 128)",
+}];
+
+const TARGET_PEER_AGGREGATE_1H: &[CleanupTarget] = &[CleanupTarget {
+    table: "peer_aggregate_1h",
+    kind: CleanupKind::Delete,
+    count_sql: "SELECT COUNT(*) FROM peer_aggregate_1h WHERE bucket_start < ?",
+    delete_sql: "DELETE FROM peer_aggregate_1h WHERE aggregate_id IN (SELECT aggregate_id FROM peer_aggregate_1h WHERE bucket_start < ? ORDER BY bucket_start, aggregate_id LIMIT 128)",
+}];
+
+const TARGET_RECEIPT_BODIES: &[CleanupTarget] = &[CleanupTarget {
+    table: "agent_report_receipts",
+    kind: CleanupKind::SlimReceiptBody,
+    count_sql: "SELECT COUNT(*) FROM agent_report_receipts WHERE received_at < ? AND receipt_slimmed_at IS NULL AND report_id NOT IN (SELECT close_report_id FROM agents WHERE close_report_id IS NOT NULL)",
+    delete_sql: "",
+}];
 
 pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
     PolicyDefaults {
@@ -63,6 +230,8 @@ pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
         min_days: 1,
         max_days: 30,
         supported: true,
+        class: PolicyClass::Raw,
+        targets: TARGET_BLOCK_SUMMARIES,
     },
     PolicyDefaults {
         family: FAMILY_ONE_MINUTE_AGGREGATE,
@@ -71,6 +240,8 @@ pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
         min_days: 7,
         max_days: 365,
         supported: false,
+        class: PolicyClass::Contract,
+        targets: NO_CLEANUP_TARGETS,
     },
     PolicyDefaults {
         family: FAMILY_ONE_HOUR_AGGREGATE,
@@ -79,6 +250,8 @@ pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
         min_days: 0,
         max_days: 0,
         supported: false,
+        class: PolicyClass::Contract,
+        targets: NO_CLEANUP_TARGETS,
     },
     PolicyDefaults {
         family: FAMILY_HISTORY_GAP,
@@ -87,6 +260,8 @@ pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
         min_days: 180,
         max_days: 0,
         supported: true,
+        class: PolicyClass::Investigation,
+        targets: TARGET_HISTORY_GAPS,
     },
     PolicyDefaults {
         family: FAMILY_DIVERGENCE_OBSERVATION,
@@ -95,6 +270,8 @@ pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
         min_days: 180,
         max_days: 0,
         supported: true,
+        class: PolicyClass::Investigation,
+        targets: TARGET_DIVERGENCE_EVIDENCE,
     },
     PolicyDefaults {
         family: FAMILY_AUDIT_EVENT,
@@ -103,6 +280,8 @@ pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
         min_days: 365,
         max_days: 0,
         supported: true,
+        class: PolicyClass::Contract,
+        targets: TARGET_AUDIT_EVENTS,
     },
     PolicyDefaults {
         family: FAMILY_ALERT_NOTIFICATION,
@@ -111,6 +290,8 @@ pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
         min_days: 90,
         max_days: 0,
         supported: true,
+        class: PolicyClass::Contract,
+        targets: TARGET_NOTIFICATION_EVENTS,
     },
     PolicyDefaults {
         family: FAMILY_PEER_PRESENCE_INTERVAL,
@@ -119,6 +300,8 @@ pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
         min_days: 1,
         max_days: 365,
         supported: true,
+        class: PolicyClass::Contract,
+        targets: TARGET_PEER_PRESENCE_INTERVALS,
     },
     PolicyDefaults {
         family: FAMILY_PEER_AGGREGATE_5M,
@@ -127,6 +310,8 @@ pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
         min_days: 7,
         max_days: 365,
         supported: true,
+        class: PolicyClass::Contract,
+        targets: TARGET_PEER_AGGREGATE_5M,
     },
     PolicyDefaults {
         family: FAMILY_PEER_AGGREGATE_1H,
@@ -135,6 +320,8 @@ pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
         min_days: 0,
         max_days: 0,
         supported: true,
+        class: PolicyClass::Contract,
+        targets: TARGET_PEER_AGGREGATE_1H,
     },
     PolicyDefaults {
         family: FAMILY_VALIDATOR_DAILY_SNAPSHOT,
@@ -146,6 +333,8 @@ pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
         min_days: 0,
         max_days: 0,
         supported: true,
+        class: PolicyClass::Contract,
+        targets: NO_CLEANUP_TARGETS,
     },
     PolicyDefaults {
         family: FAMILY_VALIDATOR_MONTHLY_AGGREGATE,
@@ -156,6 +345,8 @@ pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
         min_days: 0,
         max_days: 0,
         supported: true,
+        class: PolicyClass::Contract,
+        targets: NO_CLEANUP_TARGETS,
     },
     PolicyDefaults {
         family: FAMILY_REPORT_RECEIPT_BODY,
@@ -166,11 +357,19 @@ pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
         min_days: RECEIPT_BODY_SLIMMING_DAYS,
         max_days: RECEIPT_BODY_SLIMMING_DAYS,
         supported: true,
+        class: PolicyClass::Contract,
+        targets: TARGET_RECEIPT_BODIES,
     },
 ];
 
 pub fn catalog_family(family: &str) -> Option<&'static PolicyDefaults> {
     POLICY_CATALOG.iter().find(|entry| entry.family == family)
+}
+
+/// Declared bounded cleanup storage of a family: empty for unsupported families
+/// and for families kept forever.
+pub fn catalog_targets(family: &str) -> &'static [CleanupTarget] {
+    catalog_family(family).map_or(NO_CLEANUP_TARGETS, |entry| entry.targets)
 }
 
 /// One row's slimmed Report Receipt body (ADR 0009): the protocol-shaped
@@ -362,6 +561,21 @@ pub fn validate_policy_days(family: &str, days: i64) -> Result<(), String> {
     let Some(catalog) = catalog_family(family) else {
         return Err(format!("unknown retention family {family}"));
     };
+    // Issue #210: the class floor is part of the contract, so it holds even if
+    // a family's declared minimum were wrong; audit_catalog proves the two
+    // never disagree for a supported family.
+    let floor = catalog.safety_floor_days();
+    if days > 0 && days < floor {
+        return Err(format!(
+            "{} cannot be lowered below {} days ({})",
+            catalog.label,
+            floor,
+            catalog
+                .class
+                .floor_reference()
+                .unwrap_or("design §11.3 safety floor")
+        ));
+    }
     if days < 0 {
         return Err("retention days must be zero or positive".to_owned());
     }
@@ -417,8 +631,10 @@ pub async fn update_policy(
         .ok_or_else(|| format!("unknown retention family {family}"))
 }
 
-/// Read-only impact estimate for a proposed policy value. Never writes;
-/// used by the edit form before typed confirmation (webui.md §8.4).
+/// Read-only impact estimate for a proposed policy value: the estimated upper
+/// bound of rows a run at that value could release. Never writes; used by the
+/// edit form before typed confirmation (webui.md §8.4) and by the persisted
+/// preview.
 pub async fn estimate_impact(
     pool: &SqlitePool,
     family: &str,
@@ -431,73 +647,49 @@ pub async fn estimate_impact(
     if !catalog.supported {
         return Ok((0, true));
     }
+    let entries = plan_family_targets(pool, family, retention_days, now).await?;
+    Ok((entries.iter().map(|entry| entry.total).sum(), false))
+}
+
+/// One bounded plan entry per declared cleanup target of a family, with the
+/// cutoff frozen and the estimated upper bound counted now. retention_days = 0
+/// (keep forever) and families without cleanup targets produce nothing.
+pub async fn plan_family_targets(
+    pool: &SqlitePool,
+    family: &str,
+    retention_days: i64,
+    now: time::OffsetDateTime,
+) -> Result<Vec<PlanEntry>, sqlx::Error> {
     if retention_days == 0 {
-        return Ok((0, false));
+        return Ok(Vec::new());
     }
     let cutoff = crate::auth::format_rfc3339(family_cutoff(now, retention_days));
-    let count = match family {
-        FAMILY_RAW_BLOCK_SUMMARY => {
-            sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE accepted_at < ?")
-                .bind(&cutoff)
-                .fetch_one(pool)
-                .await?
-        }
-        FAMILY_HISTORY_GAP => {
-            sqlx::query_scalar("SELECT COUNT(*) FROM block_history_gaps WHERE resolved_at IS NOT NULL AND kind != 'permanent_gap' AND resolved_at < ?")
-                .bind(&cutoff)
-                .fetch_one(pool)
-                .await?
-        }
-        FAMILY_DIVERGENCE_OBSERVATION => {
-            let divergences: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chain_divergence_observations WHERE retained_observed_at < ?")
-                .bind(&cutoff)
-                .fetch_one(pool)
-                .await?;
-            let identity: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM block_identity_window WHERE retained_until < ?")
-                .bind(&cutoff)
-                .fetch_one(pool)
-                .await?;
-            divergences + identity
-        }
-        FAMILY_AUDIT_EVENT => {
-            sqlx::query_scalar("SELECT COUNT(*) FROM audit_events WHERE created_at < ? AND audit_event_id NOT IN (SELECT audit_event_id FROM operations WHERE audit_event_id IS NOT NULL)")
-                .bind(&cutoff)
-                .fetch_one(pool)
-                .await?
-        }
-        FAMILY_ALERT_NOTIFICATION => {
-            sqlx::query_scalar("SELECT COUNT(*) FROM notification_events WHERE created_at < ?")
-                .bind(&cutoff)
-                .fetch_one(pool)
-                .await?
-        }
-        FAMILY_PEER_PRESENCE_INTERVAL => {
-            sqlx::query_scalar("SELECT COUNT(*) FROM peer_presence_intervals WHERE closed_at IS NOT NULL AND closed_at < ?")
-                .bind(&cutoff)
-                .fetch_one(pool)
-                .await?
-        }
-        FAMILY_PEER_AGGREGATE_5M => {
-            sqlx::query_scalar("SELECT COUNT(*) FROM peer_aggregate_5m WHERE bucket_start < ?")
-                .bind(&cutoff)
-                .fetch_one(pool)
-                .await?
-        }
-        FAMILY_PEER_AGGREGATE_1H => {
-            sqlx::query_scalar("SELECT COUNT(*) FROM peer_aggregate_1h WHERE bucket_start < ?")
-                .bind(&cutoff)
-                .fetch_one(pool)
-                .await?
-        }
-        FAMILY_REPORT_RECEIPT_BODY => {
-            sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE received_at < ? AND receipt_slimmed_at IS NULL AND report_id NOT IN (SELECT close_report_id FROM agents WHERE close_report_id IS NOT NULL)")
-                .bind(&cutoff)
-                .fetch_one(pool)
-                .await?
-        }
-        _ => 0,
-    };
-    Ok((count, false))
+    count_targets(pool, family, &cutoff).await
+}
+
+/// Count what each declared target may release at one frozen cutoff. The SQL is
+/// the target's own estimate statement, never request input.
+async fn count_targets(
+    pool: &SqlitePool,
+    family: &str,
+    cutoff: &str,
+) -> Result<Vec<PlanEntry>, sqlx::Error> {
+    let mut entries = Vec::new();
+    for target in catalog_targets(family) {
+        let total: i64 = sqlx::query_scalar(target.count_sql)
+            .bind(cutoff)
+            .fetch_one(pool)
+            .await?;
+        entries.push(PlanEntry {
+            family: family.to_owned(),
+            table: target.table.to_owned(),
+            cutoff: cutoff.to_owned(),
+            total,
+            deleted: 0,
+            done: false,
+        });
+    }
+    Ok(entries)
 }
 
 /// Human-readable list of state that retention can never delete. Shown on
@@ -518,6 +710,483 @@ pub fn protected_state_notes() -> Vec<&'static str> {
 }
 
 // ---------------------------------------------------------------------------
+// Persisted authoritative impact preview (issue #210, Stories 37/38/41/42)
+// ---------------------------------------------------------------------------
+
+/// How a stored preview may be used. Execution fails closed: a preview that no
+/// longer matches the current policy version, scope, or cutoff is rejected
+/// instead of deleting against a plan the operator never reviewed.
+#[derive(Debug, Clone)]
+pub enum PreviewLoad {
+    /// The preview still binds: every row it names is unchanged and its scope
+    /// still resolves the same way.
+    Ready(RetentionPreview),
+    /// No stored preview with that id (never existed, or expired and pruned).
+    NotFound,
+    /// The preview exists but no longer binds. Reasons name families and use
+    /// fixed wording, so they are safe to return to the caller.
+    Stale(Vec<String>),
+}
+
+/// Why composing a preview failed.
+#[derive(Debug)]
+pub enum PreviewError {
+    /// The requested scope is unusable (an unknown or empty family list).
+    InvalidScope(String),
+    /// The Server's own storage failed.
+    Database(sqlx::Error),
+    /// The Server's own encoding failed.
+    Encode(String),
+}
+
+impl From<sqlx::Error> for PreviewError {
+    fn from(error: sqlx::Error) -> Self {
+        PreviewError::Database(error)
+    }
+}
+
+/// One requested family the preview will not act on, and why: recorded so a run
+/// warns about exactly the families the operator named instead of silently doing
+/// less than the scope implies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewSkip {
+    pub family: String,
+    pub code: String,
+    pub message: String,
+}
+
+/// One actionable family inside a preview: the policy value and row version it
+/// was composed against, the cutoff the run must use verbatim, and the estimated
+/// upper bound of rows it may release.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewFamily {
+    pub family: String,
+    pub retention_days: i64,
+    pub policy_version: String,
+    pub cutoff: String,
+    pub estimated_rows: i64,
+    pub targets: Vec<PlanEntry>,
+}
+
+/// A persisted, Server-authoritative impact preview. A scope of None means it
+/// was composed for every enabled and supported family; families is exactly what
+/// a run will act on, and skipped records the requested families it will not.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetentionPreview {
+    pub preview_id: String,
+    pub created_at: String,
+    pub created_by: String,
+    pub expires_at: String,
+    pub policy_version: String,
+    pub scope: Option<Vec<String>>,
+    pub families: Vec<PreviewFamily>,
+    pub skipped: Vec<PreviewSkip>,
+    pub estimated_rows: i64,
+}
+
+/// What the Server stores next to a preview: the requested scope and the
+/// requested families it will not act on.
+#[derive(Debug, Serialize, Deserialize)]
+struct PreviewScope {
+    scope: Option<Vec<String>>,
+    skipped: Vec<PreviewSkip>,
+}
+
+/// One stored preview row.
+#[derive(sqlx::FromRow)]
+struct PreviewRow {
+    preview_id: String,
+    created_at: String,
+    created_by: String,
+    policy_version: String,
+    scope_json: String,
+    entries_json: String,
+    estimated_rows: i64,
+    expires_at: String,
+}
+
+/// Fingerprint of one stored policy row: any edit changes it, so a preview (and
+/// the Admin edit form) can bind to the exact version it read.
+pub fn policy_version(family: &str, retention_days: i64, updated_at: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{family}|{retention_days}|{updated_at}").as_bytes());
+    crate::secrets::encode_hex(&hasher.finalize())
+}
+
+/// Fingerprint of a whole previewed scope: the rows it binds plus the cutoffs
+/// and estimates those rows produced.
+pub fn preview_version(families: &[PreviewFamily]) -> String {
+    let mut hasher = Sha256::new();
+    for family in families {
+        hasher.update(
+            format!(
+                "{}|{}|{}|{}|{}",
+                family.family,
+                family.retention_days,
+                family.policy_version,
+                family.cutoff,
+                family.estimated_rows
+            )
+            .as_bytes(),
+        );
+    }
+    crate::secrets::encode_hex(&hasher.finalize())
+}
+
+/// The sanctioned wording every preview surface repeats, so no surface has to
+/// invent its own promises about estimates or protected state.
+pub fn preview_notes() -> Vec<&'static str> {
+    vec![
+        "Row counts are Server estimates of what the bounded cleanup may release; a run stops as soon as no row older than the frozen cutoff remains.",
+        "The preview is bound to these policy versions, this scope, and one cutoff per family; any policy or scope change requires a new preview.",
+        "A run deletes only rows older than the frozen cutoff, in bounded batches, and never touches protected state.",
+    ]
+}
+
+/// Why a family cannot be actioned right now.
+fn skip_reason(family: &str, row: Option<&PolicyRow>) -> Option<(&'static str, String)> {
+    let Some(row) = row else {
+        return Some((
+            "retention_unknown_family",
+            format!("{family}: this family has no stored policy row, skipped"),
+        ));
+    };
+    if catalog_family(&row.family).is_none() || !row.supported {
+        return Some((
+            "retention_unsupported",
+            format!(
+                "{}: this family is not produced in the current phase, skipped",
+                row.family
+            ),
+        ));
+    }
+    if !row.enabled {
+        return Some((
+            "retention_disabled",
+            format!("{}: policy is disabled, skipped", row.family),
+        ));
+    }
+    if row.retention_days == 0 {
+        return Some((
+            "retention_keep_forever",
+            format!(
+                "{}: policy keeps history forever, nothing to execute",
+                row.family
+            ),
+        ));
+    }
+    None
+}
+
+/// Compose and persist an authoritative impact preview. Read-only with respect
+/// to retained data: it writes the preview row itself, prunes expired previews,
+/// and writes no Audit Event — the audited act is the run it authorizes.
+pub async fn create_preview(
+    pool: &SqlitePool,
+    created_by: &str,
+    families: Option<Vec<String>>,
+    now: time::OffsetDateTime,
+) -> Result<RetentionPreview, PreviewError> {
+    ensure_seeded(pool).await?;
+    let scope = match families {
+        Some(list) => {
+            let mut requested: Vec<String> = Vec::new();
+            for family in list {
+                if catalog_family(&family).is_none() {
+                    return Err(PreviewError::InvalidScope(format!(
+                        "unknown retention family {family}"
+                    )));
+                }
+                if !requested.contains(&family) {
+                    requested.push(family);
+                }
+            }
+            if requested.is_empty() {
+                return Err(PreviewError::InvalidScope(
+                    "families must not be empty when provided".to_owned(),
+                ));
+            }
+            Some(requested)
+        }
+        None => None,
+    };
+    let policies = list_policies(pool).await?;
+    let selected: Vec<&PolicyRow> = match &scope {
+        Some(requested) => requested
+            .iter()
+            .filter_map(|family| policies.iter().find(|policy| &policy.family == family))
+            .collect(),
+        None => policies
+            .iter()
+            .filter(|policy| skip_reason(&policy.family, Some(policy)).is_none())
+            .collect(),
+    };
+    let mut preview_families: Vec<PreviewFamily> = Vec::new();
+    let mut skipped: Vec<PreviewSkip> = Vec::new();
+    for policy in selected {
+        if let Some((code, message)) = skip_reason(&policy.family, Some(policy)) {
+            // An explicit request reports every family it will not act on; the
+            // default scope simply never includes them.
+            if scope.is_some() {
+                skipped.push(PreviewSkip {
+                    family: policy.family.clone(),
+                    code: code.to_owned(),
+                    message,
+                });
+            }
+            continue;
+        }
+        let cutoff = crate::auth::format_rfc3339(family_cutoff(now, policy.retention_days));
+        let targets = count_targets(pool, &policy.family, &cutoff).await?;
+        let estimated_rows = targets.iter().map(|target| target.total).sum();
+        preview_families.push(PreviewFamily {
+            family: policy.family.clone(),
+            retention_days: policy.retention_days,
+            policy_version: policy_version(
+                &policy.family,
+                policy.retention_days,
+                &policy.updated_at,
+            ),
+            cutoff,
+            estimated_rows,
+            targets,
+        });
+    }
+    let version = preview_version(&preview_families);
+    let estimated_rows: i64 = preview_families
+        .iter()
+        .map(|family| family.estimated_rows)
+        .sum();
+    let scope_json = serde_json::to_string(&PreviewScope {
+        scope: scope.clone(),
+        skipped: skipped.clone(),
+    })
+    .map_err(|error| PreviewError::Encode(error.to_string()))?;
+    let entries_json = serde_json::to_string(&preview_families)
+        .map_err(|error| PreviewError::Encode(error.to_string()))?;
+    let created_at = crate::auth::format_rfc3339(now);
+    let expires_at = crate::auth::format_rfc3339(now + time::Duration::hours(PREVIEW_TTL_HOURS));
+    let preview_id = preview_id(&version, &scope_json, &created_at);
+
+    let mut tx = pool.begin().await?;
+    // Only live previews matter, so expired rows are pruned in the same
+    // transaction — bounded exactly like every other cleanup.
+    sqlx::query("DELETE FROM retention_previews WHERE preview_id IN (SELECT preview_id FROM retention_previews WHERE expires_at <= ? LIMIT 128)")
+        .bind(&created_at)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO retention_previews (preview_id, created_at, created_by, policy_version, scope_json, entries_json, estimated_rows, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(preview_id) DO UPDATE SET created_at = excluded.created_at, created_by = excluded.created_by, entries_json = excluded.entries_json, estimated_rows = excluded.estimated_rows, expires_at = excluded.expires_at")
+        .bind(&preview_id)
+        .bind(&created_at)
+        .bind(created_by)
+        .bind(&version)
+        .bind(&scope_json)
+        .bind(&entries_json)
+        .bind(estimated_rows)
+        .bind(&expires_at)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    Ok(RetentionPreview {
+        preview_id,
+        created_at,
+        created_by: created_by.to_owned(),
+        expires_at,
+        policy_version: version,
+        scope,
+        families: preview_families,
+        skipped,
+        estimated_rows,
+    })
+}
+
+/// Deterministic preview id: the same scope, versions, and cutoffs created in
+/// the same second resolve to the same row, while any change to what was
+/// previewed produces a new one.
+fn preview_id(version: &str, scope_json: &str, created_at: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{version}|{scope_json}|{created_at}").as_bytes());
+    let digest = crate::secrets::encode_hex(&hasher.finalize());
+    format!("rp-{}", &digest[..32])
+}
+
+/// Load a stored preview and prove it still binds to the current policy
+/// versions, scope, and cutoffs. Anything else fails closed (Story 38).
+pub async fn load_preview_for_run(
+    pool: &SqlitePool,
+    preview_id: &str,
+    now: time::OffsetDateTime,
+) -> Result<PreviewLoad, sqlx::Error> {
+    let row = sqlx::query_as::<_, PreviewRow>(
+        "SELECT preview_id, created_at, created_by, policy_version, scope_json, entries_json, estimated_rows, expires_at FROM retention_previews WHERE preview_id = ?",
+    )
+    .bind(preview_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some(row) = row else {
+        return Ok(PreviewLoad::NotFound);
+    };
+    let unreadable = || {
+        PreviewLoad::Stale(vec![
+            "the stored preview could not be read; create a new preview".to_owned(),
+        ])
+    };
+    let Ok(scope) = serde_json::from_str::<PreviewScope>(&row.scope_json) else {
+        return Ok(unreadable());
+    };
+    let Ok(families) = serde_json::from_str::<Vec<PreviewFamily>>(&row.entries_json) else {
+        return Ok(unreadable());
+    };
+    let preview = RetentionPreview {
+        preview_id: row.preview_id,
+        created_at: row.created_at,
+        created_by: row.created_by,
+        expires_at: row.expires_at,
+        policy_version: row.policy_version,
+        scope: scope.scope,
+        families,
+        skipped: scope.skipped,
+        estimated_rows: row.estimated_rows,
+    };
+    let mut reasons: Vec<String> = Vec::new();
+    match crate::auth::parse_rfc3339(&preview.expires_at) {
+        Some(expires) if expires > now => {}
+        _ => push_reason(&mut reasons, "the preview expired; create a new preview"),
+    }
+    let policies = list_policies(pool).await?;
+    if preview.scope.is_none() {
+        // A default-scope preview binds to exactly the families that were
+        // actionable then: a family silently entering or leaving the scope is a
+        // change the operator never reviewed.
+        let current: Vec<String> = policies
+            .iter()
+            .filter(|policy| skip_reason(&policy.family, Some(policy)).is_none())
+            .map(|policy| policy.family.clone())
+            .collect();
+        let recorded: Vec<String> = preview
+            .families
+            .iter()
+            .map(|family| family.family.clone())
+            .collect();
+        if current != recorded {
+            push_reason(
+                &mut reasons,
+                "the enabled retention scope changed since the preview",
+            );
+        }
+    }
+    for family in &preview.families {
+        match policies
+            .iter()
+            .find(|policy| policy.family == family.family)
+        {
+            None => push_reason(
+                &mut reasons,
+                &format!(
+                    "{}: the retention policy is no longer configured",
+                    family.family
+                ),
+            ),
+            Some(row) => {
+                if !row.supported || !row.enabled {
+                    push_reason(
+                        &mut reasons,
+                        &format!(
+                            "{}: the retention policy is no longer enabled",
+                            family.family
+                        ),
+                    );
+                } else if row.retention_days != family.retention_days
+                    || policy_version(&row.family, row.retention_days, &row.updated_at)
+                        != family.policy_version
+                {
+                    push_reason(
+                        &mut reasons,
+                        &format!(
+                            "{}: the retention policy changed since the preview",
+                            family.family
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    if let Some(requested) = &preview.scope {
+        for family in requested {
+            // Families recorded as actionable are covered by the loop above.
+            if preview.families.iter().any(|entry| &entry.family == family) {
+                continue;
+            }
+            let row = policies.iter().find(|policy| &policy.family == family);
+            let recorded = preview
+                .skipped
+                .iter()
+                .find(|skip| &skip.family == family)
+                .map(|skip| skip.code.as_str());
+            let current = skip_reason(family, row).map(|(code, _)| code);
+            if recorded != current {
+                push_reason(
+                    &mut reasons,
+                    &format!("{family}: the retention policy or scope changed since the preview"),
+                );
+            }
+        }
+    }
+    if reasons.is_empty() {
+        Ok(PreviewLoad::Ready(preview))
+    } else {
+        // Bound the message: the client gets the first few changes, not a wall.
+        if reasons.len() > 3 {
+            let hidden = reasons.len() - 3;
+            reasons.truncate(3);
+            reasons.push(format!("and {hidden} more change(s)"));
+        }
+        Ok(PreviewLoad::Stale(reasons))
+    }
+}
+
+/// Record a reason once, keeping the order in which changes were detected.
+fn push_reason(reasons: &mut Vec<String>, reason: &str) {
+    if !reasons.iter().any(|existing| existing == reason) {
+        reasons.push(reason.to_owned());
+    }
+}
+
+/// The latest preview that is still executable, if any, so an Owner can return
+/// to the surface and execute the same reviewed plan.
+pub async fn latest_live_preview(
+    pool: &SqlitePool,
+    now: time::OffsetDateTime,
+) -> Result<Option<RetentionPreview>, sqlx::Error> {
+    let preview_id = sqlx::query_scalar::<_, String>(
+        "SELECT preview_id FROM retention_previews WHERE expires_at > ? ORDER BY created_at DESC, preview_id DESC LIMIT 1",
+    )
+    .bind(crate::auth::format_rfc3339(now))
+    .fetch_optional(pool)
+    .await?;
+    let Some(preview_id) = preview_id else {
+        return Ok(None);
+    };
+    match load_preview_for_run(pool, &preview_id, now).await? {
+        PreviewLoad::Ready(preview) => Ok(Some(preview)),
+        PreviewLoad::NotFound | PreviewLoad::Stale(_) => Ok(None),
+    }
+}
+
+/// The frozen execution plan a confirmed preview authorizes: exactly the entries
+/// the operator previewed, with their estimated upper bounds. Nothing is
+/// re-estimated at run time, so a policy edit during the run cannot widen what
+/// was reviewed.
+pub fn preview_plan(preview: &RetentionPreview) -> Vec<PlanEntry> {
+    preview
+        .families
+        .iter()
+        .flat_map(|family| family.targets.iter().cloned())
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Retention run Operation (kind `retention_run`)
 // ---------------------------------------------------------------------------
 
@@ -528,17 +1197,28 @@ pub struct PlanEntry {
     pub family: String,
     pub table: String,
     /// RFC3339 cutoff frozen at plan time. Re-reading the live policy on
-    /// every batch could lengthen a policy mid-run and leave `deleted <
-    /// total` forever; the plan always executes against the snapshot the
-    /// operator confirmed.
+    /// every batch could lengthen a policy mid-run and delete rows the
+    /// operator never reviewed; the plan always executes against the snapshot
+    /// the operator confirmed.
     pub cutoff: String,
+    /// The preview's estimate for this target. Reporting only — an estimate is
+    /// an upper bound, never a work quota: a batch count below it must not end
+    /// the entry, and a count that reaches it does not prove the target is
+    /// empty.
     pub total: i64,
     pub deleted: i64,
+    /// Set once a bounded batch released fewer rows than one batch can hold,
+    /// which proves the frozen cutoff has no expired row left: `total` is a
+    /// Server estimate (an upper bound), not a frozen row set, so a shortfall
+    /// completes the entry instead of retrying it forever.
+    #[serde(default)]
+    pub done: bool,
 }
 
-/// Advance one retention run by one bounded batch. The run persists its
-/// plan and progress in `params_json`/`progress_percent` and only reaches a
-/// terminal state through `finalize` — so a crash never fabricates success.
+/// Advance one retention run by one bounded batch. The run executes the plan the
+/// confirmed preview authorized, persists progress in
+/// params_json/progress_percent, and only reaches a terminal state through
+/// finalize — so a crash never fabricates success.
 pub async fn execute_step(
     state: &AppState,
     operation_id: &str,
@@ -547,21 +1227,65 @@ pub async fn execute_step(
     let mut params = crate::operations::operation_params(pool, operation_id).await?;
     let now = crate::auth::now_utc();
 
-    let mut plan: Vec<PlanEntry> = match params.get("plan").and_then(Value::as_array) {
-        Some(entries) => entries
-            .iter()
-            .filter_map(|entry| serde_json::from_value(entry.clone()).ok())
-            .collect(),
-        None => build_plan(state, operation_id, &params, now).await?,
+    // Families the operator named in the preview that will not be acted on are
+    // warned about exactly once: the flag travels with the persisted plan.
+    if params.get("warningsRecorded").and_then(Value::as_bool) != Some(true) {
+        if let Some(skipped) = params.get("skippedWarnings").and_then(Value::as_array) {
+            for entry in skipped {
+                let code = entry
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .unwrap_or("retention_scope_skipped");
+                let message = entry
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("a requested retention family was skipped");
+                crate::operations::add_warning(state, operation_id, code, message).await?;
+            }
+        }
+        params["warningsRecorded"] = Value::Bool(true);
+        sqlx::query("UPDATE operations SET params_json = ? WHERE operation_id = ?")
+            .bind(serde_json::to_string(&params)?)
+            .bind(operation_id)
+            .execute(pool)
+            .await?;
+    }
+
+    let Some(entries) = params.get("plan").and_then(Value::as_array) else {
+        // A run always queues with its preview's plan, so a missing plan means
+        // the record was tampered with or truncated: fail closed.
+        let _ = crate::operations::add_error(
+            state,
+            operation_id,
+            "retention_plan_missing",
+            "the confirmed retention plan is missing; nothing was executed",
+        )
+        .await;
+        let _ = crate::operations::finalize(
+            state,
+            operation_id,
+            crate::operations::STATUS_FAILED,
+            None,
+            &["retention"],
+        )
+        .await;
+        return Ok(());
     };
+    let mut plan: Vec<PlanEntry> = entries
+        .iter()
+        .filter_map(|entry| serde_json::from_value(entry.clone()).ok())
+        .collect();
 
     if plan.is_empty() {
         finish_run(state, operation_id, params, Vec::new()).await?;
         return Ok(());
     }
 
-    // First entry with remaining work.
-    let Some(index) = plan.iter().position(|entry| entry.deleted < entry.total) else {
+    // First entry with remaining work. The preview's estimate is never a cap
+    // (issue #210: the estimated row count is not frozen), so an entry is only
+    // complete once a bounded batch found no expired row left — stopping at
+    // "deleted == total" could leave rows the frozen cutoff still covers.
+    let Some(index) = plan.iter().position(|entry| !entry.done) else {
         finish_run(state, operation_id, params, plan).await?;
         return Ok(());
     };
@@ -578,23 +1302,48 @@ pub async fn execute_step(
         return Ok(());
     }
 
-    let entry = &plan[index];
-    let result: Result<u64, sqlx::Error> = if entry.family == FAMILY_REPORT_RECEIPT_BODY {
+    let entry = plan[index].clone();
+    let Some(target) = catalog_targets(&entry.family)
+        .iter()
+        .find(|target| target.table == entry.table)
+        .copied()
+    else {
+        // The plan names storage this Server no longer knows about: fail closed
+        // instead of skipping the batch and reporting success.
+        let _ = crate::operations::add_error(
+            state,
+            operation_id,
+            "retention_target_unknown",
+            &format!(
+                "{}: {} is not a known cleanup target",
+                entry.family, entry.table
+            ),
+        )
+        .await;
+        let _ = crate::operations::finalize(
+            state,
+            operation_id,
+            crate::operations::STATUS_FAILED,
+            None,
+            &["retention"],
+        )
+        .await;
+        return Ok(());
+    };
+    let result: Result<u64, sqlx::Error> = match target.kind {
         // ADR 0009: slimming rewrites the body in place instead of deleting the
-        // row, so it cannot use the fixed DELETE statements below.
-        slim_receipt_body_batch(pool, &entry.cutoff, &crate::auth::format_rfc3339(now)).await
-    } else {
-        let sql = batch_sql(&entry.table);
-        sqlx::query(sql)
+        // row, so it cannot use the declared DELETE statements.
+        CleanupKind::SlimReceiptBody => {
+            slim_receipt_body_batch(pool, &entry.cutoff, &crate::auth::format_rfc3339(now)).await
+        }
+        CleanupKind::Delete => sqlx::query(target.delete_sql)
             .bind(&entry.cutoff)
             .execute(pool)
             .await
-            .map(|result| result.rows_affected())
+            .map(|result| result.rows_affected()),
     };
     match result {
-        Ok(rows) => {
-            plan[index].deleted += rows as i64;
-        }
+        Ok(rows) => apply_batch(&mut plan[index], rows),
         Err(error) => {
             state.note_sqlite_error(&error);
             let _ = crate::operations::add_error(
@@ -623,12 +1372,23 @@ pub async fn execute_step(
         .execute(pool)
         .await?;
 
+    // Progress counts a resolved entry as complete work: a bounded batch that
+    // found nothing left is finished, not stalled.
     let total: i64 = plan.iter().map(|entry| entry.total).sum();
-    let deleted: i64 = plan.iter().map(|entry| entry.deleted).sum();
+    let resolved: i64 = plan
+        .iter()
+        .map(|entry| {
+            if entry.done {
+                entry.total
+            } else {
+                entry.deleted
+            }
+        })
+        .sum();
     let percent = if total == 0 {
         100
     } else {
-        (deleted * 100) / total
+        (resolved * 100) / total
     };
     let entry = &plan[index];
     crate::operations::set_progress(
@@ -641,204 +1401,25 @@ pub async fn execute_step(
     Ok(())
 }
 
-/// Fixed SQL per physical table (never dynamic). Every statement binds the
-/// plan entry's frozen RFC3339 cutoff as its single parameter.
-fn batch_sql(table: &str) -> &'static str {
-    match table {
-        "block_summaries" => {
-            "DELETE FROM block_summaries WHERE rowid IN (SELECT rowid FROM block_summaries WHERE accepted_at < ? ORDER BY accepted_at, node_id, block_number LIMIT 128)"
-        }
-        "block_history_gaps" => {
-            "DELETE FROM block_history_gaps WHERE gap_id IN (SELECT gap_id FROM block_history_gaps WHERE resolved_at IS NOT NULL AND kind != 'permanent_gap' AND resolved_at < ? ORDER BY resolved_at LIMIT 128)"
-        }
-        "chain_divergence_observations" => {
-            "DELETE FROM chain_divergence_observations WHERE rowid IN (SELECT rowid FROM chain_divergence_observations WHERE retained_observed_at < ? ORDER BY retained_observed_at LIMIT 128)"
-        }
-        "block_identity_window" => {
-            "DELETE FROM block_identity_window WHERE rowid IN (SELECT rowid FROM block_identity_window WHERE retained_until < ? ORDER BY retained_until LIMIT 128)"
-        }
-        "audit_events" => {
-            "DELETE FROM audit_events WHERE audit_event_id IN (SELECT audit_event_id FROM audit_events WHERE created_at < ? AND audit_event_id NOT IN (SELECT audit_event_id FROM operations WHERE audit_event_id IS NOT NULL) ORDER BY audit_event_id LIMIT 128)"
-        }
-        "notification_events" => {
-            "DELETE FROM notification_events WHERE event_id IN (SELECT event_id FROM notification_events WHERE created_at < ? ORDER BY created_at LIMIT 128)"
-        }
-        "peer_presence_intervals" => {
-            "DELETE FROM peer_presence_intervals WHERE interval_id IN (SELECT interval_id FROM peer_presence_intervals WHERE closed_at IS NOT NULL AND closed_at < ? ORDER BY closed_at, interval_id LIMIT 128)"
-        }
-        "peer_aggregate_5m" => {
-            "DELETE FROM peer_aggregate_5m WHERE aggregate_id IN (SELECT aggregate_id FROM peer_aggregate_5m WHERE bucket_start < ? ORDER BY bucket_start, aggregate_id LIMIT 128)"
-        }
-        "peer_aggregate_1h" => {
-            "DELETE FROM peer_aggregate_1h WHERE aggregate_id IN (SELECT aggregate_id FROM peer_aggregate_1h WHERE bucket_start < ? ORDER BY bucket_start, aggregate_id LIMIT 128)"
-        }
-        _ => "SELECT 1",
+/// Record one bounded batch against its entry. Every declared target selects
+/// its oldest `RETENTION_BATCH` matching rows, so a batch shorter than that
+/// bound proves nothing expired is left behind the frozen cutoff and completes
+/// the entry — while a full batch, or one that released nothing because there
+/// was nothing to release, never ends an entry early. The estimate is never
+/// consulted: it is an upper bound, not a work quota.
+fn apply_batch(entry: &mut PlanEntry, rows: u64) {
+    entry.deleted += rows as i64;
+    if rows < RETENTION_BATCH as u64 {
+        entry.done = true;
     }
 }
 
-/// Build the bounded execution plan from the requested families. `families:
-/// null` means every enabled and supported policy. Unsupported/disabled
-/// families are excluded; explicitly requested ones raise warnings.
-async fn build_plan(
-    state: &AppState,
-    operation_id: &str,
-    params: &Value,
-    now: time::OffsetDateTime,
-) -> Result<Vec<PlanEntry>, crate::operations::OperationError> {
-    let pool = state.db().pool();
-    let requested: Option<Vec<String>> =
-        params
-            .get("families")
-            .and_then(Value::as_array)
-            .map(|list| {
-                list.iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect()
-            });
-    let policies = list_policies(pool).await?;
-    let mut plan: Vec<PlanEntry> = Vec::new();
-    let mut warnings: Vec<(String, String)> = Vec::new();
-
-    let scope: Vec<PolicyRow> = match &requested {
-        Some(families) => {
-            let mut rows: Vec<PolicyRow> = Vec::new();
-            for family in families {
-                let Some(policy) = policies.iter().find(|policy| &policy.family == family) else {
-                    warnings.push((
-                        "retention_unknown_family".to_owned(),
-                        format!("{family}: unknown retention family, skipped"),
-                    ));
-                    continue;
-                };
-                if !policy.supported {
-                    warnings.push((
-                        "retention_unsupported".to_owned(),
-                        format!(
-                            "{}: aggregates are not produced in this phase, skipped",
-                            policy.family
-                        ),
-                    ));
-                    continue;
-                }
-                if !policy.enabled {
-                    warnings.push((
-                        "retention_disabled".to_owned(),
-                        format!("{}: policy is disabled, skipped", policy.family),
-                    ));
-                    continue;
-                }
-                rows.push(policy.clone());
-            }
-            rows
-        }
-        None => policies
-            .into_iter()
-            .filter(|policy| policy.supported && policy.enabled)
-            .collect(),
-    };
-
-    for policy in scope {
-        if policy.retention_days == 0 {
-            continue;
-        }
-        let cutoff = crate::auth::format_rfc3339(family_cutoff(now, policy.retention_days));
-        let entries = match policy.family.as_str() {
-            FAMILY_RAW_BLOCK_SUMMARY => vec![(
-                "block_summaries".to_owned(),
-                sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE accepted_at < ?")
-                    .bind(&cutoff)
-                    .fetch_one(pool)
-                    .await?,
-            )],
-            FAMILY_HISTORY_GAP => vec![(
-                "block_history_gaps".to_owned(),
-                sqlx::query_scalar("SELECT COUNT(*) FROM block_history_gaps WHERE resolved_at IS NOT NULL AND kind != 'permanent_gap' AND resolved_at < ?")
-                    .bind(&cutoff)
-                    .fetch_one(pool)
-                    .await?,
-            )],
-            FAMILY_DIVERGENCE_OBSERVATION => vec![
-                (
-                    "chain_divergence_observations".to_owned(),
-                    sqlx::query_scalar("SELECT COUNT(*) FROM chain_divergence_observations WHERE retained_observed_at < ?")
-                        .bind(&cutoff)
-                        .fetch_one(pool)
-                        .await?,
-                ),
-                (
-                    "block_identity_window".to_owned(),
-                    sqlx::query_scalar("SELECT COUNT(*) FROM block_identity_window WHERE retained_until < ?")
-                        .bind(&cutoff)
-                        .fetch_one(pool)
-                        .await?,
-                ),
-            ],
-            FAMILY_AUDIT_EVENT => vec![(
-                "audit_events".to_owned(),
-                sqlx::query_scalar("SELECT COUNT(*) FROM audit_events WHERE created_at < ? AND audit_event_id NOT IN (SELECT audit_event_id FROM operations WHERE audit_event_id IS NOT NULL)")
-                    .bind(&cutoff)
-                    .fetch_one(pool)
-                    .await?,
-            )],
-            FAMILY_ALERT_NOTIFICATION => vec![(
-                "notification_events".to_owned(),
-                sqlx::query_scalar("SELECT COUNT(*) FROM notification_events WHERE created_at < ?")
-                    .bind(&cutoff)
-                    .fetch_one(pool)
-                    .await?,
-            )],
-            FAMILY_PEER_PRESENCE_INTERVAL => vec![(
-                "peer_presence_intervals".to_owned(),
-                sqlx::query_scalar("SELECT COUNT(*) FROM peer_presence_intervals WHERE closed_at IS NOT NULL AND closed_at < ?")
-                    .bind(&cutoff)
-                    .fetch_one(pool)
-                    .await?,
-            )],
-            FAMILY_PEER_AGGREGATE_5M => vec![(
-                "peer_aggregate_5m".to_owned(),
-                sqlx::query_scalar("SELECT COUNT(*) FROM peer_aggregate_5m WHERE bucket_start < ?")
-                    .bind(&cutoff)
-                    .fetch_one(pool)
-                    .await?,
-            )],
-            FAMILY_PEER_AGGREGATE_1H => vec![(
-                "peer_aggregate_1h".to_owned(),
-                sqlx::query_scalar("SELECT COUNT(*) FROM peer_aggregate_1h WHERE bucket_start < ?")
-                    .bind(&cutoff)
-                    .fetch_one(pool)
-                    .await?,
-            )],
-            FAMILY_REPORT_RECEIPT_BODY => vec![(
-                "agent_report_receipts".to_owned(),
-                sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE received_at < ? AND receipt_slimmed_at IS NULL AND report_id NOT IN (SELECT close_report_id FROM agents WHERE close_report_id IS NOT NULL)")
-                    .bind(&cutoff)
-                    .fetch_one(pool)
-                    .await?,
-            )],
-            _ => Vec::new(),
-        };
-        for (table, total) in entries {
-            plan.push(PlanEntry {
-                family: policy.family.clone(),
-                table,
-                cutoff: cutoff.clone(),
-                total,
-                deleted: 0,
-            });
-        }
-    }
-
-    for (code, message) in warnings {
-        crate::operations::add_warning(state, operation_id, &code, &message).await?;
-    }
-    Ok(plan)
-}
-
+/// Finish the run: report what was released per family against what the preview
+/// estimated, and mark the Operation terminal.
 async fn finish_run(
     state: &AppState,
     operation_id: &str,
-    mut params: Value,
+    params: Value,
     plan: Vec<PlanEntry>,
 ) -> Result<(), crate::operations::OperationError> {
     let mut families: Vec<Value> = Vec::new();
@@ -852,19 +1433,22 @@ async fn finish_run(
         {
             existing["deletedRows"] =
                 serde_json::json!(existing["deletedRows"].as_i64().unwrap_or(0) + entry.deleted);
+            existing["estimatedRows"] =
+                serde_json::json!(existing["estimatedRows"].as_i64().unwrap_or(0) + entry.total);
         } else {
             families.push(serde_json::json!({
                 "family": entry.family,
                 "deletedRows": entry.deleted,
+                "estimatedRows": entry.total,
             }));
         }
     }
-    params["plan"] = serde_json::to_value(&plan)?;
-    let status = if plan.is_empty() {
+    // Preserve warnings recorded while composing the confirmed preview
+    // (unsupported/disabled/kept-forever families): never plain Success for a
+    // run that did less than its scope implies.
+    let status = if plan.is_empty() && params.get("previewId").is_none() {
         crate::operations::STATUS_SUCCEEDED
     } else {
-        // Preserve warnings recorded during planning (unsupported/disabled
-        // explicit requests) — never plain Success for a partial run.
         let warnings: i64 = sqlx::query_scalar(
             "SELECT json_array_length(warnings_json) FROM operations WHERE operation_id = ?",
         )
@@ -877,20 +1461,141 @@ async fn finish_run(
             crate::operations::STATUS_SUCCEEDED
         }
     };
-    crate::operations::finalize(
-        state,
-        operation_id,
-        status,
-        Some(&serde_json::json!({ "families": families })),
-        &["retention"],
-    )
-    .await?;
+    let mut result = serde_json::json!({ "families": families });
+    if let Some(preview_id) = params.get("previewId") {
+        result["previewId"] = preview_id.clone();
+    }
+    crate::operations::finalize(state, operation_id, status, Some(&result), &["retention"]).await?;
+    Ok(())
+}
+
+/// Catalog self-check (issue #210). Proves the onboarding contract before any
+/// policy or cleanup surface is served: a family cannot carry a bound below its
+/// class floor, an unsupported family cannot declare cleanup storage, and every
+/// declared target must bind exactly one cutoff with a bounded batch. Called at
+/// startup and asserted in tests.
+pub fn audit_catalog() -> Result<(), String> {
+    let mut families: Vec<&'static str> = Vec::new();
+    for entry in POLICY_CATALOG.iter() {
+        if families.contains(&entry.family) {
+            return Err(format!("{}: duplicate retention family", entry.family));
+        }
+        families.push(entry.family);
+        if entry.default_days < 0 || entry.min_days < 0 || entry.max_days < 0 {
+            return Err(format!(
+                "{}: retention bounds must not be negative",
+                entry.family
+            ));
+        }
+        let bounded = entry.max_days != 0;
+        if bounded && (entry.min_days > entry.max_days || entry.default_days > entry.max_days) {
+            return Err(format!(
+                "{}: default and floor must stay within the upper bound",
+                entry.family
+            ));
+        }
+        if !bounded && entry.default_days != 0 && entry.default_days < entry.min_days {
+            return Err(format!(
+                "{}: a long-term default must be forever (0) or at least the floor",
+                entry.family
+            ));
+        }
+        if entry.supported && bounded && entry.min_days < entry.class.floor_days() {
+            return Err(format!(
+                "{}: the {} day floor is below the {} day {:?} class floor",
+                entry.family,
+                entry.min_days,
+                entry.class.floor_days(),
+                entry.class
+            ));
+        }
+        if !entry.supported && !entry.targets.is_empty() {
+            return Err(format!(
+                "{}: an unsupported family must declare no cleanup target",
+                entry.family
+            ));
+        }
+        if entry.supported && bounded && entry.targets.is_empty() {
+            return Err(format!(
+                "{}: a supported bounded family must declare a cleanup target",
+                entry.family
+            ));
+        }
+        let mut tables: Vec<&'static str> = Vec::new();
+        for target in entry.targets {
+            if tables.contains(&target.table) {
+                return Err(format!(
+                    "{}: {} is declared twice",
+                    entry.family, target.table
+                ));
+            }
+            tables.push(target.table);
+            if target.count_sql.matches('?').count() != 1 {
+                return Err(format!(
+                    "{}: the {} estimate must bind exactly one cutoff",
+                    entry.family, target.table
+                ));
+            }
+            if target.kind == CleanupKind::Delete {
+                if target.delete_sql.matches('?').count() != 1 {
+                    return Err(format!(
+                        "{}: the {} cleanup must bind exactly one cutoff",
+                        entry.family, target.table
+                    ));
+                }
+                if !target.delete_sql.contains("LIMIT") {
+                    return Err(format!(
+                        "{}: the {} cleanup must be a bounded batch",
+                        entry.family, target.table
+                    ));
+                }
+            }
+        }
+    }
+    if !POLICY_CATALOG
+        .iter()
+        .any(|entry| entry.supported && entry.class == PolicyClass::Raw)
+    {
+        return Err("no supported raw family carries the 24-hour investigation floor".to_owned());
+    }
+    if !POLICY_CATALOG
+        .iter()
+        .any(|entry| entry.supported && entry.class == PolicyClass::Investigation)
+    {
+        return Err("no supported family carries the 30-day investigation floor".to_owned());
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Queue a retention run exactly as the HTTP layer does: the confirmed
+    /// preview's frozen plan, its policy version, and the families it will not
+    /// act on.
+    async fn queue_retention_run(
+        pool: &SqlitePool,
+        operation_id: &str,
+        request_id: &str,
+        preview: &RetentionPreview,
+        created_at: &str,
+    ) {
+        let params = serde_json::json!({
+            "previewId": preview.preview_id,
+            "previewPolicyVersion": preview.policy_version,
+            "skippedWarnings": preview.skipped,
+            "plan": preview_plan(preview),
+        });
+        sqlx::query("INSERT INTO operations (operation_id, kind, status, request_id, params_json, warnings_json, errors_json, created_at) VALUES (?, 'retention_run', 'queued', ?, ?, '[]', '[]', ?)")
+            .bind(operation_id)
+            .bind(request_id)
+            .bind(params.to_string())
+            .bind(created_at)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
 
     #[test]
     fn receipt_body_slimming_window_is_fixed_and_catalogued() {
@@ -1218,14 +1923,23 @@ mod tests {
             .await
             .unwrap();
         ensure_seeded(pool).await.unwrap();
+        let preview = create_preview(
+            pool,
+            "owner-1",
+            Some(vec![FAMILY_PEER_PRESENCE_INTERVAL.to_owned()]),
+            now,
+        )
+        .await
+        .unwrap();
         let operation_id = "peer-retention-operation";
-        sqlx::query("INSERT INTO operations (operation_id, kind, status, request_id, params_json, warnings_json, errors_json, created_at) VALUES (?, 'retention_run', 'queued', 'peer-retention-request', ?, '[]', '[]', ?)")
-            .bind(operation_id)
-            .bind(serde_json::json!({"families": [FAMILY_PEER_PRESENCE_INTERVAL]}).to_string())
-            .bind(&now_text)
-            .execute(pool)
-            .await
-            .unwrap();
+        queue_retention_run(
+            pool,
+            operation_id,
+            "peer-retention-request",
+            &preview,
+            &now_text,
+        )
+        .await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let state = AppState::new(
@@ -1337,14 +2051,28 @@ mod tests {
             .await
             .unwrap();
         ensure_seeded(pool).await.unwrap();
+        let preview = create_preview(
+            pool,
+            "owner-1",
+            Some(vec![
+                FAMILY_PEER_AGGREGATE_5M.to_owned(),
+                FAMILY_PEER_AGGREGATE_1H.to_owned(),
+            ]),
+            now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(preview.families.len(), 1);
+        assert_eq!(preview.skipped.len(), 1);
         let operation_id = "aggregate-retention-operation";
-        sqlx::query("INSERT INTO operations (operation_id, kind, status, request_id, params_json, warnings_json, errors_json, created_at) VALUES (?, 'retention_run', 'queued', 'aggregate-retention-request', ?, '[]', '[]', ?)")
-            .bind(operation_id)
-            .bind(serde_json::json!({"families": [FAMILY_PEER_AGGREGATE_5M, FAMILY_PEER_AGGREGATE_1H]}).to_string())
-            .bind(&now_text)
-            .execute(pool)
-            .await
-            .unwrap();
+        queue_retention_run(
+            pool,
+            operation_id,
+            "aggregate-retention-request",
+            &preview,
+            &now_text,
+        )
+        .await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let state = AppState::new(
@@ -1364,8 +2092,16 @@ mod tests {
                 .fetch_one(state.db().pool())
                 .await
                 .unwrap(),
-            crate::operations::STATUS_SUCCEEDED
+            crate::operations::STATUS_SUCCEEDED_WITH_WARNINGS
         );
+        let warnings: String =
+            sqlx::query_scalar("SELECT warnings_json FROM operations WHERE operation_id=?")
+                .bind(operation_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert!(warnings.contains("retention_keep_forever"), "{warnings}");
+        assert!(warnings.contains("keeps history forever"), "{warnings}");
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM peer_aggregate_5m WHERE bucket_start=?"
@@ -1438,5 +2174,440 @@ mod tests {
             .unwrap();
         assert!(!unsupported);
         assert_eq!(estimated, 0);
+    }
+    /// Issue #210: the compiled catalog is the contract itself. A family cannot
+    /// be onboarded below its class floor, and both investigation floors are
+    /// carried by families the Server actually produces.
+    #[test]
+    fn catalog_satisfies_the_investigation_contract() {
+        assert_eq!(audit_catalog(), Ok(()));
+        let raw = catalog_family(FAMILY_RAW_BLOCK_SUMMARY).unwrap();
+        assert_eq!(raw.class, PolicyClass::Raw);
+        assert_eq!(raw.safety_floor_days(), MIN_INVESTIGATION_RAW_DAYS);
+        assert!(raw.safety_floor_days() * 24 >= MIN_INVESTIGATION_RAW_HOURS);
+        for family in [FAMILY_HISTORY_GAP, FAMILY_DIVERGENCE_OBSERVATION] {
+            let entry = catalog_family(family).unwrap();
+            assert_eq!(entry.class, PolicyClass::Investigation);
+            assert_eq!(entry.class.floor_days(), MIN_INVESTIGATION_AGGREGATE_DAYS);
+            assert!(
+                entry.safety_floor_days() >= MIN_INVESTIGATION_AGGREGATE_DAYS,
+                "{family} must respect the 30-day investigation floor"
+            );
+        }
+        for family in [FAMILY_ONE_MINUTE_AGGREGATE, FAMILY_ONE_HOUR_AGGREGATE] {
+            let entry = catalog_family(family).unwrap();
+            assert!(!entry.supported, "{family} is not produced in this phase");
+            assert!(
+                catalog_targets(family).is_empty(),
+                "an unsupported family must not imply cleanup storage"
+            );
+        }
+        // Supported families that are kept forever carry no cleanup storage
+        // either, so a run can never mistake them for expendable history.
+        for family in [
+            FAMILY_VALIDATOR_DAILY_SNAPSHOT,
+            FAMILY_VALIDATOR_MONTHLY_AGGREGATE,
+        ] {
+            let entry = catalog_family(family).unwrap();
+            assert!(entry.supported);
+            assert_eq!(entry.max_days, 0);
+            assert_eq!(validate_policy_days(family, 0), Ok(()));
+            assert!(validate_policy_days(family, 30).is_err());
+            assert!(catalog_targets(family).is_empty());
+        }
+    }
+
+    /// The class floor is a property of the class, not of a family's declared
+    /// minimum: even a family that declared no minimum cannot be edited below the
+    /// investigation floor.
+    #[test]
+    fn class_floors_hold_regardless_of_a_family_minimum() {
+        let no_minimum = PolicyDefaults {
+            family: "synthetic",
+            label: "Synthetic",
+            default_days: 0,
+            min_days: 0,
+            max_days: 30,
+            supported: true,
+            class: PolicyClass::Raw,
+            targets: NO_CLEANUP_TARGETS,
+        };
+        assert_eq!(no_minimum.safety_floor_days(), MIN_INVESTIGATION_RAW_DAYS);
+        assert_eq!(
+            no_minimum.class.floor_reference(),
+            Some("24 hours of raw history, design §11.4")
+        );
+        assert_eq!(
+            PolicyClass::Investigation.floor_days(),
+            MIN_INVESTIGATION_AGGREGATE_DAYS
+        );
+        assert_eq!(PolicyClass::Contract.floor_days(), 0);
+        // The two floors stay enforceable at the trust boundary.
+        assert!(validate_policy_days(FAMILY_RAW_BLOCK_SUMMARY, 0).is_err());
+        assert!(validate_policy_days(FAMILY_HISTORY_GAP, 30).is_err());
+    }
+
+    /// Issue #210, Stories 37/38/41: a preview freezes the policy version, the
+    /// scope, and one cutoff per family, and a later policy edit turns it stale
+    /// instead of letting a run delete against a plan nobody reviewed.
+    #[tokio::test]
+    async fn preview_freezes_policy_scope_and_cutoff_and_turns_stale_on_edit() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pool = database.pool();
+        let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let preview = create_preview(
+            pool,
+            "owner-1",
+            Some(vec![FAMILY_RAW_BLOCK_SUMMARY.to_owned()]),
+            now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            preview.scope,
+            Some(vec![FAMILY_RAW_BLOCK_SUMMARY.to_owned()])
+        );
+        assert_eq!(preview.families.len(), 1);
+        assert!(preview.skipped.is_empty());
+        let family = preview.families[0].clone();
+        let policy = catalog_family(FAMILY_RAW_BLOCK_SUMMARY).unwrap();
+        assert_eq!(family.retention_days, policy.default_days);
+        assert_eq!(
+            family.cutoff,
+            crate::auth::format_rfc3339(family_cutoff(now, policy.default_days))
+        );
+        let rows = list_policies(pool).await.unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row.family == FAMILY_RAW_BLOCK_SUMMARY)
+            .unwrap();
+        assert_eq!(
+            family.policy_version,
+            policy_version(&row.family, row.retention_days, &row.updated_at)
+        );
+        assert_eq!(
+            family.targets.len(),
+            catalog_targets(FAMILY_RAW_BLOCK_SUMMARY).len()
+        );
+        assert!(family.targets.iter().all(|target| target.total == 0));
+
+        match load_preview_for_run(pool, &preview.preview_id, now)
+            .await
+            .unwrap()
+        {
+            PreviewLoad::Ready(loaded) => {
+                assert_eq!(preview_plan(&loaded).len(), family.targets.len());
+                assert_eq!(loaded.policy_version, preview.policy_version);
+                assert_eq!(
+                    latest_live_preview(pool, now)
+                        .await
+                        .unwrap()
+                        .map(|live| live.preview_id),
+                    Some(preview.preview_id.clone())
+                );
+            }
+            other => panic!("expected a ready preview, got {other:?}"),
+        }
+
+        // An edit after the preview invalidates it: the run fails closed.
+        update_policy(pool, FAMILY_RAW_BLOCK_SUMMARY, 14, "owner-1")
+            .await
+            .unwrap();
+        match load_preview_for_run(pool, &preview.preview_id, now)
+            .await
+            .unwrap()
+        {
+            PreviewLoad::Stale(reasons) => assert!(
+                reasons
+                    .iter()
+                    .any(|reason| reason.starts_with(FAMILY_RAW_BLOCK_SUMMARY)),
+                "{reasons:?}"
+            ),
+            other => panic!("expected a stale preview, got {other:?}"),
+        }
+        assert!(latest_live_preview(pool, now).await.unwrap().is_none());
+    }
+
+    /// An unknown family is a request error, not a silent skip; families the
+    /// preview will not act on are reported instead of quietly ignored.
+    #[tokio::test]
+    async fn preview_rejects_unknown_scopes_and_reports_skips() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pool = database.pool();
+        let now = crate::auth::now_utc();
+        match create_preview(pool, "owner-1", Some(vec!["nope".to_owned()]), now).await {
+            Err(PreviewError::InvalidScope(message)) => assert!(message.contains("nope")),
+            other => panic!("expected an invalid scope, got {other:?}"),
+        }
+        match create_preview(pool, "owner-1", Some(Vec::new()), now).await {
+            Err(PreviewError::InvalidScope(message)) => assert!(message.contains("empty")),
+            other => panic!("expected an invalid scope, got {other:?}"),
+        }
+        // The default scope takes every enabled, supported, bounded family.
+        let preview = create_preview(pool, "owner-1", None, now).await.unwrap();
+        assert!(preview.scope.is_none());
+        assert!(preview.skipped.is_empty());
+        assert!(
+            preview
+                .families
+                .iter()
+                .any(|family| family.family == FAMILY_RAW_BLOCK_SUMMARY),
+            "{:?}",
+            preview
+                .families
+                .iter()
+                .map(|f| &f.family)
+                .collect::<Vec<_>>()
+        );
+        // A requested family the Server cannot action is reported, never acted on.
+        let preview = create_preview(
+            pool,
+            "owner-1",
+            Some(vec![
+                FAMILY_RAW_BLOCK_SUMMARY.to_owned(),
+                FAMILY_ONE_MINUTE_AGGREGATE.to_owned(),
+            ]),
+            now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(preview.families.len(), 1);
+        assert_eq!(preview.skipped.len(), 1);
+        assert_eq!(preview.skipped[0].family, FAMILY_ONE_MINUTE_AGGREGATE);
+        assert_eq!(preview.skipped[0].code, "retention_unsupported");
+    }
+
+    /// An expired preview or an unknown id is never executable, so a run cannot
+    /// silently re-plan itself.
+    #[tokio::test]
+    async fn expired_or_unknown_previews_are_never_executable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pool = database.pool();
+        let now = crate::auth::now_utc();
+        let preview = create_preview(pool, "owner-1", None, now).await.unwrap();
+        assert!(matches!(
+            load_preview_for_run(pool, "rp-missing", now).await.unwrap(),
+            PreviewLoad::NotFound
+        ));
+        let later = now + time::Duration::hours(PREVIEW_TTL_HOURS + 1);
+        match load_preview_for_run(pool, &preview.preview_id, later)
+            .await
+            .unwrap()
+        {
+            PreviewLoad::Stale(reasons) => assert!(
+                reasons.iter().any(|reason| reason.contains("expired")),
+                "{reasons:?}"
+            ),
+            other => panic!("expected an expired preview, got {other:?}"),
+        }
+        assert!(latest_live_preview(pool, later).await.unwrap().is_none());
+    }
+
+    /// A bounded batch shorter than the batch bound completes its entry: the
+    /// frozen cutoff has no expired row left, so a run never stalls waiting for
+    /// rows that are gone — and it must not invent deleted rows either.
+    #[test]
+    fn a_short_batch_completes_its_entry_and_a_full_one_does_not() {
+        let mut entry = PlanEntry {
+            family: FAMILY_RAW_BLOCK_SUMMARY.to_owned(),
+            table: "block_summaries".to_owned(),
+            cutoff: "2026-01-01T00:00:00Z".to_owned(),
+            total: 40,
+            deleted: 0,
+            done: false,
+        };
+        apply_batch(&mut entry, RETENTION_BATCH as u64);
+        assert_eq!(entry.deleted, RETENTION_BATCH);
+        assert!(!entry.done, "a full batch may still have work behind it");
+        apply_batch(&mut entry, RETENTION_BATCH as u64);
+        assert!(!entry.done);
+        assert_eq!(
+            entry.deleted,
+            RETENTION_BATCH * 2,
+            "the preview estimate is an upper bound, never a cap on what the frozen cutoff releases"
+        );
+        apply_batch(&mut entry, 3);
+        assert!(entry.done, "a short batch completes the entry");
+        assert_eq!(entry.deleted, RETENTION_BATCH * 2 + 3);
+        apply_batch(&mut entry, 0);
+        assert_eq!(
+            entry.deleted,
+            RETENTION_BATCH * 2 + 3,
+            "a released-nothing batch must not invent deletions"
+        );
+    }
+
+    /// The preview's estimate is an upper bound, never a work quota: a run keeps
+    /// releasing everything behind the frozen cutoff even when the stored plan
+    /// undercounted it, and it reports what it actually released (issue #210:
+    /// the estimated row count is not frozen).
+    #[tokio::test]
+    async fn a_run_releases_what_the_frozen_cutoff_covers_not_what_the_estimate_said() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pool = database.pool();
+        let now = crate::auth::now_utc();
+        let now_text = crate::auth::format_rfc3339(now);
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('estimate-network', 'Estimate', '0xgenesis', 1, 1, 'lat', ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('estimate-agent', 1, ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('estimate-node', 'estimate-agent', 'estimate-network', 'ws://127.0.0.1:1', 'active', 'private', 1, ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        let insert = "INSERT INTO peer_presence_intervals (node_id, peer_id, direction, trusted, static_peer, consensus_peer, client_name, opened_at, closed_at) VALUES ('estimate-node', ?, 'inbound', 1, 0, 1, 'PlatON/v1.5.1', ?, ?)";
+        for peer in ["peer-a", "peer-b", "peer-c"] {
+            sqlx::query(insert)
+                .bind(peer)
+                .bind("2020-01-01T00:00:00Z")
+                .bind("2020-01-02T00:00:00Z")
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        ensure_seeded(pool).await.unwrap();
+        let preview = create_preview(
+            pool,
+            "owner-1",
+            Some(vec![FAMILY_PEER_PRESENCE_INTERVAL.to_owned()]),
+            now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(preview.estimated_rows, 3);
+        let operation_id = "estimate-is-not-a-cap-operation";
+        queue_retention_run(
+            pool,
+            operation_id,
+            "estimate-is-not-a-cap-request",
+            &preview,
+            &now_text,
+        )
+        .await;
+        // Simulate a preview whose estimate undercounted the frozen cutoff.
+        let mut plan = serde_json::to_value(preview_plan(&preview)).unwrap();
+        for entry in plan.as_array_mut().unwrap() {
+            entry["total"] = serde_json::json!(1);
+        }
+        let params = serde_json::json!({
+            "previewId": preview.preview_id,
+            "previewPolicyVersion": preview.policy_version,
+            "skippedWarnings": preview.skipped,
+            "plan": plan,
+        });
+        sqlx::query("UPDATE operations SET params_json = ? WHERE operation_id = ?")
+            .bind(params.to_string())
+            .bind(operation_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let state = AppState::new(
+            database,
+            None,
+            crate::auth::AuthConfig::development(
+                crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+                "http://127.0.0.1:8080".to_owned(),
+            ),
+        );
+
+        execute_step(&state, operation_id).await.unwrap();
+        execute_step(&state, operation_id).await.unwrap();
+
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT status FROM operations WHERE operation_id = ?")
+                .bind(operation_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap(),
+            crate::operations::STATUS_SUCCEEDED
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE closed_at IS NOT NULL AND closed_at < '2026-01-01T00:00:00Z'",
+            )
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            0,
+            "every row behind the frozen cutoff is released, not just the estimated one"
+        );
+        let result: Option<String> =
+            sqlx::query_scalar("SELECT result_json FROM operations WHERE operation_id = ?")
+                .bind(operation_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        let result: serde_json::Value = serde_json::from_str(result.as_deref().unwrap()).unwrap();
+        assert_eq!(result["families"][0]["deletedRows"], serde_json::json!(3));
+        assert_eq!(result["families"][0]["estimatedRows"], serde_json::json!(1));
+    }
+
+    /// A run whose stored plan is missing fails closed instead of reporting
+    /// success.
+    #[tokio::test]
+    async fn a_run_without_a_stored_plan_fails_closed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pool = database.pool();
+        sqlx::query("INSERT INTO operations (operation_id, kind, status, request_id, params_json, warnings_json, errors_json, created_at) VALUES ('empty-plan-operation', 'retention_run', 'queued', 'empty-plan-request', '{}', '[]', '[]', ?)")
+            .bind(crate::auth::format_rfc3339(crate::auth::now_utc()))
+            .execute(pool)
+            .await
+            .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let state = AppState::new(
+            database,
+            None,
+            crate::auth::AuthConfig::development(
+                crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+                "http://127.0.0.1:8080".to_owned(),
+            ),
+        );
+        execute_step(&state, "empty-plan-operation").await.unwrap();
+        let (status, errors): (String, String) = sqlx::query_as(
+            "SELECT status, errors_json FROM operations WHERE operation_id='empty-plan-operation'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(status, crate::operations::STATUS_FAILED);
+        assert!(errors.contains("retention_plan_missing"), "{errors}");
     }
 }

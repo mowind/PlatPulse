@@ -914,6 +914,14 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             "Inventory cutover not resumed: serving read-only diagnostics only. No collection, ingestion, Admin mutation or external-effect worker will start. Run 'platpulse-server cutover resume' against the converted deployment."
         );
     }
+    // Issue #210: the retention catalog is a compile-time contract
+    // (investigation floors, and one bounded cleanup target per supported
+    // family). It is checked on every start — including a read-only cutover
+    // deployment, which does no I/O for it — so a violated contract is visible
+    // before any policy or cleanup surface is served.
+    if let Err(violation) = crate::retention::audit_catalog() {
+        eprintln!("retention catalog contract violated: {violation}");
+    }
     if !cutover_blocked {
         // Retention is a fixed, bounded startup task. Re-running after a crash
         // is safe: each invocation deletes at most one batch and never touches

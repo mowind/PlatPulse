@@ -76,6 +76,9 @@ pub struct RetentionPolicyDto {
     pub enabled: bool,
     pub updated_at: String,
     pub updated_by: Option<String>,
+    /// Fingerprint of this exact policy value. The edit form submits it back so
+    /// a concurrent edit can never be overwritten silently.
+    pub policy_version: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -84,6 +87,59 @@ pub struct RetentionOverview {
     pub policies: Vec<RetentionPolicyDto>,
     pub protected_state: Vec<String>,
     pub last_run: Option<OperationSummary>,
+    /// The newest preview that still binds, so a reloaded page executes the
+    /// same reviewed plan instead of composing a new one.
+    pub preview: Option<RetentionPreviewDto>,
+}
+
+/// One actionable family inside a bound impact preview.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RetentionPreviewFamily {
+    pub family: String,
+    pub retention_days: i64,
+    /// Fingerprint of the policy this estimate was composed against.
+    pub policy_version: String,
+    /// Rows older than this instant are the only candidates a run may release.
+    pub cutoff: String,
+    pub estimated_rows: i64,
+}
+
+/// A requested family the preview will not act on, with the Server's reason.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RetentionPreviewSkip {
+    pub family: String,
+    pub code: String,
+    pub message: String,
+}
+
+/// A read-only, expiring impact preview. A run is queued by preview id, so the
+/// estimates the Owner confirmed are the estimates that execute.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RetentionPreviewDto {
+    pub preview_id: String,
+    pub created_at: String,
+    pub created_by: String,
+    pub expires_at: String,
+    pub policy_version: String,
+    /// Absent when the preview covers every actionable policy.
+    pub scope: Option<Vec<String>>,
+    pub families: Vec<RetentionPreviewFamily>,
+    pub skipped: Vec<RetentionPreviewSkip>,
+    /// Server estimate of the rows the whole preview may release.
+    pub estimated_rows: i64,
+    pub notes: Vec<String>,
+    pub protected_state: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RetentionPreviewRequest {
+    /// Restrict the preview to these families; absent means every enabled and
+    /// supported policy.
+    pub families: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -116,6 +172,9 @@ pub struct RetentionBounds {
 #[serde(rename_all = "camelCase")]
 pub struct RetentionPolicyUpdateRequest {
     pub retention_days: i64,
+    /// The `policyVersion` the operator read before previewing. Required so a
+    /// stale tab cannot overwrite a value it never reviewed.
+    pub expected_policy_version: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -485,9 +544,10 @@ pub(crate) async fn update_history_window(
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RetentionRunRequest {
-    /// Restrict the run to these families; absent means every enabled and
-    /// supported policy.
-    pub families: Option<Vec<String>>,
+    /// The confirmed impact preview. A run never re-estimates impact: the plan
+    /// the preview froze is executed as-is, and a preview that expired or no
+    /// longer matches the current policies is rejected.
+    pub preview_id: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1015,6 +1075,24 @@ pub(crate) async fn retention_overview(
             );
         }
     };
+    // Only a preview that still binds is replayed: an expired or superseded one
+    // would let a reloaded page execute estimates nobody can see.
+    let preview = match crate::retention::latest_live_preview(
+        state.db().pool(),
+        crate::auth::now_utc(),
+    )
+    .await
+    {
+        Ok(preview) => preview.as_ref().map(preview_dto),
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
     let dto = RetentionOverview {
         policies: policies
             .into_iter()
@@ -1025,6 +1103,11 @@ pub(crate) async fn retention_overview(
                         .map(|entry| entry.label.to_owned())
                         .unwrap_or_else(|| policy.family.clone()),
                     default_days: catalog.map(|entry| entry.default_days).unwrap_or(0),
+                    policy_version: crate::retention::policy_version(
+                        &policy.family,
+                        policy.retention_days,
+                        &policy.updated_at,
+                    ),
                     family: policy.family,
                     retention_days: policy.retention_days,
                     min_days: policy.min_days,
@@ -1041,8 +1124,51 @@ pub(crate) async fn retention_overview(
             .map(str::to_owned)
             .collect(),
         last_run,
+        preview,
     };
     Json(dto).into_response()
+}
+
+/// Project a stored preview for the Admin surface. The frozen targets stay
+/// Server-side: the Owner reviews families, cutoffs, and estimates only.
+fn preview_dto(preview: &crate::retention::RetentionPreview) -> RetentionPreviewDto {
+    RetentionPreviewDto {
+        preview_id: preview.preview_id.clone(),
+        created_at: preview.created_at.clone(),
+        created_by: preview.created_by.clone(),
+        expires_at: preview.expires_at.clone(),
+        policy_version: preview.policy_version.clone(),
+        scope: preview.scope.clone(),
+        families: preview
+            .families
+            .iter()
+            .map(|family| RetentionPreviewFamily {
+                family: family.family.clone(),
+                retention_days: family.retention_days,
+                policy_version: family.policy_version.clone(),
+                cutoff: family.cutoff.clone(),
+                estimated_rows: family.estimated_rows,
+            })
+            .collect(),
+        skipped: preview
+            .skipped
+            .iter()
+            .map(|skip| RetentionPreviewSkip {
+                family: skip.family.clone(),
+                code: skip.code.clone(),
+                message: skip.message.clone(),
+            })
+            .collect(),
+        estimated_rows: preview.estimated_rows,
+        notes: crate::retention::preview_notes()
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        protected_state: crate::retention::protected_state_notes()
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+    }
 }
 
 /// Read-only impact preview for a proposed retention value. Never writes
@@ -1138,7 +1264,7 @@ pub(crate) async fn retention_impact(
     path = "/api/admin/v1/retention/policies/{family}",
     tag = "admin",
     request_body = RetentionPolicyUpdateRequest,
-    responses((status = 200, body = RetentionPolicyMutationResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+    responses((status = 200, body = RetentionPolicyMutationResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn update_retention_policy(
     State(state): State<AppState>,
@@ -1186,13 +1312,14 @@ pub(crate) async fn update_retention_policy(
             );
         }
     };
-    let before: Option<(i64,)> =
-        sqlx::query_as("SELECT retention_days FROM retention_policies WHERE family = ?")
-            .bind(&family)
-            .fetch_optional(&mut *tx)
-            .await
-            .unwrap_or(None);
-    let Some((before_days,)) = before else {
+    let before: Option<(i64, String)> = sqlx::query_as(
+        "SELECT retention_days, updated_at FROM retention_policies WHERE family = ?",
+    )
+    .bind(&family)
+    .fetch_optional(&mut *tx)
+    .await
+    .unwrap_or(None);
+    let Some((before_days, before_updated_at)) = before else {
         let _ = tx.rollback().await;
         return (
             StatusCode::NOT_FOUND,
@@ -1205,6 +1332,23 @@ pub(crate) async fn update_retention_policy(
         )
             .into_response();
     };
+    // Optimistic concurrency, the Alerts convention: the exact value the
+    // Operator read and previewed is the only value this write may replace.
+    if crate::retention::policy_version(&family, before_days, &before_updated_at)
+        != request.expected_policy_version
+    {
+        let _ = tx.rollback().await;
+        return (
+            StatusCode::CONFLICT,
+            Json(ApiErrorBody::with_fields(
+                "retention_policy_version_conflict",
+                "the policy changed since it was read; reload the current value and preview again",
+                &request_id.0,
+                vec!["expectedPolicyVersion".to_owned()],
+            )),
+        )
+            .into_response();
+    }
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     if sqlx::query(
         "UPDATE retention_policies SET retention_days = ?, enabled = 1, updated_at = ?, updated_by = ? WHERE family = ?",
@@ -1297,6 +1441,11 @@ pub(crate) async fn update_retention_policy(
         policy: RetentionPolicyDto {
             label: catalog.label.to_owned(),
             default_days: catalog.default_days,
+            policy_version: crate::retention::policy_version(
+                &policy.family,
+                policy.retention_days,
+                &policy.updated_at,
+            ),
             family: policy.family,
             retention_days: policy.retention_days,
             min_days: policy.min_days,
@@ -1311,14 +1460,71 @@ pub(crate) async fn update_retention_policy(
     .into_response()
 }
 
-/// Queue a retention run. Returns immediately with the Operation
-/// reference; the worker executes it in bounded batches.
+/// Compose a bound impact preview. Read-only with respect to retained data and
+/// therefore never audited; the returned id is the only thing a run accepts, so
+/// the estimates the Owner reviewed are the estimates that execute.
+#[utoipa::path(
+    post,
+    path = "/api/admin/v1/retention/preview",
+    tag = "admin",
+    request_body = RetentionPreviewRequest,
+    responses((status = 200, body = RetentionPreviewDto), (status = 400, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn retention_preview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(principal): Extension<AuthenticatedSession>,
+    Extension(request_id): Extension<RequestId>,
+    Json(request): Json<RetentionPreviewRequest>,
+) -> Response {
+    if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, true) {
+        return response;
+    }
+    match crate::retention::create_preview(
+        state.db().pool(),
+        &principal.0.user_id,
+        request.families,
+        crate::auth::now_utc(),
+    )
+    .await
+    {
+        Ok(preview) => Json(preview_dto(&preview)).into_response(),
+        Err(crate::retention::PreviewError::InvalidScope(message)) => (
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorBody::with_fields_message(
+                "invalid_query",
+                message,
+                &request_id.0,
+                vec!["families".to_owned()],
+            )),
+        )
+            .into_response(),
+        Err(_) => mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        ),
+    }
+}
+
+/// Why a preview stopped binding, joined for the Operator: the reasons are
+/// Server-composed family names with fixed wording, already truncated.
+fn preview_stale_message(reasons: &[String]) -> String {
+    format!(
+        "the retention preview no longer matches the current policies ({}); compose a new preview",
+        reasons.join("; ")
+    )
+}
+
+/// Queue a retention run for a confirmed preview. Returns immediately with the
+/// Operation reference; the worker executes the frozen plan in bounded batches.
 #[utoipa::path(
     post,
     path = "/api/admin/v1/retention/run",
     tag = "admin",
     request_body = RetentionRunRequest,
-    responses((status = 200, body = OperationMutationResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+    responses((status = 200, body = OperationMutationResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn retention_run(
     State(state): State<AppState>,
@@ -1330,35 +1536,57 @@ pub(crate) async fn retention_run(
     if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, true) {
         return response;
     }
-    if let Some(families) = &request.families {
-        if families.is_empty() {
+    // The run executes the plan the preview froze, re-validated here: a policy
+    // or scope change since the estimates were shown becomes a conflict instead
+    // of a different deletion set.
+    let preview = match crate::retention::load_preview_for_run(
+        state.db().pool(),
+        &request.preview_id,
+        crate::auth::now_utc(),
+    )
+    .await
+    {
+        Ok(crate::retention::PreviewLoad::Ready(preview)) => preview,
+        Ok(crate::retention::PreviewLoad::NotFound) => {
             return (
-                StatusCode::BAD_REQUEST,
+                StatusCode::NOT_FOUND,
                 Json(ApiErrorBody::with_fields(
-                    "invalid_query",
-                    "families must not be empty when provided",
+                    "retention_preview_not_found",
+                    "the confirmed retention preview does not exist or has expired; compose a new preview",
                     &request_id.0,
-                    vec!["families".to_owned()],
+                    vec!["previewId".to_owned()],
                 )),
             )
                 .into_response();
         }
-        for family in families {
-            if crate::retention::catalog_family(family).is_none() {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ApiErrorBody::with_fields(
-                        "invalid_query",
-                        "unknown retention family",
-                        &request_id.0,
-                        vec!["families".to_owned()],
-                    )),
-                )
-                    .into_response();
-            }
+        Ok(crate::retention::PreviewLoad::Stale(reasons)) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ApiErrorBody::with_fields_message(
+                    "retention_preview_stale",
+                    preview_stale_message(&reasons),
+                    &request_id.0,
+                    vec!["previewId".to_owned()],
+                )),
+            )
+                .into_response();
         }
-    }
-    let params = serde_json::json!({ "families": request.families });
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
+    let plan = crate::retention::preview_plan(&preview);
+    let params = serde_json::json!({
+        "previewId": preview.preview_id,
+        "previewPolicyVersion": preview.policy_version,
+        "skippedWarnings": preview.skipped,
+        "plan": plan,
+    });
     queue_operation(
         &state,
         &principal,
@@ -1933,6 +2161,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/retention", get(retention_overview))
         .route("/retention/impact", axum::routing::post(retention_impact))
+        .route("/retention/preview", axum::routing::post(retention_preview))
         .route(
             "/retention/policies/{family}",
             axum::routing::put(update_retention_policy),
@@ -2028,6 +2257,37 @@ mod tests {
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
     }
 
+    /// Compose the impact preview the Admin page confirms (issue #210).
+    async fn preview_retention(state: &AppState, families: Option<Vec<String>>) -> Value {
+        let response = retention_preview(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+            Json(RetentionPreviewRequest { families }),
+        )
+        .await;
+        let status = response.status();
+        let body = body_json(response).await;
+        assert_eq!(status, StatusCode::OK, "the preview was refused: {body}");
+        body
+    }
+
+    /// Compose a preview and confirm the run it authorizes: the two steps a
+    /// retention run always performs, so a test can never queue a free-form one.
+    async fn queue_retention_run(state: &AppState, families: Option<Vec<String>>) -> Response {
+        let preview = preview_retention(state, families).await;
+        let preview_id = preview["previewId"].as_str().unwrap().to_owned();
+        retention_run(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+            Json(RetentionRunRequest { preview_id }),
+        )
+        .await
+    }
+
     async fn seed_old_data(state: &AppState) {
         let pool = state.db().pool();
         // Rows are seeded relative to the real clock because the retention
@@ -2100,20 +2360,208 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn policy_update_within_bounds_is_audited_and_out_of_bounds_is_rejected() {
+    async fn a_preview_binds_its_scope_versions_and_cutoffs() {
         let (_dir, state) = test_state().await;
+        seed_old_data(&state).await;
+
+        // A keep-forever family is reported instead of silently ignored.
+        let preview = preview_retention(
+            &state,
+            Some(vec![
+                "report_receipt_body".to_owned(),
+                "validator_daily_snapshot".to_owned(),
+            ]),
+        )
+        .await;
+        assert_eq!(preview["estimatedRows"], 0);
+        assert_eq!(preview["families"].as_array().unwrap().len(), 1);
+        assert_eq!(preview["families"][0]["family"], "report_receipt_body");
+        let skipped = preview["skipped"].as_array().unwrap();
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0]["family"], "validator_daily_snapshot");
+        assert_eq!(skipped[0]["code"], "retention_keep_forever");
+        assert!(preview["expiresAt"].as_str().unwrap() > preview["createdAt"].as_str().unwrap());
+        assert!(preview["protectedState"].as_array().unwrap().len() >= 6);
+        assert_eq!(
+            preview["notes"].as_array().unwrap().len(),
+            crate::retention::preview_notes().len()
+        );
+
+        // An empty or unknown scope is a client error, not a silent no-op.
+        for families in [Vec::<String>::new(), vec!["nope".to_owned()]] {
+            let response = retention_preview(
+                State(state.clone()),
+                mutation_headers(),
+                Extension(session()),
+                Extension(request_id()),
+                Json(RetentionPreviewRequest {
+                    families: Some(families),
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = body_json(response).await;
+            assert_eq!(body["error"]["code"], "invalid_query");
+            assert_eq!(body["error"]["fields"][0], "families");
+        }
+
+        // The newest live preview stays reachable, so a reloaded page executes
+        // the plan it already reviewed.
+        let overview = retention_overview(
+            State(state.clone()),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        let overview = body_json(overview).await;
+        assert_eq!(overview["preview"]["previewId"], preview["previewId"]);
+    }
+
+    #[tokio::test]
+    async fn a_run_requires_a_live_preview_and_queues_nothing_otherwise() {
+        let (_dir, state) = test_state().await;
+        seed_old_data(&state).await;
+
+        let response = retention_run(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+            Json(RetentionRunRequest {
+                preview_id: "rp-missing".to_owned(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "retention_preview_not_found");
+        assert_eq!(body["error"]["fields"][0], "previewId");
+
+        // A policy edit after the preview invalidates it.
+        let preview = preview_retention(&state, Some(vec!["raw_block_summary".to_owned()])).await;
+        crate::retention::update_policy(state.db().pool(), "raw_block_summary", 10, "owner")
+            .await
+            .unwrap();
+        let response = queue_retention_run(&state, None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let queued: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE kind = 'retention_run'")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(queued, 1);
+
+        // The stale preview is refused, and a refused run queues nothing.
+        let preview_id = preview["previewId"].as_str().unwrap().to_owned();
+        let response = retention_run(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+            Json(RetentionRunRequest { preview_id }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "retention_preview_stale");
+        assert_eq!(body["error"]["fields"][0], "previewId");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("raw_block_summary")
+        );
+    }
+
+    #[tokio::test]
+    async fn policy_update_rejects_a_version_that_was_never_reviewed() {
+        let (_dir, state) = test_state().await;
+        let response = retention_overview(
+            State(state.clone()),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        let overview = body_json(response).await;
+        let stale = overview["policies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|policy| policy["family"] == "raw_block_summary")
+            .unwrap()["policyVersion"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // Another session changes the policy between the read and the save.
+        crate::retention::update_policy(state.db().pool(), "raw_block_summary", 21, "owner")
+            .await
+            .unwrap();
         let response = update_retention_policy(
             State(state.clone()),
             Path("raw_block_summary".to_owned()),
             mutation_headers(),
             Extension(session()),
             Extension(request_id()),
-            Json(RetentionPolicyUpdateRequest { retention_days: 14 }),
+            Json(RetentionPolicyUpdateRequest {
+                retention_days: 14,
+                expected_policy_version: stale,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "retention_policy_version_conflict");
+        assert_eq!(body["error"]["fields"][0], "expectedPolicyVersion");
+        let days: i64 = sqlx::query_scalar(
+            "SELECT retention_days FROM retention_policies WHERE family = 'raw_block_summary'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(days, 21, "the rejected save must not be applied");
+    }
+
+    #[tokio::test]
+    async fn policy_update_within_bounds_is_audited_and_out_of_bounds_is_rejected() {
+        let (_dir, state) = test_state().await;
+        // The edit form always submits the version it read, so a save can never
+        // overwrite a value the operator did not review (#210).
+        let response = retention_overview(
+            State(state.clone()),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let overview = body_json(response).await;
+        assert!(overview["preview"].is_null());
+        let current_version = overview["policies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|policy| policy["family"] == "raw_block_summary")
+            .unwrap()["policyVersion"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let response = update_retention_policy(
+            State(state.clone()),
+            Path("raw_block_summary".to_owned()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+            Json(RetentionPolicyUpdateRequest {
+                retention_days: 14,
+                expected_policy_version: current_version.clone(),
+            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
         assert_eq!(body["policy"]["retentionDays"], 14);
+        assert_ne!(body["policy"]["policyVersion"], json!(current_version));
         assert!(body["auditEventId"].as_i64().unwrap() > 0);
         let audit: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM audit_events WHERE event_kind='retention_policy_updated' AND target_id='raw_block_summary'")
@@ -2126,8 +2574,11 @@ mod tests {
             mutation_headers(),
             Extension(session()),
             Extension(request_id()),
+            // Bounds are validated before the version check, so a stale version
+            // can never turn a rejected value into an accepted one.
             Json(RetentionPolicyUpdateRequest {
                 retention_days: 999,
+                expected_policy_version: current_version,
             }),
         )
         .await;
@@ -2231,15 +2682,36 @@ mod tests {
         assert_eq!(body["estimatedRows"], 1);
         assert_eq!(body["unsupported"], false);
 
-        // Queue a full run and execute it through the worker until idle.
-        let response = retention_run(
-            State(state.clone()),
-            mutation_headers(),
-            Extension(session()),
-            Extension(request_id()),
-            Json(RetentionRunRequest { families: None }),
-        )
-        .await;
+        // The preview is what the Operator confirms: it binds one policy version
+        // and one cutoff per family, and it counts without writing anything.
+        let audit_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_events")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        let preview = preview_retention(&state, None).await;
+        assert!(preview["previewId"].as_str().unwrap().starts_with("rp-"));
+        assert_eq!(preview["createdBy"], "owner");
+        assert_eq!(preview["skipped"].as_array().unwrap().len(), 0);
+        // The old raw Block Summary, the resolved gap, the old notification
+        // event, and the old unreferenced Audit Event: four rows are in scope.
+        assert_eq!(preview["estimatedRows"], 4);
+        let raw_preview = preview["families"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|family| family["family"] == "raw_block_summary")
+            .unwrap();
+        assert_eq!(raw_preview["retentionDays"], 7);
+        assert_eq!(raw_preview["estimatedRows"], 1);
+        let audit_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_events")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(audit_before, audit_after, "a preview must never audit");
+
+        // Queue the run the preview authorizes and execute it through the worker
+        // until idle.
+        let response = queue_retention_run(&state, None).await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
         let operation_id = body["operation"]["operation"]["operationId"]
@@ -2775,14 +3247,7 @@ mod tests {
     #[tokio::test]
     async fn queued_operation_cancels_immediately_and_is_audited() {
         let (_dir, state) = test_state().await;
-        let response = retention_run(
-            State(state.clone()),
-            mutation_headers(),
-            Extension(session()),
-            Extension(request_id()),
-            Json(RetentionRunRequest { families: None }),
-        )
-        .await;
+        let response = queue_retention_run(&state, None).await;
         let body = body_json(response).await;
         let operation_id = body["operation"]["operation"]["operationId"]
             .as_str()
@@ -2823,14 +3288,7 @@ mod tests {
         let (_dir, state) = test_state().await;
         seed_old_data(&state).await;
         let pool = state.db().pool();
-        let response = retention_run(
-            State(state.clone()),
-            mutation_headers(),
-            Extension(session()),
-            Extension(request_id()),
-            Json(RetentionRunRequest { families: None }),
-        )
-        .await;
+        let response = queue_retention_run(&state, None).await;
         let body = body_json(response).await;
         let operation_id = body["operation"]["operation"]["operationId"]
             .as_str()
@@ -2921,16 +3379,8 @@ mod tests {
                 .unwrap();
         }
 
-        let response = retention_run(
-            State(state.clone()),
-            mutation_headers(),
-            Extension(session()),
-            Extension(request_id()),
-            Json(RetentionRunRequest {
-                families: Some(vec!["report_receipt_body".to_owned()]),
-            }),
-        )
-        .await;
+        let response =
+            queue_retention_run(&state, Some(vec!["report_receipt_body".to_owned()])).await;
         assert_eq!(response.status(), StatusCode::OK);
         while crate::operations::process_operations(&state).await.unwrap() > 0 {}
 
@@ -2992,14 +3442,7 @@ mod tests {
     async fn running_operation_cancel_flag_stops_the_next_batch() {
         let (_dir, state) = test_state().await;
         seed_old_data(&state).await;
-        let response = retention_run(
-            State(state.clone()),
-            mutation_headers(),
-            Extension(session()),
-            Extension(request_id()),
-            Json(RetentionRunRequest { families: None }),
-        )
-        .await;
+        let response = queue_retention_run(&state, None).await;
         let body = body_json(response).await;
         let operation_id = body["operation"]["operation"]["operationId"]
             .as_str()

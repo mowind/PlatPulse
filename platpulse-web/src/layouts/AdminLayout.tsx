@@ -1,4 +1,4 @@
-import { Menu, LayoutDashboard, Cpu, Server, Network, Settings, PanelsTopLeft, ListChecks, SlidersHorizontal, TriangleAlert, BellOff, BellRing, CalendarClock, ClipboardList, Stethoscope, Archive } from 'lucide-react'
+import { Menu, LayoutDashboard, Cpu, Server, Network, Settings, PanelsTopLeft, ListChecks, SlidersHorizontal, TriangleAlert, BellOff, BellRing, CalendarClock, ClipboardList, Stethoscope, Archive, Hourglass } from 'lucide-react'
 import BackgroundDecoration from '../components/BackgroundDecoration'
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link, NavLink, Outlet, useOutletContext } from 'react-router'
@@ -270,6 +270,16 @@ export default function AdminLayout() {
               <Stethoscope size={18} strokeWidth={2} data-icon="Stethoscope" />
             </span>
             Doctor
+          </NavLink>
+          <NavLink
+            to="/admin/retention"
+            onClick={closeNav}
+            className={({ isActive }) => cn(NAV_LINK, isActive && NAV_LINK_ACTIVE)}
+          >
+            <span data-slot="admin-nav-icon" className="flex w-6 shrink-0 justify-center" aria-hidden="true">
+              <Hourglass size={18} strokeWidth={2} data-icon="Hourglass" />
+            </span>
+            Retention
           </NavLink>
           <NavLink
             to="/admin/backups"

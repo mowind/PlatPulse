@@ -204,6 +204,8 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
       'Networks',
       'Tasks',
       'Doctor',
+      'Retention',
+      'Backups',
       'Settings',
       'Incidents',
       'Rules',

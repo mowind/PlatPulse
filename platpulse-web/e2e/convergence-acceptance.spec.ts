@@ -39,6 +39,8 @@ const MVP_ADMIN_SECTIONS: Array<{
   { link: 'Networks', url: '/admin/networks', heading: 'Networks' },
   { link: 'Tasks', url: '/admin/operations', heading: 'Operations' },
   { link: 'Doctor', url: '/admin/doctor', heading: 'Doctor', primaryButton: 'Run Doctor' },
+  { link: 'Retention', url: '/admin/retention', heading: 'Retention' },
+  { link: 'Backups', url: '/admin/backups', heading: 'Backups' },
   {
     link: 'Settings',
     url: '/admin/settings',
@@ -95,8 +97,6 @@ const REMOVED_ADMIN_LABELS = [
   'Deliveries',
   'Channels',
   'Data',
-  'Retention',
-  'Backups',
   'Restore',
   'Enroll',
   'Recover',
