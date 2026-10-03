@@ -14,6 +14,7 @@ import {
   purgeNode,
   updateNodeMetadata,
   useAdminNodeDetail,
+  useAdminNodeMetricHistory,
   useAdminNodePurgeImpact,
   useAdminNodes,
 } from '../api/admin'
@@ -38,6 +39,20 @@ import { Empty } from '../components/ui/empty'
 import { Input, Select } from '../components/ui/input'
 import { cn } from '../lib/utils'
 import { SURFACE_CARD_STATIC, SURFACE_TOOLBAR } from '../lib/surface'
+import {
+  METRIC_HISTORY_PRESETS,
+  NODE_METRIC_SERIES,
+  formatHistoryDuration,
+  formatSampleDelay,
+  metricAvailabilityNotice,
+  metricBandPath,
+  metricChartGeometry,
+  metricGapKindLabel,
+  metricHistoryRange,
+  metricLinePath,
+  nodeMetricDefinition,
+  type NodeMetricKey,
+} from '../metricHistory'
 import type {
   AdminNodeDetail as AdminNodeDetailDto,
   AdminNodeListItem,
@@ -631,6 +646,7 @@ export function AdminNodeDetail() {
           <MetadataPanel node={query.data} csrfToken={csrfToken} />
           <LifecyclePanel node={query.data} />
           <HealthPanel node={query.data} />
+          <MetricHistoryPanel node={query.data} />
           <IdentityPanel node={query.data} />
           <RpcDiagnosticsPanel node={query.data} />
           <PurgePanel node={query.data} csrfToken={csrfToken} onPurged={setPurged} />
@@ -879,6 +895,368 @@ function HealthPanel({ node }: { node: AdminNodeDetailDto }) {
           </DetailItem>
         </DetailList>
       </div>
+    </CardX>
+  )
+}
+
+/** Owner-only raw metric history of one Node series (issue #213, design
+ * §11.4): the stored observations with the timing evidence that belongs to
+ * each one, the silences between them, and the state of the series itself.
+ * A series the Node never reported is named as absent, a range older than the
+ * retained raw window is answered as unavailable, and nothing is ever filled
+ * in with zeros or a line drawn across a stretch the Server did not observe. */
+function MetricHistoryPanel({ node }: { node: AdminNodeDetailDto }) {
+  const { generation } = useAuth()
+  const [metric, setMetric] = useState<NodeMetricKey>('process_cpu_percent')
+  const [hours, setHours] = useState<number>(24)
+  // The answered range is fixed per selection: the query key stays stable
+  // while the page is open, and "Reload window" moves it explicitly.
+  const [range, setRange] = useState(() => metricHistoryRange(24, new Date()))
+  const definition = nodeMetricDefinition(metric)
+  const query = useAdminNodeMetricHistory(generation, node.node_id, metric, range.from, range.to)
+  const data = query.data
+  const fixedMax = definition.fixedMax
+  const geometry = useMemo(
+    () =>
+      data
+        ? metricChartGeometry(
+            data.items,
+            data.gaps,
+            Date.parse(data.from),
+            Date.parse(data.to),
+            fixedMax,
+          )
+        : null,
+    [data, fixedMax],
+  )
+  const notice = metricAvailabilityNotice(data?.availability)
+  const series = data?.series
+  const newest = data ? data.items.slice(-8).reverse() : []
+  const state = !data ? 'Loading' : series?.observed ? 'Observed' : 'Never observed'
+  const stateTone = !data ? 'neutral' : series?.observed ? 'ok' : 'neutral'
+
+  function selectRange(nextHours: number) {
+    setHours(nextHours)
+    setRange(metricHistoryRange(nextHours, new Date()))
+  }
+
+  return (
+    <CardX
+      size="medium"
+      className={CARD_SURFACE}
+      header={
+        <>
+          <h2 className="text-lg font-semibold">Metric history</h2>
+          <StatusBadge status={state} tone={stateTone} />
+        </>
+      }
+    >
+      <p className="text-sm text-muted-foreground">
+        Stored raw observations for one Node series, with the delay between observing and
+        receiving each sample, the silences between samples, and the series state that outlives
+        them. This is the raw grain only: every value below is one observation the Node
+        actually sent, never a value averaged over a coarser interval.
+      </p>
+      <div className="mt-3 flex flex-wrap items-end gap-3">
+        <label className="grid min-w-40 gap-1 text-xs font-medium text-muted-foreground">
+          Metric series
+          <Select
+            className="min-h-11"
+            value={metric}
+            onChange={(event) => setMetric(event.currentTarget.value as NodeMetricKey)}
+          >
+            {NODE_METRIC_SERIES.map((item) => (
+              <option key={item.metric} value={item.metric}>
+                {item.label}
+              </option>
+            ))}
+          </Select>
+        </label>
+        <div className="flex flex-wrap gap-2" role="group" aria-label="History range">
+          {METRIC_HISTORY_PRESETS.map((preset) => (
+            <Button
+              key={preset.label}
+              variant={hours === preset.hours ? 'default' : 'outline'}
+              aria-pressed={hours === preset.hours}
+              className="min-h-11"
+              onClick={() => selectRange(preset.hours)}
+            >
+              {preset.label}
+            </Button>
+          ))}
+        </div>
+        <Button
+          variant="outline"
+          className="min-h-11"
+          onClick={() => setRange(metricHistoryRange(hours, new Date()))}
+        >
+          Reload window
+        </Button>
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">
+        {definition.label}: {definition.unit}. {definition.description}
+      </p>
+      {!data && query.isPending && (
+        <p className="mt-3 flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
+          <StatusBadge status="Loading" tone="neutral" /> Loading the stored series…
+        </p>
+      )}
+      {query.isError && (
+        <div
+          className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
+          role="alert"
+        >
+          <StatusBadge status="Error" tone="error" />{' '}
+          <span className="min-w-0 break-words">
+            {query.error instanceof Error ? query.error.message : 'Unable to load the metric history'}
+          </span>
+          <Button variant="link" size="sm" onClick={() => void query.refetch()}>
+            Try again
+          </Button>
+        </div>
+      )}
+      {data && query.isRefetchError && (
+        <div
+          className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
+          role="alert"
+        >
+          <StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last
+          successful samples.
+        </div>
+      )}
+      {data && notice && (
+        <p className="mt-3 text-sm text-muted-foreground" data-slot="metric-history-availability">
+          {notice}
+        </p>
+      )}
+      {data && (
+        <>
+          <div className="mt-3">
+            <DetailList>
+              <DetailItem label="Ledger">
+                {series?.observed
+                  ? series.observationCount + ' stored observation(s) since the first one'
+                  : 'No observation was ever recorded for this series'}
+              </DetailItem>
+              <DetailItem label="First observed">{formatObservedAt(series?.firstObservedAt)}</DetailItem>
+              <DetailItem label="Last observed">{formatObservedAt(series?.lastObservedAt)}</DetailItem>
+              <DetailItem label="Last received">{formatObservedAt(series?.lastReceivedAt)}</DetailItem>
+              <DetailItem label="Coverage">
+                {formatHistoryDuration(series?.coverageSeconds ?? 0)} of{' '}
+                {formatHistoryDuration(series?.windowSeconds ?? 0)}
+                <span className="text-[11px] text-muted-foreground">
+                  {' '}· proven only between stored samples, never assumed across a silence
+                </span>
+              </DetailItem>
+              <DetailItem label="Carried deliveries">
+                {series?.replayedCount ?? 0} replay(s), {series?.correctedCount ?? 0} correction(s)
+                <span className="text-[11px] text-muted-foreground">
+                  {' '}· counted apart from observations
+                </span>
+              </DetailItem>
+              <DetailItem label="Samples in this answer">
+                {series?.sampledCount ?? 0} · grain {data.grain}
+                {data.aggregateSupported ? '' : ' (raw only)'}
+              </DetailItem>
+              <DetailItem label="Newest delay">
+                {formatSampleDelay(series?.latestDelaySeconds)}
+                {series?.latestClockSuspect && (
+                  <span className="text-destructive"> · clock suspect</span>
+                )}
+              </DetailItem>
+              <DetailItem label="Retained raw window">
+                {data.rawRetentionDays} {data.rawRetentionDays === 1 ? 'day' : 'days'} · requested
+                from {formatObservedAt(data.requestedFrom)}
+              </DetailItem>
+            </DetailList>
+          </div>
+          {data.truncated && (
+            <p className="mt-3 text-sm" role="status" data-slot="metric-history-truncated">
+              This window holds more samples than one answer carries: the newest{' '}
+              {data.items.length} are drawn and the older ones are omitted, so the plot starts at
+              the oldest sample it actually has rather than inventing one at the window edge.
+            </p>
+          )}
+          {series && !series.observed && (
+            <p className="mt-3 text-sm text-muted-foreground" role="status" data-slot="metric-history-empty">
+              This Node never reported {definition.label}. Nothing is charted and nothing is shown
+              as zero; the series appears with the first accepted observation.
+            </p>
+          )}
+          {series?.observed && data.items.length === 0 && (
+            <p className="mt-3 text-sm text-muted-foreground" role="status" data-slot="metric-history-empty">
+              The series is observed, but no stored sample falls inside this window. The value is
+              reported as unknown, never as zero.
+            </p>
+          )}
+          {geometry && geometry.samples > 0 && (
+            <div className="mt-3 grid min-w-0 grid-cols-[3rem_minmax(0,1fr)] gap-x-2">
+              <div
+                className="flex flex-col justify-between pr-1 text-right text-[11px] tabular-nums text-muted-foreground"
+                aria-hidden="true"
+              >
+                <span>{definition.axisFormat(geometry.max)}</span>
+                <span>{definition.axisFormat(geometry.max / 2)}</span>
+                <span>{definition.axisFormat(0)}</span>
+              </div>
+              <svg
+                viewBox="0 0 600 150"
+                preserveAspectRatio="none"
+                role="img"
+                aria-label={
+                  definition.label +
+                  ' raw history from ' +
+                  formatObservedAt(data.from) +
+                  ' to ' +
+                  formatObservedAt(data.to)
+                }
+                className="col-start-2 h-40 w-full text-primary"
+                data-slot="metric-history-chart"
+              >
+                <title>{definition.label} raw history over {formatHistoryDuration(data.windowSeconds)}</title>
+                <desc>
+                  {geometry.samples} stored observation(s) folded into {geometry.segments.length}{' '}
+                  drawn stretch(es); {data.gaps.length} reported silence(s) are left undrawn.
+                </desc>
+                <g aria-hidden="true">
+                  <line x1="0" y1="8" x2="600" y2="8" className="stroke-border [vector-effect:non-scaling-stroke]" />
+                  <line x1="0" y1="75" x2="600" y2="75" className="stroke-border [vector-effect:non-scaling-stroke]" />
+                  <line x1="0" y1="142" x2="600" y2="142" className="stroke-border [vector-effect:non-scaling-stroke]" />
+                  {geometry.gapBands.map((band) => (
+                    <rect
+                      key={band.x.toFixed(2)}
+                      data-slot="metric-history-gap-band"
+                      className="fill-muted-foreground opacity-20"
+                      x={band.x}
+                      y={8}
+                      width={Math.max(1, band.width)}
+                      height={134}
+                    />
+                  ))}
+                </g>
+                <g aria-hidden="true">
+                  {geometry.segments.map((segment, index) => (
+                    <g key={segment[0].x.toFixed(2) + '-' + index}>
+                      {segment.length > 1 && (
+                        <>
+                          <path
+                            className="fill-current opacity-15"
+                            d={metricBandPath(segment)}
+                          />
+                          <path
+                            data-slot="metric-history-line"
+                            className="fill-none stroke-current [vector-effect:non-scaling-stroke]"
+                            strokeWidth={2}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d={metricLinePath(segment)}
+                          />
+                        </>
+                      )}
+                      {segment.length === 1 && (
+                        <>
+                          {/* One column, but possibly several observations: a
+                              vertical whisker spans the bucket's minimum and
+                              maximum so an isolated spike is never hidden by
+                              the single point drawn at its newest value. It
+                              stays inside the column: no line is interpolated
+                              across the time the column does not cover. */}
+                          <line
+                            data-slot="metric-history-whisker"
+                            className="stroke-current [vector-effect:non-scaling-stroke]"
+                            strokeWidth={2}
+                            strokeLinecap="round"
+                            x1={segment[0].x}
+                            x2={segment[0].x}
+                            y1={segment[0].top}
+                            y2={segment[0].bottom}
+                          />
+                          <circle
+                            data-slot="metric-history-point"
+                            className="fill-current stroke-background [vector-effect:non-scaling-stroke]"
+                            strokeWidth={1.5}
+                            cx={segment[0].x}
+                            cy={segment[0].y}
+                            r={3.5}
+                          />
+                        </>
+                      )}
+                    </g>
+                  ))}
+                </g>
+              </svg>
+              <div
+                className="col-start-2 flex justify-between pt-1 text-[11px] tabular-nums text-muted-foreground"
+                aria-hidden="true"
+              >
+                <span>{formatObservedAt(data.from)}</span>
+                <span>{formatObservedAt(data.to)}</span>
+              </div>
+            </div>
+          )}
+          {data.gaps.length > 0 && (
+            <div className="mt-4" data-slot="metric-history-gaps">
+              <h3 className="text-sm font-medium">Silences in this window</h3>
+              <ul className="mt-1 space-y-1 text-sm text-muted-foreground">
+                {data.gaps.map((gap) => (
+                  <li key={gap.from + gap.to}>
+                    <span className="font-medium text-foreground">
+                      {metricGapKindLabel(gap.kind)}
+                    </span>
+                    {': '}
+                    {formatObservedAt(gap.from)} → {formatObservedAt(gap.to)} (
+                    {formatHistoryDuration(gap.seconds)}) · {gap.reason}
+                    {gap.skippedCount != null
+                      ? ' · ' + gap.skippedCount + ' observation(s) skipped'
+                      : ''}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {newest.length > 0 && (
+            <div className="mt-4">
+              <h3 className="text-sm font-medium">Newest observations</h3>
+              <div className="mt-1 overflow-x-auto">
+                <table className="w-full text-left text-sm" data-slot="metric-history-samples">
+                  <thead>
+                    <tr className="text-xs font-medium tracking-wider text-muted-foreground">
+                      <th scope="col" className="py-1 pr-3">Observed</th>
+                      <th scope="col" className="py-1 pr-3">Received</th>
+                      <th scope="col" className="py-1 pr-3">Value</th>
+                      <th scope="col" className="py-1">Delay</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {newest.map((sample) => (
+                      <tr key={sample.observedAt + '-' + sample.value} data-slot="metric-history-sample">
+                        <td className="py-1 pr-3 tabular-nums">{formatObservedAt(sample.observedAt)}</td>
+                        <td className="py-1 pr-3 tabular-nums">{formatObservedAt(sample.receivedAt)}</td>
+                        <td className="py-1 pr-3 tabular-nums font-medium">
+                          {definition.format(sample.value)}
+                        </td>
+                        <td className="py-1 tabular-nums">
+                          {formatSampleDelay(sample.delaySeconds)}
+                          {sample.clockSuspect && (
+                            <span className="block text-[11px] text-destructive">
+                              {sample.clockNote ?? 'The observation is stamped after the receipt.'}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                The newest {newest.length} of {data.items.length} samples in this answer. Observed,
+                received, and the delay belong to the same observation, so a spooled or retried
+                delivery stays visible per sample.
+              </p>
+            </div>
+          )}
+        </>
+      )}
     </CardX>
   )
 }

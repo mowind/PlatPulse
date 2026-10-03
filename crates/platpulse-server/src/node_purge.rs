@@ -60,6 +60,9 @@ pub struct NodePurgeCounts {
     pub chain_divergence_observations: i64,
     pub observed_network_heads: i64,
     pub metric_samples: i64,
+    /// Series ledger rows: what each metric series observed (issue #213). They
+    /// carry no metric value and are Node-owned history.
+    pub metric_series_state: i64,
     /// Node-scoped gap evidence recorded while optional history was paused.
     pub capacity_skipped_series: i64,
     pub validator_links: i64,
@@ -92,6 +95,7 @@ impl NodePurgeCounts {
         self.chain_divergence_observations += other.chain_divergence_observations;
         self.observed_network_heads += other.observed_network_heads;
         self.metric_samples += other.metric_samples;
+        self.metric_series_state += other.metric_series_state;
         self.capacity_skipped_series += other.capacity_skipped_series;
         self.validator_links += other.validator_links;
         self.validator_identity_status += other.validator_identity_status;
@@ -121,6 +125,7 @@ impl NodePurgeCounts {
             + self.chain_divergence_observations
             + self.observed_network_heads
             + self.metric_samples
+            + self.metric_series_state
             + self.capacity_skipped_series
             + self.validator_links
             + self.validator_identity_status
@@ -209,6 +214,7 @@ pub async fn measure(
             .await?,
         observed_network_heads: count(connection, "observed_network_heads", &node_id).await?,
         metric_samples: count(connection, "node_metric_samples", &node_id).await?,
+        metric_series_state: count(connection, "node_metric_series_state", &node_id).await?,
         capacity_skipped_series: count_where(
             connection,
             "capacity_skipped_series",
@@ -326,8 +332,9 @@ pub async fn remove(connection: &mut SqliteConnection, node_id: &str) -> Result<
         "block_history_gaps",
         "chain_divergence_observations",
         "observed_network_heads",
-        // Metric samples.
+        // Metric samples and the series ledger behind them.
         "node_metric_samples",
+        "node_metric_series_state",
         // Node Validator Links, automatic-identity status, and management history.
         "node_validator_identity_status",
         "node_validator_links",

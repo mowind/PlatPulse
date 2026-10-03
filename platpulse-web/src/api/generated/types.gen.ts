@@ -244,6 +244,152 @@ export type AdminNodeListItem = {
 };
 
 /**
+ * A stretch of the window in which the Server stores no observation.
+ *
+ * Reported as a gap with its kind, so no surface has to bridge silence, hold a
+ * constant value across it, or draw it as a zero (design §11.4).
+ */
+export type AdminNodeMetricGap = {
+    from: string;
+    /**
+     * `collection_gap` (nobody observed) or `protection_pause` (the operator
+     * chose to pause collection).
+     */
+    kind: string;
+    reason: string;
+    seconds: number;
+    /**
+     * Counted losses behind a `protection_pause` (issue #212 evidence).
+     */
+    skippedCount?: number | null;
+    to: string;
+};
+
+/**
+ * Owner-only raw metric history for one Node series (issue #213, design
+ * §11.4): the stored observations, the silences between them, and the state of
+ * the series behind them.
+ */
+export type AdminNodeMetricHistoryResponse = {
+    /**
+     * The 1-minute/5-minute aggregate tiers belong to issue #214.
+     */
+    aggregateSupported: boolean;
+    /**
+     * `None` while the whole requested range is retained, `partial` when it
+     * was clamped to the raw window, `unavailable` when it is older than the
+     * retained raw history.
+     */
+    availability?: string | null;
+    /**
+     * The answered range, after clamping to the retained raw window.
+     */
+    from: string;
+    gaps: Array<AdminNodeMetricGap>;
+    grain: string;
+    items: Array<AdminNodeMetricSample>;
+    metric: string;
+    nodeId: string;
+    rawRetentionDays: number;
+    /**
+     * The range the caller asked for, so a clamped answer says what it
+     * clamped.
+     */
+    requestedFrom: string;
+    series: AdminNodeMetricSeries;
+    to: string;
+    /**
+     * True when the window held more samples than the caller's limit: the
+     * newest samples are returned and the rest is reported, never dropped
+     * silently.
+     */
+    truncated: boolean;
+    windowSeconds: number;
+};
+
+/**
+ * One stored raw observation with the timing evidence that belongs to it.
+ */
+export type AdminNodeMetricSample = {
+    clockNote?: string | null;
+    /**
+     * The observation is stamped after the receipt: the Agent clock is ahead.
+     */
+    clockSuspect: boolean;
+    /**
+     * `received_at - observed_at` for this very sample, so spool and transport
+     * delay are visible per observation. Unknown when either timestamp is
+     * unusable — never reported as zero.
+     */
+    delaySeconds?: number | null;
+    observedAt: string;
+    receivedAt: string;
+    value: number;
+};
+
+/**
+ * What the Server knows about the series itself, independent of the window.
+ */
+export type AdminNodeMetricSeries = {
+    /**
+     * Observations whose value changed: counted separately too.
+     */
+    correctedCount: number;
+    /**
+     * Seconds the samples prove they were observed.
+     */
+    coverageSeconds: number;
+    /**
+     * The oldest observation ever recorded. It outlives the samples and is not
+     * evidence that raw history survives that far back, and it is deliberately
+     * not called the moment the series was enabled: the Node may have been
+     * collecting before the first Report this Server accepted, so the Server
+     * reports what it has evidence for.
+     */
+    firstObservedAt?: string | null;
+    /**
+     * The newest observation instant the series ever recorded. A series-level
+     * stamp: it outlives the samples, and it is not evidence that a stored
+     * sample exists at that instant any more.
+     */
+    lastObservedAt?: string | null;
+    /**
+     * The receipt time of the delivery that recorded the newest observation:
+     * a series-level delivery stamp, so it can belong to a later restatement of
+     * that instant rather than to the sample the answer carries. The per-sample
+     * receipt is `items[].receivedAt`.
+     */
+    lastReceivedAt?: string | null;
+    /**
+     * That same newest stored sample is stamped after its receipt: the Agent
+     * clock is ahead of the Server's.
+     */
+    latestClockSuspect: boolean;
+    /**
+     * `receivedAt - observedAt` of the newest stored sample in this answer,
+     * measured from that one row. Unknown when the answer holds no stored
+     * sample — never reported as zero.
+     */
+    latestDelaySeconds?: number | null;
+    observationCount: number;
+    /**
+     * False when this Node never reported the series: shown as absent, not as
+     * zero.
+     */
+    observed: boolean;
+    /**
+     * Deliveries that restated an observation already stored: counted
+     * separately, never as new observations.
+     */
+    replayedCount: number;
+    /**
+     * Samples this answer actually carries.
+     */
+    sampledCount: number;
+    windowSeconds: number;
+};
+
+/**
  * Server-computed scope of a Node Purge. These are counts of Node-owned rows
  * only; shared Agent/Host/Network/Validator data is never included.
  */
@@ -261,6 +407,7 @@ export type AdminNodePurgeCounts = {
     current_peers: number;
     data_directory_observations: number;
     metric_samples: number;
+    metric_series_state: number;
     observed_network_heads: number;
     peer_aggregate_1h: number;
     peer_aggregate_1h_countries: number;
@@ -4280,6 +4427,51 @@ export type SetNodeMetadataResponses = {
 };
 
 export type SetNodeMetadataResponse = SetNodeMetadataResponses[keyof SetNodeMetadataResponses];
+
+export type AdminNodeMetricHistoryData = {
+    body?: never;
+    path: {
+        /**
+         * Node ID
+         */
+        node_id: string;
+    };
+    query: {
+        /**
+         * Stored Node metric series
+         */
+        metric: string;
+        /**
+         * Canonical RFC 3339 UTC start of the range, second precision (default: 24 hours before to)
+         */
+        from?: string;
+        /**
+         * Canonical RFC 3339 UTC end of the range, second precision (default: now)
+         */
+        to?: string;
+        /**
+         * Maximum raw samples
+         */
+        limit?: number;
+    };
+    url: '/api/admin/v1/nodes/{node_id}/metric-history';
+};
+
+export type AdminNodeMetricHistoryErrors = {
+    400: ApiErrorBody;
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AdminNodeMetricHistoryError = AdminNodeMetricHistoryErrors[keyof AdminNodeMetricHistoryErrors];
+
+export type AdminNodeMetricHistoryResponses = {
+    200: AdminNodeMetricHistoryResponse;
+};
+
+export type AdminNodeMetricHistoryResponse2 = AdminNodeMetricHistoryResponses[keyof AdminNodeMetricHistoryResponses];
 
 export type AdminNodePeerChurnData = {
     body?: never;

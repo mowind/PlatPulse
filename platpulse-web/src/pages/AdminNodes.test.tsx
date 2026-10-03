@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { adminQueryClient } from '../api/admin'
 import { client } from '../api/generated/client.gen'
+import { METRIC_HISTORY_SAMPLE_LIMIT } from '../metricHistory'
 
 const OWNER_SESSION = {
   session: {
@@ -464,6 +465,278 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     expect(screen.getByText('This Node is no longer available.')).toBeTruthy()
   })
 
+
+const MINUTE = 60 * 1000
+const HOUR = 60 * MINUTE
+
+/** Canonical second-precision instant relative to the moment the panel builds
+ * its range, so the fixture stays inside the answered window. */
+function canonical(offsetMs: number): string {
+  return new Date(Date.now() + offsetMs).toISOString().replace(/\.\d{3}Z$/, 'Z')
+}
+
+function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    nodeId: NODE_A.node_id,
+    metric: 'process_cpu_percent',
+    from: canonical(-24 * HOUR),
+    to: canonical(0),
+    requestedFrom: canonical(-24 * HOUR),
+    availability: null,
+    rawRetentionDays: 1,
+    grain: 'raw',
+    aggregateSupported: false,
+    windowSeconds: 86400,
+    truncated: false,
+    series: {
+      observed: true,
+      firstObservedAt: canonical(-26 * HOUR),
+      lastObservedAt: canonical(-1 * HOUR),
+      lastReceivedAt: canonical(-1 * HOUR + 1000),
+      observationCount: 17_280,
+      replayedCount: 12,
+      correctedCount: 2,
+      sampledCount: 3,
+      coverageSeconds: 7200,
+      windowSeconds: 86400,
+      latestDelaySeconds: 2,
+      latestClockSuspect: false,
+    },
+    items: [
+      { observedAt: canonical(-3 * HOUR), receivedAt: canonical(-3 * HOUR + 1000), value: 2.5, delaySeconds: 1, clockSuspect: false },
+      { observedAt: canonical(-2 * HOUR), receivedAt: canonical(-2 * HOUR + 1000), value: 2.5, delaySeconds: 1, clockSuspect: false },
+      { observedAt: canonical(-1 * HOUR), receivedAt: canonical(-1 * HOUR + 120_000), value: 2.5, delaySeconds: 120, clockSuspect: true, clockNote: 'the observation is stamped 6s after the Server received it: the Agent clock is ahead' },
+    ],
+    gaps: [
+      {
+        from: canonical(-2 * HOUR),
+        to: canonical(-1 * HOUR),
+        seconds: 3600,
+        kind: 'protection_pause',
+        reason: 'low-space protection paused sample collection',
+        skippedCount: 24,
+      },
+    ],
+    ...overrides,
+  }
+}
+
+  it('charts the stored raw series, its silences, and the series state behind it', async () => {
+    const historyCalls: string[] = []
+    const neverObserved = metricHistoryFixture({
+      metric: 'data_directory_percent',
+      items: [],
+      gaps: [],
+      series: {
+        observed: false,
+        firstObservedAt: null,
+        lastObservedAt: null,
+        lastReceivedAt: null,
+        observationCount: 0,
+        replayedCount: 0,
+        correctedCount: 0,
+        sampledCount: 0,
+        coverageSeconds: 0,
+        windowSeconds: 86400,
+        latestDelaySeconds: null,
+        latestClockSuspect: false,
+      },
+    })
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(NODE_A_DETAIL, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/metric-history*': (request) => {
+        historyCalls.push(request.url)
+        return jsonResponse(
+          request.url.includes('metric=data_directory_percent')
+            ? neverObserved
+            : metricHistoryFixture(),
+          200,
+        )
+      },
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    await screen.findByRole('heading', { level: 1, name: /Node A/ })
+    // The panel asks the Server for exactly the selected series and range.
+    await waitFor(() => {
+      expect(historyCalls.length).toBeGreaterThan(0)
+    })
+    expect(historyCalls[0]).toContain('metric=process_cpu_percent')
+    expect(historyCalls[0]).toContain('from=')
+    expect(historyCalls[0]).toContain('to=')
+    // The panel asks for the largest answer the Server carries, so a dense
+    // window is narrowed by the Server's own bound instead of by a request that
+    // asked for less than it could have.
+    expect(historyCalls[0]).toContain('limit=' + METRIC_HISTORY_SAMPLE_LIMIT)
+
+    // Series state: coverage is proven only between stored samples, and
+    // carried deliveries are counted apart from observations.
+    expect(await screen.findByText('2 hours of 24 hours', { exact: false })).toBeTruthy()
+    expect(screen.getByText(/17280 stored observation\(s\) since the first one/)).toBeTruthy()
+    expect(screen.getByText(/12 replay\(s\), 2 correction\(s\)/)).toBeTruthy()
+    expect(screen.getByText(/1 day · requested from/)).toBeTruthy()
+
+    // The silence is named as a protection pause with its skipped count, and
+    // the plot leaves it undrawn instead of bridging it.
+    expect(screen.getByText('Protection pause')).toBeTruthy()
+    expect(screen.getByText(/24 observation\(s\) skipped/)).toBeTruthy()
+    const chart = document.querySelector('[data-slot="metric-history-chart"]')
+    expect(chart).not.toBeNull()
+    expect(document.querySelectorAll('[data-slot="metric-history-gap-band"]')).toHaveLength(1)
+    expect(document.querySelectorAll('[data-slot="metric-history-line"]').length).toBeGreaterThan(0)
+    // The observation before the pause sits alone in its column, so it is drawn
+    // as a whisker spanning that column's own minimum and maximum rather than
+    // bridged to the next column across the silence.
+    expect(
+      document.querySelectorAll('[data-slot="metric-history-whisker"]').length,
+    ).toBeGreaterThan(0)
+
+    // Per-sample timing evidence stays attached to its own observation.
+    expect(screen.getByText(/stamped 6s after the Server received it/)).toBeTruthy()
+
+    // Another series this Node never reported is named as absent: no chart,
+    // no zero line.
+    fireEvent.change(screen.getByLabelText('Metric series'), {
+      target: { value: 'data_directory_percent' },
+    })
+    expect(await screen.findByText(/never reported Data directory/)).toBeTruthy()
+    expect(document.querySelector('[data-slot="metric-history-chart"]')).toBeNull()
+    expect(document.querySelector('[data-slot="metric-history-gap-band"]')).toBeNull()
+  })
+
+it('reports a sample stamped after its receipt as ahead of receipt, and keeps an isolated spike visible', async () => {
+    const cpus = [
+      { observedAt: canonical(-30 * MINUTE), value: 10 },
+      { observedAt: canonical(-29 * MINUTE), value: 90 },
+      { observedAt: canonical(-28 * MINUTE), value: 20 },
+    ]
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(NODE_A_DETAIL, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/metric-history*': () =>
+        jsonResponse(
+          metricHistoryFixture({
+            series: {
+              ...metricHistoryFixture().series,
+              latestDelaySeconds: -300,
+              latestClockSuspect: true,
+            },
+            items: cpus.map((sample, index) => ({
+              observedAt: sample.observedAt,
+              receivedAt: sample.observedAt,
+              value: sample.value,
+              // The newest observation is stamped five minutes after the
+              // Server received it: a clock disagreement, not a fast delivery.
+              delaySeconds: index === cpus.length - 1 ? -300 : 1,
+              clockSuspect: index === cpus.length - 1,
+              clockNote:
+                index === cpus.length - 1
+                  ? 'the observation is stamped 300s after the Server received it'
+                  : undefined,
+            })),
+          }),
+          200,
+        ),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    await screen.findByRole('heading', { level: 2, name: 'Metric history' })
+    // The ledger delay and the sample row both name the direction that made the
+    // delay suspicious, and neither prints a negative duration or "0 seconds".
+    expect(await screen.findAllByText('5 minutes ahead of receipt')).toHaveLength(2)
+    expect(screen.queryByText(/^-/)).toBeNull()
+    expect(screen.getByText(/stamped 300s after the Server received it/)).toBeTruthy()
+
+    // Three observations share one column, whose maximum of 90 is the spike the
+    // single plotted point would otherwise hide. The whisker spans that column
+    // (top above bottom), and the point stays between its ends.
+    const whisker = document.querySelector('[data-slot="metric-history-whisker"]')
+    const point = document.querySelector('[data-slot="metric-history-point"]')
+    expect(whisker).not.toBeNull()
+    expect(point).not.toBeNull()
+    const top = Number(whisker?.getAttribute('y1'))
+    const bottom = Number(whisker?.getAttribute('y2'))
+    const newest = Number(point?.getAttribute('cy'))
+    expect(bottom - top).toBeGreaterThan(50)
+    expect(newest).toBeGreaterThan(top)
+    expect(newest).toBeLessThan(bottom)
+    expect(whisker?.getAttribute('x1')).toBe(whisker?.getAttribute('x2'))
+  })
+  it('reports a range the raw window no longer holds, and a truncated answer, without faking samples', async () => {
+    let call = 0
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(NODE_A_DETAIL, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/metric-history*': () => {
+        call += 1
+        if (call === 1) {
+          return jsonResponse(
+            metricHistoryFixture({
+              availability: 'unavailable',
+              items: [],
+              gaps: [],
+              series: {
+                ...metricHistoryFixture().series,
+                observationCount: 1,
+                sampledCount: 0,
+                coverageSeconds: 0,
+              },
+            }),
+            200,
+          )
+        }
+        return jsonResponse(metricHistoryFixture({ truncated: true, windowSeconds: 3600 }), 200)
+      },
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    await screen.findByRole('heading', { level: 1, name: /Node A/ })
+    expect(
+      await screen.findByText(/entirely older than the retained raw window/),
+    ).toBeTruthy()
+    expect(screen.getByText(/no stored sample falls inside this window/)).toBeTruthy()
+    expect(document.querySelector('[data-slot="metric-history-chart"]')).toBeNull()
+    // The ledger outlives the released samples: the state is still reported.
+    expect(screen.getByText('1 stored observation(s) since the first one')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '1 hour' }))
+    expect(await screen.findByText(/more samples than one answer carries/)).toBeTruthy()
+    expect(call).toBeGreaterThan(1)
+  })
+
+  it('keeps a failed metric history load actionable without inventing a series', async () => {
+    let calls = 0
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(NODE_A_DETAIL, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/metric-history*': () => {
+        calls += 1
+        if (calls === 1) {
+          return jsonResponse(
+            { error: { code: 'unavailable', message: 'server database is unavailable' } },
+            503,
+          )
+        }
+        return jsonResponse(metricHistoryFixture(), 200)
+      },
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    await screen.findByRole('heading', { level: 1, name: /Node A/ })
+    expect(await screen.findByText('server database is unavailable')).toBeTruthy()
+    expect(document.querySelector('[data-slot="metric-history-chart"]')).toBeNull()
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Try again' })[0])
+    await waitFor(() => {
+      expect(calls).toBeGreaterThan(1)
+    })
+  })
+
   it('offers an explicit, irreversible permanent deletion with the Server-computed scope', async () => {
     const purgeCalls: Array<{ method: string; body: string }> = []
     const impact = {
@@ -503,6 +776,7 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
         chain_divergence_observations: 0,
         observed_network_heads: 1,
         metric_samples: 5,
+        metric_series_state: 6,
         validator_links: 1,
         transfers: 1,
         total_owned_rows: 39,

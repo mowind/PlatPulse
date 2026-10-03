@@ -342,6 +342,7 @@ const NODE_OWNED_TABLES: &[&str] = &[
     "chain_divergence_observations",
     "observed_network_heads",
     "node_metric_samples",
+    "node_metric_series_state",
     "node_validator_links",
     "node_transfers",
 ];
@@ -397,6 +398,10 @@ async fn seed_directly_owned_rows(
         .bind(node_id).bind(now).execute(pool).await.unwrap();
     sqlx::query("INSERT OR IGNORE INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES (?, 'process_cpu_percent', ?, ?, 1.0)")
         .bind(node_id).bind(now).bind(now).execute(pool).await.unwrap();
+    // The series ledger is Node-owned too: it describes what the Node's series
+    // observed, so it is purged with them (issue #213).
+    sqlx::query("INSERT OR IGNORE INTO node_metric_series_state (node_id, metric, first_observed_at, last_observed_at, last_received_at, observation_count, replayed_count, corrected_count, updated_at) VALUES (?, 'process_cpu_percent', ?, ?, ?, 1, 0, 0, ?)")
+        .bind(node_id).bind(now).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
     sqlx::query("INSERT OR IGNORE INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, created_at, updated_at) VALUES (?, ?, ?, 'observer', ?, ?, ?)")
         .bind(format!("link-{node_id}")).bind(node_id).bind(validator_id).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
     sqlx::query("INSERT OR IGNORE INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, created_at, expires_at, updated_at) VALUES (?, ?, ?, ?, 'cancelled', ?, ?, ?)")

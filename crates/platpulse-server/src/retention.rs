@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 
 use crate::http::AppState;
 
@@ -44,6 +44,11 @@ pub const PREVIEW_TTL_HOURS: i64 = 24;
 pub const PREVIEW_PRUNE_BATCH: i64 = 128;
 
 pub const FAMILY_RAW_BLOCK_SUMMARY: &str = "raw_block_summary";
+/// Raw Node/Agent metric samples (issue #213). This is the family that makes
+/// the design's 24-hour raw window a policy fact rather than a side effect of
+/// the report cadence: its default is exactly that window, and ordinary policy
+/// editing may not shorten it below the Raw class floor.
+pub const FAMILY_RAW_METRIC_SAMPLE: &str = "raw_metric_sample";
 pub const FAMILY_ONE_MINUTE_AGGREGATE: &str = "one_minute_aggregate";
 pub const FAMILY_ONE_HOUR_AGGREGATE: &str = "one_hour_aggregate";
 pub const FAMILY_HISTORY_GAP: &str = "history_gap";
@@ -156,6 +161,79 @@ const TARGET_BLOCK_SUMMARIES: &[CleanupTarget] = &[CleanupTarget {
     delete_sql: "DELETE FROM block_summaries WHERE rowid IN (SELECT rowid FROM block_summaries WHERE accepted_at < ? ORDER BY accepted_at, node_id, block_number LIMIT 128)",
 }];
 
+/// Rows one Node-metric cleanup batch may release.
+///
+/// The per-Report budget has to cover what one accepted Report can add, or the
+/// backlog grows even though every Report expires its own oldest rows. An
+/// AgentReport carries at most `MAX_NODE_OBSERVATIONS` Nodes
+/// (crates/platpulse-core/src/protocol.rs:33) and each of those at most the five
+/// node metric series, so the most a single Report can store is 256 x 5 = 1280
+/// rows; 2048 leaves headroom for that protocol maximum. The DELETE only ever
+/// touches rows that already exist, so a larger bound costs a deployment nothing
+/// while the backlog is small — it only decides how far one call drains when a
+/// backlog exists.
+const NODE_METRIC_CLEANUP_BATCH: i64 = 2048;
+
+/// The bound must cover the rows one Report can store, or the two rates are not
+/// equal at steady state. Checked at compile time because a protocol maximum
+/// raised without this bound would silently reintroduce the backlog.
+const _: () = assert!(
+    NODE_METRIC_CLEANUP_BATCH >= platpulse_core::protocol::MAX_NODE_OBSERVATIONS as i64 * 5,
+    "the per-Report Node sample batch must cover one maximal Report"
+);
+
+/// Raw metric samples live in two tables with identical shape: the per-Node
+/// series and the per-Agent host series. Both are expired by the same observed
+/// cutoff, so neither grows without bound now that the fixed per-series cap of
+/// migration 0041 is gone (issue #213).
+///
+/// The per-Node bound is deliberately larger than `RETENTION_BATCH`: one Report
+/// can carry 256 Nodes, so 128 rows per Report would lag a maximal Agent behind
+/// its own expiry rate and the backlog would keep growing until low-space
+/// protection paused the very history this family exists to keep. The per-Agent
+/// host table keeps the ordinary batch: a Report adds one row per host metric
+/// (a handful), far below even that bound.
+const TARGET_RAW_METRIC_SAMPLES: &[CleanupTarget] = &[
+    CleanupTarget {
+        table: "node_metric_samples",
+        kind: CleanupKind::Delete,
+        count_sql: "SELECT COUNT(*) FROM node_metric_samples WHERE observed_at < ?",
+        delete_sql: "DELETE FROM node_metric_samples WHERE rowid IN (SELECT rowid FROM node_metric_samples WHERE observed_at < ? ORDER BY observed_at, node_id, metric LIMIT 2048)",
+    },
+    CleanupTarget {
+        table: "host_metric_samples",
+        kind: CleanupKind::Delete,
+        count_sql: "SELECT COUNT(*) FROM host_metric_samples WHERE observed_at < ?",
+        delete_sql: "DELETE FROM host_metric_samples WHERE rowid IN (SELECT rowid FROM host_metric_samples WHERE observed_at < ? ORDER BY observed_at, agent_id, metric LIMIT 128)",
+    },
+];
+
+/// Stamp the series the incoming cutoff may release evidence for.
+///
+/// Deleting a row destroys the Server's ability to answer "did this series
+/// already hold an observation at this instant?", and the policy cutoff cannot
+/// say afterwards whether it ever did: widening the window moves the cutoff back
+/// over instants whose rows the cleanup already released. So the cutoff the
+/// cleanup applies is recorded on the series itself, as the oldest cutoff this
+/// series has been pruned at, and the stamp only ever moves forward
+/// (`released_before < ?` never rewrites a newer stamp).
+///
+/// The stamp is applied before the deletes rather than from the rows one pass
+/// happens to remove: each table's delete is bounded, so a series can still hold
+/// rows below the cutoff after its cleanup, and "the cutoff was applied" is the
+/// honest boundary — an instant below it may have been released, exactly what
+/// `metric_history::classify_delivery` must not count as new again (issue #213).
+///
+/// One pass over the keys of the rows this cleanup is about to delete: the
+/// candidate set is the same range read of the `observed_at` index with the same
+/// ordering and the same bound as the delete below, so a series is stamped
+/// exactly when the rows that could answer for it are removed, and the ledger is
+/// probed by primary key instead of scanned on every accepted Report. A series
+/// whose expired rows sit beyond this pass's bound keeps them for now — the
+/// window can still answer for those instants, and the pass that finally deletes
+/// them is the pass that stamps the series.
+const RAW_METRIC_RELEASED_BEFORE_SQL: &str = "WITH expired AS MATERIALIZED (SELECT node_id, metric FROM node_metric_samples WHERE observed_at < ? ORDER BY observed_at, node_id, metric LIMIT 2048) UPDATE node_metric_series_state SET released_before = ? FROM expired WHERE node_metric_series_state.node_id = expired.node_id AND node_metric_series_state.metric = expired.metric AND node_metric_series_state.released_before < ?";
+
 const TARGET_HISTORY_GAPS: &[CleanupTarget] = &[CleanupTarget {
     table: "block_history_gaps",
     kind: CleanupKind::Delete,
@@ -222,7 +300,7 @@ const TARGET_RECEIPT_BODIES: &[CleanupTarget] = &[CleanupTarget {
     delete_sql: "",
 }];
 
-pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
+pub const POLICY_CATALOG: [PolicyDefaults; 14] = [
     PolicyDefaults {
         family: FAMILY_RAW_BLOCK_SUMMARY,
         label: "Raw Block Summaries",
@@ -232,6 +310,19 @@ pub const POLICY_CATALOG: [PolicyDefaults; 13] = [
         supported: true,
         class: PolicyClass::Raw,
         targets: TARGET_BLOCK_SUMMARIES,
+    },
+    PolicyDefaults {
+        family: FAMILY_RAW_METRIC_SAMPLE,
+        label: "Raw Metric Samples",
+        // The design's raw window: 24 hours of samples the Server actually
+        // received. This is the floor the Raw class also enforces, so the
+        // window cannot be edited away (§11.4, issue #213).
+        default_days: 1,
+        min_days: 1,
+        max_days: 30,
+        supported: true,
+        class: PolicyClass::Raw,
+        targets: TARGET_RAW_METRIC_SAMPLES,
     },
     PolicyDefaults {
         family: FAMILY_ONE_MINUTE_AGGREGATE,
@@ -497,6 +588,83 @@ pub async fn cleanup_raw_block_summaries(
         .execute(pool)
         .await?;
     Ok(result.rows_affected())
+}
+
+/// Read the raw metric-sample window. The catalog default is the 24-hour
+/// window of design §11.4; a persisted Owner setting can only widen it, because
+/// the catalog declares the Raw class floor as this family's minimum.
+pub async fn metric_sample_retention_days(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    let fallback = catalog_family(FAMILY_RAW_METRIC_SAMPLE)
+        .map(|policy| policy.default_days)
+        .unwrap_or(MIN_INVESTIGATION_RAW_DAYS);
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT retention_days FROM retention_policies WHERE family = ?",
+    )
+    .bind(FAMILY_RAW_METRIC_SAMPLE)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or(fallback))
+}
+
+/// The same window read through a transaction that is already open.
+///
+/// Report ingestion holds the Server's single write connection, so a policy read
+/// through the pool would wait for a connection that only the caller can
+/// release. Reading inside the ingestion transaction is also the stronger
+/// guarantee: no policy edit can land between the read and the samples it
+/// classifies, because an edit needs that same connection.
+pub async fn metric_sample_retention_days_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+) -> Result<i64, sqlx::Error> {
+    let fallback = catalog_family(FAMILY_RAW_METRIC_SAMPLE)
+        .map(|policy| policy.default_days)
+        .unwrap_or(MIN_INVESTIGATION_RAW_DAYS);
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT retention_days FROM retention_policies WHERE family = ?",
+    )
+    .bind(FAMILY_RAW_METRIC_SAMPLE)
+    .fetch_optional(&mut **tx)
+    .await?
+    .unwrap_or(fallback))
+}
+
+/// Delete at most one bounded batch of expired raw metric samples per table.
+///
+/// This runs after every accepted AgentReport, next to the raw Block Summary
+/// cleanup, so each statement is a range read of the `observed_at` index rather
+/// than a scan of a large history (issue #137). Each table's bound is set from
+/// the rows one Report can add to it (see `TARGET_RAW_METRIC_SAMPLES`), which is
+/// what keeps the two rates equal at steady state: a per-Report bound below the
+/// arrival rate would let the backlog grow even though every Report expires its
+/// own share. The series ledger in `node_metric_series_state` is deliberately
+/// not a target: what a series observed stays knowable after the samples
+/// themselves expire, which is how the Admin surface tells "expired" apart from
+/// "never observed".
+pub async fn cleanup_expired_metric_samples(
+    pool: &SqlitePool,
+    now: time::OffsetDateTime,
+) -> Result<u64, sqlx::Error> {
+    let retention_days = metric_sample_retention_days(pool).await?;
+    if retention_days <= 0 {
+        // A keep-forever window has no cutoff, so it can never expire a row.
+        return Ok(0);
+    }
+    let cutoff = crate::auth::format_rfc3339(family_cutoff(now, retention_days));
+    sqlx::query(RAW_METRIC_RELEASED_BEFORE_SQL)
+        .bind(&cutoff)
+        .bind(&cutoff)
+        .bind(&cutoff)
+        .execute(pool)
+        .await?;
+    let mut removed = 0;
+    for target in catalog_targets(FAMILY_RAW_METRIC_SAMPLE) {
+        removed += sqlx::query(target.delete_sql)
+            .bind(&cutoff)
+            .execute(pool)
+            .await?
+            .rows_affected();
+    }
+    Ok(removed)
 }
 
 /// Idempotent policy seeding with the design §11.3 defaults. Safe to call
@@ -2433,6 +2601,201 @@ mod tests {
             assert!(validate_policy_days(family, 30).is_err());
             assert!(catalog_targets(family).is_empty());
         }
+    }
+
+    /// Issue #213: the raw metric family carries the 24-hour raw floor itself,
+    /// so the window the Admin surface promises cannot be edited away, and both
+    /// sample tables declare a bounded cleanup target.
+    #[test]
+    fn the_raw_metric_family_carries_the_twenty_four_hour_raw_floor() {
+        let policy = catalog_family(FAMILY_RAW_METRIC_SAMPLE).unwrap();
+        assert_eq!(policy.class, PolicyClass::Raw);
+        assert_eq!(policy.default_days * 24, MIN_INVESTIGATION_RAW_HOURS);
+        assert_eq!(policy.safety_floor_days() * 24, MIN_INVESTIGATION_RAW_HOURS);
+        assert!(validate_policy_days(FAMILY_RAW_METRIC_SAMPLE, 0).is_err());
+        assert_eq!(validate_policy_days(FAMILY_RAW_METRIC_SAMPLE, 1), Ok(()));
+        let tables = catalog_targets(FAMILY_RAW_METRIC_SAMPLE)
+            .iter()
+            .map(|target| target.table)
+            .collect::<Vec<_>>();
+        assert_eq!(tables, vec!["node_metric_samples", "host_metric_samples"]);
+    }
+
+    /// Issue #213: the raw window is expired by a cutoff on observed_at while
+    /// the series ledger survives, so "the series began here" and "the Server
+    /// holds samples from then" stay distinguishable facts.
+    #[tokio::test]
+    async fn expired_raw_metric_samples_are_released_and_the_series_ledger_survives() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pool = database.pool();
+        let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let fresh = crate::auth::format_rfc3339(now - time::Duration::hours(1));
+        let expired_at = now - time::Duration::hours(25);
+        let expired = crate::auth::format_rfc3339(expired_at);
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('metric-agent', 1, ?, ?)")
+            .bind(&fresh)
+            .bind(&fresh)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('metric-network', 'Metric', '0xgenesis', 1, 1, 'lat', ?, ?)")
+            .bind(&fresh)
+            .bind(&fresh)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('metric-node', 'metric-agent', 'metric-network', 'ws://127.0.0.1:1', 'active', 'private', 1, ?, ?)")
+            .bind(&fresh)
+            .bind(&fresh)
+            .execute(pool)
+            .await
+            .unwrap();
+        let insert = "INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ('metric-node', 'process_cpu_percent', ?, ?, 1.0)";
+        // The Node batch is sized for a whole maximal Report (see
+        // NODE_METRIC_CLEANUP_BATCH), so this test proves the bound is applied
+        // and then drains what is left over — not that 128 rows is the bound.
+        for seconds in 0..(NODE_METRIC_CLEANUP_BATCH + 3) {
+            let observed_at =
+                crate::auth::format_rfc3339(expired_at - time::Duration::seconds(seconds));
+            sqlx::query(insert)
+                .bind(&observed_at)
+                .bind(&observed_at)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query(insert)
+            .bind(&fresh)
+            .bind(&fresh)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO node_metric_series_state (node_id, metric, first_observed_at, last_observed_at, last_received_at, observation_count, replayed_count, corrected_count, updated_at) VALUES ('metric-node', 'process_cpu_percent', ?, ?, ?, 132, 7, 1, ?)")
+            .bind(&expired)
+            .bind(&fresh)
+            .bind(&fresh)
+            .bind(&fresh)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            cleanup_expired_metric_samples(pool, now).await.unwrap(),
+            NODE_METRIC_CLEANUP_BATCH as u64
+        );
+        assert_eq!(cleanup_expired_metric_samples(pool, now).await.unwrap(), 3);
+        assert_eq!(cleanup_expired_metric_samples(pool, now).await.unwrap(), 0);
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM node_metric_samples WHERE node_id = 'metric-node'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            remaining, 1,
+            "the sample inside the raw window must survive cleanup"
+        );
+        let ledger: (String, i64, i64, i64) = sqlx::query_as(
+            "SELECT first_observed_at, observation_count, replayed_count, corrected_count FROM node_metric_series_state WHERE node_id = 'metric-node' AND metric = 'process_cpu_percent'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(ledger.0, expired);
+        assert_eq!((ledger.1, ledger.2, ledger.3), (132, 7, 1));
+    }
+
+    /// Issue #213: one accepted Report can store up to
+    /// `MAX_NODE_OBSERVATIONS` x 5 Node metric rows, so the per-Report expiry
+    /// bound has to cover that. A smaller bound than the arrival rate would let a
+    /// maximal Agent's backlog grow even though every Report expires its own
+    /// share, and the growth would end in the low-space protection that pauses
+    /// the very history this family exists to keep.
+    #[tokio::test]
+    async fn one_cleanup_call_drains_a_maximal_reports_worth_of_node_samples() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pool = database.pool();
+        let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let fresh = crate::auth::format_rfc3339(now - time::Duration::hours(1));
+        let expired_at = now - time::Duration::hours(25);
+        let maximum_report_rows = platpulse_core::protocol::MAX_NODE_OBSERVATIONS
+            * crate::metric_history::NODE_METRIC_SERIES.len();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('batch-agent', 1, ?, ?)")
+            .bind(&fresh)
+            .bind(&fresh)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('batch-network', 'Batch', '0xgenesis', 1, 1, 'lat', ?, ?)")
+            .bind(&fresh)
+            .bind(&fresh)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let mut inserted = 0;
+        for node in 0..platpulse_core::protocol::MAX_NODE_OBSERVATIONS {
+            let node_id = format!("batch-node-{node}");
+            sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, 'batch-agent', 'batch-network', 'ws://127.0.0.1:1', 'active', 'private', 1, ?, ?)")
+                .bind(&node_id)
+                .bind(&fresh)
+                .bind(&fresh)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            for metric in crate::metric_history::NODE_METRIC_SERIES {
+                let observed_at =
+                    crate::auth::format_rfc3339(expired_at - time::Duration::seconds(inserted));
+                sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, 1.0)")
+                    .bind(&node_id)
+                    .bind(metric)
+                    .bind(&observed_at)
+                    .bind(&observed_at)
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+                inserted += 1;
+            }
+        }
+        tx.commit().await.unwrap();
+        assert_eq!(inserted as usize, maximum_report_rows);
+
+        assert_eq!(
+            cleanup_expired_metric_samples(pool, now).await.unwrap(),
+            maximum_report_rows as u64,
+            "one accepted Report may store this many Node samples"
+        );
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM node_metric_samples")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            remaining, 0,
+            "one cleanup call must keep up with one maximal Report"
+        );
+    }
+
+    /// The statement carries the bound as a literal, so this test is what keeps
+    /// the constant and the SQL in step.
+    #[test]
+    fn the_node_metric_batch_statement_carries_its_bound() {
+        assert!(
+            TARGET_RAW_METRIC_SAMPLES[0]
+                .delete_sql
+                .contains(&format!("LIMIT {NODE_METRIC_CLEANUP_BATCH})")),
+            "the Node sample batch SQL must use NODE_METRIC_CLEANUP_BATCH: {}",
+            TARGET_RAW_METRIC_SAMPLES[0].delete_sql
+        );
     }
 
     /// The class floor is a property of the class, not of a family's declared

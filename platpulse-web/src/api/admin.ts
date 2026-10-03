@@ -9,6 +9,7 @@
 
 import { QueryClient, useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
+import { METRIC_HISTORY_SAMPLE_LIMIT } from '../metricHistory'
 import {
   requestGenerated,
   setActiveAccessGeneration,
@@ -33,6 +34,7 @@ import {
   adminNetworkDetail,
   adminNetworks,
   adminNodeDetail,
+  adminNodeMetricHistory as adminNodeMetricHistoryApi,
   adminNodePeerChurn,
   adminNodePeerHistory,
   adminNodePurgePreview,
@@ -160,6 +162,10 @@ import {
   type SilenceMutationResponse,
   type AdminNetworkDetail,
   type AdminNodeDetail,
+  type AdminNodeMetricGap,
+  type AdminNodeMetricHistoryResponse,
+  type AdminNodeMetricSample,
+  type AdminNodeMetricSeries,
   type AgentAttentionAcknowledgmentResponse,
   type AttentionAcknowledgment,
   type PeerChurnDiagnostic,
@@ -231,6 +237,10 @@ const adminKeys = {
   nodePeerChurn: (nodeId: string) => ['admin', 'nodes', nodeId, 'peer-churn'] as const,
   nodePeerHistory: (nodeId: string) => ['admin', 'nodes', nodeId, 'peer-history'] as const,
   nodeTransfers: (nodeId: string) => ['admin', 'nodes', nodeId, 'transfers'] as const,
+  nodeMetricHistoryRoot: (nodeId: string) =>
+    ['admin', 'nodes', nodeId, 'metric-history'] as const,
+  nodeMetricHistory: (nodeId: string, metric: string, from: string, to: string) =>
+    [...adminKeys.nodeMetricHistoryRoot(nodeId), metric, from, to] as const,
   nodeValidatorLinks: (nodeId: string) => ['admin', 'nodes', nodeId, 'validator-links'] as const,
   validators: ['admin', 'validators'] as const,
   validatorDetail: (validatorId: string) => ['admin', 'validators', validatorId] as const,
@@ -510,6 +520,57 @@ export function useAdminNodeTransfers(generation: number, nodeId: string) {
     // No placeholder: another Node's transfers must never render under
     // this Node's URL.
     enabled: nodeId.length > 0,
+  })
+}
+
+/** Owner-only raw metric history of one Node series in one answered range
+ * (issue #213): stored observations with their own timing evidence, the
+ * silences between them, and the state of the series behind the window.
+ * The requested range is part of the query key, so switching a metric or a
+ * preset never renders another range's samples under the current one. */
+export async function fetchAdminNodeMetricHistory(
+  nodeId: string,
+  metric: string,
+  from: string,
+  to: string,
+  signal?: AbortSignal,
+): Promise<AdminNodeMetricHistory> {
+  return requestAdmin(
+    () =>
+      adminNodeMetricHistoryApi({
+        path: { node_id: nodeId },
+        // Ask for the largest answer the Server carries: the bound is the
+        // Server's own (MAX_SAMPLE_LIMIT), so a dense window is narrowed by
+        // policy rather than by this request asking for less than it could get.
+        query: { metric, from, to, limit: METRIC_HISTORY_SAMPLE_LIMIT },
+        signal,
+      }),
+    'Unable to load the Node metric history',
+  )
+}
+
+/** One stored raw observation with the timing evidence that belongs to it. */
+export type AdminNodeMetricSampleDto = AdminNodeMetricSample
+/** A stretch of the answered window with no stored observation. */
+export type AdminNodeMetricGapDto = AdminNodeMetricGap
+/** What the Server knows about the series itself, independent of the window. */
+export type AdminNodeMetricSeriesDto = AdminNodeMetricSeries
+/** Owner-only raw metric history answer for one Node series. */
+export type AdminNodeMetricHistory = AdminNodeMetricHistoryResponse
+
+export function useAdminNodeMetricHistory(
+  generation: number,
+  nodeId: string,
+  metric: string,
+  from: string,
+  to: string,
+) {
+  return useQuery({
+    queryKey: [...adminKeys.nodeMetricHistory(nodeId, metric, from, to), generation],
+    queryFn: ({ signal }) => fetchAdminNodeMetricHistory(nodeId, metric, from, to, signal),
+    // No placeholder: another Node's or another range's samples must never
+    // render under this series.
+    enabled: nodeId.length > 0 && metric.length > 0 && from.length > 0 && to.length > 0,
   })
 }
 
@@ -1435,7 +1496,7 @@ function applyAdminInvalidation(resource: string, resourceId: string | undefined
     }
   })()
   if (resourceId && resource === 'node') {
-    keys.push(adminKeys.nodeDetail(resourceId), adminKeys.nodePeerChurn(resourceId), adminKeys.nodePeerHistory(resourceId), adminKeys.nodeTransfers(resourceId))
+    keys.push(adminKeys.nodeDetail(resourceId), adminKeys.nodePeerChurn(resourceId), adminKeys.nodePeerHistory(resourceId), adminKeys.nodeTransfers(resourceId), adminKeys.nodeMetricHistoryRoot(resourceId))
   }
   if (resourceId && resource === 'network') keys.push(adminKeys.networkDetail(resourceId))
   if (resourceId && resource === 'validator') keys.push(adminKeys.validatorDetail(resourceId))

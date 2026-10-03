@@ -29,6 +29,8 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use serde_json::Value;
 use tempfile::TempDir;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use tower::ServiceExt;
 
 use platpulse_core::{AgentReport, ReceiptDisposition};
@@ -281,6 +283,12 @@ fn receipt_from(value: &Value) -> platpulse_core::ReportReceipt {
 /// healthy process component is grafted in: the point of this suite is the
 /// optional metric history a real Agent produces, and a disabled probe produces
 /// none.
+///
+/// Every instant stays the fixture's own, in August 2026. A case that asserts a
+/// stored sample has to move them onto the Server clock with [`report_at`]: raw
+/// metric samples are held only for the 24 hours
+/// of the `raw_metric_sample` retention policy (issue #213), so a Report stamped
+/// in August is released as it arrives and stores nothing.
 fn fixture_report(agent_id: &str, agent_epoch: u64, report_sequence: u64) -> AgentReport {
     let mut value: Value = serde_json::from_slice(include_bytes!(
         "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
@@ -299,6 +307,53 @@ fn fixture_report(agent_id: &str, agent_epoch: u64, report_sequence: u64) -> Age
     ));
     value["generated_at"] = Value::String(format!("2026-08-12T{:02}:00:00Z", 8 + report_sequence));
     serde_json::from_value(value).unwrap()
+}
+
+/// The newest instant a report carries, so it can be moved onto the clock whole.
+fn latest_instant(value: &Value) -> Option<OffsetDateTime> {
+    match value {
+        Value::String(text) => OffsetDateTime::parse(text, &Rfc3339).ok(),
+        Value::Array(items) => items.iter().filter_map(latest_instant).max(),
+        Value::Object(fields) => fields.values().filter_map(latest_instant).max(),
+        _ => None,
+    }
+}
+
+/// Move every instant in a report by the same offset, keeping the report's own
+/// relative timing.
+fn shift_instants(value: &mut Value, delta: time::Duration) {
+    match value {
+        Value::String(text) => {
+            if let Ok(instant) = OffsetDateTime::parse(text, &Rfc3339) {
+                *text = auth::format_rfc3339(instant + delta);
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                shift_instants(item, delta);
+            }
+        }
+        Value::Object(fields) => {
+            for field in fields.values_mut() {
+                shift_instants(field, delta);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The same report with every instant moved onto the Server clock, its newest
+/// instant landing on `at`.
+///
+/// Raw metric samples are kept for the 24 hours of the `raw_metric_sample`
+/// retention policy (issue #213), so a Report stamped in August is released the
+/// moment it is stored. Any case that asserts the Server wrote a sample has to
+/// deliver one the raw window still holds, as a live Agent does.
+fn report_at(report: &AgentReport, at: OffsetDateTime) -> Value {
+    let mut value = serde_json::to_value(report).unwrap();
+    let newest = latest_instant(&value).expect("the fixture carries observed instants");
+    shift_instants(&mut value, at - newest);
+    value
 }
 
 fn skipped_series_keys(interval: &platpulse_server::capacity::CapacityIntervalRecord) -> Vec<&str> {
@@ -329,10 +384,16 @@ async fn optional_history_pauses_under_pressure_and_recovers_with_a_visible_gap(
     harness.install_capacity(Arc::clone(&pressure));
 
     // A Report submitted while optional history is paused is still accepted.
+    // Its readings are the ones a live Agent would deliver, so the only reason
+    // the Server stores no sample is the pause.
+    let paused_report = report_at(
+        &fixture_report(&agent_id, 1, 1),
+        auth::now_utc() - time::Duration::minutes(10),
+    );
     let (status, value) = submit(
         &harness,
         &credential,
-        serde_json::to_vec(&fixture_report(&agent_id, 1, 1)).unwrap(),
+        serde_json::to_vec(&paused_report).unwrap(),
     )
     .await;
     assert_eq!(
@@ -448,10 +509,13 @@ async fn optional_history_pauses_under_pressure_and_recovers_with_a_visible_gap(
     harness.install_capacity(Arc::clone(&released));
 
     // A later Report is accepted and its optional samples are written again.
+    // Its readings are newer than the ones the pause skipped, as a resumed
+    // Agent's would be.
+    let resumed_report = report_at(&fixture_report(&agent_id, 1, 2), auth::now_utc());
     let (status, value) = submit(
         &harness,
         &credential,
-        serde_json::to_vec(&fixture_report(&agent_id, 1, 2)).unwrap(),
+        serde_json::to_vec(&resumed_report).unwrap(),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");

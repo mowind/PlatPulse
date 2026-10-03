@@ -596,7 +596,7 @@ Block History        全局 History Window 约束的近期 Block Summary（best-
 Gap/Divergence       有界 History Gap、coverage、resync 与 chain-divergence 证据
 Peer History         Peer Presence 与 5m/1h aggregate（按 retention policy）
 Validator History    ranking/counter history、daily snapshots、monthly aggregates
-Metric History       Node metric history/export（按各 family policy）
+Metric History       Node metric history/export（原始样本按 raw_metric_sample family，默认 24 小时，见 §11.6）
 Operations/Audit     Alert/Notification/Operation/Backup/Restore/Doctor 与审计记录
 ~~~
 
@@ -616,6 +616,20 @@ Server 启动时解析可选的 `[capacity]` 段（crates/platpulse-server/src/c
 - 跳过只作用于可选 metric history 的追加。Block History、Receipt、LastGood 与 current projection 的语义不变，Receipt 的 samples/disposition 也不把跳过的可选样本算作已接受；可见缺口由 `capacity_skipped_series` 与 Admin capacity 面表达（见 docs/design/webui.md 第 15.11 节）。
 - 采样失败是 fail-open：保留当前 state 并记录 `sampling_error`，不因读不到 statvfs 就伪造缺口。重启时 `reconcile` 接管已打开的区间：仍低于 pause 阈值就继续保护，否则以 `resumed` 或 `protection_disabled` 结束。
 - Admin 通过 `GET /api/admin/v1/capacity`（Owner-only）看到带年龄的容量状态、最近区间与被跳过的序列；Doctor 的 storage 检查在保护生效时报 FAIL、未配置时报 NOT_CONFIGURED、采样异常报 WARNING；`/metrics`（独立内部监听器，主监听器按设计把该路径当作 not-found）暴露 `platpulse_capacity_total_bytes`、`platpulse_capacity_available_bytes`（未知时省略而不是写 0）与 `platpulse_capacity_paused`。
+
+### 11.6 可信的 24 小时 Node 原始指标历史（issue #213）
+
+24 小时原始历史的可信度取决于两件事：保留窗口由策略而不是上报节奏决定，以及「这个序列被观察到什么」本身有记录。issue #213 因此做了三处改动：
+
+- **删除每序列硬裁剪。** ingestion 里原有的 `NODE_METRIC_SAMPLES_PER_SERIES = 64` 会每序列只保留最后 64 个样本，于是「能看到多久」变成上报频率的函数（默认 5s 节奏下约 5 分钟），任何更长的曲线都只是幸存者。现在 raw 样本的存活期完全由 retention family 决定。
+- **新 family `raw_metric_sample`**（label `Raw Metric Samples`，策略类别 raw）：default 1 天（即 24 小时），min 1 天（等于 raw 类别下限，因此 24 小时窗口无法被配置取消），max 30 天，声明两个 cleanup target：`node_metric_samples` 与 `host_metric_samples`（均按 `observed_at < cutoff`）。Host series 一并纳入，否则删掉旧裁剪后 Host 样本会无界增长；更细的 Host family 留给后续票据。行数估计是 Server 给出的上界而不是冻结行集，也不是执行配额。 新增 family 必须同时重建 `retention_policies` 的 CHECK 列表（0066 migration 沿用 0022/0027/0029/0035/0059 的做法）：CHECK 不认识的值在 seed 时会被静默跳过，策略既不出现在 Owner 面，其 cleanup 也永不运行。Node 表每 Report 的清理批次用 `NODE_METRIC_CLEANUP_BATCH = 2048`（编译期断言它必须覆盖一份最大 Report 的 256 × 5 行），Host 表保持 128：一次 Report 只加少量 Host 行。批次小于一份 Report 自身写入量时，过期速率会落后于写入速率，backlog 会一直增长，直到低空间保护暂停这个 family 本来要保住的历史。
+- **新表 `node_metric_series_state`**：`(node_id, metric)` 主键，外加 `first_observed_at`、`last_observed_at`、`last_received_at`、`observation_count`、`replayed_count`、`corrected_count`。它不保存任何数值，是序列的账本而不是第二份历史；样本被 retention 释放后账本仍在，因此「首次被观察」与计数不会随样本一起消失。0066 migration 从现有 `node_metric_samples` 回填 `MIN/MAX/COUNT`，升级不会把已经存在的历史说成从未发生；同时新增 `(observed_at, node_id, metric)` 与 `(observed_at, agent_id, metric)` 索引支撑按时间范围的读取，以及 `capacity_skipped_series (scope_kind, scope_key, metric, last_skipped_at)` 索引：0065 的主键以 `interval_id` 打头，而这个 series 谓词在每次 Owner 读取时都要执行。
+
+计数规则同时满足「重放不得抬高观测数」与「携带的 last-good 不是新观测」：写样本前在同一 ingestion 事务里读取 `(node_id, metric, observed_at)` 已存值，并按固定顺序判断（crates/platpulse-server/src/metric_history.rs:420 `classify_delivery` 返回 crates/platpulse-server/src/metric_history.rs:380 `Delivery`）：① 该时刻在序列 high-water mark（`last_observed_at`）之后 → `Observed`（canonical 时刻按文本比较，因此这里就是字符串比较）；② 该时刻已有样本 → 值相同为 `Replay`，值不同为 `Correction`；③ 没有样本但该时刻仍在 raw 窗口内（crates/platpulse-server/src/metric_history.rs:479 `outside_retained_window`）→ `Observed`，即乱序到达或填补空档的读数，因此保留行数与账本始终相等；④ 没有样本且该时刻已早于 cutoff → 视为 `Replay` 且永不计数：已过期的重放与「旧到无法保留的观测」无法区分，而把它计入正是唯一能让携带的 last-good 抬高生命周期计数的路径（代价是这类投递一律不计，计数只会少报、不会虚高）。携带的 last-good 保留其原始 `latest_observed_at`，因此永远不落在 high-water mark 之后的分支里：只有真正的新观测会推进观测数与覆盖时长。`ON CONFLICT` 只更新 value，所以一行保留「首次写入它的那次投递」的 receipt 时间；`last_observed_at` 与 `last_received_at` 由同一条 CASE 一起移动，报告的 delay 因此永远属于同一个真实样本。
+
+缺口在读取时推导，不落库（低空间保护造成的暂停已经由 #212 的 `capacity_skipped_series` 记账）：Server 从不被告知 Agent 的采样间隔，因此用观测到的节奏（窗口内相邻已存样本的最小正间隔）而不是假设值，阈值 = `max(3 × cadence, 120s)`，其中 cadence 先被限制在 `MAX_OBSERVED_CADENCE_SECONDS = 300`（Agent 的 `collection_interval_seconds` 上限就是 300，见 crates/platpulse-agent/src/config.rs:164），因此阈值上限 900s——一个节奏较慢的序列不会显得永远断裂。相邻已存样本间隔达到阈值即构一个缺口，`kind` 为 `collection_gap`（该区间没人观察）或 `protection_pause`（保护区间覆盖它），`reason` 用 Server 自己的措辞；窗口末尾仍在暂停中时补一个 paused-tail 缺口，并裁剪到本次请求窗口的上界，因此窗口之外不会被报告。缺口用「夹住它的两条已存样本」定界，`skipped_count` 只在所报区间完整覆盖整个暂停区间时才附带（`capacity_skipped_series` 每个区间只有一个计数、没有逐次跳过的时刻，被裁剪的时段不能认领这些丢失）。`coverage_seconds` 只累加被相邻样本证明的时段，绝不跨缺口，也绝不假设缺口里的值：一对样本间隔小于阈值但已知暂停落在其中时，暂停时长会从覆盖里扣除。delay 与时钟可疑同样在读取时从保留的 `(observed_at, received_at)` 对推导：`delay = received_at - observed_at`，当观测时刻比接收时刻还晚超过 300s 时标记 `clock_suspect` 并给出说明——不保存任何可能漂移的标志位。
+
+观测接口是 Owner-only `GET /api/admin/v1/nodes/{node_id}/metric-history`，参数 `metric`/`from`/`to`/`limit`（默认窗口 24 小时，limit 默认 5000、上限 20000）。响应包含每个样本自己的时间证据（observed/received/delay/clock）、推导出的缺口、序列账本（含 `window_seconds` 与本次实际携带的 `sampled_count`）、`coverage_seconds`、`window_seconds`、`truncated`、`requested_from` 与 `raw_retention_days`，并明确 `grain = "raw"`、`aggregate_supported = false`（1m/5m 聚合层与 30 天下限属于 issue #214）。`from`/`to` 必须是 canonical（crates/platpulse-server/src/metric_history.rs:460 `canonical_instant`）：由于已存时刻按文本比较，任何「同一时刻的其它写法」（小数秒、`+08:00` 偏移、其它精度）都会静默排除行，因此一律以 `invalid_history_range` 拒绝，连 query 本身无法解析时也回答 `invalid_query`；成功响应包在 `no_store` 里，Owner-only 的历史永不被缓存；每样本的 delay 与时钟可疑取本次答案最新一行的 `(observed_at, received_at)`，而不是账本的 `last_received_at`（后者可能属于同一时刻更晚的一次重述）。可用性如实表达：请求区间完全落在保留窗口内为 `null`；起点早于 cutoff 为 `partial` 并保留原始 `requested_from`；终点早于 cutoff 为 `unavailable`（样本已被释放）——两种情况下都不编造样本，账本照常回答。超过 limit 时返回的是最新样本并置 `truncated = true`，因此最旧一端不会被误读成缺口；从未上报的序列以 `observed = false` 与零/空字段表达，Admin 面显示「从未上报」而不是 0。一条已披露的边界：`capacity_skipped_series` 没有 retention target，`capacity_protection_intervals` 也从不删除，因此暂停账本按「每个区间每个序列一行」永久增长；它极小，为它设置生命周期属于审计证据的独立决定。
 
 ---
 

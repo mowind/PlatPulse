@@ -14,6 +14,7 @@ use sqlx::{FromRow, Sqlite, Transaction};
 
 use crate::enrollment::AgentAuthInfo;
 use crate::http::{AppState, ROUTE_GROUP_HEADER, RequestId};
+use crate::metric_history::Delivery;
 use crate::peer_history::PeerPresenceDelta;
 use platpulse_core::component::{ComponentKey, ComponentObservation, ComponentStatus};
 use platpulse_core::observation::{PeerDirection, PeerSnapshot};
@@ -783,9 +784,6 @@ async fn observe_block_identity(
     Ok(false)
 }
 
-// One minute at the minimum 1-second report cadence, plus a small carry-in margin.
-const NODE_METRIC_SAMPLES_PER_SERIES: i64 = 64;
-
 fn metric_observed_at<T>(observation: &ComponentObservation<T>) -> Option<Rfc3339> {
     observation.latest_observed_at.or_else(|| {
         (observation.status == ComponentStatus::Ok)
@@ -794,13 +792,32 @@ fn metric_observed_at<T>(observation: &ComponentObservation<T>) -> Option<Rfc333
     })
 }
 
+/// The raw metric window a delivery in this Report is judged against.
+///
+/// The cutoff comes from the persisted `raw_metric_sample` policy, the same
+/// family the post-ingestion cleanup reads, and it is read through the open
+/// ingestion transaction: ingestion holds the Server's single write connection,
+/// so a pool read here would wait on the caller's own transaction (issue #213).
+async fn metric_window_cutoff(tx: &mut Transaction<'_, Sqlite>) -> Result<String, sqlx::Error> {
+    let days = crate::retention::metric_sample_retention_days_tx(tx).await?;
+    Ok(crate::auth::format_rfc3339(
+        crate::retention::family_cutoff(crate::auth::now_utc(), days),
+    ))
+}
+
 /// Record one Node metric sample, unless optional history is paused.
 ///
-/// Under low-space protection the sample is not written and the per-series
-/// prune is not run either: the Server records the gap instead of deleting
-/// history it already holds (design §11.4, issue #212). The gap record shares
-/// the ingestion transaction, so "sample skipped" and "gap recorded" commit
-/// together and a failure rolls the whole Report back.
+/// Nothing here expires history: raw samples are bounded by the retention
+/// policy family `raw_metric_sample` (issue #213), because a fixed per-series
+/// row cap tied the retained window to the report cadence and deleted readings
+/// the Server had already accepted. The Server keeps at least the last 24 hours
+/// of raw samples and never connects across a stretch it did not observe.
+///
+/// Under low-space protection the sample is not written: the Server records the
+/// gap instead of deleting history it already holds (design §11.4, issue #212).
+/// The gap record shares the ingestion transaction, so "sample skipped" and
+/// "gap recorded" commit together and a failure rolls the whole Report back.
+/// The series ledger moves in this same transaction.
 async fn save_node_metric(
     tx: &mut Transaction<'_, Sqlite>,
     history: &crate::capacity::HistoryGate,
@@ -810,19 +827,30 @@ async fn save_node_metric(
     received_at: &str,
     value: f64,
 ) -> Result<(), sqlx::Error> {
+    let observed_at = observed_at.to_string();
+    // What the Server already holds for this observation time, and how the
+    // series ledger classifies this delivery: new history, a replay of an
+    // observation it already has, or a correction to one (issue #213). The
+    // ledger and the raw window's own cutoff answer that, not the sample row
+    // alone: retention releases the row once it leaves the window while the
+    // ledger keeps counting.
+    let stored = crate::metric_history::stored_value(tx, node_id, metric, &observed_at).await?;
+    let cutoff = metric_window_cutoff(tx).await?;
+    let delivery = crate::metric_history::classify_delivery(
+        tx,
+        node_id,
+        metric,
+        &observed_at,
+        stored,
+        value,
+        &cutoff,
+    )
+    .await?;
     if let crate::capacity::HistoryGate::Paused { interval_id } = history {
-        // An observation the Server already holds is not new history: a
-        // repeated last-good sample is not a second lost sample (design
-        // §11.5, issue #212). Only a first-time observation counts as a gap.
-        let stored: Option<f64> = sqlx::query_scalar(
-            "SELECT value FROM node_metric_samples WHERE node_id = ? AND metric = ? AND observed_at = ?",
-        )
-        .bind(node_id)
-        .bind(metric)
-        .bind(observed_at.to_string())
-        .fetch_optional(&mut **tx)
-        .await?;
-        if stored == Some(value) {
+        // An observation the Server has already counted is not new history: a
+        // repeated last-good sample is not a second lost sample (design §11.5,
+        // issue #212). Only a first-time observation counts as a gap.
+        if delivery != Delivery::Observed {
             return Ok(());
         }
         return crate::capacity::record_skipped_series(
@@ -831,31 +859,58 @@ async fn save_node_metric(
             crate::capacity::SkippedScope::Node,
             node_id,
             metric,
-            &observed_at.to_string(),
+            &observed_at,
         )
         .await;
     }
-    sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?) ON CONFLICT(node_id, metric, observed_at) DO UPDATE SET value=excluded.value")
-        .bind(node_id)
-        .bind(metric)
-        .bind(observed_at.to_string())
-        .bind(received_at)
-        .bind(value)
-        .execute(&mut **tx)
-        .await?;
-    sqlx::query("DELETE FROM node_metric_samples WHERE rowid IN (SELECT rowid FROM node_metric_samples WHERE node_id=? AND metric=? ORDER BY received_at DESC LIMIT -1 OFFSET ?)")
-        .bind(node_id)
-        .bind(metric)
-        .bind(NODE_METRIC_SAMPLES_PER_SERIES)
-        .execute(&mut **tx)
-        .await?;
+    // A delivery the raw window can no longer answer with, and that the Server
+    // holds nothing for, is not written back: the ledger still counts what it
+    // knows about the series, but the cleanup that runs on this same Report
+    // would release the row again. A replay writes no row either, even when a
+    // widened window covers its instant again: the row was released on purpose,
+    // and recreating it would invent coverage and a fresh receipt for a stretch
+    // the Server deliberately stopped holding (issue #213).
+    let released = crate::metric_history::outside_retained_window(stored, &observed_at, &cutoff);
+    if !released && delivery != Delivery::Replay {
+        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?) ON CONFLICT(node_id, metric, observed_at) DO UPDATE SET value=excluded.value")
+            .bind(node_id)
+            .bind(metric)
+            .bind(&observed_at)
+            .bind(received_at)
+            .bind(value)
+            .execute(&mut **tx)
+            .await?;
+    }
+    // The ledger moves with the sample it describes, so a committed Report can
+    // never leave the count describing a sample the Server does not hold.
+    crate::metric_history::record_delivery(
+        tx,
+        node_id,
+        metric,
+        &observed_at,
+        received_at,
+        delivery,
+    )
+    .await?;
+    // A first-time observation the window cannot hold is counted while it is
+    // stored nowhere, so the instant it was counted at is recorded as evidence
+    // the Server no longer holds: a later carry of the same instant — after the
+    // Operator widens the window back over it — is a replay, never a second
+    // observation.
+    if released && delivery == Delivery::Observed {
+        if let Some(floor) = crate::metric_history::counted_evidence_floor(&observed_at) {
+            crate::metric_history::stamp_evidence_floor(tx, node_id, metric, &floor).await?;
+        }
+    }
     Ok(())
 }
 
 /// Record one Agent host metric sample, unless optional history is paused.
 ///
-/// See crate::capacity::HistoryGate and the Node sibling above: under pressure the sample is skipped
-/// and the gap is recorded in the same transaction.
+/// See crate::capacity::HistoryGate and the Node sibling above: under pressure
+/// the sample is skipped and the gap is recorded in the same transaction.
+/// Nothing here expires history either: the `raw_metric_sample` retention
+/// family owns expiration (issue #213).
 async fn save_host_metric(
     tx: &mut Transaction<'_, Sqlite>,
     history: &crate::capacity::HistoryGate,
@@ -865,17 +920,19 @@ async fn save_host_metric(
     received_at: &str,
     value: f64,
 ) -> Result<(), sqlx::Error> {
+    let observed_at = observed_at.to_string();
+    // Same rule as the Node sibling above: a sample the Server already holds at
+    // this observation time is not a lost sample.
+    let stored: Option<f64> = sqlx::query_scalar(
+        "SELECT value FROM host_metric_samples WHERE agent_id = ? AND metric = ? AND observed_at = ?",
+    )
+    .bind(agent_id)
+    .bind(metric)
+    .bind(&observed_at)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let cutoff = metric_window_cutoff(tx).await?;
     if let crate::capacity::HistoryGate::Paused { interval_id } = history {
-        // Same rule as the Node sibling above: a sample the Server already
-        // holds at this observation time is not a lost sample.
-        let stored: Option<f64> = sqlx::query_scalar(
-            "SELECT value FROM host_metric_samples WHERE agent_id = ? AND metric = ? AND observed_at = ?",
-        )
-        .bind(agent_id)
-        .bind(metric)
-        .bind(observed_at.to_string())
-        .fetch_optional(&mut **tx)
-        .await?;
         if stored == Some(value) {
             return Ok(());
         }
@@ -885,22 +942,23 @@ async fn save_host_metric(
             crate::capacity::SkippedScope::Host,
             agent_id,
             metric,
-            &observed_at.to_string(),
+            &observed_at,
         )
         .await;
+    }
+    // A host delivery the raw window can no longer answer with, and that the
+    // Server holds nothing for, is not written back: see the Node sibling above.
+    // Host samples carry no ledger, so this is the only rule that keeps an
+    // ancient re-delivery from being stored only to be released again.
+    if crate::metric_history::outside_retained_window(stored, &observed_at, &cutoff) {
+        return Ok(());
     }
     sqlx::query("INSERT INTO host_metric_samples (agent_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?) ON CONFLICT(agent_id, metric, observed_at) DO UPDATE SET value=excluded.value")
         .bind(agent_id)
         .bind(metric)
-        .bind(observed_at.to_string())
+        .bind(&observed_at)
         .bind(received_at)
         .bind(value)
-        .execute(&mut **tx)
-        .await?;
-    sqlx::query("DELETE FROM host_metric_samples WHERE rowid IN (SELECT rowid FROM host_metric_samples WHERE agent_id=? AND metric=? ORDER BY received_at DESC LIMIT -1 OFFSET ?)")
-        .bind(agent_id)
-        .bind(metric)
-        .bind(NODE_METRIC_SAMPLES_PER_SERIES)
         .execute(&mut **tx)
         .await?;
     Ok(())
@@ -1314,12 +1372,16 @@ async fn save_current<I: ReportInventory>(
                 .as_ref()
                 .and_then(metric_observed_at),
         ) {
+            // The ratio is only as fresh as the older of the two readings it
+            // divides: stamping it at the newer one would present a carried
+            // size over a new capacity (or the reverse) as a fresh observation
+            // of the percentage.
             save_node_metric(
                 tx,
                 history,
                 &node_id,
                 "data_directory_percent",
-                size_observed_at.max(capacity_observed_at),
+                size_observed_at.min(capacity_observed_at),
                 received_at,
                 size as f64 * 100.0 / capacity as f64,
             )
@@ -3006,6 +3068,18 @@ async fn ingest_report<I: ReportInventory>(
             crate::redaction::redact_sensitive(&error.to_string())
         );
     }
+    // Issue #213: raw metric samples are expired by policy instead of by a
+    // fixed per-series cap, so the same bounded-after-every-Report guard keeps
+    // the 24-hour raw window from growing without limit.
+    if let Err(error) =
+        crate::retention::cleanup_expired_metric_samples(state.db().pool(), crate::auth::now_utc())
+            .await
+    {
+        eprintln!(
+            "raw metric retention cleanup deferred after ingestion: {}",
+            crate::redaction::redact_sensitive(&error.to_string())
+        );
+    }
     // Every committed report can change the Owner-side Node/Agent health
     // projection (including host-only reports), while the Public projection
     // changes only when the report contains a Node observation.
@@ -3209,6 +3283,20 @@ mod tests {
         (dir, AppState::new(database, None, auth), agent_id)
     }
 
+    /// Reopen the same database file the way a restarted Server does: the same
+    /// schema, the same rows, and nothing carried over in process memory.
+    async fn restart(dir: &TempDir) -> AppState {
+        let database = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
+            .await
+            .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        let auth = AuthConfig::development(
+            load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        AppState::new(database, None, auth)
+    }
+
     async fn submit(state: &AppState, agent_id: &str, body: Vec<u8>) -> ReportReceipt {
         let response = handler(
             State(state.clone()),
@@ -3231,6 +3319,52 @@ mod tests {
         serde_json::from_slice::<ReportResponse>(&body)
             .unwrap()
             .receipt
+    }
+
+    /// The instant the report fixture is written around.
+    const FIXTURE_INSTANT: &str = "2026-08-12T09:00:00Z";
+
+    /// Move every instant in a report fixture onto the Server clock, keeping the
+    /// fixture's own relative offsets.
+    ///
+    /// Raw metric samples are kept for the 24 hours of the `raw_metric_sample`
+    /// policy (issue #213), so a fixture stamped in August is released the moment
+    /// it is stored: a case about an accepted observation has to deliver one the
+    /// raw window can still hold.
+    fn restamp_fixture(raw: &mut serde_json::Value, now: time::OffsetDateTime) {
+        fn walk(value: &mut serde_json::Value, delta: time::Duration) {
+            match value {
+                serde_json::Value::String(text) => {
+                    if let Some(instant) = crate::auth::parse_rfc3339(text) {
+                        *text = format_rfc3339(instant + delta);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items.iter_mut() {
+                        walk(item, delta);
+                    }
+                }
+                serde_json::Value::Object(fields) => {
+                    for field in fields.values_mut() {
+                        walk(field, delta);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let anchor =
+            crate::auth::parse_rfc3339(FIXTURE_INSTANT).expect("the fixture anchor parses");
+        walk(raw, now - anchor);
+    }
+
+    /// The report fixture with every instant moved onto the Server clock.
+    fn report_near_now() -> AgentReport {
+        let mut raw: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        restamp_fixture(&mut raw, now_utc());
+        serde_json::from_value(raw).unwrap()
     }
 
     async fn submit_status(state: &AppState, agent_id: &str, body: Vec<u8>) -> StatusCode {
@@ -3481,10 +3615,7 @@ mod tests {
     #[tokio::test]
     async fn persists_node_data_directory_size_and_preserves_last_good_value() {
         let (_dir, state, agent_id) = state_with_agent().await;
-        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
-            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
-        ))
-        .unwrap();
+        let mut report = report_near_now();
         let observed_at = report.generated_at;
         report.nodes[0].data_directory_size_bytes = Some(ComponentObservation {
             status: ComponentStatus::Ok,
@@ -3583,6 +3714,339 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(stored, 12_884_901_888);
+    }
+
+    /// Issue #213: the series ledger counts what the series observed. A
+    /// restated delivery — the same observation arriving again, including a
+    /// carried last-good — is not a new observation, and a restated value that
+    /// really did change is counted as a correction instead.
+    #[tokio::test]
+    async fn replay_and_correction_never_inflate_the_series_observation_count() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut report = report_near_now();
+        let node_id = report.nodes[0].node_id.to_string();
+        let observed_at = report.generated_at;
+        report.nodes[0].data_directory_size_bytes = Some(ComponentObservation {
+            status: ComponentStatus::Ok,
+            attempted_at: Some(observed_at),
+            latest_observed_at: Some(observed_at),
+            received_at: None,
+            state_revision: 1,
+            value_revision: 1,
+            latest: Some(12_884_901_888),
+            error: None,
+        });
+        report.nodes[0].data_directory_capacity_bytes = Some(ComponentObservation {
+            status: ComponentStatus::Ok,
+            attempted_at: Some(observed_at),
+            latest_observed_at: Some(observed_at),
+            received_at: None,
+            state_revision: 1,
+            value_revision: 1,
+            latest: Some(51_539_607_552),
+            error: None,
+        });
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert_eq!(
+            metric_ledger(state.db().pool(), &node_id, "data_directory_percent").await,
+            (1, 0, 0)
+        );
+
+        // The same observation delivered again in a new Report: the value is
+        // already stored, so this is a replay and not a second observation.
+        report.report_sequence += 1;
+        report.report_id = "0195f2a1-0092-4092-8092-000000000092".parse().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert_eq!(
+            metric_ledger(state.db().pool(), &node_id, "data_directory_percent").await,
+            (1, 1, 0)
+        );
+        let stored_series: (String, String) = sqlx::query_as(
+            "SELECT first_observed_at, last_observed_at FROM node_metric_series_state WHERE node_id = ? AND metric = 'data_directory_percent'",
+        )
+        .bind(&node_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(stored_series.0, observed_at.to_string());
+        assert_eq!(stored_series.1, observed_at.to_string());
+
+        // The same instant observed with a different value is a correction: it
+        // rewrites the sample without inventing an observation or advancing the
+        // series clock.
+        report.report_sequence += 1;
+        report.report_id = "0195f2a1-0093-4093-8093-000000000093".parse().unwrap();
+        report.nodes[0].data_directory_size_bytes = Some(ComponentObservation {
+            status: ComponentStatus::Ok,
+            attempted_at: Some(observed_at),
+            latest_observed_at: Some(observed_at),
+            received_at: None,
+            state_revision: 2,
+            value_revision: 2,
+            latest: Some(25_769_803_776),
+            error: None,
+        });
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert_eq!(
+            metric_ledger(state.db().pool(), &node_id, "data_directory_percent").await,
+            (1, 1, 1)
+        );
+
+        // A genuinely newer observation is the only thing that advances the
+        // count and the series clock.
+        let later: platpulse_core::Rfc3339 =
+            format_rfc3339(observed_at.as_datetime() + time::Duration::minutes(5))
+                .parse()
+                .unwrap();
+        report.report_sequence += 1;
+        report.report_id = "0195f2a1-0094-4094-8094-000000000094".parse().unwrap();
+        report.nodes[0].data_directory_size_bytes = Some(ComponentObservation {
+            status: ComponentStatus::Ok,
+            attempted_at: Some(later),
+            latest_observed_at: Some(later),
+            received_at: None,
+            state_revision: 3,
+            value_revision: 3,
+            latest: Some(12_884_901_888),
+            error: None,
+        });
+        report.nodes[0].data_directory_capacity_bytes = Some(ComponentObservation {
+            status: ComponentStatus::Ok,
+            attempted_at: Some(later),
+            latest_observed_at: Some(later),
+            received_at: None,
+            state_revision: 3,
+            value_revision: 3,
+            latest: Some(51_539_607_552),
+            error: None,
+        });
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert_eq!(
+            metric_ledger(state.db().pool(), &node_id, "data_directory_percent").await,
+            (2, 1, 1)
+        );
+        let samples: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM node_metric_samples WHERE node_id = ? AND metric = 'data_directory_percent'",
+        )
+        .bind(&node_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(samples, 2, "a replay must not add a second sample row");
+        let last_observed: String = sqlx::query_scalar(
+            "SELECT last_observed_at FROM node_metric_series_state WHERE node_id = ? AND metric = 'data_directory_percent'",
+        )
+        .bind(&node_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(last_observed, later.to_string());
+    }
+
+    /// The scenario the review raised: an observation is retained, released by a
+    /// cleanup, and then the Operator widens the retention window past it. Its
+    /// row is gone from the sample table, so the only evidence that can keep a
+    /// carried copy from being counted a second time is the series'
+    /// released-before floor, and that floor has to survive a restart.
+    #[tokio::test]
+    async fn a_retention_widening_cannot_recount_an_observation_it_released() {
+        let (dir, state, agent_id) = state_with_agent().await;
+        let mut report = report_near_now();
+        let node_id = report.nodes[0].node_id.to_string();
+        let observed_at = report.generated_at;
+        report.nodes[0].data_directory_size_bytes = Some(ComponentObservation {
+            status: ComponentStatus::Ok,
+            attempted_at: Some(observed_at),
+            latest_observed_at: Some(observed_at),
+            received_at: None,
+            state_revision: 1,
+            value_revision: 1,
+            latest: Some(12_884_901_888),
+            error: None,
+        });
+        report.nodes[0].data_directory_capacity_bytes = Some(ComponentObservation {
+            status: ComponentStatus::Ok,
+            attempted_at: Some(observed_at),
+            latest_observed_at: Some(observed_at),
+            received_at: None,
+            state_revision: 1,
+            value_revision: 1,
+            latest: Some(51_539_607_552),
+            error: None,
+        });
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert_eq!(
+            metric_ledger(state.db().pool(), &node_id, "data_directory_percent").await,
+            (1, 0, 0)
+        );
+
+        // Time passes. The cleanup runs with a clock far enough ahead that the
+        // real one-day cutoff reaches the stored observation: it releases the
+        // row and stamps the series with the cutoff it applied.
+        let released_at = now_utc() + time::Duration::days(2);
+        let removed =
+            crate::retention::cleanup_expired_metric_samples(state.db().pool(), released_at)
+                .await
+                .unwrap();
+        assert!(removed >= 1, "the cleanup released the stored observation");
+        let released_before: String = sqlx::query_scalar(
+            "SELECT released_before FROM node_metric_series_state WHERE node_id = ? AND metric = 'data_directory_percent'",
+        )
+        .bind(&node_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert!(
+            released_before.as_str() > observed_at.to_string().as_str(),
+            "the series is stamped with a cutoff the released observation is below: {released_before}"
+        );
+
+        // The Operator then widens the window to two days. The observation is
+        // inside the widened window again while its row is gone, so the current
+        // cutoff on its own would call the carried copy a brand new observation.
+        sqlx::query(
+            "UPDATE retention_policies SET retention_days = 2 WHERE family = 'raw_metric_sample'",
+        )
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+
+        // Restart: the floor is durable evidence, not a memory of this process.
+        // The old Server has to let go of the file first, exactly as a restart
+        // would.
+        state.db().pool().close().await;
+        drop(state);
+        let state = restart(&dir).await;
+        let after_restart: String = sqlx::query_scalar(
+            "SELECT released_before FROM node_metric_series_state WHERE node_id = ? AND metric = 'data_directory_percent'",
+        )
+        .bind(&node_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(after_restart, released_before);
+
+        // The Agent carries its last good reading in a new Report. It is the
+        // observation that was already counted, so it is a replay: the lifetime
+        // count does not move, and no row comes back for it. Recreating the row
+        // would restamp receipt evidence for an instant the Server released on
+        // purpose, and a carry of adjacent expired instants would rebuild an
+        // interval the retention window deliberately stopped holding.
+        report.report_sequence += 1;
+        report.report_id = "0195f2a1-0095-4095-8095-000000000095".parse().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert_eq!(
+            metric_ledger(state.db().pool(), &node_id, "data_directory_percent").await,
+            (1, 1, 0)
+        );
+        let samples: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM node_metric_samples WHERE node_id = ? AND metric = 'data_directory_percent'",
+        )
+        .bind(&node_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            samples, 0,
+            "a replay never writes a row back, however wide the window is: the count of observations is what a replay must never move"
+        );
+    }
+
+    /// The reviewer's second scenario: the very first observation of a series is
+    /// older than the raw window, so it is counted while no row can answer for
+    /// it. Counting it is what leaves an evidence floor behind; without that
+    /// floor a later widening of the window over the same instant would turn the
+    /// Agent's carried last good reading into a brand new observation.
+    #[tokio::test]
+    async fn an_observation_counted_below_the_window_is_not_recounted_by_a_widening() {
+        let (dir, state, agent_id) = state_with_agent().await;
+        let mut report = report_near_now();
+        let node_id = report.nodes[0].node_id.to_string();
+        // Forty hours back: outside the one-day window, inside a two-day one.
+        let observed_at = format_rfc3339(now_utc() - time::Duration::hours(40));
+        report.generated_at = observed_at.parse().unwrap();
+        report.nodes[0].data_directory_size_bytes = Some(ComponentObservation {
+            status: ComponentStatus::Ok,
+            attempted_at: Some(report.generated_at),
+            latest_observed_at: Some(report.generated_at),
+            received_at: None,
+            state_revision: 1,
+            value_revision: 1,
+            latest: Some(12_884_901_888),
+            error: None,
+        });
+        report.nodes[0].data_directory_capacity_bytes = Some(ComponentObservation {
+            status: ComponentStatus::Ok,
+            attempted_at: Some(report.generated_at),
+            latest_observed_at: Some(report.generated_at),
+            received_at: None,
+            state_revision: 1,
+            value_revision: 1,
+            latest: Some(51_539_607_552),
+            error: None,
+        });
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert_eq!(
+            metric_ledger(state.db().pool(), &node_id, "data_directory_percent").await,
+            (1, 0, 0),
+            "the first observation of a series is counted even though the window cannot hold it"
+        );
+        let samples: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM node_metric_samples WHERE node_id = ? AND metric = 'data_directory_percent'",
+        )
+        .bind(&node_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(samples, 0, "and no row can answer for it");
+        let floor: String = sqlx::query_scalar(
+            "SELECT released_before FROM node_metric_series_state WHERE node_id = ? AND metric = 'data_directory_percent'",
+        )
+        .bind(&node_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert!(
+            floor.as_str() > observed_at.as_str(),
+            "counting an observation nothing holds leaves an evidence floor above it: {floor}"
+        );
+
+        // The Operator widens the window past the instant. Its row never comes
+        // back, so the floor is the only thing that can refuse a second count.
+        sqlx::query(
+            "UPDATE retention_policies SET retention_days = 2 WHERE family = 'raw_metric_sample'",
+        )
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        // Restart: the floor is durable evidence, not a memory of this process.
+        state.db().pool().close().await;
+        drop(state);
+        let state = restart(&dir).await;
+
+        report.report_sequence += 1;
+        report.report_id = "0195f2a1-0096-4096-8096-000000000096".parse().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert_eq!(
+            metric_ledger(state.db().pool(), &node_id, "data_directory_percent").await,
+            (1, 1, 0),
+            "the widened window reads the carried instant again, it does not count it again"
+        );
+    }
+
+    async fn metric_ledger(
+        pool: &sqlx::SqlitePool,
+        node_id: &str,
+        metric: &str,
+    ) -> (i64, i64, i64) {
+        sqlx::query_as(
+            "SELECT observation_count, replayed_count, corrected_count FROM node_metric_series_state WHERE node_id = ? AND metric = ?",
+        )
+        .bind(node_id)
+        .bind(metric)
+        .fetch_one(pool)
+        .await
+        .unwrap()
     }
 
     async fn body_json(response: axum::response::Response) -> serde_json::Value {

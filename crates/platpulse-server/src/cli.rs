@@ -935,6 +935,17 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                 crate::redaction::redact_sensitive(&error.to_string())
             );
         }
+        if let Err(error) = crate::retention::cleanup_expired_metric_samples(
+            database.pool(),
+            crate::auth::now_utc(),
+        )
+        .await
+        {
+            eprintln!(
+                "raw metric retention cleanup deferred: {}",
+                crate::redaction::redact_sensitive(&error.to_string())
+            );
+        }
         // Retention policies are seeded idempotently with the design §11.3
         // defaults; existing rows are never rewritten.
         if let Err(error) = crate::retention::ensure_seeded(database.pool()).await {

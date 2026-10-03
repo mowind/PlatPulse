@@ -2912,6 +2912,126 @@
         }
       }
     },
+    "/api/admin/v1/nodes/{node_id}/metric-history": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_node_metric_history",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "description": "Node ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "metric",
+            "in": "query",
+            "description": "Stored Node metric series",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Canonical RFC 3339 UTC start of the range, second precision (default: 24 hours before to)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Canonical RFC 3339 UTC end of the range, second precision (default: now)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum raw samples",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "maximum": 20000,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminNodeMetricHistoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/nodes/{node_id}/peer-churn": {
       "get": {
         "tags": [
@@ -7438,6 +7558,244 @@
           }
         }
       },
+      "AdminNodeMetricGap": {
+        "type": "object",
+        "description": "A stretch of the window in which the Server stores no observation.\n\nReported as a gap with its kind, so no surface has to bridge silence, hold a\nconstant value across it, or draw it as a zero (design §11.4).",
+        "required": [
+          "from",
+          "to",
+          "seconds",
+          "kind",
+          "reason"
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`collection_gap` (nobody observed) or `protection_pause` (the operator\nchose to pause collection)."
+          },
+          "reason": {
+            "type": "string"
+          },
+          "seconds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "skippedCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Counted losses behind a `protection_pause` (issue #212 evidence)."
+          },
+          "to": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminNodeMetricHistoryResponse": {
+        "type": "object",
+        "description": "Owner-only raw metric history for one Node series (issue #213, design\n§11.4): the stored observations, the silences between them, and the state of\nthe series behind them.",
+        "required": [
+          "nodeId",
+          "metric",
+          "from",
+          "to",
+          "requestedFrom",
+          "rawRetentionDays",
+          "grain",
+          "aggregateSupported",
+          "items",
+          "gaps",
+          "series",
+          "windowSeconds",
+          "truncated"
+        ],
+        "properties": {
+          "aggregateSupported": {
+            "type": "boolean",
+            "description": "The 1-minute/5-minute aggregate tiers belong to issue #214."
+          },
+          "availability": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`None` while the whole requested range is retained, `partial` when it\nwas clamped to the raw window, `unavailable` when it is older than the\nretained raw history."
+          },
+          "from": {
+            "type": "string",
+            "description": "The answered range, after clamping to the retained raw window."
+          },
+          "gaps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminNodeMetricGap"
+            }
+          },
+          "grain": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminNodeMetricSample"
+            }
+          },
+          "metric": {
+            "type": "string"
+          },
+          "nodeId": {
+            "type": "string"
+          },
+          "rawRetentionDays": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "requestedFrom": {
+            "type": "string",
+            "description": "The range the caller asked for, so a clamped answer says what it\nclamped."
+          },
+          "series": {
+            "$ref": "#/components/schemas/AdminNodeMetricSeries"
+          },
+          "to": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the window held more samples than the caller's limit: the\nnewest samples are returned and the rest is reported, never dropped\nsilently."
+          },
+          "windowSeconds": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AdminNodeMetricSample": {
+        "type": "object",
+        "description": "One stored raw observation with the timing evidence that belongs to it.",
+        "required": [
+          "observedAt",
+          "receivedAt",
+          "value",
+          "clockSuspect"
+        ],
+        "properties": {
+          "clockNote": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "clockSuspect": {
+            "type": "boolean",
+            "description": "The observation is stamped after the receipt: the Agent clock is ahead."
+          },
+          "delaySeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`received_at - observed_at` for this very sample, so spool and transport\ndelay are visible per observation. Unknown when either timestamp is\nunusable — never reported as zero."
+          },
+          "observedAt": {
+            "type": "string"
+          },
+          "receivedAt": {
+            "type": "string"
+          },
+          "value": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "AdminNodeMetricSeries": {
+        "type": "object",
+        "description": "What the Server knows about the series itself, independent of the window.",
+        "required": [
+          "observed",
+          "observationCount",
+          "replayedCount",
+          "correctedCount",
+          "sampledCount",
+          "coverageSeconds",
+          "windowSeconds",
+          "latestClockSuspect"
+        ],
+        "properties": {
+          "correctedCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Observations whose value changed: counted separately too."
+          },
+          "coverageSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds the samples prove they were observed."
+          },
+          "firstObservedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The oldest observation ever recorded. It outlives the samples and is not\nevidence that raw history survives that far back, and it is deliberately\nnot called the moment the series was enabled: the Node may have been\ncollecting before the first Report this Server accepted, so the Server\nreports what it has evidence for."
+          },
+          "lastObservedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The newest observation instant the series ever recorded. A series-level\nstamp: it outlives the samples, and it is not evidence that a stored\nsample exists at that instant any more."
+          },
+          "lastReceivedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The receipt time of the delivery that recorded the newest observation:\na series-level delivery stamp, so it can belong to a later restatement of\nthat instant rather than to the sample the answer carries. The per-sample\nreceipt is `items[].receivedAt`."
+          },
+          "latestClockSuspect": {
+            "type": "boolean",
+            "description": "That same newest stored sample is stamped after its receipt: the Agent\nclock is ahead of the Server's."
+          },
+          "latestDelaySeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`receivedAt - observedAt` of the newest stored sample in this answer,\nmeasured from that one row. Unknown when the answer holds no stored\nsample — never reported as zero."
+          },
+          "observationCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "observed": {
+            "type": "boolean",
+            "description": "False when this Node never reported the series: shown as absent, not as\nzero."
+          },
+          "replayedCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Deliveries that restated an observation already stored: counted\nseparately, never as new observations."
+          },
+          "sampledCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Samples this answer actually carries."
+          },
+          "windowSeconds": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "AdminNodePurgeCounts": {
         "type": "object",
         "description": "Server-computed scope of a Node Purge. These are counts of Node-owned rows\nonly; shared Agent/Host/Network/Validator data is never included.",
@@ -7463,6 +7821,7 @@
           "chain_divergence_observations",
           "observed_network_heads",
           "metric_samples",
+          "metric_series_state",
           "capacity_skipped_series",
           "validator_links",
           "validator_identity_status",
@@ -7519,6 +7878,10 @@
             "format": "int64"
           },
           "metric_samples": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "metric_series_state": {
             "type": "integer",
             "format": "int64"
           },

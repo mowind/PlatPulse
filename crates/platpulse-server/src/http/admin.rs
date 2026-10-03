@@ -451,6 +451,7 @@ pub struct AdminNodePurgeCounts {
     pub chain_divergence_observations: i64,
     pub observed_network_heads: i64,
     pub metric_samples: i64,
+    pub metric_series_state: i64,
     pub capacity_skipped_series: i64,
     pub validator_links: i64,
     pub validator_identity_status: i64,
@@ -523,6 +524,7 @@ fn node_purge_counts(counts: crate::node_purge::NodePurgeCounts) -> AdminNodePur
         chain_divergence_observations: counts.chain_divergence_observations,
         observed_network_heads: counts.observed_network_heads,
         metric_samples: counts.metric_samples,
+        metric_series_state: counts.metric_series_state,
         capacity_skipped_series: counts.capacity_skipped_series,
         validator_links: counts.validator_links,
         validator_identity_status: counts.validator_identity_status,
@@ -4318,6 +4320,371 @@ async fn admin_node_history(
     })
     .into_response()
 }
+/// Query for the Owner-side raw Node metric history range (issue #213, design
+/// §11.4). `metric` is optional at the type level so an unknown name answers
+/// with the same error body as every other rejected query.
+#[derive(Debug, Deserialize)]
+struct AdminMetricHistoryQuery {
+    metric: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+    limit: Option<i64>,
+}
+
+/// One stored raw observation with the timing evidence that belongs to it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminNodeMetricSample {
+    pub observed_at: String,
+    pub received_at: String,
+    pub value: f64,
+    /// `received_at - observed_at` for this very sample, so spool and transport
+    /// delay are visible per observation. Unknown when either timestamp is
+    /// unusable — never reported as zero.
+    pub delay_seconds: Option<i64>,
+    /// The observation is stamped after the receipt: the Agent clock is ahead.
+    pub clock_suspect: bool,
+    pub clock_note: Option<String>,
+}
+
+/// A stretch of the window in which the Server stores no observation.
+///
+/// Reported as a gap with its kind, so no surface has to bridge silence, hold a
+/// constant value across it, or draw it as a zero (design §11.4).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminNodeMetricGap {
+    pub from: String,
+    pub to: String,
+    pub seconds: i64,
+    /// `collection_gap` (nobody observed) or `protection_pause` (the operator
+    /// chose to pause collection).
+    pub kind: String,
+    pub reason: String,
+    /// Counted losses behind a `protection_pause` (issue #212 evidence).
+    pub skipped_count: Option<i64>,
+}
+
+/// What the Server knows about the series itself, independent of the window.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminNodeMetricSeries {
+    /// False when this Node never reported the series: shown as absent, not as
+    /// zero.
+    pub observed: bool,
+    /// The oldest observation ever recorded. It outlives the samples and is not
+    /// evidence that raw history survives that far back, and it is deliberately
+    /// not called the moment the series was enabled: the Node may have been
+    /// collecting before the first Report this Server accepted, so the Server
+    /// reports what it has evidence for.
+    pub first_observed_at: Option<String>,
+    /// The newest observation instant the series ever recorded. A series-level
+    /// stamp: it outlives the samples, and it is not evidence that a stored
+    /// sample exists at that instant any more.
+    pub last_observed_at: Option<String>,
+    /// The receipt time of the delivery that recorded the newest observation:
+    /// a series-level delivery stamp, so it can belong to a later restatement of
+    /// that instant rather than to the sample the answer carries. The per-sample
+    /// receipt is `items[].receivedAt`.
+    pub last_received_at: Option<String>,
+    pub observation_count: i64,
+    /// Deliveries that restated an observation already stored: counted
+    /// separately, never as new observations.
+    pub replayed_count: i64,
+    /// Observations whose value changed: counted separately too.
+    pub corrected_count: i64,
+    /// Samples this answer actually carries.
+    pub sampled_count: i64,
+    /// Seconds the samples prove they were observed.
+    pub coverage_seconds: i64,
+    pub window_seconds: i64,
+    /// `receivedAt - observedAt` of the newest stored sample in this answer,
+    /// measured from that one row. Unknown when the answer holds no stored
+    /// sample — never reported as zero.
+    pub latest_delay_seconds: Option<i64>,
+    /// That same newest stored sample is stamped after its receipt: the Agent
+    /// clock is ahead of the Server's.
+    pub latest_clock_suspect: bool,
+}
+
+/// Owner-only raw metric history for one Node series (issue #213, design
+/// §11.4): the stored observations, the silences between them, and the state of
+/// the series behind them.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminNodeMetricHistoryResponse {
+    pub node_id: String,
+    pub metric: String,
+    /// The answered range, after clamping to the retained raw window.
+    pub from: String,
+    pub to: String,
+    /// The range the caller asked for, so a clamped answer says what it
+    /// clamped.
+    pub requested_from: String,
+    /// `None` while the whole requested range is retained, `partial` when it
+    /// was clamped to the raw window, `unavailable` when it is older than the
+    /// retained raw history.
+    pub availability: Option<String>,
+    pub raw_retention_days: i64,
+    pub grain: String,
+    /// The 1-minute/5-minute aggregate tiers belong to issue #214.
+    pub aggregate_supported: bool,
+    pub items: Vec<AdminNodeMetricSample>,
+    pub gaps: Vec<AdminNodeMetricGap>,
+    pub series: AdminNodeMetricSeries,
+    pub window_seconds: i64,
+    /// True when the window held more samples than the caller's limit: the
+    /// newest samples are returned and the rest is reported, never dropped
+    /// silently.
+    pub truncated: bool,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/nodes/{node_id}/metric-history",
+    tag = "admin",
+    params(
+        ("node_id" = String, Path, description = "Node ID"),
+        ("metric" = String, Query, description = "Stored Node metric series"),
+        ("from" = Option<String>, Query, description = "Canonical RFC 3339 UTC start of the range, second precision (default: 24 hours before to)"),
+        ("to" = Option<String>, Query, description = "Canonical RFC 3339 UTC end of the range, second precision (default: now)"),
+        ("limit" = Option<i64>, Query, minimum = 1, maximum = 20000, description = "Maximum raw samples")
+    ),
+    responses(
+        (status = 200, body = AdminNodeMetricHistoryResponse),
+        (status = 400, body = crate::http::ApiErrorBody),
+        (status = 401, body = crate::http::ApiErrorBody),
+        (status = 403, body = crate::http::ApiErrorBody),
+        (status = 404, body = crate::http::ApiErrorBody),
+        (status = 503, body = crate::http::ApiErrorBody)
+    )
+)]
+async fn admin_node_metric_history(
+    State(state): State<AppState>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+    query: Result<
+        axum::extract::Query<AdminMetricHistoryQuery>,
+        axum::extract::rejection::QueryRejection,
+    >,
+    Path(node_id): Path<String>,
+) -> Response {
+    // A query the typed extractor cannot read — a duplicate parameter, a limit
+    // that is not a number — is answered with the repo's stable JSON error
+    // envelope instead of a framework-generated plain-text rejection, so no
+    // client has to parse two shapes out of the same route.
+    let params = match query {
+        Ok(axum::extract::Query(params)) => params,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_query",
+                "query is not valid for metric history",
+            );
+        }
+    };
+    let unavailable = || {
+        mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        )
+    };
+    let invalid_range = || {
+        mutation_error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "invalid_history_range",
+            "history range is invalid",
+        )
+    };
+    let Some(metric) = params
+        .metric
+        .as_deref()
+        .filter(|metric| crate::metric_history::is_node_metric(metric))
+    else {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "invalid_metric",
+            "metric is not a stored node metric series",
+        );
+    };
+    let raw_retention_days =
+        match crate::retention::metric_sample_retention_days(state.db().pool()).await {
+            Ok(days) => days,
+            Err(_) => return unavailable(),
+        };
+    let now = crate::auth::now_utc();
+    let to = match params.to.as_deref() {
+        Some(value) => match crate::metric_history::canonical_instant(value) {
+            Some(value) => value,
+            None => return invalid_range(),
+        },
+        None => now,
+    };
+    let from = match params.from.as_deref() {
+        Some(value) => match crate::metric_history::canonical_instant(value) {
+            Some(value) => value,
+            None => return invalid_range(),
+        },
+        None => to - time::Duration::hours(crate::metric_history::DEFAULT_WINDOW_HOURS),
+    };
+    if from > to {
+        return invalid_range();
+    }
+    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id=?")
+        .bind(&node_id)
+        .fetch_optional(state.db().pool())
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "resource not found",
+            );
+        }
+        Err(_) => return unavailable(),
+    }
+    // The raw window is a fact of the retention policy, not of the answer: the
+    // range is clamped to it and the clamping is reported.
+    let cutoff = crate::retention::family_cutoff(now, raw_retention_days);
+    let availability = if from >= cutoff {
+        None
+    } else if to <= cutoff {
+        Some("unavailable".to_owned())
+    } else {
+        Some("partial".to_owned())
+    };
+    let effective_from = from.max(cutoff);
+    let limit = params
+        .limit
+        .unwrap_or(crate::metric_history::DEFAULT_SAMPLE_LIMIT)
+        .clamp(1, crate::metric_history::MAX_SAMPLE_LIMIT);
+    let window = match crate::metric_history::load_window(
+        state.db().pool(),
+        &node_id,
+        metric,
+        effective_from,
+        to,
+        limit,
+    )
+    .await
+    {
+        Ok(window) => window,
+        Err(_) => return unavailable(),
+    };
+    let window_seconds = (to - effective_from).whole_seconds().max(0);
+    let items = window
+        .samples
+        .iter()
+        .map(|sample| {
+            let (delay_seconds, clock_note) = match crate::metric_history::sample_timing(
+                &sample.observed_at,
+                &sample.received_at,
+            ) {
+                Some(timing) => (Some(timing.delay_seconds), timing.clock_note),
+                None => (None, None),
+            };
+            AdminNodeMetricSample {
+                observed_at: sample.observed_at.clone(),
+                received_at: sample.received_at.clone(),
+                value: sample.value,
+                delay_seconds,
+                clock_suspect: clock_note.is_some(),
+                clock_note,
+            }
+        })
+        .collect::<Vec<_>>();
+    let gaps = window
+        .gaps
+        .iter()
+        .map(|gap| AdminNodeMetricGap {
+            from: gap.from.clone(),
+            to: gap.to.clone(),
+            seconds: gap.seconds,
+            kind: gap.kind.as_str().to_owned(),
+            reason: match gap.kind {
+                crate::metric_history::GapKind::ProtectionPause => {
+                    "low-space protection paused sample collection".to_owned()
+                }
+                crate::metric_history::GapKind::Collection => {
+                    "no observation was received in this stretch".to_owned()
+                }
+            },
+            skipped_count: gap.skipped_count,
+        })
+        .collect::<Vec<_>>();
+    let series = match &window.ledger {
+        Some(ledger) => {
+            // The newest stored sample of this answer carries both of its own
+            // timestamps, so the reported delay and clock suspicion always come
+            // from one delivery. The ledger pair stays a series-level delivery
+            // stamp: its last_received_at can belong to a later restatement of
+            // the newest instant, which is not the delay of a sample.
+            let latest = window.samples.last().and_then(|sample| {
+                crate::metric_history::sample_timing(&sample.observed_at, &sample.received_at)
+            });
+            AdminNodeMetricSeries {
+                observed: true,
+                first_observed_at: Some(ledger.first_observed_at.clone()),
+                last_observed_at: Some(ledger.last_observed_at.clone()),
+                last_received_at: Some(ledger.last_received_at.clone()),
+                observation_count: ledger.observation_count,
+                replayed_count: ledger.replayed_count,
+                corrected_count: ledger.corrected_count,
+                sampled_count: window.samples.len() as i64,
+                coverage_seconds: window.coverage_seconds,
+                window_seconds,
+                latest_delay_seconds: latest.as_ref().map(|timing| timing.delay_seconds),
+                latest_clock_suspect: latest
+                    .as_ref()
+                    .is_some_and(|timing| timing.clock_note.is_some()),
+            }
+        }
+        None => AdminNodeMetricSeries {
+            observed: false,
+            first_observed_at: None,
+            last_observed_at: None,
+            last_received_at: None,
+            observation_count: 0,
+            replayed_count: 0,
+            corrected_count: 0,
+            sampled_count: 0,
+            coverage_seconds: 0,
+            window_seconds,
+            latest_delay_seconds: None,
+            latest_clock_suspect: false,
+        },
+    };
+    // Owner-only Node history is per-session data: it must never be stored by
+    // an intermediary or a browser cache and replayed to another session
+    // (design §12.4, webui.md §6.4).
+    no_store(
+        Json(AdminNodeMetricHistoryResponse {
+            node_id,
+            metric: metric.to_owned(),
+            from: crate::auth::format_rfc3339(effective_from),
+            to: crate::auth::format_rfc3339(to),
+            requested_from: crate::auth::format_rfc3339(from),
+            availability,
+            raw_retention_days,
+            grain: "raw".to_owned(),
+            aggregate_supported: false,
+            truncated: window.truncated,
+            window_seconds,
+            items,
+            gaps,
+            series,
+        })
+        .into_response(),
+    )
+}
 /// Owner-only Network Registry projection (design §7.1). The complete
 /// validated identity tuple is presented as Server-owned expected identity;
 /// observed Agent text never creates or rewrites Registry entries.
@@ -6286,6 +6653,10 @@ pub fn router() -> Router<AppState> {
             get(admin_node_peer_history),
         )
         .route("/nodes/{node_id}/history", get(admin_node_history))
+        .route(
+            "/nodes/{node_id}/metric-history",
+            get(admin_node_metric_history),
+        )
         .route("/networks", get(admin_networks))
         .route("/networks/{network_key}", get(admin_network_detail))
         .route("/networks", post(create_network))

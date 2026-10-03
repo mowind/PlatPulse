@@ -31,6 +31,7 @@ pub mod geo_ipinfo;
 pub mod geo_refresh;
 pub mod http;
 pub mod init;
+pub mod metric_history;
 pub mod metrics;
 pub mod migration;
 pub mod network;
