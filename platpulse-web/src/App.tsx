@@ -20,6 +20,7 @@ import AdminRulesList, { AdminRuleDetailPage } from './pages/AdminRules'
 import AdminSilencesList from './pages/AdminSilences'
 import AdminMaintenanceList from './pages/AdminMaintenance'
 import AdminOperationsList, { AdminOperationDetailPage } from './pages/AdminOperations'
+import AdminBackupsList, { AdminBackupDetailPage } from './pages/AdminBackups'
 import AdminDoctor from './pages/AdminDoctor'
 import AdminNotifications from './pages/AdminNotifications'
 import AdminNotificationEvents, {
@@ -178,8 +179,12 @@ const router = createBrowserRouter([
       // detail lookup.
       { path: 'operations', element: <AdminOperationsList /> },
       { path: 'operations/:operationId', element: <AdminOperationDetailPage /> },
-      // Doctor (issue #208): read-only diagnostics; running it never repairs.
       { path: 'doctor', element: <AdminDoctor /> },
+      // Backup artifact surface (issue #209): read the recorded artifacts and
+      // request verification. Backups are created offline and restoring is a
+      // separate operation, so neither is offered here.
+      { path: 'backups', element: <AdminBackupsList /> },
+      { path: 'backups/:artifactId', element: <AdminBackupDetailPage /> },
       { path: 'settings', element: <AdminSettings /> },
       { path: 'alerts/incidents', element: <AdminIncidentsList /> },
       { path: 'alerts/incidents/:incidentId', element: <AdminIncidentDetailPage /> },

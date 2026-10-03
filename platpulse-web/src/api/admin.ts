@@ -2550,6 +2550,15 @@ export function useAdminBackup(generation: number, artifactId: string) {
   })
 }
 
+/**
+ * Re-read one artifact's recorded state. A verification task that has reached
+ * a terminal status has written whatever it will write, so the artifact record
+ * a page is showing is re-read instead of being assumed to have caught up.
+ */
+export function refetchAdminBackup(artifactId: string): void {
+  void adminQueryClient.invalidateQueries({ queryKey: adminKeys.backupDetail(artifactId) })
+}
+
 /** Queue a backup verification (checksum, read-only integrity, schema). */
 export async function verifyBackupEntry(
   artifactId: string,

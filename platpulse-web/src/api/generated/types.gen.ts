@@ -883,6 +883,12 @@ export type BackupArtifactSummary = {
     sha256: string;
     verification: string;
     verifiedAt?: string | null;
+    /**
+     * The most recent Operation that verified this artifact, so the page can
+     * link the recorded outcome to the task that produced it. Absent means no
+     * verification task ever recorded a result for this artifact.
+     */
+    verifyOperationId?: string | null;
 };
 
 export type ChannelDto = {

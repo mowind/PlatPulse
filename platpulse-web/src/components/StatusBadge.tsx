@@ -48,6 +48,12 @@ const STATUS_ICONS: Record<string, LucideIcon> = {
   // reached and is never presented as a passing result.
   'Not checked': CircleMinus,
   'Checking…': Ellipsis,
+  // Backup artifact verification states (issue #209, webui.md §15.12): a
+  // recorded outcome, an artifact that was never checked, and a state the
+  // WebUI does not recognize are three different statements.
+  Verified: Check,
+  'Verification failed': X,
+  'Not verified': Clock,
 }
 
 /** Server component states map onto the WebUI collection vocabulary. */

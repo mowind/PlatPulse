@@ -1,5 +1,5 @@
 import { operationIsActive, operationStatusLabel, operationTone } from '../api/admin'
-import type { OperationSummary } from '../api/generated'
+import type { OperationIssue, OperationSummary } from '../api/generated'
 import { StatusBadge } from '../components/StatusBadge'
 import { ProgressThin, type ProgressStatus } from '../components/ui/progress-thin'
 import { formatDuration } from '../formatDuration'
@@ -35,6 +35,43 @@ export {
  */
 export const INDETERMINATE_OUTCOME =
   'The request may not have reached the Server, so the outcome is unknown. Nothing is re-sent automatically; the recorded state above is the only trustworthy answer.'
+
+/**
+ * The Server's own issues for one task, rendered verbatim: the code is the
+ * machine-readable half, the message is the redacted one. Shared by the
+ * Operation detail and the backup detail that tracks a verification task
+ * (issues #208, #209).
+ */
+export function IssueList({ issues, label }: { issues: OperationIssue[]; label: string }) {
+  if (issues.length === 0) {
+    return <p className="text-sm text-muted-foreground">The Server recorded no {label}.</p>
+  }
+  return (
+    <ul className="space-y-2 text-sm" data-slot={'operation-' + label.replace(/s$/, '') + '-list'}>
+      {issues.map((issue, index) => (
+        <li key={issue.code + String(index)} className="min-w-0 break-words">
+          <span className="font-mono text-xs">{issue.code}</span>
+          <span className="block text-muted-foreground">{issue.message}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** Redacted Server payload, rendered in a locally scrollable region. */
+export function ResultBlock({ result }: { result: unknown }) {
+  return (
+    <pre
+      data-slot="operation-result"
+      role="region"
+      aria-label="Operation result payload"
+      tabIndex={0}
+      className="max-h-96 overflow-auto rounded-md border border-border/60 bg-muted/30 p-3 text-xs"
+    >
+      {JSON.stringify(result, null, 2)}
+    </pre>
+  )
+}
 
 /** The Server's fixed status vocabulary (webui.md §5.5). */
 export const OPERATION_STATUSES = [

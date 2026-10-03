@@ -505,6 +505,10 @@ pub struct BackupArtifactSummary {
     pub verification: String,
     pub verified_at: Option<String>,
     pub create_operation_id: Option<String>,
+    /// The most recent Operation that verified this artifact, so the page can
+    /// link the recorded outcome to the task that produced it. Absent means no
+    /// verification task ever recorded a result for this artifact.
+    pub verify_operation_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1383,8 +1387,8 @@ pub(crate) async fn backups_list(
     Extension(_session): Extension<AuthenticatedSession>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    let rows = sqlx::query_as::<_, (String, String, i64, String, i64, String, String, Option<String>, Option<String>, String, Option<String>, Option<String>)>(
-        "SELECT artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, data_range_min, data_range_max, verification, verified_at, create_operation_id FROM backup_artifacts ORDER BY created_at DESC, artifact_id DESC",
+    let rows = sqlx::query_as::<_, (String, String, i64, String, i64, String, String, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>)>(
+        "SELECT artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, data_range_min, data_range_max, verification, verified_at, create_operation_id, verify_operation_id FROM backup_artifacts ORDER BY created_at DESC, artifact_id DESC",
     )
     .fetch_all(state.db().pool())
     .await;
@@ -1405,6 +1409,7 @@ pub(crate) async fn backups_list(
                     verification,
                     verified_at,
                     create_operation_id,
+                    verify_operation_id,
                 )| {
                     BackupArtifactSummary {
                         artifact_id,
@@ -1419,6 +1424,7 @@ pub(crate) async fn backups_list(
                         verification,
                         verified_at,
                         create_operation_id,
+                        verify_operation_id,
                     }
                 },
             )
@@ -1449,8 +1455,8 @@ pub(crate) async fn backup_artifact_detail(
     Extension(_session): Extension<AuthenticatedSession>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    let row = sqlx::query_as::<_, (String, String, i64, String, i64, String, String, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>)>(
-        "SELECT artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, data_range_min, data_range_max, verification, verified_at, create_operation_id, verification_error FROM backup_artifacts WHERE artifact_id = ?",
+    let row = sqlx::query_as::<_, (String, String, i64, String, i64, String, String, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>, Option<String>)>(
+        "SELECT artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, data_range_min, data_range_max, verification, verified_at, create_operation_id, verification_error, verify_operation_id FROM backup_artifacts WHERE artifact_id = ?",
     )
     .bind(&artifact_id)
     .fetch_optional(state.db().pool())
@@ -1470,6 +1476,7 @@ pub(crate) async fn backup_artifact_detail(
             verified_at,
             create_operation_id,
             verification_error,
+            verify_operation_id,
         ))) => Json(BackupArtifactDetail {
             artifact: BackupArtifactSummary {
                 artifact_id,
@@ -1484,6 +1491,7 @@ pub(crate) async fn backup_artifact_detail(
                 verification,
                 verified_at,
                 create_operation_id,
+                verify_operation_id,
             },
             verification_error: verification_error
                 .map(|message| crate::redaction::redact_sensitive(&message)),
@@ -2354,6 +2362,9 @@ mod tests {
             crate::database::SERVER_SCHEMA_VERSION
         );
         assert_eq!(body["artifact"]["verification"], "pending");
+        // No verification task has ever recorded an outcome for this artifact,
+        // so the linkage is absent rather than a fabricated id.
+        assert!(body["artifact"]["verifyOperationId"].is_null());
         assert!(
             !body["artifact"]["serverVersion"]
                 .as_str()
@@ -2367,7 +2378,119 @@ mod tests {
             .join(format!("platpulse-{artifact_id}.db"));
         assert!(file.exists());
 
-        // Verify through the worker.
+        // A caller can re-read the same recorded artifact at any time; the
+        // page drives this read, so the test drives it too.
+        let read_detail = || {
+            let state = state.clone();
+            let artifact_id = artifact_id.clone();
+            async move {
+                body_json(
+                    backup_artifact_detail(
+                        State(state),
+                        Path(artifact_id),
+                        Extension(session()),
+                        Extension(request_id()),
+                    )
+                    .await,
+                )
+                .await
+            }
+        };
+
+        // Verify through the worker. The command only queues the Operation: the
+        // artifact keeps its recorded state until the worker writes the
+        // outcome, so acceptance and result are separable facts.
+        let response = backup_verify(
+            State(state.clone()),
+            Path(artifact_id.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let queued = body_json(response).await;
+        let first_operation = queued["operation"]["operation"]["operationId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(read_detail().await["artifact"]["verification"], "pending");
+
+        while crate::operations::process_operations(&state).await.unwrap() > 0 {}
+        let verification: (String, Option<String>) = sqlx::query_as(
+            "SELECT verification, verification_error FROM backup_artifacts WHERE artifact_id = ?",
+        )
+        .bind(&artifact_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(verification.0, "ok");
+        assert!(verification.1.is_none());
+
+        // The recorded outcome is linked to the task that produced it, on the
+        // detail and on the list the Owner reads first.
+        let verified = read_detail().await;
+        assert_eq!(verified["artifact"]["verification"], "ok");
+        assert!(verified["artifact"]["verifiedAt"].is_string());
+        assert_eq!(
+            verified["artifact"]["verifyOperationId"].as_str(),
+            Some(first_operation.as_str())
+        );
+        let list = body_json(
+            backups_list(
+                State(state.clone()),
+                Extension(session()),
+                Extension(request_id()),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            list[0]["verifyOperationId"].as_str(),
+            Some(first_operation.as_str())
+        );
+
+        // Corrupting the snapshot must fail verification without deleting
+        // the artifact or its metadata.
+        std::fs::write(&file, b"tampered").unwrap();
+        let response = backup_verify(
+            State(state.clone()),
+            Path(artifact_id.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let queued = body_json(response).await;
+        let corrupt_operation = queued["operation"]["operation"]["operationId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        while crate::operations::process_operations(&state).await.unwrap() > 0 {}
+        let verification: (String, Option<String>) = sqlx::query_as(
+            "SELECT verification, verification_error FROM backup_artifacts ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(pool).await.unwrap();
+        assert_eq!(verification.0, "failed");
+        assert!(verification.1.unwrap().contains("checksum"));
+        let corrupted = read_detail().await;
+        assert_eq!(corrupted["artifact"]["verification"], "failed");
+        assert_eq!(
+            corrupted["artifact"]["verifyOperationId"].as_str(),
+            Some(corrupt_operation.as_str())
+        );
+        assert!(
+            corrupted["verificationError"]
+                .as_str()
+                .unwrap()
+                .contains("checksum")
+        );
+
+        // An artifact the Server can no longer read is a third, distinct
+        // recorded outcome: the row and its metadata survive, and the recorded
+        // reason names the unreadable file instead of claiming a pass.
+        std::fs::remove_file(&file).unwrap();
         let response = backup_verify(
             State(state.clone()),
             Path(artifact_id.clone()),
@@ -2385,28 +2508,14 @@ mod tests {
         .fetch_one(pool)
         .await
         .unwrap();
-        assert_eq!(verification.0, "ok");
-        assert!(verification.1.is_none());
-
-        // Corrupting the snapshot must fail verification without deleting
-        // the artifact or its metadata.
-        std::fs::write(&file, b"tampered").unwrap();
-        let response = backup_verify(
-            State(state.clone()),
-            Path(artifact_id),
-            mutation_headers(),
-            Extension(session()),
-            Extension(request_id()),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        while crate::operations::process_operations(&state).await.unwrap() > 0 {}
-        let verification: (String, Option<String>) = sqlx::query_as(
-            "SELECT verification, verification_error FROM backup_artifacts ORDER BY created_at DESC LIMIT 1",
-        )
-        .fetch_one(pool).await.unwrap();
         assert_eq!(verification.0, "failed");
-        assert!(verification.1.unwrap().contains("checksum"));
+        assert!(verification.1.unwrap().contains("cannot open"));
+        assert!(read_detail().await["artifact"]["verifyOperationId"].is_string());
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM backup_artifacts")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 1);
     }
 
     #[tokio::test]

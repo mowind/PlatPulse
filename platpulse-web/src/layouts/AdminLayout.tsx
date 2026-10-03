@@ -1,4 +1,4 @@
-import { Menu, LayoutDashboard, Cpu, Server, Network, Settings, PanelsTopLeft, ListChecks, SlidersHorizontal, TriangleAlert, BellOff, BellRing, CalendarClock, ClipboardList, Stethoscope } from 'lucide-react'
+import { Menu, LayoutDashboard, Cpu, Server, Network, Settings, PanelsTopLeft, ListChecks, SlidersHorizontal, TriangleAlert, BellOff, BellRing, CalendarClock, ClipboardList, Stethoscope, Archive } from 'lucide-react'
 import BackgroundDecoration from '../components/BackgroundDecoration'
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link, NavLink, Outlet, useOutletContext } from 'react-router'
@@ -272,6 +272,16 @@ export default function AdminLayout() {
             Doctor
           </NavLink>
           <NavLink
+            to="/admin/backups"
+            onClick={closeNav}
+            className={({ isActive }) => cn(NAV_LINK, isActive && NAV_LINK_ACTIVE)}
+          >
+            <span data-slot="admin-nav-icon" className="flex w-6 shrink-0 justify-center" aria-hidden="true">
+              <Archive size={18} strokeWidth={2} data-icon="Archive" />
+            </span>
+            Backups
+          </NavLink>
+          <NavLink
             to="/admin/settings"
             end
             onClick={closeNav}
@@ -363,7 +373,8 @@ export default function AdminLayout() {
           {/* MVP Admin surface (issue #92): deferred groups (data/maintenance,
               validators, people, transfer, enrollment/recovery/rotation)
               are not linked here. Tasks and Doctor (issue #208) are the
-              routed Operations entries. Incidents
+              routed Operations entries, and Backups (issue #209) is the
+              routed artifact surface. Incidents
               (issue #203), Rules (issue #204), Silences, and Maintenance
               Windows (issue #205), and Notifications (issue #206) are the
               routed Alerts entries. The single Notifications entry keeps the

@@ -20,7 +20,7 @@
 产品分离参照 Komari（<https://github.com/komari-monitor/komari>），但监控对象是 PlatON Node 而不是服务器：
 
 - Home：只读、以 Node 为中心的监控面。根路由 `/` 以 All Networks 展示 Active Node 卡片，并进入 Node Detail 展开公共投影。Node Detail 由最近两个连续 Block Summary 推导出块间隔，但不展示 Bounded Block History 列表。Site Access Mode 为 Public 时匿名 Guest 可读选定 Public GET/SSE 路径；为 Private 时 Owner 或 Viewer 登录后可读。
-- Admin：认证后的 Owner-only 系统概览与配置面。当前 SPA 路由覆盖 Overview、Agents、Nodes、Networks、Settings、Sessions 与 Audit；Settings 现在包含 Geo provider 选择（Disabled / Local MMDB / IPinfo / GeoJS）。Server/Admin API 另外提供 Validator、Alert、Notification、Operation、Retention、Backup/Restore、Doctor、Transfer、People、Enrollment/Recovery/Rotation 等能力，但尚未全部注册为页面。
+- Admin：认证后的 Owner-only 系统概览与配置面。当前 SPA 路由覆盖 Overview、Agents、Nodes、Networks、Settings、Sessions 与 Audit；Settings 现在包含 Geo provider 选择（Disabled / Local MMDB / IPinfo / GeoJS）。Server/Admin API 另外提供 Validator、Alert、Notification、Operation、Retention、Backup/Restore、Doctor、Transfer、People、Enrollment/Recovery/Rotation 等能力，但尚未全部注册为页面（Operation 台账、Task 详情、Doctor 与 Backup artifact 面已注册，见 WebUI §15.11–§15.12）。
 - 同一个 WebUI 承载 `/` 与 `/admin` 两组路由，使用不同的 DTO、查询缓存、权限和导航。
 - 站点级 Site Access Mode（Public/Private）由 Owner 配置，变更记 Audit；当前默认 Private。Node DTO 和 Admin 页面仍保留 `visibility` 字段与 Owner mutation 作为兼容/诊断字段，但 Public 查询实际按 `lifecycle = active` 过滤，不按该字段隐藏 Home；站点模式才是有效的匿名访问开关。
 
@@ -525,7 +525,7 @@ Home 不展示：凭证、RPC Endpoint 原文、内部错误堆栈、Agent/Host 
 5. Settings（按顺序包含 History Window 与 Site Access Mode）；
 6. Sessions 与 Audit。
 
-Server Admin API 另有 People、Validator、Retention、Backup/Restore、Transfer 和 Agent credential operations；当前 SPA 没有对应注册路由。Alert/Incident/Rule/Silence/Maintenance 与 Notification 的测试、Event/Delivery 历史和请求对账页面已分别由 issue #203、#204、#205、#206 路由（见 WebUI §15.6–§15.9），Operation 台账、Task 详情与 Doctor 页面由 issue #208 路由（见 WebUI §15.11）。
+Server Admin API 另有 People、Validator、Retention、Backup/Restore、Transfer 和 Agent credential operations；当前 SPA 没有对应注册路由。Alert/Incident/Rule/Silence/Maintenance 与 Notification 的测试、Event/Delivery 历史和请求对账页面已分别由 issue #203、#204、#205、#206 路由（见 WebUI §15.6–§15.9），Operation 台账、Task 详情与 Doctor 页面由 issue #208 路由（见 WebUI §15.11）；Backup artifact 列表、详情与只读校验请求由 issue #209 路由（见 WebUI §15.12），创建与恢复仍是离线命令（ADR 0008）。
 
 Settings 是当前 SPA 全局配置的唯一 canonical route（`/admin/settings`）；旧的 `/admin/history-window` 与 `/admin/site-access` 不重定向，而是进入 Admin 的 Section not found fallback。Server API 仍分别提供 `/api/admin/v1/history-window` 与 `/api/admin/v1/access-mode`。
 

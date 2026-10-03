@@ -9255,6 +9255,13 @@
               "string",
               "null"
             ]
+          },
+          "verifyOperationId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The most recent Operation that verified this artifact, so the page can\nlink the recorded outcome to the task that produced it. Absent means no\nverification task ever recorded a result for this artifact."
           }
         }
       },

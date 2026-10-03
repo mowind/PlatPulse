@@ -90,6 +90,21 @@ export interface DisposableServer {
   adminGet(path: string): Promise<{ status: number; body: unknown }>
   /** POST any Admin API route with the Owner session without asserting status. */
   adminPost(path: string, payload?: unknown): Promise<{ status: number; body: unknown }>
+  /** Absolute path of the configured Backup directory. */
+  readonly backupDir: string
+  /**
+   * Absolute path of the artifact file the Server records for an artifact id.
+   * An acceptance test rewrites or deletes this path to make a recorded
+   * artifact corrupt or unreadable.
+   */
+  backupArtifactPath(artifactId: string): string
+  /**
+   * Create one real Backup artifact the way ADR 0008 requires — during an
+   * Offline Backup Window, with the Server process stopped — and restart the
+   * Server on the same state directory. The serving process never creates
+   * artifacts, so this is the only way an acceptance test can produce one.
+   */
+  createOfflineBackup(): Promise<{ artifactId: string; filename: string; artifactPath: string }>
   /** Kill and respawn the Server on the same state directory. */
   restart(): Promise<void>
   /** Stop the Server and delete every temporary artifact. */
@@ -160,11 +175,12 @@ function ensureBuildInputs(): void {
   }
 }
 
-function runCli(args: string[], stdin?: string): void {
+function runCli(args: string[], stdin?: string): string {
   try {
-    execFileSync(SERVER_BINARY, args, {
+    return execFileSync(SERVER_BINARY, args, {
       input: stdin ?? '',
       stdio: ['pipe', 'pipe', 'pipe'],
+      encoding: 'utf8',
     })
   } catch (error) {
     const failure = error as { stderr?: Buffer; stdout?: Buffer; message: string }
@@ -495,10 +511,40 @@ export async function startDisposableServer(
       return { status: response.status, body: await readJson(response) }
     }
 
+    const backupArtifactPath = (artifactId: string): string =>
+      join(backupDir, `platpulse-${artifactId}.db`)
+
+    const createOfflineBackup = async (): Promise<{
+      artifactId: string
+      filename: string
+      artifactPath: string
+    }> => {
+      // ADR 0008: creation is an offline operation and the serving process
+      // never writes an artifact, so the Server stops for this window and the
+      // same state directory is reused when it comes back.
+      await stop(child)
+      child = undefined
+      try {
+        const output = runCli(['backup', '--config', configPath])
+        const created = /Created sanitized backup '([^']+)'/.exec(output)
+        if (created === null) {
+          throw new Error(`the backup command did not report an artifact name: ${output}`)
+        }
+        const filename = created[1]
+        const artifactId = filename.replace(/^platpulse-/, '').replace(/\.db$/, '')
+        return { artifactId, filename, artifactPath: join(backupDir, filename) }
+      } finally {
+        child = await spawnServe()
+      }
+    }
+
     return {
       baseUrl,
       stateDir,
       dbPath,
+      backupDir,
+      backupArtifactPath,
+      createOfflineBackup,
       acknowledgeIncident,
       acknowledgeIncidentAs,
       enrollAgent,

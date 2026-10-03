@@ -1,15 +1,19 @@
-import { expect, test, type Locator, type Page } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 import type { OperationDetail, OperationSummary, DoctorOverview } from '../src/api/generated'
+import {
+  VIEWPORTS,
+  expectLocalTableScroll,
+  expectResolvedTheme,
+  focusByKeyboard,
+  gotoAuthenticated,
+  loginToDisposableServer,
+} from './admin-flow'
 import {
   expectFocusedElementHasVisibleFocus,
   expectNoHorizontalOverflow,
   expectVisibleInteractiveTargets,
 } from './helpers'
-import {
-  HARNESS_OWNER_PASSWORD,
-  HARNESS_OWNER_USERNAME,
-  startDisposableServer,
-} from './server-harness'
+import { startDisposableServer } from './server-harness'
 
 /**
  * Operations ledger and Doctor diagnostics acceptance (issue #208, #202
@@ -27,34 +31,6 @@ import {
  * load costs more than every assertion on the page put together, and the
  * resolved theme is asserted so a dark pass cannot silently re-render light.
  */
-
-const VIEWPORTS = [
-  { width: 360, height: 800 },
-  { width: 390, height: 844 },
-  { width: 768, height: 1024 },
-  { width: 1280, height: 800 },
-  { width: 1440, height: 900 },
-]
-async function loginToDisposableServer(page: Page, baseUrl: string) {
-  await page.context().clearCookies()
-  await page.goto(baseUrl + '/login')
-  await page.getByLabel('Username').fill(HARNESS_OWNER_USERNAME)
-  await page.getByLabel('Password').fill(HARNESS_OWNER_PASSWORD)
-  await page.getByRole('button', { name: 'Sign in' }).click()
-  await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
-}
-
-async function gotoAuthenticated(page: Page, baseUrl: string, path: string): Promise<void> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    await page.goto(baseUrl + path)
-    const heading = page.locator('h1').first()
-    await heading.waitFor({ state: 'visible', timeout: 15_000 })
-    if (!/^Sign in\b/i.test((await heading.innerText()).trim())) return
-    await loginToDisposableServer(page, baseUrl)
-  }
-  await page.goto(baseUrl + path)
-}
-
 
 /** Read the recorded Operation ledger over real Server HTTP. */
 async function readOperations(
@@ -91,40 +67,6 @@ async function waitForRecordedRun(server: {
 }
 
 /** Tab until the target control holds focus, so focus styling is exercised. */
-async function focusByKeyboard(page: Page, target: Locator): Promise<Locator> {
-  for (let press = 0; press < 120; press += 1) {
-    await page.keyboard.press('Tab')
-    const focused = await target
-      .evaluate((element) => element === document.activeElement)
-      .catch(() => false)
-    if (focused) return target
-  }
-  throw new Error('keyboard focus never reached the control ' + target)
-}
-
-/** A wide table scrolls inside its own region, never the document. */
-async function expectLocalTableScroll(page: Page, slot: string) {
-  const overflowX = await page
-    .locator('[data-slot="' + slot + '"]')
-    .evaluate((table) => getComputedStyle(table.parentElement ?? table).overflowX)
-  expect(overflowX, slot + ' must scroll inside its own region').toBe('auto')
-  await expectNoHorizontalOverflow(page)
-}
-
-/**
- * The resolved theme must follow the emulated system preference, otherwise a
- * dark pass would only re-assert the light rendering it already passed.
- */
-async function expectResolvedTheme(page: Page, expected: 'light' | 'dark') {
-  await expect
-    .poll(
-      async () =>
-        page.evaluate(() => document.documentElement.classList.contains('dark')),
-      { message: () => 'the resolved theme must follow the emulated system preference' },
-    )
-    .toBe(expected === 'dark')
-}
-
 /** The ledger lays out the one recorded task without overflowing the document. */
 async function expectLedgerLayout(page: Page, width: number) {
   await expect(
