@@ -280,4 +280,61 @@ Spec: 5 findings; worst: production retention execution deletes data despite the
   re-running exactly those three gives 85 passed / 7 skipped / 0 failed, and none of them imports a module this ticket
   changed or asserts anything about the Admin nav. A read-only sweep found no other hard-coded Admin-nav literal.
 
+## REVIEW ROUND 2 (both axes re-run on the shipped commit 59ff5dc, fixed point 3d25fb7)
+
+The same two axes (provider `cliproxyapi`, model `gpt-6.1-sol`, reasoning effort `high`) were re-run over the
+committed diff, this time including the Web slice, the new router-level auth test, and the three repaired nav specs.
+Both axes independently reported the same two Web defects, and both sit exactly on sentences this ticket wrote into
+`docs/design/webui.md`:
+
+1. (P2, both axes) The policy save was bound to the live prop `policy.policyVersion`, so a background overview refetch
+   — composing a preview invalidates `adminKeys.retention` (`platpulse-web/src/api/admin.ts:2492`), and so does another
+   Owner's save — handed the editor a newer version while the Operator's typed confirmation still stood. The save then
+   submitted that newer `expectedPolicyVersion` together with the older draft: no 409, and a value the Operator never
+   read was overwritten. It contradicted `docs/design/webui.md:1187` ("the save submits the `policyVersion` the
+   operator read, so a stale tab cannot overwrite a value it never reviewed"). FIXED: `PolicyEditor` now holds
+   `reviewed = {version, days}` captured when the draft began and submits `reviewed.version`; the baseline is
+   re-adopted only while the editor holds no draft of its own (`hasDraft`); a `data-slot="retention-policy-moved"`
+   notice names the recorded value and fingerprint; a refused save refetches the overview (`onStale`) and re-baselines
+   so the recovery is a fresh read and a fresh confirmation, never a retry; and the "Policy version" row displays the
+   version this save will submit.
+2. (P2, Standards axis) The run was armed by preview validity alone (`AdminRetention.tsx:802-811`, `:876-883`): a
+   single click on a bound preview queued the release command, while `docs/design/webui.md:1194` requires an explicit
+   Owner command behind typed confirmation, and `PATTERN-CONFIRMATION` (`docs/design/webui.md:320`) is the established
+   pattern. FIXED: the run panel requires the exact token `run <opening characters of the preview id>`, the full id is
+   rendered at `data-slot="retention-run-preview-id"`, the button stays disabled until the token matches, the token is
+   ASCII the Operator can type on a phone keyboard, and binding a different preview clears the confirmation so a
+   replacement preview is never executed on the previous preview's confirmation.
+3. (P2, Spec axis) The page was bound to `composed ?? data?.preview`, so a preview it merely *restored* on load was
+   not pinned: the next overview refetch substituted the Server's newest preview while the run stayed available, and
+   the run then sent an id whose scope and cutoffs the Operator never reviewed (Story 38, "旧版本/范围/截止条件变更须重预览").
+   The page's own comment claimed "A Server refetch never rebinds the page to a different preview: only composing one
+   does", which held only after this page composed one. FIXED: `pinned` holds the first preview the overview reports
+   (`boundPreview = composed ?? pinned ?? serverPreview`) and only an explicit compose on this page replaces it;
+   `docs/design/webui.md:1191` now states the pin.
+- Tests added with the fixes: `refuses to queue a run until the confirmation names the bound preview` (a confirmation
+  for another preview arms nothing and queues nothing; the exact token queues exactly one run with the same body) and
+  `keeps the version it read when the page refetches under a confirmed draft` (composing a preview under a standing
+  confirmation leaves the submitted `expectedPolicyVersion` at the reviewed version, the notice appears, the Server
+  refuses, and the draft is dropped for what is now recorded). `platpulse-web/e2e/retention-acceptance.spec.ts` now
+  drives the same confirmation through the real WebUI, and its stale-preview test re-confirms the replacement preview
+  after the refusal instead of inheriting the old confirmation.
+- Nothing else was reported: no new backend, migration, OpenAPI, or Standards finding, no repetition of the three
+  dispositioned items, and the three nav-spec repairs were checked as honest (same assertions, updated inventory).
+- CI evidence for the pre-commit failure those repairs address: run 37082514394 on 3d25fb7 failed only in
+  `WebUI e2e (fixed viewports)` (Rust workspace, WebUI, release package and release-candidate harness were green), and
+  the failing tests were exactly `e2e/admin-overview.spec.ts:179`, `e2e/convergence-acceptance.spec.ts:256` and
+  `e2e/emerald-refinement.spec.ts:143` — the three specs that pin the Admin nav and were repaired mechanically here.
+- Tests added for the pin: `stays bound to the preview it restored when the Server reports a newer one` (after
+  `adminKeys.retention` is invalidated with a different preview in the overview, the run still sends the pinned id).
+- Playwright verification on the fixed tree: the four ticket specs across the five projects gave
+  `92 passed / 22 skipped / 1 failed` on the first run, and the single failure was the test's own locator, not the
+  page: `e2e/retention-acceptance.spec.ts:278` looked up `editor.getByRole('status')` and Playwright's strict mode
+  refused `expected 1 element, found 2` (`locator('[data-slot="retention-edit"]').getByRole('status') resolved to 2
+  elements`) once the editor carried both the save notice and the new `data-slot="retention-policy-moved"` status.
+  LESSON: a new `role="status"` inside a component makes every bare `getByRole('status')` scoped to that component
+  ambiguous — the save notice now carries `data-slot="retention-save-notice"` and the spec addresses it by slot.
+  That single test then passed on `desktop-1280`, and the full four-spec sweep was re-run after the fix.
+
+
 

@@ -129,15 +129,25 @@ export default function AdminRetention() {
   const data = overview.data
 
   const [selectedFamily, setSelectedFamily] = useState<string | null>(null)
-  // The preview this page is bound to. A Server refetch never rebinds the page
-  // to a different preview: only composing one does, so the Operator always
-  // runs the estimates they reviewed.
   const [composed, setComposed] = useState<RetentionPreviewDto | null>(null)
   const [rejection, setRejection] = useState<Rejection | null>(null)
+  /**
+   * The preview this page is bound to is pinned the first time the overview
+   * reports one, and only an explicit compose here replaces it. The overview
+   * always carries the Server's newest preview, so without the pin a refetch
+   * — another Owner composing one, for instance — would silently substitute a
+   * plan this Operator never reviewed and the run would send its id (Story 38).
+   */
+  const [pinned, setPinned] = useState<RetentionPreviewDto | null>(null)
 
   const policies = data?.policies ?? []
   const selected = policies.find((policy) => policy.family === selectedFamily) ?? null
-  const boundPreview = composed ?? data?.preview ?? null
+  const serverPreview = data?.preview ?? null
+  const boundPreview = composed ?? pinned ?? serverPreview
+
+  useEffect(() => {
+    if (composed === null && pinned === null && serverPreview !== null) setPinned(serverPreview)
+  }, [composed, pinned, serverPreview])
   const boundRejection =
     rejection && boundPreview && rejection.previewId === boundPreview.previewId ? rejection : null
 
@@ -214,6 +224,7 @@ export default function AdminRetention() {
               generation={generation}
               csrfToken={csrfToken}
               onSaved={onPolicySaved}
+              onStale={() => void overview.refetch()}
               onClose={() => setSelectedFamily(null)}
             />
           )}
@@ -376,12 +387,14 @@ function PolicyEditor({
   generation,
   csrfToken,
   onSaved,
+  onStale,
   onClose,
 }: {
   policy: RetentionPolicyDto
   generation: number
   csrfToken: string
   onSaved: (policy: RetentionPolicyDto) => void
+  onStale: () => void
   onClose: () => void
 }) {
   const [days, setDays] = useState<number | null>(policy.retentionDays)
@@ -390,6 +403,24 @@ function PolicyEditor({
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [fieldError, setFieldError] = useState<string | null>(null)
+  /**
+   * The version the Operator read, and the only version this save may submit.
+   * The overview is refetched whenever another Owner writes a policy or a
+   * preview is composed, so this editor can be handed a newer version while a
+   * draft and its confirmation stand. Adopting that version would overwrite a
+   * value the Operator never read, so the draft keeps its own baseline and the
+   * Server refuses the write instead (Story 37).
+   */
+  const [reviewed, setReviewed] = useState({ version: policy.policyVersion, days: policy.retentionDays })
+  const hasDraft = confirmation.length > 0 || days !== reviewed.days
+  const movedUnderDraft = hasDraft && policy.policyVersion !== reviewed.version
+
+  // Only an editor holding no draft of its own follows the Server's values.
+  useEffect(() => {
+    if (hasDraft) return
+    setDays(policy.retentionDays)
+    setReviewed({ version: policy.policyVersion, days: policy.retentionDays })
+  }, [policy.policyVersion, policy.retentionDays, hasDraft])
 
   const boundsError = days === null ? null : localBoundsError(policy, days)
   // The estimate is asked of the Server for every non-negative draft, including
@@ -414,7 +445,7 @@ function PolicyEditor({
       const response = await updateRetentionPolicyEntry(
         policy.family,
         days,
-        policy.policyVersion,
+        reviewed.version,
         csrfToken,
       )
       setNotice(
@@ -431,8 +462,12 @@ function PolicyEditor({
     } catch (caught) {
       if (caught instanceof AdminApiError && caught.code === 'retention_policy_version_conflict') {
         // The value the Operator confirmed is no longer the value on the Server,
-        // so the confirmation is discarded and must be re-entered.
+        // so the confirmation is discarded and must be re-entered against what
+        // the Server now records: the draft is dropped as well, never re-sent.
         setConfirmation('')
+        setDays(policy.retentionDays)
+        setReviewed({ version: policy.policyVersion, days: policy.retentionDays })
+        onStale()
         setError(
           'This policy changed since this page read it (fingerprint ' +
             shortId(policy.policyVersion) +
@@ -480,7 +515,7 @@ function PolicyEditor({
           <DetailItem label="Default">{formatRetention(policy.defaultDays)}</DetailItem>
           <DetailItem label="Allowed range">{formatBounds(policy)}</DetailItem>
           <DetailItem label="Policy version">
-            <span className="font-mono text-xs">{shortId(policy.policyVersion)}</span>
+            <span className="font-mono text-xs">{shortId(reviewed.version)}</span>
           </DetailItem>
         </dl>
 
@@ -546,6 +581,16 @@ function PolicyEditor({
           </div>
         )}
 
+        {movedUnderDraft && (
+          <p className={CONSEQUENCE} role="status" data-slot="retention-policy-moved">
+            This family was written again after the version you read (now{' '}
+            <span className="font-mono text-xs">{shortId(policy.policyVersion)}</span>, and{' '}
+            <strong>{formatRetention(policy.retentionDays)}</strong> is what the Server records now). Your
+            confirmation names the version you read, so the Server refuses this save rather than overwrite a
+            value you never read: read the recorded value above, then enter and confirm the change again.
+          </p>
+        )}
+
         <div className={FIELD}>
           <label htmlFor="retention-confirmation" className={LABEL}>
             Type the change to confirm
@@ -564,7 +609,7 @@ function PolicyEditor({
         </div>
 
         {notice && (
-          <p className={NOTICE} role="status">
+          <p className={NOTICE} role="status" data-slot="retention-save-notice">
             {notice}
           </p>
         )}
@@ -790,17 +835,28 @@ function RunPanel({
   const [running, setRunning] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [confirmation, setConfirmation] = useState('')
 
   const boundPreviewId = preview ? preview.previewId : null
   // A refusal belongs to the preview it was refused for: binding a different
   // preview clears it, while a queued-run notice stays true whatever else
-  // refetches.
+  // refetches. The confirmation names one preview, so it is cleared with it:
+  // a new preview is confirmed again, never inherited (Story 38).
   useEffect(() => {
     setError(null)
+    setConfirmation('')
   }, [boundPreviewId])
 
   const expired = preview ? isExpired(preview) : false
-  const canRun = Boolean(preview && !expired && !rejection && !running && csrfToken.length > 0)
+  // Starting the run releases rows the preview froze, so it is one explicit
+  // Owner command behind a typed confirmation that names the preview it binds.
+  // The token is the preview id's own opening characters: ASCII the Operator
+  // can type on a phone keyboard, read off the id shown above.
+  const confirmationTarget = preview ? 'run ' + preview.previewId.slice(0, 12) : ''
+  const confirmationMatches = confirmationTarget.length > 0 && confirmation.trim() === confirmationTarget
+  const canRun = Boolean(
+    preview && !expired && !rejection && !running && csrfToken.length > 0 && confirmationMatches,
+  )
 
   async function run() {
     if (!preview) return
@@ -810,6 +866,7 @@ function RunPanel({
     try {
       const response = await runRetentionEntry(preview.previewId, csrfToken)
       const operationId = response.operation.operation.operationId
+      setConfirmation('')
       setNotice(
         'The Server queued the retention run as ' +
           operationId +
@@ -846,9 +903,11 @@ function RunPanel({
         {preview ? (
           <p className="text-sm">
             This would queue a run for preview{' '}
-            <code className={INLINE_CODE}>{shortId(preview.previewId)}</code>: the Server executes the plan it
-            froze, releases only rows older than each bound cutoff, never touches protected state, and never
-            re-estimates. The run is recorded as a task you can follow.
+            <code className={INLINE_CODE + ' break-all'} data-slot="retention-run-preview-id">
+              {preview.previewId}
+            </code>
+            : the Server executes the plan it froze, releases only rows older than each bound cutoff, never
+            touches protected state, and never re-estimates. The run is recorded as a task you can follow.
           </p>
         ) : (
           <p className="text-sm">
@@ -873,6 +932,27 @@ function RunPanel({
           </p>
         )}
 
+        {preview && (
+          <div className={FIELD}>
+            <label htmlFor="retention-run-confirmation" className={LABEL}>
+              Type the run to confirm
+            </label>
+            <Input
+              id="retention-run-confirmation"
+              className="max-w-[20rem]"
+              value={confirmation}
+              autoComplete="off"
+              aria-invalid={confirmation.length > 0 && !confirmationMatches}
+              aria-describedby="retention-run-confirmation-hint"
+              onChange={(event) => setConfirmation(event.target.value)}
+            />
+            <small id="retention-run-confirmation-hint" className="text-[11px] text-muted-foreground">
+              Type <code className={INLINE_CODE}>{confirmationTarget}</code> to confirm. The confirmation names
+              the preview this run is bound to, so it is never inherited by another preview.
+            </small>
+          </div>
+        )}
+
         <Button
           className="justify-self-start"
           disabled={!canRun}
@@ -882,8 +962,9 @@ function RunPanel({
           {running ? 'Queueing…' : 'Run retention for this preview'}
         </Button>
         <p className="text-xs text-muted-foreground">
-          Nothing is queued while this button is unavailable: an expired preview, a preview this page already
-          knows changed, and a missing preview are all reasons the Server would refuse the run.
+          Nothing is queued while this button is unavailable: a missing confirmation, an expired preview, a
+          preview this page already knows changed, and a missing preview are all reasons the Server would refuse
+          the run.
         </p>
       </div>
     </CardX>

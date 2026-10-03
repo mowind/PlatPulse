@@ -268,6 +268,14 @@ function saveButton(): HTMLButtonElement {
   return screen.getByRole('button', { name: 'Save retention' }) as HTMLButtonElement
 }
 
+/** Type the run confirmation the panel asks for, read from the bound preview id. */
+function confirmRun() {
+  const id = slot('retention-run-preview-id').textContent?.trim() ?? ''
+  fireEvent.change(screen.getByLabelText('Type the run to confirm'), {
+    target: { value: 'run ' + id.slice(0, 12) },
+  })
+}
+
 /** Fill the bounded edit and wait until the Server's estimate has settled. */
 async function fillEdit(days: number, confirmation: string) {
   fireEvent.change(screen.getByLabelText('New retention (days)'), { target: { value: String(days) } })
@@ -469,9 +477,12 @@ describe('PAGE-ADMIN-RETENTION (issue #210)', () => {
     expect(slot('retention-preview-notes').textContent).toContain(
       'Estimates are upper bounds computed when this preview was composed.',
     )
+    // Composing binds the preview; starting the run stays a separate explicit
+    // command behind its own typed confirmation.
     expect(
       (screen.getByRole('button', { name: 'Run retention for this preview' }) as HTMLButtonElement).disabled,
-    ).toBe(false)
+    ).toBe(true)
+    expect(slot('retention-run').textContent).toContain('run 0195f2a1-040')
   })
 
   it('queues the run for the preview it bound and links the recorded task', async () => {
@@ -494,7 +505,9 @@ describe('PAGE-ADMIN-RETENTION (issue #210)', () => {
     await renderRetention()
 
     const run = screen.getByRole('button', { name: 'Run retention for this preview' }) as HTMLButtonElement
-    expect(run.disabled).toBe(false)
+    expect(run.disabled).toBe(true)
+    confirmRun()
+    await waitFor(() => expect(run.disabled).toBe(false))
     expect(slot('retention-run').textContent).toContain('the Server executes the plan it froze')
     fireEvent.click(run)
 
@@ -526,6 +539,8 @@ describe('PAGE-ADMIN-RETENTION (issue #210)', () => {
     await renderRetention()
 
     const run = screen.getByRole('button', { name: 'Run retention for this preview' }) as HTMLButtonElement
+    confirmRun()
+    await waitFor(() => expect(run.disabled).toBe(false))
     fireEvent.click(run)
 
     // The Server's own message is on screen where the run was requested, and
@@ -548,12 +563,13 @@ describe('PAGE-ADMIN-RETENTION (issue #210)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Compose a new preview' }))
     await waitFor(() => expect(calls(PREVIEW_KEY)).toHaveLength(1))
-    await waitFor(() =>
-      expect(
-        (screen.getByRole('button', { name: 'Run retention for this preview' }) as HTMLButtonElement).disabled,
-      ).toBe(false),
-    )
     await waitFor(() => expect(slot('retention-preview').textContent).toContain('0195f2a1…0401'))
+    // The confirmation named the previous preview and is never inherited, so
+    // the replacement preview must be confirmed again before it can be run.
+    await waitFor(() => expect(run.disabled).toBe(true))
+    expect((screen.getByLabelText('Type the run to confirm') as HTMLInputElement).value).toBe('')
+    confirmRun()
+    await waitFor(() => expect(run.disabled).toBe(false))
     expect(screen.queryByText(/this page will not retry it/)).toBeNull()
   })
 
@@ -612,5 +628,132 @@ describe('PAGE-ADMIN-RETENTION (issue #210)', () => {
     expect(screen.getByText(/Nothing is bound here until one is composed successfully/)).toBeTruthy()
     expect(screen.getByText(/No preview is bound on this Server/)).toBeTruthy()
     expect((screen.getByRole('button', { name: 'Compose preview' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('refuses to queue a run until the confirmation names the bound preview', async () => {
+    const state = newState()
+    state.preview = livePreview()
+    mockRetention(
+      baseRoutes(state, {
+        [RUN_KEY]: () =>
+          jsonResponse(
+            {
+              auditEventId: 88,
+              operation: { cancellable: true, errors: [], warnings: [], result: null, operation: runSummary() },
+            },
+            200,
+          ),
+      }),
+    )
+    await renderRetention()
+
+    const run = screen.getByRole('button', { name: 'Run retention for this preview' }) as HTMLButtonElement
+    expect(run.disabled).toBe(true)
+    expect(slot('retention-run').textContent).toContain('run 0195f2a1-040')
+    // A confirmation for some other preview never arms this run.
+    fireEvent.change(screen.getByLabelText('Type the run to confirm'), {
+      target: { value: 'run 0195f2a1-0401' },
+    })
+    expect(run.disabled).toBe(true)
+    fireEvent.click(run)
+    expect(calls(RUN_KEY)).toHaveLength(0)
+
+    // The exact token does, and the command is sent exactly once.
+    confirmRun()
+    await waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    await waitFor(() => expect(calls(RUN_KEY)).toHaveLength(1))
+    expect(calls(RUN_KEY)[0].body).toEqual({ previewId: PREVIEW_ID })
+  })
+
+  it('keeps the version it read when the page refetches under a confirmed draft', async () => {
+    const state = newState()
+    mockRetention(
+      baseRoutes(state, {
+        [IMPACT_KEY]: impactRoute(),
+        [PREVIEW_KEY]: () => {
+          state.preview = livePreview()
+          return jsonResponse(livePreview(), 200)
+        },
+        [POLICY_KEY]: (_request, body) => {
+          const sent = (body as { expectedPolicyVersion: string }).expectedPolicyVersion
+          if (sent === RAW_VERSION) {
+            // Another Operator wrote this family first: the version this page
+            // read is gone, and the Server refuses to overwrite it.
+            return apiError(
+              'retention_policy_version_conflict',
+              'the policy changed since it was read; reload the current value and preview again',
+              409,
+              ['expectedPolicyVersion'],
+            )
+          }
+          state.policies = [rawPolicy({ retentionDays: 14 }), aggregatePolicy()]
+          return jsonResponse({ policy: rawPolicy({ retentionDays: 14 }), auditEventId: 99 }, 200)
+        },
+      }),
+    )
+    await renderRetention()
+    await openEditor()
+    await fillEdit(14, 'retention ' + RAW + ' 14')
+
+    // A concurrent write lands, and the page reloads the overview because a
+    // preview was composed while this confirmation stood.
+    state.policies = [rawPolicy({ retentionDays: 21, policyVersion: OTHER_VERSION }), aggregatePolicy()]
+    fireEvent.click(screen.getByRole('button', { name: 'Compose preview' }))
+    await waitFor(() => expect(calls(OVERVIEW_KEY).length).toBeGreaterThan(1))
+    await waitFor(() => expect(slot('retention-policy-moved').textContent).toContain('f0f0f0f0…0002'))
+    // The version this save will submit is still the one the Operator read.
+    expect(slot('retention-edit').textContent).toContain(RAW_VERSION_SHORT)
+    await waitFor(() => expect(saveButton().hasAttribute('disabled')).toBe(false))
+
+    fireEvent.click(saveButton())
+    await waitFor(() => expect(calls(POLICY_KEY)).toHaveLength(1))
+    expect(calls(POLICY_KEY)[0].body).toEqual({ retentionDays: 14, expectedPolicyVersion: RAW_VERSION })
+    expect(await screen.findByText(/This policy changed since this page read it/)).toBeTruthy()
+
+    // Recovery: the draft is dropped, and the editor shows what is recorded now.
+    await waitFor(() =>
+      expect((screen.getByLabelText('Type the change to confirm') as HTMLInputElement).value).toBe(''),
+    )
+    await waitFor(() => expect(screen.getAllByText('21 days').length).toBeGreaterThanOrEqual(2))
+    // The editor now holds the recorded version, not the one it read.
+    await waitFor(() => expect(slot('retention-edit').textContent).toContain('f0f0f0f0…0002'))
+  })
+
+  it('stays bound to the preview it restored when the Server reports a newer one', async () => {
+    const state = newState()
+    state.preview = livePreview()
+    mockRetention(
+      baseRoutes(state, {
+        [RUN_KEY]: () =>
+          jsonResponse(
+            {
+              auditEventId: 88,
+              operation: { cancellable: true, errors: [], warnings: [], result: null, operation: runSummary() },
+            },
+            200,
+          ),
+      }),
+    )
+    await renderRetention()
+    await waitFor(() => expect(slot('retention-preview').textContent).toContain(PREVIEW_SHORT))
+
+    // Another Owner composes a preview elsewhere and this page reloads the
+    // overview, which always carries the Server's newest preview. The page stays
+    // bound to the plan the Operator reviewed, and the run sends that id.
+    state.preview = livePreview({ previewId: SECOND_PREVIEW_ID, createdAt: iso(-1_000) })
+    await act(async () => {
+      await adminQueryClient.invalidateQueries({ queryKey: ['admin', 'retention'] })
+    })
+    await waitFor(() => expect(slot('retention-run-preview-id').textContent).toContain(PREVIEW_ID))
+    expect(slot('retention-preview').textContent).not.toContain('0195f2a1…0401')
+
+    confirmRun()
+    await waitFor(() =>
+      expect((slot('retention-run-submit') as HTMLButtonElement).disabled).toBe(false),
+    )
+    fireEvent.click(slot('retention-run-submit'))
+    await waitFor(() => expect(calls(RUN_KEY)).toHaveLength(1))
+    expect(calls(RUN_KEY)[0].body).toEqual({ previewId: PREVIEW_ID })
   })
 })

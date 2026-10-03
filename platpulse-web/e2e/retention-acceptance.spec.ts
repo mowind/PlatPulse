@@ -164,6 +164,18 @@ async function changePolicyOutOfBand(
   )
 }
 
+/**
+ * Start the run the way the page requires it: the operator types the token the
+ * run panel asks for, which names the preview the run is bound to. The token is
+ * read from the page, never assumed, so a run is never started by a bare click.
+ */
+async function confirmRun(page: Page, previewId: string) {
+  const panel = slot(page, 'retention-run')
+  await expect(panel).toContainText('run ' + previewId.slice(0, 12))
+  await panel.getByLabel('Type the run to confirm').fill('run ' + previewId.slice(0, 12))
+  await expect(slot(page, 'retention-run-submit')).toBeEnabled()
+}
+
 async function composePreview(page: Page, server: AdminServer, previousId: string | null): Promise<PreviewView> {
   await slot(page, 'retention-preview-compose').click()
   // Composing is a Server write, so wait for the Server to report the preview
@@ -263,7 +275,9 @@ test('the Server owns the retention bound: its refusals gate the save and the sa
       await save.click()
 
       // The confirmation is audited and the editor reports the Server's value.
-      const notice = editor.getByRole('status')
+      // Addressed by slot: the editor also carries a live "moved under draft"
+      // status, so a bare role=status lookup would be ambiguous.
+      const notice = editor.locator('[data-slot="retention-save-notice"]')
       await expect(notice).toContainText(raw.label + ' is now retained for ' + retentionLabel(nextDays))
       await expect(notice).toContainText('Audit #')
       await expect(days).toHaveValue(String(nextDays))
@@ -337,10 +351,15 @@ test('a composed preview binds the plan, and the run is queued against that prev
         await expect(slot(page, 'retention-preview-notes')).toHaveCount(0)
       }
 
-      // The run is offered for exactly this preview id.
-      await expect(slot(page, 'retention-run')).toContainText('This would queue a run for preview ' + shortId(preview.previewId))
+      // The run is offered for exactly this preview id, and starting it is one
+      // explicit command: a bound preview alone leaves the button unavailable
+      // until the typed confirmation names that preview.
+      await expect(slot(page, 'retention-run-preview-id')).toHaveText(preview.previewId)
       const run = slot(page, 'retention-run-submit')
-      await expect(run).toBeEnabled()
+      await expect(run).toBeDisabled()
+      await run.click({ force: true })
+      await expect(run).toBeDisabled()
+      await confirmRun(page, preview.previewId)
       await run.click()
       await expect(slot(page, 'retention-run')).toContainText('The Server queued the retention run as')
 
@@ -394,7 +413,7 @@ test('a policy change after a preview makes the run stale: nothing is queued and
       // The page holds the preview it composed and cannot see the change, so it
       // still offers the run - the Server is the one that refuses it.
       const run = slot(page, 'retention-run-submit')
-      await expect(run).toBeEnabled()
+      await confirmRun(page, preview.previewId)
       await run.click()
       const runPanel = slot(page, 'retention-run')
       const previewPanel = slot(page, 'retention-preview')
@@ -416,7 +435,10 @@ test('a policy change after a preview makes the run stale: nothing is queued and
       expect(fresh.previewId).not.toBe(preview.previewId)
       await expect(slot(page, 'retention-preview')).toContainText(shortId(fresh.previewId))
       await expect(slot(page, 'retention-preview')).not.toContainText('refused a run for this preview')
-      await expect(run).toBeEnabled()
+      // The confirmation named the refused preview and is never inherited: the
+      // replacement preview is confirmed again before it can be run.
+      await expect(run).toBeDisabled()
+      await confirmRun(page, fresh.previewId)
       await run.click()
       await expect(runPanel).toContainText('The Server queued the retention run as')
 
