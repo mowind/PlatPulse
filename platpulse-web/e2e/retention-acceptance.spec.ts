@@ -422,7 +422,9 @@ test('a second confirmation of the same preview reconciles to the recorded run i
       await confirmRun(page, preview.previewId)
       await slot(page, 'retention-run-submit').click()
       await expect(slot(page, 'retention-run-notice')).toContainText('no second cleanup was queued')
-      await expect(slot(page, 'retention-run-notice')).toContainText(shortId(queued.operationId))
+      // The notice names the recorded task in full - the same id the link below
+      // and the Operations API use; only the compact task field shortens it.
+      await expect(slot(page, 'retention-run-notice')).toContainText(queued.operationId)
       await expect(page.locator('a[href="/admin/operations/' + queued.operationId + '"]')).toHaveCount(1)
 
       // The Server, not the page, is authoritative: exactly one cleanup of this
