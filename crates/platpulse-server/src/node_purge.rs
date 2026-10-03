@@ -60,6 +60,8 @@ pub struct NodePurgeCounts {
     pub chain_divergence_observations: i64,
     pub observed_network_heads: i64,
     pub metric_samples: i64,
+    /// Node-scoped gap evidence recorded while optional history was paused.
+    pub capacity_skipped_series: i64,
     pub validator_links: i64,
     pub validator_identity_status: i64,
     pub transfers: i64,
@@ -90,6 +92,7 @@ impl NodePurgeCounts {
         self.chain_divergence_observations += other.chain_divergence_observations;
         self.observed_network_heads += other.observed_network_heads;
         self.metric_samples += other.metric_samples;
+        self.capacity_skipped_series += other.capacity_skipped_series;
         self.validator_links += other.validator_links;
         self.validator_identity_status += other.validator_identity_status;
         self.transfers += other.transfers;
@@ -118,6 +121,7 @@ impl NodePurgeCounts {
             + self.chain_divergence_observations
             + self.observed_network_heads
             + self.metric_samples
+            + self.capacity_skipped_series
             + self.validator_links
             + self.validator_identity_status
             + self.transfers
@@ -205,6 +209,13 @@ pub async fn measure(
             .await?,
         observed_network_heads: count(connection, "observed_network_heads", &node_id).await?,
         metric_samples: count(connection, "node_metric_samples", &node_id).await?,
+        capacity_skipped_series: count_where(
+            connection,
+            "capacity_skipped_series",
+            NODE_SCOPED_ROWS,
+            &node_id,
+        )
+        .await?,
         validator_links: count(connection, "node_validator_links", &node_id).await?,
         validator_identity_status: count(connection, "node_validator_identity_status", &node_id)
             .await?,
@@ -229,17 +240,16 @@ pub async fn measure(
     }))
 }
 
+/// Node-owned rows in `capacity_skipped_series`: that evidence table keys a
+/// Node by `scope_kind`/`scope_key` instead of a `node_id` column (issue #212).
+const NODE_SCOPED_ROWS: &str = "scope_kind = 'node' AND scope_key = ?";
+
 async fn count(
     connection: &mut SqliteConnection,
     table: &'static str,
     node_id: &str,
 ) -> Result<i64, sqlx::Error> {
-    // The table name is a compile-time literal list, never user input.
-    let sql = format!("SELECT COUNT(*) FROM {table} WHERE node_id = ?");
-    sqlx::query_scalar(&sql)
-        .bind(node_id)
-        .fetch_one(connection)
-        .await
+    count_where(connection, table, "node_id = ?", node_id).await
 }
 
 async fn delete(
@@ -247,8 +257,31 @@ async fn delete(
     table: &'static str,
     node_id: &str,
 ) -> Result<(), sqlx::Error> {
-    // The table name is a compile-time literal list, never user input.
-    let sql = format!("DELETE FROM {table} WHERE node_id = ?");
+    delete_where(connection, table, "node_id = ?", node_id).await
+}
+
+async fn count_where(
+    connection: &mut SqliteConnection,
+    table: &'static str,
+    predicate: &'static str,
+    node_id: &str,
+) -> Result<i64, sqlx::Error> {
+    // The table name and predicate are compile-time literals, never user input.
+    let sql = format!("SELECT COUNT(*) FROM {table} WHERE {predicate}");
+    sqlx::query_scalar(&sql)
+        .bind(node_id)
+        .fetch_one(connection)
+        .await
+}
+
+async fn delete_where(
+    connection: &mut SqliteConnection,
+    table: &'static str,
+    predicate: &'static str,
+    node_id: &str,
+) -> Result<(), sqlx::Error> {
+    // The table name and predicate are compile-time literals, never user input.
+    let sql = format!("DELETE FROM {table} WHERE {predicate}");
     sqlx::query(&sql).bind(node_id).execute(connection).await?;
     Ok(())
 }
@@ -302,6 +335,17 @@ pub async fn remove(connection: &mut SqliteConnection, node_id: &str) -> Result<
     ] {
         delete(connection, table, node_id).await?;
     }
+    // Gap evidence recorded under low-space protection is Node-owned
+    // monitoring history too: a purged Node must not keep appearing in the
+    // Operations capacity surface (issue #212). Host and interval rows are
+    // shared evidence and stay.
+    delete_where(
+        connection,
+        "capacity_skipped_series",
+        NODE_SCOPED_ROWS,
+        node_id,
+    )
+    .await?;
     sqlx::query("DELETE FROM nodes WHERE node_id = ?")
         .bind(node_id)
         .execute(connection)

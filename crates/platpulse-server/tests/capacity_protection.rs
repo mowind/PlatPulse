@@ -511,6 +511,163 @@ async fn a_report_that_fails_its_receipt_write_does_not_claim_a_gap() {
     );
 }
 
+/// Run a real Doctor run over HTTP and return its storage capacity check.
+async fn storage_capacity_check(harness: &Harness, session: &Session) -> Value {
+    let response = harness
+        .send(admin_post("/api/admin/v1/doctor", session, ""))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    while platpulse_server::operations::process_operations(&harness.state)
+        .await
+        .unwrap()
+        > 0
+    {}
+    let response = harness
+        .send(admin_get("/api/admin/v1/doctor", Some(&session.cookie)))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    body["checks"]
+        .as_array()
+        .expect("a finished Doctor run reports its checks")
+        .iter()
+        .find(|check| check["checkId"] == "storage_capacity")
+        .cloned()
+        .expect("Doctor reports the storage capacity check")
+}
+
+/// Issue #212 review: the recorded gap counts readings the Server did not
+/// store, not repeat receipts of one reading. An Agent that re-sends its
+/// last-good sample while history is paused has not lost a second sample.
+#[tokio::test]
+async fn a_replayed_reading_is_not_counted_as_a_second_lost_sample() {
+    let mut harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (agent_id, credential) = enroll_agent(&harness, &session).await;
+
+    let pressure = forced_policy(&harness);
+    pressure.reconcile(harness.pool()).await.unwrap();
+    harness.install_capacity(Arc::clone(&pressure));
+
+    let first = fixture_report(&agent_id, 1, 1);
+    let (status, value) = submit(&harness, &credential, serde_json::to_vec(&first).unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let intervals = recent_intervals(harness.pool(), ADMIN_RECENT_INTERVAL_LIMIT)
+        .await
+        .unwrap();
+    assert_eq!(intervals.len(), 1);
+    assert_eq!(intervals[0].skipped_sample_count, 4);
+
+    // The second Report is a new Report (new id, later generation time) that
+    // replays the same readings at the same observation times.
+    let repeated = fixture_report(&agent_id, 1, 2);
+    let mut first_value = serde_json::to_value(&first).unwrap();
+    let mut repeated_value = serde_json::to_value(&repeated).unwrap();
+    for field in ["report_id", "report_sequence", "generated_at"] {
+        assert_ne!(
+            first_value[field], repeated_value[field],
+            "the replayed Report is a new Report, not a duplicate receipt"
+        );
+        first_value[field] = Value::Null;
+        repeated_value[field] = Value::Null;
+    }
+    assert_eq!(
+        first_value, repeated_value,
+        "every observation is the same reading at the same observation time"
+    );
+
+    let (status, value) = submit(
+        &harness,
+        &credential,
+        serde_json::to_vec(&repeated).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(
+        receipt_from(&value).disposition,
+        ReceiptDisposition::Accepted
+    );
+
+    let intervals = recent_intervals(harness.pool(), ADMIN_RECENT_INTERVAL_LIMIT)
+        .await
+        .unwrap();
+    assert_eq!(intervals.len(), 1, "the replay opens no second interval");
+    assert_eq!(
+        intervals[0].skipped_sample_count, 4,
+        "one replayed reading is still one lost sample, not two"
+    );
+    assert_eq!(intervals[0].skipped_series_total, 4);
+    assert_eq!(harness.count("capacity_skipped_series").await, 4);
+    assert_eq!(harness.count("host_metric_samples").await, 0);
+    assert_eq!(harness.count("node_metric_samples").await, 0);
+}
+
+/// Issue #212 review and the AGENTS.md last-good rule: a state filesystem that
+/// stops being measurable is not Healthy. The retained measurement still
+/// explains the protection decision, and Doctor reports the unknown state as a
+/// warning instead of passing on stale evidence.
+#[tokio::test]
+async fn doctor_warns_when_the_state_filesystem_cannot_be_measured() {
+    let mut harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+
+    // The measured directory is separate from the Server's own state
+    // directory, so the test can make it disappear without touching the
+    // database it asserts on. The floor is below any real disk, so the policy
+    // is enabled and is never protected: the unmeasurable sample is what
+    // Doctor has to report, not a pause.
+    //
+    // The test then runs Doctor exactly once, because the overview reports the
+    // newest completed run ordered by created_at and operation_id (design
+    // §8.4); two runs inside one second are ordered by id, so a single run is
+    // what makes the check the Operator reads unambiguous.
+    let measured = TempDir::new().unwrap();
+    let config = CapacityConfig::from_declared(
+        true,
+        Some(1),
+        Some(1),
+        None,
+        Some(PathBuf::from("test-capacity-floor")),
+    )
+    .unwrap();
+    let capacity = Arc::new(CapacityProtection::new(
+        config,
+        Some(&measured.path().join("server.db")),
+    ));
+    capacity.check_now(harness.pool()).await.unwrap();
+    assert!(
+        capacity.status().sample.is_some(),
+        "the measurement the policy acts on is recorded"
+    );
+    assert!(capacity.status().sampling_error.is_none());
+    harness.install_capacity(Arc::clone(&capacity));
+
+    // The filesystem disappears between ticks: the last good measurement is
+    // retained and the failure is recorded rather than reported as healthy.
+    let mount = measured.path().to_path_buf();
+    measured.close().unwrap();
+    assert!(!mount.exists(), "the measured directory is gone");
+    capacity.check_now(harness.pool()).await.unwrap();
+    assert!(
+        capacity.status().sample.is_some(),
+        "the last good measurement is retained"
+    );
+    assert!(capacity.status().sampling_error.is_some());
+
+    let check = storage_capacity_check(&harness, &session).await;
+    assert_eq!(
+        check["status"], "warning",
+        "an unmeasurable state filesystem must not be reported as healthy: {check}"
+    );
+    assert!(
+        check["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("could not be measured"),
+        "{check}"
+    );
+}
+
 /// The Admin surface: Owner-only, and honest about a disabled policy instead of
 /// inventing thresholds or a zero available-bytes reading.
 #[tokio::test]

@@ -226,6 +226,17 @@ fn storage_capacity_check(state: &AppState) -> DoctorCheck {
             detail: format!("the last capacity transition could not be recorded: {error}"),
         };
     }
+    // A failed sample is never Healthy, even while the last-good measurement is
+    // still held: the retained value explains the pause decision, it does not
+    // prove the filesystem is measurable now (AGENTS.md last-good/Unknown rule).
+    if let Some(error) = &status.sampling_error {
+        return DoctorCheck {
+            check_id: "storage_capacity".to_owned(),
+            label: "Storage capacity".to_owned(),
+            status: STATUS_WARNING,
+            detail: format!("the state filesystem could not be measured: {error}"),
+        };
+    }
     match &status.sample {
         Some(sample) => DoctorCheck {
             check_id: "storage_capacity".to_owned(),
@@ -247,10 +258,7 @@ fn storage_capacity_check(state: &AppState) -> DoctorCheck {
             check_id: "storage_capacity".to_owned(),
             label: "Storage capacity".to_owned(),
             status: STATUS_WARNING,
-            detail: status
-                .sampling_error
-                .clone()
-                .unwrap_or_else(|| "the state filesystem could not be measured".to_owned()),
+            detail: "the state filesystem has not been measured yet".to_owned(),
         },
     }
 }

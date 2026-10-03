@@ -7463,6 +7463,7 @@
           "chain_divergence_observations",
           "observed_network_heads",
           "metric_samples",
+          "capacity_skipped_series",
           "validator_links",
           "validator_identity_status",
           "transfers",
@@ -7486,6 +7487,10 @@
             "format": "int64"
           },
           "block_summaries": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "capacity_skipped_series": {
             "type": "integer",
             "format": "int64"
           },
@@ -9452,14 +9457,14 @@
           "skippedSampleCount": {
             "type": "integer",
             "format": "int64",
-            "description": "Optional samples skipped during this interval, every series together."
+            "description": "Distinct optional readings skipped during this interval, every series\ntogether."
           },
           "skippedSeries": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/CapacitySkippedSeriesDto"
             },
-            "description": "The series with the most skipped samples, bounded."
+            "description": "The series that skipped the most readings, bounded."
           },
           "skippedSeriesTotal": {
             "type": "integer",
@@ -9546,7 +9551,7 @@
               },
               {
                 "$ref": "#/components/schemas/CapacitySampleDto",
-                "description": "The newest measurement, null when sampling itself failed."
+                "description": "The newest successful measurement. It is retained as the last good one\nwhen a later sampling attempt fails, so it explains the current\nprotection decision rather than proving the filesystem is measurable."
               }
             ]
           },
@@ -9559,19 +9564,22 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "When the newest successful measurement was taken."
           },
           "samplingError": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Set when the most recent sampling attempt failed, while the last good\nmeasurement above is retained."
           },
           "transitionError": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Set when a protection transition could not be recorded durably."
           }
         }
       },
@@ -9637,7 +9645,7 @@
           "skippedCount": {
             "type": "integer",
             "format": "int64",
-            "description": "How many samples were skipped."
+            "description": "How many distinct readings this series skipped. A reading the Server\nalready recorded as skipped is not counted twice."
           }
         }
       },

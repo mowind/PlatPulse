@@ -401,6 +401,16 @@ async fn seed_directly_owned_rows(
         .bind(format!("link-{node_id}")).bind(node_id).bind(validator_id).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
     sqlx::query("INSERT OR IGNORE INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, created_at, expires_at, updated_at) VALUES (?, ?, ?, ?, 'cancelled', ?, ?, ?)")
         .bind(format!("transfer-{node_id}")).bind(node_id).bind(agent_id).bind(agent_id).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
+    // Node-owned capacity gap evidence. A skipped-series row carries its owner
+    // in a scope column rather than a Foreign Key, so it is seeded through the
+    // interval that owns it; a Host series of the same interval is seeded
+    // alongside to prove that only the Node's share of the gap is purged.
+    sqlx::query("INSERT OR IGNORE INTO capacity_protection_intervals (interval_id, source_mount, started_at, started_reason, opened_total_bytes, opened_available_bytes, pause_below_bytes, resume_above_bytes, created_at, updated_at) VALUES ('interval-1', '/srv/state', ?, 'low_space', 100, 1, 50, 60, ?, ?)")
+        .bind(now).bind(now).bind(now).execute(pool).await.unwrap();
+    sqlx::query("INSERT OR IGNORE INTO capacity_skipped_series (interval_id, scope_kind, scope_key, metric, skipped_count, first_skipped_at, last_skipped_at) VALUES ('interval-1', 'node', ?, 'process_cpu_percent', 3, ?, ?)")
+        .bind(node_id).bind(now).bind(now).execute(pool).await.unwrap();
+    sqlx::query("INSERT OR IGNORE INTO capacity_skipped_series (interval_id, scope_kind, scope_key, metric, skipped_count, first_skipped_at, last_skipped_at) VALUES ('interval-1', 'host', ?, 'network_rx_bytes_per_sec', 2, ?, ?)")
+        .bind(agent_id).bind(now).bind(now).execute(pool).await.unwrap();
 }
 
 async fn seed_shared_data(harness: &Harness, agent_id: &str, node_id: &str) {
@@ -488,6 +498,13 @@ async fn owner_purge_removes_only_node_owned_data_and_leaves_shared_evidence() {
     assert_eq!(preview["target"]["lifecycle"], "active");
     let preview_total = preview["counts"]["total_owned_rows"].as_i64().unwrap();
     assert!(preview_total > 0, "preview must show a non-empty scope");
+    assert_eq!(
+        preview["counts"]["capacity_skipped_series"]
+            .as_i64()
+            .unwrap(),
+        1,
+        "the preview discloses the Node-owned capacity gap rows it will delete"
+    );
 
     // Purge.
     let response = harness
@@ -505,6 +522,11 @@ async fn owner_purge_removes_only_node_owned_data_and_leaves_shared_evidence() {
         preview_total,
         "the committed scope must equal the confirmed preview scope"
     );
+    assert_eq!(
+        body["removed"]["capacity_skipped_series"].as_i64().unwrap(),
+        1,
+        "the committed capacity gap scope equals the confirmed preview"
+    );
 
     // Every Node-owned table is empty for the Node and the Node itself is gone.
     for table in NODE_OWNED_TABLES {
@@ -514,6 +536,31 @@ async fn owner_purge_removes_only_node_owned_data_and_leaves_shared_evidence() {
             "{table} still holds rows for the purged Node"
         );
     }
+    // Node-owned capacity gap evidence is Node-owned monitoring history, so the
+    // Purge removes it; the Agent's own Host series of the same interval is not
+    // Node-owned and survives.
+    let node_gap: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM capacity_skipped_series WHERE scope_kind = 'node' AND scope_key = ?",
+    )
+    .bind(&node_id)
+    .fetch_one(harness.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        node_gap, 0,
+        "Node-owned capacity gap evidence must not survive the Purge"
+    );
+    let host_gap: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM capacity_skipped_series WHERE scope_kind = 'host'",
+    )
+    .fetch_one(harness.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        host_gap, 1,
+        "the Agent's Host series is shared evidence, not Node-owned history"
+    );
+
     let node_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE node_id = ?")
         .bind(&node_id)
         .fetch_one(harness.pool())

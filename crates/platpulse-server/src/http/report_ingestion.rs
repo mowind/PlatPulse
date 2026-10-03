@@ -811,6 +811,20 @@ async fn save_node_metric(
     value: f64,
 ) -> Result<(), sqlx::Error> {
     if let crate::capacity::HistoryGate::Paused { interval_id } = history {
+        // An observation the Server already holds is not new history: a
+        // repeated last-good sample is not a second lost sample (design
+        // §11.5, issue #212). Only a first-time observation counts as a gap.
+        let stored: Option<f64> = sqlx::query_scalar(
+            "SELECT value FROM node_metric_samples WHERE node_id = ? AND metric = ? AND observed_at = ?",
+        )
+        .bind(node_id)
+        .bind(metric)
+        .bind(observed_at.to_string())
+        .fetch_optional(&mut **tx)
+        .await?;
+        if stored == Some(value) {
+            return Ok(());
+        }
         return crate::capacity::record_skipped_series(
             tx,
             interval_id,
@@ -852,6 +866,19 @@ async fn save_host_metric(
     value: f64,
 ) -> Result<(), sqlx::Error> {
     if let crate::capacity::HistoryGate::Paused { interval_id } = history {
+        // Same rule as the Node sibling above: a sample the Server already
+        // holds at this observation time is not a lost sample.
+        let stored: Option<f64> = sqlx::query_scalar(
+            "SELECT value FROM host_metric_samples WHERE agent_id = ? AND metric = ? AND observed_at = ?",
+        )
+        .bind(agent_id)
+        .bind(metric)
+        .bind(observed_at.to_string())
+        .fetch_optional(&mut **tx)
+        .await?;
+        if stored == Some(value) {
+            return Ok(());
+        }
         return crate::capacity::record_skipped_series(
             tx,
             interval_id,

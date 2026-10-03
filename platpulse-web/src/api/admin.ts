@@ -2806,26 +2806,20 @@ export async function fetchAdminCapacity(signal?: AbortSignal): Promise<Capacity
   )
 }
 
-/** How often a protected Server is re-read while the page stays open. */
+/** How often an open page re-reads the capacity surface. */
 export const CAPACITY_POLL_MS = 30000
 
-function pollActiveCapacity(query: {
-  state: { data: CapacityOverview | undefined }
-}): number | false {
-  return query.state.data?.protected ? CAPACITY_POLL_MS : false
-}
-
 /**
- * Capacity changes only when the sampling worker runs (default 60 seconds) or
- * a report opens/closes an interval, so the page polls while protection is
- * active — the release it is waiting for is exactly what the poll observes —
- * and otherwise stays on demand.
+ * Capacity changes when the sampling worker runs (default 60 seconds) or when a
+ * Report opens or closes an interval. The page polls unconditionally: a page
+ * that only polled while already protected could never show protection start,
+ * and the release an Operator is waiting for is exactly what the poll observes.
  */
 export function useAdminCapacity(generation: number) {
   return useQuery({
     queryKey: [...adminKeys.capacity, generation],
     queryFn: ({ signal }) => fetchAdminCapacity(signal),
-    refetchInterval: pollActiveCapacity,
+    refetchInterval: CAPACITY_POLL_MS,
   })
 }
 

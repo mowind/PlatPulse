@@ -2306,7 +2306,8 @@ pub struct CapacitySkippedSeriesDto {
     pub scope_key: String,
     /// The optional metric that was skipped.
     pub metric: String,
-    /// How many samples were skipped.
+    /// How many distinct readings this series skipped. A reading the Server
+    /// already recorded as skipped is not counted twice.
     pub skipped_count: i64,
     /// The first skipped observation, in RFC 3339.
     pub first_skipped_at: String,
@@ -2334,11 +2335,12 @@ pub struct CapacityIntervalDto {
     pub resumed_total_bytes: Option<u64>,
     pub resumed_available_bytes: Option<u64>,
     pub updated_at: String,
-    /// Optional samples skipped during this interval, every series together.
+    /// Distinct optional readings skipped during this interval, every series
+    /// together.
     pub skipped_sample_count: i64,
     /// How many distinct series lost samples.
     pub skipped_series_total: i64,
-    /// The series with the most skipped samples, bounded.
+    /// The series that skipped the most readings, bounded.
     pub skipped_series: Vec<CapacitySkippedSeriesDto>,
 }
 
@@ -2356,10 +2358,16 @@ pub struct CapacityOverview {
     pub policy_origin: Option<String>,
     /// The directory that is measured, null when it cannot be resolved.
     pub mount_path: Option<String>,
-    /// The newest measurement, null when sampling itself failed.
+    /// The newest successful measurement. It is retained as the last good one
+    /// when a later sampling attempt fails, so it explains the current
+    /// protection decision rather than proving the filesystem is measurable.
     pub sample: Option<CapacitySampleDto>,
+    /// When the newest successful measurement was taken.
     pub sampled_at: Option<String>,
+    /// Set when the most recent sampling attempt failed, while the last good
+    /// measurement above is retained.
     pub sampling_error: Option<String>,
+    /// Set when a protection transition could not be recorded durably.
     pub transition_error: Option<String>,
     pub active_interval_id: Option<String>,
     pub recent_intervals: Vec<CapacityIntervalDto>,
@@ -2420,8 +2428,16 @@ pub(crate) async fn capacity_overview(
             available_bytes: sample.available_bytes,
         }),
         sampled_at: status.sampled_at.clone(),
-        sampling_error: status.sampling_error.clone(),
-        transition_error: status.transition_error.clone(),
+        // Reasons cross the trust boundary as sanitized text: the sources are
+        // raw path and OS error strings (design §561; WebUI contract §1218).
+        sampling_error: status
+            .sampling_error
+            .as_deref()
+            .map(crate::redaction::redact_sensitive),
+        transition_error: status
+            .transition_error
+            .as_deref()
+            .map(crate::redaction::redact_sensitive),
         active_interval_id: status.active_interval_id.clone(),
         recent_intervals: intervals.into_iter().map(capacity_interval_dto).collect(),
     })

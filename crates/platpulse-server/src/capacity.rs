@@ -48,11 +48,6 @@ pub const MIN_SAMPLE_INTERVAL_SECONDS: u64 = 5;
 /// Slowest supported sampling cadence.
 pub const MAX_SAMPLE_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 
-/// How many closed intervals stay queryable. A protection interval is a rare
-/// event (one per low-space stretch), so this is years of evidence at any
-/// plausible cadence, and it keeps the evidence table bounded.
-pub const CLOSED_INTERVAL_HISTORY_LIMIT: i64 = 200;
-
 /// Skipped series returned per interval by the Admin surface.
 pub const ADMIN_SKIPPED_SERIES_LIMIT: i64 = 20;
 /// Intervals returned by the Admin surface.
@@ -665,10 +660,15 @@ pub async fn load_open_interval(
     }))
 }
 
-/// Record the start of protection.
+/// Record the start of protection in one statement.
 ///
 /// The thresholds in force are copied into the row: an interval must be able
-/// to explain itself even after the config file changes.
+/// to explain itself even after the config file changes. Nothing here (or
+/// anywhere else in this module) prunes evidence: an interval and the gap it
+/// explains are history the Server promised to keep, so protection must never
+/// quietly delete rows to stay small (design §11.5, issue #212). A single
+/// statement also means the transition cannot half-commit — the interval row
+/// and the in-memory gate either both move or neither does.
 async fn open_interval(pool: &SqlitePool, open: &OpenInterval<'_>) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO capacity_protection_intervals (interval_id, source_mount, started_at, started_reason, opened_total_bytes, opened_available_bytes, pause_below_bytes, resume_above_bytes, ended_at, ended_reason, resumed_total_bytes, resumed_available_bytes, created_at, updated_at) VALUES (?, ?, ?, 'low_space', ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)",
@@ -684,7 +684,7 @@ async fn open_interval(pool: &SqlitePool, open: &OpenInterval<'_>) -> Result<(),
     .bind(open.started_at)
     .execute(pool)
     .await?;
-    prune_closed_intervals(pool).await
+    Ok(())
 }
 
 /// Record that protection ended, with the measurement that justified it.
@@ -709,17 +709,6 @@ async fn close_interval(
     Ok(())
 }
 
-/// Keep the evidence table bounded; skipped series cascade with their interval.
-async fn prune_closed_intervals(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "DELETE FROM capacity_protection_intervals WHERE ended_at IS NOT NULL AND interval_id NOT IN (SELECT interval_id FROM capacity_protection_intervals WHERE ended_at IS NOT NULL ORDER BY started_at DESC LIMIT ?)",
-    )
-    .bind(CLOSED_INTERVAL_HISTORY_LIMIT)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
 /// Record one optional sample that protection refused to write.
 ///
 /// This runs inside the caller's ingestion transaction. That is the point: the
@@ -727,6 +716,15 @@ async fn prune_closed_intervals(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 /// Report receipt that carried it. If the entry cannot be written the whole
 /// Report rolls back and the Agent retries, so a skipped sample is never both
 /// unrecorded and unrecoverable.
+///
+/// The count follows the same identity rule as the history writer, which keys
+/// its rows on (scope, metric, observed_at): re-sending a reading that this
+/// series already recorded as skipped is not a second lost sample, so the
+/// update is skipped when the reading time is the one already stored. An
+/// out-of-order replay of an *older* reading is still counted, because telling
+/// it apart from a late-arriving observation would need one ledger row per
+/// skipped reading, costing at least as much disk as the history the pause is
+/// protecting.
 pub async fn record_skipped_series(
     tx: &mut Transaction<'_, Sqlite>,
     interval_id: &str,
@@ -736,7 +734,7 @@ pub async fn record_skipped_series(
     observed_at: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO capacity_skipped_series (interval_id, scope_kind, scope_key, metric, skipped_count, first_skipped_at, last_skipped_at) VALUES (?, ?, ?, ?, 1, ?, ?) ON CONFLICT(interval_id, scope_kind, scope_key, metric) DO UPDATE SET skipped_count = skipped_count + 1, first_skipped_at = MIN(first_skipped_at, excluded.first_skipped_at), last_skipped_at = MAX(last_skipped_at, excluded.last_skipped_at)",
+        "INSERT INTO capacity_skipped_series (interval_id, scope_kind, scope_key, metric, skipped_count, first_skipped_at, last_skipped_at) VALUES (?, ?, ?, ?, 1, ?, ?) ON CONFLICT(interval_id, scope_kind, scope_key, metric) DO UPDATE SET skipped_count = capacity_skipped_series.skipped_count + 1, first_skipped_at = MIN(capacity_skipped_series.first_skipped_at, excluded.first_skipped_at), last_skipped_at = MAX(capacity_skipped_series.last_skipped_at, excluded.last_skipped_at) WHERE excluded.last_skipped_at <> capacity_skipped_series.last_skipped_at",
     )
     .bind(interval_id)
     .bind(scope.as_str())

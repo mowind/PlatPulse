@@ -253,6 +253,7 @@ export type AdminNodePurgeCounts = {
     block_history_states: number;
     block_identity_window: number;
     block_summaries: number;
+    capacity_skipped_series: number;
     chain_divergence_observations: number;
     chain_observations: number;
     component_statuses: number;
@@ -912,11 +913,12 @@ export type CapacityIntervalDto = {
     resumedAvailableBytes?: number | null;
     resumedTotalBytes?: number | null;
     /**
-     * Optional samples skipped during this interval, every series together.
+     * Distinct optional readings skipped during this interval, every series
+     * together.
      */
     skippedSampleCount: number;
     /**
-     * The series with the most skipped samples, bounded.
+     * The series that skipped the most readings, bounded.
      */
     skippedSeries: Array<CapacitySkippedSeriesDto>;
     /**
@@ -952,8 +954,18 @@ export type CapacityOverview = {
     resumeAboveBytes?: number | null;
     sample?: null | CapacitySampleDto;
     sampleIntervalSeconds: number;
+    /**
+     * When the newest successful measurement was taken.
+     */
     sampledAt?: string | null;
+    /**
+     * Set when the most recent sampling attempt failed, while the last good
+     * measurement above is retained.
+     */
     samplingError?: string | null;
+    /**
+     * Set when a protection transition could not be recorded durably.
+     */
     transitionError?: string | null;
 };
 
@@ -1000,7 +1012,8 @@ export type CapacitySkippedSeriesDto = {
      */
     scopeKind: string;
     /**
-     * How many samples were skipped.
+     * How many distinct readings this series skipped. A reading the Server
+     * already recorded as skipped is not counted twice.
      */
     skippedCount: number;
 };
