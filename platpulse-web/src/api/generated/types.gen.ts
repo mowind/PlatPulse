@@ -913,7 +913,7 @@ export type CapacityIntervalDto = {
     resumedAvailableBytes?: number | null;
     resumedTotalBytes?: number | null;
     /**
-     * Distinct optional readings skipped during this interval, every series
+     * Optional readings counted as skipped during this interval, every series
      * together.
      */
     skippedSampleCount: number;
@@ -922,7 +922,7 @@ export type CapacityIntervalDto = {
      */
     skippedSeries: Array<CapacitySkippedSeriesDto>;
     /**
-     * How many distinct series lost samples.
+     * How many series counted at least one skipped reading.
      */
     skippedSeriesTotal: number;
     sourceMount: string;
@@ -1012,8 +1012,10 @@ export type CapacitySkippedSeriesDto = {
      */
     scopeKind: string;
     /**
-     * How many distinct readings this series skipped. A reading the Server
-     * already recorded as skipped is not counted twice.
+     * How many readings this series counted as skipped. Counting follows the
+     * recorded high-water mark, so an accepted Report retry that re-sends the
+     * newest reading is never a second lost sample and the number never
+     * claims more losses than the series accounted for.
      */
     skippedCount: number;
 };

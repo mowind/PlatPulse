@@ -2306,8 +2306,10 @@ pub struct CapacitySkippedSeriesDto {
     pub scope_key: String,
     /// The optional metric that was skipped.
     pub metric: String,
-    /// How many distinct readings this series skipped. A reading the Server
-    /// already recorded as skipped is not counted twice.
+    /// How many readings this series counted as skipped. Counting follows the
+    /// recorded high-water mark, so an accepted Report retry that re-sends the
+    /// newest reading is never a second lost sample and the number never
+    /// claims more losses than the series accounted for.
     pub skipped_count: i64,
     /// The first skipped observation, in RFC 3339.
     pub first_skipped_at: String,
@@ -2335,10 +2337,10 @@ pub struct CapacityIntervalDto {
     pub resumed_total_bytes: Option<u64>,
     pub resumed_available_bytes: Option<u64>,
     pub updated_at: String,
-    /// Distinct optional readings skipped during this interval, every series
+    /// Optional readings counted as skipped during this interval, every series
     /// together.
     pub skipped_sample_count: i64,
-    /// How many distinct series lost samples.
+    /// How many series counted at least one skipped reading.
     pub skipped_series_total: i64,
     /// The series that skipped the most readings, bounded.
     pub skipped_series: Vec<CapacitySkippedSeriesDto>,

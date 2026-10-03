@@ -335,6 +335,15 @@ struct ProtectionState {
     sampled_at: Option<String>,
     sampling_error: Option<String>,
     transition_error: Option<String>,
+    /// True until this process has successfully read the durable open interval.
+    ///
+    /// Startup reconciliation adopts an interval a previous process left open,
+    /// but the read can fail on its own (a locked or briefly unavailable
+    /// database). While it has never succeeded, a tick retries it before
+    /// deciding anything: treating "I could not read the record" as "no
+    /// interval is open" would let optional history resume under pressure and
+    /// leave the recorded interval open forever.
+    adoption_pending: bool,
 }
 
 /// Whether a sampling tick changed the protection state.
@@ -373,6 +382,7 @@ impl CapacityProtection {
                 sampled_at: None,
                 sampling_error: None,
                 transition_error: None,
+                adoption_pending: true,
             }),
             tick: tokio::sync::Mutex::new(()),
         }
@@ -432,15 +442,37 @@ impl CapacityProtection {
         &self,
         pool: &SqlitePool,
     ) -> Result<ProtectionTransition, CapacityError> {
-        if let Some(open) = load_open_interval(pool).await? {
-            let mut state = self
-                .state
-                .write()
-                .unwrap_or_else(|error| error.into_inner());
+        self.adopt_open_interval(pool)
+            .await
+            .map_err(CapacityError::Storage)?;
+        self.check_now(pool).await
+    }
+
+    /// Adopt the interval a previous process left open, if any.
+    ///
+    /// The pending flag clears only once the read succeeds, so a startup
+    /// reconciliation that failed on its own is retried by the next tick. A
+    /// process that cannot read the record must not conclude that no interval
+    /// is open: it would resume optional history under pressure and leave the
+    /// recorded interval open forever.
+    async fn adopt_open_interval(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        let open = load_open_interval(pool).await?;
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(open) = open {
             state.protected = true;
             state.interval_id = Some(open.interval_id);
         }
-        self.check_now(pool).await
+        state.adoption_pending = false;
+        Ok(())
+    }
+
+    /// Whether this process still has to read the durable open interval.
+    fn adoption_pending(&self) -> bool {
+        let state = self.state.read().unwrap_or_else(|error| error.into_inner());
+        state.adoption_pending
     }
 
     /// Sample the filesystem once and record any protection transition.
@@ -454,6 +486,14 @@ impl CapacityProtection {
         pool: &SqlitePool,
     ) -> Result<ProtectionTransition, CapacityError> {
         let _tick = self.tick.lock().await;
+        if self.adoption_pending() {
+            if let Err(error) = self.adopt_open_interval(pool).await {
+                // Keep sampling: the ticket's rule is that pressure never
+                // stops the clock. The gate stays as it is for this tick, the
+                // failed adoption stays visible, and the next tick retries it.
+                self.record_transition_error(&error);
+            }
+        }
         let Some(mount_path) = self.mount_path.clone() else {
             self.record_measurement(
                 None,
@@ -719,12 +759,14 @@ async fn close_interval(
 ///
 /// The count follows the same identity rule as the history writer, which keys
 /// its rows on (scope, metric, observed_at): re-sending a reading that this
-/// series already recorded as skipped is not a second lost sample, so the
-/// update is skipped when the reading time is the one already stored. An
-/// out-of-order replay of an *older* reading is still counted, because telling
-/// it apart from a late-arriving observation would need one ledger row per
-/// skipped reading, costing at least as much disk as the history the pause is
-/// protecting.
+/// series already recorded as skipped is not a second lost sample. It advances
+/// only when the refused reading is newer than every reading already counted
+/// for the series, which is exactly the condition under which the recorded
+/// "last skipped" mark moves. So a replay never counts twice, and the number
+/// never claims more lost readings than the series accounted for. A
+/// late-arriving *older* reading does not advance it, because telling one apart
+/// from a replay would need one ledger row per skipped reading, costing at
+/// least as much disk as the history the pause is protecting.
 pub async fn record_skipped_series(
     tx: &mut Transaction<'_, Sqlite>,
     interval_id: &str,
@@ -734,7 +776,7 @@ pub async fn record_skipped_series(
     observed_at: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO capacity_skipped_series (interval_id, scope_kind, scope_key, metric, skipped_count, first_skipped_at, last_skipped_at) VALUES (?, ?, ?, ?, 1, ?, ?) ON CONFLICT(interval_id, scope_kind, scope_key, metric) DO UPDATE SET skipped_count = capacity_skipped_series.skipped_count + 1, first_skipped_at = MIN(capacity_skipped_series.first_skipped_at, excluded.first_skipped_at), last_skipped_at = MAX(capacity_skipped_series.last_skipped_at, excluded.last_skipped_at) WHERE excluded.last_skipped_at <> capacity_skipped_series.last_skipped_at",
+        "INSERT INTO capacity_skipped_series (interval_id, scope_kind, scope_key, metric, skipped_count, first_skipped_at, last_skipped_at) VALUES (?, ?, ?, ?, 1, ?, ?) ON CONFLICT(interval_id, scope_kind, scope_key, metric) DO UPDATE SET skipped_count = capacity_skipped_series.skipped_count + 1, first_skipped_at = MIN(capacity_skipped_series.first_skipped_at, excluded.first_skipped_at), last_skipped_at = MAX(capacity_skipped_series.last_skipped_at, excluded.last_skipped_at) WHERE excluded.last_skipped_at > capacity_skipped_series.last_skipped_at",
     )
     .bind(interval_id)
     .bind(scope.as_str())

@@ -613,10 +613,20 @@ describe('PAGE-ADMIN-OPERATIONS (task ledger)', () => {
     expect(text).toContain('5.00 GiB')
     expect(text).toContain('10.0 GiB')
     expect(text).toContain('/etc/platpulse/server.toml')
+    // Protecting is a hysteresis, so the note names both declared levels: a
+    // volume already above the pause floor must not be described as below it.
+    expect(text).toContain(
+      'Optional history is paused while available space is at or below 5.00 GiB, ' +
+        'resumes at 10.0 GiB available, and every skipped sample is recorded below.',
+    )
 
     const intervals = slot('capacity-intervals-table')
     expect(intervals.textContent).toContain('Low space')
     expect(intervals.textContent).toContain('Still active')
+    // A historical row names its own volume and both boundary totals: a mount
+    // can be relocated, and the floor alone does not say how full it was.
+    expect(intervals.textContent).toContain('/var/lib/platpulse')
+    expect(intervals.textContent).toContain('1.00 GiB of 100 GiB')
 
     // The gap is visible per series, not only as a count.
     const gap = slot('capacity-skipped-series')
@@ -629,5 +639,96 @@ describe('PAGE-ADMIN-OPERATIONS (task ledger)', () => {
     expect(text).toContain('3 series lost samples in total')
     // Optional history only: the Operation ledger is unaffected.
     expect(screen.getByRole('table', { name: /Recorded Operations/ })).toBeTruthy()
+  })
+
+  it('keeps an enabled policy Unknown until a reading arrives', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/capacity': () =>
+        jsonResponse(
+          {
+            ...PROTECTED_CAPACITY,
+            protected: false,
+            sample: null,
+            sampledAt: null,
+            activeIntervalId: null,
+            recentIntervals: [],
+          },
+          200,
+        ),
+      '/api/admin/v1/operations*': () => jsonResponse([RUNNING_OPERATION], 200),
+    })
+    await renderAt('/admin/operations')
+
+    await screen.findByText('Storage capacity and low-space protection')
+    const card = screen
+      .getByText('Storage capacity and low-space protection')
+      .closest('[data-slot="card-x"]')
+    const text = card?.textContent ?? ''
+    // Enabling protection does not make an unmeasured filesystem healthy.
+    expect(text).toContain('Unknown')
+    expect(text).not.toContain('Monitoring')
+    expect(text).toContain('has not been measured yet')
+    expect(text).toContain('Never measured')
+  })
+
+  it('reports a failed capacity measurement as Unknown, not Monitoring', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/capacity': () =>
+        jsonResponse(
+          {
+            ...PROTECTED_CAPACITY,
+            protected: false,
+            activeIntervalId: null,
+            recentIntervals: [],
+            samplingError: 'Permission denied (os error 13)',
+          },
+          200,
+        ),
+      '/api/admin/v1/operations*': () => jsonResponse([RUNNING_OPERATION], 200),
+    })
+    await renderAt('/admin/operations')
+
+    await screen.findByText('Storage capacity and low-space protection')
+    const card = screen
+      .getByText('Storage capacity and low-space protection')
+      .closest('[data-slot="card-x"]')
+    const text = card?.textContent ?? ''
+    expect(text).toContain('Unknown')
+    expect(text).not.toContain('Monitoring')
+    expect(text).toContain('the reading above is the last successful one')
+    expect(text).toContain('The state filesystem could not be measured: Permission denied (os error 13)')
+    // The retained last-good measurement is still shown, and dated.
+    expect(text).toContain('1.00 GiB available of 100 GiB')
+    expect(text).toContain('2026-08-12 09:00:00 UTC')
+  })
+
+  it('reports a failed protection transition as Unknown, not Monitoring', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/capacity': () =>
+        jsonResponse(
+          {
+            ...PROTECTED_CAPACITY,
+            protected: false,
+            activeIntervalId: null,
+            recentIntervals: [],
+            transitionError: 'database is locked',
+          },
+          200,
+        ),
+      '/api/admin/v1/operations*': () => jsonResponse([RUNNING_OPERATION], 200),
+    })
+    await renderAt('/admin/operations')
+
+    await screen.findByText('Storage capacity and low-space protection')
+    const card = screen
+      .getByText('Storage capacity and low-space protection')
+      .closest('[data-slot="card-x"]')
+    const text = card?.textContent ?? ''
+    expect(text).toContain('Unknown')
+    expect(text).not.toContain('Monitoring')
+    expect(text).toContain('The last protection transition could not be recorded: database is locked')
   })
 })

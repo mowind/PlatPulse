@@ -9457,7 +9457,7 @@
           "skippedSampleCount": {
             "type": "integer",
             "format": "int64",
-            "description": "Distinct optional readings skipped during this interval, every series\ntogether."
+            "description": "Optional readings counted as skipped during this interval, every series\ntogether."
           },
           "skippedSeries": {
             "type": "array",
@@ -9469,7 +9469,7 @@
           "skippedSeriesTotal": {
             "type": "integer",
             "format": "int64",
-            "description": "How many distinct series lost samples."
+            "description": "How many series counted at least one skipped reading."
           },
           "sourceMount": {
             "type": "string"
@@ -9645,7 +9645,7 @@
           "skippedCount": {
             "type": "integer",
             "format": "int64",
-            "description": "How many distinct readings this series skipped. A reading the Server\nalready recorded as skipped is not counted twice."
+            "description": "How many readings this series counted as skipped. Counting follows the\nrecorded high-water mark, so an accepted Report retry that re-sends the\nnewest reading is never a second lost sample and the number never\nclaims more losses than the series accounted for."
           }
         }
       },

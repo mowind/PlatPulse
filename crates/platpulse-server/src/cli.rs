@@ -969,9 +969,13 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         config.capacity.clone(),
         Some(state.db().path()),
     ));
+    // A failure here is deferred rather than fatal: the sampling worker
+    // retries the same reconciliation on its next tick before it decides
+    // anything, so a database that was briefly unreadable at startup cannot
+    // quietly leave optional history running.
     if let Err(error) = capacity.reconcile(state.db().pool()).await {
         eprintln!(
-            "capacity protection reconcile deferred: {}",
+            "capacity protection reconcile deferred until the next sample: {}",
             crate::redaction::redact_sensitive(&error.to_string())
         );
     }

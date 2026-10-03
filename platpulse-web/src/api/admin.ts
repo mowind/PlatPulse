@@ -2823,33 +2823,43 @@ export function useAdminCapacity(generation: number) {
   })
 }
 
-/** Server-owned words for the protection state, shown as sent. */
-export function capacityStateLabel(overview: {
-  enabled: boolean
-  protected: boolean
-} | null | undefined): string {
-  if (!overview) {
-    return 'Unknown'
-  }
-  if (!overview.enabled) {
-    return 'Disabled'
-  }
-  return overview.protected ? 'Protecting' : 'Monitoring'
+/** The protection states the Operations page presents. */
+export type CapacityState = 'disabled' | 'unknown' | 'monitoring' | 'protecting'
+
+/** One protection state with the words and badge tone it is shown with. */
+export interface CapacityPresentation {
+  state: CapacityState
+  label: string
+  tone: 'ok' | 'warning' | 'error' | 'neutral'
 }
 
-/** Badge tone for the protection state. Disabled is not a failure and not
- * healthy either: it means no policy is declared, so it stays neutral. */
-export function capacityStateTone(overview: {
-  enabled: boolean
-  protected: boolean
-} | null | undefined): 'ok' | 'warning' | 'error' | 'neutral' {
+/**
+ * Classify protection from the Server's own fields. An enabled policy with no
+ * usable reading is Unknown, never Monitoring: either nothing has been measured
+ * successfully yet, or the latest attempt failed while the reading above is the
+ * last good one. Neither is optional history being written normally, and a
+ * stale or unmeasured state must not read as Healthy. Disabled is a declared
+ * absence of policy, which is neither a failure nor a pass, so it stays neutral.
+ */
+export function capacityPresentation(
+  overview: CapacityOverview | null | undefined,
+): CapacityPresentation {
   if (!overview) {
-    return 'neutral'
+    return { state: 'unknown', label: 'Unknown', tone: 'neutral' }
   }
   if (!overview.enabled) {
-    return 'neutral'
+    return { state: 'disabled', label: 'Disabled', tone: 'neutral' }
   }
-  return overview.protected ? 'warning' : 'ok'
+  if (!overview.sample) {
+    return { state: 'unknown', label: 'Unknown', tone: 'warning' }
+  }
+  if (overview.protected) {
+    return { state: 'protecting', label: 'Protecting', tone: 'warning' }
+  }
+  if (overview.samplingError || overview.transitionError) {
+    return { state: 'unknown', label: 'Unknown', tone: 'warning' }
+  }
+  return { state: 'monitoring', label: 'Monitoring', tone: 'ok' }
 }
 
 /** Interval outcome vocabulary: "resumed" is the Server's word for the

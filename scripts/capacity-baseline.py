@@ -749,6 +749,11 @@ def storage_bytes(db_path: Path) -> dict:
     }
 
 
+def larger_storage(left: dict, right: dict) -> dict:
+    "Element-wise maximum: the largest live reading of a file that also shrinks."
+    return {key: max(left[key], right[key]) for key in left}
+
+
 def capacity_state(client: Client, cookie: str) -> dict:
     status, _, payload, elapsed = admin_get(client, cookie, "/api/admin/v1/capacity")
     if status != 200:
@@ -938,8 +943,13 @@ class BaselineRun:
         storage_before = baseline["storage"]
         started = time.monotonic()
         submissions: list[dict] = []
+        # The WAL only exists while the Server runs: SQLite checkpoints and removes
+        # it when the last connection closes, so a reading taken after the stop is
+        # not the WAL this load produced. Sample the live files as the load runs.
+        storage_peak = storage_bytes(self.db_path)
         for index in range(1, rounds + 1):
             submissions.append(self.submit_round(slow_scan=index in slow_rounds, label="steady round " + str(index)))
+            storage_peak = larger_storage(storage_peak, storage_bytes(self.db_path))
             if index < rounds:
                 time.sleep(self.args.interval)
         duration = time.monotonic() - started
@@ -952,7 +962,14 @@ class BaselineRun:
             expected_samples += per_round
         capacity = capacity_state(self.client, self.cookie)
         reads = measure_reads(self.client, self.cookie, self.args.query_samples, self.metrics_client)
+        # Read the loaded database and its WAL before stopping: this is the only
+        # honest "after load" number. Stopping the Server and opening the database
+        # with an external SQLite connection checkpoints the WAL away, which is how
+        # an earlier revision of this script reported 0 bytes for a WAL that had
+        # grown to megabytes.
+        storage_after = storage_bytes(self.db_path)
         self.stop()
+        storage_after_shutdown = storage_bytes(self.db_path)
         counts = optional_counts(self.db_path)
         core = core_counts(self.db_path)
         observed_samples = (
@@ -990,7 +1007,9 @@ class BaselineRun:
             "baseline_core_counts": baseline["core"],
             "baseline_optional_counts": baseline["optional"],
             "storage_before": storage_before,
-            "storage_after": storage_bytes(self.db_path),
+            "storage_after": storage_after,
+            "storage_peak": storage_peak,
+            "storage_after_shutdown": storage_after_shutdown,
             "optional_counts": counts,
             "core_counts": core,
             "capacity": capacity,
@@ -1235,15 +1254,21 @@ class BaselineRun:
             "read_path": reads,
             "storage": storage,
             "storage_per_report_bytes": {
+                "measured_at": "live readings taken while the Server was still running; a reading taken after "
+                "the stop cannot see the WAL, because closing the last connection checkpoints it away.",
                 "database_bytes_per_report": round(
-                    (storage["database_bytes"] - steady["storage_before"]["database_bytes"])
+                    (steady["storage_after"]["database_bytes"] - steady["storage_before"]["database_bytes"])
                     / max(1, steady["submissions"]),
                     2
                 ),
                 "wal_bytes_per_report": round(
-                    (storage["wal_bytes"] - steady["storage_before"]["wal_bytes"]) / max(1, steady["submissions"]),
+                    (steady["storage_after"]["wal_bytes"] - steady["storage_before"]["wal_bytes"])
+                    / max(1, steady["submissions"]),
                     2
                 ),
+                "wal_peak_bytes": steady["storage_peak"]["wal_bytes"],
+                "database_peak_bytes": steady["storage_peak"]["database_bytes"],
+                "after_shutdown": steady["storage_after_shutdown"],
             },
             "thresholds": {
                 "steady_test_pause_bytes": STEADY_PAUSE_BYTES,
@@ -1312,7 +1337,9 @@ def write_markdown_report(report: dict, path: Path) -> None:
         "| Host series / Node series | " + str(steady["optional_counts"]["host_series"]) + " / " + str(steady["optional_counts"]["node_series"]) + " |",
         "| Report latency p50 / p95 | " + str(steady["write_latency_ms"]["p50_ms"]) + "ms / " + str(steady["write_latency_ms"]["p95_ms"]) + "ms |",
         "| Database growth | " + human_bytes(steady["storage_after"]["database_bytes"] - steady["storage_before"]["database_bytes"]) + " |",
-        "| WAL bytes after load | " + human_bytes(steady["storage_after"]["wal_bytes"]) + " |",
+        "| Database / WAL after load (Server still running) | " + human_bytes(steady["storage_after"]["database_bytes"]) + " / " + human_bytes(steady["storage_after"]["wal_bytes"]) + " |",
+        "| WAL peak during load | " + human_bytes(steady["storage_peak"]["wal_bytes"]) + " |",
+        "| Database / WAL after shutdown | " + human_bytes(steady["storage_after_shutdown"]["database_bytes"]) + " / " + human_bytes(steady["storage_after_shutdown"]["wal_bytes"]) + " (the WAL is checkpointed away by the shutdown, so this is not the load's WAL) |",
         "| Core receipts | " + str(steady["core_counts"]["agent_report_receipts"]) + " |",
         "",
         "## Read path (p50 / p95)",

@@ -5,8 +5,7 @@ import {
   AdminApiError,
   cancelOperationEntry,
   capacityIntervalReasonLabel,
-  capacityStateLabel,
-  capacityStateTone,
+  capacityPresentation,
   operationKindLabel,
   useAdminCapacity,
   useAdminOperation,
@@ -74,13 +73,28 @@ function readLimit(search: URLSearchParams): number {
  * gap rather than a silent one.
  */
 function capacityStateNote(overview: CapacityOverview): string {
-  if (!overview.enabled) {
-    return 'No low-space policy is declared, so optional history is never paused and no threshold is assumed.'
+  switch (capacityPresentation(overview).state) {
+    case 'disabled':
+      return 'No low-space policy is declared, so optional history is never paused and no threshold is assumed.'
+    case 'unknown':
+      // The two ways to have no usable reading are different claims, so the
+      // copy names the one that is true rather than saying "Monitoring".
+      return overview.sample
+        ? 'The latest measurement failed, so the protection state is unknown and the reading above is the last successful one.'
+        : 'The state filesystem has not been measured yet, so the protection state is unknown.'
+    case 'protecting':
+      // Protection keeps history paused until the filesystem recovers past the
+      // resume level, so "below the pause floor" alone would be wrong.
+      return overview.pauseBelowBytes == null || overview.resumeAboveBytes == null
+        ? 'Optional history is paused by the declared low-space policy and every skipped sample is recorded below.'
+        : 'Optional history is paused while available space is at or below ' +
+            formatBytesUnknown(overview.pauseBelowBytes) +
+            ', resumes at ' +
+            formatBytesUnknown(overview.resumeAboveBytes) +
+            ' available, and every skipped sample is recorded below.'
+    default:
+      return 'Optional history is written normally; storage is measured on the configured cadence.'
   }
-  if (overview.protected) {
-    return 'Storage is below the pause floor, so optional history is paused and every skipped sample is recorded below.'
-  }
-  return 'Optional history is written normally; storage is measured on the configured cadence.'
 }
 
 function CapacityPanel() {
@@ -117,7 +131,10 @@ function CapacityPanel() {
       {overview && (
         <>
           <div className="flex flex-wrap items-center gap-2">
-            <StatusBadge status={capacityStateLabel(overview)} tone={capacityStateTone(overview)} />
+            <StatusBadge
+              status={capacityPresentation(overview).label}
+              tone={capacityPresentation(overview).tone}
+            />
             <span className="text-sm text-muted-foreground">{capacityStateNote(overview)}</span>
           </div>
           {overview.samplingError && (
@@ -201,9 +218,16 @@ function CapacityPanel() {
                           <span className="block text-xs text-muted-foreground">
                             {capacityIntervalReasonLabel(interval.startedReason)}
                           </span>
+                          {/* Which volume this window belongs to: a mount can be
+                              relocated, so a historical row has to name its own. */}
+                          <span className="block text-xs text-muted-foreground">
+                            {interval.sourceMount}
+                          </span>
                         </th>
                         <td data-label="Opened available" className="min-w-0 px-3 py-3">
-                          {formatBytesUnknown(interval.openedAvailableBytes)}
+                          {formatBytesUnknown(interval.openedAvailableBytes) +
+                            ' of ' +
+                            formatBytesUnknown(interval.openedTotalBytes)}
                         </td>
                         <td data-label="Pause floor" className="min-w-0 px-3 py-3">
                           {formatBytesUnknown(interval.pauseBelowBytes)}
@@ -223,7 +247,11 @@ function CapacityPanel() {
                                 ? ''
                                 : ' at ' +
                                   formatBytesUnknown(interval.resumedAvailableBytes) +
-                                  ' available')
+                                  (interval.resumedTotalBytes == null
+                                    ? ' available'
+                                    : ' of ' +
+                                      formatBytesUnknown(interval.resumedTotalBytes) +
+                                      ' available'))
                             : 'Still active'}
                         </td>
                       </tr>

@@ -33,8 +33,8 @@ use tower::ServiceExt;
 
 use platpulse_core::{AgentReport, ReceiptDisposition};
 use platpulse_server::capacity::{
-    ADMIN_RECENT_INTERVAL_LIMIT, CapacityConfig, CapacityProtection, recent_intervals,
-    sample_filesystem,
+    ADMIN_RECENT_INTERVAL_LIMIT, CapacityConfig, CapacityProtection, ProtectionTransition,
+    SkippedScope, recent_intervals, record_skipped_series, sample_filesystem,
 };
 use platpulse_server::{AppState, auth, database, http, network, secrets};
 
@@ -146,6 +146,28 @@ fn forced_policy(harness: &Harness) -> Arc<CapacityProtection> {
         config,
         Some(harness.state.db().path()),
     ))
+}
+
+/// An interval a previous process left open, written directly: a test that needs
+/// that durable state must not depend on a policy opening it first.
+///
+/// The recorded thresholds are the largest ones the Server can persist, which is
+/// the same "no disk can clear this floor" declaration forced_policy makes.
+async fn seed_open_interval(harness: &Harness, interval_id: &str) {
+    let mount = harness.mount();
+    let available = sample_filesystem(&mount).unwrap().available_bytes;
+    sqlx::query(
+        "INSERT INTO capacity_protection_intervals (interval_id, source_mount, started_at, started_reason, opened_total_bytes, opened_available_bytes, pause_below_bytes, resume_above_bytes, created_at, updated_at) VALUES (?, ?, '2026-03-01T02:00:00Z', 'low_space', ?, ?, ?, ?, '2026-03-01T02:00:00Z', '2026-03-01T02:00:00Z')",
+    )
+    .bind(interval_id)
+    .bind(mount.to_string_lossy().to_string())
+    .bind(available as i64)
+    .bind(available as i64)
+    .bind(CapacityConfig::MAX_PERSISTED_BYTES as i64)
+    .bind(CapacityConfig::MAX_PERSISTED_BYTES as i64)
+    .execute(harness.pool())
+    .await
+    .unwrap();
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
@@ -461,6 +483,91 @@ async fn optional_history_pauses_under_pressure_and_recovers_with_a_visible_gap(
     );
 }
 
+/// Design §11.4: a restart adopts the interval a previous process left open.
+///
+/// Startup reconciliation was the only thing that ever read that record. If it
+/// failed on its own, the process kept the default unprotected gate, and because
+/// the partial unique index allows a single open interval, every later attempt
+/// to open one was refused: protection stayed defeated while the recorded
+/// interval stayed open forever. A tick now retries the read before it decides
+/// anything.
+#[tokio::test]
+async fn a_tick_adopts_an_open_interval_the_startup_read_missed() {
+    let mut harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (agent_id, credential) = enroll_agent(&harness, &session).await;
+    let available = sample_filesystem(&harness.mount()).unwrap().available_bytes;
+
+    // What a previous process left behind: one open interval, and no memory of
+    // it in this process.
+    const ORPHAN_INTERVAL: &str = "0195f2a1-0600-4600-8600-000000000600";
+    seed_open_interval(&harness, ORPHAN_INTERVAL).await;
+
+    let pressure = forced_policy(&harness);
+    // No reconcile: this is the tick that follows a startup read that failed.
+    let transition = pressure.check_now(harness.pool()).await.unwrap();
+    assert_eq!(
+        transition,
+        ProtectionTransition::Unchanged,
+        "the adopted interval already matches today's policy"
+    );
+    let status = pressure.status();
+    assert!(
+        status.protected,
+        "the retried read pauses optional history instead of writing it"
+    );
+    assert_eq!(status.active_interval_id.as_deref(), Some(ORPHAN_INTERVAL));
+    assert_eq!(
+        harness.count("capacity_protection_intervals").await,
+        1,
+        "adoption never opens a second interval"
+    );
+    harness.install_capacity(Arc::clone(&pressure));
+
+    // The adopted interval really gates optional history.
+    let (status_code, value) = submit(
+        &harness,
+        &credential,
+        serde_json::to_vec(&fixture_report(&agent_id, 1, 1)).unwrap(),
+    )
+    .await;
+    assert_eq!(status_code, StatusCode::OK, "{value}");
+    assert_eq!(harness.count("host_metric_samples").await, 0);
+    assert_eq!(harness.count("node_metric_samples").await, 0);
+    let intervals = recent_intervals(harness.pool(), ADMIN_RECENT_INTERVAL_LIMIT)
+        .await
+        .unwrap();
+    assert_eq!(intervals[0].interval_id, ORPHAN_INTERVAL);
+    assert_eq!(intervals[0].skipped_sample_count, 4);
+
+    // And when the pressure is gone, a tick closes the adopted interval instead
+    // of leaving it open forever.
+    let released_floor = available / 2;
+    let released_config = CapacityConfig::from_declared(
+        true,
+        Some(released_floor),
+        Some(released_floor),
+        None,
+        Some(PathBuf::from("test-capacity-floor")),
+    )
+    .unwrap();
+    let released = Arc::new(CapacityProtection::new(
+        released_config,
+        Some(harness.state.db().path()),
+    ));
+    released.check_now(harness.pool()).await.unwrap();
+    assert!(!released.status().protected);
+    let intervals = recent_intervals(harness.pool(), ADMIN_RECENT_INTERVAL_LIMIT)
+        .await
+        .unwrap();
+    assert_eq!(intervals.len(), 1);
+    assert_eq!(intervals[0].ended_reason.as_deref(), Some("resumed"));
+    assert!(
+        intervals[0].resumed_available_bytes.unwrap() >= released_floor,
+        "the recorded release measurement is the one that closed it"
+    );
+}
+
 /// Story 46 and design §8.3: a Report whose receipt write fails is not accepted
 /// as received, and the gap it would have recorded rolls back with it.
 #[tokio::test]
@@ -602,6 +709,74 @@ async fn a_replayed_reading_is_not_counted_as_a_second_lost_sample() {
     assert_eq!(harness.count("node_metric_samples").await, 0);
 }
 
+/// Issue #212 review: the count is a high-water mark, so an accepted Report that
+/// re-sends older readings after newer ones cannot inflate it. A late-arriving
+/// older reading is under-counted: telling one apart from a replay needs one
+/// ledger row per skipped reading, which would cost at least as much disk as the
+/// history the pause is protecting. The number never claims more distinct lost
+/// readings than the series accounted for.
+#[tokio::test]
+async fn skipped_counting_advances_only_on_a_reading_newer_than_the_mark() {
+    let harness = Harness::boot().await;
+    const INTERVAL: &str = "0195f2a1-0600-4600-8600-000000000601";
+    const AGENT: &str = "0195f2a1-0011-4011-8011-000000000011";
+    const METRIC: &str = "network_rx_bytes_per_sec";
+    seed_open_interval(&harness, INTERVAL).await;
+
+    let mut counts = Vec::new();
+    let mut windows = Vec::new();
+    for observed_at in [
+        "2026-03-01T02:00:00Z",
+        "2026-03-01T02:05:00Z",
+        "2026-03-01T02:00:00Z",
+        "2026-03-01T02:05:00Z",
+        "2026-03-01T02:10:00Z",
+    ] {
+        let mut tx = harness.pool().begin().await.unwrap();
+        record_skipped_series(
+            &mut tx,
+            INTERVAL,
+            SkippedScope::Host,
+            AGENT,
+            METRIC,
+            observed_at,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let (count, first, last): (i64, String, String) = sqlx::query_as(
+            "SELECT skipped_count, first_skipped_at, last_skipped_at FROM capacity_skipped_series WHERE interval_id = ? AND scope_kind = ? AND scope_key = ? AND metric = ?",
+        )
+        .bind(INTERVAL)
+        .bind(SkippedScope::Host.as_str())
+        .bind(AGENT)
+        .bind(METRIC)
+        .fetch_one(harness.pool())
+        .await
+        .unwrap();
+        counts.push(count);
+        windows.push((first, last));
+    }
+
+    assert_eq!(
+        counts,
+        vec![1, 2, 2, 2, 3],
+        "only a reading newer than every counted reading advances the count"
+    );
+    assert_eq!(
+        windows[1].0, "2026-03-01T02:00:00Z",
+        "the recorded window still starts at the first reading it counted"
+    );
+    assert_eq!(
+        windows[1].1, "2026-03-01T02:05:00Z",
+        "and ends at the newest reading it counted"
+    );
+    assert_eq!(
+        windows[4].1, "2026-03-01T02:10:00Z",
+        "a newer reading moves the mark forward"
+    );
+}
 /// Issue #212 review and the AGENTS.md last-good rule: a state filesystem that
 /// stops being measurable is not Healthy. The retained measurement still
 /// explains the protection decision, and Doctor reports the unknown state as a

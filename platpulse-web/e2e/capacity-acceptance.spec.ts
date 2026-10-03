@@ -156,9 +156,13 @@ test.describe('Storage capacity and low-space protection (issue #212)', () => {
         ).toBeVisible()
         await expect(page.getByText(PANEL_TITLE, { exact: true })).toBeVisible()
         await expect(page.getByText('Protecting', { exact: true })).toBeVisible()
+        // The note names the declared hysteresis instead of claiming the volume
+        // is below a floor it is already above: the I64 max floor renders
+        // through the shared byte formatter, so both levels read 8388608 TiB.
         await expect(
           page.getByText(
-            'Storage is below the pause floor, so optional history is paused and every skipped sample is recorded below.',
+            'Optional history is paused while available space is at or below 8388608 TiB, ' +
+              'resumes at 8388608 TiB available, and every skipped sample is recorded below.',
             { exact: true },
           ),
         ).toBeVisible()
