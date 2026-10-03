@@ -149,4 +149,17 @@ What was added:
 sources ok; `cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253` ok (3 allowed warnings, all
 pre-existing); `cargo run -p platpulse-server -- --print-openapi` diffed against `docs/openapi/openapi.json` with
 **zero** lines of difference; `platpulse-web`: `npm run lint`, `npm run typecheck`, `npm test` (37 files / 584
-tests) and `npm run build` all green (only the pre-existing >500 kB chunk notice).
+tests) and `npm run build` all green (only the pre-existing >500 kB chunk notice). Playwright, the primary
+acceptance path (production WebUI -> real Server HTTP -> temporary SQLite, five viewport projects): **686 passed /
+184 skipped / 0 failed** (23.1m, 870 tests).
+
+## VERIFICATION
+
+- The acceptance run is what caught the last defect: the new deduplication scenario asserted the recorded task's
+  **shortened** id in the run notice ("first 8 chars + … + last 4"), but the page names the recorded task in full —
+  the same id the link and the Operations API use — and only the compact "Last recorded retention run" field
+  shortens it (matched by the unit test, which asserts the full id). The assertion had been written and never
+  executed before the acceptance run. Corrected in `platpulse-web/e2e/retention-acceptance.spec.ts:423`-:427 (the
+  UI is unchanged); the lesson is that a new end-to-end assertion is an unverified claim until it has actually run.
+- Recorded as a known gap rather than papered over: the cancellation summary has no viewport/theme matrix of its
+  own, because the cancellation cannot be driven deterministically from the browser (see REVIEW above).
