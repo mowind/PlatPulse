@@ -135,6 +135,18 @@ function runSummary(overrides: Record<string, unknown> = {}) {
   }
 }
 
+/** The wire shape of one accepted confirmation (issue #211): the Operation the
+ * Server queued or reconciled to, plus the command identity it was keyed by. */
+function runResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    auditEventId: 88,
+    requestId: 'cmd-0001',
+    deduplicated: false,
+    operation: { cancellable: true, errors: [], warnings: [], result: null, operation: runSummary() },
+    ...overrides,
+  }
+}
+
 /** The Server state each mocked route answers from. */
 type ServerState = {
   policies: Policy[]
@@ -492,13 +504,7 @@ describe('PAGE-ADMIN-RETENTION (issue #210)', () => {
       baseRoutes(state, {
         [RUN_KEY]: () => {
           state.lastRun = runSummary()
-          return jsonResponse(
-            {
-              auditEventId: 88,
-              operation: { cancellable: true, errors: [], warnings: [], result: null, operation: runSummary() },
-            },
-            200,
-          )
+          return jsonResponse(runResponse(), 200)
         },
       }),
     )
@@ -513,7 +519,7 @@ describe('PAGE-ADMIN-RETENTION (issue #210)', () => {
 
     expect(await screen.findByText(new RegExp('The Server queued the retention run as ' + RUN_ID))).toBeTruthy()
     expect(calls(RUN_KEY)).toHaveLength(1)
-    expect(calls(RUN_KEY)[0].body).toEqual({ previewId: PREVIEW_ID })
+    expect(calls(RUN_KEY)[0].body).toEqual({ previewId: PREVIEW_ID, requestId: expect.any(String) })
     const link = await screen.findByRole('link', { name: RUN_SHORT })
     expect(link.getAttribute('href')).toBe('/admin/operations/' + RUN_ID)
   })
@@ -571,6 +577,133 @@ describe('PAGE-ADMIN-RETENTION (issue #210)', () => {
     confirmRun()
     await waitFor(() => expect(run.disabled).toBe(false))
     expect(screen.queryByText(/this page will not retry it/)).toBeNull()
+  })
+
+  it('reconciles a repeated confirmation to the recorded run instead of queueing a second cleanup', async () => {
+    const state = newState()
+    state.preview = livePreview()
+    mockRetention(baseRoutes(state, { [RUN_KEY]: () => jsonResponse(runResponse({ deduplicated: true }), 200) }))
+    await renderRetention()
+
+    const run = screen.getByRole('button', { name: 'Run retention for this preview' }) as HTMLButtonElement
+    confirmRun()
+    await waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+
+    // The Server reconciled this confirmation to the run it already recorded, so
+    // the page says so instead of claiming it queued a second cleanup.
+    await waitFor(() => expect(slot('retention-run-notice').textContent).toContain('no second cleanup was queued'))
+    expect(slot('retention-run-notice').textContent).toContain(RUN_ID)
+    expect(calls(RUN_KEY)).toHaveLength(1)
+    expect(calls(RUN_KEY)[0].body).toEqual({ previewId: PREVIEW_ID, requestId: expect.any(String) })
+  })
+
+  it('re-sends one command identity for the bound preview and mints a new one for the next preview', async () => {
+    const state = newState()
+    state.preview = livePreview()
+    let deduplicated = false
+    mockRetention(
+      baseRoutes(state, {
+        [RUN_KEY]: () => jsonResponse(runResponse({ deduplicated }), 200),
+        [PREVIEW_KEY]: () => {
+          state.preview = livePreview({ previewId: SECOND_PREVIEW_ID, createdAt: iso(-1_000) })
+          return jsonResponse(state.preview, 200)
+        },
+      }),
+    )
+    await renderRetention()
+
+    const run = screen.getByRole('button', { name: 'Run retention for this preview' }) as HTMLButtonElement
+    confirmRun()
+    await waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    await waitFor(() => expect(calls(RUN_KEY)).toHaveLength(1))
+
+    // Confirming the same preview again is the same Owner command, so the page
+    // re-sends the identity it minted for this preview and the Server reconciles.
+    deduplicated = true
+    confirmRun()
+    await waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    await waitFor(() => expect(calls(RUN_KEY)).toHaveLength(2))
+    await waitFor(() => expect(slot('retention-run-notice').textContent).toContain('no second cleanup was queued'))
+
+    // A different preview is a different command: carrying the old identity over
+    // would be refused by the Server as a reused command identity.
+    fireEvent.click(screen.getByRole('button', { name: 'Compose a new preview' }))
+    await waitFor(() => expect(slot('retention-preview').textContent).toContain('0195f2a1…0401'))
+    confirmRun()
+    await waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    await waitFor(() => expect(calls(RUN_KEY)).toHaveLength(3))
+
+    const identities = calls(RUN_KEY).map((entry) => (entry.body as { requestId: string }).requestId)
+    expect(identities[0]).toBe(identities[1])
+    expect(identities[2]).not.toBe(identities[1])
+  })
+
+  it('reports a refused second cleanup for the same preview without retrying it', async () => {
+    const state = newState()
+    state.preview = livePreview()
+    mockRetention(
+      baseRoutes(state, {
+        [RUN_KEY]: () =>
+          apiError(
+            'retention_run_in_progress',
+            'retention run ' + RUN_ID + ' is already queued or running; read its recorded outcome instead of queueing a second cleanup',
+            409,
+            ['previewId'],
+          ),
+      }),
+    )
+    await renderRetention()
+
+    const run = screen.getByRole('button', { name: 'Run retention for this preview' }) as HTMLButtonElement
+    confirmRun()
+    await waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+
+    // The Server refused a second cleanup by naming the run already in flight.
+    await waitFor(() => expect(slot('retention-run').textContent).toContain('is already queued or running'))
+    expect(slot('retention-run').textContent).toContain('Nothing was queued by this click')
+    expect(calls(RUN_KEY)).toHaveLength(1)
+    expect(screen.queryByText(/no second cleanup was queued/)).toBeNull()
+  })
+
+  it('rotates the command identity when the Server reports it stood for another command', async () => {
+    const state = newState()
+    state.preview = livePreview()
+    let attempts = 0
+    mockRetention(
+      baseRoutes(state, {
+        [RUN_KEY]: () => {
+          attempts += 1
+          return attempts === 1
+            ? apiError(
+                'operation_request_id_conflict',
+                'this requestId was already used for retention run ' + RUN_ID + '; compose a new preview to confirm new work',
+                409,
+                ['requestId'],
+              )
+            : jsonResponse(runResponse(), 200)
+        },
+      }),
+    )
+    await renderRetention()
+
+    const run = screen.getByRole('button', { name: 'Run retention for this preview' }) as HTMLButtonElement
+    confirmRun()
+    await waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    await waitFor(() => expect(slot('retention-run').textContent).toContain('was already used for retention run'))
+    expect(slot('retention-run').textContent).toContain('under a new command identity')
+
+    // The next confirmation is a clean command, not a replay of the refused one.
+    fireEvent.click(run)
+    await waitFor(() => expect(calls(RUN_KEY)).toHaveLength(2))
+    const identities = calls(RUN_KEY).map((entry) => (entry.body as { requestId: string }).requestId)
+    expect(identities[1]).not.toBe(identities[0])
+    await waitFor(() => expect(slot('retention-run-notice').textContent).toContain('The Server queued the retention run as'))
   })
 
   it('refuses a run for an expired preview', async () => {
@@ -635,14 +768,7 @@ describe('PAGE-ADMIN-RETENTION (issue #210)', () => {
     state.preview = livePreview()
     mockRetention(
       baseRoutes(state, {
-        [RUN_KEY]: () =>
-          jsonResponse(
-            {
-              auditEventId: 88,
-              operation: { cancellable: true, errors: [], warnings: [], result: null, operation: runSummary() },
-            },
-            200,
-          ),
+        [RUN_KEY]: () => jsonResponse(runResponse(), 200),
       }),
     )
     await renderRetention()
@@ -663,7 +789,7 @@ describe('PAGE-ADMIN-RETENTION (issue #210)', () => {
     await waitFor(() => expect(run.disabled).toBe(false))
     fireEvent.click(run)
     await waitFor(() => expect(calls(RUN_KEY)).toHaveLength(1))
-    expect(calls(RUN_KEY)[0].body).toEqual({ previewId: PREVIEW_ID })
+    expect(calls(RUN_KEY)[0].body).toEqual({ previewId: PREVIEW_ID, requestId: expect.any(String) })
   })
 
   it('keeps the version it read when the page refetches under a confirmed draft', async () => {
@@ -725,14 +851,7 @@ describe('PAGE-ADMIN-RETENTION (issue #210)', () => {
     state.preview = livePreview()
     mockRetention(
       baseRoutes(state, {
-        [RUN_KEY]: () =>
-          jsonResponse(
-            {
-              auditEventId: 88,
-              operation: { cancellable: true, errors: [], warnings: [], result: null, operation: runSummary() },
-            },
-            200,
-          ),
+        [RUN_KEY]: () => jsonResponse(runResponse(), 200),
       }),
     )
     await renderRetention()
@@ -754,6 +873,6 @@ describe('PAGE-ADMIN-RETENTION (issue #210)', () => {
     )
     fireEvent.click(slot('retention-run-submit'))
     await waitFor(() => expect(calls(RUN_KEY)).toHaveLength(1))
-    expect(calls(RUN_KEY)[0].body).toEqual({ previewId: PREVIEW_ID })
+    expect(calls(RUN_KEY)[0].body).toEqual({ previewId: PREVIEW_ID, requestId: expect.any(String) })
   })
 })

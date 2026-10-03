@@ -4,6 +4,7 @@ import { Link } from 'react-router'
 import {
   AdminApiError,
   createRetentionPreviewEntry,
+  newRetentionRunRequestId,
   runRetentionEntry,
   updateRetentionPolicyEntry,
   useAdminRetention,
@@ -836,6 +837,12 @@ function RunPanel({
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState('')
+  // The Owner command identity for this confirmation (Story 39). It is minted
+  // per bound preview: a retry of the same preview re-sends the same id and the
+  // Server reconciles to the recorded run instead of queueing a second cleanup,
+  // while a different preview is a different command and gets a fresh id (reusing
+  // one across two intents is a conflict the Server refuses).
+  const [commandId, setCommandId] = useState(() => newRetentionRunRequestId())
 
   const boundPreviewId = preview ? preview.previewId : null
   // A refusal belongs to the preview it was refused for: binding a different
@@ -845,6 +852,7 @@ function RunPanel({
   useEffect(() => {
     setError(null)
     setConfirmation('')
+    setCommandId(newRetentionRunRequestId())
   }, [boundPreviewId])
 
   const expired = preview ? isExpired(preview) : false
@@ -864,14 +872,19 @@ function RunPanel({
     setNotice(null)
     setError(null)
     try {
-      const response = await runRetentionEntry(preview.previewId, csrfToken)
+      const response = await runRetentionEntry(preview.previewId, commandId, csrfToken)
       const operationId = response.operation.operation.operationId
       setConfirmation('')
       setNotice(
-        'The Server queued the retention run as ' +
-          operationId +
-          '. It starts Queued and releases only what the preview bound; the recorded task below shows its ' +
-          'outcome.',
+        response.deduplicated
+          ? 'The Server had already recorded this confirmation as ' +
+              operationId +
+              ': it is the same command, so no second cleanup was queued. The recorded task below is that ' +
+              'run, including whatever it already released.'
+          : 'The Server queued the retention run as ' +
+              operationId +
+              '. It starts Queued and releases only what the preview bound; the recorded task below shows its ' +
+              'outcome.',
       )
     } catch (caught) {
       if (
@@ -887,6 +900,20 @@ function RunPanel({
             ' Nothing was queued, and this page will not retry it — compose a new preview above and review ' +
             'the new estimates before running.',
         )
+      } else if (caught instanceof AdminApiError && caught.code === 'retention_run_in_progress') {
+        // Another cleanup of the same kind is still queued or running: the
+        // Server refused a second one by name instead of stacking it. Nothing
+        // is retried here; the Operator follows the recorded task.
+        setError(
+          caught.message +
+            ' Nothing was queued by this click: the recorded task below is the cleanup in progress.',
+        )
+      } else if (caught instanceof AdminApiError && caught.code === 'operation_request_id_conflict') {
+        // This identity already stands for a different command (a stale tab,
+        // or a preview this page has not seen). Mint a fresh one so the next
+        // confirmation is a clean command rather than a replay of that one.
+        setCommandId(newRetentionRunRequestId())
+        setError(caught.message + ' This page will confirm the run again under a new command identity.')
       } else {
         setError(
           indeterminateOutcome(caught) ? UNKNOWN_RUN_OUTCOME : errorMessage(caught, 'Unable to start the retention run.'),
@@ -917,7 +944,7 @@ function RunPanel({
         )}
 
         {notice && (
-          <p className={NOTICE} role="status">
+          <p className={NOTICE} role="status" data-slot="retention-run-notice">
             {notice}
           </p>
         )}

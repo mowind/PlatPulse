@@ -3,6 +3,7 @@ import type { OperationIssue, OperationSummary } from '../api/generated'
 import { StatusBadge } from '../components/StatusBadge'
 import { ProgressThin, type ProgressStatus } from '../components/ui/progress-thin'
 import { formatDuration } from '../formatDuration'
+import { DetailItem, DetailList } from './notificationShared'
 
 /**
  * Shared vocabulary for the Operations and Doctor Admin pages (issue #208).
@@ -204,5 +205,123 @@ export function OperationProgress({
         {percent}%
       </span>
     </span>
+  )
+}
+
+/**
+ * The recorded outcome of a cancelled cleanup (issue #211, Story 40). The Server
+ * writes this shape when a run stops: the phase it was stopped in, what it had
+ * already released, and the planned work it did not attempt. Parsing is
+ * deliberately defensive - the result column is Server-owned JSON - so an
+ * unknown shape degrades to the raw payload below instead of inventing an
+ * outcome this page cannot vouch for.
+ */
+export type CancellationPhase = 'queued' | 'running'
+
+export type CancelledFamilyTotal = {
+  family: string
+  deletedRows: number
+  estimatedRows: number
+}
+
+export type CancellationOutcome = {
+  phase: CancellationPhase
+  releasedRows: number
+  remainingTargets: number
+  families: CancelledFamilyTotal[]
+  note: string
+  previewId: string | null
+}
+
+function asRowCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+export function parseCancellationOutcome(result: unknown): CancellationOutcome | null {
+  if (typeof result !== 'object' || result === null) return null
+  const cancelled = (result as { cancelled?: unknown }).cancelled
+  if (typeof cancelled !== 'object' || cancelled === null) return null
+  const payload = cancelled as Record<string, unknown>
+  const phase = payload.phase
+  if (phase !== 'queued' && phase !== 'running') return null
+  const releasedRows = asRowCount(payload.releasedRows)
+  const remainingTargets = asRowCount(payload.remainingTargets)
+  if (releasedRows === null || remainingTargets === null) return null
+  const families: CancelledFamilyTotal[] = []
+  if (Array.isArray(payload.families)) {
+    for (const entry of payload.families) {
+      if (typeof entry !== 'object' || entry === null) continue
+      const family = (entry as { family?: unknown }).family
+      if (typeof family !== 'string' || family.length === 0) continue
+      const row = entry as Record<string, unknown>
+      const deletedRows = asRowCount(row.deletedRows)
+      const estimatedRows = asRowCount(row.estimatedRows)
+      // A family the Server recorded no counts for is left out instead of being
+      // shown as a fabricated "0 of an estimated 0" (webui.md §15.11: Server
+      // owned facts are never invented); the raw result still renders below.
+      if (deletedRows === null || estimatedRows === null) continue
+      families.push({ family, deletedRows, estimatedRows })
+    }
+  }
+  const previewId = (result as { previewId?: unknown }).previewId
+  return {
+    phase,
+    releasedRows,
+    remainingTargets,
+    families,
+    note: typeof payload.note === 'string' ? payload.note : '',
+    previewId: typeof previewId === 'string' && previewId.length > 0 ? previewId : null,
+  }
+}
+
+/**
+ * What a stopped cleanup already did, in the Server's own words: released rows
+ * stay released (a release is never rolled back), and the work that remained is
+ * reported as stopped rather than as done.
+ */
+export function CancellationSummary({ result }: { result: unknown }) {
+  const outcome = parseCancellationOutcome(result)
+  if (!outcome) return null
+  const phaseCopy =
+    outcome.phase === 'queued'
+      ? 'It was cancelled while it was still queued, so no batch ever ran and nothing was released.'
+      : 'It stopped at a safe checkpoint between batches. The rows already released are work that happened; the rest was stopped, not attempted.'
+  return (
+    <div className="space-y-2 rounded-md border border-border/60 bg-muted/30 p-3" data-slot="operation-cancellation">
+      <p className="text-sm font-medium" data-slot="operation-cancellation-phase">
+        Cancelled {outcome.phase === 'queued' ? 'while queued' : 'while running'}
+      </p>
+      <p className="text-xs text-muted-foreground">{phaseCopy}</p>
+      <DetailList>
+        <DetailItem label="Rows already released">
+          <span data-slot="operation-cancellation-released">{String(outcome.releasedRows)}</span>
+        </DetailItem>
+        <DetailItem label="Planned targets not completed">
+          <span data-slot="operation-cancellation-remaining">{String(outcome.remainingTargets)}</span>
+        </DetailItem>
+        {outcome.previewId ? (
+          <DetailItem label="Confirmed preview">
+            <span className="font-mono text-xs break-all">{outcome.previewId}</span>
+          </DetailItem>
+        ) : null}
+      </DetailList>
+      {outcome.families.length > 0 && (
+        <ul className="space-y-1 text-xs" data-slot="operation-cancellation-families">
+          {outcome.families.map((family) => (
+            <li key={family.family} className="min-w-0 break-words">
+              <span className="font-mono">{family.family}</span>
+              <span className="block text-muted-foreground">
+                {String(family.deletedRows)} of an estimated {String(family.estimatedRows)} rows released
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {outcome.note.length > 0 && (
+        <p className="text-xs text-muted-foreground" data-slot="operation-cancellation-note">
+          {outcome.note}
+        </p>
+      )}
+    </div>
   )
 }

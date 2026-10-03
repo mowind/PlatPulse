@@ -24,6 +24,7 @@ import {
   IssueList,
   OPERATION_KINDS,
   OPERATION_STATUSES,
+  CancellationSummary,
   OperationProgress,
   OperationStatus,
   ResultBlock,
@@ -500,6 +501,9 @@ export function AdminOperationDetailPage() {
           </div>
           <div className="space-y-2">
             <h2 className="text-sm font-medium">Result</h2>
+            {/* A cancelled cleanup carries its own recorded shape: work already
+                released, work stopped at the checkpoint (issue #211). */}
+            <CancellationSummary result={detail.result} />
             {detail.result == null ? (
               <p className="text-sm text-muted-foreground">
                 The Server recorded no result payload for this task yet. A task that is still queued or running

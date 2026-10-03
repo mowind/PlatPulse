@@ -2585,6 +2585,29 @@ export type RetentionRunRequest = {
      * longer matches the current policies is rejected.
      */
     previewId: string;
+    /**
+     * The Owner's opaque command identity for this confirmation (issue #211).
+     * Re-sending the same id for the same preview reconciles to the recorded
+     * run instead of queueing a second cleanup, and reusing it for a different
+     * command is a conflict.
+     */
+    requestId: string;
+};
+
+export type RetentionRunResponse = {
+    auditEventId: number;
+    /**
+     * `true` when the Server reconciled to an already-recorded run for this
+     * requestId or this preview: the Operation below is the recorded one, not
+     * a second run.
+     */
+    deduplicated: boolean;
+    operation: OperationDetail;
+    /**
+     * Echo of the command identity the Server keyed this run by, so the
+     * browser can retry the same command and be recognised.
+     */
+    requestId: string;
 };
 
 export type RevokeOthersResponse = {
@@ -4950,10 +4973,10 @@ export type RetentionRunErrors = {
 export type RetentionRunError = RetentionRunErrors[keyof RetentionRunErrors];
 
 export type RetentionRunResponses = {
-    200: OperationMutationResponse;
+    200: RetentionRunResponse;
 };
 
-export type RetentionRunResponse = RetentionRunResponses[keyof RetentionRunResponses];
+export type RetentionRunResponse2 = RetentionRunResponses[keyof RetentionRunResponses];
 
 export type SessionsListData = {
     body?: never;

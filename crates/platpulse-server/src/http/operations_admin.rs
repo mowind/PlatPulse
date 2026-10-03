@@ -548,6 +548,25 @@ pub struct RetentionRunRequest {
     /// the preview froze is executed as-is, and a preview that expired or no
     /// longer matches the current policies is rejected.
     pub preview_id: String,
+    /// The Owner's opaque command identity for this confirmation (issue #211).
+    /// Re-sending the same id for the same preview reconciles to the recorded
+    /// run instead of queueing a second cleanup, and reusing it for a different
+    /// command is a conflict.
+    pub request_id: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RetentionRunResponse {
+    pub operation: OperationDetail,
+    pub audit_event_id: i64,
+    /// Echo of the command identity the Server keyed this run by, so the
+    /// browser can retry the same command and be recognised.
+    pub request_id: String,
+    /// `true` when the Server reconciled to an already-recorded run for this
+    /// requestId or this preview: the Operation below is the recorded one, not
+    /// a second run.
+    pub deduplicated: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -906,13 +925,17 @@ pub(crate) async fn cancel_operation(
             );
         }
     };
-    let current: Option<(String, i64)> =
-        sqlx::query_as("SELECT status, cancel_requested FROM operations WHERE operation_id = ?")
-            .bind(&operation_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .unwrap_or(None);
-    let Some((status, already)) = current else {
+    // The recorded plan is read with the status: cancelling a queued Operation
+    // makes it terminal, so this handler - not a worker - records what that
+    // Operation did and did not release.
+    let current: Option<(String, i64, String, String)> = sqlx::query_as(
+        "SELECT status, cancel_requested, kind, params_json FROM operations WHERE operation_id = ?",
+    )
+    .bind(&operation_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .unwrap_or(None);
+    let Some((status, already, kind, params_json)) = current else {
         let _ = tx.rollback().await;
         return (
             StatusCode::NOT_FOUND,
@@ -938,16 +961,32 @@ pub(crate) async fn cancel_operation(
         )
             .into_response();
     }
-    let new_status = if status == "queued" {
+    let queued = status == operations::STATUS_QUEUED;
+    let new_status = if queued {
         operations::STATUS_CANCELLED
     } else {
         operations::STATUS_RUNNING
     };
-    let finished_at = if status == "queued" { Some(&now) } else { None };
+    let finished_at = if queued { Some(&now) } else { None };
+    // A cleanup cancelled while queued is terminal before any worker sees it and
+    // it had a recorded plan of work, so the Server accounts for that plan here.
+    // Every other kind keeps its result empty: a run that never started produced
+    // no outcome, and inventing one would be read back as a result it did produce
+    // (`doctor::last_run` treats a non-null result as a diagnostic report). A
+    // running Operation keeps its result empty too (COALESCE) until its worker
+    // stops at the next safe checkpoint and records the partial release.
+    let stopped_work = if queued && kind == operations::KIND_RETENTION_RUN {
+        let params: Value = serde_json::from_str(&params_json).unwrap_or(Value::Null);
+        let result = crate::retention::queued_run_cancellation(&params);
+        serde_json::to_string(&crate::redaction::redact_json_value(&result)).ok()
+    } else {
+        None
+    };
     if sqlx::query(
-        "UPDATE operations SET cancel_requested = 1, status = ?, finished_at = COALESCE(finished_at, ?) WHERE operation_id = ?",
+        "UPDATE operations SET cancel_requested = 1, status = ?, result_json = COALESCE(result_json, ?), finished_at = COALESCE(finished_at, ?) WHERE operation_id = ?",
     )
     .bind(new_status)
+    .bind(stopped_work)
     .bind(finished_at)
     .bind(&operation_id)
     .execute(&mut *tx)
@@ -1524,7 +1563,7 @@ fn preview_stale_message(reasons: &[String]) -> String {
     path = "/api/admin/v1/retention/run",
     tag = "admin",
     request_body = RetentionRunRequest,
-    responses((status = 200, body = OperationMutationResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+    responses((status = 200, body = RetentionRunResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 409, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn retention_run(
     State(state): State<AppState>,
@@ -1535,6 +1574,74 @@ pub(crate) async fn retention_run(
 ) -> Response {
     if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, true) {
         return response;
+    }
+    // The command identity is validated before any work: a blank or oversized
+    // requestId can never be recorded, so refusing it early keeps the ledger
+    // keys bounded and the browser's retry meaningful.
+    if !operations::validate_request_id(&request.request_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorBody::with_fields(
+                "operation_request_id_invalid",
+                "a non-blank requestId of at most 128 characters is required",
+                &request_id.0,
+                vec!["requestId".to_owned()],
+            )),
+        )
+            .into_response();
+    }
+    // Story 39: an identity that already recorded a command is answered before
+    // this request is treated as a new execution. A retry of an accepted
+    // confirmation must reconcile to the run it recorded even if the preview has
+    // expired or its policy has moved since - otherwise the page would report
+    // "nothing was queued" about work that already happened.
+    let fingerprint =
+        operations::request_intent_fingerprint(operations::KIND_RETENTION_RUN, &request.preview_id);
+    match operations::replay_recorded_command(
+        state.db().pool(),
+        operations::KIND_RETENTION_RUN,
+        &request.request_id,
+        &fingerprint,
+    )
+    .await
+    {
+        Ok(Some(operations::QueueOutcome::Replayed {
+            operation_id,
+            audit_event_id,
+        })) => {
+            return retention_run_response(
+                &state,
+                &request_id,
+                &request.request_id,
+                operation_id,
+                audit_event_id,
+                true,
+            )
+            .await;
+        }
+        Ok(Some(operations::QueueOutcome::RequestConflict { operation_id })) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ApiErrorBody::with_fields_message(
+                    "operation_request_id_conflict",
+                    format!(
+                        "this requestId was already used for retention run {operation_id}; compose a new preview to confirm new work"
+                    ),
+                    &request_id.0,
+                    vec!["requestId".to_owned()],
+                )),
+            )
+                .into_response();
+        }
+        Ok(_) => {}
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
     }
     // The run executes the plan the preview froze, re-validated here: a policy
     // or scope change since the estimates were shown becomes a conflict instead
@@ -1587,15 +1694,111 @@ pub(crate) async fn retention_run(
         "skippedWarnings": preview.skipped,
         "plan": plan,
     });
-    queue_operation(
-        &state,
-        &principal,
-        &request_id,
+    // One confirmation authorizes one cleanup. The preview is the intent: a
+    // repeat of this command - a doubled click, a second tab with its own
+    // requestId, a retry after a lost response - reconciles to the recorded run
+    // instead of releasing the same history twice.
+    match operations::create_operation_once(
+        state.db().pool(),
         operations::KIND_RETENTION_RUN,
         &params,
+        &request.request_id,
+        &fingerprint,
+        &principal.0.user_id,
         "retention_started",
     )
     .await
+    {
+        Ok(operations::QueueOutcome::Queued {
+            operation_id,
+            audit_event_id,
+        }) => {
+            retention_run_response(
+                &state,
+                &request_id,
+                &request.request_id,
+                operation_id,
+                audit_event_id,
+                false,
+            )
+            .await
+        }
+        Ok(operations::QueueOutcome::Replayed {
+            operation_id,
+            audit_event_id,
+        }) => {
+            retention_run_response(
+                &state,
+                &request_id,
+                &request.request_id,
+                operation_id,
+                audit_event_id,
+                true,
+            )
+            .await
+        }
+        Ok(operations::QueueOutcome::AlreadyOpen { operation_id }) => (
+            StatusCode::CONFLICT,
+            Json(ApiErrorBody::with_fields_message(
+                "retention_run_in_progress",
+                format!(
+                    "retention run {operation_id} is already queued or running; read its recorded outcome instead of queueing a second cleanup"
+                ),
+                &request_id.0,
+                vec!["previewId".to_owned()],
+            )),
+        )
+            .into_response(),
+        Ok(operations::QueueOutcome::RequestConflict { operation_id }) => (
+            StatusCode::CONFLICT,
+            Json(ApiErrorBody::with_fields_message(
+                "operation_request_id_conflict",
+                format!(
+                    "this requestId was already used for retention run {operation_id}; compose a new preview to confirm new work"
+                ),
+                &request_id.0,
+                vec!["requestId".to_owned()],
+            )),
+        )
+            .into_response(),
+        Err(_) => mutation_error(
+            &request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        ),
+    }
+}
+
+/// Respond to a queued or replayed retention run with the identity the Server
+/// keyed it by, so the browser can retry the same command and be recognised
+/// instead of queueing a second cleanup.
+async fn retention_run_response(
+    state: &AppState,
+    http_request_id: &RequestId,
+    command_request_id: &str,
+    operation_id: String,
+    audit_event_id: i64,
+    deduplicated: bool,
+) -> Response {
+    state
+        .admin_realtime()
+        .publish("operations", Some(&operation_id), 1);
+    match load_operation_detail(state.db().pool(), &operation_id).await {
+        Ok(Some(operation)) => Json(RetentionRunResponse {
+            operation,
+            audit_event_id,
+            request_id: command_request_id.to_owned(),
+            deduplicated,
+        })
+        .into_response(),
+        _ => mutation_error(
+            &http_request_id.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "Server database is unavailable",
+        ),
+    }
 }
 
 fn redact_backup_filename(filename: String) -> String {
@@ -2275,17 +2478,48 @@ mod tests {
 
     /// Compose a preview and confirm the run it authorizes: the two steps a
     /// retention run always performs, so a test can never queue a free-form one.
+    /// A fresh Owner command identity, the way a browser mints one per
+    /// confirmation.
+    fn command_request_id() -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+
     async fn queue_retention_run(state: &AppState, families: Option<Vec<String>>) -> Response {
         let preview = preview_retention(state, families).await;
         let preview_id = preview["previewId"].as_str().unwrap().to_owned();
+        queue_retention_run_once(state, &preview_id, &command_request_id()).await
+    }
+
+    /// Queue a run for one explicit preview under one explicit command
+    /// identity: the shape a browser retry, a doubled click, or a second tab
+    /// produces.
+    async fn queue_retention_run_once(
+        state: &AppState,
+        preview_id: &str,
+        command_id: &str,
+    ) -> Response {
         retention_run(
             State(state.clone()),
             mutation_headers(),
             Extension(session()),
             Extension(request_id()),
-            Json(RetentionRunRequest { preview_id }),
+            Json(RetentionRunRequest {
+                preview_id: preview_id.to_owned(),
+                request_id: command_id.to_owned(),
+            }),
         )
         .await
+    }
+
+    /// The persisted plan of one Operation, the authority on what it released.
+    async fn recorded_plan(state: &AppState, operation_id: &str) -> Value {
+        let params: String =
+            sqlx::query_scalar("SELECT params_json FROM operations WHERE operation_id = ?")
+                .bind(operation_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        serde_json::from_str(&params).unwrap()
     }
 
     async fn seed_old_data(state: &AppState) {
@@ -2429,6 +2663,7 @@ mod tests {
             Extension(request_id()),
             Json(RetentionRunRequest {
                 preview_id: "rp-missing".to_owned(),
+                request_id: command_request_id(),
             }),
         )
         .await;
@@ -2453,14 +2688,7 @@ mod tests {
 
         // The stale preview is refused, and a refused run queues nothing.
         let preview_id = preview["previewId"].as_str().unwrap().to_owned();
-        let response = retention_run(
-            State(state.clone()),
-            mutation_headers(),
-            Extension(session()),
-            Extension(request_id()),
-            Json(RetentionRunRequest { preview_id }),
-        )
-        .await;
+        let response = queue_retention_run_once(&state, &preview_id, &command_request_id()).await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
         let body = body_json(response).await;
         assert_eq!(body["error"]["code"], "retention_preview_stale");
@@ -2470,6 +2698,255 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("raw_block_summary")
+        );
+    }
+
+    /// Story 39: a repeated confirmation - a doubled click, a re-sent request, a
+    /// retry after a lost response - reconciles to the run already recorded
+    /// instead of releasing the same history twice.
+    #[tokio::test]
+    async fn a_repeated_retention_confirmation_reconciles_to_the_recorded_run() {
+        let (_dir, state) = test_state().await;
+        let preview = preview_retention(&state, None).await;
+        let preview_id = preview["previewId"].as_str().unwrap().to_owned();
+        let command = command_request_id();
+        let first = body_json(queue_retention_run_once(&state, &preview_id, &command).await).await;
+        assert_eq!(first["deduplicated"], false);
+        assert_eq!(first["requestId"], command.as_str());
+        let operation_id = first["operation"]["operation"]["operationId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let second = body_json(queue_retention_run_once(&state, &preview_id, &command).await).await;
+        assert_eq!(second["deduplicated"], true);
+        assert_eq!(
+            second["operation"]["operation"]["operationId"],
+            operation_id
+        );
+        let queued: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE kind = 'retention_run'")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(queued, 1, "a replay must not queue a second cleanup");
+        let audits: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'retention_started'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            audits, 1,
+            "a replay must not record a second command in Audit"
+        );
+    }
+
+    /// Story 39: the intent is the confirmed preview, not the browser's id, so a
+    /// second tab that minted its own identity still confirms one run.
+    #[tokio::test]
+    async fn a_second_tab_confirms_the_same_preview_without_queueing_twice() {
+        let (_dir, state) = test_state().await;
+        let preview = preview_retention(&state, None).await;
+        let preview_id = preview["previewId"].as_str().unwrap().to_owned();
+        let first =
+            body_json(queue_retention_run_once(&state, &preview_id, &command_request_id()).await)
+                .await;
+        let operation_id = first["operation"]["operation"]["operationId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let second =
+            body_json(queue_retention_run_once(&state, &preview_id, &command_request_id()).await)
+                .await;
+        assert_eq!(second["deduplicated"], true);
+        assert_eq!(
+            second["operation"]["operation"]["operationId"],
+            operation_id
+        );
+        let queued: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE kind = 'retention_run'")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(queued, 1);
+    }
+
+    /// Story 39: one confirmation authorizes one cleanup release, so a different
+    /// preview cannot queue a second run while the first is still open.
+    #[tokio::test]
+    async fn a_second_open_retention_run_is_refused() {
+        let (_dir, state) = test_state().await;
+        let first = body_json(queue_retention_run(&state, None).await).await;
+        let operation_id = first["operation"]["operation"]["operationId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        // A different scope is a different preview - and therefore a different
+        // intent - while the first run is still open.
+        let response =
+            queue_retention_run(&state, Some(vec!["raw_block_summary".to_owned()])).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "retention_run_in_progress");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(&operation_id)
+        );
+        let queued: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE kind = 'retention_run'")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(queued, 1);
+    }
+
+    /// Story 39: a request id must never quietly mean something else, or the
+    /// Operator would believe the second confirmation replaced the first.
+    #[tokio::test]
+    async fn reusing_a_request_id_for_a_different_command_is_a_conflict() {
+        let (_dir, state) = test_state().await;
+        let preview = preview_retention(&state, None).await;
+        let preview_id = preview["previewId"].as_str().unwrap().to_owned();
+        let command = command_request_id();
+        let first = body_json(queue_retention_run_once(&state, &preview_id, &command).await).await;
+        let operation_id = first["operation"]["operation"]["operationId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        // A different scope is a different preview, and a preview id is
+        // deterministic per scope/version/second: this is genuinely another
+        // command under the same browser id.
+        let other = preview_retention(&state, Some(vec!["raw_block_summary".to_owned()])).await;
+        let other_id = other["previewId"].as_str().unwrap().to_owned();
+        assert_ne!(other_id, preview_id);
+        let response = queue_retention_run_once(&state, &other_id, &command).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "operation_request_id_conflict");
+        assert_eq!(body["error"]["fields"][0], "requestId");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(&operation_id)
+        );
+    }
+
+    /// Story 39: the command identity is validated before any work, because an
+    /// unrecordable command must never reach the queue.
+    #[tokio::test]
+    async fn a_command_without_a_usable_request_id_is_refused_before_any_work() {
+        let (_dir, state) = test_state().await;
+        for unusable in ["", "   ", &"r".repeat(129)] {
+            let response = queue_retention_run_once(&state, "rp-missing", unusable).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = body_json(response).await;
+            assert_eq!(body["error"]["code"], "operation_request_id_invalid");
+            assert_eq!(body["error"]["fields"][0], "requestId");
+        }
+        let queued: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE kind = 'retention_run'")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(queued, 0);
+    }
+
+    /// Story 38: a policy edit after the confirmation moves the ground the run
+    /// was authorized on. The plan is frozen, but the preview no longer binds, so
+    /// the run stops before its first batch and releases nothing.
+    #[tokio::test]
+    async fn a_run_refuses_to_execute_when_its_confirmed_policy_moved() {
+        let (_dir, state) = test_state().await;
+        seed_old_data(&state).await;
+        let body = body_json(queue_retention_run(&state, None).await).await;
+        let operation_id = body["operation"]["operation"]["operationId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        crate::retention::update_policy(state.db().pool(), "raw_block_summary", 10, "owner")
+            .await
+            .unwrap();
+        crate::operations::process_operations(&state).await.unwrap();
+        let row: (String, Option<String>) =
+            sqlx::query_as("SELECT status, errors_json FROM operations WHERE operation_id=?")
+                .bind(&operation_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(row.0, "failed");
+        let errors: Value = serde_json::from_str(&row.1.unwrap()).unwrap();
+        assert_eq!(errors[0]["code"], "retention_preview_stale");
+        assert!(
+            errors[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("nothing was executed")
+        );
+        let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            before, after,
+            "a run whose preview stopped binding releases nothing"
+        );
+        // The refusal is durable: the run cannot be resumed into a release later.
+        crate::operations::process_operations(&state).await.unwrap();
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM operations WHERE operation_id=?")
+                .bind(&operation_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(status, "failed");
+    }
+
+    #[tokio::test]
+    async fn a_repeated_confirmation_reconciles_even_after_its_policy_moved() {
+        let (_dir, state) = test_state().await;
+        seed_old_data(&state).await;
+        let preview = preview_retention(&state, None).await;
+        let preview_id = preview["previewId"].as_str().unwrap().to_owned();
+        let command_id = command_request_id();
+        let first = queue_retention_run_once(&state, &preview_id, &command_id).await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let operation_id = body_json(first).await["operation"]["operation"]["operationId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        // The policy moves between the confirmation and the retry. The recorded
+        // command is still the command this identity recorded (issue #211,
+        // story 39): reporting "nothing was queued" here would be a lie about
+        // work that already happened.
+        crate::retention::update_policy(state.db().pool(), "raw_block_summary", 10, "owner")
+            .await
+            .unwrap();
+        let retry = queue_retention_run_once(&state, &preview_id, &command_id).await;
+        assert_eq!(
+            retry.status(),
+            StatusCode::OK,
+            "a retry of an accepted command reconciles instead of turning stale"
+        );
+        let body = body_json(retry).await;
+        assert_eq!(body["deduplicated"], true);
+        assert_eq!(body["operation"]["operation"]["operationId"], operation_id);
+        assert_eq!(body["requestId"], command_id);
+        // A second tab sends the same intent under its own identity: that is the
+        // same command too, not a second cleanup.
+        let second_tab = queue_retention_run_once(&state, &preview_id, &command_request_id()).await;
+        assert_eq!(second_tab.status(), StatusCode::OK);
+        let second_body = body_json(second_tab).await;
+        assert_eq!(second_body["deduplicated"], true);
+        assert_eq!(
+            second_body["operation"]["operation"]["operationId"],
+            operation_id
         );
     }
 
@@ -3266,6 +3743,25 @@ mod tests {
         let body = body_json(response).await;
         assert_eq!(body["operation"]["operation"]["status"], "cancelled");
         assert!(body["auditEventId"].as_i64().unwrap() > 0);
+        // Story 40: a run cancelled while queued records that it executed
+        // nothing and how much work it stopped short of, against the plan it was
+        // authorized to execute.
+        assert_eq!(body["operation"]["result"]["cancelled"]["phase"], "queued");
+        assert_eq!(body["operation"]["result"]["cancelled"]["releasedRows"], 0);
+        let plan = recorded_plan(&state, &operation_id).await;
+        let planned = plan["plan"].as_array().unwrap().len() as i64;
+        assert!(planned > 0);
+        assert_eq!(
+            body["operation"]["result"]["cancelled"]["remainingTargets"],
+            planned
+        );
+        assert_eq!(body["operation"]["result"]["previewId"], plan["previewId"]);
+        assert!(
+            body["operation"]["result"]["cancelled"]["note"]
+                .as_str()
+                .unwrap()
+                .contains("never rolls a release back")
+        );
         let audit: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM audit_events WHERE event_kind='operation_cancelled' AND target_id=?")
                 .bind(&operation_id)
@@ -3461,13 +3957,41 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         // The next worker step honours the cancel flag.
         crate::operations::process_operations(&state).await.unwrap();
-        let status: String =
-            sqlx::query_scalar("SELECT status FROM operations WHERE operation_id=?")
+        let row: (String, Option<String>) =
+            sqlx::query_as("SELECT status, result_json FROM operations WHERE operation_id=?")
                 .bind(&operation_id)
                 .fetch_one(state.db().pool())
                 .await
                 .unwrap();
-        assert_eq!(status, "cancelled");
+        assert_eq!(row.0, "cancelled");
+        // Story 40: a run stopped mid-plan records the rows it already released
+        // and the work it stopped short of, so a partial release is never read as
+        // a finished run and never silently rolled back.
+        let outcome: Value = serde_json::from_str(&row.1.unwrap()).unwrap();
+        assert_eq!(outcome["cancelled"]["phase"], "running");
+        let plan = recorded_plan(&state, &operation_id).await;
+        let entries = plan["plan"].as_array().unwrap();
+        let released: i64 = entries
+            .iter()
+            .map(|entry| entry["deleted"].as_i64().unwrap_or(0))
+            .sum();
+        assert_eq!(outcome["cancelled"]["releasedRows"], released);
+        let remaining = entries
+            .iter()
+            .filter(|entry| entry["done"] != Value::Bool(true))
+            .count() as i64;
+        assert_eq!(outcome["cancelled"]["remainingTargets"], remaining);
+        assert!(
+            remaining >= 1,
+            "the run must be stopped with work still recorded as pending"
+        );
+        assert_eq!(outcome["previewId"], plan["previewId"]);
+        assert!(
+            outcome["cancelled"]["note"]
+                .as_str()
+                .unwrap()
+                .contains("never rolls a release back")
+        );
     }
 
     #[tokio::test]

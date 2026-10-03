@@ -392,7 +392,7 @@ fn slim_receipt_body(body: &[u8]) -> Option<Vec<u8>> {
 /// coordinated checkpoint and the conversion verification compare that body
 /// byte-for-byte, so it must stay verbatim (ADR 0009).
 async fn slim_receipt_body_batch(
-    pool: &SqlitePool,
+    conn: &mut sqlx::SqliteConnection,
     cutoff: &str,
     now: &str,
 ) -> Result<u64, sqlx::Error> {
@@ -404,7 +404,7 @@ async fn slim_receipt_body_batch(
     )
     .bind(cutoff)
     .bind(RETENTION_BATCH)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
     let mut slimmed = 0u64;
     for (rowid, body) in rows {
@@ -416,7 +416,7 @@ async fn slim_receipt_body_batch(
                 .bind(slimmed_body)
                 .bind(now)
                 .bind(rowid)
-                .execute(pool)
+                .execute(&mut *conn)
                 .await?;
             }
             None => {
@@ -425,7 +425,7 @@ async fn slim_receipt_body_batch(
                 )
                 .bind(now)
                 .bind(rowid)
-                .execute(pool)
+                .execute(&mut *conn)
                 .await?;
             }
         }
@@ -1251,7 +1251,7 @@ pub async fn execute_step(
             .await?;
     }
 
-    let Some(entries) = params.get("plan").and_then(Value::as_array) else {
+    if params.get("plan").and_then(Value::as_array).is_none() {
         // A run always queues with its preview's plan, so a missing plan means
         // the record was tampered with or truncated: fail closed.
         let _ = crate::operations::add_error(
@@ -1270,11 +1270,8 @@ pub async fn execute_step(
         )
         .await;
         return Ok(());
-    };
-    let mut plan: Vec<PlanEntry> = entries
-        .iter()
-        .filter_map(|entry| serde_json::from_value(entry.clone()).ok())
-        .collect();
+    }
+    let mut plan = plan_entries(&params);
 
     if plan.is_empty() {
         finish_run(state, operation_id, params, Vec::new()).await?;
@@ -1290,16 +1287,56 @@ pub async fn execute_step(
         return Ok(());
     };
 
+    // The operator's cancel is honoured at a safe checkpoint before anything
+    // else: a run that deletes nothing because it was deliberately stopped must
+    // not be reported as a failed run.
     if crate::operations::is_cancel_requested(state, operation_id).await? {
+        // Story 40: a cancellation records what the run already released, what
+        // it stopped short of, and which phase stopped it - a bare "cancelled"
+        // status would hide both the partial release and the abandoned work.
+        let outcome = cancellation_outcome(
+            &plan,
+            params.get("previewId").and_then(Value::as_str),
+            CancellationPhase::Running,
+        );
         crate::operations::finalize(
             state,
             operation_id,
             crate::operations::STATUS_CANCELLED,
-            None,
+            Some(&outcome),
             &["retention"],
         )
         .await?;
         return Ok(());
+    }
+
+    // Story 38: the preview is the authority this run was queued from, and the
+    // frozen plan may only release what that preview reviewed. The binding is
+    // re-verified once, before this run's first batch, and the flag travels with
+    // the persisted plan: a preview that expired, a policy that moved, or a plan
+    // that no longer matches the preview stops the run with nothing executed.
+    if params.get("bindingVerified").and_then(Value::as_bool) != Some(true) {
+        if let Some(reason) = preview_binding_mismatch(state, &params).await? {
+            let _ = crate::operations::add_error(
+                state,
+                operation_id,
+                "retention_preview_stale",
+                &format!(
+                    "the confirmed retention preview no longer authorizes this run ({reason}); nothing was executed; compose a new preview"
+                ),
+            )
+            .await;
+            let _ = crate::operations::finalize(
+                state,
+                operation_id,
+                crate::operations::STATUS_FAILED,
+                None,
+                &["retention"],
+            )
+            .await;
+            return Ok(());
+        }
+        params["bindingVerified"] = Value::Bool(true);
     }
 
     let entry = plan[index].clone();
@@ -1330,21 +1367,27 @@ pub async fn execute_step(
         .await;
         return Ok(());
     };
+    // Story 40: the release and the accounting of it commit together. The
+    // cancellation summary reports "already released" as work that happened, so
+    // a crash between the deletion and the plan write must not leave rows
+    // deleted while the record still says they were never touched.
+    let mut tx = pool.begin().await?;
     let result: Result<u64, sqlx::Error> = match target.kind {
         // ADR 0009: slimming rewrites the body in place instead of deleting the
         // row, so it cannot use the declared DELETE statements.
         CleanupKind::SlimReceiptBody => {
-            slim_receipt_body_batch(pool, &entry.cutoff, &crate::auth::format_rfc3339(now)).await
+            slim_receipt_body_batch(&mut tx, &entry.cutoff, &crate::auth::format_rfc3339(now)).await
         }
         CleanupKind::Delete => sqlx::query(target.delete_sql)
             .bind(&entry.cutoff)
-            .execute(pool)
+            .execute(&mut *tx)
             .await
             .map(|result| result.rows_affected()),
     };
     match result {
         Ok(rows) => apply_batch(&mut plan[index], rows),
         Err(error) => {
+            let _ = tx.rollback().await;
             state.note_sqlite_error(&error);
             let _ = crate::operations::add_error(
                 state,
@@ -1369,8 +1412,9 @@ pub async fn execute_step(
     sqlx::query("UPDATE operations SET params_json = ? WHERE operation_id = ?")
         .bind(serde_json::to_string(&params)?)
         .bind(operation_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
 
     // Progress counts a resolved entry as complete work: a bounded batch that
     // found nothing left is finished, not stalled.
@@ -1422,27 +1466,7 @@ async fn finish_run(
     params: Value,
     plan: Vec<PlanEntry>,
 ) -> Result<(), crate::operations::OperationError> {
-    let mut families: Vec<Value> = Vec::new();
-    for entry in plan
-        .iter()
-        .filter(|entry| entry.deleted > 0 || entry.total > 0)
-    {
-        if let Some(existing) = families
-            .iter_mut()
-            .find(|value| value["family"] == entry.family)
-        {
-            existing["deletedRows"] =
-                serde_json::json!(existing["deletedRows"].as_i64().unwrap_or(0) + entry.deleted);
-            existing["estimatedRows"] =
-                serde_json::json!(existing["estimatedRows"].as_i64().unwrap_or(0) + entry.total);
-        } else {
-            families.push(serde_json::json!({
-                "family": entry.family,
-                "deletedRows": entry.deleted,
-                "estimatedRows": entry.total,
-            }));
-        }
-    }
+    let families = family_totals(&plan);
     // Preserve warnings recorded while composing the confirmed preview
     // (unsupported/disabled/kept-forever families): never plain Success for a
     // run that did less than its scope implies.
@@ -1467,6 +1491,194 @@ async fn finish_run(
     }
     crate::operations::finalize(state, operation_id, status, Some(&result), &["retention"]).await?;
     Ok(())
+}
+
+/// Released rows per family against the preview's estimate, merged across the
+/// family's physical tables. A partial run reports the same shape as a whole
+/// one, so one client parser covers both.
+fn family_totals(plan: &[PlanEntry]) -> Vec<Value> {
+    let mut families: Vec<Value> = Vec::new();
+    for entry in plan
+        .iter()
+        .filter(|entry| entry.deleted > 0 || entry.total > 0)
+    {
+        if let Some(existing) = families
+            .iter_mut()
+            .find(|value| value["family"] == entry.family)
+        {
+            existing["deletedRows"] =
+                serde_json::json!(existing["deletedRows"].as_i64().unwrap_or(0) + entry.deleted);
+            existing["estimatedRows"] =
+                serde_json::json!(existing["estimatedRows"].as_i64().unwrap_or(0) + entry.total);
+        } else {
+            families.push(serde_json::json!({
+                "family": entry.family,
+                "deletedRows": entry.deleted,
+                "estimatedRows": entry.total,
+            }));
+        }
+    }
+    families
+}
+
+/// Which phase of a run an accepted cancellation stopped it in: a queued run
+/// never started, a running run stopped between bounded batches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancellationPhase {
+    Queued,
+    Running,
+}
+
+impl CancellationPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CancellationPhase::Queued => "queued",
+            CancellationPhase::Running => "running",
+        }
+    }
+}
+
+/// The recorded outcome of a cancelled run (issue #211, story 40).
+///
+/// Cancellation stops the run at a safe checkpoint between bounded batches:
+/// whatever it already released stays released - the Server never rolls a
+/// release back - and the work that remained is reported as stopped work, not
+/// as done. Remaining work is counted in plan entries that were never proven
+/// complete, which is the honest measure: a remaining row count cannot be
+/// derived from the preview estimate, because that is an upper bound and a
+/// released count may already exceed it.
+pub fn cancellation_outcome(
+    plan: &[PlanEntry],
+    preview_id: Option<&str>,
+    phase: CancellationPhase,
+) -> Value {
+    let released_rows: i64 = plan.iter().map(|entry| entry.deleted).sum();
+    let remaining_targets = plan.iter().filter(|entry| !entry.done).count() as i64;
+    let mut result = serde_json::json!({
+        "cancelled": {
+            "phase": phase.as_str(),
+            "releasedRows": released_rows,
+            "remainingTargets": remaining_targets,
+            "families": family_totals(plan),
+            "note": "Cancellation stops the run at a safe checkpoint between bounded batches. Rows already released stay released - the Server never rolls a release back - and the work that remained was not attempted. Compose a fresh preview if the rest is still wanted.",
+        }
+    });
+    if let Some(preview_id) = preview_id {
+        result["previewId"] = serde_json::json!(preview_id);
+    }
+    result
+}
+
+/// The persisted plan of one retention run, decoded in one place so every
+/// reader - the cancellation accounting, the restart accounting, and the
+/// execution binding - keeps the same malformed-plan policy: an entry that
+/// cannot be read is dropped, and a missing or unreadable plan is empty.
+fn plan_entries(params: &Value) -> Vec<PlanEntry> {
+    params
+        .get("plan")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| serde_json::from_value(entry.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// What an interrupted run owns up to after a restart: how much of the confirmed
+/// plan it had already released, and how much of it never ran (issue #211, story
+/// 40). Released rows stay released, so the failure must say so.
+pub fn interrupted_run_message(params: &Value) -> String {
+    let plan = plan_entries(params);
+    let released: i64 = plan.iter().map(|entry| entry.deleted).sum();
+    let remaining = plan.iter().filter(|entry| !entry.done).count();
+    format!(
+        "Operation was interrupted by a Server restart while it was running: {released} rows were already released and stay released, and {remaining} planned targets were not completed; compose a fresh preview for the rest"
+    )
+}
+
+/// The recorded outcome of a retention run cancelled while it was still queued:
+/// its planned work never started, and the shared shape keeps one client parser
+/// honest for both phases.
+pub fn queued_run_cancellation(params: &Value) -> Value {
+    let plan = plan_entries(params);
+    cancellation_outcome(
+        &plan,
+        params.get("previewId").and_then(Value::as_str),
+        CancellationPhase::Queued,
+    )
+}
+
+/// Why the recorded plan no longer matches the confirmed preview, if it does
+/// not (issue #211, story 38).
+///
+/// The preview's policy version is the only comparable authority:
+/// `preview_version` hashes the estimated row counts, which drift with
+/// wall-clock time, so re-deriving it after the fact can never match and is
+/// never attempted. Cutoffs are compared against the preview's own frozen plan
+/// because a cutoff recomputed with a newer clock legitimately differs.
+async fn preview_binding_mismatch(
+    state: &AppState,
+    params: &Value,
+) -> Result<Option<String>, crate::operations::OperationError> {
+    let Some(preview_id) = params.get("previewId").and_then(Value::as_str) else {
+        return Ok(Some(
+            "the recorded plan carries no confirmed preview".to_owned(),
+        ));
+    };
+    let frozen = plan_entries(params);
+    let loaded =
+        match load_preview_for_run(state.db().pool(), preview_id, crate::auth::now_utc()).await {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                state.note_sqlite_error(&error);
+                return Ok(Some("the stored preview could not be read".to_owned()));
+            }
+        };
+    let preview = match loaded {
+        PreviewLoad::Ready(preview) => preview,
+        PreviewLoad::NotFound => {
+            return Ok(Some(format!(
+                "the confirmed preview {preview_id} is missing or expired"
+            )));
+        }
+        PreviewLoad::Stale(reasons) => return Ok(Some(reasons.join("; "))),
+    };
+    if params.get("previewPolicyVersion").and_then(Value::as_str)
+        != Some(preview.policy_version.as_str())
+    {
+        return Ok(Some(
+            "the recorded policy version no longer matches the stored preview".to_owned(),
+        ));
+    }
+    let authorized = preview_plan(&preview);
+    if let Some(entry) = frozen.iter().find(|frozen| {
+        !authorized
+            .iter()
+            .any(|allowed| same_binding(allowed, frozen))
+    }) {
+        return Ok(Some(format!(
+            "{}: {} is not in the confirmed preview at the recorded cutoff",
+            entry.family, entry.table
+        )));
+    }
+    if let Some(entry) = authorized
+        .iter()
+        .find(|allowed| !frozen.iter().any(|frozen| same_binding(allowed, frozen)))
+    {
+        return Ok(Some(format!(
+            "{}: {} was confirmed but is missing from the recorded plan",
+            entry.family, entry.table
+        )));
+    }
+    Ok(None)
+}
+
+/// The identity of one planned cleanup target: a family/table pair bound to the
+/// cutoff it was reviewed at.
+fn same_binding(left: &PlanEntry, right: &PlanEntry) -> bool {
+    left.family == right.family && left.table == right.table && left.cutoff == right.cutoff
 }
 
 /// Catalog self-check (issue #210). Proves the onboarding contract before any
@@ -1693,18 +1905,24 @@ mod tests {
             "only the unreferenced old receipt is eligible for slimming"
         );
 
+        // The batch shares one connection, exactly as the run's transaction
+        // hands it one (issue #211, story 40).
+        let mut conn = pool.acquire().await.unwrap();
         assert_eq!(
-            slim_receipt_body_batch(pool, &cutoff, &slimmed_at)
+            slim_receipt_body_batch(&mut conn, &cutoff, &slimmed_at)
                 .await
                 .unwrap(),
             1
         );
         assert_eq!(
-            slim_receipt_body_batch(pool, &cutoff, &slimmed_at)
+            slim_receipt_body_batch(&mut conn, &cutoff, &slimmed_at)
                 .await
                 .unwrap(),
             0
         );
+        // Hand the pooled connection back: the assertions below read through the
+        // pool again, and a held connection could starve it.
+        drop(conn);
 
         // The old unreferenced row keeps its identity columns and loses detail.
         let (disposition, hash, slimmed, body_text): (String, String, Option<String>, String) =
@@ -2576,6 +2794,134 @@ mod tests {
 
     /// A run whose stored plan is missing fails closed instead of reporting
     /// success.
+    #[tokio::test]
+    async fn a_release_and_the_accounting_of_it_commit_together() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pool = database.pool();
+        let now = crate::auth::now_utc();
+        let now_text = crate::auth::format_rfc3339(now);
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('atomic-network', 'Atomic', '0xgenesis', 1, 1, 'lat', ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('atomic-agent', 1, ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('atomic-node', 'atomic-agent', 'atomic-network', 'ws://127.0.0.1:1', 'active', 'private', 1, ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO peer_presence_intervals (node_id, peer_id, direction, trusted, static_peer, consensus_peer, client_name, opened_at, closed_at) VALUES ('atomic-node', 'atomic-old', 'inbound', 1, 0, 1, 'PlatON/v1.5.1', '2020-01-01T00:00:00Z', '2020-01-02T00:00:00Z')")
+            .execute(pool)
+            .await
+            .unwrap();
+        ensure_seeded(pool).await.unwrap();
+        let preview = create_preview(
+            pool,
+            "owner-1",
+            Some(vec![FAMILY_PEER_PRESENCE_INTERVAL.to_owned()]),
+            now,
+        )
+        .await
+        .unwrap();
+        let operation_id = "atomic-accounting-operation";
+        queue_retention_run(
+            pool,
+            operation_id,
+            "atomic-accounting-request",
+            &preview,
+            &now_text,
+        )
+        .await;
+        // The only params write left in this run is the batch accounting, so the
+        // injected fault lands after the deletion and before its record.
+        let mut params: Value = serde_json::from_str(
+            &sqlx::query_scalar::<_, String>(
+                "SELECT params_json FROM operations WHERE operation_id = ?",
+            )
+            .bind(operation_id)
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        params["warningsRecorded"] = Value::Bool(true);
+        sqlx::query("UPDATE operations SET params_json = ? WHERE operation_id = ?")
+            .bind(serde_json::to_string(&params).unwrap())
+            .bind(operation_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TRIGGER refuse_plan_accounting BEFORE UPDATE OF params_json ON operations BEGIN SELECT RAISE(ABORT, 'accounting unavailable'); END")
+            .execute(pool)
+            .await
+            .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let state = AppState::new(
+            database,
+            None,
+            crate::auth::AuthConfig::development(
+                crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+                "http://127.0.0.1:8080".to_owned(),
+            ),
+        );
+
+        let error = execute_step(&state, operation_id)
+            .await
+            .expect_err("the accounting write must fail");
+        assert!(
+            format!("{error:?}").contains("accounting unavailable"),
+            "unexpected error: {error:?}"
+        );
+        let survived: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM peer_presence_intervals WHERE peer_id = 'atomic-old'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            survived, 1,
+            "a release whose accounting failed is rolled back with it, so the record never under-reports what was released"
+        );
+
+        // Once the accounting write works again the same row is still there to
+        // be released, and the run reports it honestly.
+        sqlx::query("DROP TRIGGER refuse_plan_accounting")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        execute_step(&state, operation_id).await.unwrap();
+        execute_step(&state, operation_id).await.unwrap();
+        let (status, deleted): (String, i64) = (
+            sqlx::query_scalar("SELECT status FROM operations WHERE operation_id = ?")
+                .bind(operation_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap(),
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE peer_id = 'atomic-old'",
+            )
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+        );
+        assert_eq!(status, crate::operations::STATUS_SUCCEEDED);
+        assert_eq!(deleted, 0, "the retried batch releases the same row");
+    }
+
     #[tokio::test]
     async fn a_run_without_a_stored_plan_fails_closed() {
         let dir = tempfile::TempDir::new().unwrap();

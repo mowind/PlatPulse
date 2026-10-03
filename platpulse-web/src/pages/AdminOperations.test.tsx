@@ -75,6 +75,20 @@ const DOCTOR_CHECK = {
   detail: 'The last retention run finished with warnings.',
 }
 
+/** The Server's own record of a cleanup stopped at a safe checkpoint (Story 40). */
+const CANCELLED_RUN_RESULT = {
+  cancelled: {
+    phase: 'running',
+    releasedRows: 384,
+    remainingTargets: 2,
+    families: [{ family: 'raw_block_summary', deletedRows: 384, estimatedRows: 1400 }],
+    note:
+      'Cancellation stops the run at a safe checkpoint between bounded batches. Rows already released stay ' +
+      'released - the Server never rolls a release back - and the work that remained was not attempted.',
+  },
+  previewId: '0195f2a1-0400-4100-8100-000000000400',
+}
+
 function detailOf(operation: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
   return {
     operation,
@@ -99,6 +113,12 @@ function apiError(code: string, message: string, status: number): Response {
     { error: { code, message, requestId: 'req-err' } },
     status,
   )
+}
+
+function slot(name: string): HTMLElement {
+  const element = document.querySelector<HTMLElement>('[data-slot="' + name + '"]')
+  if (!element) throw new Error('missing data-slot ' + name)
+  return element
 }
 
 const TEST_ORIGIN = 'http://platpulse.test'
@@ -239,6 +259,122 @@ describe('PAGE-ADMIN-OPERATIONS (task ledger)', () => {
     ).toContain('retention.last_run')
     // Reading an outcome never deletes anything, so no delete control exists.
     expect(screen.queryByRole('button', { name: /Delete|Remove/ })).toBeNull()
+  })
+
+  it('shows what a stopped cleanup already released and what it stopped', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/operations/*': () =>
+        jsonResponse(
+          detailOf(
+            { ...RUNNING_OPERATION, status: 'cancelled', finishedAt: '2026-03-01T01:00:10Z', cancelRequested: true },
+            { result: CANCELLED_RUN_RESULT },
+          ),
+          200,
+        ),
+    })
+    await renderAt('/admin/operations/' + RUNNING_OPERATION_ID)
+
+    await screen.findByRole('heading', { level: 1, name: 'Operation detail' })
+    expect(slot('operation-cancellation-phase').textContent).toContain('Cancelled while running')
+    expect(screen.getByText(/stopped at a safe checkpoint between batches/)).toBeTruthy()
+    expect(slot('operation-cancellation-released').textContent).toBe('384')
+    expect(slot('operation-cancellation-remaining').textContent).toBe('2')
+    expect(slot('operation-cancellation-families').textContent).toContain('raw_block_summary')
+    expect(slot('operation-cancellation-families').textContent).toContain('384 of an estimated 1400 rows released')
+    expect(slot('operation-cancellation-note').textContent).toContain('never rolls a release back')
+    expect(screen.getByText('0195f2a1-0400-4100-8100-000000000400')).toBeTruthy()
+    // The raw Server payload is still recorded below the summary, unchanged.
+    expect(screen.getByRole('region', { name: 'Operation result payload' }).textContent).toContain('releasedRows')
+  })
+
+  it('reports a cleanup cancelled before it ran as having executed nothing', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/operations/*': () =>
+        jsonResponse(
+          detailOf(QUEUED_OPERATION, {
+            result: {
+              cancelled: {
+                phase: 'queued',
+                releasedRows: 0,
+                remainingTargets: 1,
+                families: [],
+                note:
+                  'The task was cancelled while it was still queued, so it executed nothing: nothing was ' +
+                  'released and nothing is left running.',
+              },
+            },
+          }),
+          200,
+        ),
+    })
+    await renderAt('/admin/operations/' + QUEUED_OPERATION_ID)
+
+    await screen.findByRole('heading', { level: 1, name: 'Operation detail' })
+    expect(slot('operation-cancellation-phase').textContent).toContain('Cancelled while queued')
+    expect(screen.getByText(/no batch ever ran and nothing was released/)).toBeTruthy()
+    expect(slot('operation-cancellation-released').textContent).toBe('0')
+    expect(slot('operation-cancellation-remaining').textContent).toBe('1')
+    expect(document.querySelector('[data-slot="operation-cancellation-families"]')).toBeNull()
+    expect(slot('operation-cancellation-note').textContent).toContain('executed nothing')
+  })
+
+  it('never invents a cancellation outcome for a payload it cannot vouch for', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/operations/*': () =>
+        jsonResponse(
+          detailOf(RUNNING_OPERATION, {
+            result: { cancelled: { phase: 'halfway', releasedRows: 3 } },
+          }),
+          200,
+        ),
+    })
+    await renderAt('/admin/operations/' + RUNNING_OPERATION_ID)
+
+    await screen.findByRole('heading', { level: 1, name: 'Operation detail' })
+    expect(document.querySelector('[data-slot="operation-cancellation"]')).toBeNull()
+    expect(screen.getByRole('region', { name: 'Operation result payload' }).textContent).toContain('halfway')
+  })
+
+  it('omits a family the Server recorded no counts for instead of inventing zeros', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/operations/*': () =>
+        jsonResponse(
+          detailOf(
+            { ...RUNNING_OPERATION, status: 'cancelled', cancelRequested: true },
+            {
+              result: {
+                cancelled: {
+                  phase: 'running',
+                  releasedRows: 5,
+                  remainingTargets: 1,
+                  families: [
+                    { family: 'raw_block_summary', deletedRows: 5, estimatedRows: 40 },
+                    { family: 'aggregate_rollup', note: 'counts were never recorded' },
+                  ],
+                  note: 'stopping at a safe checkpoint leaves the rest unattempted',
+                },
+              },
+            },
+          ),
+          200,
+        ),
+    })
+    await renderAt('/admin/operations/' + RUNNING_OPERATION_ID)
+
+    await screen.findByRole('heading', { level: 1, name: 'Operation detail' })
+    const families = slot('operation-cancellation-families').textContent ?? ''
+    expect(families).toContain('5 of an estimated 40 rows released')
+    // An incomplete entry is left out rather than shown as a fabricated
+    // "0 of an estimated 0" (webui.md §15.11); the raw payload keeps it visible.
+    expect(families).not.toContain('aggregate_rollup')
+    expect(families).not.toContain('0 of an estimated 0')
+    expect(screen.getByRole('region', { name: 'Operation result payload' }).textContent).toContain(
+      'aggregate_rollup',
+    )
   })
 
   it('never offers a cancel control for a running task that already recorded one', async () => {

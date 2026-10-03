@@ -16,10 +16,10 @@ import {
 import { startDisposableServer } from './server-harness'
 
 /**
- * Retention surface acceptance (issue #210), driven through the production
+ * Retention surface acceptance (issues #210, #211), driven through the production
  * WebUI build against a real Server over HTTP - no mock, no jsdom.
  *
- * The first three tests own a throwaway Server (its own port, temp state dir
+ * The first four tests own a throwaway Server (its own port, temp state dir
  * and SQLite database) and run once, on desktop-1280, because each one boots a
  * Server and queues a real retention run. The last test is viewport-driven and
  * uses the shared CI Server through baseURL, so it runs for every Playwright
@@ -35,6 +35,20 @@ import { startDisposableServer } from './server-harness'
  *  3. A run is queued by preview id. When the Server refuses a preview that no
  *     longer matches the policies, nothing is queued, the page says so, and it
  *     recovers by composing a new preview rather than retrying the refused one.
+ *  4. One confirmation is one Owner command: sending the same one again (a
+ *     doubled click, a second tab, a retry after a lost response) reconciles to
+ *     the run the Server already recorded, so no second cleanup is queued.
+ *
+ * Cancellation (issue #211, story 40) is deliberately not driven from this spec.
+ * A run over seeded data finishes inside the first status poll, so a
+ * browser-driven "cancel it while it runs" step would mostly race the Server
+ * instead of proving the contract, and the Server exposes no knob that holds a
+ * run queued. The contract - a cancelled task reports what it already released,
+ * what it stopped, and never implies a released row was rolled back - is covered
+ * where it can be observed deterministically: the queued and the running-safe
+ * checkpoint paths in crates/platpulse-server/src/retention.rs and
+ * crates/platpulse-server/src/http/operations_admin.rs, and the presentation of
+ * both outcomes in platpulse-web/src/pages/AdminOperations.test.tsx.
  */
 
 /** The read-only Admin seam this spec needs: it asserts the status for us. */
@@ -374,6 +388,51 @@ test('a composed preview binds the plan, and the run is queued against that prev
       await expect(slot(page, 'retention-last-run')).toContainText(shortId(queued.operationId))
       await expect(page.locator('a[href="/admin/operations/' + queued.operationId + '"]')).toHaveCount(1)
       await expect(slot(page, 'retention-preview')).toContainText(shortId(preview.previewId))
+    } finally {
+      await context.close()
+    }
+  } finally {
+    await server.dispose()
+  }
+})
+
+test('a second confirmation of the same preview reconciles to the recorded run instead of queueing a second cleanup', async ({
+  browser,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop-1280', 'the Server-heavy flow runs once')
+  test.setTimeout(600_000)
+  const server = await startDisposableServer()
+  try {
+    const context = await browser.newContext()
+    const page = await context.newPage()
+    try {
+      await loginToDisposableServer(page, server.baseUrl)
+      await gotoAuthenticated(page, server.baseUrl, '/admin/retention')
+      const preview = await composePreview(page, server, null)
+
+      await confirmRun(page, preview.previewId)
+      await slot(page, 'retention-run-submit').click()
+      await expect(slot(page, 'retention-run-notice')).toContainText('The Server queued the retention run as')
+      const queued = (await readOverview(server)).lastRun
+      if (!queued) throw new Error('the Server recorded no retention run')
+
+      // The same Owner command, sent a second time (a doubled click, a second
+      // tab, or a retry after a lost response): the Server reconciles it to the
+      // run it already recorded instead of queueing a second cleanup.
+      await confirmRun(page, preview.previewId)
+      await slot(page, 'retention-run-submit').click()
+      await expect(slot(page, 'retention-run-notice')).toContainText('no second cleanup was queued')
+      await expect(slot(page, 'retention-run-notice')).toContainText(shortId(queued.operationId))
+      await expect(page.locator('a[href="/admin/operations/' + queued.operationId + '"]')).toHaveCount(1)
+
+      // The Server, not the page, is authoritative: exactly one cleanup of this
+      // kind was recorded for the preview that was confirmed twice.
+      const runs = (await server.expectAdminGet(
+        '/api/admin/v1/operations?kind=retention_run',
+        200,
+      )) as { operationId: string }[]
+      expect(runs.map((entry) => entry.operationId)).toEqual([queued.operationId])
+      expect((await readOverview(server)).lastRun?.operationId).toBe(queued.operationId)
     } finally {
       await context.close()
     }

@@ -2495,7 +2495,7 @@ mod tests {
             ),
             (
                 "/api/admin/v1/retention/run",
-                r#"{"previewId":"no-such-preview"}"#,
+                r#"{"previewId":"no-such-preview","requestId":"cmd-guard-test"}"#,
                 StatusCode::NOT_FOUND,
                 "retention_preview_not_found",
             ),

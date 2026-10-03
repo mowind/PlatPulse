@@ -339,6 +339,7 @@ impl Modify for AgentBearerScheme {
         crate::http::operations_admin::HistoryWindowImpact,
         crate::http::operations_admin::HistoryWindowMutationResponse,
         crate::http::operations_admin::RetentionRunRequest,
+        crate::http::operations_admin::RetentionRunResponse,
         crate::http::operations_admin::BackupArtifactSummary,
         crate::http::operations_admin::BackupArtifactDetail,
         crate::http::operations_admin::DoctorCheckDto,

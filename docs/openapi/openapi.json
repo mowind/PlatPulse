@@ -4905,7 +4905,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OperationMutationResponse"
+                  "$ref": "#/components/schemas/RetentionRunResponse"
                 }
               }
             }
@@ -14200,12 +14200,43 @@
       "RetentionRunRequest": {
         "type": "object",
         "required": [
-          "previewId"
+          "previewId",
+          "requestId"
         ],
         "properties": {
           "previewId": {
             "type": "string",
             "description": "The confirmed impact preview. A run never re-estimates impact: the plan\nthe preview froze is executed as-is, and a preview that expired or no\nlonger matches the current policies is rejected."
+          },
+          "requestId": {
+            "type": "string",
+            "description": "The Owner's opaque command identity for this confirmation (issue #211).\nRe-sending the same id for the same preview reconciles to the recorded\nrun instead of queueing a second cleanup, and reusing it for a different\ncommand is a conflict."
+          }
+        }
+      },
+      "RetentionRunResponse": {
+        "type": "object",
+        "required": [
+          "operation",
+          "auditEventId",
+          "requestId",
+          "deduplicated"
+        ],
+        "properties": {
+          "auditEventId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "deduplicated": {
+            "type": "boolean",
+            "description": "`true` when the Server reconciled to an already-recorded run for this\nrequestId or this preview: the Operation below is the recorded one, not\na second run."
+          },
+          "operation": {
+            "$ref": "#/components/schemas/OperationDetail"
+          },
+          "requestId": {
+            "type": "string",
+            "description": "Echo of the command identity the Server keyed this run by, so the\nbrowser can retry the same command and be recognised."
           }
         }
       },

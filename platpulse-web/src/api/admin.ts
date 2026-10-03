@@ -140,6 +140,7 @@ import {
   type RetentionOverview,
   type RetentionPolicyDto,
   type RetentionPreviewDto,
+  type RetentionRunResponse,
   type ChannelDto,
   type ChannelTestResponse,
   type DeliveryRetryResponse,
@@ -2525,19 +2526,31 @@ export async function updateRetentionPolicyEntry(
   }
 }
 
+/** A fresh opaque Owner command identity for one retention confirmation
+ * (webui.md §15.9, issue #211). The Server, not the browser busy state, is
+ * authoritative for dedup: re-sending this id for the same preview reconciles
+ * to the recorded run, so the caller keeps it across retries and mints a new
+ * one only for a different preview. */
+export function newRetentionRunRequestId(): string {
+  return crypto.randomUUID()
+}
+
 /** Queue a retention run for one confirmed preview; returns the Operation
  * reference immediately. The Server never re-estimates here: an expired preview
  * (409 `retention_preview_stale`) or an unknown one (404
- * `retention_preview_not_found`) is surfaced to the caller as-is. */
+ * `retention_preview_not_found`) is surfaced to the caller as-is. A repeated
+ * confirmation of the same preview comes back with `deduplicated: true` and the
+ * recorded Operation instead of queueing a second cleanup. */
 export async function runRetentionEntry(
   previewId: string,
+  requestId: string,
   csrfToken: string,
-): Promise<OperationMutationResponse> {
+): Promise<RetentionRunResponse> {
   try {
     const response = await requestAdmin(
       () =>
         retentionRunApi({
-          body: { previewId },
+          body: { previewId, requestId },
           headers: { 'X-CSRF-Token': csrfToken },
         }),
       'Unable to start the retention run',
