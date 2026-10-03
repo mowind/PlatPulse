@@ -119,6 +119,7 @@ import {
   backupVerify as backupVerifyApi,
   backupsList,
   cancelOperation as cancelOperationApi,
+  capacityOverview,
   doctorOverview,
   doctorRun as doctorRunApi,
   operationDetail,
@@ -132,6 +133,7 @@ import {
   updateRetentionPolicy as updateRetentionPolicyApi,
   type BackupArtifactDetail as BackupArtifactDetailDto,
   type BackupArtifactSummary,
+  type CapacityOverview,
   type DoctorOverview,
   type OperationDetail,
   type OperationMutationResponse,
@@ -274,6 +276,7 @@ const adminKeys = {
   restoreValidate: (artifactId: string) =>
     ['admin', 'restore', 'validate', artifactId] as const,
   doctor: ['admin', 'doctor'] as const,
+  capacity: ['admin', 'capacity'] as const,
 }
 
 /** Immutable Audit listing filters (issue #47). */
@@ -2786,6 +2789,87 @@ export function doctorCheckTone(
       return 'neutral'
     default:
       return 'neutral'
+  }
+}
+
+/**
+ * The capacity policy, live filesystem sample, and the protection intervals
+ * that recorded a visible gap in optional history (issue #212).
+ *
+ * A disabled policy is reported as disabled: the page must not invent a
+ * threshold, and a missing measurement stays Unknown instead of zero.
+ */
+export async function fetchAdminCapacity(signal?: AbortSignal): Promise<CapacityOverview> {
+  return requestAdmin(
+    () => capacityOverview({ signal }),
+    'Unable to load capacity protection',
+  )
+}
+
+/** How often a protected Server is re-read while the page stays open. */
+export const CAPACITY_POLL_MS = 30000
+
+function pollActiveCapacity(query: {
+  state: { data: CapacityOverview | undefined }
+}): number | false {
+  return query.state.data?.protected ? CAPACITY_POLL_MS : false
+}
+
+/**
+ * Capacity changes only when the sampling worker runs (default 60 seconds) or
+ * a report opens/closes an interval, so the page polls while protection is
+ * active — the release it is waiting for is exactly what the poll observes —
+ * and otherwise stays on demand.
+ */
+export function useAdminCapacity(generation: number) {
+  return useQuery({
+    queryKey: [...adminKeys.capacity, generation],
+    queryFn: ({ signal }) => fetchAdminCapacity(signal),
+    refetchInterval: pollActiveCapacity,
+  })
+}
+
+/** Server-owned words for the protection state, shown as sent. */
+export function capacityStateLabel(overview: {
+  enabled: boolean
+  protected: boolean
+} | null | undefined): string {
+  if (!overview) {
+    return 'Unknown'
+  }
+  if (!overview.enabled) {
+    return 'Disabled'
+  }
+  return overview.protected ? 'Protecting' : 'Monitoring'
+}
+
+/** Badge tone for the protection state. Disabled is not a failure and not
+ * healthy either: it means no policy is declared, so it stays neutral. */
+export function capacityStateTone(overview: {
+  enabled: boolean
+  protected: boolean
+} | null | undefined): 'ok' | 'warning' | 'error' | 'neutral' {
+  if (!overview) {
+    return 'neutral'
+  }
+  if (!overview.enabled) {
+    return 'neutral'
+  }
+  return overview.protected ? 'warning' : 'ok'
+}
+
+/** Interval outcome vocabulary: "resumed" is the Server's word for the
+ * measurement that released protection. */
+export function capacityIntervalReasonLabel(reason: string | null | undefined): string {
+  switch (reason) {
+    case 'low_space':
+      return 'Low space'
+    case 'resumed':
+      return 'Resumed'
+    case 'protection_disabled':
+      return 'Protection disabled'
+    default:
+      return 'Unknown'
   }
 }
 

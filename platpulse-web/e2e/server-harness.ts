@@ -237,6 +237,27 @@ export const HARNESS_TELEGRAM_CHAT_ID = '1001234567890'
  */
 export const HARNESS_TELEGRAM_TOKEN = 'platpulse-e2e-dummy-bot-token'
 
+/**
+ * A declared low-space policy (issue #212). The floor is measured against the
+ * temporary state directory, so a test can force real pressure with the
+ * largest byte count the Server accepts: `9223372036854775807`, because
+ * SQLite stores signed integers and `u64::MAX` is rejected. No product
+ * default is invented anywhere — an omitted section means "no policy
+ * declared", and optional history is then never paused.
+ */
+export interface DisposableCapacityOptions {
+  /**
+   * `capacity.pause_below_bytes`: optional history pauses below it. A string
+   * keeps a floor that exceeds `Number.MAX_SAFE_INTEGER` exact; JavaScript
+   * would otherwise rewrite the largest accepted value on the way to TOML.
+   */
+  pauseBelowBytes: number | string
+  /** `capacity.resume_above_bytes`; must be at least the pause floor. */
+  resumeAboveBytes: number | string
+  /** `capacity.sample_interval_seconds`; the Server accepts 5..=86400. */
+  sampleIntervalSeconds?: number
+}
+
 export interface DisposableServerOptions {
   /**
    * SQL applied while the database is closed, before the Server starts. Seed
@@ -248,6 +269,8 @@ export interface DisposableServerOptions {
   seedSql?: string
   /** Configure the notification channel and request policy (issue #206). */
   notifications?: DisposableNotificationOptions
+  /** Declare `[capacity]` low-space protection (issue #212). */
+  capacity?: DisposableCapacityOptions
 }
 
 /** Boot a disposable Server; delete it with {@link DisposableServer.dispose}. */
@@ -313,6 +336,16 @@ export async function startDisposableServer(
           `\nchat_id = "${notifications.chatId ?? HARNESS_TELEGRAM_CHAT_ID}"`,
       )
     }
+    const capacity = options.capacity
+    const capacityConfig =
+      capacity === undefined
+        ? []
+        : [
+            `[capacity]\nenabled = true` +
+              `\npause_below_bytes = ${String(capacity.pauseBelowBytes)}` +
+              `\nresume_above_bytes = ${String(capacity.resumeAboveBytes)}` +
+              `\nsample_interval_seconds = ${capacity.sampleIntervalSeconds ?? 5}`,
+          ]
     writeFileSync(
       configPath,
       [
@@ -325,6 +358,7 @@ export async function startDisposableServer(
         `public_base_url = "${baseUrl}"`,
         'development = true',
         ...notificationConfig,
+        ...capacityConfig,
         '',
       ].join('\n'),
     )

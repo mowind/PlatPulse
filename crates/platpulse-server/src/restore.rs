@@ -1145,6 +1145,7 @@ mod tests {
                 listen: crate::config::DEFAULT_METRICS_LISTEN,
             },
             backup_required_mount: None,
+            capacity: crate::capacity::CapacityConfig::disabled(),
         }
     }
 

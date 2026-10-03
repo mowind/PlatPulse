@@ -891,6 +891,120 @@ export type BackupArtifactSummary = {
     verifyOperationId?: string | null;
 };
 
+/**
+ * One protection interval: why it opened, what was skipped, and, once the
+ * filesystem recovered, the measurement that closed it.
+ */
+export type CapacityIntervalDto = {
+    /**
+     * Null while protection is still active.
+     */
+    endedAt?: string | null;
+    /**
+     * "resumed" or "protection_disabled", null while active.
+     */
+    endedReason?: string | null;
+    intervalId: string;
+    openedAvailableBytes: number;
+    openedTotalBytes: number;
+    pauseBelowBytes: number;
+    resumeAboveBytes: number;
+    resumedAvailableBytes?: number | null;
+    resumedTotalBytes?: number | null;
+    /**
+     * Optional samples skipped during this interval, every series together.
+     */
+    skippedSampleCount: number;
+    /**
+     * The series with the most skipped samples, bounded.
+     */
+    skippedSeries: Array<CapacitySkippedSeriesDto>;
+    /**
+     * How many distinct series lost samples.
+     */
+    skippedSeriesTotal: number;
+    sourceMount: string;
+    startedAt: string;
+    startedReason: string;
+    updatedAt: string;
+};
+
+/**
+ * Capacity visibility and low-space protection state for Operations.
+ */
+export type CapacityOverview = {
+    activeIntervalId?: string | null;
+    enabled: boolean;
+    /**
+     * The directory that is measured, null when it cannot be resolved.
+     */
+    mountPath?: string | null;
+    /**
+     * Null when the policy is disabled, because nothing is invented in its place.
+     */
+    pauseBelowBytes?: number | null;
+    /**
+     * The configuration file the policy was read from.
+     */
+    policyOrigin?: string | null;
+    protected: boolean;
+    recentIntervals: Array<CapacityIntervalDto>;
+    resumeAboveBytes?: number | null;
+    sample?: null | CapacitySampleDto;
+    sampleIntervalSeconds: number;
+    sampledAt?: string | null;
+    samplingError?: string | null;
+    transitionError?: string | null;
+};
+
+/**
+ * One measurement of the filesystem that holds the Server state.
+ */
+export type CapacitySampleDto = {
+    /**
+     * The bytes still available to the Server user.
+     */
+    availableBytes: number;
+    /**
+     * The directory that was measured.
+     */
+    mountPath: string;
+    /**
+     * The filesystem size in bytes.
+     */
+    totalBytes: number;
+};
+
+/**
+ * One series whose optional history lost samples while protection was active.
+ */
+export type CapacitySkippedSeriesDto = {
+    /**
+     * The first skipped observation, in RFC 3339.
+     */
+    firstSkippedAt: string;
+    /**
+     * The most recent skipped observation, in RFC 3339.
+     */
+    lastSkippedAt: string;
+    /**
+     * The optional metric that was skipped.
+     */
+    metric: string;
+    /**
+     * The node or agent identity the series belongs to.
+     */
+    scopeKey: string;
+    /**
+     * Either "node" or "host".
+     */
+    scopeKind: string;
+    /**
+     * How many samples were skipped.
+     */
+    skippedCount: number;
+};
+
 export type ChannelDto = {
     channelId: string;
     channelKind: string;
@@ -3724,6 +3838,25 @@ export type BackupVerifyResponses = {
 };
 
 export type BackupVerifyResponse = BackupVerifyResponses[keyof BackupVerifyResponses];
+
+export type CapacityOverviewData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/capacity';
+};
+
+export type CapacityOverviewErrors = {
+    503: ApiErrorBody;
+};
+
+export type CapacityOverviewError = CapacityOverviewErrors[keyof CapacityOverviewErrors];
+
+export type CapacityOverviewResponses = {
+    200: CapacityOverview;
+};
+
+export type CapacityOverviewResponse = CapacityOverviewResponses[keyof CapacityOverviewResponses];
 
 export type DoctorOverviewData = {
     body?: never;

@@ -404,6 +404,7 @@ pub struct AppState {
     pub(crate) public_realtime: RealtimeHub,
     pub(crate) admin_realtime: RealtimeHub,
     metrics: crate::metrics::MetricsRegistry,
+    capacity: Arc<crate::capacity::CapacityProtection>,
 }
 
 impl AppState {
@@ -515,6 +516,9 @@ impl AppState {
                 .is_some_and(|dir| dir.join("assets").is_dir());
         let runtime = Arc::new(ServerRuntime::new());
         let shutdown = Arc::new(Notify::new());
+        let capacity = Arc::new(crate::capacity::CapacityProtection::disabled(Some(
+            db.path(),
+        )));
         Self {
             db: Arc::new(db),
             auth: Arc::new(auth),
@@ -552,7 +556,21 @@ impl AppState {
             public_realtime: RealtimeHub::default(),
             admin_realtime: RealtimeHub::default(),
             metrics: crate::metrics::MetricsRegistry::new(),
+            capacity,
         }
+    }
+
+    /// Override the capacity visibility and low-space protection policy
+    /// (design §11.4, issue #212). The default keeps optional history moving
+    /// and reports capacity without pausing anything.
+    pub fn with_capacity(mut self, capacity: Arc<crate::capacity::CapacityProtection>) -> Self {
+        self.capacity = capacity;
+        self
+    }
+
+    /// The resolved capacity protection policy and its current state.
+    pub fn capacity(&self) -> &crate::capacity::CapacityProtection {
+        &self.capacity
     }
 
     pub(crate) fn begin_shutdown(&self) {

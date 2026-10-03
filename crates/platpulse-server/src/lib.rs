@@ -14,6 +14,7 @@ pub mod alerts;
 pub mod attention;
 pub mod auth;
 pub mod backup;
+pub mod capacity;
 pub mod checkpoint;
 pub mod cli;
 pub mod config;

@@ -4,12 +4,17 @@ import { Link, useParams, useSearchParams } from 'react-router'
 import {
   AdminApiError,
   cancelOperationEntry,
+  capacityIntervalReasonLabel,
+  capacityStateLabel,
+  capacityStateTone,
   operationKindLabel,
+  useAdminCapacity,
   useAdminOperation,
   useAdminOperations,
 } from '../api/admin'
-import type { OperationSummary } from '../api/generated'
+import type { CapacityOverview, OperationSummary } from '../api/generated'
 import { useAuth } from '../auth/AuthContext'
+import { formatBytesUnknown } from '../formatBytes'
 import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
 import { CardX } from '../components/ui/card-x'
@@ -60,6 +65,219 @@ function readLimit(search: URLSearchParams): number {
   return PAGE_SIZES.includes(value as (typeof PAGE_SIZES)[number]) ? value : 50
 }
 
+/**
+ * Capacity and low-space protection (issue #212, design section 11.4). The
+ * Server owns the policy, the measurement, and the gap record, so this card
+ * renders exactly what it sent: a disabled policy is shown as disabled with no
+ * invented threshold, an absent measurement stays Unknown instead of zero, and
+ * every skipped optional sample is listed, so a paused history is a visible
+ * gap rather than a silent one.
+ */
+function capacityStateNote(overview: CapacityOverview): string {
+  if (!overview.enabled) {
+    return 'No low-space policy is declared, so optional history is never paused and no threshold is assumed.'
+  }
+  if (overview.protected) {
+    return 'Storage is below the pause floor, so optional history is paused and every skipped sample is recorded below.'
+  }
+  return 'Optional history is written normally; storage is measured on the configured cadence.'
+}
+
+function CapacityPanel() {
+  const { generation } = useAuth()
+  const capacity = useAdminCapacity(generation)
+  const overview = capacity.data
+  const intervals = overview?.recentIntervals ?? []
+
+  return (
+    <CardX
+      size="medium"
+      className={CARD_SURFACE}
+      title="Storage capacity and low-space protection"
+      contentClassName="space-y-3"
+    >
+      {!overview && capacity.isPending && (
+        <p role="status" className="text-sm">
+          <StatusBadge status="Starting" tone="neutral" /> Loading capacity protection…
+        </p>
+      )}
+      {!overview && capacity.isError && (
+        <div role="alert" className="space-y-2 text-sm">
+          <p>{errorMessage(capacity.error, 'Unable to load capacity protection')}</p>
+          <Button variant="link" size="sm" onClick={() => void capacity.refetch()}>
+            Try again
+          </Button>
+        </div>
+      )}
+      {overview && capacity.isRefetchError && (
+        <p role="alert" className="text-sm">
+          Failed to refresh; showing the last successful capacity reading.
+        </p>
+      )}
+      {overview && (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusBadge status={capacityStateLabel(overview)} tone={capacityStateTone(overview)} />
+            <span className="text-sm text-muted-foreground">{capacityStateNote(overview)}</span>
+          </div>
+          {overview.samplingError && (
+            <p role="alert" className="text-sm">
+              The state filesystem could not be measured: {overview.samplingError}
+            </p>
+          )}
+          {overview.transitionError && (
+            <p role="alert" className="text-sm">
+              The last protection transition could not be recorded: {overview.transitionError}
+            </p>
+          )}
+          <DetailList>
+            <DetailItem label="Policy declared in">
+              {overview.policyOrigin ?? 'Not read from a configuration file'}
+            </DetailItem>
+            <DetailItem label="Pause floor">
+              {overview.pauseBelowBytes == null
+                ? 'Not declared'
+                : formatBytesUnknown(overview.pauseBelowBytes)}
+            </DetailItem>
+            <DetailItem label="Resume level">
+              {overview.resumeAboveBytes == null
+                ? 'Not declared'
+                : formatBytesUnknown(overview.resumeAboveBytes)}
+            </DetailItem>
+            <DetailItem label="Sampling cadence">
+              {String(overview.sampleIntervalSeconds) + ' seconds'}
+            </DetailItem>
+            <DetailItem label="Measured directory">{overview.mountPath ?? 'Unknown'}</DetailItem>
+            <DetailItem label="Last measurement">
+              {overview.sampledAt ? formatObservedAt(overview.sampledAt) : 'Never measured'}
+            </DetailItem>
+            <DetailItem label="Filesystem">
+              {overview.sample
+                ? formatBytesUnknown(overview.sample.availableBytes) +
+                  ' available of ' +
+                  formatBytesUnknown(overview.sample.totalBytes)
+                : 'Unknown'}
+            </DetailItem>
+            <DetailItem label="Active interval">
+              {overview.activeIntervalId ?? 'None'}
+            </DetailItem>
+          </DetailList>
+          {intervals.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              The Server has recorded no protection interval, so optional history has never been paused here.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <div className="overflow-x-auto">
+                <table data-stack data-slot="capacity-intervals-table" className="w-full text-sm">
+                  <caption className="sr-only">Recorded protection intervals</caption>
+                  <thead>
+                    <tr className="border-b">
+                      <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                        Started
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                        Opened available
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                        Pause floor
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                        Skipped samples
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                        Series affected
+                      </th>
+                      <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                        Ended
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {intervals.map((interval) => (
+                      <tr key={interval.intervalId} className="border-b border-border/60 align-top">
+                        <th scope="row" data-label="Started" className="min-w-0 px-3 py-3 text-left font-normal">
+                          {formatObservedAt(interval.startedAt)}
+                          <span className="block text-xs text-muted-foreground">
+                            {capacityIntervalReasonLabel(interval.startedReason)}
+                          </span>
+                        </th>
+                        <td data-label="Opened available" className="min-w-0 px-3 py-3">
+                          {formatBytesUnknown(interval.openedAvailableBytes)}
+                        </td>
+                        <td data-label="Pause floor" className="min-w-0 px-3 py-3">
+                          {formatBytesUnknown(interval.pauseBelowBytes)}
+                        </td>
+                        <td data-label="Skipped samples" className="min-w-0 px-3 py-3">
+                          {String(interval.skippedSampleCount)}
+                        </td>
+                        <td data-label="Series affected" className="min-w-0 px-3 py-3">
+                          {String(interval.skippedSeriesTotal)}
+                        </td>
+                        <td data-label="Ended" className="min-w-0 px-3 py-3">
+                          {interval.endedAt
+                            ? formatObservedAt(interval.endedAt) +
+                              ' · ' +
+                              capacityIntervalReasonLabel(interval.endedReason) +
+                              (interval.resumedAvailableBytes == null
+                                ? ''
+                                : ' at ' +
+                                  formatBytesUnknown(interval.resumedAvailableBytes) +
+                                  ' available')
+                            : 'Still active'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {intervals.map((interval) =>
+                interval.skippedSeries.length === 0 ? null : (
+                  <div key={interval.intervalId + '-gap'} className="space-y-1 text-sm">
+                    <p className="text-xs font-medium tracking-wider text-muted-foreground">
+                      Gap in optional history · interval {interval.intervalId}
+                    </p>
+                    <ul data-slot="capacity-skipped-series" className="space-y-1">
+                      {interval.skippedSeries.map((series) => (
+                        <li
+                          key={series.scopeKind + series.scopeKey + series.metric}
+                          className="min-w-0 break-words"
+                        >
+                          <span className="font-mono text-xs">
+                            {series.scopeKind + ':' + series.scopeKey}
+                          </span>{' '}
+                          <span className="text-muted-foreground">{series.metric}</span>{' '}
+                          <span>{String(series.skippedCount) + ' skipped'}</span>
+                          <span className="block text-xs text-muted-foreground">
+                            {formatObservedAt(series.firstSkippedAt) +
+                              ' → ' +
+                              formatObservedAt(series.lastSkippedAt)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                    {interval.skippedSeriesTotal > interval.skippedSeries.length && (
+                      <p className="text-xs text-muted-foreground">
+                        The Server lists the worst {String(interval.skippedSeries.length)} series;{' '}
+                        {String(interval.skippedSeriesTotal)} series lost samples in total.
+                      </p>
+                    )}
+                  </div>
+                ),
+              )}
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Protection pauses optional history only. Reports still arrive, and their core projection, receipt,
+            and retry semantics are unchanged; a skipped sample is counted here instead of being written, and
+            nothing is deleted to make room, because the Server never prunes history to fit a floor.
+          </p>
+        </>
+      )}
+    </CardX>
+  )
+}
+
 export default function AdminOperations() {
   const { generation } = useAuth()
   const [search, setSearch] = useSearchParams()
@@ -98,6 +316,8 @@ export default function AdminOperations() {
           later, shows the same recorded state.
         </p>
       </div>
+
+      <CapacityPanel />
 
       <form
         className={'flex flex-wrap items-end gap-3 rounded-md border-none p-3 bg-background/60'}

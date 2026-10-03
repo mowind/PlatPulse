@@ -961,6 +961,21 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     )
     .with_backup_dir(config.backup_dir.clone())
     .with_geo_loader(geo_loader);
+    // The declared capacity policy (issue #212) is adopted before anything can
+    // ingest a report, so a restart under pressure never records optional
+    // history that the policy meant to pause. Reconcile also adopts an interval
+    // an earlier process left open, and closes one whose policy is now off.
+    let capacity = std::sync::Arc::new(crate::capacity::CapacityProtection::new(
+        config.capacity.clone(),
+        Some(state.db().path()),
+    ));
+    if let Err(error) = capacity.reconcile(state.db().pool()).await {
+        eprintln!(
+            "capacity protection reconcile deferred: {}",
+            crate::redaction::redact_sensitive(&error.to_string())
+        );
+    }
+    state = state.with_capacity(std::sync::Arc::clone(&capacity));
     // The durable Geo provider selection is resolved once per installation
     // (issue #132). Before the key exists, the deployment's MMDB
     // configuration decides, so an upgrade keeps resolving with the same
@@ -1109,6 +1124,23 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         {
             let geo_state = state.clone();
             worker_handles.push(tokio::spawn(crate::geo_backfill::run_worker(geo_state)));
+        }
+
+        // Capacity sampling (issue #212): the worker below only samples when a
+        // policy is declared. It opens a protection interval when the state
+        // filesystem falls under the floor and closes it when the declared
+        // release level is reached, so optional history pauses and resumes with
+        // a durable gap between the two, never a silent one. Startup reconcile
+        // above already ran once, so a disabled policy spawns nothing.
+        if capacity.config().enabled() {
+            let capacity_state = state.clone();
+            let capacity_worker = std::sync::Arc::clone(&capacity);
+            worker_handles.push(tokio::spawn(async move {
+                let pool = capacity_state.db().pool().clone();
+                capacity_worker
+                    .run_worker(pool, capacity_state.shutdown_signal())
+                    .await;
+            }));
         }
 
         // Operations left `running` by a crash are honestly failed (issue #50,

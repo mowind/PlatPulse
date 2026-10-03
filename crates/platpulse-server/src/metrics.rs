@@ -413,6 +413,45 @@ impl MetricsRegistry {
         );
         metric_header(
             &mut output,
+            "platpulse_capacity_total_bytes",
+            "Size of the filesystem that holds Server state, in bytes.",
+            "gauge",
+        );
+        metric_optional_gauge(
+            &mut output,
+            "platpulse_capacity_total_bytes",
+            "Size of the filesystem that holds Server state, in bytes.",
+            &[],
+            snapshot.capacity_total_bytes,
+        );
+        metric_header(
+            &mut output,
+            "platpulse_capacity_available_bytes",
+            "Bytes available on the filesystem that holds Server state.",
+            "gauge",
+        );
+        metric_optional_gauge(
+            &mut output,
+            "platpulse_capacity_available_bytes",
+            "Bytes available on the filesystem that holds Server state.",
+            &[],
+            snapshot.capacity_available_bytes,
+        );
+        metric_header(
+            &mut output,
+            "platpulse_capacity_paused",
+            "1 while optional history is paused for low space, 0 otherwise.",
+            "gauge",
+        );
+        metric_gauge(
+            &mut output,
+            "platpulse_capacity_paused",
+            "1 while optional history is paused for low space, 0 otherwise.",
+            &[],
+            snapshot.capacity_paused,
+        );
+        metric_header(
+            &mut output,
             "platpulse_ingestion_in_flight",
             "AgentReport ingestions currently in flight.",
             "gauge",
@@ -458,6 +497,13 @@ pub struct MetricsSnapshot {
     pub sqlite_wal_bytes: Option<u64>,
     pub sqlite_pool_size: u64,
     pub sqlite_pool_idle: u64,
+    /// Latest measurement of the filesystem that holds Server state, taken by
+    /// the sampling worker rather than at scrape time: a scrape must not do
+    /// filesystem I/O, and an unknown measurement stays unknown.
+    pub capacity_total_bytes: Option<u64>,
+    pub capacity_available_bytes: Option<u64>,
+    /// 1 while optional history is paused for low space.
+    pub capacity_paused: u64,
     pub ingestion_in_flight: u64,
     pub public_buffered_events: u64,
     pub admin_buffered_events: u64,
@@ -632,6 +678,13 @@ async fn collect_snapshot(state: &AppState) -> MetricsSnapshot {
     snapshot.sqlite_wal_bytes = std::fs::metadata(wal_path).ok().map(|value| value.len());
     snapshot.sqlite_pool_size = pool.size() as u64;
     snapshot.sqlite_pool_idle = pool.num_idle() as u64;
+    let capacity = state.capacity().status();
+    snapshot.capacity_total_bytes = capacity.sample.as_ref().map(|sample| sample.total_bytes);
+    snapshot.capacity_available_bytes = capacity
+        .sample
+        .as_ref()
+        .map(|sample| sample.available_bytes);
+    snapshot.capacity_paused = u64::from(capacity.protected);
 
     if let Some(counts) = grouped_counts(
         pool,

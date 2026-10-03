@@ -794,14 +794,33 @@ fn metric_observed_at<T>(observation: &ComponentObservation<T>) -> Option<Rfc333
     })
 }
 
+/// Record one Node metric sample, unless optional history is paused.
+///
+/// Under low-space protection the sample is not written and the per-series
+/// prune is not run either: the Server records the gap instead of deleting
+/// history it already holds (design §11.4, issue #212). The gap record shares
+/// the ingestion transaction, so "sample skipped" and "gap recorded" commit
+/// together and a failure rolls the whole Report back.
 async fn save_node_metric(
     tx: &mut Transaction<'_, Sqlite>,
+    history: &crate::capacity::HistoryGate,
     node_id: &str,
     metric: &str,
     observed_at: Rfc3339,
     received_at: &str,
     value: f64,
 ) -> Result<(), sqlx::Error> {
+    if let crate::capacity::HistoryGate::Paused { interval_id } = history {
+        return crate::capacity::record_skipped_series(
+            tx,
+            interval_id,
+            crate::capacity::SkippedScope::Node,
+            node_id,
+            metric,
+            &observed_at.to_string(),
+        )
+        .await;
+    }
     sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?) ON CONFLICT(node_id, metric, observed_at) DO UPDATE SET value=excluded.value")
         .bind(node_id)
         .bind(metric)
@@ -819,14 +838,30 @@ async fn save_node_metric(
     Ok(())
 }
 
+/// Record one Agent host metric sample, unless optional history is paused.
+///
+/// See crate::capacity::HistoryGate and the Node sibling above: under pressure the sample is skipped
+/// and the gap is recorded in the same transaction.
 async fn save_host_metric(
     tx: &mut Transaction<'_, Sqlite>,
+    history: &crate::capacity::HistoryGate,
     agent_id: &str,
     metric: &str,
     observed_at: Rfc3339,
     received_at: &str,
     value: f64,
 ) -> Result<(), sqlx::Error> {
+    if let crate::capacity::HistoryGate::Paused { interval_id } = history {
+        return crate::capacity::record_skipped_series(
+            tx,
+            interval_id,
+            crate::capacity::SkippedScope::Host,
+            agent_id,
+            metric,
+            &observed_at.to_string(),
+        )
+        .await;
+    }
     sqlx::query("INSERT INTO host_metric_samples (agent_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?) ON CONFLICT(agent_id, metric, observed_at) DO UPDATE SET value=excluded.value")
         .bind(agent_id)
         .bind(metric)
@@ -846,6 +881,7 @@ async fn save_host_metric(
 
 async fn save_current<I: ReportInventory>(
     tx: &mut Transaction<'_, Sqlite>,
+    history: &crate::capacity::HistoryGate,
     report: &AgentReport<I>,
     received_at: &str,
     geo_provider: crate::geo::GeoProvider,
@@ -1009,6 +1045,7 @@ async fn save_current<I: ReportInventory>(
     ) {
         save_host_metric(
             tx,
+            history,
             &agent_id,
             "network_rx_bytes_per_sec",
             observed_at,
@@ -1018,6 +1055,7 @@ async fn save_current<I: ReportInventory>(
         .await?;
         save_host_metric(
             tx,
+            history,
             &agent_id,
             "network_tx_bytes_per_sec",
             observed_at,
@@ -1213,6 +1251,7 @@ async fn save_current<I: ReportInventory>(
         {
             save_node_metric(
                 tx,
+                history,
                 &node_id,
                 "process_cpu_percent",
                 observed_at,
@@ -1223,6 +1262,7 @@ async fn save_current<I: ReportInventory>(
             if let Some(memory) = host.memory.latest.filter(|memory| memory.total_bytes > 0) {
                 save_node_metric(
                     tx,
+                    history,
                     &node_id,
                     "process_memory_percent",
                     observed_at,
@@ -1249,6 +1289,7 @@ async fn save_current<I: ReportInventory>(
         ) {
             save_node_metric(
                 tx,
+                history,
                 &node_id,
                 "data_directory_percent",
                 size_observed_at.max(capacity_observed_at),
@@ -1269,6 +1310,7 @@ async fn save_current<I: ReportInventory>(
             let outbound = snapshot.peers.len().saturating_sub(inbound);
             save_node_metric(
                 tx,
+                history,
                 &node_id,
                 "peer_inbound_count",
                 observed_at,
@@ -1278,6 +1320,7 @@ async fn save_current<I: ReportInventory>(
             .await?;
             save_node_metric(
                 tx,
+                history,
                 &node_id,
                 "peer_outbound_count",
                 observed_at,
@@ -2420,8 +2463,18 @@ async fn ingest_report<I: ReportInventory>(
         .block_summaries
         .retain(|sample| !rejected_nodes.contains(&sample.node_id));
     let geo_provider = state.geo_config().provider;
-    if let Err(save_error) =
-        save_current(&mut tx, &projection_report, &now_text, geo_provider).await
+    // The low-space gate is read once from memory for this Report. It is never
+    // read through the pool: ingestion already holds the single write
+    // connection, and a second acquire inside the transaction would deadlock.
+    let history = state.capacity().history_gate();
+    if let Err(save_error) = save_current(
+        &mut tx,
+        &history,
+        &projection_report,
+        &now_text,
+        geo_provider,
+    )
+    .await
     {
         return storage_error(&request_id.0, "save current observations", &save_error);
     }

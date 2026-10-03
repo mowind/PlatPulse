@@ -1970,6 +1970,38 @@
         }
       }
     },
+    "/api/admin/v1/capacity": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Capacity and low-space protection state (design section 11.4).",
+        "description": "Read-only: it never changes the policy and never deletes anything. It\nsamples the filesystem before answering so the Operator sees the current\ndisk instead of one cadence old, and it records a transition with the same\nbookkeeping the sampling worker performs. A deployment that never enables\nthe policy still gets a truthful answer: enabled is false and the\nthresholds are null rather than invented defaults.",
+        "operationId": "capacity_overview",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapacityOverview"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/doctor": {
       "get": {
         "tags": [
@@ -9343,6 +9375,269 @@
               "null"
             ],
             "description": "The most recent Operation that verified this artifact, so the page can\nlink the recorded outcome to the task that produced it. Absent means no\nverification task ever recorded a result for this artifact."
+          }
+        }
+      },
+      "CapacityIntervalDto": {
+        "type": "object",
+        "description": "One protection interval: why it opened, what was skipped, and, once the\nfilesystem recovered, the measurement that closed it.",
+        "required": [
+          "intervalId",
+          "sourceMount",
+          "startedAt",
+          "startedReason",
+          "openedTotalBytes",
+          "openedAvailableBytes",
+          "pauseBelowBytes",
+          "resumeAboveBytes",
+          "updatedAt",
+          "skippedSampleCount",
+          "skippedSeriesTotal",
+          "skippedSeries"
+        ],
+        "properties": {
+          "endedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Null while protection is still active."
+          },
+          "endedReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "\"resumed\" or \"protection_disabled\", null while active."
+          },
+          "intervalId": {
+            "type": "string"
+          },
+          "openedAvailableBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "openedTotalBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "pauseBelowBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "resumeAboveBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "resumedAvailableBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "resumedTotalBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "skippedSampleCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Optional samples skipped during this interval, every series together."
+          },
+          "skippedSeries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CapacitySkippedSeriesDto"
+            },
+            "description": "The series with the most skipped samples, bounded."
+          },
+          "skippedSeriesTotal": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many distinct series lost samples."
+          },
+          "sourceMount": {
+            "type": "string"
+          },
+          "startedAt": {
+            "type": "string"
+          },
+          "startedReason": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        }
+      },
+      "CapacityOverview": {
+        "type": "object",
+        "description": "Capacity visibility and low-space protection state for Operations.",
+        "required": [
+          "enabled",
+          "protected",
+          "sampleIntervalSeconds",
+          "recentIntervals"
+        ],
+        "properties": {
+          "activeIntervalId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "mountPath": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The directory that is measured, null when it cannot be resolved."
+          },
+          "pauseBelowBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Null when the policy is disabled, because nothing is invented in its place.",
+            "minimum": 0
+          },
+          "policyOrigin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The configuration file the policy was read from."
+          },
+          "protected": {
+            "type": "boolean"
+          },
+          "recentIntervals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CapacityIntervalDto"
+            }
+          },
+          "resumeAboveBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "sample": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CapacitySampleDto",
+                "description": "The newest measurement, null when sampling itself failed."
+              }
+            ]
+          },
+          "sampleIntervalSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sampledAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "samplingError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transitionError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CapacitySampleDto": {
+        "type": "object",
+        "description": "One measurement of the filesystem that holds the Server state.",
+        "required": [
+          "mountPath",
+          "totalBytes",
+          "availableBytes"
+        ],
+        "properties": {
+          "availableBytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The bytes still available to the Server user.",
+            "minimum": 0
+          },
+          "mountPath": {
+            "type": "string",
+            "description": "The directory that was measured."
+          },
+          "totalBytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The filesystem size in bytes.",
+            "minimum": 0
+          }
+        }
+      },
+      "CapacitySkippedSeriesDto": {
+        "type": "object",
+        "description": "One series whose optional history lost samples while protection was active.",
+        "required": [
+          "scopeKind",
+          "scopeKey",
+          "metric",
+          "skippedCount",
+          "firstSkippedAt",
+          "lastSkippedAt"
+        ],
+        "properties": {
+          "firstSkippedAt": {
+            "type": "string",
+            "description": "The first skipped observation, in RFC 3339."
+          },
+          "lastSkippedAt": {
+            "type": "string",
+            "description": "The most recent skipped observation, in RFC 3339."
+          },
+          "metric": {
+            "type": "string",
+            "description": "The optional metric that was skipped."
+          },
+          "scopeKey": {
+            "type": "string",
+            "description": "The node or agent identity the series belongs to."
+          },
+          "scopeKind": {
+            "type": "string",
+            "description": "Either \"node\" or \"host\"."
+          },
+          "skippedCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many samples were skipped."
           }
         }
       },

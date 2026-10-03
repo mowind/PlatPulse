@@ -14,6 +14,8 @@ use ipnet::IpNet;
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::capacity::CapacityConfig;
+
 /// Default listen address when neither the config file nor CLI flags set one.
 pub const DEFAULT_LISTEN: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 8080);
@@ -86,6 +88,29 @@ pub struct ServerConfigFile {
     pub notifications: Option<NotificationsSectionFile>,
     /// Optional dedicated internal Prometheus metrics listener.
     pub metrics: Option<MetricsSectionFile>,
+    /// Optional capacity visibility and low-space protection policy
+    /// (design §11.4, issue #212).
+    pub capacity: Option<CapacitySectionFile>,
+}
+
+/// The optional `[capacity]` section (design §11.4, issue #212).
+///
+/// Enabling protection requires both thresholds to be declared. The Server
+/// deliberately invents no default here: a free-space floor is a claim about a
+/// deployment this process has never measured, and a fabricated GiB number
+/// would be exactly the kind of unverified promise the issue refuses.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct CapacitySectionFile {
+    /// Whether optional history may be paused when free space runs short.
+    /// Presence of the section alone does not enable it; the default is off.
+    pub enabled: Option<bool>,
+    /// Free-space floor in bytes: below this, optional history pauses.
+    pub pause_below_bytes: Option<u64>,
+    /// Free-space level in bytes: at or above this, optional history resumes.
+    pub resume_above_bytes: Option<u64>,
+    /// Sampling cadence in seconds.
+    pub sample_interval_seconds: Option<u64>,
 }
 
 /// The optional `[metrics]` section. Presence enables metrics unless
@@ -202,6 +227,9 @@ pub struct ServerConfig {
     pub metrics: MetricsConfig,
     /// Optional mount the backup directory must live on (ADR 0008).
     pub backup_required_mount: Option<PathBuf>,
+    /// Resolved capacity visibility and low-space protection policy
+    /// (design §11.4, issue #212).
+    pub capacity: CapacityConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,6 +365,8 @@ pub enum ConfigError {
         "backup_required_mount requires both an absolute mount point and a configured backup_dir in {path}"
     )]
     InvalidBackupRequiredMount { path: PathBuf },
+    #[error("invalid capacity protection policy in {path}: {reason}")]
+    InvalidCapacity { path: PathBuf, reason: String },
 }
 
 impl ServerConfigFile {
@@ -510,6 +540,7 @@ impl ServerConfig {
         };
         let backup_required_mount =
             resolve_backup_required_mount(file, &backup_dir, config_path.as_deref())?;
+        let capacity = resolve_capacity(file, config_path.as_deref())?;
 
         Ok(Self {
             config_path,
@@ -529,8 +560,35 @@ impl ServerConfig {
             notifications,
             metrics,
             backup_required_mount,
+            capacity,
         })
     }
+}
+
+/// Resolve the optional `[capacity]` policy.
+///
+/// A missing section means "report capacity, never pause history". A present
+/// section is validated by `CapacityConfig`, which refuses an enabled policy
+/// without measured thresholds.
+fn resolve_capacity(
+    file: Option<&ServerConfigFile>,
+    config_path: Option<&Path>,
+) -> Result<CapacityConfig, ConfigError> {
+    let origin = config_path.map(Path::to_owned);
+    let Some(section) = file.and_then(|value| value.capacity.as_ref()) else {
+        return Ok(CapacityConfig::disabled());
+    };
+    CapacityConfig::from_declared(
+        section.enabled.unwrap_or(false),
+        section.pause_below_bytes,
+        section.resume_above_bytes,
+        section.sample_interval_seconds,
+        origin.clone(),
+    )
+    .map_err(|reason| ConfigError::InvalidCapacity {
+        path: origin.unwrap_or_else(|| PathBuf::from("<cli>")),
+        reason,
+    })
 }
 
 /// Resolve the optional offline backup layout guard (ADR 0008). The mount is

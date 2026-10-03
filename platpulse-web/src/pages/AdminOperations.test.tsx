@@ -89,6 +89,73 @@ const CANCELLED_RUN_RESULT = {
   previewId: '0195f2a1-0400-4100-8100-000000000400',
 }
 
+/** A disabled policy: no threshold is declared, so none may be shown. */
+const DISABLED_CAPACITY = {
+  enabled: false,
+  protected: false,
+  pauseBelowBytes: null,
+  resumeAboveBytes: null,
+  sampleIntervalSeconds: 60,
+  policyOrigin: null,
+  mountPath: '/var/lib/platpulse',
+  sample: { mountPath: '/var/lib/platpulse', totalBytes: 107374182400, availableBytes: 85899345920 },
+  sampledAt: '2026-08-12T09:00:00Z',
+  samplingError: null,
+  transitionError: null,
+  activeIntervalId: null,
+  recentIntervals: [],
+}
+
+/** A Server protecting itself: the interval and the skipped series are the
+ * Server's own gap record, and the recovery measurement closed it. */
+const PROTECTED_CAPACITY = {
+  ...DISABLED_CAPACITY,
+  enabled: true,
+  protected: true,
+  pauseBelowBytes: 5368709120,
+  resumeAboveBytes: 10737418240,
+  policyOrigin: '/etc/platpulse/server.toml',
+  sample: { mountPath: '/var/lib/platpulse', totalBytes: 107374182400, availableBytes: 1073741824 },
+  activeIntervalId: '0195f2a1-0500-4500-8500-000000000500',
+  recentIntervals: [
+    {
+      intervalId: '0195f2a1-0500-4500-8500-000000000500',
+      sourceMount: '/var/lib/platpulse',
+      startedAt: '2026-03-01T02:00:00Z',
+      startedReason: 'low_space',
+      openedTotalBytes: 107374182400,
+      openedAvailableBytes: 1073741824,
+      pauseBelowBytes: 5368709120,
+      resumeAboveBytes: 10737418240,
+      endedAt: null,
+      endedReason: null,
+      resumedTotalBytes: null,
+      resumedAvailableBytes: null,
+      updatedAt: '2026-03-01T02:05:00Z',
+      skippedSampleCount: 4,
+      skippedSeriesTotal: 3,
+      skippedSeries: [
+        {
+          scopeKind: 'host',
+          scopeKey: '0195f2a1-0011-4011-8011-000000000011',
+          metric: 'network_rx_bytes_per_sec',
+          skippedCount: 2,
+          firstSkippedAt: '2026-03-01T02:00:30Z',
+          lastSkippedAt: '2026-03-01T02:04:30Z',
+        },
+        {
+          scopeKind: 'node',
+          scopeKey: '0195f2a1-0014-4014-8014-000000000014',
+          metric: 'process_cpu_percent',
+          skippedCount: 1,
+          firstSkippedAt: '2026-03-01T02:00:30Z',
+          lastSkippedAt: '2026-03-01T02:00:30Z',
+        },
+      ],
+    },
+  ],
+}
+
 function detailOf(operation: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
   return {
     operation,
@@ -166,6 +233,7 @@ describe('PAGE-ADMIN-OPERATIONS (task ledger)', () => {
   it('lists each recorded task with its status, kind, and progress', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/capacity': () => jsonResponse(DISABLED_CAPACITY, 200),
       '/api/admin/v1/operations*': () =>
         jsonResponse([WARNED_OPERATION, RUNNING_OPERATION, CANCEL_REQUESTED_OPERATION], 200),
     })
@@ -187,6 +255,7 @@ describe('PAGE-ADMIN-OPERATIONS (task ledger)', () => {
   it('asks the Server for the filtered window and keeps the filter in the URL', async () => {
     const fetchMock = mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/capacity': () => jsonResponse(DISABLED_CAPACITY, 200),
       '/api/admin/v1/operations*': () => jsonResponse([RUNNING_OPERATION], 200),
     })
     await renderAt('/admin/operations?status=running&kind=retention_run')
@@ -204,6 +273,7 @@ describe('PAGE-ADMIN-OPERATIONS (task ledger)', () => {
   it('asks the Server for the chosen page size instead of the default window', async () => {
     const fetchMock = mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/capacity': () => jsonResponse(DISABLED_CAPACITY, 200),
       '/api/admin/v1/operations*': () => jsonResponse([RUNNING_OPERATION], 200),
     })
     await renderAt('/admin/operations?limit=25')
@@ -492,6 +562,7 @@ describe('PAGE-ADMIN-OPERATIONS (task ledger)', () => {
   it('offers a retry when the ledger cannot be loaded', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/capacity': () => jsonResponse(DISABLED_CAPACITY, 200),
       '/api/admin/v1/operations*': () => apiError('database_unavailable', 'Server database is unavailable', 503),
     })
     await renderAt('/admin/operations')
@@ -499,5 +570,64 @@ describe('PAGE-ADMIN-OPERATIONS (task ledger)', () => {
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toContain('Server database is unavailable')
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
+  })
+
+  it('shows a disabled capacity policy without inventing a threshold', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/capacity': () => jsonResponse(DISABLED_CAPACITY, 200),
+      '/api/admin/v1/operations*': () => jsonResponse([RUNNING_OPERATION], 200),
+    })
+    await renderAt('/admin/operations')
+
+    const title = await screen.findByText('Storage capacity and low-space protection')
+    const card = title.closest('[data-slot="card-x"]')
+    expect(card).not.toBeNull()
+    const text = card?.textContent ?? ''
+    expect(text).toContain('Disabled')
+    // A disabled policy declares no floor, so the card says so twice instead
+    // of rendering an absent threshold as a number.
+    expect(text.match(/Not declared/g)).toHaveLength(2)
+    expect(text).toContain('never paused')
+    // The filesystem is still measured while the policy is off.
+    expect(text).toContain('/var/lib/platpulse')
+    expect(text).toContain('80.0 GiB available of 100 GiB')
+    expect(text).toContain('2026-08-12 09:00:00 UTC')
+    expect(text).toContain('never been paused here')
+  })
+
+  it('shows the recorded gap while low-space protection is active', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/capacity': () => jsonResponse(PROTECTED_CAPACITY, 200),
+      '/api/admin/v1/operations*': () => jsonResponse([RUNNING_OPERATION], 200),
+    })
+    await renderAt('/admin/operations')
+
+    await screen.findByText('Storage capacity and low-space protection')
+    const card = screen.getByText('Storage capacity and low-space protection').closest(
+      '[data-slot="card-x"]',
+    )
+    const text = card?.textContent ?? ''
+    expect(text).toContain('Protecting')
+    expect(text).toContain('5.00 GiB')
+    expect(text).toContain('10.0 GiB')
+    expect(text).toContain('/etc/platpulse/server.toml')
+
+    const intervals = slot('capacity-intervals-table')
+    expect(intervals.textContent).toContain('Low space')
+    expect(intervals.textContent).toContain('Still active')
+
+    // The gap is visible per series, not only as a count.
+    const gap = slot('capacity-skipped-series')
+    expect(gap.textContent).toContain('host:0195f2a1-0011-4011-8011-000000000011')
+    expect(gap.textContent).toContain('network_rx_bytes_per_sec')
+    expect(gap.textContent).toContain('2 skipped')
+    expect(gap.textContent).toContain('node:0195f2a1-0014-4014-8014-000000000014')
+    expect(gap.textContent).toContain('process_cpu_percent')
+    // The worst-N bound is named instead of pretending the list is complete.
+    expect(text).toContain('3 series lost samples in total')
+    // Optional history only: the Operation ledger is unaffected.
+    expect(screen.getByRole('table', { name: /Recorded Operations/ })).toBeTruthy()
   })
 })

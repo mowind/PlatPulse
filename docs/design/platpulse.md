@@ -398,13 +398,13 @@ Validator         validators / links / current insight / ranking-counter history
 4. 验证 Network Identity、Component revisions、Block Summary 和 History Gap 边界；
 5. 幂等检查：重复 report 返回同一 Receipt，不重复写投影与历史；
 6. 更新 Agent、Host 与各 Node 当前投影；
-7. 追加合法的 Block History，记录 coverage/divergence/gap 状态（受全局窗口约束）；
+7. 追加合法的 Block History，记录 coverage/divergence/gap 状态（受全局窗口约束；低空间保护生效时，被跳过的可选 metric history 也在此事务内累加到 `capacity_skipped_series`，见 §11.5）；
 8. 计算 Inventory、per-Node 和 per-sample dispositions，写入完整 Report Receipt；
 9. 在同一事务中评估 Alert/Notification side effects；
 10. 提交事务（Geo 国家解析不在事务内，提交后只唤醒后台解析路径）；
 11. 事务提交后才发布受影响资源的 Admin/Public SSE invalidation。
 
-`partially_accepted` 表示同一个事务中部分 Node/sample 被接受、其余被拒绝，不表示半提交。任一步骤失败都回滚投影、历史、Receipt 和告警副作用；回滚不会发布 invalidation。Post-commit invalidation 是通知层行为，客户端必须用 REST 重新读取权威 DTO。
+`partially_accepted` 表示同一个事务中部分 Node/sample 被接受、其余被拒绝，不表示半提交。任一步骤失败都回滚投影、历史、Receipt 和告警副作用；回滚不会发布 invalidation。Post-commit invalidation 是通知层行为，客户端必须用 REST 重新读取权威 DTO。低空间保护不改变上述事务边界：被跳过的可选 metric history 样本与它的缺口记账在同一次提交内完成，任一步失败同样整体回滚（§11.5）。
 
 ### 8.4 HTTP API
 
@@ -605,6 +605,17 @@ Server 仍不会用零值填充缺失区间；Retention 按 data family 分别�
 每个 family 的保留契约由 Server 的 retention catalog 声明（`crates/platpulse-server/src/retention.rs`）：策略类别（raw / investigation / contract）给出安全下限（raw 至少 24h，investigation 与必要的 aggregate/state 至少 30d），family 自有 min/max/default 只能在此之上收紧或放宽，Server 拒绝任何低于下限的值；未启用或未支持的 family 不声明任何 cleanup target，因此不会暗示已保存其未实现的历史。支持的 family 声明其 cleanup target（固定 SQL、有界批量、恰好一个绑定参数），执行时按 preview 冻结的 cutoff 逐批运行；估计计数是 Server 给出的上界而不是冻结行集，也不是执行配额：某批返回的行数少于批量上限即证明该 cutoff 之后已无过期行，视为该目标完成；某批满额则继续；实际释放行数可以超过估计值，结果按 Server 记录的真实释放数报告。plan 在排队瞬间冻结（scope、policy version、每个 family 的 cutoff），执行期间不再读取实时策略，因此运行中的策略变更既不会加长也不会扩大正在执行的范围。preview 的 policy version 由该 family 记录的值与时间戳摘要而成，并使重预览判定同时比较 retention_days 本身，因此任何会改变计划内容的编辑都被判为过时；preview 校验与入队是两条语句，排队瞬间的校验存在极窄窗口，但已冻结的 plan 使该窗口无法扩大或加长将要释放的行（把校验并入同一事务留待后续票据）。已记录的历史在更长保留下不会被自动缩短。
 
 按批准计划执行、命令去重与诚实的取消（issue #211）：每次清理执行都必须绑定一个仍然有效的 preview，Server 在执行前重新校验 policy version、scope 与每个 family 的 cutoff，任何一项变化都返回 `409 retention_preview_stale` 且不入队。Owner 的一次确认是一个持久化的命令身份（请求体中的 `requestId`，与中间件生成的 HTTP 关联 id 不同）：同一 `requestId` 的重复提交（双击、第二个标签页、响应丢失后的重试）不会产生第二次清理，Server 按 `operation_requests` 的 `(kind, intent_fingerprint)` 唯一索引回放已记录的结果，Retention 的 intent fingerprint 是 `retention_run:<previewId>`；同一 `requestId` 用于不同意图返回 `409 operation_request_id_conflict`，而不是静默执行一个新动作。同一时刻只允许一个 queued/running 的 `retention_run`（部分唯一索引），因此第二次确认要么回放已记录的任务，要么被明确拒绝（`409 retention_run_in_progress`）；命令记录的存活期与 preview 一致（24h）。取消是显式记录而不是回滚：queued 的清理在取消当刻由 Server 写入终态与结果（已释放 0 行、未完成目标数、按 family 明细与说明），running 的清理在下一个安全检查点停止并记录已释放行数与未完成目标数；已释放的数据永不回滚。重启后被中断的清理按已记录的 plan 汇总已释放行数与未完成目标数，而不是一条通用错误。释放数据与其记账在同一次提交的同一事务内完成，因此不存在“行已删除而记录仍称从未触碰”的状态。从未开始且没有计划工作的任务不编造结果（queued 的 Doctor 诊断取消后 `result_json` 保持为空，`doctor::last_run` 因此不会把一次取消当成一次诊断报告）。
+
+### 11.5 低空间保护（issue #212）
+
+Server 启动时解析可选的 `[capacity]` 段（crates/platpulse-server/src/config.rs），由 crates/platpulse-server/src/capacity.rs 按 hysteresis 采样挂载点可用空间：
+
+- `enabled = true` 时必须同时给出 `pause_below_bytes` 与 `resume_above_bytes`，不设默认阈值；契约是 `resume_above_bytes >= pause_below_bytes > 0`，采样间隔限 5..86400 秒（默认 60）。缺少阈值时启动直接失败并说明原因，而不是替部署方猜一个 GiB 数字。
+- 进入保护时向 `capacity_protection_intervals` 写入一行，用当时的真实容量填 `opened_total_bytes`/`opened_available_bytes`，`started_reason` 为 `low_space`，并以部分唯一索引保证同一时刻最多一个未结束区间；只有恢复到 `resume_above_bytes` 以上才结束该区间（`ended_reason` 为 `resumed`），保护被配置关闭时以 `protection_disabled` 结束，两条路径都保留原始开区间证据供审计。
+- 保护生效期间 Report 仍完整校验、当前投影与 Report Receipt 照常写入，但可选的 metric history（Host/Node series）不再追加：每次被跳过的样本在同一 ingestion 事务内累加到 `capacity_skipped_series`（`scope_kind`/`scope_key`/`metric` 加 `skipped_count` 与首个/最近跳过时间戳），因此样本未落库与缺口已记账要么一起提交、要么一起回滚；记账失败会回滚整个 Report 并返回可重试的 503，历史因此不会静默丢失，也不会为了腾空间删除已有数据或降低精度。
+- 跳过只作用于可选 metric history 的追加。Block History、Receipt、LastGood 与 current projection 的语义不变，Receipt 的 samples/disposition 也不把跳过的可选样本算作已接受；可见缺口由 `capacity_skipped_series` 与 Admin capacity 面表达（见 docs/design/webui.md 第 15.11 节）。
+- 采样失败是 fail-open：保留当前 state 并记录 `sampling_error`，不因读不到 statvfs 就伪造缺口。重启时 `reconcile` 接管已打开的区间：仍低于 pause 阈值就继续保护，否则以 `resumed` 或 `protection_disabled` 结束。
+- Admin 通过 `GET /api/admin/v1/capacity`（Owner-only）看到带年龄的容量状态、最近区间与被跳过的序列；Doctor 的 storage 检查在保护生效时报 FAIL、未配置时报 NOT_CONFIGURED、采样异常报 WARNING；`/metrics`（独立内部监听器，主监听器按设计把该路径当作 not-found）暴露 `platpulse_capacity_total_bytes`、`platpulse_capacity_available_bytes`（未知时省略而不是写 0）与 `platpulse_capacity_paused`。
 
 ---
 

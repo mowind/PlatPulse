@@ -182,6 +182,79 @@ fn backup_residue(dir: &std::path::Path) -> std::io::Result<(u64, u64)> {
     Ok((count, bytes))
 }
 
+/// Report capacity and low-space protection as one Doctor check.
+///
+/// Doctor stays read-only here too: it reports the state the sampling worker
+/// last reached and never samples, deletes, or changes the policy. A
+/// deployment that did not enable the policy is not misconfigured, so it is
+/// reported as not configured rather than failed. A deployment that is paused
+/// fails, because the optional history it is not recording is the point of
+/// the policy. A policy whose transition could not be recorded warns, because
+/// the Operator has lost track of a change that did happen.
+fn storage_capacity_check(state: &AppState) -> DoctorCheck {
+    let capacity = state.capacity();
+    let status = capacity.status();
+    if !status.enabled {
+        return DoctorCheck {
+            check_id: "storage_capacity".to_owned(),
+            label: "Storage capacity".to_owned(),
+            status: STATUS_NOT_CONFIGURED,
+            detail: "low-space protection is disabled, so optional history is never paused"
+                .to_owned(),
+        };
+    }
+    if status.protected {
+        return DoctorCheck {
+            check_id: "storage_capacity".to_owned(),
+            label: "Storage capacity".to_owned(),
+            status: STATUS_FAIL,
+            detail: match &status.sample {
+                Some(sample) => format!(
+                    "optional history is paused with {} available on the state filesystem",
+                    human_bytes(sample.available_bytes)
+                ),
+                None => "optional history is paused because the state filesystem is short of space"
+                    .to_owned(),
+            },
+        };
+    }
+    if let Some(error) = &status.transition_error {
+        return DoctorCheck {
+            check_id: "storage_capacity".to_owned(),
+            label: "Storage capacity".to_owned(),
+            status: STATUS_WARNING,
+            detail: format!("the last capacity transition could not be recorded: {error}"),
+        };
+    }
+    match &status.sample {
+        Some(sample) => DoctorCheck {
+            check_id: "storage_capacity".to_owned(),
+            label: "Storage capacity".to_owned(),
+            status: STATUS_PASS,
+            detail: match capacity.config().pause_below_bytes() {
+                Some(floor) => format!(
+                    "{} available on the state filesystem, above the {} pause floor",
+                    human_bytes(sample.available_bytes),
+                    human_bytes(floor)
+                ),
+                None => format!(
+                    "{} available on the state filesystem",
+                    human_bytes(sample.available_bytes)
+                ),
+            },
+        },
+        None => DoctorCheck {
+            check_id: "storage_capacity".to_owned(),
+            label: "Storage capacity".to_owned(),
+            status: STATUS_WARNING,
+            detail: status
+                .sampling_error
+                .clone()
+                .unwrap_or_else(|| "the state filesystem could not be measured".to_owned()),
+        },
+    }
+}
+
 async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Error> {
     let mut checks = Vec::new();
     let pool = state.db().pool();
@@ -506,7 +579,12 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
         },
     });
 
-    // 12. Sensitive file discipline is a unix property; elsewhere skipped.
+    // 12. Capacity and low-space protection state (issue #212): the same
+    // state the Operations page shows, so an Operator reading Doctor is not
+    // left guessing why optional history stopped.
+    checks.push(storage_capacity_check(state));
+
+    // 13. Sensitive file discipline is a unix property; elsewhere skipped.
     #[cfg(unix)]
     {
         checks.push(DoctorCheck {

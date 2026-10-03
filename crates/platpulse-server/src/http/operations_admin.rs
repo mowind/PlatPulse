@@ -2281,6 +2281,185 @@ pub(crate) async fn doctor_run(
 }
 
 // ---------------------------------------------------------------------------
+// Capacity and low-space protection
+// ---------------------------------------------------------------------------
+
+/// One measurement of the filesystem that holds the Server state.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CapacitySampleDto {
+    /// The directory that was measured.
+    pub mount_path: String,
+    /// The filesystem size in bytes.
+    pub total_bytes: u64,
+    /// The bytes still available to the Server user.
+    pub available_bytes: u64,
+}
+
+/// One series whose optional history lost samples while protection was active.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CapacitySkippedSeriesDto {
+    /// Either "node" or "host".
+    pub scope_kind: String,
+    /// The node or agent identity the series belongs to.
+    pub scope_key: String,
+    /// The optional metric that was skipped.
+    pub metric: String,
+    /// How many samples were skipped.
+    pub skipped_count: i64,
+    /// The first skipped observation, in RFC 3339.
+    pub first_skipped_at: String,
+    /// The most recent skipped observation, in RFC 3339.
+    pub last_skipped_at: String,
+}
+
+/// One protection interval: why it opened, what was skipped, and, once the
+/// filesystem recovered, the measurement that closed it.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CapacityIntervalDto {
+    pub interval_id: String,
+    pub source_mount: String,
+    pub started_at: String,
+    pub started_reason: String,
+    pub opened_total_bytes: u64,
+    pub opened_available_bytes: u64,
+    pub pause_below_bytes: u64,
+    pub resume_above_bytes: u64,
+    /// Null while protection is still active.
+    pub ended_at: Option<String>,
+    /// "resumed" or "protection_disabled", null while active.
+    pub ended_reason: Option<String>,
+    pub resumed_total_bytes: Option<u64>,
+    pub resumed_available_bytes: Option<u64>,
+    pub updated_at: String,
+    /// Optional samples skipped during this interval, every series together.
+    pub skipped_sample_count: i64,
+    /// How many distinct series lost samples.
+    pub skipped_series_total: i64,
+    /// The series with the most skipped samples, bounded.
+    pub skipped_series: Vec<CapacitySkippedSeriesDto>,
+}
+
+/// Capacity visibility and low-space protection state for Operations.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CapacityOverview {
+    pub enabled: bool,
+    pub protected: bool,
+    /// Null when the policy is disabled, because nothing is invented in its place.
+    pub pause_below_bytes: Option<u64>,
+    pub resume_above_bytes: Option<u64>,
+    pub sample_interval_seconds: u64,
+    /// The configuration file the policy was read from.
+    pub policy_origin: Option<String>,
+    /// The directory that is measured, null when it cannot be resolved.
+    pub mount_path: Option<String>,
+    /// The newest measurement, null when sampling itself failed.
+    pub sample: Option<CapacitySampleDto>,
+    pub sampled_at: Option<String>,
+    pub sampling_error: Option<String>,
+    pub transition_error: Option<String>,
+    pub active_interval_id: Option<String>,
+    pub recent_intervals: Vec<CapacityIntervalDto>,
+}
+
+/// Capacity and low-space protection state (design section 11.4).
+///
+/// Read-only: it never changes the policy and never deletes anything. It
+/// samples the filesystem before answering so the Operator sees the current
+/// disk instead of one cadence old, and it records a transition with the same
+/// bookkeeping the sampling worker performs. A deployment that never enables
+/// the policy still gets a truthful answer: enabled is false and the
+/// thresholds are null rather than invented defaults.
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/capacity",
+    tag = "admin",
+    responses((status = 200, body = CapacityOverview), (status = 503, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn capacity_overview(
+    State(state): State<AppState>,
+    Extension(_principal): Extension<AuthenticatedSession>,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    let capacity = state.capacity();
+    // A refused transition is recorded on the status read below, so it still
+    // reaches the Operator; what it must not do is hide the measurement.
+    let _ = capacity.check_now(state.db().pool()).await;
+    let status = capacity.status();
+    let intervals = match crate::capacity::recent_intervals(
+        state.db().pool(),
+        crate::capacity::ADMIN_RECENT_INTERVAL_LIMIT,
+    )
+    .await
+    {
+        Ok(intervals) => intervals,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
+    let config = capacity.config();
+    Json(CapacityOverview {
+        enabled: status.enabled,
+        protected: status.protected,
+        pause_below_bytes: config.pause_below_bytes(),
+        resume_above_bytes: config.resume_above_bytes(),
+        sample_interval_seconds: config.sample_interval_seconds(),
+        policy_origin: config.origin().map(|path| path.display().to_string()),
+        mount_path: capacity.mount_path().map(|path| path.display().to_string()),
+        sample: status.sample.as_ref().map(|sample| CapacitySampleDto {
+            mount_path: sample.mount_path.display().to_string(),
+            total_bytes: sample.total_bytes,
+            available_bytes: sample.available_bytes,
+        }),
+        sampled_at: status.sampled_at.clone(),
+        sampling_error: status.sampling_error.clone(),
+        transition_error: status.transition_error.clone(),
+        active_interval_id: status.active_interval_id.clone(),
+        recent_intervals: intervals.into_iter().map(capacity_interval_dto).collect(),
+    })
+    .into_response()
+}
+
+fn capacity_interval_dto(record: crate::capacity::CapacityIntervalRecord) -> CapacityIntervalDto {
+    CapacityIntervalDto {
+        interval_id: record.interval_id,
+        source_mount: record.source_mount,
+        started_at: record.started_at,
+        started_reason: record.started_reason,
+        opened_total_bytes: record.opened_total_bytes,
+        opened_available_bytes: record.opened_available_bytes,
+        pause_below_bytes: record.pause_below_bytes,
+        resume_above_bytes: record.resume_above_bytes,
+        ended_at: record.ended_at,
+        ended_reason: record.ended_reason,
+        resumed_total_bytes: record.resumed_total_bytes,
+        resumed_available_bytes: record.resumed_available_bytes,
+        updated_at: record.updated_at,
+        skipped_sample_count: record.skipped_sample_count,
+        skipped_series_total: record.skipped_series_total,
+        skipped_series: record
+            .skipped_series
+            .into_iter()
+            .map(|series| CapacitySkippedSeriesDto {
+                scope_kind: series.scope_kind,
+                scope_key: series.scope_key,
+                metric: series.metric,
+                skipped_count: series.skipped_count,
+                first_skipped_at: series.first_skipped_at,
+                last_skipped_at: series.last_skipped_at,
+            })
+            .collect(),
+    }
+}
+// ---------------------------------------------------------------------------
 // Shared mutation plumbing
 // ---------------------------------------------------------------------------
 
@@ -2379,6 +2558,7 @@ pub fn router() -> Router<AppState> {
         .route("/restore/validate", axum::routing::post(restore_validate))
         .route("/restore", axum::routing::post(restore_submit))
         .route("/doctor", get(doctor_overview).post(doctor_run))
+        .route("/capacity", get(capacity_overview))
 }
 
 // ---------------------------------------------------------------------------
@@ -3587,6 +3767,13 @@ mod tests {
         assert!(statuses.contains("warning")); // backup dir missing at this point
         assert!(statuses.contains("not_configured")); // no notification channels
         assert!(statuses.contains("skipped")); // no backup artifact yet
+        // Capacity protection is reported here as well, in the disabled shape a
+        // deployment without the policy truthfully has.
+        let capacity = checks
+            .iter()
+            .find(|check| check["checkId"] == "storage_capacity")
+            .expect("the capacity check is part of every run");
+        assert_eq!(capacity["status"], "not_configured");
         // The run itself never writes business data.
         let audits: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_events")
             .fetch_one(pool)
@@ -3644,6 +3831,159 @@ mod tests {
         assert!(body["currentRun"].is_null());
         assert_eq!(body["lastRun"]["status"], "succeeded_with_warnings");
         assert!(!body["checks"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn doctor_fails_the_storage_capacity_check_while_history_is_paused() {
+        let (_dir, state) = test_state().await;
+        let capacity = forced_capacity(&state);
+        capacity.check_now(state.db().pool()).await.unwrap();
+        let state = state.with_capacity(capacity);
+        let response = doctor_run(
+            State(state.clone()),
+            mutation_headers(),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        while crate::operations::process_operations(&state).await.unwrap() > 0 {}
+        let body = body_json(
+            doctor_overview(
+                State(state.clone()),
+                Extension(session()),
+                Extension(request_id()),
+            )
+            .await,
+        )
+        .await;
+        let checks = body["checks"].as_array().unwrap();
+        let capacity = checks
+            .iter()
+            .find(|check| check["checkId"] == "storage_capacity")
+            .expect("the capacity check is part of every run");
+        assert_eq!(capacity["status"], "fail");
+        assert!(
+            capacity["detail"]
+                .as_str()
+                .unwrap()
+                .contains("optional history is paused")
+        );
+        // A failed check never reports a clean run.
+        assert_eq!(body["lastRun"]["status"], "succeeded_with_warnings");
+    }
+
+    /// Force protection with a floor no filesystem reaches: the same policy
+    /// shape an Operator configures, set high enough to guarantee pressure.
+    fn forced_capacity(state: &AppState) -> std::sync::Arc<crate::capacity::CapacityProtection> {
+        let config = crate::capacity::CapacityConfig::from_declared(
+            true,
+            Some(crate::capacity::CapacityConfig::MAX_PERSISTED_BYTES),
+            Some(crate::capacity::CapacityConfig::MAX_PERSISTED_BYTES),
+            None,
+            None,
+        )
+        .unwrap();
+        std::sync::Arc::new(crate::capacity::CapacityProtection::new(
+            config,
+            Some(state.db().path()),
+        ))
+    }
+
+    #[tokio::test]
+    async fn capacity_overview_reports_a_disabled_policy_without_inventing_thresholds() {
+        let (dir, state) = test_state().await;
+        let response = capacity_overview(
+            State(state.clone()),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["enabled"], false);
+        assert_eq!(body["protected"], false);
+        // A disabled policy has no floor to report, so it reports none.
+        assert!(body["pauseBelowBytes"].is_null());
+        assert!(body["resumeAboveBytes"].is_null());
+        assert!(body["policyOrigin"].is_null());
+        assert!(body["activeIntervalId"].is_null());
+        assert!(body["recentIntervals"].as_array().unwrap().is_empty());
+        // The measurement is still real: the Operator sees the mount and its size.
+        assert!(body["sample"]["totalBytes"].as_u64().unwrap() > 0);
+        assert!(
+            body["sample"]["availableBytes"].as_u64().unwrap()
+                <= body["sample"]["totalBytes"].as_u64().unwrap()
+        );
+        assert_eq!(
+            body["sample"]["mountPath"].as_str().unwrap(),
+            dir.path().display().to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn capacity_overview_surfaces_protection_and_the_visible_gap() {
+        let (_dir, state) = test_state().await;
+        let capacity = forced_capacity(&state);
+        capacity.check_now(state.db().pool()).await.unwrap();
+        let interval_id = capacity
+            .status()
+            .active_interval_id
+            .expect("the forced floor opens an interval");
+        let state = state.with_capacity(capacity.clone());
+
+        // One optional series, skipped twice inside the ingestion transaction.
+        let mut tx = state.db().pool().begin().await.unwrap();
+        for observed_at in ["2026-08-12T00:00:00Z", "2026-08-12T00:01:00Z"] {
+            crate::capacity::record_skipped_series(
+                &mut tx,
+                &interval_id,
+                crate::capacity::SkippedScope::Node,
+                "node-a",
+                "process_cpu_percent",
+                observed_at,
+            )
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+
+        let response = capacity_overview(
+            State(state.clone()),
+            Extension(session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["enabled"], true);
+        assert_eq!(body["protected"], true);
+        assert_eq!(body["activeIntervalId"], interval_id);
+        assert_eq!(
+            body["pauseBelowBytes"],
+            crate::capacity::CapacityConfig::MAX_PERSISTED_BYTES
+        );
+        let intervals = body["recentIntervals"].as_array().unwrap();
+        assert_eq!(intervals.len(), 1);
+        let interval = &intervals[0];
+        assert_eq!(interval["startedReason"], "low_space");
+        assert!(interval["endedAt"].is_null());
+        assert_eq!(interval["skippedSampleCount"], 2);
+        assert_eq!(interval["skippedSeriesTotal"], 1);
+        assert_eq!(interval["skippedSeries"][0]["scopeKind"], "node");
+        assert_eq!(interval["skippedSeries"][0]["scopeKey"], "node-a");
+        assert_eq!(
+            interval["skippedSeries"][0]["metric"],
+            "process_cpu_percent"
+        );
+        assert_eq!(
+            interval["skippedSeries"][0]["firstSkippedAt"],
+            "2026-08-12T00:00:00Z"
+        );
+        assert_eq!(
+            interval["skippedSeries"][0]["lastSkippedAt"],
+            "2026-08-12T00:01:00Z"
+        );
     }
 
     #[tokio::test]
