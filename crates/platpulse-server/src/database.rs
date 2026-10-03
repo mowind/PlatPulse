@@ -21,7 +21,7 @@ use thiserror::Error;
 pub static SERVER_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Server binary.
-pub const SERVER_SCHEMA_VERSION: i64 = 66;
+pub const SERVER_SCHEMA_VERSION: i64 = 67;
 
 /// The Server currently serializes all SQLite operations through one pool
 /// connection. Read scaling can be added with a concrete query need; it is
@@ -88,6 +88,7 @@ const REQUIRED_TABLES: &[&str] = &[
     "capacity_protection_intervals",
     "capacity_skipped_series",
     "node_metric_series_state",
+    "node_metric_aggregates",
 ];
 
 /// Connection settings for the Server database.
@@ -845,6 +846,79 @@ mod tests {
             .unwrap();
         assert_eq!(disabled.provider, crate::geo::GeoProvider::Disabled);
         assert_eq!(disabled.generation, 1);
+    }
+
+    /// Issue #214: before the aggregate tiers existed the retention catalog
+    /// declared one_minute_aggregate as a family that was never produced, and
+    /// the seeding wrote its placeholder row (90 days, unsupported) on every
+    /// database. Pinned to the schema immediately before migration 0067 so the
+    /// upgrade path is exercised: the never-produced placeholder becomes the
+    /// delivered 7-day tier contract, and so does a row an Owner had pointed at
+    /// one of the old invented windows. The 1-minute tier is served for exactly
+    /// [now - 7d, now - 24h], so a stored 30-day window is not a setting the
+    /// Server can honour - it is only a licence for the cleanup to retain
+    /// unreachable buckets - and the edit stays visible in audit_events instead.
+    #[tokio::test]
+    async fn aggregate_tier_migration_aligns_the_never_produced_policy_placeholder() {
+        // The schema immediately before the aggregate tiers (0067). Deriving it
+        // from SERVER_SCHEMA_VERSION would silently start this test one
+        // migration later instead of exercising 0067's upgrade path.
+        const SCHEMA_BEFORE_AGGREGATE_TIERS: i64 = 66;
+
+        async fn upgraded(
+            directory: &tempfile::TempDir,
+            retention_days: i64,
+            updated_by: &str,
+        ) -> ServerDatabase {
+            let path = directory.path().join("server.db");
+            let pool = SqlitePoolOptions::new()
+                .max_connections(SERVER_WRITE_CONNECTIONS)
+                .connect_with(sqlite_options(&config(&path), true))
+                .await
+                .unwrap();
+            migrations_through(SCHEMA_BEFORE_AGGREGATE_TIERS)
+                .run(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES ('one_minute_aggregate', ?, 7, 365, 0, 1, '2026-01-01T00:00:00Z', ?)",
+            )
+            .bind(retention_days)
+            .bind(updated_by)
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+            ServerDatabase::open(config(&path)).await.unwrap()
+        }
+
+        async fn policy(database: &ServerDatabase) -> (i64, i64, i64, i64) {
+            sqlx::query_as(
+                "SELECT retention_days, min_days, max_days, supported FROM retention_policies WHERE family = 'one_minute_aggregate'",
+            )
+            .fetch_one(database.pool())
+            .await
+            .unwrap()
+        }
+
+        // The untouched placeholder: the upgrade registers the tier it now
+        // really produces, with its own fixed window.
+        let untouched = tempdir().unwrap();
+        let database = upgraded(&untouched, 90, "defaults").await;
+        assert_eq!(
+            database.schema_version().await.unwrap(),
+            SERVER_SCHEMA_VERSION
+        );
+        assert_eq!(policy(&database).await, (7, 7, 7, 1));
+        database.close().await;
+
+        // An Owner who had set the old window is normalised too: the tier's
+        // window is its contract, and the value that was edited was one of the
+        // placeholders invented for a family the Server did not produce yet.
+        let edited = tempdir().unwrap();
+        let database = upgraded(&edited, 30, "00000000-0000-4000-8000-000000000001").await;
+        assert_eq!(policy(&database).await, (7, 7, 7, 1));
+        database.close().await;
     }
 
     #[tokio::test]

@@ -533,6 +533,7 @@ export async function fetchAdminNodeMetricHistory(
   metric: string,
   from: string,
   to: string,
+  before?: string,
   signal?: AbortSignal,
 ): Promise<AdminNodeMetricHistory> {
   return requestAdmin(
@@ -542,7 +543,15 @@ export async function fetchAdminNodeMetricHistory(
         // Ask for the largest answer the Server carries: the bound is the
         // Server's own (MAX_SAMPLE_LIMIT), so a dense window is narrowed by
         // policy rather than by this request asking for less than it could get.
-        query: { metric, from, to, limit: METRIC_HISTORY_SAMPLE_LIMIT },
+        // The cursor is exclusive and comes from the Server's own answer, so an
+        // older page never repeats a point and never skips one (issue #214).
+        query: {
+          metric,
+          from,
+          to,
+          limit: METRIC_HISTORY_SAMPLE_LIMIT,
+          ...(before ? { before } : {}),
+        },
         signal,
       }),
     'Unable to load the Node metric history',
@@ -564,10 +573,15 @@ export function useAdminNodeMetricHistory(
   metric: string,
   from: string,
   to: string,
+  before?: string,
 ) {
   return useQuery({
-    queryKey: [...adminKeys.nodeMetricHistory(nodeId, metric, from, to), generation],
-    queryFn: ({ signal }) => fetchAdminNodeMetricHistory(nodeId, metric, from, to, signal),
+    queryKey: [
+      ...adminKeys.nodeMetricHistory(nodeId, metric, from, to),
+      before ?? 'newest',
+      generation,
+    ],
+    queryFn: ({ signal }) => fetchAdminNodeMetricHistory(nodeId, metric, from, to, before, signal),
     // No placeholder: another Node's or another range's samples must never
     // render under this series.
     enabled: nodeId.length > 0 && metric.length > 0 && from.length > 0 && to.length > 0,

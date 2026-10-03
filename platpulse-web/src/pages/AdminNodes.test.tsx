@@ -485,9 +485,21 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
     availability: null,
     rawRetentionDays: 1,
     grain: 'raw',
-    aggregateSupported: false,
+    aggregateSupported: true,
+    historyHorizonDays: 30,
     windowSeconds: 86400,
     truncated: false,
+    continuation: null,
+    segments: [
+      {
+        from: canonical(-24 * HOUR),
+        to: canonical(0),
+        grain: 'raw',
+        source: 'raw',
+        pointCount: 3,
+        truncated: false,
+      },
+    ],
     series: {
       observed: true,
       firstObservedAt: canonical(-26 * HOUR),
@@ -503,9 +515,9 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
       latestClockSuspect: false,
     },
     items: [
-      { observedAt: canonical(-3 * HOUR), receivedAt: canonical(-3 * HOUR + 1000), value: 2.5, delaySeconds: 1, clockSuspect: false },
-      { observedAt: canonical(-2 * HOUR), receivedAt: canonical(-2 * HOUR + 1000), value: 2.5, delaySeconds: 1, clockSuspect: false },
-      { observedAt: canonical(-1 * HOUR), receivedAt: canonical(-1 * HOUR + 120_000), value: 2.5, delaySeconds: 120, clockSuspect: true, clockNote: 'the observation is stamped 6s after the Server received it: the Agent clock is ahead' },
+      { observedAt: canonical(-3 * HOUR), receivedAt: canonical(-3 * HOUR + 1000), value: 2.5, grain: 'raw', source: 'raw', minValue: 2.5, maxValue: 2.5, sampleCount: 1, lastObservedAt: canonical(-3 * HOUR), delaySeconds: 1, clockSuspect: false },
+      { observedAt: canonical(-2 * HOUR), receivedAt: canonical(-2 * HOUR + 1000), value: 2.5, grain: 'raw', source: 'raw', minValue: 2.5, maxValue: 2.5, sampleCount: 1, lastObservedAt: canonical(-2 * HOUR), delaySeconds: 1, clockSuspect: false },
+      { observedAt: canonical(-1 * HOUR), receivedAt: canonical(-1 * HOUR + 120_000), value: 2.5, grain: 'raw', source: 'raw', minValue: 2.5, maxValue: 2.5, sampleCount: 1, lastObservedAt: canonical(-1 * HOUR), delaySeconds: 120, clockSuspect: true, clockNote: 'the observation is stamped 6s after the Server received it: the Agent clock is ahead' },
     ],
     gaps: [
       {
@@ -527,6 +539,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
       metric: 'data_directory_percent',
       items: [],
       gaps: [],
+      segments: [],
       series: {
         observed: false,
         firstObservedAt: null,
@@ -596,6 +609,17 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
     // Per-sample timing evidence stays attached to its own observation.
     expect(screen.getByText(/stamped 6s after the Server received it/)).toBeTruthy()
 
+    // The answer says which tier answered what, and how far back evidence can
+    // exist at all: the horizon outlives the raw window.
+    expect(screen.getByText('Tiers in this answer')).toBeTruthy()
+    expect(screen.getByText(/stored samples · 3 points/)).toBeTruthy()
+    expect(screen.getByText(/Investigation horizon/)).toBeTruthy()
+    expect(screen.getByText(/30 days · older stretches are answered by buckets/)).toBeTruthy()
+    // A raw-only answer explains no tiers and offers no older page.
+    expect(document.querySelector('[data-slot="metric-history-tiers"]')).toBeNull()
+    expect(document.querySelector('[data-slot="metric-history-bucket"]')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Load older points' })).toBeNull()
+
     // Another series this Node never reported is named as absent: no chart,
     // no zero line.
     fireEvent.change(screen.getByLabelText('Metric series'), {
@@ -604,6 +628,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
     expect(await screen.findByText(/never reported Data directory/)).toBeTruthy()
     expect(document.querySelector('[data-slot="metric-history-chart"]')).toBeNull()
     expect(document.querySelector('[data-slot="metric-history-gap-band"]')).toBeNull()
+    expect(document.querySelector('[data-slot="metric-history-segments"]')).toBeNull()
   })
 
 it('reports a sample stamped after its receipt as ahead of receipt, and keeps an isolated spike visible', async () => {
@@ -665,13 +690,25 @@ it('reports a sample stamped after its receipt as ahead of receipt, and keeps an
     expect(newest).toBeLessThan(bottom)
     expect(whisker?.getAttribute('x1')).toBe(whisker?.getAttribute('x2'))
   })
-  it('reports a range the raw window no longer holds, and a truncated answer, without faking samples', async () => {
+  it('reports a range the raw window no longer holds, and pages an older answer without faking samples', async () => {
     let call = 0
+    const olderCalls: string[] = []
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
         jsonResponse(NODE_A_DETAIL, 200),
-      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/metric-history*': () => {
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/metric-history*': (request) => {
+        if (request.url.includes('before=')) {
+          olderCalls.push(request.url)
+          return jsonResponse(
+            metricHistoryFixture({
+              to: canonical(-90 * MINUTE),
+              truncated: false,
+              continuation: null,
+            }),
+            200,
+          )
+        }
         call += 1
         if (call === 1) {
           return jsonResponse(
@@ -689,14 +726,21 @@ it('reports a sample stamped after its receipt as ahead of receipt, and keeps an
             200,
           )
         }
-        return jsonResponse(metricHistoryFixture({ truncated: true, windowSeconds: 3600 }), 200)
+        return jsonResponse(
+          metricHistoryFixture({
+            truncated: true,
+            windowSeconds: 3600,
+            continuation: canonical(-90 * MINUTE),
+          }),
+          200,
+        )
       },
     })
     renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
 
     await screen.findByRole('heading', { level: 1, name: /Node A/ })
     expect(
-      await screen.findByText(/entirely older than the retained raw window/),
+      await screen.findByText(/entirely older than the investigation horizon/),
     ).toBeTruthy()
     expect(screen.getByText(/no stored sample falls inside this window/)).toBeTruthy()
     expect(document.querySelector('[data-slot="metric-history-chart"]')).toBeNull()
@@ -706,6 +750,283 @@ it('reports a sample stamped after its receipt as ahead of receipt, and keeps an
     fireEvent.click(screen.getByRole('button', { name: '1 hour' }))
     expect(await screen.findByText(/more samples than one answer carries/)).toBeTruthy()
     expect(call).toBeGreaterThan(1)
+
+    // The Server names the coordinate to continue from, and the panel asks for
+    // exactly that one: a full stretch is never pretended to fit one answer.
+    fireEvent.click(await screen.findByRole('button', { name: 'Load older points' }))
+    await waitFor(() => {
+      expect(olderCalls.length).toBeGreaterThan(0)
+    })
+    expect(decodeURIComponent(olderCalls[0])).toContain('before=' + canonical(-90 * MINUTE))
+    expect(await screen.findByText(/An older page/)).toBeTruthy()
+    expect(screen.getByText(/No point is skipped between two pages/)).toBeTruthy()
+    // Returning to the newest points drops the cursor rather than keeping it.
+    fireEvent.click(screen.getByRole('button', { name: 'Return to the newest points' }))
+    expect(await screen.findByRole('button', { name: 'Load older points' })).toBeTruthy()
+  })
+
+  it('pages twice into an older answer while the Server reports it truncated, and returns to the newest points', async () => {
+    // The Server names each answer's own oldest instant as the exclusive
+    // coordinate the next older page continues from.
+    const newestOldest = canonical(-30 * MINUTE)
+    const secondPageOldest = canonical(-120 * MINUTE)
+    const thirdPageOldest = canonical(-210 * MINUTE)
+    const requested: (string | null)[] = []
+    const olderRequests = () => requested.filter((value) => value !== null)
+    // The chart's axis labels carry percent text of their own, so which page is
+    // on screen is read from the newest-observations table alone.
+    const sampleText = () =>
+      document.querySelector('[data-slot="metric-history-samples"]')?.textContent ?? ''
+    const observedLabel = (instant: string) => instant.slice(0, 19).replace('T', ' ')
+    const page = (
+      to: string,
+      continuation: string | null,
+      truncated: boolean,
+      observedAt: string,
+      value: number,
+    ) =>
+      metricHistoryFixture({
+        to,
+        truncated,
+        continuation,
+        items: [
+          {
+            observedAt,
+            receivedAt: observedAt,
+            value,
+            grain: 'raw',
+            source: 'raw',
+            minValue: value,
+            maxValue: value,
+            sampleCount: 1,
+            lastObservedAt: observedAt,
+            delaySeconds: 1,
+            clockSuspect: false,
+          },
+        ],
+      })
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(NODE_A_DETAIL, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/metric-history*': (request) => {
+        const before = new URL(request.url).searchParams.get('before')
+        requested.push(before)
+        if (before === newestOldest) {
+          return jsonResponse(page(newestOldest, secondPageOldest, true, secondPageOldest, 33.4), 200)
+        }
+        if (before === secondPageOldest) {
+          return jsonResponse(page(secondPageOldest, null, false, thirdPageOldest, 66.4), 200)
+        }
+        if (before !== null) return jsonResponse({ error: { code: 'not_found' } }, 404)
+        return jsonResponse(page(canonical(0), newestOldest, true, newestOldest, 2.5), 200)
+      },
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    // The newest window answers for itself alone: it is truncated, so it carries
+    // the way into the older pages beside that notice.
+    expect(await screen.findByText(/more samples than one answer carries/)).toBeTruthy()
+    await waitFor(() => {
+      expect(sampleText()).toContain('2.5%')
+    })
+    expect(sampleText()).toContain(observedLabel(newestOldest))
+    expect(requested[0]).toBeNull()
+
+    // First page older: the coordinate is the oldest instant of the newest
+    // answer, and the way further back stays available.
+    fireEvent.click(screen.getByRole('button', { name: 'Load older points' }))
+    await waitFor(() => {
+      expect(olderRequests()).toHaveLength(1)
+    })
+    expect(olderRequests()[0]).toBe(newestOldest)
+    await waitFor(() => {
+      expect(sampleText()).toContain('33%')
+    })
+    expect(sampleText()).toContain(observedLabel(secondPageOldest))
+    expect(sampleText()).not.toContain('2.5%')
+    expect(screen.getByText(/No point is skipped between two pages/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Return to the newest points' })).toBeTruthy()
+
+    // Second page older: the cursor is that answer's own oldest instant, so the
+    // panel walks further back instead of resetting to the newest window.
+    fireEvent.click(screen.getByRole('button', { name: 'Load older points' }))
+    await waitFor(() => {
+      expect(olderRequests()).toHaveLength(2)
+    })
+    expect(olderRequests()[1]).toBe(secondPageOldest)
+    await waitFor(() => {
+      expect(sampleText()).toContain('66%')
+    })
+    expect(sampleText()).toContain(observedLabel(thirdPageOldest))
+    expect(sampleText()).not.toContain('33%')
+    // This answer holds everything left, so there is no further page to ask for
+    // while the newest window is still one click away.
+    expect(screen.queryByRole('button', { name: 'Load older points' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Return to the newest points' }))
+    await waitFor(() => {
+      expect(sampleText()).toContain('2.5%')
+    })
+    expect(sampleText()).toContain(observedLabel(newestOldest))
+    expect(sampleText()).not.toContain('66%')
+    expect(screen.getByRole('button', { name: 'Load older points' })).toBeTruthy()
+    // Returning drops the cursor; it never asks the Server for another page.
+    expect(olderRequests()).toHaveLength(2)
+  })
+
+  it('names the tier behind each stretch and never calls a bucket a sample', async () => {
+    const bucketStart = new Date(Math.floor((Date.now() - 29 * 24 * HOUR) / MINUTE) * MINUTE)
+      .toISOString()
+      .replace(/\.\d{3}Z$/, 'Z')
+    const bucket = {
+      observedAt: bucketStart,
+      receivedAt: canonical(-29 * 24 * HOUR + 5000),
+      value: 42.5,
+      grain: '1m',
+      source: 'aggregate',
+      minValue: 7,
+      maxValue: 88.5,
+      sampleCount: 6,
+      lastObservedAt: new Date(Date.parse(bucketStart) + 4 * MINUTE)
+        .toISOString()
+        .replace(/\.\d{3}Z$/, 'Z'),
+      delaySeconds: 5,
+      clockSuspect: false,
+    }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(NODE_A_DETAIL, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/metric-history*': () =>
+        jsonResponse(
+          metricHistoryFixture({
+            from: canonical(-30 * 24 * HOUR),
+            requestedFrom: canonical(-30 * 24 * HOUR),
+            grain: '1m',
+            windowSeconds: 30 * 86400,
+            items: [metricHistoryFixture().items[0], bucket],
+            segments: [
+              {
+                from: canonical(-30 * 24 * HOUR),
+                to: canonical(-24 * HOUR),
+                grain: '1m',
+                source: 'aggregate',
+                pointCount: 1440,
+                truncated: false,
+              },
+              {
+                from: canonical(-24 * HOUR),
+                to: canonical(0),
+                grain: 'raw',
+                source: 'raw',
+                pointCount: 1,
+                truncated: false,
+              },
+            ],
+          }),
+          200,
+        ),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    // The answer, not the static panel heading: wait for evidence the tiers
+    // were read. Which tier answered which stretch, and what a bucket is worth,
+    // so a bucket never reads as one stored sample.
+    expect(await screen.findByText(/1 minute buckets · 1440 points/)).toBeTruthy()
+    expect(screen.getByText(/answered by 1 minute buckets/)).toBeTruthy()
+    expect(screen.getByText('Tiers in this answer')).toBeTruthy()
+    expect(screen.getByText(/stored samples · 1 point/)).toBeTruthy()
+    expect(screen.getByText(/30 days · older stretches are answered by buckets/)).toBeTruthy()
+
+    // The newest-points table names the grain, the counted evidence, and the
+    // range the bucket kept.
+    expect(screen.getByText('1 minute bucket')).toBeTruthy()
+    expect(screen.getByText(/6 observations over 4 minutes/)).toBeTruthy()
+    // The counted maximum of the bucket is on screen: the spike the Server kept
+    // is visible even though the bucket is drawn as one marker (the percent
+    // formatter drops the fraction above ten, so 88.5 reads as 89).
+    expect(screen.getByText(/7\.0% to 89%/)).toBeTruthy()
+    const chart = document.querySelector('[data-slot="metric-history-chart"]')
+    expect(chart?.getAttribute('aria-label')).toContain('at 1 minute grain')
+
+    // A bucket is drawn as a square marker, and the plot says what it stands for.
+    expect(
+      document.querySelectorAll('[data-slot="metric-history-bucket"]').length,
+    ).toBeGreaterThan(0)
+    // The legend explains the square markers (the chart description says the
+    // same thing, so the legend is named rather than searched for by text).
+    expect(
+      document.querySelector('[data-slot="metric-history-buckets"]')?.textContent,
+    ).toContain('are aggregate buckets')
+  })
+
+  it('breaks the drawn line at a bucket whose own evidence proved a hole, and says so', async () => {
+    // Four 1 minute buckets one minute apart, the third of which measured a
+    // five minute interval between two of its own observations. The Server kept
+    // the evidence that the stretch it stands for was not continuous, so the
+    // plot must not join it to either neighbour and the table must not call it
+    // a closed stretch.
+    const bucket = (offsetMs: number, value: number, gapSeconds: number) => ({
+      observedAt: canonical(offsetMs),
+      receivedAt: canonical(offsetMs + 5000),
+      value,
+      grain: '1m',
+      source: 'aggregate',
+      minValue: value - 1,
+      maxValue: value + 1,
+      sampleCount: 60,
+      firstObservedAt: canonical(offsetMs),
+      lastObservedAt: canonical(offsetMs + 59_000),
+      maxGapSeconds: gapSeconds,
+      delaySeconds: 5,
+      clockSuspect: false,
+    })
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(NODE_A_DETAIL, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/metric-history*': () =>
+        jsonResponse(
+          metricHistoryFixture({
+            from: canonical(-1 * HOUR),
+            to: canonical(0),
+            requestedFrom: canonical(-1 * HOUR),
+            grain: '1m',
+            windowSeconds: 3600,
+            gaps: [],
+            items: [
+              bucket(-4 * MINUTE, 10, 1),
+              bucket(-3 * MINUTE, 20, 1),
+              bucket(-2 * MINUTE, 30, 300),
+              bucket(-1 * MINUTE, 40, 1),
+            ],
+          }),
+          200,
+        ),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    // The per-point copy names what the bucket measured and refuses to call the
+    // stretch closed.
+    const hole = await screen.findByText(/the widest measured interval inside it is 5 minutes/)
+    expect(hole.getAttribute('data-slot')).toBe('metric-history-hole')
+    expect(hole.textContent).toContain('so no line is drawn across it')
+    // Every bucket is drawn, and only the one that proved a hole carries the
+    // mark that says so.
+    expect(document.querySelectorAll('[data-slot="metric-history-bucket"]').length).toBe(4)
+    expect(
+      document.querySelectorAll('[data-slot="metric-history-bucket"][data-hole="proved"]').length,
+    ).toBe(1)
+
+    // The columns on either side of the holed bucket are not joined across it:
+    // one stretch of the two columns before it, and the column after it stands
+    // alone (three joined points would be one line of four columns).
+    const lines = Array.from(document.querySelectorAll('[data-slot="metric-history-line"]'))
+    expect(lines.length).toBe(1)
+    expect(lines[0].getAttribute('d')?.match(/L/g)?.length).toBe(1)
+    expect(
+      document.querySelector('[data-slot="metric-history-buckets"]')?.textContent,
+    ).toContain('1 of them measured a hole inside their own stretch')
   })
 
   it('keeps a failed metric history load actionable without inventing a series', async () => {

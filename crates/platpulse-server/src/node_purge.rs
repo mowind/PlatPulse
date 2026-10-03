@@ -63,6 +63,11 @@ pub struct NodePurgeCounts {
     /// Series ledger rows: what each metric series observed (issue #213). They
     /// carry no metric value and are Node-owned history.
     pub metric_series_state: i64,
+    /// Aggregate bucket rows: the extremes, the count and the newest value the
+    /// observations of one series proved beyond the raw window (issue #214).
+    /// They are Node-owned history in the same sense as the samples they
+    /// summarize, and a Purge removes them with the Node.
+    pub metric_aggregates: i64,
     /// Node-scoped gap evidence recorded while optional history was paused.
     pub capacity_skipped_series: i64,
     pub validator_links: i64,
@@ -96,6 +101,7 @@ impl NodePurgeCounts {
         self.observed_network_heads += other.observed_network_heads;
         self.metric_samples += other.metric_samples;
         self.metric_series_state += other.metric_series_state;
+        self.metric_aggregates += other.metric_aggregates;
         self.capacity_skipped_series += other.capacity_skipped_series;
         self.validator_links += other.validator_links;
         self.validator_identity_status += other.validator_identity_status;
@@ -126,6 +132,7 @@ impl NodePurgeCounts {
             + self.observed_network_heads
             + self.metric_samples
             + self.metric_series_state
+            + self.metric_aggregates
             + self.capacity_skipped_series
             + self.validator_links
             + self.validator_identity_status
@@ -215,6 +222,7 @@ pub async fn measure(
         observed_network_heads: count(connection, "observed_network_heads", &node_id).await?,
         metric_samples: count(connection, "node_metric_samples", &node_id).await?,
         metric_series_state: count(connection, "node_metric_series_state", &node_id).await?,
+        metric_aggregates: count(connection, "node_metric_aggregates", &node_id).await?,
         capacity_skipped_series: count_where(
             connection,
             "capacity_skipped_series",
@@ -332,9 +340,11 @@ pub async fn remove(connection: &mut SqliteConnection, node_id: &str) -> Result<
         "block_history_gaps",
         "chain_divergence_observations",
         "observed_network_heads",
-        // Metric samples and the series ledger behind them.
+        // Metric samples, the series ledger behind them, and the aggregate
+        // buckets that summarize what they proved beyond the raw window.
         "node_metric_samples",
         "node_metric_series_state",
+        "node_metric_aggregates",
         // Node Validator Links, automatic-identity status, and management history.
         "node_validator_identity_status",
         "node_validator_links",

@@ -23,6 +23,12 @@ extrapolated into a guarantee: the report window is compressed in wall time
 (backdated observation instants on real ingestions), and Agent-side collection
 is not measured.
 
+The aggregate tiers issue #214 added are exercised by the last phase of the same
+run: a declared thirty day hourly history is seeded through the same ingestion
+path for one fresh Node, so the one minute and five minute rows, the answers they
+serve and the cleanup that releases them are measured against what the Server
+counted rather than against what it can still hold.
+
 Usage:
     python3 scripts/metric-history-baseline.py --output-root target/metric-history-baseline
 """
@@ -529,6 +535,90 @@ PLAN_CLIFF_GUARD_SECONDS = 600
 # the read default. A run with a different --hours still writes into this same
 # 24 hour window.
 SERVER_RAW_RETENTION_SECONDS = 86400
+# How far back any tier answers at all, which is what the read path calls
+# "availability" since issue #214: crates/platpulse-server/src/metric_history.rs:141
+# declares FIVE_MINUTE_MAX_AGE_DAYS = 30 for the 5 minute tier, and
+# crates/platpulse-server/src/http/admin.rs:4643-4649 decides availability from
+# now - that many days alone. Issue #213 measured the same field against the raw
+# window's cutoff instead, so a range the 24 hour Server called unavailable is
+# answerable now.
+SERVER_HISTORY_HORIZON_DAYS = 30
+
+# -- the aggregate tiers (issue #214) -------------------------------------
+#
+# Facts under test, read from the tree when this run was written:
+#   * crates/platpulse-server/migrations/0067_node_metric_aggregates.sql creates
+#     node_metric_aggregates keyed (node_id, metric, grain_seconds, bucket_start)
+#     with grain_seconds in (60, 300), bucket_start on the UTC-aligned start of
+#     the bucket, sample_count/min_value/max_value/last_value and the observation
+#     instants, plus the expiry index (grain_seconds, bucket_start). A bucket row
+#     exists only when at least one observation arrived in it, so an empty bucket
+#     is absent rather than zero.
+#   * crates/platpulse-server/src/metric_history.rs:892 records both grains for
+#     every observation the Server accepted as new, whether or not the raw window
+#     stored it: the 1 minute tier answers day 7 up to the raw cutoff and the 5
+#     minute tier day 30 up to day 7 (:1064-1066), and nothing is re-derived at
+#     read time, so zooming an old stretch can never recover a raw sample.
+#   * crates/platpulse-server/src/retention.rs:224 bounds one tier cleanup at
+#     AGGREGATE_CLEANUP_BATCH = 2048 rows; :237 deletes grain_seconds = 60 buckets
+#     below the 7 day window and :247 grain_seconds = 300 buckets below the 30 day
+#     one, and the pass runs after every accepted Report
+#     (crates/platpulse-server/src/http/report_ingestion.rs:3116).
+TIER_REPORTS = 720
+TIER_CADENCE_SECONDS = 3600
+TIER_SPAN_SECONDS = (TIER_REPORTS - 1) * TIER_CADENCE_SECONDS
+# The newest instant is half an hour old, so the Server's moving raw cutoff
+# (now - 24 hours) and both tier floors (now - 7 days, now - 30 days) pass no
+# grid instant for the whole phase: the set a read sees stays still while the
+# phase, its paging walk and its cleanup probes run.
+TIER_NEWEST_AGE_SECONDS = 1800
+TIER_ONE_MINUTE_SECONDS = 60
+TIER_FIVE_MINUTE_SECONDS = 300
+TIER_ONE_MINUTE_WINDOW_SECONDS = 7 * 86400
+TIER_FIVE_MINUTE_WINDOW_SECONDS = 30 * 86400
+# One block per phase keeps the earlier phases' Node counts exact.
+TIER_CLONE_BLOCK = 0x2000
+TIER_PLANT_CLONE_BLOCK = 0x2100
+TIER_PAGE_LIMIT = 5
+TIER_READ_LIMIT = 20000
+# The raw-only read must sit entirely inside the raw window: a 48 hour read would
+# reach past the raw cutoff and be answered by 1 minute buckets for its older
+# half, which is exactly what the mixed read below measures instead.
+TIER_RAW_READ_HOURS = 20
+TIER_SERIES = 2
+# The value of an hourly instant is a function of its index alone - a ladder
+# from 10 to 28 and back - so a tier's floor and ceiling are known before it is
+# read, and one index carries a planted spike no bucket may round away.
+TIER_VALUE_BASE = 10.0
+TIER_VALUE_STEP = 3.0
+TIER_VALUE_STEP_COUNT = 7
+TIER_SPIKE_INDEX = 671
+TIER_SPIKE_CPU = 99.5
+# One planted observation past both tier windows and one past the 1 minute
+# window only: the first must leave no bucket behind, the second must keep its 5
+# minute bucket and lose its 1 minute one.
+TIER_PLANT_EXPIRED_AGE_SECONDS = 31 * 86400
+TIER_PLANT_SURVIVING_AGE_SECONDS = 29 * 86400
+# Every tier inventory is a different single-Node inventory, so each declares a
+# revision strictly above DRAIN_INVENTORY_REVISION (1002), the last change the
+# earlier phases made. A frozen v1 Report whose declared revision equals the
+# accepted one is rejected with InventoryRevisionConflict when its content
+# differs (crates/platpulse-server/src/http/report_ingestion.rs:2084-2104), and
+# one below the accepted revision is rejected outright (:2048-2065). The seeded
+# Node declares the first revision - all 720 Reports carry the same inventory,
+# so they share it, the way MULTI_NODE_INVENTORY_REVISION (1001) carries the
+# multi-Node inventory - and each planted Node plus the trigger Node declares
+# the next one.
+TIER_INVENTORY_REVISIONS = (2001, 2002, 2003, 2004)
+
+
+def aligned_bucket_start(observed_at: str, grain_seconds: int) -> str:
+    """The UTC-aligned bucket an instant belongs to, computed the way the Server
+    aligns it (crates/platpulse-server/src/metric_history.rs:892), so a planted
+    bucket can be looked up by its own start instead of by its row order."""
+    epoch = int(parse_instant(observed_at).timestamp())
+    aligned = datetime.fromtimestamp(epoch - (epoch % grain_seconds), timezone.utc)
+    return aligned.strftime(CANONICAL)
 
 
 def clone_node_id(block: int, ordinal: int) -> str:
@@ -972,9 +1062,16 @@ class BaselineRun:
             "lastObservedAt": series.get("lastObservedAt"),
         }
 
-    def read(self, from_instant: str, to_instant: str, limit: int, metric: str = "process_cpu_percent"):
+    def read(
+        self,
+        from_instant: str,
+        to_instant: str,
+        limit: int,
+        metric: str = "process_cpu_percent",
+        node_id: str | None = None,
+    ):
         query = "&from=" + from_instant + "&to=" + to_instant + "&limit=" + str(limit)
-        return read_history(self.client, self.cookie, self.node_id, metric, query)
+        return read_history(self.client, self.cookie, node_id or self.node_id, metric, query)
 
     def window_from(self) -> str:
         return self.instants[0]
@@ -1067,16 +1164,64 @@ class BaselineRun:
             history_url("0195f2a1-00ff-40ff-80ff-0000000000ff", "process_cpu_percent"),
         )
         refusals["unknown_node"] = {"status": status, "code": json.loads(body)["error"]["code"]}
+        # Issue #213 asked this same 30 hour old range and expected availability
+        # "unavailable", which is what the Server answered while availability
+        # followed the raw window's own cutoff: the whole range sat outside the
+        # released raw history. Issue #214 moved the question to the investigation
+        # horizon (crates/platpulse-server/src/http/admin.rs:4643-4649), so that
+        # range is now inside what the Server can answer and its availability is
+        # null; only a range ending before now - SERVER_HISTORY_HORIZON_DAYS days is
+        # still called unavailable. Both branches are asked here and both are
+        # asserted by the check that keeps the issue #213 name.
+        released_from = instant(-30 * 3600)
+        released_to = instant(-29 * 3600)
         status, _, body, _ = admin_get(
             self.client,
             self.cookie,
-            history_url(self.node_id, "process_cpu_percent", "&from=" + instant(-30 * 3600) + "&to=" + instant(-29 * 3600)),
+            history_url(
+                self.node_id,
+                "process_cpu_percent",
+                "&from=" + released_from + "&to=" + released_to,
+            ),
         )
+        released = json.loads(body)
         refusals["released_range"] = {
             "status": status,
-            "availability": json.loads(body).get("availability"),
-            "requestedFrom": json.loads(body).get("requestedFrom"),
-            "items": len(json.loads(body).get("items", [])),
+            "availability": released.get("availability"),
+            "requestedFrom": released.get("requestedFrom"),
+            "requestedFromParam": released_from,
+            "requestedToParam": released_to,
+            "effectiveFrom": released.get("from"),
+            "effectiveTo": released.get("to"),
+            "historyHorizonDays": released.get("historyHorizonDays"),
+            "rawRetentionDays": released.get("rawRetentionDays"),
+            "grain": released.get("grain"),
+            "items": len(released.get("items", [])),
+        }
+        beyond_from = instant(-31 * 86400)
+        beyond_to = instant(-SERVER_HISTORY_HORIZON_DAYS * 86400 - 3600)
+        status, _, body, _ = admin_get(
+            self.client,
+            self.cookie,
+            history_url(
+                self.node_id,
+                "process_cpu_percent",
+                "&from=" + beyond_from + "&to=" + beyond_to,
+            ),
+        )
+        beyond = json.loads(body)
+        refusals["beyond_horizon"] = {
+            "status": status,
+            "availability": beyond.get("availability"),
+            "requestedFrom": beyond.get("requestedFrom"),
+            "requestedFromParam": beyond_from,
+            "requestedToParam": beyond_to,
+            "effectiveFrom": beyond.get("from"),
+            "effectiveTo": beyond.get("to"),
+            "historyHorizonDays": beyond.get("historyHorizonDays"),
+            "rawRetentionDays": beyond.get("rawRetentionDays"),
+            "grain": beyond.get("grain"),
+            "items": len(beyond.get("items", [])),
         }
         reads["refusals"] = refusals
         return reads
@@ -1342,6 +1487,674 @@ class BaselineRun:
         proven = sum(delta for delta in positive if delta < threshold)
         return {"observed_cadence_seconds": cadence, "gap_threshold_seconds": threshold, "proven_seconds": proven}
 
+    # -- the aggregate tiers (issue #214) ----------------------------------
+    #
+    # The tier phase is deliberately the last one: it seeds a month of hourly
+    # Reports that the raw window does not keep but both aggregate tiers do, and
+    # it needs the Server stopped to take a page-level storage baseline before and
+    # after. phase_storage already stopped it, so the phase begins with a
+    # checkpointed database and restarts the Server itself.
+
+    def tier_instants(self, base: datetime) -> list[datetime]:
+        """The declared hour grid, oldest first.
+
+        The newest instant is half an hour old (TIER_NEWEST_AGE_SECONDS), so the
+        Server's moving raw cutoff (now - 24 hours) and both tier floors (now - 7
+        days, now - 30 days) pass no grid instant for the whole phase: the set a
+        read sees cannot shift while the reads, the paging walk and the planted
+        probes run.
+        """
+        newest = base - timedelta(seconds=TIER_NEWEST_AGE_SECONDS)
+        return [
+            newest - timedelta(seconds=(TIER_REPORTS - 1 - index) * TIER_CADENCE_SECONDS)
+            for index in range(TIER_REPORTS)
+        ]
+
+    def tier_cpu(self, index: int) -> float:
+        """The value of one hour as a function of its index alone: a ladder from
+        TIER_VALUE_BASE to TIER_VALUE_BASE + (STEP_COUNT - 1) * STEP and back, so
+        a tier's floor and ceiling are known before it is read, with one planted
+        spike at TIER_SPIKE_INDEX that no bucket may round away."""
+        if index == TIER_SPIKE_INDEX:
+            return TIER_SPIKE_CPU
+        return TIER_VALUE_BASE + (index % TIER_VALUE_STEP_COUNT) * TIER_VALUE_STEP
+
+    def tier_memory(self, index: int) -> int:
+        return 2147483648 + (index % 11) * 67108864
+
+    def tier_report(
+        self, node_id: str, observed_at: str, cpu: float, memory_bytes: int, inventory_revision: int
+    ) -> dict:
+        """A Report whose only Node is the given id, carrying the fixture's two
+        series (process_cpu_percent, process_memory_percent) at observed_at.
+
+        The inventory revision is declared, not inherited from the fixture: the
+        fixture's revision 1 belongs to its own single-Node inventory, and a
+        changed inventory declared at an accepted revision is rejected. The
+        placeholder sequence and report id do not matter either: BaselineRun.submit
+        replaces both with the run's own next_sequence() before it sends.
+        """
+        report = copy.deepcopy(self.fixture)
+        for entry in report["inventory"]["nodes"]:
+            entry["node_id"] = node_id
+        report["inventory"]["revision"] = inventory_revision
+        report["nodes"][0]["node_id"] = node_id
+        return build_report(report, self.agent, 0, observed_at, cpu, 21000, report_id_for(0), memory_bytes=memory_bytes)
+
+    def grain_row_counts(self, scope: str = "") -> dict:
+        """The rows each tier holds, the series they describe and their buckets.
+
+        The scope is a bare SQL predicate ("node_id = '...'") or "" for the whole
+        table, and is combined with the grain predicate exactly the way the
+        Server's own tier cleanup does (retention.rs:237/247).
+        """
+        counts = {}
+        for grain_seconds, label in (
+            (TIER_ONE_MINUTE_SECONDS, "one_minute"),
+            (TIER_FIVE_MINUTE_SECONDS, "five_minute"),
+        ):
+            where = ["grain_seconds = " + str(grain_seconds)]
+            if scope:
+                where.append(scope)
+            counts[label] = sqlite_count(
+                self.db_path,
+                "SELECT COUNT(*) FROM node_metric_aggregates WHERE " + " AND ".join(where),
+            )
+        counts["total"] = counts["one_minute"] + counts["five_minute"]
+        where = " WHERE " + scope if scope else ""
+        counts["distinct_series"] = sqlite_count(
+            self.db_path,
+            "SELECT COUNT(*) FROM (SELECT DISTINCT node_id, metric FROM node_metric_aggregates" + where + ")",
+        )
+        counts["distinct_buckets"] = sqlite_count(
+            self.db_path,
+            "SELECT COUNT(*) FROM (SELECT DISTINCT node_id, metric, bucket_start FROM node_metric_aggregates" + where + ")",
+        )
+        return counts
+
+    def bucket_row(self, node_id: str, metric: str, grain_seconds: int, bucket_start: str) -> dict:
+        """The one bucket an instant belongs to, looked up by its own start."""
+        sql = (
+            "SELECT sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at "
+            "FROM node_metric_aggregates WHERE node_id = '" + node_id + "'"
+            " AND metric = '" + metric + "'"
+            " AND grain_seconds = " + str(grain_seconds) +
+            " AND bucket_start = '" + bucket_start + "'"
+        )
+        try:
+            rows = sqlite_rows(self.db_path, sql)
+        except sqlite3.Error as error:
+            return {"found": 0, "row": None, "error": str(error)}
+        return {"found": len(rows), "row": rows[0] if rows else None, "error": None}
+
+    def aggregate_footprint(self) -> dict:
+        """What node_metric_aggregates and its indexes really occupy.
+
+        PRAGMA page_count is the whole database; dbstat attributes pages to one
+        object, which is what a bytes per bucket figure needs. A SQLite build
+        without dbstat reports available false rather than a guess.
+        """
+        objects = (
+            "node_metric_aggregates",
+            "sqlite_autoindex_node_metric_aggregates_1",
+            "node_metric_aggregates_expiry_idx",
+        )
+        try:
+            pages = {}
+            for name in objects:
+                pages[name] = sqlite_scalar(
+                    self.db_path,
+                    "SELECT SUM(pgsize) FROM dbstat WHERE name = '" + name + "'",
+                )
+        except sqlite3.Error as error:
+            return {
+                "available": False,
+                "reason": str(error),
+                "objects": {},
+                "bytes": None,
+                "pages": None,
+                "page_size": None,
+                "page_count_database": None,
+            }
+        page_size = sqlite_scalar(self.db_path, "PRAGMA page_size")
+        total_bytes = sum(value for value in pages.values() if value)
+        return {
+            "available": True,
+            "reason": None,
+            "objects": pages,
+            "bytes": total_bytes,
+            "pages": round(total_bytes / page_size, 3) if page_size else None,
+            "page_size": page_size,
+            "page_count_database": sqlite_scalar(self.db_path, "PRAGMA page_count"),
+        }
+
+    def tier_read(self, label: str, from_instant: str, to_instant: str, node_id: str, limit: int) -> dict:
+        """One metric-history read, reduced to the fields the tier checks assert.
+
+        Every field is JSON-safe: which grains one answer mixed, how many points
+        came from a bucket rather than from a stored raw sample, the segments the
+        Server consulted, the envelopes the buckets carried, the gaps it named and
+        how long the answer took to arrive.
+        """
+        requested_span = int((parse_instant(to_instant) - parse_instant(from_instant)).total_seconds())
+        payload, elapsed_ms, payload_bytes = self.read(from_instant, to_instant, limit, node_id=node_id)
+        items = payload.get("items") or []
+        grains: dict[str, dict] = {}
+        observed_instants = []
+        raw_instants = []
+        for item in items:
+            grain = item.get("grain")
+            found = grains.setdefault(
+                grain,
+                {
+                    "points": 0,
+                    "minValue": None,
+                    "maxValue": None,
+                    "sampleCount": 0,
+                    "withoutSamples": 0,
+                    "sources": [],
+                },
+            )
+            found["points"] += 1
+            low = item.get("minValue")
+            high = item.get("maxValue")
+            if low is not None:
+                found["minValue"] = low if found["minValue"] is None else min(found["minValue"], low)
+            if high is not None:
+                found["maxValue"] = high if found["maxValue"] is None else max(found["maxValue"], high)
+            count = item.get("sampleCount")
+            if count is None:
+                found["withoutSamples"] += 1
+            else:
+                found["sampleCount"] += count
+            source = item.get("source")
+            if source not in found["sources"]:
+                found["sources"].append(source)
+            observed_instants.append(item.get("observedAt"))
+            if item.get("grain") == "raw":
+                raw_instants.append(item.get("observedAt"))
+        gaps = payload.get("gaps") or []
+        series = payload.get("series") or {}
+        return {
+            "label": label,
+            "requested_from": from_instant,
+            "requested_to": to_instant,
+            "requested_span_seconds": requested_span,
+            "availability": payload.get("availability"),
+            "effective_from": payload.get("from"),
+            "effective_to": payload.get("to"),
+            "history_horizon_days": payload.get("historyHorizonDays"),
+            "raw_retention_days": payload.get("rawRetentionDays"),
+            "grain": payload.get("grain"),
+            "window_seconds": payload.get("windowSeconds"),
+            "items": len(items),
+            "grains": {grain: found for grain, found in sorted(grains.items(), key=lambda pair: str(pair[0]))},
+            "sources": sorted({source for found in grains.values() for source in found["sources"]}),
+            "aggregate_points": sum(found["points"] for grain, found in grains.items() if grain != "raw"),
+            "without_samples": sum(found["withoutSamples"] for found in grains.values()),
+            "segments": [
+                {
+                    "from": segment.get("from"),
+                    "to": segment.get("to"),
+                    "grain": segment.get("grain"),
+                    "source": segment.get("source"),
+                    "pointCount": segment.get("pointCount"),
+                    "truncated": bool(segment.get("truncated")),
+                }
+                for segment in payload.get("segments") or []
+            ],
+            "truncated": bool(payload.get("truncated")),
+            "continuation": payload.get("continuation"),
+            "coverage_seconds": payload.get("coverageSeconds"),
+            "observation_count": series.get("observationCount"),
+            "sampled_count": series.get("sampledCount"),
+            "replayed_count": series.get("replayedCount"),
+            "corrected_count": series.get("correctedCount"),
+            "series_coverage_seconds": series.get("coverageSeconds"),
+            "series_window_seconds": series.get("windowSeconds"),
+            "first_observed_at": series.get("firstObservedAt"),
+            "last_observed_at": series.get("lastObservedAt"),
+            "gaps": len(gaps),
+            "gap_kinds": sorted({gap.get("kind") for gap in gaps}),
+            "gap_max_seconds": max((gap.get("seconds") or 0) for gap in gaps) if gaps else 0,
+            "gap_seconds_total": sum((gap.get("seconds") or 0) for gap in gaps),
+            "latency_ms": round(elapsed_ms, 3),
+            "payload_bytes": payload_bytes,
+            "observed_instants": observed_instants,
+            "raw_instants": raw_instants,
+        }
+
+    def tier_walk(self, node_id: str, from_instant: str, to_instant: str, expected: list) -> dict:
+        """Page the whole window at TIER_PAGE_LIMIT and follow continuation home.
+
+        The walk asserts on itself page by page - every page is strictly older
+        than the cursor that produced it, the cursor only ever moves backwards,
+        the last page is untruncated with no continuation - and then against the
+        single read's coordinates, so a repeated or skipped coordinate cannot hide
+        in an average. The loop is bounded, so a route that always claims more
+        evidence fails the check instead of hanging the run.
+        """
+        bound = 4 * ((TIER_REPORTS + TIER_PAGE_LIMIT - 1) // TIER_PAGE_LIMIT)
+        cursor = None
+        walked = []
+        seen = set()
+        repeats = 0
+        out_of_order = 0
+        cursor_not_older = 0
+        without_samples = 0
+        latency = []
+        payload_bytes = 0
+        grain_counts: dict = {}
+        pages = []
+        last_truncated = None
+        last_continuation = "unset"
+        last_items = 0
+        while True:
+            query = "&from=" + from_instant + "&to=" + to_instant + "&limit=" + str(TIER_PAGE_LIMIT)
+            if cursor:
+                query += "&before=" + cursor
+            payload, elapsed_ms, page_bytes = read_history(
+                self.client, self.cookie, node_id, "process_cpu_percent", query
+            )
+            items = payload.get("items") or []
+            page_instants = [item.get("observedAt") for item in items]
+            latency.append(round(elapsed_ms, 3))
+            payload_bytes += page_bytes
+            for item in items:
+                grain = item.get("grain")
+                grain_counts[grain] = grain_counts.get(grain, 0) + 1
+                if item.get("sampleCount") is None:
+                    without_samples += 1
+                if item.get("observedAt") in seen:
+                    repeats += 1
+                seen.add(item.get("observedAt"))
+                walked.append(item.get("observedAt"))
+            if cursor and page_instants and max(page_instants) >= cursor:
+                out_of_order += 1
+            pages.append(
+                {
+                    "page": len(pages) + 1,
+                    "items": len(items),
+                    # The route returns each page oldest first, so the extremes are
+                    # taken rather than assumed from the ends.
+                    "newest": max(page_instants) if page_instants else None,
+                    "oldest": min(page_instants) if page_instants else None,
+                    "truncated": bool(payload.get("truncated")),
+                    "continuation": payload.get("continuation"),
+                    "elapsed_ms": round(elapsed_ms, 3),
+                    "payload_bytes": page_bytes,
+                }
+            )
+            last_truncated = bool(payload.get("truncated"))
+            last_continuation = payload.get("continuation")
+            last_items = len(items)
+            if not last_truncated:
+                break
+            next_cursor = payload.get("continuation")
+            if not next_cursor or not page_instants:
+                break
+            if cursor and next_cursor >= cursor:
+                cursor_not_older += 1
+            cursor = next_cursor
+            if len(pages) >= bound:
+                break
+        expected_set = set(expected)
+        seen_set = {value for value in seen if value}
+        return {
+            "limit": TIER_PAGE_LIMIT,
+            "pages": len(pages),
+            "bound": bound,
+            "bounded": len(pages) >= bound and bool(last_truncated),
+            "items": len(walked),
+            "distinct_coordinates": len(seen_set),
+            "repeats": repeats,
+            "out_of_order_pages": out_of_order,
+            "cursor_not_older": cursor_not_older,
+            "without_samples": without_samples,
+            "matches_single_read": seen_set == expected_set,
+            "missing_from_walk": len(expected_set - seen_set),
+            "extra_in_walk": len(seen_set - expected_set),
+            "strictly_descending": all(
+                pages[index]["newest"] is not None
+                and pages[index - 1]["oldest"] is not None
+                and pages[index - 1]["oldest"] > pages[index]["newest"]
+                for index in range(1, len(pages))
+            ),
+            "last_page_items": last_items,
+            "last_truncated": last_truncated,
+            "last_continuation": last_continuation,
+            "grain_counts": {
+                grain: grain_counts[grain]
+                for grain in sorted(grain_counts, key=lambda value: (value is None, value))
+            },
+            "latency_ms": {
+                "p50_ms": round(percentile(latency, 0.5), 3) if latency else None,
+                "p95_ms": round(percentile(latency, 0.95), 3) if latency else None,
+                "max_ms": round(max(latency), 3) if latency else None,
+            },
+            "payload_bytes_total": payload_bytes,
+            "first_pages": pages[:3],
+            "last_pages": pages[-3:],
+        }
+
+    def phase_tiers(self) -> dict:
+        """Seed a month of hourly Reports and measure what the tiers kept.
+
+        The Server counts every new observation into both tiers whether or not the
+        raw window stored it, so a backdated month on a fresh Node is the only way
+        to fill the 1 minute and 5 minute tiers without filling node_metric_samples:
+        node_metric_samples must hold the 24 instants the raw window keeps, while
+        all 720 hourly instants are counted and the measured bucket rows exist.
+        """
+        started = time.monotonic()
+        node_id = clone_node_id(TIER_CLONE_BLOCK, 0)
+        scope = "node_id = '" + node_id + "'"
+        before = {
+            "page_count": sqlite_scalar(self.db_path, "PRAGMA page_count"),
+            "database_bytes": self.db_path.stat().st_size if self.db_path.is_file() else 0,
+            "with_wal_bytes": file_bytes(self.db_path),
+            "grain_rows": self.grain_row_counts(),
+            "footprint": self.aggregate_footprint(),
+        }
+        self.restart_with_floor(CLEARED_FLOOR)
+
+        base = datetime.now(timezone.utc)
+        instants = self.tier_instants(base)
+        seeded = []
+        accepted = 0
+        rejected: dict = {}
+        seed_latencies = []
+        seed_started = time.monotonic()
+        for index, moment in enumerate(instants):
+            observed_at = moment.strftime(CANONICAL)
+            cpu = self.tier_cpu(index)
+            outcome = self.submit(
+                "tier",
+                observed_at,
+                cpu,
+                21000,
+                report=self.tier_report(
+                    node_id, observed_at, cpu, self.tier_memory(index), TIER_INVENTORY_REVISIONS[0]
+                ),
+            )
+            seeded.append(observed_at)
+            seed_latencies.append(outcome["elapsed_ms"])
+            if outcome["disposition"] == "accepted":
+                accepted += 1
+            else:
+                reason = outcome.get("reason") or "unknown"
+                rejected[reason] = rejected.get(reason, 0) + 1
+        seed_wall = round(time.monotonic() - seed_started, 3)
+
+        raw_rows = self.metric_counts(scope)
+        tier_rows = self.grain_row_counts(scope)
+
+        reads = {
+            "30d": self.tier_read(
+                "30d", instant(-TIER_FIVE_MINUTE_WINDOW_SECONDS), instant(1), node_id, TIER_READ_LIMIT
+            ),
+            "20h": self.tier_read(
+                "20h", instant(-TIER_RAW_READ_HOURS * 3600), instant(1), node_id, TIER_READ_LIMIT
+            ),
+            "10d": self.tier_read("10d", instant(-10 * 86400), instant(-8 * 86400), node_id, TIER_READ_LIMIT),
+            "4d": self.tier_read("4d", instant(-4 * 86400), instant(-2 * 86400), node_id, TIER_READ_LIMIT),
+        }
+        # Nothing is submitted between the single read above and this walk: every
+        # Report runs a cleanup pass and moves the floors, so the two answers can
+        # only be compared while the Server sees exactly the same buckets.
+        walk = self.tier_walk(
+            node_id,
+            instant(-TIER_FIVE_MINUTE_WINDOW_SECONDS),
+            instant(1),
+            reads["30d"]["observed_instants"],
+        )
+        # What "availability" means is a fact of the tiers, not of the raw window:
+        # the 5 minute tier's own age bound is the investigation horizon
+        # (crates/platpulse-server/src/metric_history.rs:141) and
+        # crates/platpulse-server/src/http/admin.rs:4643-4649 compares the request
+        # with that horizon alone, so a range whose start is inside it answers with
+        # a null availability, one that straddles it is "partial", and only a range
+        # that ends before it is "unavailable". The issue #213 check in evaluate()
+        # still expects the raw window's rule for a 30 hour old range, so this pair
+        # asks that same range and one older than the whole horizon, and records
+        # what the issue #214 Server answers.
+        horizon = {
+            "inside": self.tier_read(
+                "inside_horizon", instant(-30 * 3600), instant(-29 * 3600), node_id, TIER_READ_LIMIT
+            ),
+            "beyond": self.tier_read(
+                "beyond_horizon",
+                instant(-TIER_FIVE_MINUTE_WINDOW_SECONDS - 86400),
+                instant(-TIER_FIVE_MINUTE_WINDOW_SECONDS - 3600),
+                node_id,
+                TIER_READ_LIMIT,
+            ),
+        }
+
+        plants = []
+        for ordinal, plant in enumerate(
+            (
+                (TIER_PLANT_EXPIRED_AGE_SECONDS, 44.5, "expired"),
+                (TIER_PLANT_SURVIVING_AGE_SECONDS, 44.5, "surviving"),
+            )
+        ):
+            age, value, kind = plant
+            plant_node = clone_node_id(TIER_PLANT_CLONE_BLOCK, ordinal)
+            observed_at = instant(-age)
+            outcome = self.submit(
+                "tier-plant",
+                observed_at,
+                value,
+                21000,
+                report=self.tier_report(
+                    plant_node, observed_at, value, 2147483648, TIER_INVENTORY_REVISIONS[ordinal + 1]
+                ),
+            )
+            buckets = {}
+            for grain_seconds, label in (
+                (TIER_ONE_MINUTE_SECONDS, "one_minute"),
+                (TIER_FIVE_MINUTE_SECONDS, "five_minute"),
+            ):
+                bucket_start = aligned_bucket_start(observed_at, grain_seconds)
+                buckets[label] = dict(
+                    self.bucket_row(plant_node, "process_cpu_percent", grain_seconds, bucket_start),
+                    bucket_start=bucket_start,
+                )
+            entry = {
+                "kind": kind,
+                "node_id": plant_node,
+                "age_seconds": age,
+                "observed_at": observed_at,
+                "disposition": outcome["disposition"],
+                "tier_rows_after_own_report": self.grain_row_counts("node_id = '" + plant_node + "'"),
+                "buckets_after_own_report": buckets,
+            }
+            plants.append(entry)
+
+        # A later accepted Report runs one more cleanup pass
+        # (report_ingestion.rs:3116). It plants its own Node, so the phase's Node -
+        # and with it the reads and the walk above - cannot be disturbed, and it
+        # must release nothing more for the planted instants: the pass runs inside
+        # the ingestion request that created a bucket, so the creating Report
+        # already released what its instant owed.
+        trigger_node = clone_node_id(TIER_PLANT_CLONE_BLOCK, 2)
+        trigger_at = instant(-60)
+        trigger = self.submit(
+            "tier-trigger",
+            trigger_at,
+            51.5,
+            21000,
+            report=self.tier_report(
+                trigger_node, trigger_at, 51.5, 2147483648, TIER_INVENTORY_REVISIONS[3]
+            ),
+        )
+        for plant in plants:
+            plant_node = plant["node_id"]
+            after_plant = self.grain_row_counts("node_id = '" + plant_node + "'")
+            plant["tier_rows_after_later_report"] = after_plant
+            plant["released_by_later_report"] = {
+                "one_minute": plant["tier_rows_after_own_report"]["one_minute"] - after_plant["one_minute"],
+                "five_minute": plant["tier_rows_after_own_report"]["five_minute"] - after_plant["five_minute"],
+            }
+            buckets = {}
+            for grain_seconds, label in (
+                (TIER_ONE_MINUTE_SECONDS, "one_minute"),
+                (TIER_FIVE_MINUTE_SECONDS, "five_minute"),
+            ):
+                bucket_start = aligned_bucket_start(plant["observed_at"], grain_seconds)
+                buckets[label] = dict(
+                    self.bucket_row(plant_node, "process_cpu_percent", grain_seconds, bucket_start),
+                    bucket_start=bucket_start,
+                )
+            plant["buckets_after_later_report"] = buckets
+
+        node_rows_after_probes = self.grain_row_counts(scope)
+        self.stop_server()
+        after = {
+            "page_count": sqlite_scalar(self.db_path, "PRAGMA page_count"),
+            "database_bytes": self.db_path.stat().st_size if self.db_path.is_file() else 0,
+            "with_wal_bytes": file_bytes(self.db_path),
+            "grain_rows": self.grain_row_counts(),
+            "footprint": self.aggregate_footprint(),
+        }
+
+        raw_instants = (SERVER_RAW_RETENTION_SECONDS - TIER_NEWEST_AGE_SECONDS) // TIER_CADENCE_SECONDS + 1
+        one_minute_buckets = (
+            TIER_ONE_MINUTE_WINDOW_SECONDS - TIER_NEWEST_AGE_SECONDS
+        ) // TIER_CADENCE_SECONDS + 1
+        one_minute_region = (
+            TIER_ONE_MINUTE_WINDOW_SECONDS - SERVER_RAW_RETENTION_SECONDS
+        ) // TIER_CADENCE_SECONDS
+        five_minute_region = (
+            TIER_FIVE_MINUTE_WINDOW_SECONDS - TIER_ONE_MINUTE_WINDOW_SECONDS
+        ) // TIER_CADENCE_SECONDS
+        planned = {
+            "reports": TIER_REPORTS,
+            "accepted_reports": accepted,
+            "cadence_seconds": TIER_CADENCE_SECONDS,
+            "declared_span_seconds": TIER_SPAN_SECONDS,
+            "newest_age_seconds": TIER_NEWEST_AGE_SECONDS,
+            "series_per_report": TIER_SERIES,
+            "raw_instants": raw_instants,
+            "raw_rows": raw_instants * TIER_SERIES,
+            "one_minute_buckets_per_series": one_minute_buckets,
+            "one_minute_rows": one_minute_buckets * TIER_SERIES,
+            "five_minute_buckets_per_series": TIER_REPORTS,
+            "five_minute_rows": TIER_REPORTS * TIER_SERIES,
+            "aggregate_rows": (one_minute_buckets + TIER_REPORTS) * TIER_SERIES,
+            "one_minute_region_instants": one_minute_region,
+            "five_minute_region_instants": five_minute_region,
+            "thirty_day_items": raw_instants + one_minute_region + five_minute_region,
+            "raw_read_items": (TIER_RAW_READ_HOURS * 3600 - TIER_NEWEST_AGE_SECONDS) // TIER_CADENCE_SECONDS + 1,
+            "ten_day_items": (10 * 86400 - 8 * 86400) // TIER_CADENCE_SECONDS,
+            "four_day_items": (4 * 86400 - 2 * 86400) // TIER_CADENCE_SECONDS,
+            "spike_index": TIER_SPIKE_INDEX,
+            "spike_cpu": TIER_SPIKE_CPU,
+            "spike_age_seconds": TIER_NEWEST_AGE_SECONDS
+            + (TIER_REPORTS - 1 - TIER_SPIKE_INDEX) * TIER_CADENCE_SECONDS,
+            "ladder_floor": TIER_VALUE_BASE,
+            "ladder_ceiling": TIER_VALUE_BASE + (TIER_VALUE_STEP_COUNT - 1) * TIER_VALUE_STEP,
+            "page_limit": TIER_PAGE_LIMIT,
+            "walk_pages": (TIER_REPORTS + TIER_PAGE_LIMIT - 1) // TIER_PAGE_LIMIT,
+        }
+        footprint_before = before["footprint"]["bytes"]
+        footprint_after = after["footprint"]["bytes"]
+        rows_before = before["grain_rows"]["total"]
+        rows_after = after["grain_rows"]["total"]
+        rows_added = rows_after - rows_before
+        bytes_added = (
+            footprint_after - footprint_before
+            if footprint_before is not None and footprint_after is not None
+            else None
+        )
+        bytes_per_bucket = (
+            round(footprint_after / rows_after, 3) if footprint_after is not None and rows_after else None
+        )
+        storage = {
+            "page_count_before": before["page_count"],
+            "page_count_after": after["page_count"],
+            "page_size": after["footprint"]["page_size"],
+            "database_bytes_before": before["database_bytes"],
+            "database_bytes_after": after["database_bytes"],
+            "with_wal_bytes_before": before["with_wal_bytes"],
+            "with_wal_bytes_after": after["with_wal_bytes"],
+            "aggregate_rows_before": rows_before,
+            "aggregate_rows_after": rows_after,
+            "rows_added": rows_added,
+            "pages_added": (after["page_count"] or 0) - (before["page_count"] or 0),
+            "database_bytes_added": (after["database_bytes"] or 0) - (before["database_bytes"] or 0),
+            "aggregate_footprint_before": before["footprint"],
+            "aggregate_footprint_after": after["footprint"],
+            "aggregate_bytes_before": footprint_before,
+            "aggregate_bytes_after": footprint_after,
+            "aggregate_bytes_added": bytes_added,
+            "bytes_per_bucket": bytes_per_bucket,
+            "bytes_per_bucket_added": (
+                round(bytes_added / rows_added, 3) if bytes_added is not None and rows_added else None
+            ),
+            # dbstat attributes pages, not rows, so a per-tier page split would be a
+            # guess: the per-tier figure below is the measured bytes per bucket times
+            # that tier's measured rows, and says so.
+            "bytes_per_tier": {
+                "one_minute": (
+                    round(bytes_per_bucket * after["grain_rows"]["one_minute"], 3)
+                    if bytes_per_bucket
+                    else None
+                ),
+                "five_minute": (
+                    round(bytes_per_bucket * after["grain_rows"]["five_minute"], 3)
+                    if bytes_per_bucket
+                    else None
+                ),
+                "method": "measured bytes per bucket x that tier's measured rows",
+            },
+            "tier_row_counts_before": before["grain_rows"],
+            "tier_row_counts_after": after["grain_rows"],
+            "tier_row_counts_for_node": node_rows_after_probes,
+        }
+        return {
+            "issue": 214,
+            "node_id": node_id,
+            "planned": planned,
+            "seeded_reports": len(seeded),
+            "dispositions": {key: self.dispositions[key] for key in sorted(self.dispositions)},
+            "rejections": rejected,
+            "seed_wall_seconds": seed_wall,
+            "write_latency_ms": {
+                "p50_ms": round(percentile(seed_latencies, 0.5), 3) if seed_latencies else None,
+                "p95_ms": round(percentile(seed_latencies, 0.95), 3) if seed_latencies else None,
+                "max_ms": round(max(seed_latencies), 3) if seed_latencies else None,
+            },
+            "instants": {
+                "newest": seeded[-1],
+                "oldest": seeded[0],
+                "declared_cadence_seconds": TIER_CADENCE_SECONDS,
+                "declared_span_seconds": int(
+                    (parse_instant(seeded[-1]) - parse_instant(seeded[0])).total_seconds()
+                ),
+                "newest_age_seconds": int((base - parse_instant(seeded[-1])).total_seconds()),
+                "oldest_age_seconds": int((base - parse_instant(seeded[0])).total_seconds()),
+            },
+            "raw_rows": raw_rows,
+            "tier_rows": tier_rows,
+            "reads": reads,
+            "horizon": horizon,
+            "walk": walk,
+            "planted": {
+                "plants": plants,
+                "later_report": {
+                    "node_id": trigger_node,
+                    "observed_at": trigger_at,
+                    "disposition": trigger["disposition"],
+                    "tier_rows": self.grain_row_counts("node_id = '" + trigger_node + "'"),
+                },
+                "expired_age_seconds": TIER_PLANT_EXPIRED_AGE_SECONDS,
+                "surviving_age_seconds": TIER_PLANT_SURVIVING_AGE_SECONDS,
+            },
+            "storage": storage,
+            "wall_seconds": round(time.monotonic() - started, 3),
+        }
+
     def phase_storage(self) -> dict:
         self.stop_server()
         tables = (
@@ -1380,13 +2193,22 @@ class BaselineRun:
     # -- checks ------------------------------------------------------------
 
     def evaluate(
-        self, load: dict, restatements: dict, release: dict, reads: dict, multi_node: dict, storage: dict
+        self,
+        load: dict,
+        restatements: dict,
+        release: dict,
+        reads: dict,
+        multi_node: dict,
+        tiers: dict,
+        storage: dict,
     ) -> list:
         full = reads["24h"]
         planned = self.planned_coverage()
         part1 = multi_node["part1"]
         drain = multi_node["drain"]
         ledger_after_load = restatements["before"]
+        released_range = reads["refusals"]["released_range"]
+        beyond_horizon = reads["refusals"]["beyond_horizon"]
         checks = [
             check(
                 "every Report was accepted",
@@ -1577,12 +2399,51 @@ class BaselineRun:
                 full["clock_suspect"] is False,
             ),
             check(
-                "a range older than the released history is answered as unavailable",
-                "unavailable with the requested start preserved and no items",
-                json.dumps(reads["refusals"]["released_range"]),
-                reads["refusals"]["released_range"]["availability"] == "unavailable"
-                and reads["refusals"]["released_range"]["items"] == 0
-                and reads["refusals"]["released_range"]["requestedFrom"] is not None,
+                # Issue #213 wrote this as "a range older than the released history
+                # is answered as unavailable", because availability followed the raw
+                # window's own cutoff then: the 30 hour old range sat entirely
+                # outside the released raw history. Issue #214 moved the field to the
+                # investigation horizon (crates/platpulse-server/src/http/admin.rs:4643-4649),
+                # so that range is answerable now and only a range ending before
+                # now - SERVER_HISTORY_HORIZON_DAYS days is still refused. The name
+                # keeps the issue #213 name and states the boundary this check really
+                # holds the Server to; the #213 statement that changed is quoted here.
+                "a range older than the investigation horizon is answered as unavailable "
+                "(issue #213 held this range to the released raw history instead)",
+                "the 30 hour old range is answered, not refused: availability null, 0 items on this "
+                "Node whose raw rows were released, requested start preserved; a range ending more than "
+                + str(SERVER_HISTORY_HORIZON_DAYS)
+                + " days before now answers unavailable with its requested start preserved, 0 items and "
+                "its effective start clamped to now - "
+                + str(SERVER_HISTORY_HORIZON_DAYS)
+                + " days. The tier Node's same 30 hour old range answers 1 item with grain 1m and source "
+                "aggregate, asserted by the availability check in the issue #214 section.",
+                json.dumps(
+                    {
+                        "inside": reads["refusals"]["released_range"],
+                        "beyond": reads["refusals"]["beyond_horizon"],
+                    }
+                ),
+                released_range["availability"] is None
+                and released_range["items"] == 0
+                and released_range["historyHorizonDays"] == SERVER_HISTORY_HORIZON_DAYS
+                and parse_instant(released_range["requestedFrom"])
+                == parse_instant(released_range["requestedFromParam"])
+                and beyond_horizon["availability"] == "unavailable"
+                and beyond_horizon["items"] == 0
+                and parse_instant(beyond_horizon["requestedFrom"])
+                == parse_instant(beyond_horizon["requestedFromParam"])
+                and parse_instant(beyond_horizon["effectiveTo"])
+                == parse_instant(beyond_horizon["requestedToParam"])
+                # The clamp lands exactly on the horizon, which sits 3600s after the
+                # requested end; the tolerance only covers the time between the
+                # script writing the query and the Server reading it.
+                and 3595
+                <= (
+                    parse_instant(beyond_horizon["effectiveFrom"])
+                    - parse_instant(beyond_horizon["requestedToParam"])
+                ).total_seconds()
+                <= 3605,
             ),
             check(
                 "an unusable series token is refused",
@@ -1711,6 +2572,425 @@ class BaselineRun:
                 and drain["replay"]["before"]["total"] > 0,
             ),
         ]
+        # -- the aggregate tiers (issue #214) --------------------------------
+        tier_planned = tiers["planned"]
+        thirty = tiers["reads"]["30d"]
+        raw_only_read = tiers["reads"]["20h"]
+        ten_day = tiers["reads"]["10d"]
+        four_day = tiers["reads"]["4d"]
+        inside_horizon = tiers["horizon"]["inside"]
+        beyond_horizon = tiers["horizon"]["beyond"]
+        walk = tiers["walk"]
+        tier_storage = tiers["storage"]
+        plants = {plant["kind"]: plant for plant in tiers["planted"]["plants"]}
+        expired_plant = plants["expired"]
+        surviving_plant = plants["surviving"]
+        later_report = tiers["planted"]["later_report"]
+        segment_grains = [segment["grain"] for segment in thirty["segments"]]
+        one_minute_grain = thirty["grains"].get("1m") or {}
+        five_minute_grain = thirty["grains"].get("5m") or {}
+        raw_grain = thirty["grains"].get("raw") or {}
+        four_day_grain = four_day["grains"].get("1m") or {}
+        ten_day_from = instant(-10 * 86400)
+        ten_day_to = instant(-8 * 86400)
+        raw_samples_in_stretch = sum(
+            1 for value in thirty["raw_instants"] if ten_day_from <= value < ten_day_to
+        )
+        rows_expected = tier_planned["aggregate_rows"] + 3 * TIER_SERIES
+        checks.extend([
+            check(
+                "the tier phase seeded a month of hourly Reports and every one was accepted",
+                "seeded "
+                + str(TIER_REPORTS)
+                + " reports over a declared "
+                + str(TIER_SPAN_SECONDS)
+                + "s span, all accepted, no rejections",
+                json.dumps(
+                    {
+                        "seeded": tiers["seeded_reports"],
+                        "accepted": tier_planned["accepted_reports"],
+                        "rejections": tiers["rejections"],
+                        "declared_span_seconds": tiers["instants"]["declared_span_seconds"],
+                        "oldest_age_seconds": tiers["instants"]["oldest_age_seconds"],
+                        "write_latency_ms": tiers["write_latency_ms"],
+                        "seed_wall_seconds": tiers["seed_wall_seconds"],
+                    }
+                ),
+                tiers["seeded_reports"] == TIER_REPORTS
+                and tier_planned["accepted_reports"] == TIER_REPORTS
+                and not tiers["rejections"],
+            ),
+            check(
+                "the backdated month is counted into the tiers without being stored as raw samples",
+                "ledger "
+                + str(TIER_REPORTS)
+                + " observations, node_metric_samples rows "
+                + str(tier_planned["raw_rows"])
+                + ", 0 expired",
+                json.dumps(
+                    {
+                        "ledger_observations": thirty["observation_count"],
+                        "ledger_sampled": thirty["sampled_count"],
+                        "ledger_replayed": thirty["replayed_count"],
+                        "ledger_corrected": thirty["corrected_count"],
+                        "raw_rows": tiers["raw_rows"],
+                        "aggregate_rows": tiers["tier_rows"],
+                    }
+                ),
+                thirty["observation_count"] == TIER_REPORTS
+                and tiers["raw_rows"]["total"] == tier_planned["raw_rows"]
+                and tiers["raw_rows"]["expired"] == 0,
+            ),
+            check(
+                "each counted hour became one bucket per series in each tier",
+                "1m rows "
+                + str(tier_planned["one_minute_rows"])
+                + " and 5m rows "
+                + str(tier_planned["five_minute_rows"])
+                + " (+/- "
+                + str(TIER_SERIES)
+                + " series rows for the moving tier floor), "
+                + " distinct (node, metric, bucket_start) coordinates between "
+                + str(TIER_REPORTS * TIER_SERIES)
+                + " (the 5m tier alone) and "
+                + str(tier_planned["aggregate_rows"])
+                + " (every row its own: a 1m start that coincides with a 5m start merges the two)",
+                json.dumps(
+                    {
+                        "tier_rows": tiers["tier_rows"],
+                        "planned": {
+                            "one_minute_rows": tier_planned["one_minute_rows"],
+                            "five_minute_rows": tier_planned["five_minute_rows"],
+                            "buckets_per_series": {
+                                "one_minute": tier_planned["one_minute_buckets_per_series"],
+                                "five_minute": tier_planned["five_minute_buckets_per_series"],
+                            },
+                        },
+                    }
+                ),
+                abs(tiers["tier_rows"]["one_minute"] - tier_planned["one_minute_rows"]) <= TIER_SERIES
+                and abs(tiers["tier_rows"]["five_minute"] - tier_planned["five_minute_rows"]) <= TIER_SERIES
+                and tiers["tier_rows"]["distinct_series"] == TIER_SERIES
+                # The 5m tier alone contributes 720 bucket starts per series; a 1m
+                # start on a 5 minute boundary coincides with a 5m start and merges
+                # into one coordinate, and one off the boundary adds a row, so the
+                # exact count depends on which minute of the hour the run's clock
+                # sits on. The bounds hold either way.
+                and TIER_REPORTS * TIER_SERIES
+                <= tiers["tier_rows"]["distinct_buckets"]
+                <= tier_planned["aggregate_rows"],
+            ),
+            check(
+                "the tiers cost one row per bucket at a measurable bytes per bucket",
+                "rows added "
+                + str(rows_expected)
+                + " (tier Node "
+                + str(tier_planned["aggregate_rows"])
+                + " + surviving plant "
+                + str(TIER_SERIES)
+                + " + later Report "
+                + str(2 * TIER_SERIES)
+                + "), 0 < bytes per bucket < page size "
+                + str(tier_storage["page_size"]),
+                json.dumps(
+                    {
+                        "rows_added": tier_storage["rows_added"],
+                        "aggregate_rows_before": tier_storage["aggregate_rows_before"],
+                        "aggregate_rows_after": tier_storage["aggregate_rows_after"],
+                        "aggregate_footprint_after": tier_storage["aggregate_footprint_after"],
+                        "bytes_per_bucket": tier_storage["bytes_per_bucket"],
+                        "bytes_per_bucket_added": tier_storage["bytes_per_bucket_added"],
+                        "bytes_per_tier": tier_storage["bytes_per_tier"],
+                        "pages_added": tier_storage["pages_added"],
+                        "database_bytes_added": tier_storage["database_bytes_added"],
+                    }
+                ),
+                tier_storage["rows_added"] == rows_expected
+                and tier_storage["aggregate_footprint_after"]["available"]
+                and (tier_storage["bytes_per_bucket"] or 0) > 0
+                and (tier_storage["bytes_per_bucket"] or 0) < (tier_storage["page_size"] or 0),
+            ),
+            check(
+                "a read wholly inside the raw window is answered by raw samples alone",
+                "grain raw, sources ['raw'], items "
+                + str(tier_planned["raw_read_items"])
+                + ", 0 aggregate points",
+                json.dumps(
+                    {
+                        "items": raw_only_read["items"],
+                        "grain": raw_only_read["grain"],
+                        "sources": raw_only_read["sources"],
+                        "aggregate_points": raw_only_read["aggregate_points"],
+                        "grains": raw_only_read["grains"],
+                        "segments": raw_only_read["segments"],
+                        "truncated": raw_only_read["truncated"],
+                        "coverage_seconds": raw_only_read["coverage_seconds"],
+                        "window_seconds": raw_only_read["window_seconds"],
+                        "gaps": raw_only_read["gaps"],
+                        "gap_kinds": raw_only_read["gap_kinds"],
+                        "latency_ms": raw_only_read["latency_ms"],
+                        "payload_bytes": raw_only_read["payload_bytes"],
+                    }
+                ),
+                raw_only_read["grain"] == "raw"
+                and raw_only_read["sources"] == ["raw"]
+                and raw_only_read["aggregate_points"] == 0
+                and raw_only_read["items"] == tier_planned["raw_read_items"],
+            ),
+            check(
+                "one 30 day answer mixes all three tiers, newest tier first",
+                "items "
+                + str(tier_planned["thirty_day_items"])
+                + " (raw "
+                + str(tier_planned["raw_instants"])
+                + " + 1m "
+                + str(tier_planned["one_minute_region_instants"])
+                + " + 5m "
+                + str(tier_planned["five_minute_region_instants"])
+                + "), segments 5m/1m/raw (oldest region first), truncated false, continuation null",
+                json.dumps(
+                    {
+                        "items": thirty["items"],
+                        "grains": thirty["grains"],
+                        "segments": thirty["segments"],
+                        "truncated": thirty["truncated"],
+                        "continuation": thirty["continuation"],
+                        "availability": thirty["availability"],
+                        "coverage_seconds": thirty["coverage_seconds"],
+                        "window_seconds": thirty["window_seconds"],
+                        "gaps": thirty["gaps"],
+                        "gap_kinds": thirty["gap_kinds"],
+                        "gap_max_seconds": thirty["gap_max_seconds"],
+                        "latency_ms": thirty["latency_ms"],
+                        "payload_bytes": thirty["payload_bytes"],
+                    }
+                ),
+                thirty["items"] == tier_planned["thirty_day_items"]
+                and raw_grain.get("points", 0) == tier_planned["raw_instants"]
+                and one_minute_grain.get("points", 0) == tier_planned["one_minute_region_instants"]
+                and five_minute_grain.get("points", 0) == tier_planned["five_minute_region_instants"]
+                and segment_grains == ["5m", "1m", "raw"]
+                and thirty["truncated"] is False
+                and thirty["continuation"] is None,
+            ),
+            check(
+                "a read older than the raw window is answered by buckets, and widening cannot recover raw samples",
+                "grain '5m', sources ['aggregate'], items "
+                + str(tier_planned["ten_day_items"])
+                + ", 0 raw samples in that stretch even inside the 30 day answer (the Server's tier regions put 1m at day 7 up to the raw cutoff and 5m at day 30 up to day 7, so a day 10..8 read is a 5m read; the ticket expected 1m there)",
+                json.dumps(
+                    {
+                        "items": ten_day["items"],
+                        "grain": ten_day["grain"],
+                        "sources": ten_day["sources"],
+                        "aggregate_points": ten_day["aggregate_points"],
+                        "segments": ten_day["segments"],
+                        "truncated": ten_day["truncated"],
+                        "coverage_seconds": ten_day["coverage_seconds"],
+                        "latency_ms": ten_day["latency_ms"],
+                        "payload_bytes": ten_day["payload_bytes"],
+                        "raw_samples_in_stretch_of_thirty_day_answer": raw_samples_in_stretch,
+                    }
+                ),
+                ten_day["items"] == tier_planned["ten_day_items"]
+                and ten_day["grain"] == "5m"
+                and ten_day["sources"] == ["aggregate"]
+                and ten_day["aggregate_points"] == ten_day["items"]
+                and raw_samples_in_stretch == 0,
+            ),
+            check(
+                "a read between day 7 and the raw cutoff is answered by 1m buckets that keep the spike and the floor",
+                "grain '1m', items "
+                + str(tier_planned["four_day_items"])
+                + ", min "
+                + str(TIER_VALUE_BASE)
+                + ", max "
+                + str(TIER_SPIKE_CPU)
+                + ", no item without a sampleCount",
+                json.dumps(
+                    {
+                        "items": four_day["items"],
+                        "grain": four_day["grain"],
+                        "sources": four_day["sources"],
+                        "grains": four_day["grains"],
+                        "segments": four_day["segments"],
+                        "without_samples": four_day["without_samples"],
+                        "truncated": four_day["truncated"],
+                        "latency_ms": four_day["latency_ms"],
+                        "payload_bytes": four_day["payload_bytes"],
+                    }
+                ),
+                four_day["items"] == tier_planned["four_day_items"]
+                and four_day["grain"] == "1m"
+                and four_day["sources"] == ["aggregate"]
+                and four_day["aggregate_points"] == four_day["items"]
+                and four_day_grain.get("maxValue") == TIER_SPIKE_CPU
+                and four_day_grain.get("minValue") == TIER_VALUE_BASE
+                and four_day["without_samples"] == 0,
+            ),
+            check(
+                "the paging walk visits every coordinate exactly once",
+                "pages "
+                + str(tier_planned["walk_pages"])
+                + " at limit "
+                + str(TIER_PAGE_LIMIT)
+                + ", items "
+                + str(tier_planned["thirty_day_items"])
+                + ", 0 repeats, 0 skipped, same set as the single read",
+                json.dumps(
+                    {
+                        "pages": walk["pages"],
+                        "items": walk["items"],
+                        "distinct_coordinates": walk["distinct_coordinates"],
+                        "repeats": walk["repeats"],
+                        "missing_from_walk": walk["missing_from_walk"],
+                        "extra_in_walk": walk["extra_in_walk"],
+                        "matches_single_read": walk["matches_single_read"],
+                        "grain_counts": walk["grain_counts"],
+                        "without_samples": walk["without_samples"],
+                        "bounded": walk["bounded"],
+                        "latency_ms": walk["latency_ms"],
+                        "payload_bytes_total": walk["payload_bytes_total"],
+                        "first_pages": walk["first_pages"],
+                        "last_pages": walk["last_pages"],
+                    }
+                ),
+                walk["pages"] == tier_planned["walk_pages"]
+                and walk["items"] == tier_planned["thirty_day_items"]
+                and walk["repeats"] == 0
+                and walk["distinct_coordinates"] == tier_planned["thirty_day_items"]
+                and walk["missing_from_walk"] == 0
+                and walk["extra_in_walk"] == 0
+                and walk["matches_single_read"]
+                and not walk["bounded"],
+            ),
+            check(
+                "every continuation cursor moves strictly backwards and the walk ends untruncated",
+                "0 pages out of order, 0 cursors not older, last page truncated false with continuation null",
+                json.dumps(
+                    {
+                        "pages": walk["pages"],
+                        "out_of_order_pages": walk["out_of_order_pages"],
+                        "cursor_not_older": walk["cursor_not_older"],
+                        "strictly_descending": walk["strictly_descending"],
+                        "last_page_items": walk["last_page_items"],
+                        "last_truncated": walk["last_truncated"],
+                        "last_continuation": walk["last_continuation"],
+                    }
+                ),
+                walk["out_of_order_pages"] == 0
+                and walk["cursor_not_older"] == 0
+                and walk["strictly_descending"]
+                and walk["last_truncated"] is False
+                and walk["last_continuation"] is None,
+            ),
+            check(
+                "a 31 day instant is counted, then released by both tiers",
+                "0 rows in both tiers for the planted Node and no bucket in either grain",
+                json.dumps(
+                    {
+                        "age_seconds": expired_plant["age_seconds"],
+                        "disposition": expired_plant["disposition"],
+                        "tier_rows": expired_plant["tier_rows_after_own_report"],
+                        "buckets": expired_plant["buckets_after_own_report"],
+                        "released_by_later_report": expired_plant["released_by_later_report"],
+                    }
+                ),
+                expired_plant["disposition"] == "accepted"
+                and expired_plant["tier_rows_after_own_report"]["one_minute"] == 0
+                and expired_plant["tier_rows_after_own_report"]["five_minute"] == 0
+                and expired_plant["buckets_after_own_report"]["one_minute"]["found"] == 0
+                and expired_plant["buckets_after_own_report"]["five_minute"]["found"] == 0,
+            ),
+            check(
+                "a 29 day instant keeps its 5m bucket and loses its 1m bucket",
+                "1m rows 0, 5m rows "
+                + str(TIER_SERIES)
+                + ", one cpu bucket holding 44.5 with sampleCount 1",
+                json.dumps(
+                    {
+                        "age_seconds": surviving_plant["age_seconds"],
+                        "disposition": surviving_plant["disposition"],
+                        "tier_rows": surviving_plant["tier_rows_after_own_report"],
+                        "buckets": surviving_plant["buckets_after_own_report"],
+                        "released_by_later_report": surviving_plant["released_by_later_report"],
+                    }
+                ),
+                surviving_plant["disposition"] == "accepted"
+                and surviving_plant["tier_rows_after_own_report"]["one_minute"] == 0
+                and surviving_plant["tier_rows_after_own_report"]["five_minute"] == TIER_SERIES
+                and surviving_plant["buckets_after_own_report"]["one_minute"]["found"] == 0
+                and surviving_plant["buckets_after_own_report"]["five_minute"]["found"] == 1
+                and (surviving_plant["buckets_after_own_report"]["five_minute"]["row"] or {}).get("sample_count")
+                == 1
+                and (surviving_plant["buckets_after_own_report"]["five_minute"]["row"] or {}).get("min_value")
+                == 44.5
+                and (surviving_plant["buckets_after_own_report"]["five_minute"]["row"] or {}).get("max_value")
+                == 44.5,
+            ),
+            check(
+                "a later Report's cleanup pass releases nothing more for the planted instants",
+                "the later Report is accepted, releases 0 rows in both tiers for both plants, lands in both tiers itself, and leaves the tier Node's rows unchanged",
+                json.dumps(
+                    {
+                        "later_report": later_report,
+                        "expired_released": expired_plant["released_by_later_report"],
+                        "surviving_released": surviving_plant["released_by_later_report"],
+                        "tier_node_rows_after_probes": tier_storage["tier_row_counts_for_node"],
+                        "tier_node_rows_before_probes": tiers["tier_rows"],
+                    }
+                ),
+                later_report["disposition"] == "accepted"
+                and later_report["tier_rows"]["one_minute"] == TIER_SERIES
+                and later_report["tier_rows"]["five_minute"] == TIER_SERIES
+                and expired_plant["released_by_later_report"] == {"one_minute": 0, "five_minute": 0}
+                and surviving_plant["released_by_later_report"] == {"one_minute": 0, "five_minute": 0}
+                and tier_storage["tier_row_counts_for_node"] == tiers["tier_rows"],
+            ),
+            check(
+                "availability follows the investigation horizon, not the raw window",
+                "a 30 hour old range inside the 30 day horizon is answered rather than refused: "
+                "availability null, its one hourly instant answered by the 1m tier (1 item, grain "
+                "1m, source aggregate); a range that ends before the whole horizon answers "
+                "unavailable with its requested start preserved, 0 items and its effective start "
+                "clamped to the horizon. The issue #213 check above still expects the raw "
+                "window's rule for that same 30 hour old range.",
+                json.dumps(
+                    {
+                        "inside": {
+                            "availability": inside_horizon["availability"],
+                            "items": inside_horizon["items"],
+                            "grain": inside_horizon["grain"],
+                            "sources": inside_horizon["sources"],
+                            "grains": inside_horizon["grains"],
+                            "horizon_days": inside_horizon["history_horizon_days"],
+                            "requested_from": inside_horizon["requested_from"],
+                            "effective_from": inside_horizon["effective_from"],
+                        },
+                        "beyond": {
+                            "availability": beyond_horizon["availability"],
+                            "items": beyond_horizon["items"],
+                            "requested_from": beyond_horizon["requested_from"],
+                            "effective_from": beyond_horizon["effective_from"],
+                            "effective_to": beyond_horizon["effective_to"],
+                        },
+                    }
+                ),
+                inside_horizon["availability"] is None
+                # The tier Node counted one hourly instant there, past the raw
+                # window and inside the 1 minute tier, so the answer carries that
+                # one bucket and nothing else.
+                and inside_horizon["items"] == 1
+                and inside_horizon["grain"] == "1m"
+                and inside_horizon["sources"] == ["aggregate"]
+                and inside_horizon["history_horizon_days"]
+                == TIER_FIVE_MINUTE_WINDOW_SECONDS // 86400
+                and beyond_horizon["availability"] == "unavailable"
+                and beyond_horizon["items"] == 0
+                and beyond_horizon["requested_from"] is not None
+                and beyond_horizon["effective_from"] > beyond_horizon["requested_from"],
+            ),
+        ])
         return checks
 
     # -- orchestration -----------------------------------------------------
@@ -1748,7 +3028,12 @@ class BaselineRun:
         # database counts include the rows it added.
         multi_node = self.phase_multi_node()
         storage = self.phase_storage()
-        checks = self.evaluate(load, restatements, release, reads, multi_node, storage)
+        # The aggregate tier phase (issue #214) runs last: it seeds a backdated
+        # month, so it needs the earlier one-Node counts already read, and it takes
+        # a page-level storage baseline by stopping the Server, which phase_storage
+        # has already done.
+        tiers = self.phase_tiers()
+        checks = self.evaluate(load, restatements, release, reads, multi_node, tiers, storage)
         return {
             "issue": 213,
             "title": "Story 47 baseline: a measured 24 hour raw Node metric history",
@@ -1759,6 +3044,7 @@ class BaselineRun:
                 "release": release,
                 "reads": reads,
                 "multi_node": multi_node,
+                "tiers": tiers,
                 "storage": storage,
             },
             "checks": checks,
@@ -1768,7 +3054,6 @@ class BaselineRun:
                 "Agent-side collection was not measured: Reports came from the fixture through the real ingestion"
                 " path, not from a running platpulse-agent process.",
                 "One Agent, one Node and one mount were measured; no multi-disk or network filesystem deployment.",
-                "The aggregate tiers (one minute and five minute) belong to issue #214 and were not exercised.",
                 "The fixture reports only process_cpu_percent and process_memory_percent for the one measured"
                 " Node: data_directory_percent, peer_inbound_count and peer_outbound_count are carried by the"
                 " multi-Node clones below but their one-Node path has integration-test coverage only, not a"
@@ -1932,6 +3217,213 @@ def write_markdown_report(report: dict, path: Path) -> None:
         + str(drain["replay"]["before"]["expired"])
         + " -> "
         + str(drain["replay"]["after"]["expired"])
+    )
+    lines.append("")
+    tiers = report["phases"]["tiers"]
+    tier_planned = tiers["planned"]
+    tier_walk = tiers["walk"]
+    tier_storage = tiers["storage"]
+    lines.append("## Aggregate tiers (issue #214)")
+    lines.append("")
+    lines.append(
+        "- Seeded "
+        + str(tiers["seeded_reports"])
+        + " hourly Reports on a fresh Node over a declared "
+        + str(tier_planned["declared_span_seconds"])
+        + "s span, newest instant "
+        + str(tiers["instants"]["newest_age_seconds"])
+        + "s old: write latency p50 "
+        + str(tiers["write_latency_ms"]["p50_ms"])
+        + "ms, p95 "
+        + str(tiers["write_latency_ms"]["p95_ms"])
+        + "ms, max "
+        + str(tiers["write_latency_ms"]["max_ms"])
+        + "ms, "
+        + str(tiers["seed_wall_seconds"])
+        + "s wall"
+    )
+    lines.append(
+        "- Counted but not stored: node_metric_samples "
+        + str(tiers["raw_rows"]["total"])
+        + " rows (expired "
+        + str(tiers["raw_rows"]["expired"])
+        + "), ledger "
+        + str(tiers["reads"]["30d"]["observation_count"])
+        + " observations, tiers "
+        + str(tiers["tier_rows"]["total"])
+        + " rows over "
+        + str(tiers["tier_rows"]["distinct_buckets"])
+        + " (node, metric, bucket_start) coordinates and "
+        + str(tiers["tier_rows"]["distinct_series"])
+        + " series"
+    )
+    lines.append(
+        "- Buckets per series: "
+        + str(tier_planned["one_minute_buckets_per_series"])
+        + " one minute ("
+        + str(tiers["tier_rows"]["one_minute"])
+        + " rows), "
+        + str(tier_planned["five_minute_buckets_per_series"])
+        + " five minute ("
+        + str(tiers["tier_rows"]["five_minute"])
+        + " rows)"
+    )
+    for label in ("30d", "20h", "10d", "4d"):
+        entry = tiers["reads"][label]
+        lines.append(
+            "- Read "
+            + label
+            + ": "
+            + str(entry["items"])
+            + " items, grain "
+            + str(entry["grain"])
+            + ", sources "
+            + json.dumps(entry["sources"])
+            + ", availability "
+            + str(entry["availability"])
+            + ", series coverage "
+            + str(entry["series_coverage_seconds"])
+            + "s, truncated "
+            + str(entry["truncated"])
+            + ", continuation "
+            + str(entry["continuation"])
+            + ", gaps "
+            + str(entry["gaps"])
+            + " ("
+            + ",".join(str(kind) for kind in entry["gap_kinds"])
+            + ") max "
+            + str(entry["gap_max_seconds"])
+            + "s, "
+            + str(entry["latency_ms"])
+            + "ms, "
+            + human_bytes(entry["payload_bytes"])
+            + " payload"
+        )
+    inside_horizon = tiers["horizon"]["inside"]
+    beyond_horizon = tiers["horizon"]["beyond"]
+    lines.append(
+        "- Availability over a "
+        + str(inside_horizon["history_horizon_days"])
+        + " day horizon (raw window "
+        + str(inside_horizon["raw_retention_days"])
+        + " day): a 30 hour old range answers availability "
+        + json.dumps(inside_horizon["availability"])
+        + " with "
+        + str(inside_horizon["items"])
+        + " item (grain "
+        + str(inside_horizon["grain"])
+        + ", sources "
+        + json.dumps(inside_horizon["sources"])
+        + "); a range ending before the horizon answers "
+        + json.dumps(beyond_horizon["availability"])
+        + " with "
+        + str(beyond_horizon["items"])
+        + " items, its requested start "
+        + str(beyond_horizon["requested_from"])
+        + " preserved and its effective start clamped to "
+        + str(beyond_horizon["effective_from"])
+    )
+    thirty = tiers["reads"]["30d"]
+    lines.append(
+        "- 30 day grains: "
+        + json.dumps(
+            {
+                grain: {
+                    "points": found["points"],
+                    "minValue": found["minValue"],
+                    "maxValue": found["maxValue"],
+                    "sampleCount": found["sampleCount"],
+                    "sources": found["sources"],
+                }
+                for grain, found in thirty["grains"].items()
+            }
+        )
+    )
+    lines.append("- 30 day segments: " + json.dumps(thirty["segments"]))
+    lines.append(
+        "- Paging walk at limit "
+        + str(tier_walk["limit"])
+        + ": "
+        + str(tier_walk["pages"])
+        + " pages, "
+        + str(tier_walk["items"])
+        + " items, "
+        + str(tier_walk["distinct_coordinates"])
+        + " distinct coordinates, repeats "
+        + str(tier_walk["repeats"])
+        + ", missing "
+        + str(tier_walk["missing_from_walk"])
+        + ", extra "
+        + str(tier_walk["extra_in_walk"])
+        + ", same set as the single read "
+        + str(tier_walk["matches_single_read"])
+        + ", strictly descending "
+        + str(tier_walk["strictly_descending"])
+        + ", last page truncated "
+        + str(tier_walk["last_truncated"])
+        + " with continuation "
+        + str(tier_walk["last_continuation"])
+        + ", latency p50 "
+        + str(tier_walk["latency_ms"]["p50_ms"])
+        + "ms, p95 "
+        + str(tier_walk["latency_ms"]["p95_ms"])
+        + "ms, max "
+        + str(tier_walk["latency_ms"]["max_ms"])
+        + "ms, "
+        + human_bytes(tier_walk["payload_bytes_total"])
+        + " payload total"
+    )
+    lines.append(
+        "- Aggregate storage: "
+        + str(tier_storage["rows_added"])
+        + " rows added ("
+        + str(tier_storage["aggregate_rows_before"])
+        + " -> "
+        + str(tier_storage["aggregate_rows_after"])
+        + "), "
+        + str(tier_storage["bytes_per_bucket"])
+        + " bytes per bucket, "
+        + str(tier_storage["bytes_per_bucket_added"])
+        + " bytes per added bucket, "
+        + human_bytes(tier_storage["aggregate_bytes_after"])
+        + " in node_metric_aggregates plus indexes over "
+        + str(tier_storage["aggregate_footprint_after"]["pages"])
+        + " pages, database "
+        + human_bytes(tier_storage["database_bytes_before"])
+        + " -> "
+        + human_bytes(tier_storage["database_bytes_after"])
+        + " ("
+        + str(tier_storage["pages_added"])
+        + " pages, "
+        + human_bytes(tier_storage["database_bytes_added"])
+        + ")"
+    )
+    lines.append("- Bytes per tier: " + json.dumps(tier_storage["bytes_per_tier"]))
+    for plant in tiers["planted"]["plants"]:
+        lines.append(
+            "- Planted "
+            + plant["kind"]
+            + " instant "
+            + str(plant["age_seconds"])
+            + "s old ("
+            + str(plant["disposition"])
+            + "): tiers "
+            + json.dumps(plant["tier_rows_after_own_report"])
+            + ", one minute bucket found "
+            + str(plant["buckets_after_own_report"]["one_minute"]["found"])
+            + ", five minute bucket found "
+            + str(plant["buckets_after_own_report"]["five_minute"]["found"])
+            + ", released by the later Report "
+            + json.dumps(plant["released_by_later_report"])
+        )
+    later_report = tiers["planted"]["later_report"]
+    lines.append(
+        "- Later Report ("
+        + str(later_report["disposition"])
+        + ", observed "
+        + later_report["observed_at"]
+        + "): its own tiers "
+        + json.dumps(later_report["tier_rows"])
     )
     lines.append("")
     lines.append("## Checks")

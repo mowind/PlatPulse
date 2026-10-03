@@ -50,6 +50,11 @@ pub const FAMILY_RAW_BLOCK_SUMMARY: &str = "raw_block_summary";
 /// editing may not shorten it below the Raw class floor.
 pub const FAMILY_RAW_METRIC_SAMPLE: &str = "raw_metric_sample";
 pub const FAMILY_ONE_MINUTE_AGGREGATE: &str = "one_minute_aggregate";
+/// The 5-minute aggregate tier beyond the raw window (issue #214, design
+/// §11.6). This family carries the registered 30-day investigation floor for
+/// metric history: widening the raw window is not what makes an old stretch
+/// answerable, the bucket is.
+pub const FAMILY_FIVE_MINUTE_AGGREGATE: &str = "five_minute_aggregate";
 pub const FAMILY_ONE_HOUR_AGGREGATE: &str = "one_hour_aggregate";
 pub const FAMILY_HISTORY_GAP: &str = "history_gap";
 pub const FAMILY_DIVERGENCE_OBSERVATION: &str = "divergence_observation";
@@ -208,6 +213,44 @@ const TARGET_RAW_METRIC_SAMPLES: &[CleanupTarget] = &[
     },
 ];
 
+/// Rows one aggregate-tier cleanup batch may release.
+///
+/// Each tier's delete is filtered to its own grain, so one accepted Report adds
+/// at most MAX_NODE_OBSERVATIONS x 5 rows to it (one bucket per Node metric
+/// series and tier); 2048 leaves headroom for that protocol maximum, exactly as
+/// the raw sample batch does. Without a per-Report bound the tier a Report keeps
+/// feeding would grow for as long as the process stays up, because its expired
+/// rows only appear once its own window has passed.
+const AGGREGATE_CLEANUP_BATCH: i64 = 2048;
+
+/// See NODE_METRIC_CLEANUP_BATCH: a bound below the rows one maximal Report can
+/// add to a single grain would let the backlog grow at steady state.
+const _: () = assert!(
+    AGGREGATE_CLEANUP_BATCH >= platpulse_core::protocol::MAX_NODE_OBSERVATIONS as i64 * 5,
+    "the per-Report aggregate batch must cover one maximal Report"
+);
+
+/// The 1-minute tier the design §11.6 window declares: a bucket is kept for the
+/// 7 days the reader can still be served at that grain, and the delete is a
+/// range read of the node_metric_aggregates_expiry_idx index (grain_seconds,
+/// bucket_start), never a scan of the whole tier.
+const TARGET_ONE_MINUTE_AGGREGATES: &[CleanupTarget] = &[CleanupTarget {
+    table: "node_metric_aggregates",
+    kind: CleanupKind::Delete,
+    count_sql: "SELECT COUNT(*) FROM node_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < ?",
+    delete_sql: "DELETE FROM node_metric_aggregates WHERE rowid IN (SELECT rowid FROM node_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < ? ORDER BY bucket_start LIMIT 2048)",
+}];
+
+/// The 5-minute tier, kept for the whole 30-day investigation horizon. It is the
+/// tier that answers the stretches the 1-minute tier has already released, so it
+/// must outlive it by construction.
+const TARGET_FIVE_MINUTE_AGGREGATES: &[CleanupTarget] = &[CleanupTarget {
+    table: "node_metric_aggregates",
+    kind: CleanupKind::Delete,
+    count_sql: "SELECT COUNT(*) FROM node_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < ?",
+    delete_sql: "DELETE FROM node_metric_aggregates WHERE rowid IN (SELECT rowid FROM node_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < ? ORDER BY bucket_start LIMIT 2048)",
+}];
+
 /// Stamp the series the incoming cutoff may release evidence for.
 ///
 /// Deleting a row destroys the Server's ability to answer "did this series
@@ -300,7 +343,7 @@ const TARGET_RECEIPT_BODIES: &[CleanupTarget] = &[CleanupTarget {
     delete_sql: "",
 }];
 
-pub const POLICY_CATALOG: [PolicyDefaults; 14] = [
+pub const POLICY_CATALOG: [PolicyDefaults; 15] = [
     PolicyDefaults {
         family: FAMILY_RAW_BLOCK_SUMMARY,
         label: "Raw Block Summaries",
@@ -327,12 +370,30 @@ pub const POLICY_CATALOG: [PolicyDefaults; 14] = [
     PolicyDefaults {
         family: FAMILY_ONE_MINUTE_AGGREGATE,
         label: "1-Minute Aggregates",
-        default_days: 90,
+        // The finer-resolution tier serves the stretch between the raw window
+        // and 7 days (design §11.6). Its window is its contract: a bucket kept
+        // beyond what the reader can be served at this grain is storage nobody
+        // asks for, and a shorter one would leave a hole between the raw window
+        // and the 5-minute tier. So the bound is fixed at 7 days.
+        default_days: 7,
         min_days: 7,
-        max_days: 365,
-        supported: false,
+        max_days: 7,
+        supported: true,
         class: PolicyClass::Contract,
-        targets: NO_CLEANUP_TARGETS,
+        targets: TARGET_ONE_MINUTE_AGGREGATES,
+    },
+    PolicyDefaults {
+        family: FAMILY_FIVE_MINUTE_AGGREGATE,
+        label: "5-Minute Aggregates",
+        // The coarse tier carries the investigation horizon: 30 days is both the
+        // window the reader may ask for and the registered floor of this family
+        // (design §11.4, §11.6).
+        default_days: MIN_INVESTIGATION_AGGREGATE_DAYS,
+        min_days: MIN_INVESTIGATION_AGGREGATE_DAYS,
+        max_days: MIN_INVESTIGATION_AGGREGATE_DAYS,
+        supported: true,
+        class: PolicyClass::Investigation,
+        targets: TARGET_FIVE_MINUTE_AGGREGATES,
     },
     PolicyDefaults {
         family: FAMILY_ONE_HOUR_AGGREGATE,
@@ -542,6 +603,44 @@ pub fn family_cutoff(now: time::OffsetDateTime, retention_days: i64) -> time::Of
     now - time::Duration::days(retention_days)
 }
 
+/// The width of one bucket of an aggregate tier, in seconds. Only the two tiers
+/// node_metric_aggregates holds have one.
+fn aggregate_grain_seconds(family: &str) -> Option<i64> {
+    match family {
+        FAMILY_ONE_MINUTE_AGGREGATE => Some(crate::metric_history::ONE_MINUTE_SECONDS),
+        FAMILY_FIVE_MINUTE_AGGREGATE => Some(crate::metric_history::FIVE_MINUTE_SECONDS),
+        _ => None,
+    }
+}
+
+/// The instant a family's cleanup actually releases evidence at (review F2).
+///
+/// For every family but the aggregate tiers this is the family cutoff itself.
+/// An aggregate tier releases its rows one bucket width behind that cutoff,
+/// because a row of this table IS a bucket: the bucket the cutoff falls inside
+/// also holds observations that are still inside the window, and once the row is
+/// gone the reader has no evidence left for those instants at all - the reader
+/// aligns its own region floor down to that bucket's boundary for exactly that
+/// reason (metric_history::load_range). Deleting only a bucket that ends before
+/// the cutoff is the same statement as deleting only a bucket whose own
+/// observations are all expired: every observation counted into a bucket is
+/// stamped before its bucket ends, so a bucket with bucket_start + width <=
+/// cutoff holds nothing inside the window, and no bucket whose observations
+/// reach the window can satisfy it. The cost is one bucket of extra storage per
+/// tier at the boundary, and the guarantee is that a stretch the reader may
+/// still ask for is never released early.
+pub fn release_cutoff(
+    family: &str,
+    retention_days: i64,
+    now: time::OffsetDateTime,
+) -> time::OffsetDateTime {
+    let cutoff = family_cutoff(now, retention_days);
+    match aggregate_grain_seconds(family) {
+        Some(grain) => cutoff - time::Duration::seconds(grain),
+        None => cutoff,
+    }
+}
+
 /// RFC3339 cutoff before which raw summaries may be removed.
 pub fn raw_block_summary_cutoff(now: time::OffsetDateTime) -> time::OffsetDateTime {
     family_cutoff(now, RAW_BLOCK_SUMMARY_RETENTION_DAYS)
@@ -667,23 +766,95 @@ pub async fn cleanup_expired_metric_samples(
     Ok(removed)
 }
 
+/// Read the persisted window of one aggregate tier.
+///
+/// The catalog default is the fallback for a database that has not been seeded
+/// yet, exactly as the raw families do it: a tier whose window is fixed cannot
+/// have been widened by an edit, but it must still be read rather than assumed,
+/// because the policy table is the single place an Operator can see.
+async fn aggregate_retention_days(pool: &SqlitePool, family: &str) -> Result<i64, sqlx::Error> {
+    let Some(catalog) = catalog_family(family) else {
+        return Ok(0);
+    };
+    if aggregate_grain_seconds(family).is_some() {
+        // The stored rows of this family are buckets, and the stretch a bucket
+        // can still be served for IS the tier's window: it has exactly one legal
+        // value, so the catalog is the window (review F4). A row that says
+        // otherwise - a pre-#214 placeholder, or a number an operator set while
+        // the surface still offered a range - must not make the automatic
+        // cleanup retain buckets the reader can never be served. ensure_seeded
+        // restores the catalog tuple, and this clamp keeps the window right even
+        // on a database whose seeding has not run yet.
+        return Ok(catalog.default_days);
+    }
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT retention_days FROM retention_policies WHERE family = ?",
+    )
+    .bind(family)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or(catalog.default_days))
+}
+
+/// Delete at most one bounded batch of expired aggregate buckets per tier.
+///
+/// Each tier is expired by its own window, so the 1-minute buckets leave first
+/// while the 5-minute buckets covering the same stretch stay: that is what makes
+/// an old bucket unrecoverable as raw samples and still answerable at a coarser
+/// grain (design §11.6, issue #214). Nothing here touches the raw samples, the
+/// series ledger, or the aggregate rows the reader can still be served.
+pub async fn cleanup_expired_metric_aggregates(
+    pool: &SqlitePool,
+    now: time::OffsetDateTime,
+) -> Result<u64, sqlx::Error> {
+    let mut removed = 0;
+    for family in [FAMILY_ONE_MINUTE_AGGREGATE, FAMILY_FIVE_MINUTE_AGGREGATE] {
+        let retention_days = aggregate_retention_days(pool, family).await?;
+        if retention_days <= 0 {
+            // A keep-forever window has no cutoff, so it can never expire a row.
+            continue;
+        }
+        // One bucket width behind the policy cutoff: a bucket is released only
+        // once every observation it counted is outside the window (review F2).
+        let cutoff = crate::auth::format_rfc3339(release_cutoff(family, retention_days, now));
+        for target in catalog_targets(family) {
+            removed += sqlx::query(target.delete_sql)
+                .bind(&cutoff)
+                .execute(pool)
+                .await?
+                .rows_affected();
+        }
+    }
+    Ok(removed)
+}
+
 /// Idempotent policy seeding with the design §11.3 defaults. Safe to call
-/// at startup and from read handlers; existing rows are never rewritten.
+/// at startup and from read handlers.
+///
+/// A family whose stored rows are buckets is the one exception to leave the
+/// existing row alone (review F4): its window is its contract, so its catalog
+/// tuple is restored - but only while the row still disagrees with it, and only
+/// the four columns the contract is made of. What an operator chose stays
+/// visible in the audit trail, and a window the update path would refuse cannot
+/// be kept alive by a row that predates the tier.
 pub async fn ensure_seeded(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let mut tx = pool.begin().await?;
     for policy in POLICY_CATALOG {
-        sqlx::query(
-            "INSERT OR IGNORE INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, 1, ?, 'defaults')",
-        )
-        .bind(policy.family)
-        .bind(policy.default_days)
-        .bind(policy.min_days)
-        .bind(policy.max_days)
-        .bind(policy.supported as i64)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await?;
+        let sql = if aggregate_grain_seconds(policy.family).is_some() {
+            "INSERT INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, 1, ?, 'defaults') ON CONFLICT(family) DO UPDATE SET retention_days = excluded.retention_days, min_days = excluded.min_days, max_days = excluded.max_days, supported = excluded.supported WHERE retention_policies.retention_days <> excluded.retention_days OR retention_policies.min_days <> excluded.min_days OR retention_policies.max_days <> excluded.max_days OR retention_policies.supported <> excluded.supported"
+        } else {
+            "INSERT OR IGNORE INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, 1, ?, 'defaults')"
+        };
+        sqlx::query(sql)
+            .bind(policy.family)
+            .bind(policy.default_days)
+            .bind(policy.min_days)
+            .bind(policy.max_days)
+            .bind(policy.supported as i64)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
     }
     tx.commit().await
 }
@@ -831,7 +1002,9 @@ pub async fn plan_family_targets(
     if retention_days == 0 {
         return Ok(Vec::new());
     }
-    let cutoff = crate::auth::format_rfc3339(family_cutoff(now, retention_days));
+    // The estimate counts against the same instant the cleanup deletes at, so a
+    // preview never promises a release the run would not perform.
+    let cutoff = crate::auth::format_rfc3339(release_cutoff(family, retention_days, now));
     count_targets(pool, family, &cutoff).await
 }
 
@@ -1104,7 +1277,8 @@ pub async fn create_preview(
             }
             continue;
         }
-        let cutoff = crate::auth::format_rfc3339(family_cutoff(now, policy.retention_days));
+        let cutoff =
+            crate::auth::format_rfc3339(release_cutoff(&policy.family, policy.retention_days, now));
         let targets = count_targets(pool, &policy.family, &cutoff).await?;
         let estimated_rows = targets.iter().map(|target| target.total).sum();
         preview_families.push(PreviewFamily {
@@ -2550,7 +2724,9 @@ mod tests {
         assert_eq!(count, POLICY_CATALOG.len() as i64);
 
         let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
-        let (estimated, unsupported) = estimate_impact(pool, "one_minute_aggregate", 90, now)
+        // Issue #214 made one_minute_aggregate a produced family, so the
+        // not-yet-produced example is the 1-hour tier the design still defers.
+        let (estimated, unsupported) = estimate_impact(pool, FAMILY_ONE_HOUR_AGGREGATE, 90, now)
             .await
             .unwrap();
         assert!(unsupported);
@@ -2561,6 +2737,275 @@ mod tests {
         assert!(!unsupported);
         assert_eq!(estimated, 0);
     }
+    /// Issue #214: the 1-minute tier serves the stretch between the raw window
+    /// and 7 days and the 5-minute tier the 30-day investigation horizon, so a
+    /// bucket is released by its own grain: a 10-day-old bucket survives the
+    /// fine tier's cleanup exactly because only the coarse tier still answers
+    /// it, and widening the read therefore never recovers raw samples.
+    #[tokio::test]
+    async fn metric_aggregate_cleanup_expires_each_tier_by_its_own_window() {
+        let one_minute = catalog_family(FAMILY_ONE_MINUTE_AGGREGATE).unwrap();
+        assert!(one_minute.supported);
+        assert_eq!(one_minute.default_days, 7);
+        assert_eq!(one_minute.max_days, 7);
+        assert!(validate_policy_days(FAMILY_ONE_MINUTE_AGGREGATE, 8).is_err());
+        assert_eq!(validate_policy_days(FAMILY_ONE_MINUTE_AGGREGATE, 7), Ok(()));
+        let five_minute = catalog_family(FAMILY_FIVE_MINUTE_AGGREGATE).unwrap();
+        assert!(five_minute.supported);
+        assert_eq!(five_minute.class, PolicyClass::Investigation);
+        assert_eq!(five_minute.default_days, MIN_INVESTIGATION_AGGREGATE_DAYS);
+        assert!(
+            validate_policy_days(FAMILY_FIVE_MINUTE_AGGREGATE, 4).is_err(),
+            "the coarse tier cannot be shortened below the investigation floor"
+        );
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pool = database.pool();
+        let now = crate::auth::now_utc();
+        let now_text = crate::auth::format_rfc3339(now);
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('tier-network', 'Tier', '0xgenesis', 1, 1, 'lat', ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('tier-agent', 1, ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('tier-node', 'tier-agent', 'tier-network', 'ws://127.0.0.1:1', 'active', 'private', 1, ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        let insert = "INSERT INTO node_metric_aggregates (node_id, metric, grain_seconds, bucket_start, sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at, last_received_at, updated_at) VALUES ('tier-node', 'process_cpu_percent', ?, ?, 1, 1.0, 2.0, 2.0, ?, ?, ?, ?)";
+        let expired = "2020-01-01T00:00:00Z";
+        let mid = crate::auth::format_rfc3339(now - time::Duration::days(10));
+        for (grain, bucket) in [
+            (60_i64, expired),
+            (60, now_text.as_str()),
+            (300, expired),
+            (300, mid.as_str()),
+            (300, now_text.as_str()),
+        ] {
+            sqlx::query(insert)
+                .bind(grain)
+                .bind(bucket)
+                .bind(bucket)
+                .bind(bucket)
+                .bind(bucket)
+                .bind(&now_text)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        ensure_seeded(pool).await.unwrap();
+
+        let removed = cleanup_expired_metric_aggregates(pool, now).await.unwrap();
+        assert_eq!(removed, 2, "one expired bucket per tier, nothing else");
+        let remaining: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT grain_seconds, bucket_start FROM node_metric_aggregates ORDER BY grain_seconds, bucket_start",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            remaining,
+            vec![
+                (60, now_text.clone()),
+                (300, mid.clone()),
+                (300, now_text.clone()),
+            ],
+            "each tier releases only what its own window has passed"
+        );
+        // The tier a widened read can no longer be served leaves while the
+        // buckets that still answer the same stretch stay behind, and the raw
+        // samples are not part of this cleanup at all.
+        let raw_owned: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM node_metric_aggregates WHERE grain_seconds = 60",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(raw_owned, 1);
+    }
+
+    /// Issue #214 review F2: a bucket is released only once every observation it
+    /// counted is outside the window. The cutoff falls inside a bucket whose
+    /// first observations are already expired, and that bucket is the only
+    /// evidence left for the stretch just inside the horizon, so the cleanup
+    /// leaves it behind - and the read aligns its own floor down to the same
+    /// boundary, so nothing inside the horizon is unanswerable.
+    #[tokio::test]
+    async fn aggregate_cleanup_keeps_the_bucket_the_cutoff_falls_inside() {
+        let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        assert_eq!(
+            release_cutoff(FAMILY_FIVE_MINUTE_AGGREGATE, 30, now),
+            family_cutoff(now, 30) - time::Duration::seconds(300),
+            "an aggregate tier releases one bucket width behind its own cutoff"
+        );
+        assert_eq!(
+            release_cutoff(FAMILY_ONE_MINUTE_AGGREGATE, 7, now),
+            family_cutoff(now, 7) - time::Duration::seconds(60)
+        );
+        assert_eq!(
+            release_cutoff(FAMILY_RAW_METRIC_SAMPLE, 1, now),
+            family_cutoff(now, 1),
+            "a family whose rows are not buckets releases at its own cutoff"
+        );
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pool = database.pool();
+        let now = crate::auth::now_utc();
+        let now_text = crate::auth::format_rfc3339(now);
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('tier-network', 'Tier', '0xgenesis', 1, 1, 'lat', ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('tier-agent', 1, ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('tier-node', 'tier-agent', 'tier-network', 'ws://127.0.0.1:1', 'active', 'private', 1, ?, ?)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        let insert = "INSERT INTO node_metric_aggregates (node_id, metric, grain_seconds, bucket_start, sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at, last_received_at, updated_at) VALUES ('tier-node', 'process_cpu_percent', ?, ?, 1, 1.0, 2.0, 2.0, ?, ?, ?, ?)";
+        // The bucket the seven-day cutoff falls inside: it starts before the
+        // cutoff and reaches past it.
+        let minute_straddler = crate::auth::format_rfc3339(
+            now - time::Duration::days(7) - time::Duration::seconds(30),
+        );
+        // The bucket the thirty-day cutoff falls inside, and a bucket whose own
+        // window has been passed entirely.
+        let straddler = crate::auth::format_rfc3339(
+            now - time::Duration::days(30) - time::Duration::seconds(120),
+        );
+        let released = crate::auth::format_rfc3339(
+            now - time::Duration::days(30) - time::Duration::seconds(700),
+        );
+        let inside = crate::auth::format_rfc3339(
+            now - time::Duration::days(30) + time::Duration::seconds(600),
+        );
+        for (grain, bucket) in [
+            (60_i64, minute_straddler.as_str()),
+            (300, straddler.as_str()),
+            (300, released.as_str()),
+            (300, inside.as_str()),
+        ] {
+            sqlx::query(insert)
+                .bind(grain)
+                .bind(bucket)
+                .bind(bucket)
+                .bind(bucket)
+                .bind(bucket)
+                .bind(&now_text)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        ensure_seeded(pool).await.unwrap();
+        assert_eq!(
+            aggregate_retention_days(pool, FAMILY_ONE_MINUTE_AGGREGATE)
+                .await
+                .unwrap(),
+            7
+        );
+        assert_eq!(
+            aggregate_retention_days(pool, FAMILY_FIVE_MINUTE_AGGREGATE)
+                .await
+                .unwrap(),
+            30
+        );
+
+        let removed = cleanup_expired_metric_aggregates(pool, now).await.unwrap();
+        assert_eq!(
+            removed, 1,
+            "only a bucket whose own observations have all expired leaves"
+        );
+        let remaining: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT grain_seconds, bucket_start FROM node_metric_aggregates ORDER BY grain_seconds, bucket_start",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            remaining,
+            vec![(60, minute_straddler), (300, straddler), (300, inside),],
+            "the buckets that still hold an observation inside their window stay"
+        );
+    }
+
+    /// Issue #214 review F4: the stored window of an aggregate tier is the
+    /// tier's contract, so seeding restores the catalog tuple of that family -
+    /// while the operator's own record of the value (who set it, when, and
+    /// whether the family is enabled) is left as it is.
+    #[tokio::test]
+    async fn seeding_restores_the_tier_contract_and_keeps_the_operator_record() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pool = database.pool();
+        ensure_seeded(pool).await.unwrap();
+        sqlx::query(
+            "UPDATE retention_policies SET retention_days = 30, min_days = 7, max_days = 365, supported = 0, enabled = 0, updated_by = 'owner-1' WHERE family = 'one_minute_aggregate'",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        // The cleanup reads the contract, not the stale row, even before any
+        // seeding has repaired it.
+        assert_eq!(
+            aggregate_retention_days(pool, FAMILY_ONE_MINUTE_AGGREGATE)
+                .await
+                .unwrap(),
+            7
+        );
+
+        ensure_seeded(pool).await.unwrap();
+        let stored: (i64, i64, i64, i64, i64, Option<String>) = sqlx::query_as(
+            "SELECT retention_days, min_days, max_days, supported, enabled, updated_by FROM retention_policies WHERE family = 'one_minute_aggregate'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            stored,
+            (7, 7, 7, 1, 0, Some("owner-1".to_owned())),
+            "the contract is restored; the operator's own setting and record are not rewritten"
+        );
+        // The family the operator left alone is not rewritten either.
+        let raw: (i64, i64, i64) = sqlx::query_as(
+            "SELECT retention_days, min_days, max_days FROM retention_policies WHERE family = 'raw_metric_sample'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(raw, (1, 1, 30));
+    }
+
     /// Issue #210: the compiled catalog is the contract itself. A family cannot
     /// be onboarded below its class floor, and both investigation floors are
     /// carried by families the Server actually produces.
@@ -2571,7 +3016,14 @@ mod tests {
         assert_eq!(raw.class, PolicyClass::Raw);
         assert_eq!(raw.safety_floor_days(), MIN_INVESTIGATION_RAW_DAYS);
         assert!(raw.safety_floor_days() * 24 >= MIN_INVESTIGATION_RAW_HOURS);
-        for family in [FAMILY_HISTORY_GAP, FAMILY_DIVERGENCE_OBSERVATION] {
+        // Issue #214: the coarse metric tier is the family that carries the
+        // investigation horizon for Node metric history, so it must respect the
+        // same 30-day floor the other investigation families do.
+        for family in [
+            FAMILY_HISTORY_GAP,
+            FAMILY_DIVERGENCE_OBSERVATION,
+            FAMILY_FIVE_MINUTE_AGGREGATE,
+        ] {
             let entry = catalog_family(family).unwrap();
             assert_eq!(entry.class, PolicyClass::Investigation);
             assert_eq!(entry.class.floor_days(), MIN_INVESTIGATION_AGGREGATE_DAYS);
@@ -2580,7 +3032,8 @@ mod tests {
                 "{family} must respect the 30-day investigation floor"
             );
         }
-        for family in [FAMILY_ONE_MINUTE_AGGREGATE, FAMILY_ONE_HOUR_AGGREGATE] {
+        {
+            let family = FAMILY_ONE_HOUR_AGGREGATE;
             let entry = catalog_family(family).unwrap();
             assert!(!entry.supported, "{family} is not produced in this phase");
             assert!(
@@ -2956,7 +3409,7 @@ mod tests {
             "owner-1",
             Some(vec![
                 FAMILY_RAW_BLOCK_SUMMARY.to_owned(),
-                FAMILY_ONE_MINUTE_AGGREGATE.to_owned(),
+                FAMILY_ONE_HOUR_AGGREGATE.to_owned(),
             ]),
             now,
         )
@@ -2964,7 +3417,7 @@ mod tests {
         .unwrap();
         assert_eq!(preview.families.len(), 1);
         assert_eq!(preview.skipped.len(), 1);
-        assert_eq!(preview.skipped[0].family, FAMILY_ONE_MINUTE_AGGREGATE);
+        assert_eq!(preview.skipped[0].family, FAMILY_ONE_HOUR_AGGREGATE);
         assert_eq!(preview.skipped[0].code, "retention_unsupported");
     }
 

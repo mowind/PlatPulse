@@ -452,6 +452,7 @@ pub struct AdminNodePurgeCounts {
     pub observed_network_heads: i64,
     pub metric_samples: i64,
     pub metric_series_state: i64,
+    pub metric_aggregates: i64,
     pub capacity_skipped_series: i64,
     pub validator_links: i64,
     pub validator_identity_status: i64,
@@ -525,6 +526,7 @@ fn node_purge_counts(counts: crate::node_purge::NodePurgeCounts) -> AdminNodePur
         observed_network_heads: counts.observed_network_heads,
         metric_samples: counts.metric_samples,
         metric_series_state: counts.metric_series_state,
+        metric_aggregates: counts.metric_aggregates,
         capacity_skipped_series: counts.capacity_skipped_series,
         validator_links: counts.validator_links,
         validator_identity_status: counts.validator_identity_status,
@@ -4328,6 +4330,9 @@ struct AdminMetricHistoryQuery {
     metric: Option<String>,
     from: Option<String>,
     to: Option<String>,
+    /// Exclusive upper bound of a paging request: the continuation coordinate a
+    /// previous truncated answer returned.
+    before: Option<String>,
     limit: Option<i64>,
 }
 
@@ -4335,12 +4340,47 @@ struct AdminMetricHistoryQuery {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminNodeMetricSample {
+    /// The point's coordinate: the observation instant of a raw sample, or the
+    /// aligned start of an aggregate bucket.
     pub observed_at: String,
+    /// For a raw sample, the receipt that carried it. For a bucket, the receipt
+    /// of the bucket's newest observation.
     pub received_at: String,
+    /// A raw sample's value, or a bucket's newest value.
     pub value: f64,
-    /// `received_at - observed_at` for this very sample, so spool and transport
-    /// delay are visible per observation. Unknown when either timestamp is
-    /// unusable — never reported as zero.
+    /// The grain this point was served at: `raw`, `1m` or `5m`.
+    pub grain: String,
+    /// `raw` for a stored observation, `aggregate` for a bucket that
+    /// summarizes observations the raw window no longer holds.
+    pub source: String,
+    /// The extremes of the observations behind this point. A raw sample is its
+    /// own extreme; a bucket keeps the spike the raw samples would have shown.
+    pub min_value: f64,
+    pub max_value: f64,
+    /// Observations behind this point: 1 for a raw sample, the bucket's counted
+    /// observations for a bucket. A thin bucket says so here instead of looking
+    /// like a closed stretch.
+    pub sample_count: i64,
+    /// The newest observation this point holds. Equal to `observedAt` for a raw
+    /// sample; for a bucket it is the instant inside the bucket that delay and
+    /// clock suspicion are measured from.
+    pub last_observed_at: String,
+    /// The oldest observation this point holds: the other end of the stretch it
+    /// really testifies to, and equal to `observedAt` for a raw sample. A bucket
+    /// whose two ends are far apart states a span, not continuity - a surface
+    /// that says how long the point covers must measure it between these two
+    /// instants, never from the bucket's own aligned start (review F1).
+    pub first_observed_at: String,
+    /// The widest interval the bucket recorded between two of its consecutive
+    /// observations (0 for a raw sample, and for a bucket that counted one).
+    /// This is measured evidence about the inside of a bucket: a surface can
+    /// compare it with the cadence it sees and draw a line break where the
+    /// Server proved a hole instead of a continuous stretch. Zero means the
+    /// observations it counted were contiguous, never that nobody measured.
+    pub max_gap_seconds: i64,
+    /// `received_at - last_observed_at` for this very point, so spool and
+    /// transport delay are visible per observation. Unknown when either
+    /// timestamp is unusable — never reported as zero.
     pub delay_seconds: Option<i64>,
     /// The observation is stamped after the receipt: the Agent clock is ahead.
     pub clock_suspect: bool,
@@ -4407,36 +4447,74 @@ pub struct AdminNodeMetricSeries {
     pub latest_clock_suspect: bool,
 }
 
-/// Owner-only raw metric history for one Node series (issue #213, design
-/// §11.4): the stored observations, the silences between them, and the state of
-/// the series behind them.
+/// One tier's stretch of a metric-history answer.
+///
+/// It tells the caller which grain answered which stretch, so no surface has to
+/// infer the resolution from the points themselves or present a bucket as if it
+/// were a sample (design §11.6).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminNodeMetricSegment {
+    /// The stretch this segment answers: the older end inclusive, the newer end
+    /// exclusive, matching what the reader asked of the tier.
+    pub from: String,
+    pub to: String,
+    /// `raw`, `1m` or `5m`.
+    pub grain: String,
+    /// `raw` or `aggregate`.
+    pub source: String,
+    /// Points this answer carries for the segment.
+    pub point_count: i64,
+    /// True when the segment hit the answer's limit, so the stretch holds more
+    /// evidence than this answer carries for it.
+    pub truncated: bool,
+}
+
+/// Owner-only metric history for one Node series (issues #213 and #214, design
+/// §11.4 and §11.6): the stored observations of the raw window, the aggregate
+/// buckets that answer the stretches beyond it, the silences between them, and
+/// the state of the series behind them.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminNodeMetricHistoryResponse {
     pub node_id: String,
     pub metric: String,
-    /// The answered range, after clamping to the retained raw window.
+    /// The answered range, after clamping to the investigation horizon.
     pub from: String,
+    /// The answered range's end: the requested `to`, or the exclusive paging
+    /// cursor when the caller paged with `before`.
     pub to: String,
-    /// The range the caller asked for, so a clamped answer says what it
-    /// clamped.
+    /// The range the caller asked for, so a clamped or paged answer says what it
+    /// clamped or narrowed.
     pub requested_from: String,
-    /// `None` while the whole requested range is retained, `partial` when it
-    /// was clamped to the raw window, `unavailable` when it is older than the
-    /// retained raw history.
+    /// `None` while the whole requested range is answerable, `partial` when it
+    /// was clamped to the investigation horizon, `unavailable` when it is older
+    /// than any retained history.
     pub availability: Option<String>,
+    /// The configured raw window, which decides where the raw tier ends.
     pub raw_retention_days: i64,
+    /// The oldest age any tier answers, in days: the investigation horizon the
+    /// 5-minute tier and its retention family both declare.
+    pub history_horizon_days: i64,
+    /// The finest grain this answer carries: `raw`, `1m`, `5m`, or `none`
+    /// when no tier holds anything for the requested range.
     pub grain: String,
-    /// The 1-minute/5-minute aggregate tiers belong to issue #214.
+    /// True while the Server serves the 1-minute and 5-minute tiers for the
+    /// stretches older than the raw window (issue #214).
     pub aggregate_supported: bool,
+    /// Which tier answered which stretch, oldest stretch first.
+    pub segments: Vec<AdminNodeMetricSegment>,
     pub items: Vec<AdminNodeMetricSample>,
     pub gaps: Vec<AdminNodeMetricGap>,
     pub series: AdminNodeMetricSeries,
     pub window_seconds: i64,
-    /// True when the window held more samples than the caller's limit: the
-    /// newest samples are returned and the rest is reported, never dropped
-    /// silently.
+    /// True when any tier had more evidence than the caller's limit: the newest
+    /// points are returned and the rest is reported, never dropped silently.
     pub truncated: bool,
+    /// When the answer is truncated, the coordinate to pass back as `before` for
+    /// the next, older page. `None` when the answer reaches the oldest end of
+    /// the requested range.
+    pub continuation: Option<String>,
 }
 
 #[utoipa::path(
@@ -4448,7 +4526,8 @@ pub struct AdminNodeMetricHistoryResponse {
         ("metric" = String, Query, description = "Stored Node metric series"),
         ("from" = Option<String>, Query, description = "Canonical RFC 3339 UTC start of the range, second precision (default: 24 hours before to)"),
         ("to" = Option<String>, Query, description = "Canonical RFC 3339 UTC end of the range, second precision (default: now)"),
-        ("limit" = Option<i64>, Query, minimum = 1, maximum = 20000, description = "Maximum raw samples")
+        ("before" = Option<String>, Query, description = "Canonical RFC 3339 UTC exclusive upper bound for paging: the continuation coordinate a truncated answer returned"),
+        ("limit" = Option<i64>, Query, minimum = 1, maximum = 20000, description = "Maximum points across every tier")
     ),
     responses(
         (status = 200, body = AdminNodeMetricHistoryResponse),
@@ -4535,6 +4614,22 @@ async fn admin_node_metric_history(
     if from > to {
         return invalid_range();
     }
+    // A paging cursor narrows the answer to the evidence older than a
+    // coordinate the caller has already seen, so it must sit strictly inside the
+    // requested range: a cursor outside it would answer a stretch nobody asked
+    // about.
+    let before = match params.before.as_deref() {
+        Some(value) => match crate::metric_history::canonical_instant(value) {
+            Some(value) => Some(value),
+            None => return invalid_range(),
+        },
+        None => None,
+    };
+    if let Some(before) = before
+        && (before <= from || before > to)
+    {
+        return invalid_range();
+    }
     match sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id=?")
         .bind(&node_id)
         .fetch_optional(state.db().pool())
@@ -4551,57 +4646,119 @@ async fn admin_node_metric_history(
         }
         Err(_) => return unavailable(),
     }
-    // The raw window is a fact of the retention policy, not of the answer: the
-    // range is clamped to it and the clamping is reported.
-    let cutoff = crate::retention::family_cutoff(now, raw_retention_days);
-    let availability = if from >= cutoff {
+    // How far back history can be answered is a fact of the retention policy,
+    // not of the answer: the range is clamped to the investigation horizon and
+    // the clamping is reported.
+    //
+    // Which stretch is answered as raw samples is not a policy at all (review
+    // F3). The tier contract is fixed: the last 24 hours are answered by the
+    // samples the Server received, older than that by 1-minute buckets, older
+    // than 7 days by 5-minute buckets. The raw retention policy decides how long
+    // the Server keeps those rows on disk; if it decided the reader's grain too,
+    // widening it to 7 days would answer a three-day range out of buckets the
+    // reader was promised raw, and shortening it would make buckets answer a
+    // stretch whose samples are still stored.
+    let raw_cutoff = crate::metric_history::raw_window_cutoff(now);
+    let horizon_cutoff =
+        now - time::Duration::days(crate::metric_history::FIVE_MINUTE_MAX_AGE_DAYS);
+    let availability = if from >= horizon_cutoff {
         None
-    } else if to <= cutoff {
+    } else if to <= horizon_cutoff {
         Some("unavailable".to_owned())
     } else {
         Some("partial".to_owned())
     };
-    let effective_from = from.max(cutoff);
+    let effective_from = from.max(horizon_cutoff);
+    let effective_to = before.unwrap_or(to);
     let limit = params
         .limit
         .unwrap_or(crate::metric_history::DEFAULT_SAMPLE_LIMIT)
         .clamp(1, crate::metric_history::MAX_SAMPLE_LIMIT);
-    let window = match crate::metric_history::load_window(
+    let range = match crate::metric_history::load_range(
         state.db().pool(),
-        &node_id,
-        metric,
-        effective_from,
-        to,
-        limit,
+        crate::metric_history::RangeQuery {
+            node_id: &node_id,
+            metric,
+            from: effective_from,
+            to,
+            before,
+            limit,
+            raw_cutoff,
+            now,
+        },
     )
     .await
     {
-        Ok(window) => window,
+        Ok(range) => range,
         Err(_) => return unavailable(),
     };
-    let window_seconds = (to - effective_from).whole_seconds().max(0);
-    let items = window
-        .samples
+    let window_seconds = (effective_to - effective_from).whole_seconds().max(0);
+    let items = range
+        .points
         .iter()
-        .map(|sample| {
+        .map(|point| {
             let (delay_seconds, clock_note) = match crate::metric_history::sample_timing(
-                &sample.observed_at,
-                &sample.received_at,
+                &point.last_observed_at,
+                &point.received_at,
             ) {
                 Some(timing) => (Some(timing.delay_seconds), timing.clock_note),
                 None => (None, None),
             };
             AdminNodeMetricSample {
-                observed_at: sample.observed_at.clone(),
-                received_at: sample.received_at.clone(),
-                value: sample.value,
+                observed_at: point.instant.clone(),
+                received_at: point.received_at.clone(),
+                value: point.value,
+                grain: point.grain.to_owned(),
+                source: point.source.to_owned(),
+                min_value: point.min_value,
+                max_value: point.max_value,
+                sample_count: point.sample_count,
+                last_observed_at: point.last_observed_at.clone(),
+                first_observed_at: point.first_observed_at.clone(),
+                max_gap_seconds: point.max_gap_seconds,
                 delay_seconds,
                 clock_suspect: clock_note.is_some(),
                 clock_note,
             }
         })
         .collect::<Vec<_>>();
-    let gaps = window
+    // The answer's own grain is the finest resolution it carries: a reader that
+    // wants one word for the answer gets the best one, and the segments say
+    // where the coarser stretches are.
+    let grain = if range
+        .points
+        .iter()
+        .any(|point| point.grain == crate::metric_history::GRAIN_RAW)
+    {
+        crate::metric_history::GRAIN_RAW
+    } else if range
+        .points
+        .iter()
+        .any(|point| point.grain == crate::metric_history::GRAIN_ONE_MINUTE)
+    {
+        crate::metric_history::GRAIN_ONE_MINUTE
+    } else if range
+        .points
+        .iter()
+        .any(|point| point.grain == crate::metric_history::GRAIN_FIVE_MINUTE)
+    {
+        crate::metric_history::GRAIN_FIVE_MINUTE
+    } else {
+        "none"
+    };
+    let segments = range
+        .segments
+        .iter()
+        .map(|segment| AdminNodeMetricSegment {
+            from: segment.from.clone(),
+            to: segment.to.clone(),
+            grain: segment.grain.to_owned(),
+            source: segment.source.to_owned(),
+            point_count: segment.point_count,
+            truncated: segment.truncated,
+        })
+        .collect::<Vec<_>>();
+    let gaps = range
         .gaps
         .iter()
         .map(|gap| AdminNodeMetricGap {
@@ -4620,15 +4777,17 @@ async fn admin_node_metric_history(
             skipped_count: gap.skipped_count,
         })
         .collect::<Vec<_>>();
-    let series = match &window.ledger {
+    let series = match &range.ledger {
         Some(ledger) => {
-            // The newest stored sample of this answer carries both of its own
-            // timestamps, so the reported delay and clock suspicion always come
-            // from one delivery. The ledger pair stays a series-level delivery
-            // stamp: its last_received_at can belong to a later restatement of
-            // the newest instant, which is not the delay of a sample.
-            let latest = window.samples.last().and_then(|sample| {
-                crate::metric_history::sample_timing(&sample.observed_at, &sample.received_at)
+            // The newest point of this answer carries the timestamps of the
+            // observation behind it, so the reported delay and clock suspicion
+            // always come from one delivery — also for a bucket, whose evidence
+            // is its newest observation. The ledger pair stays a series-level
+            // delivery stamp: its last_received_at can belong to a later
+            // restatement of the newest instant, which is not the delay of a
+            // point.
+            let latest = range.points.last().and_then(|point| {
+                crate::metric_history::sample_timing(&point.last_observed_at, &point.received_at)
             });
             AdminNodeMetricSeries {
                 observed: true,
@@ -4638,8 +4797,8 @@ async fn admin_node_metric_history(
                 observation_count: ledger.observation_count,
                 replayed_count: ledger.replayed_count,
                 corrected_count: ledger.corrected_count,
-                sampled_count: window.samples.len() as i64,
-                coverage_seconds: window.coverage_seconds,
+                sampled_count: range.points.len() as i64,
+                coverage_seconds: range.coverage_seconds,
                 window_seconds,
                 latest_delay_seconds: latest.as_ref().map(|timing| timing.delay_seconds),
                 latest_clock_suspect: latest
@@ -4670,13 +4829,16 @@ async fn admin_node_metric_history(
             node_id,
             metric: metric.to_owned(),
             from: crate::auth::format_rfc3339(effective_from),
-            to: crate::auth::format_rfc3339(to),
+            to: crate::auth::format_rfc3339(effective_to),
             requested_from: crate::auth::format_rfc3339(from),
             availability,
             raw_retention_days,
-            grain: "raw".to_owned(),
-            aggregate_supported: false,
-            truncated: window.truncated,
+            history_horizon_days: crate::metric_history::FIVE_MINUTE_MAX_AGE_DAYS,
+            grain: grain.to_owned(),
+            aggregate_supported: true,
+            segments,
+            truncated: range.truncated,
+            continuation: range.continuation.clone(),
             window_seconds,
             items,
             gaps,

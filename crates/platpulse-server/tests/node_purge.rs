@@ -343,6 +343,7 @@ const NODE_OWNED_TABLES: &[&str] = &[
     "observed_network_heads",
     "node_metric_samples",
     "node_metric_series_state",
+    "node_metric_aggregates",
     "node_validator_links",
     "node_transfers",
 ];
@@ -402,6 +403,11 @@ async fn seed_directly_owned_rows(
     // observed, so it is purged with them (issue #213).
     sqlx::query("INSERT OR IGNORE INTO node_metric_series_state (node_id, metric, first_observed_at, last_observed_at, last_received_at, observation_count, replayed_count, corrected_count, updated_at) VALUES (?, 'process_cpu_percent', ?, ?, ?, 1, 0, 0, ?)")
         .bind(node_id).bind(now).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
+    // The aggregate buckets summarize the same Node's series beyond the raw
+    // window and carry its Node ID directly, so they are Node-owned history
+    // (issue #214).
+    sqlx::query("INSERT OR IGNORE INTO node_metric_aggregates (node_id, metric, grain_seconds, bucket_start, sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at, last_received_at, updated_at) VALUES (?, 'process_cpu_percent', 60, ?, 2, 1.0, 2.0, 2.0, ?, ?, ?, ?)")
+        .bind(node_id).bind(now).bind(now).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
     sqlx::query("INSERT OR IGNORE INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, created_at, updated_at) VALUES (?, ?, ?, 'observer', ?, ?, ?)")
         .bind(format!("link-{node_id}")).bind(node_id).bind(validator_id).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
     sqlx::query("INSERT OR IGNORE INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, created_at, expires_at, updated_at) VALUES (?, ?, ?, ?, 'cancelled', ?, ?, ?)")

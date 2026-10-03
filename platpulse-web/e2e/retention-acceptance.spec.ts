@@ -224,7 +224,15 @@ test('the Server owns the retention bound: its refusals gate the save and the sa
       expect(overview.policies.length).toBeGreaterThan(0)
       const raw = requirePolicy(
         overview.policies,
-        (policy) => policy.supported && policy.enabled && policy.maxDays > 0 && policy.minDays >= 1,
+        (policy) =>
+          policy.supported &&
+          policy.enabled &&
+          policy.maxDays > 0 &&
+          policy.minDays >= 1 &&
+          // Issue #214 added the aggregate tiers, whose window IS their contract:
+          // their published bounds collapse to a single value, so the Server
+          // refuses every change to them and there is nothing to edit.
+          policy.minDays < policy.maxDays,
         'bounded, actionable family',
       )
       const unsupported = requirePolicy(overview.policies, (policy) => !policy.supported, 'family without cleanup')

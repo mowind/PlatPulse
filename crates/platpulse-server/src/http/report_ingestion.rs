@@ -881,6 +881,39 @@ async fn save_node_metric(
             .execute(&mut **tx)
             .await?;
     }
+    // The tiers beyond the raw window accumulate in this same transaction: an
+    // observation the Server counted advances its minute and five-minute
+    // buckets even while its raw row is released, and a correction recomputes
+    // the buckets it can still restate from retained rows. A replay moves
+    // nothing — it is the same observation, not another one. Deriving the tiers
+    // at read time instead would state a count the Server never counted, and
+    // would count one stretch twice the moment it is read at two grains (issue
+    // #214, design §11.6).
+    match delivery {
+        Delivery::Observed => {
+            crate::metric_history::record_aggregates(
+                tx,
+                node_id,
+                metric,
+                &observed_at,
+                received_at,
+                value,
+            )
+            .await?;
+        }
+        Delivery::Correction => {
+            crate::metric_history::recompute_aggregates(
+                tx,
+                node_id,
+                metric,
+                &observed_at,
+                received_at,
+                value,
+            )
+            .await?;
+        }
+        Delivery::Replay => {}
+    }
     // The ledger moves with the sample it describes, so a committed Report can
     // never leave the count describing a sample the Server does not hold.
     crate::metric_history::record_delivery(
@@ -3077,6 +3110,21 @@ async fn ingest_report<I: ReportInventory>(
     {
         eprintln!(
             "raw metric retention cleanup deferred after ingestion: {}",
+            crate::redaction::redact_sensitive(&error.to_string())
+        );
+    }
+    // Issue #214: the aggregate tiers are bounded by their own windows the same
+    // way, and by the same guard. Each Report that accumulated buckets also gets
+    // a chance to release the buckets whose window has passed, so a server that
+    // never restarts still cannot grow a tier without limit.
+    if let Err(error) = crate::retention::cleanup_expired_metric_aggregates(
+        state.db().pool(),
+        crate::auth::now_utc(),
+    )
+    .await
+    {
+        eprintln!(
+            "aggregate metric retention cleanup deferred after ingestion: {}",
             crate::redaction::redact_sensitive(&error.to_string())
         );
     }

@@ -2956,9 +2956,18 @@
             }
           },
           {
+            "name": "before",
+            "in": "query",
+            "description": "Canonical RFC 3339 UTC exclusive upper bound for paging: the continuation coordinate a truncated answer returned",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
-            "description": "Maximum raw samples",
+            "description": "Maximum points across every tier",
             "required": false,
             "schema": {
               "type": "integer",
@@ -7598,7 +7607,7 @@
       },
       "AdminNodeMetricHistoryResponse": {
         "type": "object",
-        "description": "Owner-only raw metric history for one Node series (issue #213, design\n§11.4): the stored observations, the silences between them, and the state of\nthe series behind them.",
+        "description": "Owner-only metric history for one Node series (issues #213 and #214, design\n§11.4 and §11.6): the stored observations of the raw window, the aggregate\nbuckets that answer the stretches beyond it, the silences between them, and\nthe state of the series behind them.",
         "required": [
           "nodeId",
           "metric",
@@ -7606,8 +7615,10 @@
           "to",
           "requestedFrom",
           "rawRetentionDays",
+          "historyHorizonDays",
           "grain",
           "aggregateSupported",
+          "segments",
           "items",
           "gaps",
           "series",
@@ -7617,18 +7628,25 @@
         "properties": {
           "aggregateSupported": {
             "type": "boolean",
-            "description": "The 1-minute/5-minute aggregate tiers belong to issue #214."
+            "description": "True while the Server serves the 1-minute and 5-minute tiers for the\nstretches older than the raw window (issue #214)."
           },
           "availability": {
             "type": [
               "string",
               "null"
             ],
-            "description": "`None` while the whole requested range is retained, `partial` when it\nwas clamped to the raw window, `unavailable` when it is older than the\nretained raw history."
+            "description": "`None` while the whole requested range is answerable, `partial` when it\nwas clamped to the investigation horizon, `unavailable` when it is older\nthan any retained history."
+          },
+          "continuation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the answer is truncated, the coordinate to pass back as `before` for\nthe next, older page. `None` when the answer reaches the oldest end of\nthe requested range."
           },
           "from": {
             "type": "string",
-            "description": "The answered range, after clamping to the retained raw window."
+            "description": "The answered range, after clamping to the investigation horizon."
           },
           "gaps": {
             "type": "array",
@@ -7637,7 +7655,13 @@
             }
           },
           "grain": {
-            "type": "string"
+            "type": "string",
+            "description": "The finest grain this answer carries: `raw`, `1m`, `5m`, or `none`\nwhen no tier holds anything for the requested range."
+          },
+          "historyHorizonDays": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The oldest age any tier answers, in days: the investigation horizon the\n5-minute tier and its retention family both declare."
           },
           "items": {
             "type": "array",
@@ -7653,21 +7677,30 @@
           },
           "rawRetentionDays": {
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "description": "The configured raw window, which decides where the raw tier ends."
           },
           "requestedFrom": {
             "type": "string",
-            "description": "The range the caller asked for, so a clamped answer says what it\nclamped."
+            "description": "The range the caller asked for, so a clamped or paged answer says what it\nclamped or narrowed."
+          },
+          "segments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminNodeMetricSegment"
+            },
+            "description": "Which tier answered which stretch, oldest stretch first."
           },
           "series": {
             "$ref": "#/components/schemas/AdminNodeMetricSeries"
           },
           "to": {
-            "type": "string"
+            "type": "string",
+            "description": "The answered range's end: the requested `to`, or the exclusive paging\ncursor when the caller paged with `before`."
           },
           "truncated": {
             "type": "boolean",
-            "description": "True when the window held more samples than the caller's limit: the\nnewest samples are returned and the rest is reported, never dropped\nsilently."
+            "description": "True when any tier had more evidence than the caller's limit: the newest\npoints are returned and the rest is reported, never dropped silently."
           },
           "windowSeconds": {
             "type": "integer",
@@ -7682,6 +7715,14 @@
           "observedAt",
           "receivedAt",
           "value",
+          "grain",
+          "source",
+          "minValue",
+          "maxValue",
+          "sampleCount",
+          "lastObservedAt",
+          "firstObservedAt",
+          "maxGapSeconds",
           "clockSuspect"
         ],
         "properties": {
@@ -7701,17 +7742,93 @@
               "null"
             ],
             "format": "int64",
-            "description": "`received_at - observed_at` for this very sample, so spool and transport\ndelay are visible per observation. Unknown when either timestamp is\nunusable — never reported as zero."
+            "description": "`received_at - last_observed_at` for this very point, so spool and\ntransport delay are visible per observation. Unknown when either\ntimestamp is unusable — never reported as zero."
+          },
+          "firstObservedAt": {
+            "type": "string",
+            "description": "The oldest observation this point holds: the other end of the stretch it\nreally testifies to, and equal to `observedAt` for a raw sample. A bucket\nwhose two ends are far apart states a span, not continuity - a surface\nthat says how long the point covers must measure it between these two\ninstants, never from the bucket's own aligned start (review F1)."
+          },
+          "grain": {
+            "type": "string",
+            "description": "The grain this point was served at: `raw`, `1m` or `5m`."
+          },
+          "lastObservedAt": {
+            "type": "string",
+            "description": "The newest observation this point holds. Equal to `observedAt` for a raw\nsample; for a bucket it is the instant inside the bucket that delay and\nclock suspicion are measured from."
+          },
+          "maxGapSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The widest interval the bucket recorded between two of its consecutive\nobservations (0 for a raw sample, and for a bucket that counted one).\nThis is measured evidence about the inside of a bucket: a surface can\ncompare it with the cadence it sees and draw a line break where the\nServer proved a hole instead of a continuous stretch. Zero means the\nobservations it counted were contiguous, never that nobody measured."
+          },
+          "maxValue": {
+            "type": "number",
+            "format": "double"
+          },
+          "minValue": {
+            "type": "number",
+            "format": "double",
+            "description": "The extremes of the observations behind this point. A raw sample is its\nown extreme; a bucket keeps the spike the raw samples would have shown."
           },
           "observedAt": {
-            "type": "string"
+            "type": "string",
+            "description": "The point's coordinate: the observation instant of a raw sample, or the\naligned start of an aggregate bucket."
           },
           "receivedAt": {
-            "type": "string"
+            "type": "string",
+            "description": "For a raw sample, the receipt that carried it. For a bucket, the receipt\nof the bucket's newest observation."
+          },
+          "sampleCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Observations behind this point: 1 for a raw sample, the bucket's counted\nobservations for a bucket. A thin bucket says so here instead of looking\nlike a closed stretch."
+          },
+          "source": {
+            "type": "string",
+            "description": "`raw` for a stored observation, `aggregate` for a bucket that\nsummarizes observations the raw window no longer holds."
           },
           "value": {
             "type": "number",
-            "format": "double"
+            "format": "double",
+            "description": "A raw sample's value, or a bucket's newest value."
+          }
+        }
+      },
+      "AdminNodeMetricSegment": {
+        "type": "object",
+        "description": "One tier's stretch of a metric-history answer.\n\nIt tells the caller which grain answered which stretch, so no surface has to\ninfer the resolution from the points themselves or present a bucket as if it\nwere a sample (design §11.6).",
+        "required": [
+          "from",
+          "to",
+          "grain",
+          "source",
+          "pointCount",
+          "truncated"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "The stretch this segment answers: the older end inclusive, the newer end\nexclusive, matching what the reader asked of the tier."
+          },
+          "grain": {
+            "type": "string",
+            "description": "`raw`, `1m` or `5m`."
+          },
+          "pointCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Points this answer carries for the segment."
+          },
+          "source": {
+            "type": "string",
+            "description": "`raw` or `aggregate`."
+          },
+          "to": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the segment hit the answer's limit, so the stretch holds more\nevidence than this answer carries for it."
           }
         }
       },
@@ -7822,6 +7939,7 @@
           "observed_network_heads",
           "metric_samples",
           "metric_series_state",
+          "metric_aggregates",
           "capacity_skipped_series",
           "validator_links",
           "validator_identity_status",
@@ -7874,6 +7992,10 @@
             "format": "int64"
           },
           "data_directory_observations": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "metric_aggregates": {
             "type": "integer",
             "format": "int64"
           },
