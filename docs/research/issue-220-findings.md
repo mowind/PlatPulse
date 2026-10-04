@@ -111,8 +111,44 @@ The investigation read is an Owner read on the existing Admin surface, and it ad
 
 ### Not asserted here, with the reason
 
+These limits are the read-only pass's own; the implementation landed afterwards and the results are recorded in the verification section at the end of this document, including the Web half.
+
 - No Rust gate (`fmt`, `clippy`, `test`, `build`, `deny`, `audit`) was run, so this document does not claim the crate compiles or that crates/platpulse-server/tests/node_investigation.rs passes. The file exists and covers six cases — `owner_reads_one_window_with_every_source_and_other_principals_are_refused` (:394), `the_window_is_a_preset_or_an_explicit_range_and_an_unusable_one_is_refused` (:563), `a_silence_between_reports_is_partial_coverage_and_never_a_zero` (:660), `a_low_space_pause_is_a_pause_and_not_a_collection_failure` (:721), `a_node_with_no_evidence_is_unavailable_rather_than_empty` (:785) and `a_purged_node_says_when_it_was_purged_and_an_unknown_one_is_not_found` (:843) — but their result is not recorded here.
 - No OpenAPI regeneration was run, so the claim is only that docs/openapi/openapi.json already carries both new Admin paths (:3220, :3552), not that the committed document is byte-identical to a fresh generation.
 - No Web test, lint or browser run happened, and the acceptance spec this ticket asks for does not exist; nothing in this document asserts a rendered pixel, a viewport or a theme.
 - The ticket text (`gh issue view 220`) was not read in this pass, so no ticket title, story wording or named risk is quoted above; the ticket is identified only as the tree identifies it (crates/platpulse-server/tests/node_investigation.rs:1-2) and through the roadmap references in docs/research/issue-208-findings.md:49 and docs/research/issue-216-findings.md:151.
 - docs/design/platpulse.md has no investigation section of its own yet: the module's doc comment points at §11.4 to §11.7 as its design basis, and §11.4 "数据边界" (docs/design/platpulse.md:589) is the section that governs the "never invent a value" rule — but the main design document was not extended by this ticket, so the authoritative description of the coordinate lives in this file and in docs/design/webui.md:1312.
+
+## Reviewer findings and disposition (two-axis review, cliproxyapi/gpt-6.1-sol high)
+
+The read-only pass above was made before implementation finished; its "no command was run" scope is superseded by the results in the next section. This table is the disposition of the review that followed the implementation.
+
+| # | Axis | Finding | Disposition |
+|---|---|---|---|
+| F1 | Spec | `peers_source` built its ledger from `peer_aggregate_5m` alone, so once 5m cleanup released the oldest bucket the whole family read as `never_observed` even with hourly rows present, and a 7d window called older stretches `pre_enablement` | Fixed: the ledger is one `UNION ALL` over `peer_aggregate_5m` and `peer_aggregate_1h`, so `first_observed_at`/`last_observed_at` describe every bucket the Server still holds (crates/platpulse-server/src/investigation.rs, `peers_source`) |
+| F2 | Spec | the peer tier horizons were `ctx.now - 288*300` (24h) and `ctx.now - 168*3600` (7d) — the `HISTORY_FIVE_MINUTE_LIMIT`/`HISTORY_HOURLY_LIMIT` read tails — mislabelled as what each family "keeps" | Fixed: the tiers follow the real retention policy (5m default 90 days, min 7; 1h kept forever, crates/platpulse-server/src/retention.rs:552-584, migrations/0029_peer_history_aggregates.sql:121-122), and the read-tail limits are no longer used as storage bounds |
+| F3 | Spec | the Incident occurrence link could ask for a window wider than the Server's 30-day ceiling and be refused | Fixed: `MAXIMUM_OCCURRENCE_SPAN_MS` (29 days) clamps the link's end (platpulse-web/src/pages/AdminIncidents.tsx) |
+| F4 | Spec | the windowed Incident traversal stopped at the API: the client filters carried no range or cursor and the list said older rows were unreachable | Fixed: `alert_incidents` answers a paired from/to (30-day ceiling, crates/platpulse-server/src/http/alerts_admin.rs:1956, handler :2015) with the exclusive cursor `<opened_at>|<incident_id>`; the list reads `from`/`to`/`before` (platpulse-web/src/api/admin.ts:2331), follows them with `setCursor` (:515) and states what it holds in `[data-slot="incident-page-facts"]` (:750). The investigation page enters that list with the window it read (`incidentsHref`, platpulse-web/src/pages/AdminNodeInvestigation.tsx). The answer-path links stay the Server's own endpoints by decision: the page already embeds the inline readers, and a client-side API-to-route map would duplicate the Server's routing and drift |
+| S1 | Standards | the client owned the window policy (a hardcoded preset list, default and width limits) | Fixed: the preset list, the default and both widths come from the answer (`supportedPresets`, `MIN_WINDOW_HOURS`/`MAX_WINDOW_HOURS`), and `readInvestigationLink` only normalizes (platpulse-web/src/nodeInvestigation.ts) |
+| S2 | Standards | a client-side refusal replaced the Server's own reason, so a shared link hid why it was refused | Fixed: `refusalNotice`/`rangeRefusal`/`InvestigationRefusal` are deleted; the link is sent verbatim and the Server's `invalid_investigation_window` message renders in `[data-slot="investigation-window-refused"]` (platpulse-web/src/pages/AdminNodeInvestigation.tsx:274-284) |
+| S3 | Standards | a range the tier's own retention had released was answered as an empty era | Fixed: `retention_horizon` (crates/platpulse-server/src/peer_history.rs) plus the `unavailable` coverage arm; "the oldest bucket the grain still holds" replaces "ever recorded" |
+| S4 | Standards | the Peer panel rendered a hard failure while the last successful range was still on screen | Verified already implemented: the hard branch is narrowed to `query.isError && answer === undefined`, and a refresh failure renders "Failed to refresh; the range below is the last successful read of this window." (platpulse-web/src/pages/AdminNodeInvestigation.tsx:1281, :1299) |
+| B1 | Standards baseline | `PeerGrain` duplicates two `AggregateFamily` variants and delegates `seconds()`/`family()` to them | Accepted, not actioned: `receipt_bucket_5m`/`receipt_bucket_1h` is the wire vocabulary while `FiveMinute`/`Hourly` is the storage vocabulary (`AggregateFamily::table()`), and the delegation is the single place the two are mapped. Collapsing the enums would either leak storage table names onto the wire or spread that mapping across every call site |
+
+## VERIFICATION after the review fixes
+
+Every claim in this document and in §15.22/§15.6 of docs/design/webui.md is now backed by a run, not by reading:
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --check` | clean |
+| `cargo clippy --all-targets --all-features -- -D warnings` | clean |
+| `cargo test --workspace` | 1079 passed, 0 failed, 0 ignored across 27 test binaries, including crates/platpulse-server/tests/node_investigation.rs (6 tests) |
+| `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok (one `advisory-not-detected` warning for the stale deny.toml:6 ignore of RUSTSEC-2023-0071) |
+| `cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253` | 3 allowed warnings (RUSTSEC-2024-0436 `paste` unmaintained, `chacha20` yanked) |
+| `npx eslint` + `npx tsc --noEmit -p tsconfig.json` | 0 errors |
+| `npx vitest run` | 45 files, 807 tests passed |
+| `npx vite build` | built (the e2e harness serves platpulse-web/dist, so the build has to run first) |
+| `npx playwright test e2e/node-investigation-acceptance.spec.ts` | 4 passed, 16 skipped — production WebUI → real Server HTTP → temporary SQLite, five viewports × both themes inside the test matrix |
+
+One pre-existing failure appeared once and did not reproduce, and it is outside this ticket's diff: crates/platpulse-server/src/http/report_ingestion.rs:6700 (`successful_peer_snapshots_update_both_aggregate_families_once`) asserts that two submissions land in one 5-minute bucket while `bucket_start` rounds the real wall clock (`crate::auth::now_utc()`), so a run that crosses a 300-second boundary sees a second row and `fetch_one` returns the older one (`left: 1, right: 2`). The isolated re-run passed in 0.39s and the full `cargo test -p platpulse-server --lib` re-run passed 680/680 in 303s. Nothing in this ticket's diff touches that write path (crates/platpulse-server/src/http/report_ingestion.rs carries a one-line `pub(crate)` visibility change).
