@@ -23,6 +23,7 @@ import {
   SERVER_DEFAULT_WINDOW,
   readInvestigationLink,
   receiptDelaySeconds,
+  relatedSubjectKindLabel,
   sourceAtInstant,
   timeBasisNote,
 } from "./nodeInvestigation";
@@ -69,6 +70,7 @@ function source(
     key: "node_metrics",
     label: "Node metrics",
     notes: [],
+    relatedSubjects: [],
     subject: "0195f2a1-0014-4014-8014-000000000014",
     subjectKind: "node",
     timeBasis: "metric_observation",
@@ -324,6 +326,17 @@ describe("time bases and Peer grains", () => {
 
   it("leaves a basis it does not know without a sentence", () => {
     expect(timeBasisNote("agent_wall_clock")).toBeNull();
+  });
+
+  it("names each related subject kind the Server records", () => {
+    expect(relatedSubjectKindLabel("agent")).toBe("Agent");
+    expect(relatedSubjectKindLabel("host")).toBe("Host");
+    expect(relatedSubjectKindLabel("network")).toBe("Network");
+    expect(relatedSubjectKindLabel("validator")).toBe("Validator");
+  });
+
+  it("shows a kind it does not know as the Server wrote it", () => {
+    expect(relatedSubjectKindLabel("peer")).toBe("peer");
   });
 
   it("reads the Peer grains out of the source itself", () => {

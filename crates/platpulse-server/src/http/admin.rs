@@ -461,6 +461,10 @@ pub struct AdminNodePurgeCounts {
     pub validator_links: i64,
     pub validator_identity_status: i64,
     pub transfers: i64,
+    /// Recorded relationship intervals: the relations the Server wrote down
+    /// for this Node over time (issue #221). They describe this Node's place,
+    /// so a Purge removes them with it.
+    pub relationship_intervals: i64,
     pub total_owned_rows: i64,
 }
 
@@ -537,6 +541,7 @@ fn node_purge_counts(counts: crate::node_purge::NodePurgeCounts) -> AdminNodePur
         validator_links: counts.validator_links,
         validator_identity_status: counts.validator_identity_status,
         transfers: counts.transfers,
+        relationship_intervals: counts.relationship_intervals,
         total_owned_rows: counts.total_owned_rows(),
     }
 }

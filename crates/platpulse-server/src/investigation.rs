@@ -1,5 +1,5 @@
 //! The investigation coordinate: one UTC window, and how much of it each
-//! evidence family can actually answer (issue #220).
+//! evidence family can actually answer (issues #220, #221).
 //!
 //! An investigation starts from a subject (a Node) and one window, and asks
 //! every family of evidence the Server holds for that Node the same question:
@@ -22,6 +22,12 @@
 //!   the requested range to what its retention happens to hold: it reports the
 //!   range it was given and states, per source, the boundary beyond which it
 //!   holds nothing.
+//!
+//! A third rule says who the evidence is about (issue #221): a source answers
+//! about its own subject, and evidence belonging to a subject the Node was
+//! related to is attributed only over the intervals the Server itself recorded,
+//! labelled as a related subject, and named as unknown for every stretch no record
+//! covers. The relation a Node has now is never read backwards into the window.
 
 use platpulse_core::component::ComponentKey;
 use serde::Serialize;
@@ -34,6 +40,10 @@ use crate::metric_history::{
     FIVE_MINUTE_MAX_AGE_DAYS, FIVE_MINUTE_SECONDS, HOST_HISTORY, HOST_METRIC_SERIES, HistorySchema,
     NODE_HISTORY, NODE_METRIC_SERIES, ONE_MINUTE_MAX_AGE_DAYS, ONE_MINUTE_SECONDS,
     canonical_instant, gap_threshold_seconds, raw_window_cutoff,
+};
+use crate::relationships::{
+    RELATION_AGENT, RELATION_KINDS, RecordedRelations, RelationSpan, RelationView,
+    RelationshipInterval, clipped_span, describe_span, load_intervals, relation_kind_label,
 };
 use crate::retention::{
     FAMILY_FIVE_MINUTE_AGGREGATE, FAMILY_OBSERVATION_STATE, FAMILY_PEER_AGGREGATE_1H,
@@ -383,6 +393,8 @@ pub enum TimeBasis {
     IncidentEvaluation,
     /// The third-party timestamp a Validator snapshot carries.
     ValidatorSnapshotSource,
+    /// The instant the Server wrote a record of its own, such as a relationship.
+    ServerRecord,
 }
 
 impl TimeBasis {
@@ -394,6 +406,7 @@ impl TimeBasis {
             TimeBasis::PeerReceiptBucket => "peer_receipt_bucket",
             TimeBasis::IncidentEvaluation => "incident_evaluation",
             TimeBasis::ValidatorSnapshotSource => "validator_snapshot_source",
+            TimeBasis::ServerRecord => "server_record",
         }
     }
 
@@ -405,6 +418,7 @@ impl TimeBasis {
             TimeBasis::PeerReceiptBucket => "Peer receipt bucket",
             TimeBasis::IncidentEvaluation => "Incident occurrence time",
             TimeBasis::ValidatorSnapshotSource => "Validator source time",
+            TimeBasis::ServerRecord => "Server record time",
         }
     }
 }
@@ -424,6 +438,8 @@ pub enum BoundaryKind {
     NeverObserved,
     /// The newest evidence is older than the end of the window.
     StaleTail,
+    /// The Server holds no record of which subject this stretch belonged to.
+    RelationshipUnknown,
 }
 
 impl BoundaryKind {
@@ -436,6 +452,7 @@ impl BoundaryKind {
             BoundaryKind::CollectionFailure => "collection_failure",
             BoundaryKind::NeverObserved => "never_observed",
             BoundaryKind::StaleTail => "stale_tail",
+            BoundaryKind::RelationshipUnknown => "relationship_unknown",
         }
     }
 
@@ -448,6 +465,7 @@ impl BoundaryKind {
             BoundaryKind::CollectionFailure => "Collection gap",
             BoundaryKind::NeverObserved => "Never observed",
             BoundaryKind::StaleTail => "Newest evidence is older than the window end",
+            BoundaryKind::RelationshipUnknown => "No recorded relationship",
         }
     }
 }
@@ -468,6 +486,8 @@ pub const GRAIN_PEER_1H: &str = "receipt_bucket_1h";
 pub const GRAIN_OCCURRENCE: &str = "occurrence";
 /// Validator local days.
 pub const GRAIN_VALIDATOR_DAY: &str = "validator_day";
+/// Recorded relationship intervals: one point per interval, with no bucket width.
+pub const GRAIN_RECORDED_INTERVAL: &str = "recorded_interval";
 
 /// The fixed source keys, in the order an investigation answers them.
 pub const SOURCE_NODE_METRICS: &str = "node_metrics";
@@ -477,13 +497,16 @@ pub const SOURCE_NODE_STATE: &str = "node_state";
 pub const SOURCE_HOST_METRICS: &str = "host_metrics";
 /// Peer receipt buckets.
 pub const SOURCE_PEERS: &str = "peers";
+/// The relationships the Server itself recorded for the Node.
+pub const SOURCE_RELATIONSHIPS: &str = "relationships";
 /// Alert Incidents whose occurrence intersects the window.
 pub const SOURCE_INCIDENTS: &str = "incidents";
 /// Daily Validator snapshots for the Validators linked in the window.
 pub const SOURCE_VALIDATOR: &str = "validator";
 
 /// The source keys an answer always carries, whether or not each holds evidence.
-pub const SOURCE_ORDER: [&str; 6] = [
+pub const SOURCE_ORDER: [&str; 7] = [
+    SOURCE_RELATIONSHIPS,
     SOURCE_NODE_METRICS,
     SOURCE_NODE_STATE,
     SOURCE_HOST_METRICS,
@@ -491,6 +514,23 @@ pub const SOURCE_ORDER: [&str; 6] = [
     SOURCE_INCIDENTS,
     SOURCE_VALIDATOR,
 ];
+
+/// An attribution is about the subject the source itself answers about.
+pub const SUBJECT_ROLE_SOURCE: &str = "source";
+/// An attribution is about a subject the source's subject is related to.
+pub const SUBJECT_ROLE_RELATED: &str = "related";
+/// The attribution rests on an interval the Server recorded itself.
+pub const BASIS_RECORDED_RELATIONSHIP: &str = "recorded_relationship";
+/// The attribution rests on a Node Validator Link the Server recorded itself.
+pub const BASIS_RECORDED_VALIDATOR_LINK: &str = "recorded_validator_link";
+
+/// The label shown beside an attribution's basis.
+pub fn basis_label(basis: &str) -> &'static str {
+    match basis {
+        BASIS_RECORDED_VALIDATOR_LINK => "Recorded Validator Link",
+        _ => "Recorded relationship",
+    }
+}
 
 // ------------------------------------------------------------------- DTOs ---
 
@@ -640,6 +680,37 @@ pub struct InvestigationAnswerPathResponse {
     pub note: Option<String>,
 }
 
+/// One subject a source's evidence is attributed to, and the Server record that
+/// attribution rests on.
+///
+/// A source answers about its own subject, but some of its evidence belongs to a
+/// subject the Node is related to (the Agent that reported it, its Host, its
+/// Network, a linked Validator). Each such attribution states which subject it is,
+/// whether that subject is the source's own or a related one, and the recorded
+/// basis (the extent of a recorded relationship or Validator link) it is read
+/// over. Nothing is attributed outside a record: a stretch the Server never
+/// recorded is reported as an unknown boundary instead (stories 60, 61).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InvestigationRelatedSubjectResponse {
+    /// The kind of the related subject (`agent`, `host`, `network`, `validator`).
+    pub subject_kind: String,
+    /// The related subject's own key, as the Server records it.
+    pub subject: String,
+    /// Whether this is the source's own subject (`source`) or a related one (`related`).
+    pub role: String,
+    /// The machine-readable basis of the attribution.
+    pub basis: String,
+    /// The label shown beside the basis.
+    pub basis_label: String,
+    /// The instant the recorded basis starts at, clipped to the window.
+    pub from: String,
+    /// The instant the recorded basis ends at, clipped to the window.
+    pub to: String,
+    /// What the record says, and how far it may be read.
+    pub detail: String,
+}
+
 /// A family of evidence and how much of the window it can answer.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -686,6 +757,10 @@ pub struct InvestigationSourceResponse {
     pub components: Vec<InvestigationComponentResponse>,
     /// The existing endpoints that answer this source's evidence for the window.
     pub answer_paths: Vec<InvestigationAnswerPathResponse>,
+    /// The subjects this source's evidence is attributed to, each with the recorded
+    /// basis it is read over. Empty when the source answers only about itself and no
+    /// subject was recorded as related to it.
+    pub related_subjects: Vec<InvestigationRelatedSubjectResponse>,
     /// Disclosures that shape how the numbers above must be read.
     pub notes: Vec<String>,
 }
@@ -1166,6 +1241,110 @@ fn hole_boundary(grain: &str, hole: &Hole) -> Boundary {
             format_rfc3339(hole.from),
             format_rfc3339(hole.to)
         ),
+    }
+}
+
+/// The boundary marking a stretch the Server recorded for another subject.
+///
+/// The relation is known here — the records name whose stretch it is — and what is
+/// unknown is whether this source's own subject held it. Saying so is the only
+/// honest answer: the evidence behind this boundary belongs to another subject and
+/// must be read in that subject's own family (issue #221, story 61).
+fn other_subject_boundary(kind: &str, span: &RelationSpan) -> Boundary {
+    Boundary {
+        kind: BoundaryKind::RelationshipUnknown,
+        at: span.from,
+        to: Some(span.to),
+        detail: format!(
+            "the Server recorded {} {} for this stretch, so this family holds no evidence attributed to {} it answers about",
+            crate::relationships::relation_kind_label(kind),
+            span.related_key,
+            crate::relationships::related_subject_label(kind)
+        ),
+    }
+}
+
+/// The boundary that marks a stretch the whole record leaves uncovered.
+///
+/// A stretch with no recorded interval is not an uninteresting stretch: the Node
+/// was somewhere, and the Server simply did not write down where. Reporting it as
+/// the relations the Node has now would back-fill the past from the present, and
+/// reporting it as nothing at all would read a missing record as a fact, so it is
+/// named as what it is (issue #221, stories 61, 66).
+fn uncovered_record_boundary(
+    from: OffsetDateTime,
+    to: OffsetDateTime,
+    recorded_from: Option<OffsetDateTime>,
+) -> Boundary {
+    let detail = match recorded_from {
+        None => "the Server has never recorded which Agent or Network this Node belonged to, and recording is prospective, so this stretch is not attributed to the relations the Node has now"
+            .to_owned(),
+        Some(_) => format!(
+            "the Server recorded nothing about which Agent or Network this Node belonged to from {} to {}, so this stretch is not attributed to the relations it had before or after it",
+            format_rfc3339(from),
+            format_rfc3339(to)
+        ),
+    };
+    Boundary {
+        kind: BoundaryKind::RelationshipUnknown,
+        at: from,
+        to: Some(to),
+        detail,
+    }
+}
+
+/// The boundary that marks a stretch one relation holds no record for.
+///
+/// Read by a family that answers about one related subject: the stretch was given
+/// to nobody this source can read, so it is named rather than attributed to the
+/// relation the Node has now (issue #221, stories 61, 66).
+fn uncovered_relation_boundary(
+    kind: &str,
+    from: OffsetDateTime,
+    to: OffsetDateTime,
+    recorded_from: Option<OffsetDateTime>,
+) -> Boundary {
+    let relation = crate::relationships::relation_kind_label(kind);
+    let detail = match recorded_from {
+        None => format!(
+            "the Server has never recorded a {relation} for this Node, and recording is prospective, so this stretch is not attributed to the relation the Node has now"
+        ),
+        Some(_) => format!(
+            "the Server recorded no {relation} for this Node from {} to {}, so this stretch is not attributed to the relation it had before or after it",
+            format_rfc3339(from),
+            format_rfc3339(to)
+        ),
+    };
+    Boundary {
+        kind: BoundaryKind::RelationshipUnknown,
+        at: from,
+        to: Some(to),
+        detail,
+    }
+}
+
+/// One recorded stretch of a relation, as the attribution an answer names it by.
+///
+/// The fields that state where an attribution comes from — the recorded basis, its
+/// label, and the two edges of the stretch — are written in one place, so every
+/// family that attributes its evidence to the recorded relations says it the same
+/// way; only the role, the kind of subject and the sentence differ (issue #221,
+/// stories 60, 61).
+fn relation_attribution(
+    subject_kind: &str,
+    span: &RelationSpan,
+    role: &str,
+    detail: String,
+) -> InvestigationRelatedSubjectResponse {
+    InvestigationRelatedSubjectResponse {
+        subject_kind: subject_kind.to_owned(),
+        subject: span.related_key.clone(),
+        role: role.to_owned(),
+        basis: BASIS_RECORDED_RELATIONSHIP.to_owned(),
+        basis_label: basis_label(BASIS_RECORDED_RELATIONSHIP).to_owned(),
+        from: format_rfc3339(span.from),
+        to: format_rfc3339(span.to),
+        detail,
     }
 }
 
@@ -1843,6 +2022,7 @@ struct SourceBuilder {
     pauses: Vec<Pause>,
     components: Vec<ComponentRow>,
     answer_paths: Vec<InvestigationAnswerPathResponse>,
+    related_subjects: Vec<InvestigationRelatedSubjectResponse>,
     boundaries: Vec<Boundary>,
     grains: Vec<GrainEvidence>,
     notes: Vec<String>,
@@ -1875,6 +2055,7 @@ impl SourceBuilder {
             pauses: Vec::new(),
             components: Vec::new(),
             answer_paths: Vec::new(),
+            related_subjects: Vec::new(),
             boundaries: Vec::new(),
             grains: Vec::new(),
             notes: Vec::new(),
@@ -1898,6 +2079,75 @@ impl SourceBuilder {
             path,
             note: note.map(str::to_owned),
         });
+        self
+    }
+
+    /// Attribute this source's own evidence to the relations the Server recorded.
+    ///
+    /// Every recorded span inside the window becomes one named attribution: the
+    /// subject is marked as this source's own subject when the recorded key is the
+    /// subject the source answers about, and as a related subject when it is a
+    /// different one. Every stretch the records leave uncovered becomes an unknown
+    /// boundary instead, because the relation the Node has now is not evidence
+    /// about what it was then, and the Server never back-fills one (stories 60, 61).
+    fn attribute_relation(mut self, view: &RelationView, subject_kind: &str) -> Self {
+        for span in &view.spans {
+            let role = if span.related_key == self.subject {
+                SUBJECT_ROLE_SOURCE
+            } else {
+                SUBJECT_ROLE_RELATED
+            };
+            self.related_subjects.push(relation_attribution(
+                subject_kind,
+                span,
+                role,
+                crate::relationships::describe_span(view.kind, span),
+            ));
+        }
+        for (from, to) in &view.unknown_spans {
+            self.boundaries
+                .push(uncovered_record_boundary(*from, *to, view.recorded_from));
+        }
+        self
+    }
+
+    /// Attribute this source's evidence to the recorded stretches of its own
+    /// subject, and mark every other stretch as unknown for this source.
+    ///
+    /// For a family whose subject is the relation itself — the Agent that collected
+    /// and reported one measurement — a stretch the records give to a different
+    /// subject is evidence about a different subject, and this family holds nothing
+    /// for it. Reading the current subject back over it would present another
+    /// subject's measurement as this one's (issue #221, stories 60, 61).
+    fn attribute_own_relation(mut self, view: &RelationView, subject_kind: &str) -> Self {
+        for span in &view.spans {
+            // A stretch the record gives to another subject still names that
+            // subject here — the attribution is the Server's, and the boundary
+            // only states that this family holds nothing for the stretch itself.
+            let own = span.related_key == self.subject;
+            self.related_subjects.push(relation_attribution(
+                subject_kind,
+                span,
+                if own {
+                    SUBJECT_ROLE_SOURCE
+                } else {
+                    SUBJECT_ROLE_RELATED
+                },
+                crate::relationships::describe_span(view.kind, span),
+            ));
+            if !own {
+                self.boundaries
+                    .push(other_subject_boundary(view.kind, span));
+            }
+        }
+        for (from, to) in &view.unknown_spans {
+            self.boundaries.push(uncovered_relation_boundary(
+                view.kind,
+                *from,
+                *to,
+                view.recorded_from,
+            ));
+        }
         self
     }
 
@@ -1933,6 +2183,7 @@ impl SourceBuilder {
             pauses,
             components,
             answer_paths,
+            related_subjects,
             boundaries,
             grains,
             notes,
@@ -2007,6 +2258,7 @@ impl SourceBuilder {
             grains: grains.iter().map(GrainEvidence::to_response).collect(),
             components: components.iter().map(ComponentRow::to_response).collect(),
             answer_paths,
+            related_subjects,
             notes,
         }
     }
@@ -2479,6 +2731,123 @@ async fn peers_source(ctx: &SourceContext<'_>) -> Result<InvestigationSourceResp
     Ok(builder.finish(ctx.window))
 }
 
+// ------------------------------------------------------- relationships ---
+
+/// The relationships the Server recorded for this Node inside the window.
+///
+/// This family is the coordinate the rest of the answer is read against. The
+/// Server writes down which Agent and which Network a Node belonged to as it
+/// accepts Reports and completes Node Transfers, starting from the moment that
+/// recording exists: nothing here is back-filled from the Agent or Network key the
+/// Node happens to have now, and a stretch the record does not cover is named as
+/// unknown instead of being described with the current relation (issue #221,
+/// stories 60, 61, 66).
+fn relationships_source(
+    ctx: &SourceContext<'_>,
+    relations: &RecordedRelations,
+    intervals: &[RelationshipInterval],
+) -> InvestigationSourceResponse {
+    // The record's own ledger: the earliest instant the Server could have held a
+    // record of this Node, the instant the record reaches to, and the last time the
+    // Server wrote one down. An interval the Server has not closed is read as still
+    // holding, so a current record produces no staleness claim.
+    let first_observed_at = intervals
+        .iter()
+        .filter_map(|interval| interval.valid_from_at())
+        .min()
+        .map(|instant| instant.min(ctx.first_seen_at))
+        .unwrap_or(ctx.first_seen_at);
+    let last_observed_at = intervals
+        .iter()
+        .map(|interval| interval.valid_until_at().unwrap_or(ctx.window.to))
+        .max();
+    let last_recorded_at = intervals
+        .iter()
+        .filter_map(|interval| canonical_instant(&interval.recorded_at))
+        .max();
+
+    let mut builder = SourceBuilder::new(
+        SOURCE_RELATIONSHIPS,
+        "Recorded relationships",
+        "node",
+        ctx.node_id,
+        TimeBasis::ServerRecord,
+        0,
+    );
+    // The record is the Server's own writing rather than a collected series, so a
+    // stretch it does not cover is an unknown boundary rather than a silence of a
+    // cadence that never existed.
+    builder.event_source = true;
+    builder.ledger = Ledger {
+        first_observed_at: Some(first_observed_at),
+        last_observed_at,
+        last_received_at: last_recorded_at,
+        released_before: None,
+    };
+    builder = builder.note(
+        "this family is the Server's own record of which subjects this Node belonged to: it is written as the Server accepts a Report or completes a Node Transfer, and it is never back-filled from the Agent or Network key the Node has now",
+    );
+    builder = builder.note(
+        "the recorded relations are the Server's own writing and are read in this answer, which is the only place the Server serves them, so this family points at no other path",
+    );
+
+    let mut recorded_spans = 0;
+    for kind in RELATION_KINDS {
+        let view = relations.view(kind);
+        recorded_spans += view.spans.len();
+        if view.spans.is_empty() {
+            builder = builder.note(format!(
+                "the Server holds no record of a {} for this Node inside this window, and holding no record is not evidence that it had none",
+                relation_kind_label(kind)
+            ));
+        }
+        for span in &view.spans {
+            builder = builder.note(describe_span(kind, span));
+        }
+        builder = builder.attribute_relation(view, kind);
+    }
+
+    // How many of the intervals the Server holds overlap this window at all: one read
+    // only for the record's own start is not a sample of this window.
+    let recorded_intervals = intervals
+        .iter()
+        .filter(|interval| {
+            interval
+                .valid_from_at()
+                .and_then(|from| {
+                    clipped_span(
+                        from,
+                        interval.valid_until_at(),
+                        ctx.window.from,
+                        ctx.window.to,
+                    )
+                })
+                .is_some()
+        })
+        .count();
+
+    let spans = relations.spans();
+    builder = builder.grain(tier_grain(
+        GRAIN_RECORDED_INTERVAL,
+        None,
+        (ctx.window.from, ctx.window.to),
+        TierStats {
+            point_count: recorded_spans as i64,
+            sample_count: recorded_intervals as i64,
+            first_observed_at: spans.first().map(|(_, span)| format_rfc3339(span.from)),
+            last_observed_at: spans.last().map(|(_, span)| format_rfc3339(span.to)),
+            cadence_seconds: None,
+            // Intervals are not a series: the distance between two of them is not a
+            // missing observation, and no interruption can be proved from it.
+            longest_gap_seconds: None,
+        },
+        None,
+        i64::MAX,
+        None,
+    ));
+    builder.finish(ctx.window)
+}
+
 // ----------------------------------------------------------- incidents ---
 
 /// The window-overlap predicate Alert Incidents are read with.
@@ -2490,10 +2859,24 @@ async fn peers_source(ctx: &SourceContext<'_>) -> Result<InvestigationSourceResp
 pub const INCIDENT_WINDOW_PREDICATE: &str =
     "i.opened_at < ? AND (i.resolved_at IS NULL OR i.resolved_at > ?)";
 
-/// The subject predicate: the Node itself, or the Agent that reports for it.
-pub const INCIDENT_SUBJECT_PREDICATE: &str = "((i.subject_kind = 'node' AND i.subject_key = ?) OR (i.subject_kind = 'agent' AND i.subject_key = ?))";
+/// The statement one subject's Incident statistics are read with.
+///
+/// The binds are the stretch's end, its start, the subject kind and the subject
+/// key. An Incident belongs to the stretch it overlapped rather than to the instant
+/// it opened, so one that opened before the stretch and had not closed when it
+/// started is counted in it too.
+fn incident_stats_sql() -> String {
+    format!(
+        "SELECT COUNT(*) AS point_count, \
+                MIN(i.opened_at) AS first_opened_at, \
+                MAX(i.opened_at) AS last_opened_at, \
+                MAX(COALESCE(i.resolved_at, i.opened_at)) AS last_evidence_at \
+           FROM alert_incidents i \
+          WHERE {INCIDENT_WINDOW_PREDICATE} AND i.subject_kind = ? AND i.subject_key = ?"
+    )
+}
 
-/// What one window of Alert Incidents holds for a subject.
+/// What one stretch of Alert Incidents holds for a subject.
 #[derive(Debug, FromRow)]
 struct IncidentStatsRow {
     point_count: i64,
@@ -2502,41 +2885,115 @@ struct IncidentStatsRow {
     last_evidence_at: Option<String>,
 }
 
+/// Incidents on one related subject, inside the stretch recorded for that relation.
+struct RelatedIncidents {
+    subject_kind: &'static str,
+    subject: String,
+    from: OffsetDateTime,
+    to: OffsetDateTime,
+    stats: IncidentStatsRow,
+}
+
+/// The Incident statistics one subject carries inside one stretch.
+async fn load_incident_stats(
+    ctx: &SourceContext<'_>,
+    subject_kind: &str,
+    subject_key: &str,
+    from: OffsetDateTime,
+    to: OffsetDateTime,
+) -> Result<IncidentStatsRow, sqlx::Error> {
+    sqlx::query_as::<_, IncidentStatsRow>(&incident_stats_sql())
+        .bind(format_rfc3339(to))
+        .bind(format_rfc3339(from))
+        .bind(subject_kind)
+        .bind(subject_key)
+        .fetch_one(ctx.pool)
+        .await
+}
+
+/// The instants one subject's Incident statistics name, as canonical instants.
+fn incident_instants(
+    stats: &IncidentStatsRow,
+) -> (
+    Option<OffsetDateTime>,
+    Option<OffsetDateTime>,
+    Option<OffsetDateTime>,
+) {
+    (
+        stats.first_opened_at.as_deref().and_then(canonical_instant),
+        stats.last_opened_at.as_deref().and_then(canonical_instant),
+        stats
+            .last_evidence_at
+            .as_deref()
+            .and_then(canonical_instant),
+    )
+}
+
 /// Measure the Alert Incidents that cover a window.
+///
+/// The Node's own Incidents are read over the whole window: they are about this
+/// Node whatever it was related to. Incidents on a related subject are read only
+/// over the stretches the Server recorded that relation for, and are marked as
+/// related, because an Incident opened while a different Agent reported this Node
+/// is not evidence about the Agent that reports it now (issue #221, stories 60, 61).
 async fn incidents_source(
     ctx: &SourceContext<'_>,
+    relations: &RecordedRelations,
 ) -> Result<InvestigationSourceResponse, sqlx::Error> {
     let (from, to) = (
         format_rfc3339(ctx.window.from),
         format_rfc3339(ctx.window.to),
     );
-    let stats = sqlx::query_as::<_, IncidentStatsRow>(&format!(
-        "SELECT COUNT(*) AS point_count, \
-                MIN(i.opened_at) AS first_opened_at, \
-                MAX(i.opened_at) AS last_opened_at, \
-                MAX(COALESCE(i.resolved_at, i.opened_at)) AS last_evidence_at \
-           FROM alert_incidents i \
-          WHERE {INCIDENT_WINDOW_PREDICATE} AND {INCIDENT_SUBJECT_PREDICATE}"
-    ))
-    .bind(&to)
-    .bind(&from)
-    .bind(ctx.node_id)
-    .bind(ctx.agent_id)
-    .fetch_one(ctx.pool)
-    .await?;
+    let stats =
+        load_incident_stats(ctx, "node", ctx.node_id, ctx.window.from, ctx.window.to).await?;
+
+    // Only a recorded Agent relation can carry Incidents on a related subject: the
+    // Alert catalog evaluates Agent and Host subjects on the Agent's own key, and
+    // holds no rule whose subject is a Network, so a recorded Network relation
+    // cannot appear in this family at all (crates/platpulse-server/src/alerts/mod.rs,
+    // the rule catalog).
+    let mut related: Vec<RelatedIncidents> = Vec::new();
+    for (kind, span) in relations.spans() {
+        if kind != RELATION_AGENT {
+            continue;
+        }
+        for subject_kind in ["agent", "host"] {
+            let related_stats =
+                load_incident_stats(ctx, subject_kind, &span.related_key, span.from, span.to)
+                    .await?;
+            if related_stats.point_count > 0 {
+                related.push(RelatedIncidents {
+                    subject_kind,
+                    subject: span.related_key.clone(),
+                    from: span.from,
+                    to: span.to,
+                    stats: related_stats,
+                });
+            }
+        }
+    }
 
     // An Incident is an occurrence, not a series: the earliest instant this
     // source could have opened one is when the Server first saw the Node, so a
     // window with no Incidents in it is an empty window rather than an
     // unobserved one, and a window that ends before the Node existed is not
     // answered as an empty list either.
+    let (mut first_opened, mut last_opened, mut last_evidence) = incident_instants(&stats);
+    for incident in &related {
+        let (first, last, evidence) = incident_instants(&incident.stats);
+        first_opened = [first_opened, first].into_iter().flatten().min();
+        last_opened = [last_opened, last].into_iter().flatten().max();
+        last_evidence = [last_evidence, evidence].into_iter().flatten().max();
+    }
+    let point_count: i64 = stats.point_count
+        + related
+            .iter()
+            .map(|incident| incident.stats.point_count)
+            .sum::<i64>();
     let ledger = Ledger {
         first_observed_at: Some(ctx.first_seen_at),
-        last_observed_at: stats.last_opened_at.as_deref().and_then(canonical_instant),
-        last_received_at: stats
-            .last_evidence_at
-            .as_deref()
-            .and_then(canonical_instant),
+        last_observed_at: last_opened,
+        last_received_at: last_evidence,
         released_before: None,
     };
 
@@ -2549,19 +3006,22 @@ async fn incidents_source(
         0,
     );
     builder.event_source = true;
-    builder.ledger = ledger.clone();
+    builder.ledger = ledger;
     builder = builder.note(
         "Incidents are evaluated by the Server from its own history, so no Agent collector reports on them and none is named here",
     );
-    builder = builder.grain(tier_grain(
+    builder = builder.note(
+        "Incidents on a related subject are counted only inside the stretches the Server recorded that relation for, and the Alert catalog holds no rule on a Network subject, so a recorded Network relation cannot appear in this family",
+    );
+    let mut grain = tier_grain(
         GRAIN_OCCURRENCE,
         None,
         (ctx.window.from, ctx.window.to),
         TierStats {
-            point_count: stats.point_count,
-            sample_count: stats.point_count,
-            first_observed_at: stats.first_opened_at,
-            last_observed_at: stats.last_opened_at,
+            point_count,
+            sample_count: point_count,
+            first_observed_at: first_opened.map(format_rfc3339),
+            last_observed_at: last_opened.map(format_rfc3339),
             cadence_seconds: None,
             // An occurrence source has no cadence: a quiet stretch between two
             // Incidents is not a missing observation, so no interruption can be
@@ -2571,7 +3031,28 @@ async fn incidents_source(
         None,
         i64::MAX,
         None,
-    ));
+    );
+    let related_count: i64 = related
+        .iter()
+        .map(|incident| incident.stats.point_count)
+        .sum();
+    if related_count > 0 {
+        grain.note = Some(format!(
+            "{related_count} of these Incidents are on subjects recorded as related to this Node, inside the stretches the Server held that relation for"
+        ));
+    }
+    builder = builder.grain(grain);
+    // A related subject's Incidents can only be counted where the record names a
+    // relation, so a window the record does not cover wholly is answered with that
+    // gap named here rather than read as an absence of Incidents (issue #221,
+    // stories 60, 61).
+    let wholly_recorded =
+        relations.agent.unknown_spans.is_empty() && relations.network.unknown_spans.is_empty();
+    if related_count == 0 && !wholly_recorded {
+        builder = builder.note(
+            "no Incident on a related subject is counted for this window: the record of this Node's relations does not cover all of it, and a stretch with no recorded relation is a gap in the record rather than an absence of Incidents",
+        );
+    }
     builder = builder.answer(
         "Incidents covering this window",
         format!(
@@ -2580,14 +3061,43 @@ async fn incidents_source(
         ),
         Some("an Incident that opened before the window and had not closed when it started is listed too"),
     );
-    builder = builder.answer(
-        "Incidents on the reporting Agent",
-        format!(
-            "/api/admin/v1/alerts/incidents?subject_kind=agent&subject_key={}&from={from}&to={to}",
-            ctx.agent_id
-        ),
-        None,
-    );
+    for incident in &related {
+        builder = builder.note(format!(
+            "{} Alert Incidents on {} {} fall inside the stretch the Server recorded that relation for, from {} to {}; they are read as Incidents on a related subject and never as this Node's own",
+            incident.stats.point_count,
+            incident.subject_kind,
+            incident.subject,
+            format_rfc3339(incident.from),
+            format_rfc3339(incident.to)
+        ));
+        builder = builder.answer(
+            &format!(
+                "Incidents on related {} {}",
+                incident.subject_kind, incident.subject
+            ),
+            format!(
+                "/api/admin/v1/alerts/incidents?subject_kind={}&subject_key={}&from={}&to={}",
+                incident.subject_kind,
+                incident.subject,
+                format_rfc3339(incident.from),
+                format_rfc3339(incident.to)
+            ),
+            Some("only the stretch the Server recorded this relation for is asked, not the whole window"),
+        );
+        builder.related_subjects.push(InvestigationRelatedSubjectResponse {
+            subject_kind: incident.subject_kind.to_owned(),
+            subject: incident.subject.clone(),
+            role: SUBJECT_ROLE_RELATED.to_owned(),
+            basis: BASIS_RECORDED_RELATIONSHIP.to_owned(),
+            basis_label: basis_label(BASIS_RECORDED_RELATIONSHIP).to_owned(),
+            from: format_rfc3339(incident.from),
+            to: format_rfc3339(incident.to),
+            detail: format!(
+                "{} Incident(s) on this related subject inside the stretch the Server recorded it for",
+                incident.stats.point_count
+            ),
+        });
+    }
     Ok(builder.finish(ctx.window))
 }
 
@@ -2627,20 +3137,33 @@ const VALIDATOR_LINK_SQL: &str = "\
      ORDER BY valid_from DESC";
 
 /// SQL: where the snapshots of those links start and stop.
+///
+/// A snapshot belongs to a link only while the Server held it: `received_at` is the
+/// Server's own receipt clock, the clock the edges of the link itself are written
+/// from, so a day read under an earlier link — or before any link existed — is not
+/// credited to this one, and two links to the same Validator inside one window
+/// cannot each claim the same row (issue #221, stories 65, 66).
 const VALIDATOR_HORIZON_SQL: &str = "\
     SELECT MAX(s.sample_at) AS last_sample_at, \
            MAX(s.received_at) AS last_received_at \
       FROM validator_daily_snapshots s \
       JOIN node_validator_links l ON l.validator_id = s.validator_id \
+       AND s.received_at >= l.valid_from \
+       AND (l.valid_until IS NULL OR s.received_at < l.valid_until) \
      WHERE l.node_id = ? AND l.valid_from < ? AND (l.valid_until IS NULL OR l.valid_until > ?) \
        AND s.timezone = ?";
 
 /// SQL: the days and rows those snapshots hold inside the window's local days.
+///
+/// Bounded by the same link correspondence as the horizon above, so the days counted
+/// here are the days the Server read this Validator for this Node.
 const VALIDATOR_GRID_SQL: &str = "\
     SELECT COUNT(*) AS entries, COUNT(DISTINCT s.local_date) AS days, \
            MIN(s.sample_at) AS first_sample_at, MAX(s.sample_at) AS last_sample_at \
       FROM validator_daily_snapshots s \
       JOIN node_validator_links l ON l.validator_id = s.validator_id \
+       AND s.received_at >= l.valid_from \
+       AND (l.valid_until IS NULL OR s.received_at < l.valid_until) \
      WHERE l.node_id = ? AND l.valid_from < ? AND (l.valid_until IS NULL OR l.valid_until > ?) \
        AND s.timezone = ? AND s.local_date >= ? AND s.local_date <= ?";
 
@@ -2663,19 +3186,38 @@ fn local_days_between(from: &str, to: &str) -> Option<i64> {
     Some(to.signed_duration_since(from).num_days() + 1)
 }
 
-/// How one Validator link reads in a note.
+/// How one recorded Validator link reads in a note.
+///
+/// A Node Validator Link is the Server's own record of the stretch it read a
+/// Validator for this Node. Its edges are correspondence times — when the Server
+/// began and stopped treating the link as current — rather than the instant a key
+/// changed on chain, and it is not proof that the Node was continuously secured by
+/// that Validator between them (issue #221, stories 65, 66).
 fn link_description(link: &ValidatorLinkRow) -> String {
     let role = link.role.clone().unwrap_or_else(|| "unassigned".to_owned());
     match &link.valid_until {
         Some(valid_until) => format!(
-            "{} ({role}, {}) linked from {} to {valid_until}",
+            "the Server recorded {} ({role}, {}) as linked from {} to {valid_until}",
             link.validator_id, link.origin, link.valid_from
         ),
         None => format!(
-            "{} ({role}, {}) linked from {}",
+            "the Server recorded {} ({role}, {}) as linked from {} and still holds it",
             link.validator_id, link.origin, link.valid_from
         ),
     }
+}
+
+/// The stretch of the window one recorded link covers, when it covers any.
+fn link_span(
+    link: &ValidatorLinkRow,
+    window: &ResolvedWindow,
+) -> Option<(OffsetDateTime, OffsetDateTime)> {
+    clipped_span(
+        canonical_instant(&link.valid_from)?,
+        link.valid_until.as_deref().and_then(canonical_instant),
+        window.from,
+        window.to,
+    )
 }
 
 /// Measure the Validator snapshots a Node's links answer with.
@@ -2707,6 +3249,13 @@ async fn validator_source(
         VALIDATOR_GRACE_SECONDS,
     );
     if links.is_empty() {
+        // Holding no link is not the same as the Node never having had one: the
+        // links this Server keeps are its own prospective record, so the absence is
+        // named as an absence of record and nothing is back-filled from the
+        // relation the Node has now (issue #221, stories 61, 66).
+        builder = builder.note(
+            "the Server holds no link interval for this Node inside this window, and holding no record of a link is not evidence that the Node had none: this family states what the Server recorded and never what the current link implies about the past",
+        );
         builder.unsupported = Some(
             "no Validator is linked to this Node for any part of this window, so the Server holds no Validator snapshots for it"
                 .to_owned(),
@@ -2761,15 +3310,42 @@ async fn validator_source(
         "the day grid is the {local} calendar the Server is configured with, from {local_from} to {local_to}; the Validator trend engine is the day-level authority and also discloses rows recorded in other timezones",
         local = ctx.timezone
     ));
+    builder = builder.note(
+        "a Validator link is the Server's own record of when it began and stopped reading a Validator for this Node: its edges are correspondence times rather than key-change times, and it proves no continuous protection between them",
+    );
     for link in &links {
         builder = builder.note(link_description(link));
+        let span = link_span(link, ctx.window);
+        if let Some((link_from, link_to)) = span {
+            builder
+                .related_subjects
+                .push(InvestigationRelatedSubjectResponse {
+                    subject_kind: "validator".to_owned(),
+                    subject: link.validator_id.clone(),
+                    role: SUBJECT_ROLE_RELATED.to_owned(),
+                    basis: BASIS_RECORDED_VALIDATOR_LINK.to_owned(),
+                    basis_label: basis_label(BASIS_RECORDED_VALIDATOR_LINK).to_owned(),
+                    from: format_rfc3339(link_from),
+                    to: format_rfc3339(link_to),
+                    detail: link_description(link),
+                });
+        }
+        // The trend is asked for the stretch this link was recorded for rather than
+        // for the whole window: the days outside the correspondence were read under
+        // another link, or under none, and asking for them here would present them
+        // as this link's (issue #221, stories 65, 66).
+        let (asked_from, asked_to) = span.unwrap_or((ctx.window.from, ctx.window.to));
         builder = builder.answer(
             "Validator daily trend",
             format!(
-                "/api/admin/v1/validators/{}/trend?from={from}&to={to}",
-                link.validator_id
+                "/api/admin/v1/validators/{}/trend?from={}&to={}",
+                link.validator_id,
+                format_rfc3339(asked_from),
+                format_rfc3339(asked_to)
             ),
-            None,
+            span.map(|_| {
+                "only the stretch the Server recorded this link for is asked, not the whole window"
+            }),
         );
     }
     builder = builder.grain(tier_grain(
@@ -2925,7 +3501,19 @@ pub async fn investigate_node(
         policies: &policies,
     };
 
+    // The relations the whole answer is read against: the Agent and Network the
+    // Server itself wrote down, per stretch of the window (issue #221). Sources that
+    // attribute evidence to a related subject read their stretches from here rather
+    // than from the keys the Node happens to have now.
+    // Every interval the Server holds for this Node is read, not only the ones that
+    // fall inside the window: an interval that opened exactly at the window's end is
+    // still the relation the Node had while the window was open, and the record's own
+    // start is what lets this answer say when the Server began recording at all.
+    let intervals = load_intervals(pool, &node.node_id).await?;
+    let relations = RecordedRelations::derive(intervals.clone(), window.from, window.to);
+
     let mut sources = Vec::with_capacity(SOURCE_ORDER.len());
+    sources.push(relationships_source(&ctx, &relations, &intervals));
     sources.push(
         metric_source(
             &ctx,
@@ -2966,7 +3554,11 @@ pub async fn investigate_node(
                 &node.agent_id,
                 TimeBasis::MetricObservation,
                 METRIC_GRACE_SECONDS,
-            ),
+            )
+            // Host metrics are collected once per Agent and read by Agent key, so
+            // the stretches the records gave to another Agent are not this family's
+            // evidence and are named as unknown instead of being attributed here.
+            .attribute_own_relation(relations.view(RELATION_AGENT), "agent"),
             &Collectors::of(&[
                 ComponentKey::CpuPercent,
                 ComponentKey::Memory,
@@ -2988,7 +3580,7 @@ pub async fn investigate_node(
         .await?,
     );
     sources.push(peers_source(&ctx).await?);
-    sources.push(incidents_source(&ctx).await?);
+    sources.push(incidents_source(&ctx, &relations).await?);
     sources.push(validator_source(&ctx).await?);
     debug_assert_eq!(sources.len(), SOURCE_ORDER.len());
 

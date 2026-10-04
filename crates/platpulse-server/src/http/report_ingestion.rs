@@ -1876,6 +1876,18 @@ async fn resolve_node_transfer<I: ReportInventory>(
         .bind(node.node_id.to_string())
         .execute(&mut **tx)
         .await?;
+    // The switch is a recorded relationship change (issue #221): the previous
+    // Agent's interval closes at this instant and the reporting Agent's opens.
+    // The Network is passed as the registered key, which this path has already
+    // verified, so a transfer never records a Network change.
+    crate::relationships::record_relations(
+        tx,
+        &node.node_id.to_string(),
+        reporting_agent,
+        &registered_key,
+        now_text,
+    )
+    .await?;
     let _ = crate::auth::insert_audit_event(
         &mut **tx,
         None,
@@ -2555,6 +2567,27 @@ async fn ingest_report<I: ReportInventory>(
         let result = sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', 'private', ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET network_key=excluded.network_key, display_name=COALESCE(nodes.display_name, excluded.display_name), rpc_endpoint=excluded.rpc_endpoint, lifecycle='active', inventory_revision=excluded.inventory_revision, updated_at=excluded.updated_at")
             .bind(node.node_id.to_string()).bind(&auth.agent_id).bind(node.network_key.as_str()).bind(&node.display_name).bind(node.rpc_endpoint.as_str()).bind(effective_inventory_revision as i64).bind(&now_text).bind(&now_text).execute(&mut *tx).await;
         if result.is_err() {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+        // Record the relations the Server accepted with this Report (issue
+        // #221). A first Report opens the intervals; a change of reporting
+        // Agent or Network key closes the old interval and opens the new one,
+        // so history is never read from the Node's current columns.
+        if crate::relationships::record_relations(
+            &mut tx,
+            &node.node_id.to_string(),
+            &auth.agent_id,
+            node.network_key.as_str(),
+            &now_text,
+        )
+        .await
+        .is_err()
+        {
             return error(
                 &request_id.0,
                 StatusCode::SERVICE_UNAVAILABLE,

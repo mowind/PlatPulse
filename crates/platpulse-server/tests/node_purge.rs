@@ -348,6 +348,7 @@ const NODE_OWNED_TABLES: &[&str] = &[
     "node_state_series_state",
     "node_validator_links",
     "node_transfers",
+    "node_relationship_intervals",
 ];
 
 /// Populate one row of every Node-owned table that the minimal report does not
@@ -527,6 +528,13 @@ async fn owner_purge_removes_only_node_owned_data_and_leaves_shared_evidence() {
         1,
         "the preview discloses the Node-owned capacity gap rows it will delete"
     );
+    assert_eq!(
+        preview["counts"]["relationship_intervals"]
+            .as_i64()
+            .unwrap(),
+        2,
+        "the preview discloses the relations the Server recorded for this Node: the accepted Report writes the Agent and the Network it belonged to"
+    );
 
     // Purge.
     let response = harness
@@ -548,6 +556,11 @@ async fn owner_purge_removes_only_node_owned_data_and_leaves_shared_evidence() {
         body["removed"]["capacity_skipped_series"].as_i64().unwrap(),
         1,
         "the committed capacity gap scope equals the confirmed preview"
+    );
+    assert_eq!(
+        body["removed"]["relationship_intervals"].as_i64().unwrap(),
+        2,
+        "the committed relation scope equals the confirmed preview"
     );
 
     // Every Node-owned table is empty for the Node and the Node itself is gone.
@@ -655,6 +668,18 @@ async fn owner_purge_removes_only_node_owned_data_and_leaves_shared_evidence() {
             .await
             .unwrap();
     assert_eq!(incidents, 1, "existing Incident evidence must be retained");
+    // The record of which subjects this Node belonged to is the Node's own
+    // history and goes with it, while the Agent and Host history, the sibling
+    // Node, and the independent Validator and Incident evidence recorded about
+    // those subjects survive (issue #221, story 68).
+    let relations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM node_relationship_intervals")
+        .fetch_one(harness.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        relations, 0,
+        "the record of a purged Node's relations must not survive the Purge"
+    );
 
     // The Node leaves Admin and Public current views, and the public detail URL
     // becomes a non-leaking unavailable outcome.

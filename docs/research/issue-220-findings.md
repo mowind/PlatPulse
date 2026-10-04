@@ -4,6 +4,8 @@
 
 Everything below is the working tree as it stands, read at the line references given. It is not a plan. This pass read code and wrote documents only: no cargo command, no npm command and no browser run happened here, and the ticket text itself was not read — which is why nothing below quotes the ticket's own wording (see VERIFICATION).
 
+> **Superseded in part by issue #221.** `docs/research/issue-221-findings.md` records the seventh family (the Server's own record of the Node's relations), which now leads `SOURCE_ORDER`, and the additions to `TimeBasis`, `BoundaryKind` and the grain list. Both changes shifted the line references into `crates/platpulse-server/src/investigation.rs` that this document cites, so every `investigation.rs:<line>` below reads as of #220's merge (commit `76e91a2`) rather than as of the tree it is read in today; the behaviour it describes is otherwise unchanged.
+
 ## SERVER — one window, and how a request becomes one
 
 1. **The window is a first-class value.** `pub fn resolve_window(window: Option<&str>, from: Option<&str>, to: Option<&str>, now: OffsetDateTime) -> Result<ResolvedWindow, String>` (crates/platpulse-server/src/investigation.rs:232) trims every value and turns an empty string into `None`, so `(None, None, None)` resolves to `DEFAULT_WINDOW_PRESET` = `"24h"` (crates/platpulse-server/src/investigation.rs:90 and :246-249) — a bare deep link, an empty query and a refresh are all the same window rather than an error. The preset path sets `from = now - hours` and `to = now` with `clamped_to_now` false; the explicit path needs both ends and parses them through `canonical_instant`.

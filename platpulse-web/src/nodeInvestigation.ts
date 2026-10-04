@@ -219,6 +219,23 @@ export function timeBasisNote(basis: string): string | null {
   return TIME_BASIS_NOTES[basis] ?? null;
 }
 
+/**
+ * A plain name for the kind of subject a source's evidence is attributed to.
+ *
+ * The Server names every related subject by kind; a kind this build does not know is shown as the
+ * Server wrote it rather than under a name this page invented for it.
+ */
+const RELATED_SUBJECT_KIND_LABELS: Record<string, string> = {
+  agent: "Agent",
+  host: "Host",
+  network: "Network",
+  validator: "Validator",
+};
+
+export function relatedSubjectKindLabel(kind: string): string {
+  return RELATED_SUBJECT_KIND_LABELS[kind] ?? kind;
+}
+
 /** The evidence grain names a Peer receipt range can be read at. */
 const PEER_GRAIN_BY_EVIDENCE: Record<string, string> = {
   receipt_bucket_5m: "5m",

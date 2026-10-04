@@ -111,6 +111,7 @@ function sourceFixture(overrides: Record<string, unknown> = {}) {
     lastObservedAt: WINDOW_TO,
     lastReceivedAt: "2026-08-12T12:00:05Z",
     notes: [],
+    relatedSubjects: [],
     releasedBefore: null,
     retainedFrom: null,
     retentionDays: 1,
@@ -1018,5 +1019,116 @@ describe("PAGE-ADMIN-NODE-INVESTIGATION (one UTC window over every family)", () 
     expect(entry.textContent).toContain(
       "the width is the width the link asked for",
     );
+  });
+
+  it("attributes a family to the subjects the Server recorded and to no other key", async () => {
+    const FORMER_AGENT = "0195f2a1-0021-4021-8021-000000000021";
+    const related = sourceFixture({
+      key: "host_metrics",
+      label: "Host metrics",
+      relatedSubjects: [
+        {
+          basis: "recorded_relationship",
+          basisLabel: "Recorded relationship",
+          detail: "the Server recorded this Agent for this stretch",
+          from: WINDOW_FROM,
+          role: "source",
+          subject: AGENT_ID,
+          subjectKind: "agent",
+          to: WINDOW_TO,
+        },
+        {
+          basis: "recorded_relationship",
+          basisLabel: "Recorded relationship",
+          detail: "the Server recorded another Agent for this stretch",
+          from: "2026-08-12T10:00:00Z",
+          role: "related",
+          subject: FORMER_AGENT,
+          subjectKind: "agent",
+          to: "2026-08-12T11:00:00Z",
+        },
+      ],
+    });
+    mockFetch(
+      investigationRoutes(() =>
+        jsonResponse(
+          answerFixture({ sources: [related, peersSourceFixture()] }),
+          200,
+        ),
+      ),
+    );
+    await renderAt("/admin/nodes/" + NODE_ID + "/investigation");
+    await waitForInvestigation();
+
+    const table = document.querySelector(
+      '[data-slot="investigation-related-subjects"]',
+    );
+    if (!table) throw new Error("the related subjects table is not rendered");
+    const rows = table.querySelectorAll("tbody tr");
+    expect(rows).toHaveLength(2);
+    // The family's own subject is named as such, and the earlier key is named as related rather than
+    // being folded into the family's own points.
+    expect(rows[0].textContent).toContain("Agent");
+    expect(rows[0].textContent).toContain(AGENT_ID);
+    expect(rows[0].textContent).toContain("This family's own subject");
+    expect(rows[1].textContent).toContain(FORMER_AGENT);
+    expect(rows[1].textContent).toContain("Related subject");
+    expect(rows[1].textContent).toContain("Recorded relationship");
+    expect(rows[1].textContent).toContain("recorded_relationship");
+    expect(rows[1].textContent).toContain(
+      "the Server recorded another Agent for this stretch",
+    );
+
+    // A family the Server credited to nobody says so, rather than reading its own points as the
+    // subject's own.
+    expect(
+      document.querySelector(
+        '[data-slot="investigation-no-related-subject"]',
+      )?.textContent,
+    ).toContain("records no subject related to this family");
+  });
+
+  it("reads a family the Server points no further than as a statement rather than a broken link", async () => {
+    // The record family is answered inside this window: the Server names no endpoint for it, so the
+    // card states that instead of heading a list of links that does not exist.
+    const record = sourceFixture({
+      answerPaths: [],
+      key: "relationships",
+      label: "Recorded relationships",
+      timeBasis: "server_record",
+      timeBasisLabel: "Server record time",
+    });
+    mockFetch(
+      investigationRoutes(() =>
+        jsonResponse(
+          answerFixture({ sources: [record, peersSourceFixture()] }),
+          200,
+        ),
+      ),
+    );
+    await renderAt("/admin/nodes/" + NODE_ID + "/investigation");
+    await waitForInvestigation();
+
+    const card = document.querySelector(
+      '[data-slot="investigation-source"][data-source="relationships"]',
+    ) as HTMLElement;
+    expect(
+      card.querySelector('[data-slot="investigation-answer-paths"]'),
+    ).toBeNull();
+    expect(
+      card.querySelector('[data-slot="investigation-no-answer-path"]')
+        ?.textContent,
+    ).toContain("The Server sends no endpoint for this family");
+
+    // A family that does send them still lists them, and states nothing about endpoints.
+    const peersCard = document.querySelector(
+      '[data-slot="investigation-source"][data-source="peers"]',
+    ) as HTMLElement;
+    expect(
+      peersCard.querySelector('[data-slot="investigation-answer-paths"]'),
+    ).not.toBeNull();
+    expect(
+      peersCard.querySelector('[data-slot="investigation-no-answer-path"]'),
+    ).toBeNull();
   });
 });

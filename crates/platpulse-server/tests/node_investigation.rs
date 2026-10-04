@@ -33,7 +33,8 @@ const VIEWER_LOGIN_BODY: &str = r#"{"username":"viewer1","password":"correct hor
 /// The Node the injected observation fixture declares.
 const NODE_ID: &str = "0195f2a1-0014-4014-8014-000000000014";
 /// The source keys, in the fixed order every answer carries them.
-const SOURCE_ORDER: [&str; 6] = [
+const SOURCE_ORDER: [&str; 7] = [
+    "relationships",
     "node_metrics",
     "node_state",
     "host_metrics",
@@ -313,6 +314,28 @@ fn report(agent_id: &str, sequence: u64, generated_at: &str) -> Vec<u8> {
     serde_json::to_vec(&value).unwrap()
 }
 
+/// The same Report with a Network Identity probe that agrees with the
+/// registered Network: a declaration without a successful identity probe cannot
+/// switch ownership, so the handover path needs one (issue #46).
+fn report_verified(agent_id: &str, sequence: u64, generated_at: &str) -> Vec<u8> {
+    let mut value: Value =
+        serde_json::from_slice(&report(agent_id, sequence, generated_at)).unwrap();
+    value["nodes"][0]["chain"]["network_identity"] = serde_json::json!({
+        "status": "ok",
+        "attempted_at": generated_at,
+        "latest_observed_at": generated_at,
+        "state_revision": 1,
+        "value_revision": 1,
+        "latest": {
+            "genesis_hash": NETWORK_GENESIS,
+            "chain_id": 210425,
+            "p2p_network_id": 210425,
+            "address_hrp": "lat"
+        }
+    });
+    serde_json::to_vec(&value).unwrap()
+}
+
 /// Submit one Report per offset, in order, each at base plus that many seconds.
 async fn submit_every(
     harness: &Harness,
@@ -466,10 +489,20 @@ async fn owner_reads_one_window_with_every_source_and_other_principals_are_refus
                 !entry["notes"].as_array().unwrap().is_empty(),
                 "{key} is unsupported without saying why"
             );
-        } else {
-            assert!(
-                !paths.is_empty(),
+        } else if paths.is_empty() {
+            // A family whose evidence is the Server's own record says so instead
+            // of pointing at a second surface (#221): the recorded relations are
+            // served in this answer and nowhere else.
+            assert_eq!(
+                key, "relationships",
                 "{key} answers with no way to read its evidence"
+            );
+            assert!(
+                entry["notes"].as_array().unwrap().iter().any(|note| note
+                    .as_str()
+                    .unwrap()
+                    .contains("the only place the Server serves them")),
+                "{key} sent no answer path and did not say why"
             );
         }
         for path in paths {
@@ -536,6 +569,17 @@ async fn owner_reads_one_window_with_every_source_and_other_principals_are_refus
     let validator = source(&body, "validator");
     assert_eq!(validator["coverage"], "unsupported");
     assert!(!validator["notes"].as_array().unwrap().is_empty());
+    assert!(
+        validator["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note
+                .as_str()
+                .unwrap()
+                .contains("holding no record of a link is not evidence that the Node had none")),
+        "{validator}"
+    );
 
     // The collector rows ride along, so a reader sees the collection state
     // behind the history without a second request.
@@ -871,5 +915,728 @@ async fn a_purged_node_says_when_it_was_purged_and_an_unknown_one_is_not_found()
             .unwrap()
             .contains(&deleted_at),
         "the purge answer does not say when: {body}"
+    );
+}
+
+/// Stories 60 and 61: the Server records which Agent and Network a Node
+/// belonged to as it accepts Reports and completes Node Transfers, and every
+/// answer is attributed by that record alone. A Node the record does not cover
+/// has an unknown past, not the relation it has now.
+#[tokio::test]
+async fn a_recorded_relation_is_read_from_the_record_and_never_back_filled() {
+    let harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (first_agent, first_credential) = enroll_agent(&harness, &session).await;
+    let (second_agent, second_credential) = enroll_agent(&harness, &session).await;
+
+    // The first accepted Report opens the record for both relations at once, at
+    // the instant the Server received it rather than the instant the Agent
+    // generated it.
+    let first_at = auth::format_rfc3339(auth::now_utc() - time::Duration::minutes(30));
+    let (status, value) = submit(
+        &harness,
+        &first_credential,
+        report(&first_agent, 1, &first_at),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let opened: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT relation_kind, related_key, origin, valid_until \
+         FROM node_relationship_intervals ORDER BY relation_kind",
+    )
+    .fetch_all(harness.pool())
+    .await
+    .unwrap();
+    assert_eq!(opened.len(), 2, "{opened:?}");
+    assert_eq!(opened[0].0, "agent");
+    assert_eq!(opened[0].1, first_agent);
+    assert_eq!(opened[0].2, "enrollment");
+    assert_eq!(opened[0].3, None);
+    assert_eq!(opened[1].0, "network");
+    assert_eq!(opened[1].1, "platon-mainnet");
+    assert_eq!(opened[1].2, "enrollment");
+    assert_eq!(opened[1].3, None);
+
+    // A later Report that changes nothing writes nothing: the record is about
+    // relations, not about Reports.
+    let (status, value) = submit(
+        &harness,
+        &first_credential,
+        report(
+            &first_agent,
+            2,
+            &auth::format_rfc3339(auth::now_utc() - time::Duration::minutes(29)),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(
+        harness
+            .count_where("node_relationship_intervals", "node_id IS NOT NULL")
+            .await,
+        2,
+        "a repeated Report must not write a new interval"
+    );
+
+    // The Owner hands the Node to a second Agent. The handover completes when
+    // the target Agent's Report is accepted, and that receipt is the instant the
+    // Server records the change at.
+    let response = harness
+        .send(admin_post(
+            &format!("/api/admin/v1/nodes/{NODE_ID}/transfers"),
+            &session,
+            &format!(
+                r#"{{"targetAgentId":"{second_agent}","expiresInHours":24,"operatorReason":"move the node to its new host"}}"#
+            ),
+        ))
+        .await;
+    let status = response.status();
+    let value = body_json(response).await;
+    assert!(status.is_success(), "{status}: {value}");
+
+    let (status, value) = submit(
+        &harness,
+        &second_credential,
+        report_verified(&second_agent, 3, &auth::format_rfc3339(auth::now_utc())),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+
+    let agents: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
+        "SELECT related_key, origin, valid_until, valid_from FROM node_relationship_intervals \
+         WHERE relation_kind = 'agent' ORDER BY valid_from",
+    )
+    .fetch_all(harness.pool())
+    .await
+    .unwrap();
+    assert_eq!(agents.len(), 2, "{agents:?}");
+    assert_eq!(agents[0].0, first_agent);
+    assert_eq!(agents[0].1, "enrollment");
+    assert_eq!(agents[1].0, second_agent);
+    assert_eq!(agents[1].1, "transfer");
+    assert_eq!(agents[1].2, None, "the new relation is still open");
+    let closed_at = agents[0]
+        .2
+        .clone()
+        .expect("the handover closes the first Agent's interval");
+    assert_eq!(
+        agents[1].3, closed_at,
+        "the next interval opens at the instant the previous one closes"
+    );
+    let network: (String, Option<String>) = sqlx::query_as(
+        "SELECT related_key, valid_until FROM node_relationship_intervals \
+         WHERE relation_kind = 'network'",
+    )
+    .fetch_one(harness.pool())
+    .await
+    .unwrap();
+    assert_eq!(network.0, "platon-mainnet");
+    assert_eq!(network.1, None, "the Network did not change");
+
+    // Let the clock pass the second the record was written in. The investigation
+    // window ends at the request instant with second precision, so a relation
+    // recorded within that same second is not yet strictly inside the window.
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+
+    let body = investigate(&harness, &session.cookie, NODE_ID, "window=1h").await;
+    let relationships = source(&body, "relationships");
+    assert_eq!(
+        relationships["timeBasis"], "server_record",
+        "{relationships}"
+    );
+    assert_eq!(
+        relationships["timeBasisLabel"], "Server record time",
+        "{relationships}"
+    );
+    assert_eq!(relationships["subjectKind"], "node", "{relationships}");
+    assert_eq!(relationships["subject"], NODE_ID, "{relationships}");
+    assert!(
+        relationships["answerPaths"].as_array().unwrap().is_empty(),
+        "the record is a Server statement, not another answer surface: {relationships}"
+    );
+    assert!(
+        relationships["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note
+                .as_str()
+                .unwrap()
+                .contains("the only place the Server serves them")),
+        "{relationships}"
+    );
+
+    let recorded: Vec<&Value> = relationships["relatedSubjects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .collect();
+    let by_key: Vec<(String, String)> = recorded
+        .iter()
+        .map(|entry| {
+            (
+                entry["subject"].as_str().unwrap().to_owned(),
+                entry["subjectKind"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        by_key,
+        vec![
+            (first_agent.clone(), "agent".to_owned()),
+            (second_agent.clone(), "agent".to_owned()),
+            ("platon-mainnet".to_owned(), "network".to_owned()),
+        ],
+        "{relationships}"
+    );
+    for entry in &recorded {
+        assert_eq!(entry["role"], "related", "{entry}");
+        assert_eq!(entry["basis"], "recorded_relationship", "{entry}");
+        assert_eq!(entry["basisLabel"], "Recorded relationship", "{entry}");
+    }
+
+    // Host metrics are collected once per Agent, so the stretch the record gave
+    // to the first Agent is that Agent's evidence and is named as such.
+    let host = source(&body, "host_metrics");
+    let related: Vec<&Value> = host["relatedSubjects"].as_array().unwrap().iter().collect();
+    let roles: Vec<(String, String)> = related
+        .iter()
+        .map(|entry| {
+            (
+                entry["subject"].as_str().unwrap().to_owned(),
+                entry["role"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        roles,
+        vec![
+            (first_agent.clone(), "related".to_owned()),
+            (second_agent.clone(), "source".to_owned()),
+        ],
+        "{host}"
+    );
+    assert!(
+        boundary_kinds(host).contains(&"relationship_unknown".to_owned()),
+        "the family that reads Agent evidence must disclose where the record gives another Agent: {host}"
+    );
+
+    // A Node the Server holds no record for has an unknown past: the current
+    // Agent is never read back across the window.
+    sqlx::query("DELETE FROM node_relationship_intervals")
+        .execute(harness.pool())
+        .await
+        .unwrap();
+    let body = investigate(&harness, &session.cookie, NODE_ID, "window=1h").await;
+    let relationships = source(&body, "relationships");
+    assert!(
+        relationships["relatedSubjects"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{relationships}"
+    );
+    let unknown = relationships["boundaries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|boundary| boundary["kind"] == "relationship_unknown")
+        .map(|boundary| boundary["detail"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        unknown.contains("has never recorded which Agent or Network this Node belonged to"),
+        "{unknown}"
+    );
+    let host = source(&body, "host_metrics");
+    assert!(
+        host["relatedSubjects"].as_array().unwrap().is_empty(),
+        "{host}"
+    );
+}
+
+/// One instant minutes before the Server's own clock, in the format the Server
+/// writes its own records in.
+fn minutes_ago(minutes: i64) -> String {
+    auth::format_rfc3339(auth::now_utc() - time::Duration::minutes(minutes))
+}
+
+/// Replace the record the Server wrote with a seeded one, so a test can read
+/// relations only weeks of history would otherwise produce.
+async fn seed_relations(
+    harness: &Harness,
+    intervals: &[(&str, &str, &str, String, Option<String>)],
+) {
+    sqlx::query("DELETE FROM node_relationship_intervals")
+        .execute(harness.pool())
+        .await
+        .unwrap();
+    for (kind, key, origin, from, until) in intervals {
+        sqlx::query(
+            "INSERT INTO node_relationship_intervals \
+             (interval_id, node_id, relation_kind, related_key, origin, valid_from, valid_until, recorded_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(NODE_ID)
+        .bind(kind)
+        .bind(key)
+        .bind(origin)
+        .bind(from)
+        .bind(until)
+        .bind(auth::format_rfc3339(auth::now_utc()))
+        .execute(harness.pool())
+        .await
+        .unwrap();
+    }
+}
+
+/// One Alert Incident, written into the Server's own history the way the rule
+/// evaluator writes one.
+async fn seed_incident(
+    harness: &Harness,
+    subject_kind: &str,
+    subject_key: &str,
+    sequence: i64,
+    opened_at: &str,
+) {
+    sqlx::query(
+        "INSERT OR IGNORE INTO alert_rules \
+         (rule_key, enabled, severity, version, condition_json, created_at, updated_at) \
+         VALUES ('node.rpc_unreachable', 1, 'warning', 1, '{}', ?, ?)",
+    )
+    .bind(opened_at)
+    .bind(opened_at)
+    .execute(harness.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO alert_incidents \
+         (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) \
+         VALUES (?, 'node.rpc_unreachable', 1, ?, ?, 'warning', 'open', ?, ?, '{}')",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(subject_kind)
+    .bind(subject_key)
+    .bind(sequence)
+    .bind(opened_at)
+    .execute(harness.pool())
+    .await
+    .unwrap();
+}
+
+/// Enroll one Agent, let it report once, and answer with its Agent id and
+/// credential, so a test starts from a Node the Server knows.
+async fn enroll_reporting_agent(harness: &Harness, session: &Session) -> (String, String) {
+    let (agent, credential) = enroll_agent(harness, session).await;
+    let (status, value) = submit(harness, &credential, report(&agent, 1, &minutes_ago(29))).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    (agent, credential)
+}
+
+/// An Incident on a subject the record names is read inside the stretch the
+/// Server recorded that relation for, and never outside it (issue #221, stories
+/// 60 and 61).
+#[tokio::test]
+async fn incidents_on_a_related_subject_stay_inside_the_recorded_stretch() {
+    let harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (current_agent, _credential) = enroll_reporting_agent(&harness, &session).await;
+
+    // The record says the Node reported through another Agent up to twenty
+    // minutes ago, and through this one since then.
+    const FORMER_AGENT: &str = "0195f2a1-0021-4021-8021-000000000021";
+    let (former_from, former_to) = (minutes_ago(30), minutes_ago(20));
+    seed_relations(
+        &harness,
+        &[
+            (
+                "agent",
+                FORMER_AGENT,
+                "transfer",
+                former_from.clone(),
+                Some(former_to.clone()),
+            ),
+            ("agent", &current_agent, "transfer", former_to.clone(), None),
+            (
+                "network",
+                "platon-mainnet",
+                "enrollment",
+                former_from.clone(),
+                None,
+            ),
+        ],
+    )
+    .await;
+
+    // Two Incidents on the former Agent fall inside the recorded stretch, and a
+    // third one on the same subject falls after it: the record gives this Node no
+    // relation to that Agent for that later stretch.
+    seed_incident(&harness, "agent", FORMER_AGENT, 1, &minutes_ago(25)).await;
+    seed_incident(&harness, "host", FORMER_AGENT, 2, &minutes_ago(22)).await;
+    seed_incident(&harness, "agent", FORMER_AGENT, 3, &minutes_ago(10)).await;
+    seed_incident(&harness, "node", NODE_ID, 1, &minutes_ago(24)).await;
+
+    let body = investigate(&harness, &session.cookie, NODE_ID, "window=1h").await;
+    let incidents = source(&body, "incidents");
+    assert_eq!(
+        incidents["grains"][0]["pointCount"], 3,
+        "this Node's own Incident plus the two inside the recorded stretch, and no other: {incidents}"
+    );
+
+    let recorded: Vec<(String, String)> = incidents["relatedSubjects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["subject"].as_str().unwrap().to_owned(),
+                entry["subjectKind"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        recorded,
+        vec![
+            (FORMER_AGENT.to_owned(), "agent".to_owned()),
+            (FORMER_AGENT.to_owned(), "host".to_owned()),
+        ],
+        "{incidents}"
+    );
+    for entry in incidents["relatedSubjects"].as_array().unwrap() {
+        assert_eq!(entry["role"], "related", "{entry}");
+        assert_eq!(entry["basis"], "recorded_relationship", "{entry}");
+        assert_eq!(entry["basisLabel"], "Recorded relationship", "{entry}");
+        assert_eq!(entry["from"], former_from, "{entry}");
+        assert_eq!(entry["to"], former_to, "{entry}");
+    }
+
+    let notes = incidents["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| note.as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        incidents["grains"][0]["note"]
+            .as_str()
+            .unwrap()
+            .contains("2 of these Incidents are on subjects recorded as related to this Node"),
+        "{incidents}"
+    );
+    assert!(
+        notes.contains("the Alert catalog holds no rule on a Network subject"),
+        "{notes}"
+    );
+    assert!(
+        notes.contains(&format!(
+            "Alert Incidents on agent {FORMER_AGENT} fall inside the stretch the Server recorded that relation for"
+        )),
+        "{notes}"
+    );
+
+    let related_path = incidents["answerPaths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|path| {
+            path["path"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("subject_kind=agent&subject_key={FORMER_AGENT}"))
+        })
+        .expect("the related subject is answered over the stretch it was recorded for");
+    assert!(
+        related_path["path"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("from={former_from}&to={former_to}")),
+        "{related_path}"
+    );
+    assert_eq!(
+        related_path["note"],
+        "only the stretch the Server recorded this relation for is asked, not the whole window",
+        "{related_path}"
+    );
+}
+
+/// A Validator link is the Server's own record of correspondence, and the answer
+/// serves it as exactly that (issue #221, stories 65 and 66).
+#[tokio::test]
+async fn a_validator_link_is_served_as_a_recorded_correspondence() {
+    let harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (_agent, _credential) = enroll_reporting_agent(&harness, &session).await;
+
+    const VALIDATOR_ID: &str = "0195f2a1-0031-4031-8031-000000000031";
+    let (linked_from, linked_until) = (minutes_ago(25), minutes_ago(15));
+    let now = auth::format_rfc3339(auth::now_utc());
+    sqlx::query(
+        "INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) \
+         VALUES (?, 'platon-mainnet', ?, 'Seeded Validator', ?, ?)",
+    )
+    .bind(VALIDATOR_ID)
+    .bind(VALIDATOR_ID)
+    .bind(&now)
+    .bind(&now)
+    .execute(harness.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO node_validator_links \
+         (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) \
+         VALUES (?, ?, ?, 'primary', 'manual', ?, ?, ?, ?)",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(NODE_ID)
+    .bind(VALIDATOR_ID)
+    .bind(&linked_from)
+    .bind(&linked_until)
+    .bind(&now)
+    .bind(&now)
+    .execute(harness.pool())
+    .await
+    .unwrap();
+
+    let body = investigate(&harness, &session.cookie, NODE_ID, "window=1h").await;
+    let validator = source(&body, "validator");
+    let related = validator["relatedSubjects"].as_array().unwrap();
+    assert_eq!(related.len(), 1, "{validator}");
+    assert_eq!(related[0]["subjectKind"], "validator", "{validator}");
+    assert_eq!(related[0]["subject"], VALIDATOR_ID, "{validator}");
+    assert_eq!(related[0]["role"], "related", "{validator}");
+    assert_eq!(
+        related[0]["basis"], "recorded_validator_link",
+        "{validator}"
+    );
+    assert_eq!(
+        related[0]["basisLabel"], "Recorded Validator Link",
+        "{validator}"
+    );
+    assert_eq!(related[0]["from"], linked_from, "{validator}");
+    assert_eq!(related[0]["to"], linked_until, "{validator}");
+
+    let notes = validator["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| note.as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        notes.contains(&format!(
+            "the Server recorded {VALIDATOR_ID} (primary, manual) as linked from {linked_from} to {linked_until}"
+        )),
+        "{notes}"
+    );
+    assert!(
+        notes.contains(
+            "its edges are correspondence times rather than key-change times, and it proves no continuous protection between them"
+        ),
+        "{notes}"
+    );
+    assert!(
+        validator["answerPaths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path["path"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("/api/admin/v1/validators/{VALIDATOR_ID}/trend"))),
+        "{validator}"
+    );
+}
+/// Story 65: a recorded link answers only for the stretch the Server held it, so a
+/// day read under an earlier link — or before any link existed — is not credited to
+/// the link that happens to be in force now, and two links to one Validator inside
+/// one window cannot each claim the same stored day.
+#[tokio::test]
+async fn a_recorded_link_answers_only_for_the_stretch_the_server_held_it() {
+    let harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (_agent, _credential) = enroll_reporting_agent(&harness, &session).await;
+
+    const VALIDATOR_ID: &str = "0195f2a1-0031-4031-8031-000000000031";
+    let now = auth::format_rfc3339(auth::now_utc());
+    let (first_from, first_until) = (minutes_ago(4_320), minutes_ago(2_880));
+    let second_from = minutes_ago(2_880);
+
+    sqlx::query(
+        "INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) \
+         VALUES (?, 'platon-mainnet', ?, 'Seeded Validator', ?, ?)",
+    )
+    .bind(VALIDATOR_ID)
+    .bind(VALIDATOR_ID)
+    .bind(&now)
+    .bind(&now)
+    .execute(harness.pool())
+    .await
+    .unwrap();
+    for (from, until) in [(&first_from, Some(&first_until)), (&second_from, None)] {
+        sqlx::query(
+            "INSERT INTO node_validator_links \
+             (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) \
+             VALUES (?, ?, ?, 'primary', 'manual', ?, ?, ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(NODE_ID)
+        .bind(VALIDATOR_ID)
+        .bind(from)
+        .bind(until)
+        .bind(&now)
+        .bind(&now)
+        .execute(harness.pool())
+        .await
+        .unwrap();
+    }
+
+    // One stored day per instant: before the first link, inside it, and inside the
+    // second link. The day before the first link sits well inside the seven-day
+    // window, so only the link correspondence can keep it out of the answer.
+    let days = [minutes_ago(5_760), minutes_ago(3_600), minutes_ago(1_440)];
+    for received_at in &days {
+        let local_date = &received_at[..10];
+        sqlx::query(
+            "INSERT INTO validator_daily_snapshots \
+             (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, \
+              provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, \
+              reward_rate, delegator_count, epoch, block_count) \
+             VALUES (?, ?, 'UTC', ?, ?, ?, ?, NULL, 'platsScan', ?, 12, '1000.000000', '25.000000', \
+                     '0.05', 40, 5, 900)",
+        )
+        .bind(format!("snapshot-UTC-{local_date}"))
+        .bind(VALIDATOR_ID)
+        .bind(local_date)
+        .bind(&local_date[..7])
+        .bind(received_at)
+        .bind(received_at)
+        .bind(format!("observation-UTC-{local_date}"))
+        .execute(harness.pool())
+        .await
+        .unwrap();
+    }
+
+    let body = investigate(&harness, &session.cookie, NODE_ID, "window=7d").await;
+    let window_to = body["window"]["to"].as_str().unwrap().to_owned();
+    let validator = source(&body, "validator");
+
+    // Two days are answerable: the one read while the first link was held and the one
+    // read while the second was. The day before the first link is not, and no stored
+    // day is counted once per link.
+    let grain = &validator["grains"][0];
+    assert_eq!(grain["grain"], "validator_day", "{validator}");
+    assert_eq!(grain["pointCount"], 2, "{validator}");
+    assert_eq!(grain["sampleCount"], 2, "{validator}");
+    assert_eq!(grain["firstObservedAt"], days[1], "{validator}");
+    assert_eq!(grain["lastObservedAt"], days[2], "{validator}");
+
+    let related = validator["relatedSubjects"].as_array().unwrap();
+    assert_eq!(related.len(), 2, "{validator}");
+    for entry in related {
+        assert_eq!(entry["subjectKind"], "validator", "{entry}");
+        assert_eq!(entry["subject"], VALIDATOR_ID, "{entry}");
+        assert_eq!(entry["role"], "related", "{entry}");
+        assert_eq!(entry["basis"], "recorded_validator_link", "{entry}");
+        assert_eq!(entry["basisLabel"], "Recorded Validator Link", "{entry}");
+        assert!(
+            entry["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("the Server recorded"),
+            "{entry}"
+        );
+    }
+    let stretches = related
+        .iter()
+        .map(|entry| {
+            (
+                entry["from"].as_str().unwrap().to_owned(),
+                entry["to"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        stretches.contains(&(first_from.clone(), first_until.clone())),
+        "{validator}"
+    );
+    assert!(
+        stretches.contains(&(second_from.clone(), window_to.clone())),
+        "{validator}"
+    );
+
+    // Each link is asked over its own recorded stretch rather than the whole window,
+    // and each path says so, so a day read under another link is never presented as
+    // this link's.
+    let paths = validator["answerPaths"].as_array().unwrap();
+    assert_eq!(paths.len(), 2, "{validator}");
+    for (from, to) in [
+        (first_from.as_str(), first_until.as_str()),
+        (second_from.as_str(), window_to.as_str()),
+    ] {
+        let path = paths
+            .iter()
+            .find(|path| {
+                path["path"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(&format!("from={from}&to={to}"))
+            })
+            .unwrap_or_else(|| {
+                panic!("the link recorded from {from} is asked over its own stretch: {validator}")
+            });
+        assert!(
+            path["path"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("/api/admin/v1/validators/{VALIDATOR_ID}/trend")),
+            "{path}"
+        );
+        assert_eq!(
+            path["note"],
+            "only the stretch the Server recorded this link for is asked, not the whole window",
+            "{path}"
+        );
+    }
+
+    let notes = validator["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| note.as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        notes.contains(&format!(
+            "the Server recorded {VALIDATOR_ID} (primary, manual) as linked from {first_from} to {first_until}"
+        )),
+        "{notes}"
+    );
+    assert!(
+        notes.contains(&format!(
+            "the Server recorded {VALIDATOR_ID} (primary, manual) as linked from {second_from} and still holds it"
+        )),
+        "{notes}"
+    );
+    assert!(
+        notes.contains("its edges are correspondence times rather than key-change times"),
+        "{notes}"
+    );
+
+    // The week's relation record begins when the accepted Report was received, so the
+    // part of the window before that is a gap in the record rather than an absence of
+    // Incidents on related subjects, and the Incidents family says so.
+    let incidents = source(&body, "incidents");
+    let incident_notes = incidents["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| note.as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        incident_notes.contains("no Incident on a related subject is counted for this window"),
+        "{incidents}"
     );
 }

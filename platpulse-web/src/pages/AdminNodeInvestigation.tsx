@@ -66,6 +66,7 @@ import {
   SERVER_DEFAULT_WINDOW,
   readInvestigationLink,
   receiptDelaySeconds,
+  relatedSubjectKindLabel,
   sourceAtInstant,
   timeBasisNote,
   type InvestigationRequest,
@@ -357,8 +358,8 @@ function NodeFactsCard({ answer }: { answer: AdminInvestigation }) {
           {answer.visibility === "public" ? "Public" : "Owner only"}
         </Fact>
         <Fact label="Evidence families">
-          {answer.sources.length === 6
-            ? "All six families are listed, whether or not each holds evidence"
+          {answer.sources.length === 7
+            ? "All seven families are listed, whether or not each holds evidence"
             : answer.sources.length + " families are listed"}
         </Fact>
       </Facts>
@@ -651,6 +652,108 @@ function BoundaryTable({ source }: { source: InvestigationSourceResponse }) {
   );
 }
 
+/**
+ * The subjects one family's evidence is attributed to, and the Server's own record under each.
+ *
+ * A family's points are attributed to a subject only when the Server wrote that relation down: the
+ * current key of the Node is never read back over an earlier stretch, so a family whose window holds no
+ * recorded relation says so here instead of claiming every point as the subject's own.
+ */
+function RelatedSubjectTable({
+  source,
+}: {
+  source: InvestigationSourceResponse;
+}) {
+  if (source.relatedSubjects.length === 0) {
+    return (
+      <p
+        className="mt-2 text-sm text-muted-foreground"
+        data-slot="investigation-no-related-subject"
+      >
+        The Server records no subject related to this family inside this window.
+        Attribution is only ever made from the Server's own record, so nothing
+        here is credited to a subject the record does not name.
+      </p>
+    );
+  }
+  return (
+    <div
+      data-slot="investigation-related-subjects-list"
+      className="mt-2 overflow-x-auto"
+    >
+      <table
+        data-stack
+        data-slot="investigation-related-subjects"
+        className="w-full min-w-[44rem] text-sm"
+      >
+        <caption className="sr-only">
+          Subjects this family's evidence is attributed to, and the recorded
+          basis of each attribution
+        </caption>
+        <thead>
+          <tr className="border-b border-border">
+            <th scope="col" className={TH}>
+              Subject
+            </th>
+            <th scope="col" className={TH}>
+              Read as
+            </th>
+            <th scope="col" className={TH}>
+              Recorded basis
+            </th>
+            <th scope="col" className={TH}>
+              Stretch
+            </th>
+            <th scope="col" className={TH}>
+              What the record says
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {source.relatedSubjects.map((related) => (
+            <tr
+              key={
+                related.subjectKind +
+                related.subject +
+                related.role +
+                related.from
+              }
+              className="border-b border-border/60 last:border-0"
+            >
+              <td className={TD}>
+                <span className="font-medium">
+                  {relatedSubjectKindLabel(related.subjectKind)}
+                </span>
+                <span className="block break-all font-mono text-xs text-muted-foreground">
+                  {related.subject}
+                </span>
+              </td>
+              <td className={TD}>
+                <span className="font-medium">
+                  {related.role === "source"
+                    ? "This family's own subject"
+                    : "Related subject"}
+                </span>
+                <span className="block font-mono text-xs text-muted-foreground">
+                  {related.role}
+                </span>
+              </td>
+              <td className={TD}>
+                <span className="font-medium">{related.basisLabel}</span>
+                <span className="block font-mono text-xs text-muted-foreground">
+                  {related.basis}
+                </span>
+              </td>
+              <td className={TD}>{instantPair(related.from, related.to)}</td>
+              <td className={cn(TD, SCOPE)}>{related.detail}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /** The collectors behind one family, with what each last recorded. */
 function CollectorTable({ source }: { source: InvestigationSourceResponse }) {
   if (source.components.length === 0) {
@@ -899,6 +1002,7 @@ function SourceEvidence({
           </ul>
         )}
         <BoundaryTable source={source} />
+        <RelatedSubjectTable source={source} />
         <CollectorTable source={source} />
         {source.notes.length > 0 && (
           <ul
@@ -912,37 +1016,47 @@ function SourceEvidence({
             ))}
           </ul>
         )}
-        <div className="grid gap-2" data-slot="investigation-answer-paths">
-          <p className="text-xs font-medium tracking-wider text-muted-foreground">
-            The endpoints that answer this family for this window
-          </p>
-          {source.answerPaths.map((path) => (
-            <p key={path.path} className={SCOPE}>
-              <a
-                className="inline-flex min-h-11 min-w-11 items-center font-mono text-xs underline underline-offset-4"
-                href={path.path}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {path.label}
-              </a>
-              <span className="block break-all font-mono text-xs text-muted-foreground">
-                {path.path}
-              </span>
-              {path.note && (
-                <span className="block text-xs text-muted-foreground">
-                  {path.note}
-                </span>
-              )}
+        {source.answerPaths.length > 0 ? (
+          <div className="grid gap-2" data-slot="investigation-answer-paths">
+            <p className="text-xs font-medium tracking-wider text-muted-foreground">
+              The endpoints that answer this family for this window
             </p>
-          ))}
-        </div>
+            {source.answerPaths.map((path) => (
+              <p key={path.path} className={SCOPE}>
+                <a
+                  className="inline-flex min-h-11 min-w-11 items-center font-mono text-xs underline underline-offset-4"
+                  href={path.path}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {path.label}
+                </a>
+                <span className="block break-all font-mono text-xs text-muted-foreground">
+                  {path.path}
+                </span>
+                {path.note && (
+                  <span className="block text-xs text-muted-foreground">
+                    {path.note}
+                  </span>
+                )}
+              </p>
+            ))}
+          </div>
+        ) : (
+          <p
+            className="text-sm text-muted-foreground"
+            data-slot="investigation-no-answer-path"
+          >
+            The Server sends no endpoint for this family: this family is answered
+            here, and the Server names no second place to read it.
+          </p>
+        )}
       </Disclosure>
     </div>
   );
 }
 
-/** All six families in one place: the verdict each reached, and the clock it reached it on. */
+/** All seven families in one place: the verdict each reached, and the clock it reached it on. */
 function CoverageCard({ answer }: { answer: AdminInvestigation }) {
   const occurrence = null;
   return (

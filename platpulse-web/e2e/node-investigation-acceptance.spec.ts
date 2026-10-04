@@ -57,8 +57,11 @@ const CANONICAL_FIXTURE =
 const REPORT_FIXTURE =
   "../crates/platpulse-core/tests/fixtures/report_v1_minimal.json";
 
-/** The six families, in the order every answer names them. */
+/** The seven families, in the order every answer names them. The Server's own
+ * record of the Node's relations is read first, because it is what every other
+ * family's attribution rests on. */
 const SOURCE_ORDER = [
+  "relationships",
   "node_metrics",
   "node_state",
   "host_metrics",
@@ -69,6 +72,7 @@ const SOURCE_ORDER = [
 
 /** The clock each family states its own evidence in (design §11.4). */
 const SOURCE_TIME_BASES = [
+  "server_record",
   "metric_observation",
   "state_observation",
   "metric_observation",
@@ -408,7 +412,7 @@ test.describe("Node investigation over one UTC window (issue #220)", () => {
         "the answer states the rule every family answers by",
       ).toBeGreaterThan(0);
 
-      // Six families, in the one order, each on its own clock.
+      // Seven families, in the one order, each on its own clock.
       expect(answer.sources.map((source) => source.key)).toEqual(SOURCE_ORDER);
       expect(answer.sources.map((source) => source.timeBasis)).toEqual(
         SOURCE_TIME_BASES,
@@ -419,6 +423,14 @@ test.describe("Node investigation over one UTC window (issue #220)", () => {
         expect(source.timeBasisLabel.length).toBeGreaterThan(0);
         expect(source.subjectKind.length).toBeGreaterThan(0);
         expect(source.subject.length).toBeGreaterThan(0);
+        for (const related of source.relatedSubjects) {
+          expect(related.subjectKind.length).toBeGreaterThan(0);
+          expect(related.subject.length).toBeGreaterThan(0);
+          expect(related.role.length).toBeGreaterThan(0);
+          expect(related.basis.length).toBeGreaterThan(0);
+          expect(related.basisLabel.length).toBeGreaterThan(0);
+          expect(related.detail.length).toBeGreaterThan(0);
+        }
         for (const path of source.answerPaths) {
           expect(path.path, "every answer path is an Admin route").toContain(
             "/api/admin/v1/",
@@ -720,6 +732,54 @@ test.describe("Node investigation over one UTC window (issue #220)", () => {
             validatorCard.locator('[data-slot="investigation-no-boundary"]'),
           ).toBeVisible();
 
+          // The Server's own record of the Node's relations is read as the first
+          // family, on the Server's own record clock. It credits the evidence to the
+          // subjects the Server wrote down -- never to the key the Node carries now --
+          // and it sends no answer path, because the record is served here and nowhere
+          // else, while the stretch before the Server wrote anything down is refused
+          // in its own words instead of being back-filled.
+          const recordCard = familyCard(page, "relationships");
+          await recordCard.locator("summary").click();
+          await expect(recordCard.locator("summary")).toContainText(
+            "Server record time",
+          );
+          const recordAnswer = family(rendered, "relationships");
+          expect(
+            recordAnswer.answerPaths,
+            "the record is served here and nowhere else, so it sends no answer path",
+          ).toHaveLength(0);
+          await expect(
+            recordCard.locator('[data-slot="investigation-answer-paths"]'),
+          ).toHaveCount(0);
+          expect(
+            recordAnswer.relatedSubjects.length,
+            "the accepted Reports wrote the Agent and the Network down",
+          ).toBeGreaterThan(0);
+          const relatedTable = recordCard.locator(
+            '[data-slot="investigation-related-subjects"]',
+          );
+          await expect(relatedTable).toBeVisible();
+          for (const related of recordAnswer.relatedSubjects) {
+            await expect(
+              relatedTable,
+              "the " + related.subjectKind + " the Server recorded",
+            ).toContainText(related.subject);
+            await expect(relatedTable).toContainText(related.basisLabel);
+            await expect(relatedTable).toContainText(related.detail);
+          }
+          await expect(relatedTable).toContainText("Agent");
+          await expect(relatedTable).toContainText("Network");
+          const recordStarts = recordAnswer.boundaries.filter(
+            (boundary) => boundary.kind === "relationship_unknown",
+          );
+          expect(
+            recordStarts.length,
+            "a window that opens before the record began is refused rather than back-filled",
+          ).toBeGreaterThan(0);
+          await expect(
+            recordCard.locator('[data-slot="investigation-boundaries"]'),
+          ).toContainText("No recorded relationship");
+
           // The Peer panel reads receipt buckets: the two reports that arrived in
           // one bucket are samples of one bucket, and no bucket is claimed missing.
           await expect(
@@ -749,6 +809,11 @@ test.describe("Node investigation over one UTC window (issue #220)", () => {
             page,
             "investigation-boundaries",
             '[data-slot="investigation-source"][data-source="node_metrics"]',
+          );
+          await expectLocalTableScroll(
+            page,
+            "investigation-related-subjects",
+            '[data-slot="investigation-source"][data-source="relationships"]',
           );
 
           // The windowed Incident reader is entered with the window this page read
@@ -1211,18 +1276,22 @@ test.describe("Node investigation over one UTC window (issue #220)", () => {
           (grain) => grain.grain === "occurrence" && grain.pointCount >= 1,
         ),
       ).toBe(true);
-      await expect(rows.first()).toContainText(
+      await expect(rows.nth(1)).toContainText(
         family(read, "node_metrics").label,
       );
       // The Incident family is evaluated by the Server itself, so its first
       // evaluation is later than the instant the Incident carries: the window
       // opens before the Server evaluated anything, and that is said rather than
-      // smoothed over. The family that does not apply says so.
-      await expect(rows.nth(4)).toContainText("Before this evidence started");
-      await expect(rows.nth(4)).toContainText(
+      // smoothed over. The family that does not apply says so, and the record the
+      // Server wrote is located against that instant like every other family.
+      await expect(rows.nth(0)).toContainText(
+        family(read, "relationships").label,
+      );
+      await expect(rows.nth(5)).toContainText("Before this evidence started");
+      await expect(rows.nth(5)).toContainText(
         "so the window opens before the Agent reported any of it",
       );
-      await expect(rows.nth(5)).toContainText(
+      await expect(rows.nth(6)).toContainText(
         "This family does not apply to this Node.",
       );
       expect(family(read, "validator").coverage).toBe("unsupported");
@@ -1253,7 +1322,7 @@ test.describe("Node investigation over one UTC window (issue #220)", () => {
       // The located instant sits two minutes before this family's first evidence
       // inside the window, so it is inside neither a boundary nor a silence: the
       // page must not turn that into a claim of stored evidence.
-      await expect(rows.first()).toContainText(
+      await expect(rows.nth(1)).toContainText(
         family(read, "node_metrics").label,
       );
       const metricLocated = sourceAtInstant(
@@ -1261,7 +1330,7 @@ test.describe("Node investigation over one UTC window (issue #220)", () => {
         openedAt,
       );
       expect(metricLocated.answered).toBe(true);
-      await expect(rows.first()).toContainText(
+      await expect(rows.nth(1)).toContainText(
         "No boundary and no silence of this family covers the instant.",
       );
     } finally {

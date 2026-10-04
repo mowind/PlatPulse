@@ -8878,6 +8878,7 @@
           "validator_links",
           "validator_identity_status",
           "transfers",
+          "relationship_intervals",
           "total_owned_rows"
         ],
         "properties": {
@@ -8968,6 +8969,11 @@
           "process_observations": {
             "type": "integer",
             "format": "int64"
+          },
+          "relationship_intervals": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Recorded relationship intervals: the relations the Server wrote down\nfor this Node over time (issue #221). They describe this Node's place,\nso a Purge removes them with it."
           },
           "rpc_methods": {
             "type": "integer",
@@ -13985,6 +13991,54 @@
           }
         }
       },
+      "InvestigationRelatedSubjectResponse": {
+        "type": "object",
+        "description": "One subject a source's evidence is attributed to, and the Server record that\nattribution rests on.\n\nA source answers about its own subject, but some of its evidence belongs to a\nsubject the Node is related to (the Agent that reported it, its Host, its\nNetwork, a linked Validator). Each such attribution states which subject it is,\nwhether that subject is the source's own or a related one, and the recorded\nbasis (the extent of a recorded relationship or Validator link) it is read\nover. Nothing is attributed outside a record: a stretch the Server never\nrecorded is reported as an unknown boundary instead (stories 60, 61).",
+        "required": [
+          "subjectKind",
+          "subject",
+          "role",
+          "basis",
+          "basisLabel",
+          "from",
+          "to",
+          "detail"
+        ],
+        "properties": {
+          "basis": {
+            "type": "string",
+            "description": "The machine-readable basis of the attribution."
+          },
+          "basisLabel": {
+            "type": "string",
+            "description": "The label shown beside the basis."
+          },
+          "detail": {
+            "type": "string",
+            "description": "What the record says, and how far it may be read."
+          },
+          "from": {
+            "type": "string",
+            "description": "The instant the recorded basis starts at, clipped to the window."
+          },
+          "role": {
+            "type": "string",
+            "description": "Whether this is the source's own subject (`source`) or a related one (`related`)."
+          },
+          "subject": {
+            "type": "string",
+            "description": "The related subject's own key, as the Server records it."
+          },
+          "subjectKind": {
+            "type": "string",
+            "description": "The kind of the related subject (`agent`, `host`, `network`, `validator`)."
+          },
+          "to": {
+            "type": "string",
+            "description": "The instant the recorded basis ends at, clipped to the window."
+          }
+        }
+      },
       "InvestigationResponse": {
         "type": "object",
         "description": "The investigation coordinate for one Node and one window.",
@@ -14066,6 +14120,7 @@
           "grains",
           "components",
           "answerPaths",
+          "relatedSubjects",
           "notes"
         ],
         "properties": {
@@ -14147,6 +14202,13 @@
               "type": "string"
             },
             "description": "Disclosures that shape how the numbers above must be read."
+          },
+          "relatedSubjects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvestigationRelatedSubjectResponse"
+            },
+            "description": "The subjects this source's evidence is attributed to, each with the recorded\nbasis it is read over. Empty when the source answers only about itself and no\nsubject was recorded as related to it."
           },
           "releasedBefore": {
             "type": [

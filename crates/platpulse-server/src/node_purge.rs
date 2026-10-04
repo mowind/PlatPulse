@@ -82,6 +82,11 @@ pub struct NodePurgeCounts {
     pub validator_links: i64,
     pub validator_identity_status: i64,
     pub transfers: i64,
+    /// Recorded relationship intervals: which Agent reported this Node and on
+    /// which Network, over time (issue #221). They describe this Node's place,
+    /// so a Purge removes them with it; the Agent, Host, Network and Validator
+    /// history they point at is shared and survives.
+    pub relationship_intervals: i64,
 }
 
 impl NodePurgeCounts {
@@ -117,6 +122,7 @@ impl NodePurgeCounts {
         self.validator_links += other.validator_links;
         self.validator_identity_status += other.validator_identity_status;
         self.transfers += other.transfers;
+        self.relationship_intervals += other.relationship_intervals;
     }
 
     /// Total Node-owned rows removed, excluding the nodes row itself.
@@ -150,6 +156,7 @@ impl NodePurgeCounts {
             + self.validator_links
             + self.validator_identity_status
             + self.transfers
+            + self.relationship_intervals
     }
 }
 
@@ -249,6 +256,7 @@ pub async fn measure(
         validator_identity_status: count(connection, "node_validator_identity_status", &node_id)
             .await?,
         transfers: count(connection, "node_transfers", &node_id).await?,
+        relationship_intervals: count(connection, "node_relationship_intervals", &node_id).await?,
     };
 
     Ok(Some(NodePurgeImpact {
@@ -328,7 +336,10 @@ async fn delete_where(
 /// pending Transfer is therefore gone with the Node, and the serialized report
 /// ingestion transaction never re-admits the removed ID (issue #170).
 /// Network-level projections such as network_reference_heads are keyed by
-/// Network and are deliberately left untouched.
+/// Network and are deliberately left untouched. Recorded relationship
+/// intervals are this Node's own place over time, so they go with it, while the
+/// Agent, Host, Network and Validator history they point at is shared and
+/// survives (issue #221).
 pub async fn remove(connection: &mut SqliteConnection, node_id: &str) -> Result<(), sqlx::Error> {
     for table in [
         // Composite children first.
@@ -369,6 +380,7 @@ pub async fn remove(connection: &mut SqliteConnection, node_id: &str) -> Result<
         "node_validator_identity_status",
         "node_validator_links",
         "node_transfers",
+        "node_relationship_intervals",
     ] {
         delete(connection, table, node_id).await?;
     }

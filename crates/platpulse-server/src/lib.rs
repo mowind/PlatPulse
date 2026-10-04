@@ -43,6 +43,8 @@ pub mod operations;
 pub mod ownership;
 pub mod peer_history;
 pub mod redaction;
+/// Server-recorded Node relationship intervals (issue #221).
+pub mod relationships;
 pub mod restore;
 pub mod retention;
 pub mod secrets;

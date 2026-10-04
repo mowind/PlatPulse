@@ -619,6 +619,12 @@ export type AdminNodePurgeCounts = {
     peer_aggregate_5m_countries: number;
     peer_presence_intervals: number;
     process_observations: number;
+    /**
+     * Recorded relationship intervals: the relations the Server wrote down
+     * for this Node over time (issue #221). They describe this Node's place,
+     * so a Purge removes them with it.
+     */
+    relationship_intervals: number;
     rpc_methods: number;
     rpc_namespaces: number;
     /**
@@ -2714,6 +2720,53 @@ export type InvestigationPresetResponse = {
 };
 
 /**
+ * One subject a source's evidence is attributed to, and the Server record that
+ * attribution rests on.
+ *
+ * A source answers about its own subject, but some of its evidence belongs to a
+ * subject the Node is related to (the Agent that reported it, its Host, its
+ * Network, a linked Validator). Each such attribution states which subject it is,
+ * whether that subject is the source's own or a related one, and the recorded
+ * basis (the extent of a recorded relationship or Validator link) it is read
+ * over. Nothing is attributed outside a record: a stretch the Server never
+ * recorded is reported as an unknown boundary instead (stories 60, 61).
+ */
+export type InvestigationRelatedSubjectResponse = {
+    /**
+     * The machine-readable basis of the attribution.
+     */
+    basis: string;
+    /**
+     * The label shown beside the basis.
+     */
+    basisLabel: string;
+    /**
+     * What the record says, and how far it may be read.
+     */
+    detail: string;
+    /**
+     * The instant the recorded basis starts at, clipped to the window.
+     */
+    from: string;
+    /**
+     * Whether this is the source's own subject (`source`) or a related one (`related`).
+     */
+    role: string;
+    /**
+     * The related subject's own key, as the Server records it.
+     */
+    subject: string;
+    /**
+     * The kind of the related subject (`agent`, `host`, `network`, `validator`).
+     */
+    subjectKind: string;
+    /**
+     * The instant the recorded basis ends at, clipped to the window.
+     */
+    to: string;
+};
+
+/**
  * The investigation coordinate for one Node and one window.
  */
 export type InvestigationResponse = {
@@ -2811,6 +2864,12 @@ export type InvestigationSourceResponse = {
      * Disclosures that shape how the numbers above must be read.
      */
     notes: Array<string>;
+    /**
+     * The subjects this source's evidence is attributed to, each with the recorded
+     * basis it is read over. Empty when the source answers only about itself and no
+     * subject was recorded as related to it.
+     */
+    relatedSubjects: Array<InvestigationRelatedSubjectResponse>;
     /**
      * The cleanup cutoff the newest release of this source's evidence used.
      */
