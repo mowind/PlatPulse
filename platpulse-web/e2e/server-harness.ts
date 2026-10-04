@@ -258,6 +258,22 @@ export interface DisposableCapacityOptions {
   sampleIntervalSeconds?: number
 }
 
+/**
+ * The Server-side PlatScan adapter (issue #219). The Validator daily trend is
+ * bucketed in the Server's *configured* calendar, and the refresh loop only runs
+ * when at least one Network is bound to a deployment, so a spec that wants real
+ * snapshot days must state both. An omitted section means "no Provider
+ * configured", which is what the identity specs rely on.
+ */
+export interface DisposableValidatorProviderOptions {
+  /** The Server's configured IANA calendar for Validator daily/monthly buckets. */
+  timezone: string
+  /** Network key -> PlatScan-compatible deployment base URL. */
+  deployments: Record<string, string>
+  /** `validator_provider.refresh_seconds`; defaults to the Server's 60s. */
+  refreshSeconds?: number
+}
+
 export interface DisposableServerOptions {
   /**
    * SQL applied while the database is closed, before the Server starts. Seed
@@ -271,6 +287,8 @@ export interface DisposableServerOptions {
   notifications?: DisposableNotificationOptions
   /** Declare `[capacity]` low-space protection (issue #212). */
   capacity?: DisposableCapacityOptions
+  /** Declare `[validator_provider]` (issue #219). */
+  validatorProvider?: DisposableValidatorProviderOptions
 }
 
 /** Boot a disposable Server; delete it with {@link DisposableServer.dispose}. */
@@ -346,6 +364,21 @@ export async function startDisposableServer(
               `\nresume_above_bytes = ${String(capacity.resumeAboveBytes)}` +
               `\nsample_interval_seconds = ${capacity.sampleIntervalSeconds ?? 5}`,
           ]
+    const validatorProvider = options.validatorProvider
+    // A deployment map must bind at least one Network: the Server rejects an
+    // empty map ("networks must bind at least one Network to a PlatScan
+    // deployment"), and an unbound Network is never queried.
+    const validatorProviderConfig =
+      validatorProvider === undefined
+        ? []
+        : [
+            `[validator_provider]\nnetworks = { ` +
+              Object.entries(validatorProvider.deployments)
+                .map(([networkKey, baseUrl]) => `"${networkKey}" = "${baseUrl}"`)
+                .join(', ') +
+              ` }\nrefresh_seconds = ${validatorProvider.refreshSeconds ?? 5}` +
+              `\ntimezone = "${validatorProvider.timezone}"`,
+          ]
     writeFileSync(
       configPath,
       [
@@ -359,6 +392,7 @@ export async function startDisposableServer(
         'development = true',
         ...notificationConfig,
         ...capacityConfig,
+        ...validatorProviderConfig,
         '',
       ].join('\n'),
     )

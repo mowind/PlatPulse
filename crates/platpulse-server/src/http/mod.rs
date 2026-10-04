@@ -395,6 +395,10 @@ pub struct AppState {
     /// Seconds after which a last-good Validator observation is stale.
     /// Derived from the configured refresh interval (two intervals).
     validator_freshness_seconds: i64,
+    /// Configured IANA timezone the Validator daily and calendar-month buckets
+    /// are formed in (#219). Trend reads answer in this calendar instead of
+    /// silently re-bucketing stored samples into UTC.
+    validator_timezone: String,
     backup_dir: Option<PathBuf>,
     geo: Arc<crate::geo::GeoLoader>,
     geo_config: Arc<std::sync::RwLock<crate::geo::GeoConfig>>,
@@ -486,6 +490,21 @@ impl AppState {
         self.validator_freshness_seconds
     }
 
+    /// Set the configured Validator analytics timezone (IANA). The Server
+    /// validates it at configuration load, so an invalid value here would only
+    /// come from a caller that bypassed configuration.
+    pub fn with_validator_timezone(mut self, timezone: String) -> Self {
+        self.validator_timezone = timezone;
+        self
+    }
+
+    /// The configured Validator analytics timezone. Stored Validator buckets
+    /// are only served under this calendar (#219): a stored bucket keeps the
+    /// calendar it was formed in instead of being silently re-bucketed.
+    pub(crate) fn validator_timezone(&self) -> &str {
+        &self.validator_timezone
+    }
+
     /// Point backup Operations at a dedicated backup directory (design
     /// §20.1: never inside the Server state directory). `None` keeps the
     /// backup surface honestly NotConfigured.
@@ -547,6 +566,7 @@ impl AppState {
             delivery_provider: Arc::new(crate::notifications::TelegramProvider::default()),
             validator_provider: Arc::new(crate::validator::DisabledValidatorProvider),
             validator_freshness_seconds: 120,
+            validator_timezone: "UTC".to_owned(),
             backup_dir: None,
             geo: Arc::new(crate::geo::GeoLoader::disabled()),
             geo_config: Arc::new(std::sync::RwLock::new(crate::geo::GeoConfig::disabled())),

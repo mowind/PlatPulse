@@ -323,7 +323,8 @@ pub(crate) fn error_response(request_id: &str, error: ValidatorError) -> Respons
         | ValidatorError::InvalidTimestamp(_)
         | ValidatorError::InvalidValidity
         | ValidatorError::InvalidProviderObservation(_)
-        | ValidatorError::InvalidTimezone(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
+        | ValidatorError::InvalidTimezone(_)
+        | ValidatorError::InvalidTrendWindow(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
         ValidatorError::Database(_) | ValidatorError::Alert(_) => {
             (StatusCode::SERVICE_UNAVAILABLE, "unavailable")
         }
@@ -968,6 +969,304 @@ pub(crate) async fn admin_validator_identities(
     }
 }
 
+/// Query for one bounded Validator daily-trend page (#219). Every bound is an
+/// instant or a configured local date; the Server owns the calendar mapping.
+#[derive(Debug, Deserialize, IntoParams)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatorTrendRequest {
+    /// RFC3339 instant bounding the requested window from below.
+    pub from: Option<String>,
+    /// RFC3339 instant bounding the requested window from above.
+    pub to: Option<String>,
+    /// Paging cursor: a configured local date (YYYY-MM-DD). Only strictly older
+    /// days answer, so one page never re-answers a day the caller already holds.
+    pub before: Option<String>,
+    /// Days to answer, 1..=366. Defaults to 90.
+    pub limit: Option<i64>,
+}
+
+/// One stored configured calendar day of the trend, with the UTC instants that
+/// local day really covers and the timestamps the bucket was chosen from.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminValidatorTrendPoint {
+    pub local_date: String,
+    pub month_key: String,
+    /// UTC instant the configured local day starts at, inclusive.
+    pub day_start: String,
+    /// UTC instant the next configured local day starts at, exclusive. A
+    /// daylight-saving day is 23 or 25 hours wide here instead of a pretended 24.
+    pub day_end: String,
+    pub sample_at: String,
+    pub received_at: String,
+    pub provider_timestamp: Option<String>,
+    /// Which timestamp chose this calendar day: the Provider timestamp or the
+    /// Server receipt time.
+    pub sample_time: String,
+    /// receivedAt minus providerTimestamp in whole seconds for this one row.
+    /// Null when the observation carried no Provider timestamp, because then
+    /// there is no delay to measure; never 0 for an unknown delay.
+    pub delay_seconds: Option<i64>,
+    /// The observation is stamped after its receipt: the Provider clock is
+    /// ahead of the Server clock.
+    pub clock_suspect: bool,
+    pub source: String,
+    pub observation_key: String,
+    pub rank: Option<i64>,
+    pub stake_amount: Option<String>,
+    pub reward_amount: Option<String>,
+    pub reward_rate: Option<String>,
+    pub delegator_count: Option<i64>,
+    pub epoch: Option<i64>,
+    pub block_count: Option<i64>,
+}
+
+/// A stretch of configured local days this answer proves holds no snapshot.
+/// A surface draws it as silence, never as a zero.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminValidatorTrendGap {
+    pub from_local_date: String,
+    pub to_local_date: String,
+    pub days: i64,
+}
+
+/// One configured calendar month the answer touches, with the month boundary
+/// mapped into the UTC investigation coordinate (#219).
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminValidatorTrendMonth {
+    pub month_key: String,
+    /// UTC instant the month's first configured local day starts at.
+    pub month_start: String,
+    /// UTC instant the next month's first configured local day starts at.
+    pub month_end: String,
+    pub observed_days: i64,
+    pub first_local_date: Option<String>,
+    pub last_local_date: Option<String>,
+}
+
+/// One Node association of this Validator that still resolves to a Node row.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminValidatorTrendAssociation {
+    pub link_id: String,
+    pub node_id: String,
+    pub node_display_name: Option<String>,
+    pub node_lifecycle: String,
+    /// manual or automatic, the model this interval was created under.
+    pub origin: String,
+    pub valid_from: String,
+    pub valid_until: Option<String>,
+    /// This interval has no end boundary yet.
+    pub current: bool,
+}
+
+/// One bounded Validator daily-trend page (#219).
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminValidatorTrendResponse {
+    pub validator_id: String,
+    pub network_key: String,
+    /// The configured IANA timezone every local date in this answer is formed
+    /// in. A stored bucket from another zone is counted, never merged.
+    pub timezone: String,
+    /// The coverage verdict this answer carries on its own: complete, partial,
+    /// unavailable (nothing observed in the stretch), or empty (the caller
+    /// asked for a stretch of no days).
+    pub coverage: String,
+    /// The counters in this answer are cumulative Provider counters as of each
+    /// sample. This endpoint never derives period earnings, net profit, or a
+    /// silently UTC re-bucketed series from them.
+    pub counter_semantics: String,
+    /// The UTC coordinate the caller asked for, echoed so a clamped or paged
+    /// answer says what it narrowed.
+    pub requested_from: String,
+    pub requested_to: String,
+    pub requested_from_local_date: String,
+    pub requested_to_local_date: String,
+    /// The configured local dates this answer really covers.
+    pub answered_from_local_date: String,
+    pub answered_to_local_date: String,
+    pub requested_days: i64,
+    /// The requested window was narrowed to the bounded maximum window.
+    pub clamped: bool,
+    /// Days the answered stretch covers, days that carry a snapshot, and the
+    /// difference, so coverage is disclosed instead of assumed.
+    pub expected_days: i64,
+    pub observed_days: i64,
+    pub missing_days: i64,
+    pub gaps: Vec<AdminValidatorTrendGap>,
+    pub first_observed_local_date: Option<String>,
+    pub last_observed_local_date: Option<String>,
+    /// Points in ascending configured local-date order.
+    pub points: Vec<AdminValidatorTrendPoint>,
+    pub months: Vec<AdminValidatorTrendMonth>,
+    /// The window holds more days than the caller's limit answered.
+    pub truncated: bool,
+    /// Pass this back as before for the next, strictly older page.
+    pub continuation: Option<String>,
+    /// Stored rows for this Validator inside the answered stretch that were
+    /// formed in another timezone. They are disclosed here and never merged
+    /// into the configured calendar.
+    pub foreign_rows: i64,
+    pub foreign_timezones: Vec<String>,
+    /// Association intervals that still resolve to a Node row.
+    pub associations: Vec<AdminValidatorTrendAssociation>,
+    pub associations_truncated: bool,
+    /// Nodes of this Validator's Network that Purge already deleted. Purge
+    /// removes that Node's association rows with the Node, so those intervals
+    /// are unavailable here rather than never having existed (Story 68).
+    pub deleted_nodes: i64,
+    /// True when deleted Nodes mean this association list is not the whole
+    /// association history. Retained Validator snapshots are never dropped.
+    pub association_history_partial: bool,
+}
+
+/// The coverage verdict one trend answer can carry on its own.
+fn trend_coverage(page: &validator::ValidatorTrendPage) -> &'static str {
+    if page.expected_days == 0 {
+        "empty"
+    } else if page.observed_days == 0 {
+        "unavailable"
+    } else if page.missing_days == 0 && !page.truncated && !page.clamped {
+        "complete"
+    } else {
+        "partial"
+    }
+}
+
+/// Bounded Validator daily-trend page: rank, stake, and delegator count per
+/// configured calendar day (#219, main design §15.4.1).
+///
+/// The window is answered in the configured IANA calendar and every boundary is
+/// mapped back into the UTC investigation coordinate, so retention, pagination,
+/// and coverage read on the real days instead of a silently UTC-aligned bucket.
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/validators/{validator_id}/trend",
+    tag = "admin",
+    params(("validator_id" = String, Path, description = "Validator ID"), ValidatorTrendRequest),
+    responses((status = 200, body = AdminValidatorTrendResponse), (status = 400, body = crate::http::ApiErrorBody), (status = 401, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn admin_validator_trend(
+    State(state): State<AppState>,
+    Path(validator_id): Path<String>,
+    Query(query): Query<ValidatorTrendRequest>,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    let record = match validator::get_validator(state.db(), &validator_id).await {
+        Ok(Some(record)) => record,
+        Ok(None) => return error_response(&request_id.0, ValidatorError::ValidatorNotFound),
+        Err(error) => return error_response(&request_id.0, error),
+    };
+    let request = validator::ValidatorTrendQuery {
+        validator_id: validator_id.clone(),
+        timezone: state.validator_timezone().to_owned(),
+        from: query.from,
+        to: query.to,
+        before: query.before,
+        limit: query.limit.unwrap_or(validator::TREND_DEFAULT_LIMIT),
+    };
+    let page = match validator::load_daily_trend(state.db(), &request, crate::auth::now_utc()).await
+    {
+        Ok(page) => page,
+        Err(error) => return error_response(&request_id.0, error),
+    };
+    let coverage = trend_coverage(&page).to_owned();
+    let associations = page
+        .associations
+        .into_iter()
+        .map(|association| {
+            let current = association.valid_until.is_none();
+            AdminValidatorTrendAssociation {
+                link_id: association.link_id,
+                node_id: association.node_id,
+                node_display_name: association.node_display_name,
+                node_lifecycle: association.node_lifecycle,
+                origin: association.origin,
+                valid_from: association.valid_from,
+                valid_until: association.valid_until,
+                current,
+            }
+        })
+        .collect();
+    Json(AdminValidatorTrendResponse {
+        validator_id,
+        network_key: record.network_key,
+        timezone: page.timezone,
+        coverage,
+        counter_semantics: "cumulative".to_owned(),
+        requested_from: page.requested_from,
+        requested_to: page.requested_to,
+        requested_from_local_date: page.requested_from_local_date,
+        requested_to_local_date: page.requested_to_local_date,
+        answered_from_local_date: page.answered_from_local_date,
+        answered_to_local_date: page.answered_to_local_date,
+        requested_days: page.requested_days,
+        clamped: page.clamped,
+        expected_days: page.expected_days,
+        observed_days: page.observed_days,
+        missing_days: page.missing_days,
+        gaps: page
+            .gaps
+            .into_iter()
+            .map(|gap| AdminValidatorTrendGap {
+                from_local_date: gap.from_local_date,
+                to_local_date: gap.to_local_date,
+                days: gap.days,
+            })
+            .collect(),
+        first_observed_local_date: page.first_observed_local_date,
+        last_observed_local_date: page.last_observed_local_date,
+        points: page
+            .points
+            .into_iter()
+            .map(|point| AdminValidatorTrendPoint {
+                local_date: point.local_date,
+                month_key: point.month_key,
+                day_start: point.day_start,
+                day_end: point.day_end,
+                sample_at: point.sample_at,
+                received_at: point.received_at,
+                provider_timestamp: point.provider_timestamp,
+                sample_time: point.sample_time,
+                delay_seconds: point.delay_seconds,
+                clock_suspect: point.clock_suspect,
+                source: point.source,
+                observation_key: point.observation_key,
+                rank: point.rank,
+                stake_amount: point.stake_amount,
+                reward_amount: point.reward_amount,
+                reward_rate: point.reward_rate,
+                delegator_count: point.delegator_count,
+                epoch: point.epoch,
+                block_count: point.block_count,
+            })
+            .collect(),
+        months: page
+            .months
+            .into_iter()
+            .map(|month| AdminValidatorTrendMonth {
+                month_key: month.month_key,
+                month_start: month.month_start,
+                month_end: month.month_end,
+                observed_days: month.observed_days,
+                first_local_date: month.first_local_date,
+                last_local_date: month.last_local_date,
+            })
+            .collect(),
+        truncated: page.truncated,
+        continuation: page.continuation,
+        foreign_rows: page.foreign_rows,
+        foreign_timezones: page.foreign_timezones,
+        associations,
+        associations_truncated: page.associations_truncated,
+        deleted_nodes: page.deleted_nodes,
+        association_history_partial: page.association_history_partial,
+    })
+    .into_response()
+}
 pub(crate) fn router() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/validators", get(admin_validators))
@@ -979,6 +1278,10 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/validators/{validator_id}/history",
             get(admin_validator_history),
+        )
+        .route(
+            "/validators/{validator_id}/trend",
+            get(admin_validator_trend),
         )
         .route("/validator-identities", get(admin_validator_identities))
         .route("/networks/{network_key}/validators", post(create_validator))
@@ -1068,6 +1371,32 @@ mod tests {
             .unwrap();
     }
 
+    /// One stored Validator day for the trend endpoint tests: the sample time is
+    /// the Provider timestamp when the Provider gave one and the receipt time
+    /// otherwise, exactly like the production writer.
+    async fn seed_admin_trend_day(
+        state: &AppState,
+        validator_id: &str,
+        timezone: &str,
+        local_date: &str,
+        received_at: &str,
+        provider_timestamp: Option<&str>,
+    ) {
+        sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'explorer', ?, 5, '1000', '25', '0.05', 8, 42, 100)")
+            .bind(format!("snapshot-{validator_id}-{local_date}"))
+            .bind(validator_id)
+            .bind(timezone)
+            .bind(local_date)
+            .bind(&local_date[..7])
+            .bind(provider_timestamp.unwrap_or(received_at))
+            .bind(received_at)
+            .bind(provider_timestamp)
+            .bind(format!("observation-{timezone}-{local_date}"))
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn admin_validator_analytics_includes_admin_dto_fields_and_handles_unknown() {
         let (_dir, state) = test_state().await;
@@ -1124,6 +1453,235 @@ mod tests {
         assert_eq!(value["state"], "unknown");
         assert!(value["daily"].as_array().unwrap().is_empty());
         assert!(value["monthly"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn admin_validator_trend_answers_its_configured_calendar_with_coverage_and_gaps() {
+        let (_dir, state) = test_state().await;
+        let state = state.with_validator_timezone("Asia/Tokyo".to_owned());
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ('validator-1', 'mainnet', 'node-key-1', 'First', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        seed_admin_trend_day(
+            &state,
+            "validator-1",
+            "Asia/Tokyo",
+            "2026-02-01",
+            "2026-02-01T00:01:00Z",
+            None,
+        )
+        .await;
+        seed_admin_trend_day(
+            &state,
+            "validator-1",
+            "Asia/Tokyo",
+            "2026-02-03",
+            "2026-02-03T00:00:30Z",
+            Some("2026-02-03T00:00:00Z"),
+        )
+        .await;
+
+        let ask =
+            |from: Option<&str>, to: Option<&str>, before: Option<&str>, limit: Option<i64>| {
+                admin_validator_trend(
+                    State(state.clone()),
+                    Path("validator-1".to_owned()),
+                    Query(ValidatorTrendRequest {
+                        from: from.map(str::to_owned),
+                        to: to.map(str::to_owned),
+                        before: before.map(str::to_owned),
+                        limit,
+                    }),
+                    Extension(RequestId(std::sync::Arc::from("test"))),
+                )
+            };
+
+        let response = ask(
+            Some("2026-02-01T00:00:00Z"),
+            Some("2026-02-04T00:00:00Z"),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["validatorId"], "validator-1");
+        assert_eq!(value["networkKey"], "mainnet");
+        assert_eq!(value["timezone"], "Asia/Tokyo");
+        // Cumulative counters are labelled as such: read as of each sample, never
+        // as period earnings or a net-profit delta.
+        assert_eq!(value["counterSemantics"], "cumulative");
+        assert_eq!(value["requestedFrom"], "2026-02-01T00:00:00Z");
+        assert_eq!(value["requestedTo"], "2026-02-04T00:00:00Z");
+        assert_eq!(value["requestedFromLocalDate"], "2026-02-01");
+        assert_eq!(value["requestedToLocalDate"], "2026-02-04");
+        assert_eq!(value["requestedDays"], 4);
+        assert_eq!(value["clamped"], false);
+        assert_eq!(value["expectedDays"], 4);
+        assert_eq!(value["observedDays"], 2);
+        assert_eq!(value["missingDays"], 2);
+        assert_eq!(value["coverage"], "partial");
+        // The configured local day is answered on its real UTC stretch, and the
+        // month boundary is the configured calendar's, not a UTC-aligned bucket.
+        assert_eq!(value["answeredFromLocalDate"], "2026-02-01");
+        assert_eq!(value["answeredToLocalDate"], "2026-02-04");
+        assert_eq!(value["firstObservedLocalDate"], "2026-02-01");
+        assert_eq!(value["lastObservedLocalDate"], "2026-02-03");
+        assert_eq!(value["points"][0]["localDate"], "2026-02-01");
+        assert_eq!(value["points"][0]["dayStart"], "2026-01-31T15:00:00Z");
+        assert_eq!(value["points"][0]["dayEnd"], "2026-02-01T15:00:00Z");
+        assert_eq!(value["points"][0]["monthKey"], "2026-02");
+        assert_eq!(value["points"][0]["rank"], 5);
+        assert_eq!(value["points"][0]["stakeAmount"], "1000");
+        assert_eq!(value["points"][0]["delegatorCount"], 8);
+        // Without a Provider timestamp the sample is a receipt time and the
+        // delay is unknown, which is not the same as a fresh zero delay.
+        assert_eq!(value["points"][0]["sampleTime"], "receipt");
+        assert!(value["points"][0]["delaySeconds"].is_null());
+        assert_eq!(value["points"][0]["clockSuspect"], false);
+        assert_eq!(value["points"][1]["sampleTime"], "provider");
+        assert_eq!(value["points"][1]["delaySeconds"], 30);
+        assert_eq!(value["months"][0]["monthKey"], "2026-02");
+        assert_eq!(value["months"][0]["monthStart"], "2026-01-31T15:00:00Z");
+        assert_eq!(value["months"][0]["monthEnd"], "2026-02-28T15:00:00Z");
+        assert_eq!(value["months"][0]["observedDays"], 2);
+        assert_eq!(value["truncated"], false);
+        assert!(value["continuation"].is_null());
+        assert_eq!(value["foreignRows"], 0);
+        assert_eq!(
+            value["gaps"].as_array().unwrap().len(),
+            2,
+            "both unread days inside the answered stretch are gaps: {value}"
+        );
+        assert_eq!(value["gaps"][0]["fromLocalDate"], "2026-02-02");
+        assert_eq!(value["gaps"][0]["toLocalDate"], "2026-02-02");
+        assert_eq!(value["gaps"][0]["days"], 1);
+        assert_eq!(value["gaps"][1]["fromLocalDate"], "2026-02-04");
+        // No Node association exists for this Validator, and nothing was purged:
+        // the empty list is complete, not partial.
+        assert!(value["associations"].as_array().unwrap().is_empty());
+        assert_eq!(value["associationsTruncated"], false);
+        assert_eq!(value["deletedNodes"], 0);
+        assert_eq!(value["associationHistoryPartial"], false);
+
+        // A window every day of which carries a snapshot is complete on its own.
+        let complete = ask(
+            Some("2026-02-01T00:00:00Z"),
+            Some("2026-02-01T00:00:00Z"),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(complete.status(), StatusCode::OK);
+        let body = to_bytes(complete.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["expectedDays"], 1);
+        assert_eq!(value["observedDays"], 1);
+        assert_eq!(value["coverage"], "complete");
+
+        // A stretch with days but no snapshot is unavailable, never healthy-empty.
+        let unobserved = ask(
+            Some("2026-05-01T00:00:00Z"),
+            Some("2026-05-02T00:00:00Z"),
+            None,
+            None,
+        )
+        .await;
+        let body = to_bytes(unobserved.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["expectedDays"], 2);
+        assert_eq!(value["observedDays"], 0);
+        assert_eq!(value["coverage"], "unavailable");
+        assert!(value["points"].as_array().unwrap().is_empty());
+
+        // A cursor past every day asks for no day at all: honestly empty, not an
+        // error and not partial.
+        let empty = ask(
+            Some("2026-06-01T00:00:00Z"),
+            Some("2026-06-30T00:00:00Z"),
+            Some("2026-01-01"),
+            None,
+        )
+        .await;
+        assert_eq!(empty.status(), StatusCode::OK);
+        let body = to_bytes(empty.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["expectedDays"], 0);
+        assert_eq!(value["coverage"], "empty");
+
+        // Pagination is disclosed, and the caller can ask for the older page.
+        let first = ask(
+            Some("2026-02-01T00:00:00Z"),
+            Some("2026-02-04T00:00:00Z"),
+            None,
+            Some(1),
+        )
+        .await;
+        let body = to_bytes(first.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["truncated"], true);
+        assert_eq!(value["continuation"], "2026-02-03");
+        assert_eq!(value["points"].as_array().unwrap().len(), 1);
+
+        // A configured zone that cannot parse is a sanitized 400, and an unknown
+        // Validator is a 404 that leaks nothing about the database.
+        let bad_zone = {
+            let bad_zone_state = state
+                .clone()
+                .with_validator_timezone("Not/AZone".to_owned());
+            admin_validator_trend(
+                State(bad_zone_state),
+                Path("validator-1".to_owned()),
+                Query(ValidatorTrendRequest {
+                    from: None,
+                    to: None,
+                    before: None,
+                    limit: None,
+                }),
+                Extension(RequestId(std::sync::Arc::from("test"))),
+            )
+            .await
+        };
+        assert_eq!(bad_zone.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(bad_zone.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], "invalid_request");
+        assert_eq!(value["error"]["requestId"], "test");
+
+        let inverted = ask(
+            Some("2026-06-02T00:00:00Z"),
+            Some("2026-06-01T00:00:00Z"),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(inverted.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(inverted.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], "invalid_request");
+        assert_eq!(
+            value["error"]["message"],
+            "invalid Validator trend window: from must not be later than to"
+        );
+
+        let missing = admin_validator_trend(
+            State(state.clone()),
+            Path("validator-missing".to_owned()),
+            Query(ValidatorTrendRequest {
+                from: None,
+                to: None,
+                before: None,
+                limit: None,
+            }),
+            Extension(RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(missing.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], "not_found");
     }
 
     #[test]

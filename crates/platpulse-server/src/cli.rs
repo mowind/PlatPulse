@@ -1054,7 +1054,8 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             Ok(provider) => {
                 state = state
                     .with_validator_provider(std::sync::Arc::new(provider))
-                    .with_validator_freshness_seconds(provider_config.stale_after_seconds());
+                    .with_validator_freshness_seconds(provider_config.stale_after_seconds())
+                    .with_validator_timezone(provider_config.timezone.clone());
             }
             Err(error) => eprintln!(
                 "Validator Provider disabled: {}",

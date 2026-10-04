@@ -1202,6 +1202,190 @@ export type AdminValidatorMonthlyAggregate = {
 };
 
 /**
+ * One Node association of this Validator that still resolves to a Node row.
+ */
+export type AdminValidatorTrendAssociation = {
+    /**
+     * This interval has no end boundary yet.
+     */
+    current: boolean;
+    linkId: string;
+    nodeDisplayName?: string | null;
+    nodeId: string;
+    nodeLifecycle: string;
+    /**
+     * manual or automatic, the model this interval was created under.
+     */
+    origin: string;
+    validFrom: string;
+    validUntil?: string | null;
+};
+
+/**
+ * A stretch of configured local days this answer proves holds no snapshot.
+ * A surface draws it as silence, never as a zero.
+ */
+export type AdminValidatorTrendGap = {
+    days: number;
+    fromLocalDate: string;
+    toLocalDate: string;
+};
+
+/**
+ * One configured calendar month the answer touches, with the month boundary
+ * mapped into the UTC investigation coordinate (#219).
+ */
+export type AdminValidatorTrendMonth = {
+    firstLocalDate?: string | null;
+    lastLocalDate?: string | null;
+    /**
+     * UTC instant the next month's first configured local day starts at.
+     */
+    monthEnd: string;
+    monthKey: string;
+    /**
+     * UTC instant the month's first configured local day starts at.
+     */
+    monthStart: string;
+    observedDays: number;
+};
+
+/**
+ * One stored configured calendar day of the trend, with the UTC instants that
+ * local day really covers and the timestamps the bucket was chosen from.
+ */
+export type AdminValidatorTrendPoint = {
+    blockCount?: number | null;
+    /**
+     * The observation is stamped after its receipt: the Provider clock is
+     * ahead of the Server clock.
+     */
+    clockSuspect: boolean;
+    /**
+     * UTC instant the next configured local day starts at, exclusive. A
+     * daylight-saving day is 23 or 25 hours wide here instead of a pretended 24.
+     */
+    dayEnd: string;
+    /**
+     * UTC instant the configured local day starts at, inclusive.
+     */
+    dayStart: string;
+    /**
+     * receivedAt minus providerTimestamp in whole seconds for this one row.
+     * Null when the observation carried no Provider timestamp, because then
+     * there is no delay to measure; never 0 for an unknown delay.
+     */
+    delaySeconds?: number | null;
+    delegatorCount?: number | null;
+    epoch?: number | null;
+    localDate: string;
+    monthKey: string;
+    observationKey: string;
+    providerTimestamp?: string | null;
+    rank?: number | null;
+    receivedAt: string;
+    rewardAmount?: string | null;
+    rewardRate?: string | null;
+    sampleAt: string;
+    /**
+     * Which timestamp chose this calendar day: the Provider timestamp or the
+     * Server receipt time.
+     */
+    sampleTime: string;
+    source: string;
+    stakeAmount?: string | null;
+};
+
+/**
+ * One bounded Validator daily-trend page (#219).
+ */
+export type AdminValidatorTrendResponse = {
+    /**
+     * The configured local dates this answer really covers.
+     */
+    answeredFromLocalDate: string;
+    answeredToLocalDate: string;
+    /**
+     * True when deleted Nodes mean this association list is not the whole
+     * association history. Retained Validator snapshots are never dropped.
+     */
+    associationHistoryPartial: boolean;
+    /**
+     * Association intervals that still resolve to a Node row.
+     */
+    associations: Array<AdminValidatorTrendAssociation>;
+    associationsTruncated: boolean;
+    /**
+     * The requested window was narrowed to the bounded maximum window.
+     */
+    clamped: boolean;
+    /**
+     * Pass this back as before for the next, strictly older page.
+     */
+    continuation?: string | null;
+    /**
+     * The counters in this answer are cumulative Provider counters as of each
+     * sample. This endpoint never derives period earnings, net profit, or a
+     * silently UTC re-bucketed series from them.
+     */
+    counterSemantics: string;
+    /**
+     * The coverage verdict this answer carries on its own: complete, partial,
+     * unavailable (nothing observed in the stretch), or empty (the caller
+     * asked for a stretch of no days).
+     */
+    coverage: string;
+    /**
+     * Nodes of this Validator's Network that Purge already deleted. Purge
+     * removes that Node's association rows with the Node, so those intervals
+     * are unavailable here rather than never having existed (Story 68).
+     */
+    deletedNodes: number;
+    /**
+     * Days the answered stretch covers, days that carry a snapshot, and the
+     * difference, so coverage is disclosed instead of assumed.
+     */
+    expectedDays: number;
+    firstObservedLocalDate?: string | null;
+    /**
+     * Stored rows for this Validator inside the answered stretch that were
+     * formed in another timezone. They are disclosed here and never merged
+     * into the configured calendar.
+     */
+    foreignRows: number;
+    foreignTimezones: Array<string>;
+    gaps: Array<AdminValidatorTrendGap>;
+    lastObservedLocalDate?: string | null;
+    missingDays: number;
+    months: Array<AdminValidatorTrendMonth>;
+    networkKey: string;
+    observedDays: number;
+    /**
+     * Points in ascending configured local-date order.
+     */
+    points: Array<AdminValidatorTrendPoint>;
+    requestedDays: number;
+    /**
+     * The UTC coordinate the caller asked for, echoed so a clamped or paged
+     * answer says what it narrowed.
+     */
+    requestedFrom: string;
+    requestedFromLocalDate: string;
+    requestedTo: string;
+    requestedToLocalDate: string;
+    /**
+     * The configured IANA timezone every local date in this answer is formed
+     * in. A stored bucket from another zone is counted, never merged.
+     */
+    timezone: string;
+    /**
+     * The window holds more days than the caller's limit answered.
+     */
+    truncated: boolean;
+    validatorId: string;
+};
+
+/**
  * One Owner acknowledgment request: the exact Agent Attention Items and
  * evidence boundaries the Owner saw, never a bare kind or a "hide forever"
  * switch (design §15.6, webui.md §15.3).
@@ -6445,6 +6629,52 @@ export type AdminValidatorHistoryResponses = {
 };
 
 export type AdminValidatorHistoryResponse2 = AdminValidatorHistoryResponses[keyof AdminValidatorHistoryResponses];
+
+export type AdminValidatorTrendData = {
+    body?: never;
+    path: {
+        /**
+         * Validator ID
+         */
+        validator_id: string;
+    };
+    query?: {
+        /**
+         * RFC3339 instant bounding the requested window from below.
+         */
+        from?: string | null;
+        /**
+         * RFC3339 instant bounding the requested window from above.
+         */
+        to?: string | null;
+        /**
+         * Paging cursor: a configured local date (YYYY-MM-DD). Only strictly older
+         * days answer, so one page never re-answers a day the caller already holds.
+         */
+        before?: string | null;
+        /**
+         * Days to answer, 1..=366. Defaults to 90.
+         */
+        limit?: number | null;
+    };
+    url: '/api/admin/v1/validators/{validator_id}/trend';
+};
+
+export type AdminValidatorTrendErrors = {
+    400: ApiErrorBody;
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AdminValidatorTrendError = AdminValidatorTrendErrors[keyof AdminValidatorTrendErrors];
+
+export type AdminValidatorTrendResponses = {
+    200: AdminValidatorTrendResponse;
+};
+
+export type AdminValidatorTrendResponse2 = AdminValidatorTrendResponses[keyof AdminValidatorTrendResponses];
 
 export type PublicAccessSettingsData = {
     body?: never;

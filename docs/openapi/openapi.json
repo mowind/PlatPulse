@@ -6566,6 +6566,138 @@
         }
       }
     },
+    "/api/admin/v1/validators/{validator_id}/trend": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Bounded Validator daily-trend page: rank, stake, and delegator count per\nconfigured calendar day (#219, main design §15.6).",
+        "description": "The window is answered in the configured IANA calendar and every boundary is\nmapped back into the UTC investigation coordinate, so retention, pagination,\nand coverage read on the real days instead of a silently UTC-aligned bucket.",
+        "operationId": "admin_validator_trend",
+        "parameters": [
+          {
+            "name": "validator_id",
+            "in": "path",
+            "description": "Validator ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "RFC3339 instant bounding the requested window from below.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "RFC3339 instant bounding the requested window from above.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Paging cursor: a configured local date (YYYY-MM-DD). Only strictly older\ndays answer, so one page never re-answers a day the caller already holds.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Days to answer, 1..=366. Defaults to 90.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminValidatorTrendResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/agent/v1/enroll": {
       "post": {
         "tags": [
@@ -9998,6 +10130,389 @@
             "type": "string"
           },
           "updatedAt": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminValidatorTrendAssociation": {
+        "type": "object",
+        "description": "One Node association of this Validator that still resolves to a Node row.",
+        "required": [
+          "linkId",
+          "nodeId",
+          "nodeLifecycle",
+          "origin",
+          "validFrom",
+          "current"
+        ],
+        "properties": {
+          "current": {
+            "type": "boolean",
+            "description": "This interval has no end boundary yet."
+          },
+          "linkId": {
+            "type": "string"
+          },
+          "nodeDisplayName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nodeId": {
+            "type": "string"
+          },
+          "nodeLifecycle": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string",
+            "description": "manual or automatic, the model this interval was created under."
+          },
+          "validFrom": {
+            "type": "string"
+          },
+          "validUntil": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AdminValidatorTrendGap": {
+        "type": "object",
+        "description": "A stretch of configured local days this answer proves holds no snapshot.\nA surface draws it as silence, never as a zero.",
+        "required": [
+          "fromLocalDate",
+          "toLocalDate",
+          "days"
+        ],
+        "properties": {
+          "days": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "fromLocalDate": {
+            "type": "string"
+          },
+          "toLocalDate": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminValidatorTrendMonth": {
+        "type": "object",
+        "description": "One configured calendar month the answer touches, with the month boundary\nmapped into the UTC investigation coordinate (#219).",
+        "required": [
+          "monthKey",
+          "monthStart",
+          "monthEnd",
+          "observedDays"
+        ],
+        "properties": {
+          "firstLocalDate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastLocalDate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "monthEnd": {
+            "type": "string",
+            "description": "UTC instant the next month's first configured local day starts at."
+          },
+          "monthKey": {
+            "type": "string"
+          },
+          "monthStart": {
+            "type": "string",
+            "description": "UTC instant the month's first configured local day starts at."
+          },
+          "observedDays": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AdminValidatorTrendPoint": {
+        "type": "object",
+        "description": "One stored configured calendar day of the trend, with the UTC instants that\nlocal day really covers and the timestamps the bucket was chosen from.",
+        "required": [
+          "localDate",
+          "monthKey",
+          "dayStart",
+          "dayEnd",
+          "sampleAt",
+          "receivedAt",
+          "sampleTime",
+          "clockSuspect",
+          "source",
+          "observationKey"
+        ],
+        "properties": {
+          "blockCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "clockSuspect": {
+            "type": "boolean",
+            "description": "The observation is stamped after its receipt: the Provider clock is\nahead of the Server clock."
+          },
+          "dayEnd": {
+            "type": "string",
+            "description": "UTC instant the next configured local day starts at, exclusive. A\ndaylight-saving day is 23 or 25 hours wide here instead of a pretended 24."
+          },
+          "dayStart": {
+            "type": "string",
+            "description": "UTC instant the configured local day starts at, inclusive."
+          },
+          "delaySeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "receivedAt minus providerTimestamp in whole seconds for this one row.\nNull when the observation carried no Provider timestamp, because then\nthere is no delay to measure; never 0 for an unknown delay."
+          },
+          "delegatorCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "localDate": {
+            "type": "string"
+          },
+          "monthKey": {
+            "type": "string"
+          },
+          "observationKey": {
+            "type": "string"
+          },
+          "providerTimestamp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rank": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "receivedAt": {
+            "type": "string"
+          },
+          "rewardAmount": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rewardRate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sampleAt": {
+            "type": "string"
+          },
+          "sampleTime": {
+            "type": "string",
+            "description": "Which timestamp chose this calendar day: the Provider timestamp or the\nServer receipt time."
+          },
+          "source": {
+            "type": "string"
+          },
+          "stakeAmount": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AdminValidatorTrendResponse": {
+        "type": "object",
+        "description": "One bounded Validator daily-trend page (#219).",
+        "required": [
+          "validatorId",
+          "networkKey",
+          "timezone",
+          "coverage",
+          "counterSemantics",
+          "requestedFrom",
+          "requestedTo",
+          "requestedFromLocalDate",
+          "requestedToLocalDate",
+          "answeredFromLocalDate",
+          "answeredToLocalDate",
+          "requestedDays",
+          "clamped",
+          "expectedDays",
+          "observedDays",
+          "missingDays",
+          "gaps",
+          "points",
+          "months",
+          "truncated",
+          "foreignRows",
+          "foreignTimezones",
+          "associations",
+          "associationsTruncated",
+          "deletedNodes",
+          "associationHistoryPartial"
+        ],
+        "properties": {
+          "answeredFromLocalDate": {
+            "type": "string",
+            "description": "The configured local dates this answer really covers."
+          },
+          "answeredToLocalDate": {
+            "type": "string"
+          },
+          "associationHistoryPartial": {
+            "type": "boolean",
+            "description": "True when deleted Nodes mean this association list is not the whole\nassociation history. Retained Validator snapshots are never dropped."
+          },
+          "associations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminValidatorTrendAssociation"
+            },
+            "description": "Association intervals that still resolve to a Node row."
+          },
+          "associationsTruncated": {
+            "type": "boolean"
+          },
+          "clamped": {
+            "type": "boolean",
+            "description": "The requested window was narrowed to the bounded maximum window."
+          },
+          "continuation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass this back as before for the next, strictly older page."
+          },
+          "counterSemantics": {
+            "type": "string",
+            "description": "The counters in this answer are cumulative Provider counters as of each\nsample. This endpoint never derives period earnings, net profit, or a\nsilently UTC re-bucketed series from them."
+          },
+          "coverage": {
+            "type": "string",
+            "description": "The coverage verdict this answer carries on its own: complete, partial,\nunavailable (nothing observed in the stretch), or empty (the caller\nasked for a stretch of no days)."
+          },
+          "deletedNodes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Nodes of this Validator's Network that Purge already deleted. Purge\nremoves that Node's association rows with the Node, so those intervals\nare unavailable here rather than never having existed (Story 68)."
+          },
+          "expectedDays": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Days the answered stretch covers, days that carry a snapshot, and the\ndifference, so coverage is disclosed instead of assumed."
+          },
+          "firstObservedLocalDate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "foreignRows": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Stored rows for this Validator inside the answered stretch that were\nformed in another timezone. They are disclosed here and never merged\ninto the configured calendar."
+          },
+          "foreignTimezones": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "gaps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminValidatorTrendGap"
+            }
+          },
+          "lastObservedLocalDate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "missingDays": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "months": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminValidatorTrendMonth"
+            }
+          },
+          "networkKey": {
+            "type": "string"
+          },
+          "observedDays": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminValidatorTrendPoint"
+            },
+            "description": "Points in ascending configured local-date order."
+          },
+          "requestedDays": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "requestedFrom": {
+            "type": "string",
+            "description": "The UTC coordinate the caller asked for, echoed so a clamped or paged\nanswer says what it narrowed."
+          },
+          "requestedFromLocalDate": {
+            "type": "string"
+          },
+          "requestedTo": {
+            "type": "string"
+          },
+          "requestedToLocalDate": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "The configured IANA timezone every local date in this answer is formed\nin. A stored bucket from another zone is counted, never merged."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "The window holds more days than the caller's limit answered."
+          },
+          "validatorId": {
             "type": "string"
           }
         }

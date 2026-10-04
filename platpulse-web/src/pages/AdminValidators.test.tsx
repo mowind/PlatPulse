@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { adminQueryClient } from '../api/admin'
@@ -449,3 +449,260 @@ describe('PAGE-ADMIN-VALIDATOR-DETAIL (one chain identity)', () => {
     ).toBe('/admin/validators')
   })
 })
+
+/** One stored configured local day, for the trend panel assertions. */
+function trendPoint(overrides: Record<string, unknown> = {}) {
+  return {
+    blockCount: 900,
+    clockSuspect: false,
+    dayEnd: '2026-02-01T15:00:00Z',
+    dayStart: '2026-01-31T15:00:00Z',
+    delaySeconds: 30,
+    delegatorCount: 40,
+    epoch: 5,
+    localDate: '2026-02-01',
+    monthKey: '2026-02',
+    observationKey: 'observation-Asia/Tokyo-2026-02-01',
+    providerTimestamp: '2026-01-31T15:00:00Z',
+    rank: 12,
+    receivedAt: '2026-01-31T15:00:30Z',
+    rewardAmount: '25.000000',
+    rewardRate: '0.05',
+    sampleAt: '2026-01-31T15:00:00Z',
+    sampleTime: 'provider',
+    source: 'platsScan',
+    stakeAmount: '1000.000000',
+    ...overrides,
+  }
+}
+
+function trendPage(overrides: Record<string, unknown> = {}) {
+  return {
+    answeredFromLocalDate: '2026-02-01',
+    answeredToLocalDate: '2026-02-03',
+    associationHistoryPartial: false,
+    associations: [],
+    associationsTruncated: false,
+    clamped: false,
+    continuation: null,
+    counterSemantics: 'cumulative',
+    coverage: 'partial',
+    deletedNodes: 0,
+    expectedDays: 3,
+    firstObservedLocalDate: '2026-02-01',
+    foreignRows: 0,
+    foreignTimezones: [],
+    gaps: [{ days: 1, fromLocalDate: '2026-02-03', toLocalDate: '2026-02-03' }],
+    lastObservedLocalDate: '2026-02-02',
+    missingDays: 1,
+    months: [
+      {
+        firstLocalDate: '2026-02-01',
+        lastLocalDate: '2026-02-02',
+        monthEnd: '2026-02-28T15:00:00Z',
+        monthKey: '2026-02',
+        monthStart: '2026-01-31T15:00:00Z',
+        observedDays: 2,
+      },
+    ],
+    networkKey: 'platon-mainnet',
+    observedDays: 2,
+    points: [
+      trendPoint(),
+      trendPoint({
+        dayEnd: '2026-02-02T15:00:00Z',
+        dayStart: '2026-02-01T15:00:00Z',
+        localDate: '2026-02-02',
+        observationKey: 'observation-Asia/Tokyo-2026-02-02',
+        providerTimestamp: null,
+        receivedAt: '2026-02-02T01:00:00Z',
+        sampleAt: '2026-02-02T01:00:00Z',
+        sampleTime: 'receipt',
+        delaySeconds: null,
+      }),
+    ],
+    requestedDays: 3,
+    requestedFrom: '2026-01-31T15:00:00Z',
+    requestedFromLocalDate: '2026-02-01',
+    requestedTo: '2026-02-03T15:00:00Z',
+    requestedToLocalDate: '2026-02-03',
+    timezone: 'Asia/Tokyo',
+    truncated: false,
+    validatorId: 'v-1',
+    ...overrides,
+  }
+}
+
+function detailRoutes(trend: () => Response) {
+  return {
+    '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+    '/api/admin/v1/validators/v-1': () => jsonResponse({ ...VALIDATOR_A, links: [LINK_OPEN] }, 200),
+    '/api/admin/v1/validators/v-1/trend*': trend,
+  }
+}
+
+function calledUrls(fetchMock: ReturnType<typeof mockFetch>): string[] {
+  return fetchMock.mock.calls.map((call) => {
+    const input = call[0]
+    return input instanceof Request ? input.url : String(input)
+  })
+}
+
+describe('PAGE-ADMIN-VALIDATOR-TREND (daily snapshots over the configured calendar)', () => {
+  it('answers the configured local days, their real width, their months, and every silence', async () => {
+    mockFetch(detailRoutes(() => jsonResponse(trendPage(), 200)))
+    renderAt('/admin/validators/v-1')
+
+    await screen.findAllByText('Asia/Tokyo')
+    expect(screen.getByRole('heading', { name: 'Daily trend' })).toBeTruthy()
+    expect(screen.getAllByText('Partial').length).toBeGreaterThan(0)
+    expect(screen.getByText('2 observed · 1 missing')).toBeTruthy()
+    expect(screen.getByText('2026-02-01 → 2026-02-03 (3 day(s))')).toBeTruthy()
+    // The configured month boundary is disclosed in the UTC coordinate.
+    expect(screen.getByText('2026-01-31T15:00:00Z → 2026-02-28T15:00:00Z')).toBeTruthy()
+    // A day with no snapshot is a silence, and never a zero.
+    expect(
+      screen.getByText('No snapshot was stored for 2026-02-03. It is a silence, not a zero.'),
+    ).toBeTruthy()
+    // The real width of a configured local day, not a pretended 24 hours.
+    expect(screen.getAllByText(/24 hours/).length).toBeGreaterThan(0)
+    // Which timestamp chose the day, and the delay a fallback cannot measure.
+    expect(screen.getAllByText('Provider timestamp').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Server receipt (fallback)').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Unknown').length).toBeGreaterThan(0)
+    // Cumulative counters are labelled cumulative, and no earnings are derived.
+    expect(screen.getByText(/cumulative Provider counters as of each sample/)).toBeTruthy()
+    expect(screen.getByText(/never computes period earnings, net profit/)).toBeTruthy()
+    expect(screen.getByText('Reward (cumulative)')).toBeTruthy()
+    expect(screen.getByText('Blocks (cumulative)')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Load older days' })).toBeTruthy()
+  })
+
+  it('reads a stored day without a metric as Unknown rather than a value', async () => {
+    mockFetch(
+      detailRoutes(() =>
+        jsonResponse(
+          trendPage({
+            gaps: [],
+            missingDays: 0,
+            observedDays: 2,
+            points: [trendPoint({ rank: null, delegatorCount: null })],
+          }),
+          200,
+        ),
+      ),
+    )
+    renderAt('/admin/validators/v-1')
+
+    await screen.findByRole('columnheader', { name: 'Rank' })
+    const points = document.querySelector('[data-slot="validator-trend-points"]')
+    expect(points).not.toBeNull()
+    // The stored row carries no rank and no delegator count, so both read Unknown.
+    expect(within(points as HTMLElement).getAllByText('Unknown').length).toBeGreaterThanOrEqual(2)
+    expect(
+      screen.getByText('No configured local day of the answered stretch is missing a snapshot.'),
+    ).toBeTruthy()
+  })
+
+  it('claims nothing when the stretch holds days and none of them was observed', async () => {
+    mockFetch(
+      detailRoutes(() =>
+        jsonResponse(
+          trendPage({
+            coverage: 'unavailable',
+            firstObservedLocalDate: null,
+            gaps: [{ days: 3, fromLocalDate: '2026-02-01', toLocalDate: '2026-02-03' }],
+            lastObservedLocalDate: null,
+            missingDays: 3,
+            months: [],
+            observedDays: 0,
+            points: [],
+          }),
+          200,
+        ),
+      ),
+    )
+    renderAt('/admin/validators/v-1')
+
+    expect((await screen.findAllByText('Unavailable')).length).toBeGreaterThan(0)
+    expect(screen.getByText(/missing evidence, not a zero and not a healthy stretch/)).toBeTruthy()
+    expect(screen.getByText(/No snapshot was stored for any configured local day/)).toBeTruthy()
+    expect(screen.getByText(/They are a silence, not a zero/)).toBeTruthy()
+  })
+
+  it('discloses foreign-bucket rows instead of merging them, and a purged Node instead of hiding it', async () => {
+    mockFetch(
+      detailRoutes(() =>
+        jsonResponse(
+          trendPage({
+            associationHistoryPartial: true,
+            associations: [],
+            deletedNodes: 1,
+            foreignRows: 2,
+            foreignTimezones: ['UTC'],
+          }),
+          200,
+        ),
+      ),
+    )
+    renderAt('/admin/validators/v-1')
+
+    expect(
+      await screen.findByText(/never merged into the configured calendar or quietly re-bucketed/),
+    ).toBeTruthy()
+    expect(screen.getByText(/unavailable here rather than never having existed/)).toBeTruthy()
+    expect(screen.getAllByText(/retained/).length).toBeGreaterThan(0)
+    expect(
+      screen.getByText(
+        /the deleted Node intervals above are unavailable rather than never having existed/,
+      ),
+    ).toBeTruthy()
+  })
+
+  it('pages into strictly older days with the Server cursor and returns to the newest', async () => {
+    const fetchMock = mockFetch(
+      detailRoutes(() => jsonResponse(trendPage({ continuation: '2026-02-01', truncated: true }), 200)),
+    )
+    renderAt('/admin/validators/v-1')
+
+    await screen.findByText(/holds more configured local days than this page answered/)
+    expect(calledUrls(fetchMock).some((url) => url.includes('/trend?'))).toBe(true)
+    expect(screen.getByRole('button', { name: 'Return to newest' }).hasAttribute('disabled')).toBe(
+      true,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load older days' }))
+    await waitFor(() => {
+      expect(calledUrls(fetchMock).some((url) => url.includes('before=2026-02-01'))).toBe(true)
+    })
+    expect(
+      screen.getByRole('button', { name: 'Return to newest' }).hasAttribute('disabled'),
+    ).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Return to newest' }))
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: 'Return to newest' }).hasAttribute('disabled'),
+      ).toBe(true)
+    })
+  })
+
+  it('keeps the panel honest when the trend itself cannot be loaded', async () => {
+    mockFetch(
+      detailRoutes(() =>
+        jsonResponse(
+          { error: { code: 'unavailable', message: 'server database is unavailable' } },
+          503,
+        ),
+      ),
+    )
+    renderAt('/admin/validators/v-1')
+
+    const alert = await screen.findByText(
+      /server database is unavailable|Unable to load the Validator trend/,
+    )
+    expect(alert).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Current Validator status' })).toBeTruthy()
+  })
+})
+

@@ -820,6 +820,17 @@ PlatPulse 当前实现是：
 
 实现状态：§15.4 的自动身份识别、当前状态投影与 Admin 呈现已由 issue #218 交付（见 WebUI §15.20）。Server 侧由 `validator.rs` 承担唯一投影（`project_activity`、`automatic_identity_reason`、`last_good_age_seconds`、`list_node_validator_identities`），Public 与 Admin 因此共用同一套判定，不会各自漂移；Admin 新增 `GET /api/admin/v1/validator-identities`、`/admin/validators`、`/admin/validators/:validatorId`，并在 Node 详情内嵌只含识别状态与该身份的公开关联是否投影的 `validator_identity`（不含所有权或角色）。Provider 未配置或不可读时一律为 `unknown`/`Not configured`/`Unknown` 并保留 stale last-good，绝不产生 `not_validator` 或新鲜的 0；缺键、Network Identity 不匹配时只给出未知状态与理由。链上密钥变化结束旧 Link 区间并按边界新开区间，而「无证据」状态（缺公钥、缺 Network Identity）不结束区间；Node Purge 只清该 Node 的识别状态与 Link：被 Purged Node 自己的区间随该 Node 删除而不可重建（读回为无关联），`linkCount` 相应减少，仅当被删 Node 是该身份唯一关联时才为 0；共享 Validator 身份、其保留证据以及其他 Node 的关联历史（含已结束区间）保留。权威缺席的时效沿用 #168 的既有实现（严格校验的空应答一律投影为 `current`，且 `empty` 不更新 `last_good_received_at`），本票不单独改判；但这与上表「Provider 失败或信息过期不产生新的肯定/否定结论，保留 last-good 并标 Stale」的要求不一致——Provider 不再刷新时该缺席不会自然陈旧，只有 `Attempted at`/`Observed at` 可见。因此这是一处继承自 #168 的既有偏差，本票记录为待修缺陷（处置见 `docs/research/issue-218-findings.md` 的 F1），不作为本票达成的一致性结论；locked/exiting/verifying 的权威否定条件仍需主源证据。
 
+### 15.4.1 Validator 日/月快照趋势与配置日历边界（已由 issue #219 交付）
+
+- 趋势以「配置日历的一日」为单位，而不是以 UTC 日为单位：`from`/`to` 用 UTC 瞬时表达，但归属到该瞬时所在的配置 IANA 本地日，`to` 含其落入的本地日，因此 N 天窗口对应 N+1 个配置本地日。日/月边界由 `local_day_bounds`（validator.rs:2243）、`local_period_at`（:2273）、`local_midnight`（:2205）计算；DST 抹掉的午夜（例如 America/Santiago 的 00:00 不存在）取该本地日最早的合法瞬时，桶仍属于真实的本地日。配置时区来自 `[validator_provider] timezone`：配置加载时若不能解析成 IANA 名即 `ConfigError::InvalidValidatorTimezone` 启动失败，读取时若仍不能解析则返回 `InvalidTimezone` 400——两处都不回退成 UTC。
+- 查询有界且披露完整：窗口上限 730 天（`TREND_MAX_WINDOW_DAYS`，超出即钳制并在响应里标 `clamped`），`limit` 默认 90、上限 366（`TREND_MAX_LIMIT`）；分页游标 `before` 是排他游标（严格更旧的配置本地日），响应给出 `continuation`；截断只丢最旧的日，且 `expectedDays`/`observedDays`/`missingDays` 只统计「已应答的那一段」，应答段之外的日绝不算作静默（`coverage` 因此区分 `empty` 与 `unavailable`）。
+- 每个点披露真实的取样时间与来源：`sampleTime` 为 `provider` 或 `receipt`（provider_timestamp 优先、否则 receipt，与 §15.5 的 `analytics_period` 同一规则），`delaySeconds` 在任一时间不可用时为 null（绝不写 0），`clockSuspect` 标记 Provider 时间早于接收时间；行里没有的指标就是 Unknown，绝不呈现为 0。
+- 累计语义写死在契约里：`counterSemantics` 固定为 `"cumulative"`，reward/block 是累计值，WebUI 也标注为累计，绝不差分出周期收益或净收益。
+- 其他时区已存在的行既不合并、也不静默按 UTC 重桶：响应把它们计为 `foreignRows`/`foreignTimezones` 并明确披露，配置日历上的那几天仍如实显示为静默。
+- Story 68：Purge 删除该 Node 的 `node_validator_links`，因此趋势里的关联列表只列出仍能解析到存活 Node 的区间，并给出 `deletedNodes` 与 `associationHistoryPartial=true`，说明已删 Node 的关联是「这里不可用」而不是「从未存在」，也绝不把它们重新挂到别的存活 Node 上；共享 Validator 身份与其已存快照日保留，趋势仍可读取。
+- rank 序列的真实性由同一刷新周期保证：每日快照行现在由 `record_snapshot_rank`（validator.rs:2620）在同一 refresh 事务内写入该本地日的 rank（权威缺席写 NULL），失败保留 last-good、绝不编造；由于 `rebuild_monthly_aggregate` 没有零行保护，只有确实更新到该日行时才重建该月聚合。
+- 表面：Admin 只读端点 `GET /api/admin/v1/validators/{validator_id}/trend`（Owner 守卫沿用 `http/mod.rs` 的 `/api/admin/v1` 嵌套，见 WebUI §15.21）。
+
 ### 15.5 一次性 Validator 模型迁移
 
 - 迁移切换时立即停止以旧手工 Link 作为当前关联或回退，删除旧手工关联及旧 Validator 快照、ranking/counter history、daily snapshots、monthly aggregates；切换后通过自动识别重新采集和积累。

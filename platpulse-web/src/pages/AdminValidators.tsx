@@ -38,6 +38,7 @@ import {
   validatorStatusTone,
 } from '../validators'
 import type { AdminNodeValidatorIdentity, Validator, ValidatorDetail } from '../api/generated'
+import { ValidatorTrendPanel } from './validatorTrendPanel'
 
 /**
  * PAGE-ADMIN-VALIDATORS and PAGE-ADMIN-VALIDATOR-DETAIL (design §15.4;
@@ -521,6 +522,7 @@ export function AdminValidatorDetail() {
           <EvidencePanel validator={query.data} />
           <StakingPanel validator={query.data} />
           <LinksPanel validator={query.data} />
+          <ValidatorTrendPanel validatorId={validatorId} />
         </>
       )}
     </section>

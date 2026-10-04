@@ -50,6 +50,7 @@ import {
   adminValidatorIdentities,
   adminValidatorAnalytics,
   adminValidatorLinks,
+  adminValidatorTrend as adminValidatorTrendApi,
   adminValidators,
   adminRevokeCredential,
   adminRotateCredential,
@@ -199,6 +200,7 @@ import {
   type ValidatorDetail,
   type AdminValidatorAnalyticsResponse,
   type AdminValidatorHistoryResponse,
+  type AdminValidatorTrendResponse,
   type AdminNodeValidatorIdentity,
   type NetworkResponse,
   type NetworkUpdateRequest,
@@ -1017,6 +1019,59 @@ export function useAdminValidatorAnalytics(generation: number, validatorId: stri
   return useQuery({
     queryKey: [...adminKeys.validatorDetail(validatorId), 'analytics', generation],
     queryFn: ({ signal }) => fetchAdminValidatorAnalytics(validatorId, 31, signal),
+    enabled: validatorId.length > 0,
+  })
+}
+
+/** One requested window of the daily trend: the UTC instants that bound it, the
+ *  exclusive cursor that walks into older days, and how many days one answer may
+ *  carry. Every field is sent literally, so a narrowed or paged answer is the
+ *  Operator's own request and not a hidden default. */
+export type AdminValidatorTrendParams = {
+  from: string
+  to: string
+  /** A configured local date (YYYY-MM-DD). Only strictly older days answer. */
+  before?: string | null
+  limit: number
+}
+
+export async function fetchAdminValidatorTrend(
+  validatorId: string,
+  params: AdminValidatorTrendParams,
+  signal?: AbortSignal,
+): Promise<AdminValidatorTrendResponse> {
+  return requestAdmin(
+    () =>
+      adminValidatorTrendApi({
+        path: { validator_id: validatorId },
+        query: {
+          from: params.from,
+          to: params.to,
+          before: params.before ?? undefined,
+          limit: params.limit,
+        },
+        signal,
+      }),
+    'Unable to load the Validator trend',
+  )
+}
+
+export function useAdminValidatorTrend(
+  generation: number,
+  validatorId: string,
+  params: AdminValidatorTrendParams,
+) {
+  return useQuery({
+    queryKey: [
+      ...adminKeys.validatorDetail(validatorId),
+      'trend',
+      params.from,
+      params.to,
+      params.before ?? null,
+      params.limit,
+      generation,
+    ],
+    queryFn: ({ signal }) => fetchAdminValidatorTrend(validatorId, params, signal),
     enabled: validatorId.length > 0,
   })
 }
