@@ -1332,8 +1332,58 @@ pub struct AdminPeerHistory {
     /// when the latest Peer collection is in error.
     pub state: String,
     pub freshness: String,
+    /// The fixed newest tail of five-minute buckets, answered when no range was
+    /// asked for.
     pub five_minute: Vec<AdminPeerAggregate>,
+    /// The fixed newest tail of hourly buckets, answered when no range was asked
+    /// for.
     pub hourly: Vec<AdminPeerAggregate>,
+    /// The bounded range this answer covers, when one was asked for: a ranged
+    /// read fills this and leaves both tails empty, so one response never means
+    /// two things.
+    pub range: Option<AdminPeerRange>,
+}
+
+/// One bounded read of a Node's Peer receipt buckets (issue #220).
+///
+/// Receipt buckets are what the Server actually accepted, so a range says how
+/// many of them it holds, where the grain's own grid expects more of them, and
+/// which older page comes next. A fixed top list silently leaves everything
+/// older than its limit unreadable, and a window that cannot be paged cannot
+/// rule that out.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AdminPeerRange {
+    /// `5m` or `1h`.
+    pub grain: String,
+    pub grain_seconds: i64,
+    /// Start of the answered range: a bucket belongs to it when its start is at
+    /// or after `from` and before `to`.
+    pub from: String,
+    pub to: String,
+    /// The page, newest bucket first.
+    pub buckets: Vec<AdminPeerAggregate>,
+    /// How many buckets the range holds in total, whatever the page limit is.
+    pub matching: i64,
+    pub returned: i64,
+    /// The oldest and newest bucket the range holds, when it holds any.
+    pub first_bucket: Option<String>,
+    pub last_bucket: Option<String>,
+    /// Aligned buckets the Node's own stretch expects inside the range and the
+    /// Server holds none for: a receipt bucket exists only when a Report carried
+    /// Peer evidence, so each of them is a receipt that never arrived. The grid
+    /// starts at the oldest bucket the grain ever recorded, so the era before a
+    /// Node's first successful snapshot is never counted here.
+    pub missing_buckets: i64,
+    /// `complete`, `partial`, `empty` or `unavailable`, the vocabulary the
+    /// investigation window uses.
+    pub coverage: String,
+    /// True when the range holds more buckets than the page limit returned.
+    pub truncated: bool,
+    /// Pass this as `before` for the next, older page while `truncated`: a
+    /// bucket start is unique inside a Node and grain, so paging at a tie cannot
+    /// skip or repeat a bucket.
+    pub continuation: Option<String>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -1373,48 +1423,91 @@ pub struct AdminPeerLagSummary {
     pub maximum: Option<i64>,
 }
 
+fn admin_peer_aggregate(row: crate::peer_history::PeerAggregateRow) -> AdminPeerAggregate {
+    let average_peers =
+        (row.sample_count > 0).then(|| row.total_peers as f64 / row.sample_count as f64);
+    let average_lag =
+        (row.cbft_lag_count > 0).then(|| row.cbft_lag_sum as f64 / row.cbft_lag_count as f64);
+    AdminPeerAggregate {
+        bucket_start: row.bucket_start,
+        last_observed_at: row.last_observed_at,
+        sample_count: row.sample_count,
+        total_peers: row.total_peers,
+        average_peers,
+        inbound_count: row.inbound_count,
+        outbound_count: row.outbound_count,
+        trusted_count: row.trusted_count,
+        static_count: row.static_count,
+        consensus_count: row.consensus_count,
+        known_country_count: row.known_country_count,
+        unknown_country_count: row.unknown_country_count,
+        countries: row
+            .countries
+            .into_iter()
+            .map(|country| AdminPeerCountryCount {
+                country_code: country.country_code,
+                count: country.count,
+            })
+            .collect(),
+        arrivals: row.arrivals,
+        departures: row.departures,
+        cbft_lag: AdminPeerLagSummary {
+            sample_count: row.cbft_lag_count,
+            minimum: row.cbft_lag_min,
+            average: average_lag,
+            maximum: row.cbft_lag_max,
+        },
+    }
+}
+
 fn admin_peer_history(history: crate::peer_history::PeerHistory) -> AdminPeerHistory {
-    let convert = |row: crate::peer_history::PeerAggregateRow| {
-        let average_peers =
-            (row.sample_count > 0).then(|| row.total_peers as f64 / row.sample_count as f64);
-        let average_lag =
-            (row.cbft_lag_count > 0).then(|| row.cbft_lag_sum as f64 / row.cbft_lag_count as f64);
-        AdminPeerAggregate {
-            bucket_start: row.bucket_start,
-            last_observed_at: row.last_observed_at,
-            sample_count: row.sample_count,
-            total_peers: row.total_peers,
-            average_peers,
-            inbound_count: row.inbound_count,
-            outbound_count: row.outbound_count,
-            trusted_count: row.trusted_count,
-            static_count: row.static_count,
-            consensus_count: row.consensus_count,
-            known_country_count: row.known_country_count,
-            unknown_country_count: row.unknown_country_count,
-            countries: row
-                .countries
-                .into_iter()
-                .map(|country| AdminPeerCountryCount {
-                    country_code: country.country_code,
-                    count: country.count,
-                })
-                .collect(),
-            arrivals: row.arrivals,
-            departures: row.departures,
-            cbft_lag: AdminPeerLagSummary {
-                sample_count: row.cbft_lag_count,
-                minimum: row.cbft_lag_min,
-                average: average_lag,
-                maximum: row.cbft_lag_max,
-            },
-        }
-    };
     AdminPeerHistory {
         state: history.state,
         freshness: history.freshness,
-        five_minute: history.five_minute.into_iter().map(convert).collect(),
-        hourly: history.hourly.into_iter().map(convert).collect(),
+        five_minute: history
+            .five_minute
+            .into_iter()
+            .map(admin_peer_aggregate)
+            .collect(),
+        hourly: history
+            .hourly
+            .into_iter()
+            .map(admin_peer_aggregate)
+            .collect(),
+        range: None,
+    }
+}
+
+/// One bounded Peer receipt range as the answer to the Peer history route.
+///
+/// The ranged read fills `range` and leaves both fixed tails empty rather than
+/// reusing one of them, so a caller always knows whether it is reading the newest
+/// tail or the range it asked for.
+fn admin_peer_range_answer(answer: crate::peer_history::PeerRangeAnswer) -> AdminPeerHistory {
+    AdminPeerHistory {
+        state: answer.state,
+        freshness: answer.freshness,
+        five_minute: Vec::new(),
+        hourly: Vec::new(),
+        range: Some(AdminPeerRange {
+            grain: answer.grain.to_owned(),
+            grain_seconds: answer.grain_seconds,
+            from: answer.from,
+            to: answer.to,
+            returned: answer.buckets.len() as i64,
+            buckets: answer
+                .buckets
+                .into_iter()
+                .map(admin_peer_aggregate)
+                .collect(),
+            matching: answer.matching,
+            first_bucket: answer.first_bucket,
+            last_bucket: answer.last_bucket,
+            missing_buckets: answer.missing_buckets,
+            coverage: answer.coverage.to_owned(),
+            truncated: answer.truncated,
+            continuation: answer.continuation,
+        }),
     }
 }
 
@@ -2564,19 +2657,176 @@ async fn admin_node_peer_churn(
     }
 }
 
+/// One page of Peer receipt buckets may not exceed this, whatever the caller
+/// asks for: a range read is a page of evidence, not an export.
+const MAX_PEER_RANGE_LIMIT: i64 = 1000;
+
+/// The widest Peer receipt range one answer may cover. The tiers themselves keep
+/// less than this, and a wider range would only be answered as a shortfall.
+const MAX_PEER_RANGE_SECONDS: i64 = 30 * 24 * 60 * 60;
+
+/// Query for one bounded read of a Node's Peer receipt buckets (issue #220).
+///
+/// A range only means something at a grain: `grain` names the tier, and the tier
+/// decides the grid a shortfall is measured against. With no `from`/`to` the
+/// read answers the tier's own horizon ending now, which is what the fixed tail
+/// covers, so a caller can page what the tail could only show the newest of.
+#[derive(Debug, Default, Deserialize)]
+struct AdminPeerHistoryQuery {
+    grain: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+    before: Option<String>,
+    limit: Option<i64>,
+}
+
+/// A Peer receipt range the Admin API refuses, as the error body it answers in.
+struct PeerRangeRejection {
+    code: &'static str,
+    message: &'static str,
+}
+
+/// A range bound the route cannot answer: not canonical, reversed, or wider than
+/// one answer may cover.
+fn invalid_peer_range() -> PeerRangeRejection {
+    PeerRangeRejection {
+        code: "invalid_history_range",
+        message: "history range is invalid",
+    }
+}
+
+/// Read the Peer receipt range a query asks for, or refuse it.
+///
+/// The range is half-open — a bucket belongs to it when its start is at or after
+/// `from` and before `to` — which is the same rule the stored buckets and the
+/// tier's grid use, so the range answered and the range paged never disagree at
+/// an edge. A half-stated range and a bound that is not the canonical
+/// second-precision UTC shape are refused rather than completed: completing
+/// either would answer a stretch the caller never asked for.
+fn peer_range_request(
+    query: &AdminPeerHistoryQuery,
+    now: time::OffsetDateTime,
+) -> Result<Option<crate::peer_history::PeerRangeRequest>, PeerRangeRejection> {
+    let Some(grain_value) = query.grain.as_deref() else {
+        if query.from.is_some()
+            || query.to.is_some()
+            || query.before.is_some()
+            || query.limit.is_some()
+        {
+            return Err(PeerRangeRejection {
+                code: "invalid_query",
+                message: "a Peer range needs a grain: pass grain=5m or grain=1h",
+            });
+        }
+        return Ok(None);
+    };
+    let Some(grain) = crate::peer_history::PeerGrain::parse(grain_value) else {
+        return Err(PeerRangeRejection {
+            code: "invalid_grain",
+            message: "grain is not a Peer receipt grain (5m or 1h)",
+        });
+    };
+    let (from, to) = match (query.from.as_deref(), query.to.as_deref()) {
+        (None, None) => (
+            now - time::Duration::seconds(grain.seconds() * grain.tail_limit()),
+            now,
+        ),
+        (Some(from), Some(to)) => {
+            let (Some(from), Some(to)) = (
+                crate::metric_history::canonical_instant(from),
+                crate::metric_history::canonical_instant(to),
+            ) else {
+                return Err(invalid_peer_range());
+            };
+            if from >= to || (to - from).whole_seconds() > MAX_PEER_RANGE_SECONDS {
+                return Err(invalid_peer_range());
+            }
+            (from, to)
+        }
+        _ => {
+            return Err(PeerRangeRejection {
+                code: "invalid_history_range",
+                message: "a Peer range needs both from and to",
+            });
+        }
+    };
+    let from = crate::auth::format_rfc3339(from);
+    let to = crate::auth::format_rfc3339(to);
+    // A paging cursor narrows the answer to the receipts older than a coordinate
+    // the caller has already seen, so it must sit inside the requested range: a
+    // cursor outside it would answer a stretch nobody asked about.
+    let before = match query.before.as_deref() {
+        None => None,
+        Some(value) => {
+            let Some(before) = crate::metric_history::canonical_instant(value) else {
+                return Err(invalid_peer_range());
+            };
+            let before = crate::auth::format_rfc3339(before);
+            if before <= from || before > to {
+                return Err(invalid_peer_range());
+            }
+            Some(before)
+        }
+    };
+    let limit = query
+        .limit
+        .unwrap_or_else(|| grain.tail_limit())
+        .clamp(1, MAX_PEER_RANGE_LIMIT);
+    Ok(Some(crate::peer_history::PeerRangeRequest {
+        grain,
+        from,
+        to,
+        before,
+        limit,
+    }))
+}
+
 #[utoipa::path(
     get,
     path = "/api/admin/v1/nodes/{node_id}/peer-history",
     tag = "admin",
-    params(("node_id" = String, Path, description = "Node ID")),
-    responses((status = 200, description = "Owner-only bounded aggregate Peer history", body = AdminPeerHistory), (status = 404, body = crate::http::ApiErrorBody))
+    params(
+        ("node_id" = String, Path, description = "Node ID"),
+        ("grain" = Option<String>, Query, description = "Peer receipt grain: 5m or 1h. Naming one answers a bounded range instead of the fixed newest tails"),
+        ("from" = Option<String>, Query, description = "Canonical RFC 3339 UTC start of the range, second precision (default: the grain's horizon before to)"),
+        ("to" = Option<String>, Query, description = "Canonical RFC 3339 UTC exclusive end of the range, second precision (default: now)"),
+        ("before" = Option<String>, Query, description = "Canonical RFC 3339 UTC exclusive upper bound for paging: the continuation coordinate a truncated answer returned"),
+        ("limit" = Option<i64>, Query, minimum = 1, maximum = 1000, description = "Maximum Peer receipt buckets in the page (default: the grain's tail limit)")
+    ),
+    responses((status = 200, description = "Owner-only aggregate Peer history: the fixed newest tails, or one bounded receipt range when a grain is named", body = AdminPeerHistory), (status = 400, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody))
 )]
-pub(crate) async fn admin_node_peer_history(
+async fn admin_node_peer_history(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
     Extension(_session): Extension<super::AuthenticatedSession>,
     Extension(request_id): Extension<super::RequestId>,
+    query: Result<
+        axum::extract::Query<AdminPeerHistoryQuery>,
+        axum::extract::rejection::QueryRejection,
+    >,
 ) -> Response {
+    let params = match query {
+        Ok(axum::extract::Query(params)) => params,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_query",
+                "query is not valid for peer history",
+            );
+        }
+    };
+    let range = match peer_range_request(&params, crate::auth::now_utc()) {
+        Ok(range) => range,
+        Err(rejection) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                rejection.code,
+                rejection.message,
+            );
+        }
+    };
     let exists = sqlx::query_scalar::<_, String>("SELECT node_id FROM nodes WHERE node_id=?")
         .bind(&node_id)
         .fetch_optional(state.db().pool())
@@ -2599,6 +2849,20 @@ pub(crate) async fn admin_node_peer_history(
             "resource not found",
         );
     };
+    // A ranged read answers the range it was asked for: the fixed tails stay
+    // empty, so one response never means both "the newest buckets" and "the
+    // range you asked about".
+    if let Some(request) = range {
+        return match crate::peer_history::load_range(state.db().pool(), &node_id, &request).await {
+            Ok(answer) => Json(admin_peer_range_answer(answer)).into_response(),
+            Err(_) => mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            ),
+        };
+    }
     match crate::peer_history::load_history(state.db().pool(), &node_id).await {
         Ok(history) => Json(admin_peer_history(history)).into_response(),
         Err(_) => mutation_error(
@@ -2607,6 +2871,134 @@ pub(crate) async fn admin_node_peer_history(
             "unavailable",
             "server database is unavailable",
         ),
+    }
+}
+
+/// Query for the Owner-side investigation of one Node (issue #220).
+///
+/// Either `window` names one supported preset, or `from` and `to` name an
+/// explicit range. A half-stated range is rejected rather than completed,
+/// because which end a client meant cannot be guessed from one timestamp.
+#[derive(Debug, Deserialize)]
+struct AdminInvestigationQuery {
+    window: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+}
+
+/// An error envelope whose message is built from what the Server found.
+///
+/// The shared mutation helper carries static text only; a window that cannot be
+/// read has to say which part of it was wrong, and a purged Node has to say when
+/// it was purged, so those two messages are built here and redacted like any
+/// other.
+fn dynamic_error(
+    request_id: &str,
+    status: StatusCode,
+    code: &'static str,
+    message: String,
+) -> Response {
+    (
+        status,
+        Json(crate::http::ApiErrorBody::with_fields_message(
+            code,
+            message,
+            request_id,
+            Vec::new(),
+        )),
+    )
+        .into_response()
+}
+
+/// The one window the other evidence routes are read inside.
+///
+/// This answers coordinates, coverage and boundaries only: where a family's
+/// evidence is for a window, how complete it is, and which boundary explains a
+/// stretch it cannot answer. The evidence itself stays with that family's own
+/// route, so no second copy of the history is served from here and the two can
+/// never drift apart (design §7, §11.4).
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/nodes/{node_id}/investigation",
+    tag = "admin",
+    params(
+        ("node_id" = String, Path, description = "Node ID"),
+        ("window" = Option<String>, Query, description = "One supported preset: 1h, 6h, 24h, 7d or 30d (default: 24h)"),
+        ("from" = Option<String>, Query, description = "Canonical RFC 3339 UTC start of an explicit range, second precision (paired with to)"),
+        ("to" = Option<String>, Query, description = "Canonical RFC 3339 UTC exclusive end of an explicit range, second precision (paired with from)")
+    ),
+    responses(
+        (status = 200, description = "Owner-only investigation window over one Node's own evidence", body = crate::investigation::InvestigationResponse),
+        (status = 400, body = crate::http::ApiErrorBody),
+        (status = 404, body = crate::http::ApiErrorBody),
+        (status = 503, body = crate::http::ApiErrorBody)
+    )
+)]
+async fn admin_node_investigation(
+    State(state): State<AppState>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+    query: Result<
+        axum::extract::Query<AdminInvestigationQuery>,
+        axum::extract::rejection::QueryRejection,
+    >,
+    Path(node_id): Path<String>,
+) -> Response {
+    // A window the typed extractor cannot read answers with the repo's error
+    // envelope, so this route never answers in two error shapes.
+    let Ok(axum::extract::Query(query)) = query else {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            crate::investigation::INVALID_WINDOW_CODE,
+            "the investigation window could not be read; name a preset, or pass from and to together",
+        );
+    };
+    let now = crate::auth::now_utc();
+    let window = match crate::investigation::resolve_window(
+        query.window.as_deref(),
+        query.from.as_deref(),
+        query.to.as_deref(),
+        now,
+    ) {
+        Ok(window) => window,
+        Err(reason) => {
+            return dynamic_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                crate::investigation::INVALID_WINDOW_CODE,
+                reason,
+            );
+        }
+    };
+    match crate::investigation::investigate_node(
+        state.db().pool(),
+        &node_id,
+        &window,
+        now,
+        state.validator_timezone(),
+    )
+    .await
+    {
+        Ok(investigation) => no_store(Json(investigation).into_response()),
+        Err(crate::investigation::InvestigationError::NotFound) => {
+            not_found_response(&request_id.0)
+        }
+        // A purged Node is told apart from an unknown id: its evidence is gone
+        // by design, so a window over it can never be answered again (design
+        // §11.5), and saying so is not the same as saying the Server never knew
+        // the Node.
+        Err(crate::investigation::InvestigationError::Purged { deleted_at }) => dynamic_error(
+            &request_id.0,
+            StatusCode::NOT_FOUND,
+            "node_purged",
+            format!(
+                "this Node was purged at {deleted_at}; its evidence was deleted by design and cannot be reconstructed"
+            ),
+        ),
+        Err(crate::investigation::InvestigationError::Unavailable(_)) => {
+            unavailable_response(&request_id.0)
+        }
     }
 }
 
@@ -7861,6 +8253,13 @@ pub fn router() -> Router<AppState> {
             "/nodes/{node_id}/state-history",
             get(admin_node_state_history),
         )
+        // The one UTC window every evidence route above is read inside (#220):
+        // it answers where each family's evidence is and how complete it is,
+        // never a second copy of the evidence itself (design §7, §11.4).
+        .route(
+            "/nodes/{node_id}/investigation",
+            get(admin_node_investigation),
+        )
         // The Agent's shared Host series: the same evidence every Node on that
         // Host reads, answered from the Agent page and from any Node page
         // (design §11.6).
@@ -10049,6 +10448,7 @@ mod tests {
             Path("node-healthy".to_owned()),
             Extension(lifecycle_session()),
             Extension(request_id()),
+            Ok(axum::extract::Query(AdminPeerHistoryQuery::default())),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -10109,6 +10509,264 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Insert one 5-minute Peer receipt bucket holding a single trusted inbound
+    /// Peer: the row shape one successful Report leaves behind.
+    async fn insert_peer_bucket(state: &AppState, node_id: &str, bucket_start: &str) {
+        sqlx::query("INSERT INTO peer_aggregate_5m (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(node_id)
+            .bind(bucket_start)
+            .bind(1_i64)
+            .bind(1_i64)
+            .bind(1_i64)
+            .bind(0_i64)
+            .bind(1_i64)
+            .bind(0_i64)
+            .bind(1_i64)
+            .bind(1_i64)
+            .bind(0_i64)
+            .bind(0_i64)
+            .bind(0_i64)
+            .bind(0_i64)
+            .bind(0_i64)
+            .bind(Option::<i64>::None)
+            .bind(Option::<i64>::None)
+            .bind(bucket_start)
+            .bind(bucket_start)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+    }
+
+    /// Call the Peer history route with one query, the way the browser does.
+    async fn peer_history_query(
+        state: &AppState,
+        node_id: &str,
+        query: AdminPeerHistoryQuery,
+    ) -> (StatusCode, Value) {
+        let response = admin_node_peer_history(
+            State(state.clone()),
+            Path(node_id.to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+            Ok(axum::extract::Query(query)),
+        )
+        .await;
+        let status = response.status();
+        let body =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn peer_history_answers_one_bounded_range_with_its_own_grid() {
+        let (_dir, state) = node_inventory_state().await;
+        let range_query = |limit: Option<i64>, before: Option<String>| AdminPeerHistoryQuery {
+            grain: Some("5m".to_owned()),
+            from: Some("2026-08-12T10:00:00Z".to_owned()),
+            to: Some("2026-08-12T10:15:00Z".to_owned()),
+            before,
+            limit,
+        };
+        // Nothing is recorded for this Node yet: the range is unavailable rather
+        // than an empty window, and a ranged read never fills the fixed tails.
+        let (status, body) =
+            peer_history_query(&state, "node-healthy", range_query(None, None)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["range"]["coverage"], "unavailable");
+        assert_eq!(body["range"]["matching"], 0);
+        assert!(body["range"]["buckets"].as_array().unwrap().is_empty());
+        assert!(body["range"]["first_bucket"].is_null());
+        assert!(body["range"]["last_bucket"].is_null());
+        assert!(body["range"]["continuation"].is_null());
+        assert!(
+            body["five_minute"].as_array().unwrap().is_empty(),
+            "a ranged read answers the range, never the fixed newest tail"
+        );
+        assert!(body["hourly"].as_array().unwrap().is_empty());
+
+        for bucket in [
+            "2026-08-12T10:00:00Z",
+            "2026-08-12T10:05:00Z",
+            "2026-08-12T10:10:00Z",
+        ] {
+            insert_peer_bucket(&state, "node-healthy", bucket).await;
+        }
+        let (status, body) =
+            peer_history_query(&state, "node-healthy", range_query(None, None)).await;
+        assert_eq!(status, StatusCode::OK);
+        let range = body["range"].clone();
+        assert_eq!(range["grain"], "5m");
+        assert_eq!(range["grain_seconds"], 300);
+        assert_eq!(range["from"], "2026-08-12T10:00:00Z");
+        assert_eq!(range["to"], "2026-08-12T10:15:00Z");
+        assert_eq!(range["matching"], 3);
+        assert_eq!(range["returned"], 3);
+        assert_eq!(range["missing_buckets"], 0);
+        assert_eq!(range["coverage"], "complete");
+        assert_eq!(range["truncated"], false);
+        assert_eq!(range["first_bucket"], "2026-08-12T10:00:00Z");
+        assert_eq!(range["last_bucket"], "2026-08-12T10:10:00Z");
+        assert_eq!(
+            range["buckets"][0]["bucket_start"], "2026-08-12T10:10:00Z",
+            "the page is newest first"
+        );
+        assert_eq!(range["buckets"][2]["bucket_start"], "2026-08-12T10:00:00Z");
+        assert!(range["buckets"][0]["total_peers"].is_number());
+        assert!(!body.to_string().contains("203.0.113.7"));
+    }
+
+    #[tokio::test]
+    async fn peer_history_range_counts_missing_receipts_and_pages_at_a_bucket_boundary() {
+        let (_dir, state) = node_inventory_state().await;
+        for bucket in [
+            "2026-08-12T10:00:00Z",
+            "2026-08-12T10:05:00Z",
+            "2026-08-12T10:10:00Z",
+        ] {
+            insert_peer_bucket(&state, "node-healthy", bucket).await;
+        }
+        let paged = AdminPeerHistoryQuery {
+            grain: Some("5m".to_owned()),
+            from: Some("2026-08-12T10:00:00Z".to_owned()),
+            to: Some("2026-08-12T10:30:00Z".to_owned()),
+            before: None,
+            limit: Some(2),
+        };
+        let (status, body) = peer_history_query(&state, "node-healthy", paged).await;
+        assert_eq!(status, StatusCode::OK);
+        let range = body["range"].clone();
+        assert_eq!(range["matching"], 3, "the range holds three receipts");
+        assert_eq!(range["returned"], 2);
+        assert_eq!(range["truncated"], true);
+        assert_eq!(
+            range["continuation"], "2026-08-12T10:05:00Z",
+            "the oldest returned bucket is where the next page continues"
+        );
+        assert_eq!(
+            range["missing_buckets"], 3,
+            "the record owes 10:15, 10:20 and 10:25 inside the range"
+        );
+        assert_eq!(
+            range["coverage"], "partial",
+            "a shortfall inside the record is partial coverage, never complete"
+        );
+        // The continuation pages backwards without repeating or skipping a bucket.
+        let (status, page) = peer_history_query(
+            &state,
+            "node-healthy",
+            AdminPeerHistoryQuery {
+                grain: Some("5m".to_owned()),
+                from: Some("2026-08-12T10:00:00Z".to_owned()),
+                to: Some("2026-08-12T10:30:00Z".to_owned()),
+                before: Some("2026-08-12T10:05:00Z".to_owned()),
+                limit: Some(2),
+            },
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["range"]["buckets"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            page["range"]["buckets"][0]["bucket_start"],
+            "2026-08-12T10:00:00Z"
+        );
+        assert_eq!(page["range"]["truncated"], false);
+        assert!(page["range"]["continuation"].is_null());
+        assert_eq!(
+            page["range"]["matching"], 3,
+            "paging narrows the page, never the range it reports"
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_history_refuses_a_half_stated_reversed_or_too_wide_range() {
+        let (_dir, state) = node_inventory_state().await;
+        let range = |from: Option<&str>, to: Option<&str>| AdminPeerHistoryQuery {
+            grain: Some("5m".to_owned()),
+            from: from.map(str::to_owned),
+            to: to.map(str::to_owned),
+            ..Default::default()
+        };
+        let refused = [
+            (
+                "invalid_query",
+                AdminPeerHistoryQuery {
+                    from: Some("2026-08-12T10:00:00Z".to_owned()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "invalid_query",
+                AdminPeerHistoryQuery {
+                    limit: Some(10),
+                    ..Default::default()
+                },
+            ),
+            (
+                "invalid_grain",
+                AdminPeerHistoryQuery {
+                    grain: Some("15m".to_owned()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "invalid_history_range",
+                range(Some("2026-08-12T10:00:00Z"), None),
+            ),
+            (
+                "invalid_history_range",
+                range(Some("2026-08-12T10:00:00Z"), Some("2026-08-12T10:00:00Z")),
+            ),
+            (
+                "invalid_history_range",
+                range(Some("2026-08-12T10:00:00Z"), Some("2026-09-13T10:00:00Z")),
+            ),
+            (
+                "invalid_history_range",
+                range(
+                    Some("2026-08-12T10:00:00+08:00"),
+                    Some("2026-08-12T10:15:00Z"),
+                ),
+            ),
+            (
+                "invalid_history_range",
+                AdminPeerHistoryQuery {
+                    grain: Some("5m".to_owned()),
+                    from: Some("2026-08-12T10:00:00Z".to_owned()),
+                    to: Some("2026-08-12T10:15:00Z".to_owned()),
+                    before: Some("2026-08-12T11:00:00Z".to_owned()),
+                    limit: None,
+                },
+            ),
+        ];
+        for (code, query) in refused {
+            let (status, body) = peer_history_query(&state, "node-healthy", query).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(body["error"]["code"], code);
+        }
+        let (_, body) = peer_history_query(
+            &state,
+            "node-healthy",
+            range(Some("2026-08-12T10:00:00Z"), None),
+        )
+        .await;
+        assert_eq!(
+            body["error"]["message"], "a Peer range needs both from and to",
+            "a half-stated range is refused rather than completed"
+        );
+        // No grain at all stays the fixed-tail answer the Node page already reads.
+        let (status, body) =
+            peer_history_query(&state, "node-healthy", AdminPeerHistoryQuery::default()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["range"].is_null(), "the fixed tails are not a range");
+        assert!(body["five_minute"].is_array());
+        assert!(body["hourly"].is_array());
+        // An unknown Node is a non-leaking 404 for a ranged read too.
+        let (status, body) = peer_history_query(&state, "node-missing", range(None, None)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "not_found");
     }
 
     #[tokio::test]

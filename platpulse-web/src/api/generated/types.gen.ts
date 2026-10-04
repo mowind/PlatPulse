@@ -754,9 +754,18 @@ export type AdminPeerCountryCount = {
 };
 
 export type AdminPeerHistory = {
+    /**
+     * The fixed newest tail of five-minute buckets, answered when no range was
+     * asked for.
+     */
     five_minute: Array<AdminPeerAggregate>;
     freshness: string;
+    /**
+     * The fixed newest tail of hourly buckets, answered when no range was asked
+     * for.
+     */
     hourly: Array<AdminPeerAggregate>;
+    range?: null | AdminPeerRange;
     /**
      * Aggregate collection state; retained last-good rows remain visible
      * when the latest Peer collection is in error.
@@ -769,6 +778,66 @@ export type AdminPeerLagSummary = {
     maximum?: number | null;
     minimum?: number | null;
     sample_count: number;
+};
+
+/**
+ * One bounded read of a Node's Peer receipt buckets (issue #220).
+ *
+ * Receipt buckets are what the Server actually accepted, so a range says how
+ * many of them it holds, where the grain's own grid expects more of them, and
+ * which older page comes next. A fixed top list silently leaves everything
+ * older than its limit unreadable, and a window that cannot be paged cannot
+ * rule that out.
+ */
+export type AdminPeerRange = {
+    /**
+     * The page, newest bucket first.
+     */
+    buckets: Array<AdminPeerAggregate>;
+    /**
+     * Pass this as `before` for the next, older page while `truncated`: a
+     * bucket start is unique inside a Node and grain, so paging at a tie cannot
+     * skip or repeat a bucket.
+     */
+    continuation?: string | null;
+    /**
+     * `complete`, `partial`, `empty` or `unavailable`, the vocabulary the
+     * investigation window uses.
+     */
+    coverage: string;
+    /**
+     * The oldest and newest bucket the range holds, when it holds any.
+     */
+    first_bucket?: string | null;
+    /**
+     * Start of the answered range: a bucket belongs to it when its start is at
+     * or after `from` and before `to`.
+     */
+    from: string;
+    /**
+     * `5m` or `1h`.
+     */
+    grain: string;
+    grain_seconds: number;
+    last_bucket?: string | null;
+    /**
+     * How many buckets the range holds in total, whatever the page limit is.
+     */
+    matching: number;
+    /**
+     * Aligned buckets the Node's own stretch expects inside the range and the
+     * Server holds none for: a receipt bucket exists only when a Report carried
+     * Peer evidence, so each of them is a receipt that never arrived. The grid
+     * starts at the oldest bucket the grain ever recorded, so the era before a
+     * Node's first successful snapshot is never counted here.
+     */
+    missing_buckets: number;
+    returned: number;
+    to: string;
+    /**
+     * True when the range holds more buckets than the page limit returned.
+     */
+    truncated: boolean;
 };
 
 /**
@@ -2413,8 +2482,429 @@ export type IncidentListItem = {
 };
 
 export type IncidentListResponse = {
+    /**
+     * When the answer is truncated, the coordinate to pass back as `before`
+     * for the next, older page.
+     */
+    continuation?: string | null;
+    /**
+     * `complete` when this answer holds every Incident the window matches,
+     * `partial` when the limit cut it short, `empty` when the window holds
+     * none. An occurrence is never averaged into a value, so a window with no
+     * Incident is empty and not zero (design §11.4; issue #220).
+     */
+    coverage: string;
     incidents: Array<IncidentListItem>;
+    /**
+     * How many Incidents this answer carries.
+     */
+    returned: number;
+    /**
+     * How many Incidents the filters match inside the answered window,
+     * independent of `limit`: a cut page still says what it left out.
+     */
     total: number;
+    /**
+     * True when the range held more Incidents than the caller limit: the newest
+     * are returned and the rest is reported, never dropped silently.
+     */
+    truncated: boolean;
+    window?: null | IncidentRangeResponse;
+};
+
+/**
+ * The occurrence range an Incident list answered (issue #220).
+ *
+ * An Incident belongs to the range when it opened inside it or was still open
+ * when the range started, so the answer holds every occurrence the range could
+ * observe and a caller investigating the range reads the same set the
+ * investigation answer points at.
+ */
+export type IncidentRangeResponse = {
+    from: string;
+    to: string;
+};
+
+/**
+ * Where the evidence behind a source is answered by the Server.
+ */
+export type InvestigationAnswerPathResponse = {
+    /**
+     * What the endpoint answers.
+     */
+    label: string;
+    /**
+     * How to read the response, when it needs saying.
+     */
+    note?: string | null;
+    /**
+     * The request path, including the window this investigation was resolved over.
+     */
+    path: string;
+};
+
+/**
+ * One stretch of the window a source cannot answer, and why.
+ */
+export type InvestigationBoundaryResponse = {
+    /**
+     * The instant the boundary starts at.
+     */
+    at: string;
+    /**
+     * Why this stretch cannot be answered.
+     */
+    detail: string;
+    /**
+     * The machine-readable boundary kind.
+     */
+    kind: string;
+    /**
+     * The label shown beside the kind.
+     */
+    kindLabel: string;
+    /**
+     * The instant the boundary ends at, when it ends inside the window.
+     */
+    to?: string | null;
+};
+
+/**
+ * One collector row the Server holds for the investigated subject.
+ */
+export type InvestigationComponentResponse = {
+    /**
+     * The collector's key as the Server stores it.
+     */
+    componentKey: string;
+    /**
+     * The error code the last failed collection carried.
+     */
+    errorCode?: string | null;
+    /**
+     * The instant the Agent attempted the last collection.
+     */
+    observedAt?: string | null;
+    /**
+     * The instant the Server received the last collection.
+     */
+    receivedAt?: string | null;
+    /**
+     * The scope the collector was recorded in (`node` or `host`).
+     */
+    scope: string;
+    /**
+     * The scope's own key (the Node id, or `host` for the Host scope).
+     */
+    scopeKey: string;
+    /**
+     * The last collection state (`ok`, `error`, `disabled`, …).
+     */
+    state: string;
+};
+
+/**
+ * What one grain of a source can answer for the window.
+ */
+export type InvestigationGrainResponse = {
+    /**
+     * Whether this grain holds any point inside the window.
+     *
+     * A grain that serves the window but stored nothing is not available: an
+     * empty grain and a grain that holds an empty stretch are different
+     * statements, and only the counts distinguish them.
+     */
+    available: boolean;
+    /**
+     * The fastest interval the grain actually showed, in seconds.
+     */
+    cadenceSeconds?: number | null;
+    /**
+     * How many points an unbroken grain would hold, when that is knowable.
+     */
+    expectedPoints?: number | null;
+    /**
+     * The oldest point of this grain inside its stretch.
+     */
+    firstObservedAt?: string | null;
+    /**
+     * The stretch of the window this grain serves, when it serves any.
+     */
+    from?: string | null;
+    /**
+     * The grain's name (for example `raw`, `1m`, `5m`, `validator_day`).
+     */
+    grain: string;
+    /**
+     * The bucket width, when the grain has one.
+     */
+    grainSeconds?: number | null;
+    /**
+     * The interruptions this grain proves, longest first (at most one per tier).
+     */
+    holes: Array<InvestigationHoleResponse>;
+    /**
+     * The newest point of this grain inside its stretch.
+     */
+    lastObservedAt?: string | null;
+    /**
+     * The longest interval between two adjacent points, in seconds.
+     */
+    longestGapSeconds?: number | null;
+    /**
+     * How many expected points are missing, when that is knowable.
+     */
+    missingPoints?: number | null;
+    /**
+     * Why the grain is unavailable, or how to read its counts.
+     */
+    note?: string | null;
+    /**
+     * How many stored points of this grain fall inside its stretch.
+     */
+    pointCount: number;
+    /**
+     * How many observations those points aggregate.
+     */
+    sampleCount: number;
+    /**
+     * The stretch of the window this grain serves, when it serves any.
+     */
+    to?: string | null;
+};
+
+/**
+ * One located interruption in a grain's evidence.
+ */
+export type InvestigationHoleResponse = {
+    /**
+     * The instant the interruption starts after.
+     */
+    from: string;
+    /**
+     * How long the interruption lasted, in seconds.
+     */
+    seconds?: number | null;
+    /**
+     * The series the interruption was measured on, when the grain holds many.
+     */
+    series?: string | null;
+    /**
+     * The instant the interruption ends at, where evidence resumes.
+     */
+    to: string;
+};
+
+/**
+ * One selectable window, as reported to a client.
+ */
+export type InvestigationPresetResponse = {
+    /**
+     * How far back the preset reaches, in hours.
+     */
+    hours: number;
+    /**
+     * The value the `window` query parameter accepts.
+     */
+    key: string;
+    /**
+     * The preset's human label.
+     */
+    label: string;
+};
+
+/**
+ * The investigation coordinate for one Node and one window.
+ */
+export type InvestigationResponse = {
+    /**
+     * The Agent that reports this Node.
+     */
+    agentId: string;
+    /**
+     * Every collector row the Server holds for this Node and its Agent.
+     */
+    components: Array<InvestigationComponentResponse>;
+    /**
+     * The Node's display name, when the Owner set one.
+     */
+    displayName?: string | null;
+    /**
+     * The Node's lifecycle.
+     */
+    lifecycle: string;
+    /**
+     * The investigated Node.
+     */
+    nodeId: string;
+    /**
+     * Disclosures that shape how the whole answer must be read.
+     */
+    notes: Array<string>;
+    /**
+     * Every evidence family, in a fixed order, whether or not it holds evidence.
+     */
+    sources: Array<InvestigationSourceResponse>;
+    /**
+     * The Node's visibility.
+     */
+    visibility: string;
+    /**
+     * The window the answer was resolved over.
+     */
+    window: InvestigationWindowResponse;
+};
+
+/**
+ * A family of evidence and how much of the window it can answer.
+ */
+export type InvestigationSourceResponse = {
+    /**
+     * The existing endpoints that answer this source's evidence for the window.
+     */
+    answerPaths: Array<InvestigationAnswerPathResponse>;
+    /**
+     * The stretches of the window this source cannot answer.
+     */
+    boundaries: Array<InvestigationBoundaryResponse>;
+    /**
+     * The collectors behind this source, with their last recorded state.
+     */
+    components: Array<InvestigationComponentResponse>;
+    /**
+     * The machine-readable coverage verdict.
+     */
+    coverage: string;
+    /**
+     * The label shown beside the verdict.
+     */
+    coverageLabel: string;
+    /**
+     * The error code the last failed collection carried, when there was one.
+     */
+    errorCode?: string | null;
+    /**
+     * The oldest evidence the Server still holds for this source.
+     */
+    firstObservedAt?: string | null;
+    /**
+     * What each grain of this source can answer.
+     */
+    grains: Array<InvestigationGrainResponse>;
+    /**
+     * The stable source key.
+     */
+    key: string;
+    /**
+     * The source's human label.
+     */
+    label: string;
+    /**
+     * The newest evidence the Server holds for this source.
+     */
+    lastObservedAt?: string | null;
+    /**
+     * The newest receipt of that evidence.
+     */
+    lastReceivedAt?: string | null;
+    /**
+     * Disclosures that shape how the numbers above must be read.
+     */
+    notes: Array<string>;
+    /**
+     * The cleanup cutoff the newest release of this source's evidence used.
+     */
+    releasedBefore?: string | null;
+    /**
+     * The instant beyond which this source's cleanup cannot answer, when it has one.
+     */
+    retainedFrom?: string | null;
+    /**
+     * The retention this source's oldest served grain is declared with, in days.
+     */
+    retentionDays?: number | null;
+    /**
+     * The collection state the Server last recorded for this source, when it records one.
+     */
+    sourceState?: string | null;
+    /**
+     * The subject's identifier.
+     */
+    subject: string;
+    /**
+     * The kind of subject this source describes.
+     */
+    subjectKind: string;
+    /**
+     * The clock this source's timestamps belong to.
+     */
+    timeBasis: string;
+    /**
+     * The label shown beside the clock.
+     */
+    timeBasisLabel: string;
+    /**
+     * Whether the answer omits detail the Server holds (for example further holes).
+     */
+    truncated: boolean;
+};
+
+/**
+ * The window an investigation answered over.
+ */
+export type InvestigationWindowResponse = {
+    /**
+     * The instant the Server resolved the window at.
+     */
+    answeredAt: string;
+    /**
+     * Whether `to` was clipped to `answered_at` because the range ended in the future.
+     */
+    clampedToNow: boolean;
+    /**
+     * Whether the caller named the range explicitly rather than a preset.
+     */
+    custom: boolean;
+    /**
+     * The width of the answered range, in seconds.
+     */
+    durationSeconds: number;
+    /**
+     * The start of the range the Server answered over.
+     */
+    from: string;
+    /**
+     * The widest window an investigation accepts, in days.
+     */
+    horizonDays: number;
+    /**
+     * The preset key the answer used, or `custom`.
+     */
+    preset: string;
+    /**
+     * The label of that preset.
+     */
+    presetLabel: string;
+    /**
+     * How long the raw metric tier reaches back, in days.
+     */
+    rawRetentionDays: number;
+    /**
+     * The range the caller asked for, before any clipping.
+     */
+    requestedFrom: string;
+    /**
+     * The range the caller asked for, before any clipping.
+     */
+    requestedTo: string;
+    /**
+     * Every window a client may ask for, so it never hardcodes the list.
+     */
+    supportedPresets: Array<InvestigationPresetResponse>;
+    /**
+     * The end of the range the Server answered over.
+     */
+    to: string;
 };
 
 export type LiveResponse = {
@@ -4383,6 +4873,18 @@ export type AlertIncidentsData = {
          */
         subject_key?: string;
         /**
+         * Canonical RFC 3339 UTC start of the occurrence range, paired with to
+         */
+        from?: string;
+        /**
+         * Canonical RFC 3339 UTC end of the occurrence range, paired with from
+         */
+        to?: string;
+        /**
+         * Exclusive continuation coordinate <opened_at>|<incident_id> a truncated answer returned
+         */
+        before?: string;
+        /**
          * Maximum rows (1..=500)
          */
         limit?: number;
@@ -5315,6 +5817,48 @@ export type AdminNodeHostMetricHistoryResponses = {
 
 export type AdminNodeHostMetricHistoryResponse = AdminNodeHostMetricHistoryResponses[keyof AdminNodeHostMetricHistoryResponses];
 
+export type AdminNodeInvestigationData = {
+    body?: never;
+    path: {
+        /**
+         * Node ID
+         */
+        node_id: string;
+    };
+    query?: {
+        /**
+         * One supported preset: 1h, 6h, 24h, 7d or 30d (default: 24h)
+         */
+        window?: string;
+        /**
+         * Canonical RFC 3339 UTC start of an explicit range, second precision (paired with to)
+         */
+        from?: string;
+        /**
+         * Canonical RFC 3339 UTC exclusive end of an explicit range, second precision (paired with from)
+         */
+        to?: string;
+    };
+    url: '/api/admin/v1/nodes/{node_id}/investigation';
+};
+
+export type AdminNodeInvestigationErrors = {
+    400: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AdminNodeInvestigationError = AdminNodeInvestigationErrors[keyof AdminNodeInvestigationErrors];
+
+export type AdminNodeInvestigationResponses = {
+    /**
+     * Owner-only investigation window over one Node's own evidence
+     */
+    200: InvestigationResponse;
+};
+
+export type AdminNodeInvestigationResponse = AdminNodeInvestigationResponses[keyof AdminNodeInvestigationResponses];
+
 export type SetNodeMetadataData = {
     body: NodeMetadataRequest;
     path: {
@@ -5425,11 +5969,33 @@ export type AdminNodePeerHistoryData = {
          */
         node_id: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * Peer receipt grain: 5m or 1h. Naming one answers a bounded range instead of the fixed newest tails
+         */
+        grain?: string;
+        /**
+         * Canonical RFC 3339 UTC start of the range, second precision (default: the grain's horizon before to)
+         */
+        from?: string;
+        /**
+         * Canonical RFC 3339 UTC exclusive end of the range, second precision (default: now)
+         */
+        to?: string;
+        /**
+         * Canonical RFC 3339 UTC exclusive upper bound for paging: the continuation coordinate a truncated answer returned
+         */
+        before?: string;
+        /**
+         * Maximum Peer receipt buckets in the page (default: the grain's tail limit)
+         */
+        limit?: number;
+    };
     url: '/api/admin/v1/nodes/{node_id}/peer-history';
 };
 
 export type AdminNodePeerHistoryErrors = {
+    400: ApiErrorBody;
     404: ApiErrorBody;
 };
 
@@ -5437,7 +6003,7 @@ export type AdminNodePeerHistoryError = AdminNodePeerHistoryErrors[keyof AdminNo
 
 export type AdminNodePeerHistoryResponses = {
     /**
-     * Owner-only bounded aggregate Peer history
+     * Owner-only aggregate Peer history: the fixed newest tails, or one bounded receipt range when a grain is named
      */
     200: AdminPeerHistory;
 };

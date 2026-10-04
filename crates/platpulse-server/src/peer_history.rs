@@ -9,8 +9,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use sqlx::{FromRow, QueryBuilder, Sqlite, SqlitePool, Transaction};
-use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use time::{Duration, OffsetDateTime};
 
 use platpulse_core::observation::PeerSnapshot;
 
@@ -163,15 +163,26 @@ impl AggregateFamily {
         }
     }
 
-    fn history_select_sql(self) -> &'static str {
+    /// The aggregate table one grain is stored in.
+    fn table(self) -> &'static str {
         match self {
-            Self::FiveMinute => {
-                "SELECT bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at FROM peer_aggregate_5m WHERE node_id=? ORDER BY bucket_start DESC LIMIT ?"
-            }
-            Self::Hourly => {
-                "SELECT bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at FROM peer_aggregate_1h WHERE node_id=? ORDER BY bucket_start DESC LIMIT ?"
-            }
+            Self::FiveMinute => "peer_aggregate_5m",
+            Self::Hourly => "peer_aggregate_1h",
         }
+    }
+
+    /// The columns every history read returns, so the fixed tail and a bounded
+    /// range answer the same shape.
+    fn history_columns(self) -> &'static str {
+        "bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at"
+    }
+
+    fn history_select_sql(self) -> String {
+        format!(
+            "SELECT {} FROM {} WHERE node_id=? ORDER BY bucket_start DESC LIMIT ?",
+            self.history_columns(),
+            self.table()
+        )
     }
 
     fn country_select_prefix(self) -> &'static str {
@@ -466,11 +477,21 @@ async fn load_family(
     family: AggregateFamily,
     limit: i64,
 ) -> Result<Vec<PeerAggregateRow>, sqlx::Error> {
-    let db_rows = sqlx::query_as::<_, DbAggregateRow>(family.history_select_sql())
+    let db_rows = sqlx::query_as::<_, DbAggregateRow>(&family.history_select_sql())
         .bind(node_id)
         .bind(limit)
         .fetch_all(pool)
         .await?;
+    attach_countries(pool, node_id, family, db_rows).await
+}
+
+/// Attach the retained country counts of every bucket a read returned.
+async fn attach_countries(
+    pool: &SqlitePool,
+    node_id: &str,
+    family: AggregateFamily,
+    db_rows: Vec<DbAggregateRow>,
+) -> Result<Vec<PeerAggregateRow>, sqlx::Error> {
     if db_rows.is_empty() {
         return Ok(Vec::new());
     }
@@ -526,6 +547,328 @@ async fn load_family(
         .collect())
 }
 
+/// The grain one bounded Peer receipt read answers in.
+///
+/// Both grains are written from the same successful snapshots, so a range read
+/// picks exactly one of them: the two tiers keep different horizons, and an
+/// answer that mixed them would hide where one of them ran out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PeerGrain {
+    FiveMinute,
+    Hourly,
+}
+
+impl PeerGrain {
+    /// Parse the \`grain\` query value: \`5m\` or \`1h\`.
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "5m" => Some(Self::FiveMinute),
+            "1h" => Some(Self::Hourly),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::FiveMinute => "5m",
+            Self::Hourly => "1h",
+        }
+    }
+
+    pub(crate) fn seconds(self) -> i64 {
+        self.family().seconds()
+    }
+
+    /// How many buckets this grain keeps, so a read that names only a grain
+    /// answers the same stretch the fixed history tail does.
+    pub(crate) fn tail_limit(self) -> i64 {
+        match self {
+            Self::FiveMinute => HISTORY_FIVE_MINUTE_LIMIT,
+            Self::Hourly => HISTORY_HOURLY_LIMIT,
+        }
+    }
+
+    fn family(self) -> AggregateFamily {
+        match self {
+            Self::FiveMinute => AggregateFamily::FiveMinute,
+            Self::Hourly => AggregateFamily::Hourly,
+        }
+    }
+}
+
+/// One bounded read of a Node's Peer receipt buckets.
+#[derive(Debug, Clone)]
+pub(crate) struct PeerRangeRequest {
+    pub grain: PeerGrain,
+    /// The answered range, half-open: a bucket belongs to it when its start is
+    /// at or after \`from\` and before \`to\`.
+    pub from: String,
+    pub to: String,
+    /// Read only buckets older than this cursor, for the next page.
+    pub before: Option<String>,
+    pub limit: i64,
+}
+
+/// What one bounded read of a Node's Peer receipt buckets covers.
+#[derive(Debug)]
+pub(crate) struct PeerRangeAnswer {
+    pub state: String,
+    pub freshness: String,
+    pub grain: &'static str,
+    pub grain_seconds: i64,
+    pub from: String,
+    pub to: String,
+    /// The page, newest bucket first.
+    pub buckets: Vec<PeerAggregateRow>,
+    /// How many buckets the range holds, whatever the page limit is.
+    pub matching: i64,
+    /// The oldest and newest bucket the range holds, when it holds any.
+    pub first_bucket: Option<String>,
+    pub last_bucket: Option<String>,
+    /// Aligned buckets the Node's own stretch expects inside the range and the
+    /// Server holds none for.
+    pub missing_buckets: i64,
+    /// \`complete\`, \`partial\`, \`empty\` or \`unavailable\`.
+    pub coverage: &'static str,
+    pub truncated: bool,
+    pub continuation: Option<String>,
+}
+
+/// How many buckets the aligned grid of one grain expects inside a half-open
+/// range.
+///
+/// A receipt bucket opens on a UTC boundary of its grain, so the grid covers the
+/// range exactly: \`[from, to)\` holds every boundary at or after \`from\` and
+/// before \`to\`.
+fn expected_buckets(from: &str, to: &str, grain_seconds: i64) -> Option<i64> {
+    let from = crate::metric_history::canonical_instant(from)?.unix_timestamp();
+    let to = crate::metric_history::canonical_instant(to)?.unix_timestamp();
+    if to <= from {
+        return Some(0);
+    }
+    let first = from.div_euclid(grain_seconds) + i64::from(from.rem_euclid(grain_seconds) != 0);
+    let last = (to - 1).div_euclid(grain_seconds);
+    Some(if last < first { 0 } else { last - first + 1 })
+}
+
+/// The instant before which this family's cleanup no longer answers.
+///
+/// Each tier of Peer aggregates is declared with its own retention, and a
+/// zero-day policy keeps every row forever. A range that ends at or before this
+/// horizon was released by cleanup, so the Server cannot tell a quiet stretch
+/// from a stretch it no longer holds.
+async fn retention_horizon(pool: &SqlitePool, family: &str) -> Result<Option<String>, sqlx::Error> {
+    let days = crate::retention::list_policies(pool)
+        .await?
+        .into_iter()
+        .find(|row| row.family == family)
+        .map(|row| row.retention_days)
+        .filter(|days| *days > 0);
+    Ok(days.map(|days| crate::auth::format_rfc3339(crate::auth::now_utc() - Duration::days(days))))
+}
+
+/// How current the newest receipt this grain holds is.
+fn freshness_of(latest: Option<&str>) -> String {
+    match latest.and_then(crate::auth::parse_rfc3339) {
+        None => "unknown".to_owned(),
+        Some(value) if (crate::auth::now_utc() - value).whole_seconds().abs() <= 120 => {
+            "current".to_owned()
+        }
+        Some(_) => "stale".to_owned(),
+    }
+}
+
+/// The component state the Server reports, falling back to what a read's own
+/// rows show: a retained all-empty snapshot is \`empty\`, rows without any
+/// reported status are \`ok\`, and a current collection error stays \`error\`
+/// while the last-good rows remain visible to the caller.
+fn collection_state(
+    component_state: Option<&str>,
+    current_peer_count: Option<i64>,
+    rows: &[&PeerAggregateRow],
+) -> String {
+    let has_rows = !rows.is_empty();
+    let all_empty = rows.iter().all(|row| row_is_empty(row));
+    match component_state {
+        Some("error") => "error",
+        Some("unsupported") => "unsupported",
+        Some("disabled") => "disabled",
+        Some("starting") => "starting",
+        Some("ok") if current_peer_count == Some(0) => "empty",
+        Some(_) if has_rows && all_empty => "empty",
+        Some(_) if has_rows => "ok",
+        Some(_) => "unknown",
+        None if has_rows && all_empty => "empty",
+        None if has_rows => "ok",
+        None => "unknown",
+    }
+    .to_owned()
+}
+
+/// The Peer component's reported state and, when it reports a successful
+/// collection, how many peers the current projection holds.
+async fn component_status(
+    pool: &SqlitePool,
+    node_id: &str,
+) -> Result<(Option<String>, Option<i64>), sqlx::Error> {
+    let status: Option<(String, i64)> = sqlx::query_as(
+        "SELECT state, value_revision FROM component_status WHERE node_id=? AND component_key='peers'",
+    )
+    .bind(node_id)
+    .fetch_optional(pool)
+    .await?;
+    let state = status.as_ref().map(|(state, _)| state.clone());
+    let current_peer_count = match status.as_ref() {
+        Some((state, value_revision)) if state == "ok" && *value_revision > 0 => Some(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM current_node_peers WHERE node_id=?")
+                .bind(node_id)
+                .fetch_one(pool)
+                .await?,
+        ),
+        _ => None,
+    };
+    Ok((state, current_peer_count))
+}
+
+/// Read one bounded stretch of a Node's Peer receipt buckets.
+///
+/// The two tiers keep a bounded horizon, so a range wider than a tier holds is
+/// answered from the buckets that exist and the shortfall is disclosed instead
+/// of hidden: the aligned grid of the grain says how many receipts the range
+/// expects, and the peer engine's own rule — a bucket exists only when a Report
+/// carried Peer evidence — makes each one of them a receipt the Server never
+/// received. The range's start is raised to the oldest bucket the grain still
+/// holds, because the stretch before a Node's first successful snapshot is not a
+/// hole; its end is not, because silence after the newest receipt is. A range
+/// the tier's own retention has already released is answered as unavailable
+/// rather than as an empty era, because the Server no longer holds those
+/// receipts and cannot prove the quiet.
+pub(crate) async fn load_range(
+    pool: &SqlitePool,
+    node_id: &str,
+    request: &PeerRangeRequest,
+) -> Result<PeerRangeAnswer, sqlx::Error> {
+    let family = request.grain.family();
+    let grain_seconds = family.seconds();
+    let (component_state, current_peer_count) = component_status(pool, node_id).await?;
+
+    let (matching, first_bucket, last_bucket): (i64, Option<String>, Option<String>) =
+        sqlx::query_as(&format!(
+            "SELECT COUNT(*), MIN(bucket_start), MAX(bucket_start) FROM {} \
+              WHERE node_id = ? AND bucket_start >= ? AND bucket_start < ?",
+            family.table()
+        ))
+        .bind(node_id)
+        .bind(&request.from)
+        .bind(&request.to)
+        .fetch_one(pool)
+        .await?;
+
+    let (ever_min, ever_max, latest): (Option<String>, Option<String>, Option<String>) =
+        sqlx::query_as(&format!(
+            "SELECT MIN(bucket_start), MAX(bucket_start), MAX(last_observed_at) FROM {} \
+              WHERE node_id = ?",
+            family.table()
+        ))
+        .bind(node_id)
+        .fetch_one(pool)
+        .await?;
+
+    let mut page_sql = format!(
+        "SELECT {} FROM {} WHERE node_id = ? AND bucket_start >= ? AND bucket_start < ?",
+        family.history_columns(),
+        family.table()
+    );
+    if request.before.is_some() {
+        page_sql.push_str(" AND bucket_start < ?");
+    }
+    page_sql.push_str(" ORDER BY bucket_start DESC LIMIT ?");
+    let mut page = sqlx::query_as::<_, DbAggregateRow>(&page_sql)
+        .bind(node_id)
+        .bind(&request.from)
+        .bind(&request.to);
+    if let Some(before) = request.before.as_deref() {
+        page = page.bind(before);
+    }
+    let limit = request.limit.max(1);
+    let mut db_rows = page.bind(limit + 1).fetch_all(pool).await?;
+    let truncated = db_rows.len() as i64 > limit;
+    if truncated {
+        db_rows.truncate(limit as usize);
+    }
+    let buckets = attach_countries(pool, node_id, family, db_rows).await?;
+    let continuation = truncated
+        .then(|| buckets.last().map(|row| row.bucket_start.clone()))
+        .flatten();
+
+    // The grid starts where the Node's own history does, so the era before its
+    // first receipt is a boundary the answer names rather than a hole it counts.
+    let grid_from = match ever_min.as_deref() {
+        Some(ever_min) if ever_min > request.from.as_str() => Some(ever_min),
+        _ => Some(request.from.as_str()),
+    };
+    let missing_buckets = match (
+        ever_min.is_some(),
+        grid_from.and_then(|grid_from| expected_buckets(grid_from, &request.to, grain_seconds)),
+    ) {
+        (false, _) => 0,
+        (true, Some(expected)) => (expected - matching).max(0),
+        (true, None) => 0,
+    };
+    // Whether the Node's own record reaches both edges of the range: the range
+    // starts at or after the first bucket ever recorded, and its newest bucket is
+    // the last aligned bucket the range expects. A range that runs past either
+    // edge asks about a stretch the record does not cover, which is partial
+    // coverage of that range even when every bucket inside it is present.
+    let held_whole_range = match (ever_min.as_deref(), ever_max.as_deref()) {
+        (Some(ever_min), Some(ever_max)) => {
+            request.from.as_str() >= ever_min
+                && expected_buckets(ever_max, &request.to, grain_seconds)
+                    .is_some_and(|expected| expected <= 1)
+        }
+        _ => false,
+    };
+    // Coverage is about the aligned buckets the Node's own record owes for the
+    // range, in the vocabulary the investigation window uses. A shortfall is
+    // `partial` even when it leaves the page with no row at all, because a gap
+    // inside the record is receipts that never arrived, not an empty window; a
+    // range that ends before the record begins stays `empty` for the same
+    // reason that era is not a hole the Node reported. A range cleanup has
+    // already released is neither: the receipts are gone, so the honest answer
+    // is that the Server cannot answer that stretch of the grain.
+    let released_before = retention_horizon(pool, family.table()).await?;
+    let coverage = match (ever_min.as_deref(), ever_max.as_deref()) {
+        (None, _) => "unavailable",
+        _ if released_before
+            .as_deref()
+            .is_some_and(|horizon| request.to.as_str() <= horizon) =>
+        {
+            "unavailable"
+        }
+        (Some(ever_min), _) if request.to.as_str() <= ever_min => "empty",
+        _ if missing_buckets > 0 || !held_whole_range => "partial",
+        _ if matching == 0 => "empty",
+        _ => "complete",
+    };
+
+    Ok(PeerRangeAnswer {
+        state: collection_state(component_state.as_deref(), current_peer_count, &[]),
+        freshness: freshness_of(latest.as_deref()),
+        grain: request.grain.as_str(),
+        grain_seconds,
+        from: request.from.clone(),
+        to: request.to.clone(),
+        buckets,
+        matching,
+        first_bucket,
+        last_bucket,
+        missing_buckets,
+        coverage,
+        truncated,
+        continuation,
+    })
+}
+
 fn row_is_empty(row: &PeerAggregateRow) -> bool {
     row.total_peers == 0
 }
@@ -538,22 +881,7 @@ pub(crate) async fn load_history(
     pool: &SqlitePool,
     node_id: &str,
 ) -> Result<PeerHistory, sqlx::Error> {
-    let component_status: Option<(String, i64)> = sqlx::query_as(
-        "SELECT state, value_revision FROM component_status WHERE node_id=? AND component_key='peers'",
-    )
-    .bind(node_id)
-    .fetch_optional(pool)
-    .await?;
-    let component_state = component_status.as_ref().map(|(state, _)| state.as_str());
-    let current_peer_count = match component_status.as_ref() {
-        Some((state, value_revision)) if state == "ok" && *value_revision > 0 => Some(
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM current_node_peers WHERE node_id=?")
-                .bind(node_id)
-                .fetch_one(pool)
-                .await?,
-        ),
-        _ => None,
-    };
+    let (component_state, current_peer_count) = component_status(pool, node_id).await?;
     let five_minute = load_family(
         pool,
         node_id,
@@ -567,31 +895,11 @@ pub(crate) async fn load_history(
         .iter()
         .chain(hourly.iter())
         .map(|row| row.last_observed_at.as_str())
-        .filter_map(crate::auth::parse_rfc3339)
         .max();
-    let freshness = match latest {
-        None => "unknown",
-        Some(value) if (crate::auth::now_utc() - value).whole_seconds().abs() <= 120 => "current",
-        Some(_) => "stale",
-    }
-    .to_owned();
+    let freshness = freshness_of(latest);
 
-    let has_rows = !five_minute.is_empty() || !hourly.is_empty();
-    let all_empty = five_minute.iter().chain(hourly.iter()).all(row_is_empty);
-    let state = match component_state {
-        Some("error") => "error",
-        Some("unsupported") => "unsupported",
-        Some("disabled") => "disabled",
-        Some("starting") => "starting",
-        Some("ok") if current_peer_count == Some(0) => "empty",
-        Some(_) if has_rows && all_empty => "empty",
-        Some(_) if has_rows => "ok",
-        Some(_) => "unknown",
-        None if has_rows && all_empty => "empty",
-        None if has_rows => "ok",
-        None => "unknown",
-    }
-    .to_owned();
+    let rows: Vec<&PeerAggregateRow> = five_minute.iter().chain(hourly.iter()).collect();
+    let state = collection_state(component_state.as_deref(), current_peer_count, &rows);
 
     Ok(PeerHistory {
         state,

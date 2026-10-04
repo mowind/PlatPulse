@@ -607,6 +607,13 @@ export function AdminNodeDetail() {
           >
             Incidents for this Node
           </Link>{' '}
+          ·{' '}
+          <Link
+            className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
+            to={`/admin/nodes/${encodeURIComponent(nodeId)}/investigation`}
+          >
+            Investigate this Node
+          </Link>{' '}
           · Server-owned metadata stays distinct from Agent-observed identity and configuration.
           Lifecycle is Node Inventory state and is never confused with Agent liveness or Node
           health.

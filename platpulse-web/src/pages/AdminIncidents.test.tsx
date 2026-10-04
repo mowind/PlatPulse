@@ -163,10 +163,115 @@ describe('PAGE-ADMIN-INCIDENTS (Incident history)', () => {
     expect(table.textContent).toContain('Awaiting acknowledgment')
     expect(table.textContent).toContain('Acknowledged')
     expect(table.textContent).toContain('admin')
-    // The bounded first page is disclosed instead of implying a full history.
+    // The page states what the Server answered instead of implying a full history.
     expect(
-      screen.getByText(/Showing up to the first 200 matching Incidents/),
+      screen.getByText(
+        /The Server answered this page without an occurrence range, so it holds the newest occurrences the filters match\./,
+      ),
     ).toBeTruthy()
+  })
+
+  it('walks to older occurrences with the cursor the Server answered', async () => {
+    const listUrls: string[] = []
+    const answerWindow = { from: '2026-02-01T00:00:00Z', to: '2026-03-01T00:00:00Z' }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/alerts/incidents*': (request) => {
+        listUrls.push(request.url)
+        const before = new URL(request.url).searchParams.get('before')
+        // The first page stops at a bounded count and names the coordinate older
+        // occurrences continue from.
+        return before === null
+          ? jsonResponse(
+              {
+                incidents: [OPEN_INCIDENT, RESOLVED_INCIDENT],
+                total: 5,
+                returned: 2,
+                truncated: true,
+                continuation: '2026-03-01T00:00:00Z|' + OPEN_INCIDENT_ID,
+                coverage: 'partial',
+                window: answerWindow,
+              },
+              200,
+            )
+          : jsonResponse(
+              {
+                incidents: [RESOLVED_INCIDENT],
+                total: 5,
+                returned: 1,
+                truncated: false,
+                continuation: null,
+                coverage: 'complete',
+                window: answerWindow,
+              },
+              200,
+            )
+      },
+    })
+    renderAt('/admin/alerts/incidents')
+
+    await screen.findByRole('heading', { level: 1, name: 'Incidents' })
+    const firstPageFacts = await screen.findByText(/The filters match 5 occurrence\(s\)/)
+    expect(firstPageFacts.textContent).toContain('Occurrences of the range')
+    expect(firstPageFacts.textContent).toContain('was still open when the range started')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load older occurrences' }))
+    await waitFor(() => {
+      expect(
+        new URL(listUrls[listUrls.length - 1] ?? TEST_ORIGIN).searchParams.get('before'),
+      ).toBe('2026-03-01T00:00:00Z|' + OPEN_INCIDENT_ID)
+    })
+    // Nothing older is left, so the page says the answer is complete from here on.
+    expect(
+      await screen.findByText(/from this coordinate onward is in this answer/),
+    ).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to the newest occurrences' }))
+    await waitFor(() => {
+      expect(window.location.search).not.toContain('before=')
+    })
+    // The newest page is the coordinate-free read, so its own facts come back.
+    expect(await screen.findByText(/The filters match 5 occurrence\(s\)/)).toBeTruthy()
+  })
+
+  it('drops the cursor when the filters it was counted under change', async () => {
+    const listUrls: string[] = []
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/alerts/incidents*': (request) => {
+        listUrls.push(request.url)
+        return jsonResponse(
+          {
+            incidents: [OPEN_INCIDENT],
+            total: 1,
+            returned: 1,
+            truncated: false,
+            continuation: null,
+            coverage: 'partial',
+            window: { from: '2026-02-01T00:00:00Z', to: '2026-03-01T00:00:00Z' },
+          },
+          200,
+        )
+      },
+    })
+    renderAt(
+      '/admin/alerts/incidents?from=2026-02-01T00:00:00Z&to=2026-03-01T00:00:00Z' +
+        '&before=2026-02-20T00:00:00Z%7Cabc',
+    )
+
+    await screen.findByRole('heading', { level: 1, name: 'Incidents' })
+    await waitFor(() => {
+      const params = new URL(listUrls[listUrls.length - 1] ?? TEST_ORIGIN).searchParams
+      expect(params.get('from')).toBe('2026-02-01T00:00:00Z')
+      expect(params.get('to')).toBe('2026-03-01T00:00:00Z')
+      expect(params.get('before')).toBe('2026-02-20T00:00:00Z|abc')
+    })
+
+    fireEvent.change(screen.getByLabelText('State'), { target: { value: 'resolved' } })
+    await waitFor(() => {
+      expect(window.location.search).toContain('state=resolved')
+      expect(window.location.search).not.toContain('before=')
+    })
   })
 
   it('filters through URL state so back/forward preserves the filters', async () => {
@@ -894,5 +999,44 @@ describe('PAGE-ADMIN-INCIDENTS (Incident history)', () => {
     expect(await screen.findByText(/Acknowledged by other-owner/)).toBeTruthy()
     expect(document.activeElement?.tagName).toBe('BODY')
     external.remove()
+  })
+
+  it('opens the Node investigation at the occurrence instant instead of at this browser clock', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      ['/api/admin/v1/alerts/incidents/' + OPEN_INCIDENT_ID]: () =>
+        jsonResponse(OPEN_INCIDENT_DETAIL, 200),
+    })
+    renderAt('/admin/alerts/incidents/' + OPEN_INCIDENT_ID)
+
+    const link = await screen.findByRole('link', {
+      name: 'Investigate this Node in this window',
+    })
+    const href = new URL(link.getAttribute('href') ?? '', TEST_ORIGIN)
+    expect(href.pathname).toBe('/admin/nodes/node-a/investigation')
+    // The occurrence is the window start, so the page reads that instant rather than deriving one.
+    expect(href.searchParams.get('from')).toBe('2026-03-01T00:00:00Z')
+    expect(href.searchParams.get('occurrence')).toBe('2026-03-01T00:00:00Z')
+    expect(href.searchParams.get('incident')).toBe(OPEN_INCIDENT_ID)
+    // At least the narrowest width the Server answers, so a fresh occurrence is still readable.
+    const to = href.searchParams.get('to') ?? ''
+    expect(Date.parse(to) - Date.parse('2026-03-01T00:00:00Z')).toBeGreaterThanOrEqual(
+      60 * 60 * 1000,
+    )
+  })
+
+  it('offers no Node investigation for an Agent-subject occurrence', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      ['/api/admin/v1/alerts/incidents/' + OPEN_INCIDENT_ID]: () =>
+        jsonResponse({ ...OPEN_INCIDENT_DETAIL, subjectKind: 'agent', subjectKey: 'agent-a' }, 200),
+    })
+    renderAt('/admin/alerts/incidents/' + OPEN_INCIDENT_ID)
+
+    await screen.findByRole('heading', { level: 1, name: /Incident 0195f2a1/ })
+    // No Node may be guessed for an Agent occurrence, so no investigation is offered at all.
+    expect(
+      screen.queryByRole('link', { name: 'Investigate this Node in this window' }),
+    ).toBeNull()
   })
 })

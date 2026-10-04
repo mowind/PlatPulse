@@ -9,6 +9,7 @@ import { NodePage } from './pages/HomePages'
 import AdminHome from './pages/AdminHome'
 import AdminAgentsList, { AdminAgentDetail, AdminAgentEnroll } from './pages/AdminAgents'
 import AdminNodesList, { AdminNodeDetail } from './pages/AdminNodes'
+import AdminNodeInvestigation from './pages/AdminNodeInvestigation'
 import AdminNetworksList, {
   AdminNetworkDetailPage,
 } from './pages/AdminNetworks'
@@ -172,6 +173,11 @@ const router = createBrowserRouter([
       { path: 'agents/:agentId', element: <AdminAgentDetail /> },
       { path: 'nodes', element: <AdminNodesList /> },
       { path: 'nodes/:nodeId', element: <AdminNodeDetail /> },
+      // Investigation surface (issue #220): one adjustable UTC window over every
+      // family of evidence the Server holds for a Node, reached from the Node
+      // page or from an Incident occurrence. The window lives in the URL, so a
+      // shared or reloaded link reads the same evidence.
+      { path: 'nodes/:nodeId/investigation', element: <AdminNodeInvestigation /> },
       { path: 'networks', element: <AdminNetworksList /> },
       { path: 'networks/:networkKey', element: <AdminNetworkDetailPage /> },
       // Validator surface (issue #218): the automatic Network-scoped identity

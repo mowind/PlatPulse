@@ -352,7 +352,7 @@ fn status_name(status: ComponentStatus) -> &'static str {
 /// Most legacy keys predate the wire enum's snake_case names. Network identity
 /// is read by the Admin projection under its stable network_identity key, so
 /// ingestion must use that same key rather than the Rust debug spelling.
-fn component_storage_key(key: ComponentKey) -> String {
+pub(crate) fn component_storage_key(key: ComponentKey) -> String {
     match key {
         ComponentKey::NetworkIdentity => "network_identity".to_owned(),
         key => format!("{key:?}").to_lowercase(),

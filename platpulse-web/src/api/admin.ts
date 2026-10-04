@@ -11,6 +11,12 @@ import { QueryClient, useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { hostMetricNeedsMount, METRIC_HISTORY_SAMPLE_LIMIT } from '../metricHistory'
 import {
+  PEER_RANGE_LIMIT,
+  investigationKey,
+  investigationQuery,
+  type InvestigationRequest,
+} from '../nodeInvestigation'
+import {
   requestGenerated,
   setActiveAccessGeneration,
   TransportError,
@@ -37,6 +43,7 @@ import {
   adminNetworks,
   adminNodeDetail,
   adminNodeHostMetricHistory as adminNodeHostMetricHistoryApi,
+  adminNodeInvestigation as adminNodeInvestigationApi,
   adminNodeMetricHistory as adminNodeMetricHistoryApi,
   adminNodePeerChurn,
   adminNodePeerHistory,
@@ -183,6 +190,7 @@ import {
   type AttentionAcknowledgment,
   type PeerChurnDiagnostic,
   type AdminPeerHistory,
+  type InvestigationResponse,
   type AdminNodeListItem,
   type AdminAgentRemovalImpact,
   type AdminNodePurgeImpact,
@@ -274,6 +282,17 @@ const adminKeys = {
     from: string,
     to: string,
   ) => [...adminKeys.nodeStateHistoryRoot(nodeId), component, from, to] as const,
+  /** The investigation window over one Node's own evidence (issue #220). The
+   * requested window is part of the key, so switching a preset or a range never
+   * renders one window's evidence under another's. */
+  nodeInvestigationRoot: (nodeId: string) =>
+    ['admin', 'nodes', nodeId, 'investigation'] as const,
+  nodeInvestigation: (nodeId: string, request: string) =>
+    [...adminKeys.nodeInvestigationRoot(nodeId), request] as const,
+  /** One bounded read of a Node's Peer receipt buckets at one grain. */
+  nodePeerRangeRoot: (nodeId: string) => ['admin', 'nodes', nodeId, 'peer-range'] as const,
+  nodePeerRange: (nodeId: string, grain: string, from: string, to: string) =>
+    [...adminKeys.nodePeerRangeRoot(nodeId), grain, from, to] as const,
   agentHostMetricHistoryRoot: (agentId: string) =>
     ['admin', 'agents', agentId, 'host-metric-history'] as const,
   agentHostMetricHistory: (
@@ -550,6 +569,102 @@ export async function fetchAdminNodePeerHistory(
   )
 }
 
+/** One page of a Node's Peer receipt buckets inside one investigation window
+ * (issue #220, design §11.4). A range only means something at a grain, so the
+ * grain decides both the grid a shortfall is measured against and the width of
+ * one page; the page is asked for at the Server's own bound, because a dense
+ * window should be narrowed by the Server's policy and not by this page asking
+ * for less than it could answer. */
+export async function fetchAdminNodePeerRange(
+  nodeId: string,
+  grain: string,
+  from: string,
+  to: string,
+  before?: string,
+  signal?: AbortSignal,
+): Promise<AdminPeerRangeAnswer> {
+  return requestAdmin(
+    () =>
+      adminNodePeerHistory({
+        path: { node_id: nodeId },
+        query: {
+          grain,
+          // Both ends are always sent: the Server refuses a half-stated range
+          // rather than completing it, so one end alone would be an error, not
+          // a wider answer.
+          from,
+          to,
+          limit: PEER_RANGE_LIMIT,
+          ...(before ? { before } : {}),
+        },
+        signal,
+      }),
+    'Unable to load the Peer receipt range',
+  )
+}
+
+export function useAdminNodePeerRange(
+  generation: number,
+  nodeId: string,
+  grain: string,
+  from: string,
+  to: string,
+  before?: string,
+) {
+  return useQuery({
+    queryKey: [
+      ...adminKeys.nodePeerRange(nodeId, grain, from, to),
+      before ?? 'newest',
+      generation,
+    ],
+    queryFn: ({ signal }) => fetchAdminNodePeerRange(nodeId, grain, from, to, before, signal),
+    // No placeholder: another range's or another grain's receipts must never
+    // render under the selected one.
+    enabled: nodeId.length > 0 && grain.length > 0 && from.length > 0 && to.length > 0,
+  })
+}
+
+/** The investigation window over one Node's own evidence (issue #220, design
+ * §11.4–§11.7): the window the Server resolved, and for each source the coverage
+ * it holds, where it starts and stops, and what it cannot answer. The answer is
+ * the page's own window: every evidence panel reads the resolved from/to out of
+ * it rather than recomputing a range from the browser clock. */
+export async function fetchAdminNodeInvestigation(
+  nodeId: string,
+  request: InvestigationRequest,
+  signal?: AbortSignal,
+): Promise<AdminInvestigation> {
+  return requestAdmin(
+    () =>
+      adminNodeInvestigationApi({
+        path: { node_id: nodeId },
+        // An unnamed window sends no parameter at all: the default window is the
+        // Server's own policy, and a page that hard-coded one would keep asking
+        // for a range the Server no longer considers the default.
+        query: investigationQuery(request),
+        signal,
+      }),
+    'Unable to load the Node investigation',
+  )
+}
+
+export function useAdminNodeInvestigation(
+  generation: number,
+  nodeId: string,
+  request: InvestigationRequest,
+) {
+  return useQuery({
+    queryKey: [
+      ...adminKeys.nodeInvestigation(nodeId, investigationKey(request)),
+      generation,
+    ],
+    queryFn: ({ signal }) => fetchAdminNodeInvestigation(nodeId, request, signal),
+    // No placeholder: another Node's or another window's evidence must never
+    // render under this window.
+    enabled: nodeId.length > 0,
+  })
+}
+
 /** Two-phase Transfer history of one Node (issue #46): typed outcomes with
  * Server-owned effective status — pending, completed, cancelled, expired,
  * rejected, conflict, identity_mismatch — and Audit references. */
@@ -624,6 +739,12 @@ export type AdminStorageSeriesDto = AdminStorageSeries
 export type AdminStorageMountDto = AdminStorageMount
 /** The mount paths one Agent reported, with the coverage of each path's series. */
 export type AdminStorageMounts = AdminAgentStorageMountsResponse
+/** One investigation answer over one Node's own evidence (issue #220): the
+ * window the Server actually resolved, and what each source holds inside it. */
+export type AdminInvestigation = InvestigationResponse
+/** One bounded page of a Node's Peer receipt buckets: the range it answered, the
+ * buckets inside it, and the shortfall the grain's own grid proves. */
+export type AdminPeerRangeAnswer = AdminPeerHistory
 
 export function useAdminNodeMetricHistory(
   generation: number,
@@ -2215,6 +2336,15 @@ export type IncidentFilters = {
   /** Exact subject key: the contextual Node/Agent shortcut into the Incident
    * surface (issue #202 Story 2). */
   subjectKey?: string
+  /** Occurrence range, paired: an Incident belongs to the range when it opened
+   * inside it or was still open when it started (issue #220). Both ends travel
+   * together and the Server refuses one end alone. */
+  from?: string
+  to?: string
+  /** Exclusive continuation coordinate `<opened_at>|<incident_id>` a truncated
+   * answer returned: occurrences are paged by the Server's own cursor, never by
+   * a client-side offset or by re-deriving a range from this browser clock. */
+  before?: string
   limit?: number
 }
 
@@ -2234,6 +2364,9 @@ export async function fetchAdminIncidents(
           rule_key: filters.ruleKey,
           subject_kind: filters.subjectKind,
           subject_key: filters.subjectKey,
+          from: filters.from,
+          to: filters.to,
+          before: filters.before,
           limit: filters.limit,
         },
         signal,

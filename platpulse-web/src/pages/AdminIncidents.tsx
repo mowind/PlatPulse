@@ -16,6 +16,7 @@ import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
 import { cn } from '../lib/utils'
 import { SURFACE_CARD_STATIC, SURFACE_TOOLBAR } from '../lib/surface'
 import { severityLabel, severityTone } from '../lib/severity'
+import { canonicalInstant } from '../nodeInvestigation'
 import type {
   IncidentAcknowledgment,
   IncidentDetail,
@@ -38,9 +39,54 @@ import type {
 
 const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD_STATIC)
 
-// The bounded first page the list requests. Older occurrences are reachable by
-// narrowing the filters, not by scrolling; there is no cursor yet (issue #203
-// review C3).
+/** The narrowest window the Server answers, in milliseconds. */
+const MINIMUM_WINDOW_MS = 60 * 60 * 1000
+
+/**
+ * The widest span the link asks for, in milliseconds.
+ *
+ * The Server answers at most 720 hours (30 days) in one window, so a link that spans from an
+ * occurrence older than that to now would be refused as too wide and read as the page's own default
+ * instead — losing the occurrence the link exists to locate. The link therefore keeps its own span
+ * one day inside that maximum, which is still a window the Operator asked for and still contains the
+ * occurrence, and the page states the width it was asked for rather than a default it fell back to.
+ */
+const MAXIMUM_OCCURRENCE_SPAN_MS = 29 * 24 * 60 * 60 * 1000
+
+/**
+ * The investigation link for an Incident's Node, with a window that starts at the occurrence.
+ *
+ * The occurrence is what makes the window readable as evidence about this Incident, so it is carried
+ * in the link as the window's own start: the page locates it in every family instead of being
+ * narrowed to the instant alone, and the window it reads is a window an Operator asked for rather
+ * than one derived from a clock. The window is at least the narrowest width the Server answers, so an
+ * Incident that opened minutes ago is still readable; if that makes the window end in the future, the
+ * Server states that it clipped the end instead of filling it. The span never reaches past the widest
+ * window the Server answers, so an occurrence older than the 30 day horizon still opens a window
+ * around itself instead of a link the Server would refuse as too wide.
+ */
+function nodeInvestigationLink(subjectKey: string, openedAt: string, incidentId: string): string {
+  const params = new URLSearchParams({ incident: incidentId })
+  const occurrence = canonicalInstant(openedAt)
+  if (occurrence !== null) {
+    params.set('occurrence', occurrence)
+    const end = Math.min(
+      Math.max(Date.now(), Date.parse(occurrence) + MINIMUM_WINDOW_MS),
+      Date.parse(occurrence) + MAXIMUM_OCCURRENCE_SPAN_MS,
+    )
+    const to = canonicalInstant(new Date(end).toISOString())
+    if (to !== null) {
+      params.set('from', occurrence)
+      params.set('to', to)
+    }
+  }
+  return '/admin/nodes/' + encodeURIComponent(subjectKey) + '/investigation?' + params.toString()
+}
+
+// The bounded first page the list requests. Older occurrences are reachable with
+// the Server's own continuation coordinate rather than by narrowing the filters
+// (issue #220; issue #203 review C3), and the page says which of the two it is
+// showing.
 const INCIDENT_PAGE_LIMIT = 200
 
 function shortId(value: string): string {
@@ -71,13 +117,22 @@ function acknowledgmentText(acknowledgment: IncidentAcknowledgment): string {
   return 'Acknowledged by ' + acknowledgment.acknowledgedByUsername + ' at ' + formatObservedAt(acknowledgment.acknowledgedAt)
 }
 
-/** URL-state filters (design §10.1: back/forward preserves them). */
+/** URL-state filters (design §10.1: back/forward preserves them), including the
+ * occurrence range and the Server's continuation cursor: an addressed page reads
+ * the same occurrences when it is copied, refreshed or shared. */
 type IncidentFilterState = {
   state: string
   severity: string
   subjectKind: string
   subjectKey: string
   ruleKey: string
+  /** Paired occurrence range, sent as the link writes it; the Server is the
+   * authority on whether the two ends are usable. */
+  from: string
+  to: string
+  /** The exclusive continuation coordinate the previous answer returned. Empty
+   * means the newest page. */
+  before: string
 }
 
 function readFilters(search: URLSearchParams): IncidentFilterState {
@@ -89,6 +144,9 @@ function readFilters(search: URLSearchParams): IncidentFilterState {
     // Story 2). Empty means no subject narrowing.
     subjectKey: search.get('subject_key') ?? '',
     ruleKey: search.get('rule') ?? '',
+    from: search.get('from') ?? '',
+    to: search.get('to') ?? '',
+    before: search.get('before') ?? '',
   }
 }
 
@@ -442,16 +500,32 @@ export default function AdminIncidentsList() {
     subjectKind: filters.subjectKind === 'all' ? undefined : filters.subjectKind,
     subjectKey: filters.subjectKey.trim() === '' ? undefined : filters.subjectKey.trim(),
     ruleKey: filters.ruleKey.trim() === '' ? undefined : filters.ruleKey.trim(),
+    from: filters.from.trim() === '' ? undefined : filters.from.trim(),
+    to: filters.to.trim() === '' ? undefined : filters.to.trim(),
+    before: filters.before.trim() === '' ? undefined : filters.before.trim(),
     limit: INCIDENT_PAGE_LIMIT,
   })
 
-  const incidents: IncidentListItem[] = query.data?.incidents ?? []
-  const total = query.data?.total ?? 0
+  const page = query.data
+  const incidents: IncidentListItem[] = page?.incidents ?? []
+  const total = page?.total ?? 0
 
+  /** Walk to another page of the same occurrence range. The coordinate is the
+   * Server's (`continuation`), and the newest page is the absence of one. */
+  const setCursor = (before: string | null) => {
+    const next = new URLSearchParams(search)
+    if (before === null) next.delete('before')
+    else next.set('before', before)
+    setSearch(next, { replace: false })
+  }
+
+  /** A filter or a window change starts a new traversal: a cursor belongs to the
+   * filters it was counted under, so it is dropped rather than carried over. */
   const setFilter = (key: 'state' | 'severity' | 'subject', value: string) => {
     const next = new URLSearchParams(search)
     if (value === 'all') next.delete(key)
     else next.set(key, value)
+    next.delete('before')
     setSearch(next, { replace: false })
   }
 
@@ -461,6 +535,7 @@ export default function AdminIncidentsList() {
     const value = ruleKeyDraft.trim()
     if (value === '') next.delete('rule')
     else next.set('rule', value)
+    next.delete('before')
     setSearch(next, { replace: false })
   }
 
@@ -469,6 +544,7 @@ export default function AdminIncidentsList() {
   const clearSubjectKey = () => {
     const next = new URLSearchParams(search)
     next.delete('subject_key')
+    next.delete('before')
     setSearch(next, { replace: false })
   }
 
@@ -594,12 +670,22 @@ export default function AdminIncidentsList() {
           successful Incident values.
         </div>
       )}
-      {query.data && incidents.length === 0 && (
+      {page && incidents.length === 0 && (
         <CardX size="medium" className={CARD_SURFACE}>
-          <Empty description="No Incidents match these filters." />
+          <Empty
+            description={
+              query.data.window
+                ? 'No Incident the filters match falls in the range ' +
+                  formatObservedAt(query.data.window.from) +
+                  ' to ' +
+                  formatObservedAt(query.data.window.to) +
+                  '.'
+                : 'No Incidents match these filters.'
+            }
+          />
         </CardX>
       )}
-      {query.data && incidents.length > 0 && (
+      {page && incidents.length > 0 && (
         <CardX
           size="medium"
           className={CARD_SURFACE}
@@ -660,12 +746,56 @@ export default function AdminIncidentsList() {
               </tbody>
             </table>
           </div>
-          <p className="px-3 pb-3 text-xs text-muted-foreground">
-            Showing up to the first {INCIDENT_PAGE_LIMIT} matching Incidents, newest first — a
-            bounded first page, not the full history. Narrowing the filters finds older
-            occurrences; a filter that still matches more than {INCIDENT_PAGE_LIMIT} Incidents
-            cannot reach past them until cursor pagination exists.
+          <p
+            data-slot="incident-page-facts"
+            className="px-3 pb-3 text-xs text-muted-foreground"
+          >
+            {page.window
+              ? 'Occurrences of the range ' +
+                formatObservedAt(page.window.from) +
+                ' to ' +
+                formatObservedAt(page.window.to) +
+                ': an Incident is in it when it opened inside that range or was still open when ' +
+                'the range started. '
+              : 'The Server answered this page without an occurrence range, so it holds the ' +
+                'newest occurrences the filters match. '}
+            {page.coverage === 'complete'
+              ? 'Every occurrence the filters match' +
+                (filters.before === '' ? ' is in this answer.' : ' from this coordinate onward is in this answer.')
+              : page.coverage === 'empty'
+                ? 'The filters match no occurrence here, which is an empty answer rather than a zero value.'
+                : 'The filters match ' +
+                  total +
+                  ' occurrence(s) and this page carries ' +
+                  incidents.length +
+                  ' of them, newest first.'}
           </p>
+          {(filters.before !== '' || (page.truncated && page.continuation)) && (
+            <div className="flex flex-wrap gap-2 px-3 pb-3">
+              {page.truncated && page.continuation && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="min-h-11"
+                  onClick={() => setCursor(page.continuation ?? null)}
+                >
+                  Load older occurrences
+                </Button>
+              )}
+              {filters.before !== '' && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="min-h-11"
+                  onClick={() => setCursor(null)}
+                >
+                  Back to the newest occurrences
+                </Button>
+              )}
+            </div>
+          )}
         </CardX>
       )}
     </section>
@@ -927,6 +1057,22 @@ export function AdminIncidentDetailPage() {
           <DetailItem label="Resolved at">{formatObservedAt(incident.resolvedAt)}</DetailItem>
           <DetailItem label="Subject deleted at">{formatObservedAt(incident.subjectDeletedAt)}</DetailItem>
         </DetailList>
+        {incident.subjectKind === 'node' && (
+          <p className="mt-3 text-sm">
+            <Link
+              className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
+              to={nodeInvestigationLink(
+                incident.subjectKey,
+                incident.openedAt,
+                incident.incidentId,
+              )}
+            >
+              Investigate this Node in this window
+            </Link>{' '}
+            · The window starts at that occurrence, so the evidence that explains it is read in one
+            place instead of being narrowed to the instant alone.
+          </p>
+        )}
         <p className="mt-3 text-xs text-muted-foreground">
           Subject deletion is annotated separately from recovery: a deleted subject is not a
           recovered Incident, and a genuinely recovered subject that faults again opens a new

@@ -986,6 +986,7 @@
           "admin"
         ],
         "summary": "PAGE-ADMIN-INCIDENTS: durable Incident history. Incidents are opened by\nthe state machine and resolved only by sustained fresh Known recovery;\nthey are never manually resolvable, reopenable, or deletable.",
+        "description": "A caller that passes from/to asks for the occurrences a range could observe\ninstead of the newest ones: the answer then reports how many the range\nmatches, how many it carries, whether the limit cut it, and the cursor that\ncontinues it (issue #220, design §11.4).",
         "operationId": "alert_incidents",
         "parameters": [
           {
@@ -1028,6 +1029,33 @@
             "name": "subject_key",
             "in": "query",
             "description": "Filter by exact subject key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Canonical RFC 3339 UTC start of the occurrence range, paired with to",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Canonical RFC 3339 UTC end of the occurrence range, paired with from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Exclusive continuation coordinate <opened_at>|<incident_id> a truncated answer returned",
             "required": false,
             "schema": {
               "type": "string"
@@ -3189,6 +3217,96 @@
         }
       }
     },
+    "/api/admin/v1/nodes/{node_id}/investigation": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "The one window the other evidence routes are read inside.",
+        "description": "This answers coordinates, coverage and boundaries only: where a family's\nevidence is for a window, how complete it is, and which boundary explains a\nstretch it cannot answer. The evidence itself stays with that family's own\nroute, so no second copy of the history is served from here and the two can\nnever drift apart (design §7, §11.4).",
+        "operationId": "admin_node_investigation",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "description": "Node ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "description": "One supported preset: 1h, 6h, 24h, 7d or 30d (default: 24h)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Canonical RFC 3339 UTC start of an explicit range, second precision (paired with to)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Canonical RFC 3339 UTC exclusive end of an explicit range, second precision (paired with from)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-only investigation window over one Node's own evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestigationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/nodes/{node_id}/metadata": {
       "put": {
         "tags": [
@@ -3446,15 +3564,73 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "grain",
+            "in": "query",
+            "description": "Peer receipt grain: 5m or 1h. Naming one answers a bounded range instead of the fixed newest tails",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Canonical RFC 3339 UTC start of the range, second precision (default: the grain's horizon before to)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Canonical RFC 3339 UTC exclusive end of the range, second precision (default: now)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Canonical RFC 3339 UTC exclusive upper bound for paging: the continuation coordinate a truncated answer returned",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum Peer receipt buckets in the page (default: the grain's tail limit)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "maximum": 1000,
+              "minimum": 1
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Owner-only bounded aggregate Peer history",
+            "description": "Owner-only aggregate Peer history: the fixed newest tails, or one bounded receipt range when a grain is named",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AdminPeerHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
                 }
               }
             }
@@ -6571,7 +6747,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Bounded Validator daily-trend page: rank, stake, and delegator count per\nconfigured calendar day (#219, main design §15.6).",
+        "summary": "Bounded Validator daily-trend page: rank, stake, and delegator count per\nconfigured calendar day (#219, main design §15.4.1).",
         "description": "The window is answered in the configured IANA calendar and every boundary is\nmapped back into the UTC investigation coordinate, so retention, pagination,\nand coverage read on the real days instead of a silently UTC-aligned bucket.",
         "operationId": "admin_validator_trend",
         "parameters": [
@@ -9135,7 +9311,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/AdminPeerAggregate"
-            }
+            },
+            "description": "The fixed newest tail of five-minute buckets, answered when no range was\nasked for."
           },
           "freshness": {
             "type": "string"
@@ -9144,7 +9321,19 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/AdminPeerAggregate"
-            }
+            },
+            "description": "The fixed newest tail of hourly buckets, answered when no range was asked\nfor."
+          },
+          "range": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AdminPeerRange",
+                "description": "The bounded range this answer covers, when one was asked for: a ranged\nread fills this and leaves both tails empty, so one response never means\ntwo things."
+              }
+            ]
           },
           "state": {
             "type": "string",
@@ -9182,6 +9371,88 @@
           "sample_count": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "AdminPeerRange": {
+        "type": "object",
+        "description": "One bounded read of a Node's Peer receipt buckets (issue #220).\n\nReceipt buckets are what the Server actually accepted, so a range says how\nmany of them it holds, where the grain's own grid expects more of them, and\nwhich older page comes next. A fixed top list silently leaves everything\nolder than its limit unreadable, and a window that cannot be paged cannot\nrule that out.",
+        "required": [
+          "grain",
+          "grain_seconds",
+          "from",
+          "to",
+          "buckets",
+          "matching",
+          "returned",
+          "missing_buckets",
+          "coverage",
+          "truncated"
+        ],
+        "properties": {
+          "buckets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminPeerAggregate"
+            },
+            "description": "The page, newest bucket first."
+          },
+          "continuation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass this as `before` for the next, older page while `truncated`: a\nbucket start is unique inside a Node and grain, so paging at a tie cannot\nskip or repeat a bucket."
+          },
+          "coverage": {
+            "type": "string",
+            "description": "`complete`, `partial`, `empty` or `unavailable`, the vocabulary the\ninvestigation window uses."
+          },
+          "first_bucket": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The oldest and newest bucket the range holds, when it holds any."
+          },
+          "from": {
+            "type": "string",
+            "description": "Start of the answered range: a bucket belongs to it when its start is at\nor after `from` and before `to`."
+          },
+          "grain": {
+            "type": "string",
+            "description": "`5m` or `1h`."
+          },
+          "grain_seconds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "last_bucket": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "matching": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many buckets the range holds in total, whatever the page limit is."
+          },
+          "missing_buckets": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Aligned buckets the Node's own stretch expects inside the range and the\nServer holds none for: a receipt bucket exists only when a Report carried\nPeer evidence, so each of them is a receipt that never arrived. The grid\nstarts at the oldest bucket the grain ever recorded, so the era before a\nNode's first successful snapshot is never counted here."
+          },
+          "returned": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "to": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the range holds more buckets than the page limit returned."
           }
         }
       },
@@ -13369,18 +13640,641 @@
         "type": "object",
         "required": [
           "incidents",
-          "total"
+          "total",
+          "returned",
+          "coverage",
+          "truncated"
         ],
         "properties": {
+          "continuation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the answer is truncated, the coordinate to pass back as `before`\nfor the next, older page."
+          },
+          "coverage": {
+            "type": "string",
+            "description": "`complete` when this answer holds every Incident the window matches,\n`partial` when the limit cut it short, `empty` when the window holds\nnone. An occurrence is never averaged into a value, so a window with no\nIncident is empty and not zero (design §11.4; issue #220)."
+          },
           "incidents": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/IncidentListItem"
             }
           },
+          "returned": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many Incidents this answer carries."
+          },
           "total": {
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "description": "How many Incidents the filters match inside the answered window,\nindependent of `limit`: a cut page still says what it left out."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the range held more Incidents than the caller limit: the newest\nare returned and the rest is reported, never dropped silently."
+          },
+          "window": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IncidentRangeResponse",
+                "description": "The answered occurrence range, absent when the caller asked for the whole\nhistory instead of a range."
+              }
+            ]
+          }
+        }
+      },
+      "IncidentRangeResponse": {
+        "type": "object",
+        "description": "The occurrence range an Incident list answered (issue #220).\n\nAn Incident belongs to the range when it opened inside it or was still open\nwhen the range started, so the answer holds every occurrence the range could\nobserve and a caller investigating the range reads the same set the\ninvestigation answer points at.",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        }
+      },
+      "InvestigationAnswerPathResponse": {
+        "type": "object",
+        "description": "Where the evidence behind a source is answered by the Server.",
+        "required": [
+          "label",
+          "path"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "What the endpoint answers."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How to read the response, when it needs saying."
+          },
+          "path": {
+            "type": "string",
+            "description": "The request path, including the window this investigation was resolved over."
+          }
+        }
+      },
+      "InvestigationBoundaryResponse": {
+        "type": "object",
+        "description": "One stretch of the window a source cannot answer, and why.",
+        "required": [
+          "kind",
+          "kindLabel",
+          "at",
+          "detail"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "description": "The instant the boundary starts at."
+          },
+          "detail": {
+            "type": "string",
+            "description": "Why this stretch cannot be answered."
+          },
+          "kind": {
+            "type": "string",
+            "description": "The machine-readable boundary kind."
+          },
+          "kindLabel": {
+            "type": "string",
+            "description": "The label shown beside the kind."
+          },
+          "to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The instant the boundary ends at, when it ends inside the window."
+          }
+        }
+      },
+      "InvestigationComponentResponse": {
+        "type": "object",
+        "description": "One collector row the Server holds for the investigated subject.",
+        "required": [
+          "scope",
+          "scopeKey",
+          "componentKey",
+          "state"
+        ],
+        "properties": {
+          "componentKey": {
+            "type": "string",
+            "description": "The collector's key as the Server stores it."
+          },
+          "errorCode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The error code the last failed collection carried."
+          },
+          "observedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The instant the Agent attempted the last collection."
+          },
+          "receivedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The instant the Server received the last collection."
+          },
+          "scope": {
+            "type": "string",
+            "description": "The scope the collector was recorded in (`node` or `host`)."
+          },
+          "scopeKey": {
+            "type": "string",
+            "description": "The scope's own key (the Node id, or `host` for the Host scope)."
+          },
+          "state": {
+            "type": "string",
+            "description": "The last collection state (`ok`, `error`, `disabled`, …)."
+          }
+        }
+      },
+      "InvestigationGrainResponse": {
+        "type": "object",
+        "description": "What one grain of a source can answer for the window.",
+        "required": [
+          "grain",
+          "available",
+          "pointCount",
+          "sampleCount",
+          "holes"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "description": "Whether this grain holds any point inside the window.\n\nA grain that serves the window but stored nothing is not available: an\nempty grain and a grain that holds an empty stretch are different\nstatements, and only the counts distinguish them."
+          },
+          "cadenceSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The fastest interval the grain actually showed, in seconds."
+          },
+          "expectedPoints": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many points an unbroken grain would hold, when that is knowable."
+          },
+          "firstObservedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The oldest point of this grain inside its stretch."
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stretch of the window this grain serves, when it serves any."
+          },
+          "grain": {
+            "type": "string",
+            "description": "The grain's name (for example `raw`, `1m`, `5m`, `validator_day`)."
+          },
+          "grainSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The bucket width, when the grain has one."
+          },
+          "holes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvestigationHoleResponse"
+            },
+            "description": "The interruptions this grain proves, longest first (at most one per tier)."
+          },
+          "lastObservedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The newest point of this grain inside its stretch."
+          },
+          "longestGapSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The longest interval between two adjacent points, in seconds."
+          },
+          "missingPoints": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many expected points are missing, when that is knowable."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the grain is unavailable, or how to read its counts."
+          },
+          "pointCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many stored points of this grain fall inside its stretch."
+          },
+          "sampleCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many observations those points aggregate."
+          },
+          "to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stretch of the window this grain serves, when it serves any."
+          }
+        }
+      },
+      "InvestigationHoleResponse": {
+        "type": "object",
+        "description": "One located interruption in a grain's evidence.",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "The instant the interruption starts after."
+          },
+          "seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How long the interruption lasted, in seconds."
+          },
+          "series": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The series the interruption was measured on, when the grain holds many."
+          },
+          "to": {
+            "type": "string",
+            "description": "The instant the interruption ends at, where evidence resumes."
+          }
+        }
+      },
+      "InvestigationPresetResponse": {
+        "type": "object",
+        "description": "One selectable window, as reported to a client.",
+        "required": [
+          "key",
+          "label",
+          "hours"
+        ],
+        "properties": {
+          "hours": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How far back the preset reaches, in hours."
+          },
+          "key": {
+            "type": "string",
+            "description": "The value the `window` query parameter accepts."
+          },
+          "label": {
+            "type": "string",
+            "description": "The preset's human label."
+          }
+        }
+      },
+      "InvestigationResponse": {
+        "type": "object",
+        "description": "The investigation coordinate for one Node and one window.",
+        "required": [
+          "nodeId",
+          "agentId",
+          "lifecycle",
+          "visibility",
+          "window",
+          "sources",
+          "components",
+          "notes"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string",
+            "description": "The Agent that reports this Node."
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvestigationComponentResponse"
+            },
+            "description": "Every collector row the Server holds for this Node and its Agent."
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Node's display name, when the Owner set one."
+          },
+          "lifecycle": {
+            "type": "string",
+            "description": "The Node's lifecycle."
+          },
+          "nodeId": {
+            "type": "string",
+            "description": "The investigated Node."
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Disclosures that shape how the whole answer must be read."
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvestigationSourceResponse"
+            },
+            "description": "Every evidence family, in a fixed order, whether or not it holds evidence."
+          },
+          "visibility": {
+            "type": "string",
+            "description": "The Node's visibility."
+          },
+          "window": {
+            "$ref": "#/components/schemas/InvestigationWindowResponse",
+            "description": "The window the answer was resolved over."
+          }
+        }
+      },
+      "InvestigationSourceResponse": {
+        "type": "object",
+        "description": "A family of evidence and how much of the window it can answer.",
+        "required": [
+          "key",
+          "label",
+          "subjectKind",
+          "subject",
+          "coverage",
+          "coverageLabel",
+          "timeBasis",
+          "timeBasisLabel",
+          "truncated",
+          "boundaries",
+          "grains",
+          "components",
+          "answerPaths",
+          "notes"
+        ],
+        "properties": {
+          "answerPaths": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvestigationAnswerPathResponse"
+            },
+            "description": "The existing endpoints that answer this source's evidence for the window."
+          },
+          "boundaries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvestigationBoundaryResponse"
+            },
+            "description": "The stretches of the window this source cannot answer."
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvestigationComponentResponse"
+            },
+            "description": "The collectors behind this source, with their last recorded state."
+          },
+          "coverage": {
+            "type": "string",
+            "description": "The machine-readable coverage verdict."
+          },
+          "coverageLabel": {
+            "type": "string",
+            "description": "The label shown beside the verdict."
+          },
+          "errorCode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The error code the last failed collection carried, when there was one."
+          },
+          "firstObservedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The oldest evidence the Server still holds for this source."
+          },
+          "grains": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvestigationGrainResponse"
+            },
+            "description": "What each grain of this source can answer."
+          },
+          "key": {
+            "type": "string",
+            "description": "The stable source key."
+          },
+          "label": {
+            "type": "string",
+            "description": "The source's human label."
+          },
+          "lastObservedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The newest evidence the Server holds for this source."
+          },
+          "lastReceivedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The newest receipt of that evidence."
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Disclosures that shape how the numbers above must be read."
+          },
+          "releasedBefore": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cleanup cutoff the newest release of this source's evidence used."
+          },
+          "retainedFrom": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The instant beyond which this source's cleanup cannot answer, when it has one."
+          },
+          "retentionDays": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The retention this source's oldest served grain is declared with, in days."
+          },
+          "sourceState": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The collection state the Server last recorded for this source, when it records one."
+          },
+          "subject": {
+            "type": "string",
+            "description": "The subject's identifier."
+          },
+          "subjectKind": {
+            "type": "string",
+            "description": "The kind of subject this source describes."
+          },
+          "timeBasis": {
+            "type": "string",
+            "description": "The clock this source's timestamps belong to."
+          },
+          "timeBasisLabel": {
+            "type": "string",
+            "description": "The label shown beside the clock."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether the answer omits detail the Server holds (for example further holes)."
+          }
+        }
+      },
+      "InvestigationWindowResponse": {
+        "type": "object",
+        "description": "The window an investigation answered over.",
+        "required": [
+          "preset",
+          "presetLabel",
+          "custom",
+          "requestedFrom",
+          "requestedTo",
+          "from",
+          "to",
+          "durationSeconds",
+          "answeredAt",
+          "clampedToNow",
+          "horizonDays",
+          "rawRetentionDays",
+          "supportedPresets"
+        ],
+        "properties": {
+          "answeredAt": {
+            "type": "string",
+            "description": "The instant the Server resolved the window at."
+          },
+          "clampedToNow": {
+            "type": "boolean",
+            "description": "Whether `to` was clipped to `answered_at` because the range ended in the future."
+          },
+          "custom": {
+            "type": "boolean",
+            "description": "Whether the caller named the range explicitly rather than a preset."
+          },
+          "durationSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The width of the answered range, in seconds."
+          },
+          "from": {
+            "type": "string",
+            "description": "The start of the range the Server answered over."
+          },
+          "horizonDays": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The widest window an investigation accepts, in days."
+          },
+          "preset": {
+            "type": "string",
+            "description": "The preset key the answer used, or `custom`."
+          },
+          "presetLabel": {
+            "type": "string",
+            "description": "The label of that preset."
+          },
+          "rawRetentionDays": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long the raw metric tier reaches back, in days."
+          },
+          "requestedFrom": {
+            "type": "string",
+            "description": "The range the caller asked for, before any clipping."
+          },
+          "requestedTo": {
+            "type": "string",
+            "description": "The range the caller asked for, before any clipping."
+          },
+          "supportedPresets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvestigationPresetResponse"
+            },
+            "description": "Every window a client may ask for, so it never hardcodes the list."
+          },
+          "to": {
+            "type": "string",
+            "description": "The end of the range the Server answered over."
           }
         }
       },

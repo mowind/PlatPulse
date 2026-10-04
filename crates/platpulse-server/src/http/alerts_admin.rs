@@ -30,6 +30,7 @@ use crate::alerts::{
 use crate::auth::{format_rfc3339, now_utc, parse_rfc3339};
 use crate::http::admin::{mutation_error, mutation_guard_ok};
 use crate::http::{AppState, AuthenticatedSession, RequestId};
+use crate::metric_history::canonical_instant;
 
 const MAX_WINDOW_SECS: i64 = 366 * 24 * 60 * 60;
 
@@ -394,7 +395,38 @@ pub struct IncidentListItem {
 #[serde(rename_all = "camelCase")]
 pub struct IncidentListResponse {
     pub incidents: Vec<IncidentListItem>,
+    /// How many Incidents the filters match inside the answered window,
+    /// independent of `limit`: a cut page still says what it left out.
     pub total: i64,
+    /// How many Incidents this answer carries.
+    pub returned: i64,
+    /// `complete` when this answer holds every Incident the window matches,
+    /// `partial` when the limit cut it short, `empty` when the window holds
+    /// none. An occurrence is never averaged into a value, so a window with no
+    /// Incident is empty and not zero (design §11.4; issue #220).
+    pub coverage: String,
+    /// The answered occurrence range, absent when the caller asked for the whole
+    /// history instead of a range.
+    pub window: Option<IncidentRangeResponse>,
+    /// True when the range held more Incidents than the caller limit: the newest
+    /// are returned and the rest is reported, never dropped silently.
+    pub truncated: bool,
+    /// When the answer is truncated, the coordinate to pass back as `before`
+    /// for the next, older page.
+    pub continuation: Option<String>,
+}
+
+/// The occurrence range an Incident list answered (issue #220).
+///
+/// An Incident belongs to the range when it opened inside it or was still open
+/// when the range started, so the answer holds every occurrence the range could
+/// observe and a caller investigating the range reads the same set the
+/// investigation answer points at.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IncidentRangeResponse {
+    pub from: String,
+    pub to: String,
 }
 
 /// Query filters for the Incident list. The wire names are the snake_case
@@ -415,6 +447,18 @@ pub struct IncidentFilters {
     /// Incident surface (issue #202 Story 2).
     #[serde(alias = "subjectKey")]
     pub subject_key: Option<String>,
+    /// Canonical RFC 3339 UTC start of the occurrence range, paired with `to`
+    /// (issue #220). Without a range the list is the newest occurrences, which
+    /// silently omits older ones; with a range the caller asks for the
+    /// occurrences the range could observe.
+    pub from: Option<String>,
+    /// Canonical RFC 3339 UTC end of the occurrence range, paired with `from`.
+    pub to: Option<String>,
+    /// Exclusive continuation coordinate of a paging request:
+    /// `<opened_at>|<incident_id>`, the coordinate a previous truncated answer
+    /// returned. The pair is needed because an Incident instant alone is not
+    /// unique, and paging on a tie would either skip or repeat rows.
+    pub before: Option<String>,
     pub limit: Option<i64>,
 }
 
@@ -1907,9 +1951,50 @@ pub(crate) async fn delete_rule_override(
     }
 }
 
+/// The widest occurrence range the Incident list answers, matching the widest
+/// investigation window (issue #220).
+const MAX_INCIDENT_RANGE_SECS: i64 = 30 * 24 * 60 * 60;
+
+/// The rejection for a range end that is not in the canonical shape the stored
+/// instants use: another shape would compare differently against the stored
+/// instant text and answer a range the caller never asked for.
+fn incident_range_error(request_id: &str, field: &str, value: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(crate::http::ApiErrorBody::with_message(
+            "alert_validation",
+            format!(
+                "incident range {field}={value} is not a canonical RFC 3339 UTC instant with second precision"
+            ),
+            request_id,
+        )),
+    )
+        .into_response()
+}
+
+/// Count the Incidents one filter set matches. The page and its total share the
+/// same predicates, so an answer can never disagree with the count it reports.
+async fn count_incidents(
+    state: &AppState,
+    where_clause: &str,
+    params: &[String],
+) -> Result<i64, sqlx::Error> {
+    let count_sql = format!("SELECT COUNT(*) FROM alert_incidents i{where_clause}");
+    let mut query = sqlx::query_scalar::<_, i64>(&count_sql);
+    for param in params {
+        query = query.bind(param);
+    }
+    query.fetch_one(state.db().pool()).await
+}
+
 /// PAGE-ADMIN-INCIDENTS: durable Incident history. Incidents are opened by
 /// the state machine and resolved only by sustained fresh Known recovery;
 /// they are never manually resolvable, reopenable, or deletable.
+///
+/// A caller that passes from/to asks for the occurrences a range could observe
+/// instead of the newest ones: the answer then reports how many the range
+/// matches, how many it carries, whether the limit cut it, and the cursor that
+/// continues it (issue #220, design §11.4).
 #[utoipa::path(
     get,
     path = "/api/admin/v1/alerts/incidents",
@@ -1920,6 +2005,9 @@ pub(crate) async fn delete_rule_override(
         ("rule_key" = Option<String>, Query, description = "Filter by Rule key"),
         ("subject_kind" = Option<String>, Query, description = "Filter by subject kind"),
         ("subject_key" = Option<String>, Query, description = "Filter by exact subject key"),
+        ("from" = Option<String>, Query, description = "Canonical RFC 3339 UTC start of the occurrence range, paired with to"),
+        ("to" = Option<String>, Query, description = "Canonical RFC 3339 UTC end of the occurrence range, paired with from"),
+        ("before" = Option<String>, Query, description = "Exclusive continuation coordinate <opened_at>|<incident_id> a truncated answer returned"),
         ("limit" = Option<i64>, Query, description = "Maximum rows (1..=500)"),
     ),
     responses((status = 200, body = IncidentListResponse), (status = 503, body = crate::http::ApiErrorBody))
@@ -1994,21 +2082,94 @@ pub(crate) async fn alert_incidents(
         conditions.push("i.subject_key = ?".to_owned());
         params.push(subject_key.clone());
     }
+    // A range makes this an occurrence query rather than a top list: an Incident
+    // belongs to the range when it opened inside it or was still open when the
+    // range started, which is the same predicate the investigation answer points
+    // at (issue #220), so both surfaces agree on what "in this window" means.
+    let range = match (&filters.from, &filters.to) {
+        (None, None) => None,
+        (Some(from), Some(to)) => {
+            let Some(from_instant) = canonical_instant(from) else {
+                return incident_range_error(&request_id.0, "from", from);
+            };
+            let Some(to_instant) = canonical_instant(to) else {
+                return incident_range_error(&request_id.0, "to", to);
+            };
+            if from_instant >= to_instant {
+                return mutation_error(
+                    &request_id.0,
+                    StatusCode::BAD_REQUEST,
+                    "alert_validation",
+                    "the incident range ends at or before it starts: from must be an earlier instant than to",
+                );
+            }
+            let width = (to_instant - from_instant).whole_seconds();
+            if width > MAX_INCIDENT_RANGE_SECS {
+                return mutation_error(
+                    &request_id.0,
+                    StatusCode::BAD_REQUEST,
+                    "alert_validation",
+                    "the incident range is wider than the supported 30 days",
+                );
+            }
+            conditions.push(crate::investigation::INCIDENT_WINDOW_PREDICATE.to_owned());
+            params.push(to.clone());
+            params.push(from.clone());
+            Some(IncidentRangeResponse {
+                from: from.clone(),
+                to: to.clone(),
+            })
+        }
+        _ => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "alert_validation",
+                "an incident range needs both from and to: one end alone does not describe it",
+            );
+        }
+    };
     let limit = filters.limit.unwrap_or(100).clamp(1, 500);
-    let where_clause = if conditions.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", conditions.join(" AND "))
+    // The page narrows the answered range further by the caller's cursor; `total`
+    // deliberately counts without it, so a paged answer still reports how many
+    // occurrences the range holds in all.
+    let mut page_conditions = conditions.clone();
+    let mut page_params = params.clone();
+    if let Some(before) = &filters.before {
+        let Some((opened_at, incident_id)) = before.split_once('|') else {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "alert_validation",
+                "an incident continuation must be the <opened_at>|<incident_id> coordinate a truncated answer returned",
+            );
+        };
+        if canonical_instant(opened_at).is_none() || incident_id.trim().is_empty() {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "alert_validation",
+                "an incident continuation must be the <opened_at>|<incident_id> coordinate a truncated answer returned",
+            );
+        }
+        page_conditions
+            .push("(i.opened_at < ? OR (i.opened_at = ? AND i.incident_id > ?))".to_owned());
+        page_params.push(opened_at.to_owned());
+        page_params.push(opened_at.to_owned());
+        page_params.push(incident_id.to_owned());
+    }
+    let where_clause = |conditions: &[String]| {
+        if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        }
     };
     let sql = format!(
-        "SELECT i.incident_id, i.rule_key, i.rule_version, i.subject_kind, i.subject_key, i.severity, i.state, i.sequence, i.opened_at, i.resolved_at, i.subject_deleted_at, a.acknowledged_by_user_id, a.acknowledged_by_username, a.acknowledged_at FROM alert_incidents i LEFT JOIN incident_acknowledgments a ON a.incident_id = i.incident_id{where_clause} ORDER BY i.opened_at DESC, i.incident_id LIMIT ?"
+        "SELECT i.incident_id, i.rule_key, i.rule_version, i.subject_kind, i.subject_key, i.severity, i.state, i.sequence, i.opened_at, i.resolved_at, i.subject_deleted_at, a.acknowledged_by_user_id, a.acknowledged_by_username, a.acknowledged_at FROM alert_incidents i LEFT JOIN incident_acknowledgments a ON a.incident_id = i.incident_id{} ORDER BY i.opened_at DESC, i.incident_id LIMIT ?",
+        where_clause(&page_conditions)
     );
-    let count_sql = format!("SELECT COUNT(*) FROM alert_incidents i{where_clause}");
-    let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
-    for param in &params {
-        count_query = count_query.bind(param);
-    }
-    let total: i64 = match count_query.fetch_one(state.db().pool()).await {
+    let total: i64 = match count_incidents(&state, &where_clause(&conditions), &params).await {
         Ok(count) => count,
         Err(_) => {
             return mutation_error(
@@ -2019,6 +2180,18 @@ pub(crate) async fn alert_incidents(
             );
         }
     };
+    let page_total: i64 =
+        match count_incidents(&state, &where_clause(&page_conditions), &page_params).await {
+            Ok(count) => count,
+            Err(_) => {
+                return mutation_error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Server database is unavailable",
+                );
+            }
+        };
     let mut query = sqlx::query_as::<
         _,
         (
@@ -2038,7 +2211,7 @@ pub(crate) async fn alert_incidents(
             Option<String>,
         ),
     >(&sql);
-    for param in &params {
+    for param in &page_params {
         query = query.bind(param);
     }
     let rows = match query.bind(limit).fetch_all(state.db().pool()).await {
@@ -2051,6 +2224,20 @@ pub(crate) async fn alert_incidents(
                 "Server database is unavailable",
             );
         }
+    };
+    let returned = rows.len() as i64;
+    let truncated = page_total > returned;
+    // The next page starts strictly below the last returned occurrence, so a tie
+    // on opened_at continues by incident_id instead of repeating or skipping it.
+    let continuation = truncated
+        .then(|| rows.last().map(|row| format!("{}|{}", row.8, row.0)))
+        .flatten();
+    let coverage = if total == 0 {
+        crate::investigation::Coverage::Empty
+    } else if truncated {
+        crate::investigation::Coverage::Partial
+    } else {
+        crate::investigation::Coverage::Complete
     };
     Json(IncidentListResponse {
         incidents: rows
@@ -2092,6 +2279,11 @@ pub(crate) async fn alert_incidents(
             )
             .collect(),
         total,
+        returned,
+        coverage: coverage.as_str().to_owned(),
+        window: range,
+        truncated,
+        continuation,
     })
     .into_response()
 }
@@ -4272,6 +4464,183 @@ mod tests {
         assert_eq!(value["windows"].as_array().unwrap().len(), 1);
     }
 
+    /// Insert one Incident occurrence directly: the shape the evaluator writes,
+    /// so a range test can place occurrences on instants it chooses.
+    async fn insert_incident(
+        state: &AppState,
+        incident_id: &str,
+        subject_key: &str,
+        opened_at: &str,
+        sequence: i64,
+    ) {
+        sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES (?, 'node.rpc_unreachable', 1, 'node', ?, 'critical', 'open', ?, ?, '{}')")
+            .bind(incident_id)
+            .bind(subject_key)
+            .bind(sequence)
+            .bind(opened_at)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+    }
+
+    fn incident_range_filters(
+        from: Option<&str>,
+        to: Option<&str>,
+        before: Option<&str>,
+        limit: Option<i64>,
+    ) -> IncidentFilters {
+        IncidentFilters {
+            state: None,
+            severity: None,
+            rule_key: None,
+            subject_kind: None,
+            subject_key: None,
+            from: from.map(str::to_owned),
+            to: to.map(str::to_owned),
+            before: before.map(str::to_owned),
+            limit,
+        }
+    }
+
+    async fn incident_list(state: &AppState, filters: IncidentFilters) -> (StatusCode, Value) {
+        let response = alert_incidents(
+            State(state.clone()),
+            Query(filters),
+            Extension(request_id()),
+        )
+        .await;
+        let status = response.status();
+        (status, body_json(response).await)
+    }
+
+    #[tokio::test]
+    async fn incident_list_answers_one_range_and_pages_across_an_opened_at_tie() {
+        let (_dir, state) = test_state().await;
+        // Two occurrences share an instant, so an instant alone cannot page them.
+        // The sequence is unique per (rule, subject), so each occurrence of the
+        // same Node counts up even when two Nodes share an instant.
+        insert_incident(&state, "inc-0001", "node-a", "2026-08-12T10:00:00Z", 1).await;
+        insert_incident(&state, "inc-0002", "node-a", "2026-08-12T10:05:00Z", 2).await;
+        insert_incident(&state, "inc-0003", "node-b", "2026-08-12T10:05:00Z", 1).await;
+        insert_incident(&state, "inc-0004", "node-a", "2026-08-12T10:20:00Z", 3).await;
+
+        let (status, body) = incident_list(
+            &state,
+            incident_range_filters(
+                Some("2026-08-12T10:00:00Z"),
+                Some("2026-08-12T10:10:00Z"),
+                None,
+                Some(2),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["total"], 3,
+            "the range holds the 10:00 occurrence and both 10:05 occurrences"
+        );
+        assert_eq!(body["returned"], 2);
+        assert_eq!(body["truncated"], true);
+        assert_eq!(
+            body["coverage"], "partial",
+            "a cut answer says it left occurrences out"
+        );
+        assert_eq!(body["window"]["from"], "2026-08-12T10:00:00Z");
+        assert_eq!(body["window"]["to"], "2026-08-12T10:10:00Z");
+        assert_eq!(body["incidents"][1]["incidentId"], "inc-0003");
+        assert_eq!(
+            body["continuation"], "2026-08-12T10:05:00Z|inc-0003",
+            "the coordinate carries the instant and the tie-break id"
+        );
+        assert!(
+            !body.to_string().contains("inc-0004"),
+            "an occurrence outside the range is never returned"
+        );
+
+        // The continuation resumes strictly below the tie instead of repeating it.
+        let (status, page) = incident_list(
+            &state,
+            incident_range_filters(
+                Some("2026-08-12T10:00:00Z"),
+                Some("2026-08-12T10:10:00Z"),
+                Some("2026-08-12T10:05:00Z|inc-0003"),
+                Some(2),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["returned"], 1);
+        assert_eq!(page["incidents"][0]["incidentId"], "inc-0001");
+        assert_eq!(
+            page["total"], 3,
+            "paging narrows the page, never the range it reports"
+        );
+        assert_eq!(page["truncated"], false);
+        assert!(page["continuation"].is_null());
+
+        // Without a range the list stays the newest-occurrence answer it was.
+        let (status, body) =
+            incident_list(&state, incident_range_filters(None, None, None, None)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["window"].is_null(), "a top list answers no range");
+        assert_eq!(body["total"], 4);
+        assert_eq!(body["returned"], 4);
+        assert_eq!(body["coverage"], "complete");
+        assert_eq!(body["truncated"], false);
+        assert!(body["continuation"].is_null());
+        assert_eq!(body["incidents"][0]["incidentId"], "inc-0004");
+    }
+
+    #[tokio::test]
+    async fn incident_list_refuses_a_half_stated_reversed_or_too_wide_range() {
+        let (_dir, state) = test_state().await;
+        let half = "an incident range needs both from and to: one end alone does not describe it";
+        let reversed = "the incident range ends at or before it starts: from must be an earlier instant than to";
+        let wide = "the incident range is wider than the supported 30 days";
+        let cursor = "an incident continuation must be the <opened_at>|<incident_id> coordinate a truncated answer returned";
+        let start = Some("2026-08-12T10:00:00Z");
+        let end = Some("2026-08-12T10:10:00Z");
+        let refused: [(&str, IncidentFilters); 8] = [
+            (half, incident_range_filters(start, None, None, None)),
+            (half, incident_range_filters(None, end, None, None)),
+            (
+                reversed,
+                incident_range_filters(start, Some("2026-08-12T10:00:00Z"), None, None),
+            ),
+            (
+                wide,
+                incident_range_filters(
+                    Some("2026-08-01T00:00:00Z"),
+                    Some("2026-09-05T00:00:00Z"),
+                    None,
+                    None,
+                ),
+            ),
+            (
+                "incident range from=2026-08-12T18:00:00+08:00 is not a canonical RFC 3339 UTC instant with second precision",
+                incident_range_filters(Some("2026-08-12T18:00:00+08:00"), end, None, None),
+            ),
+            (
+                cursor,
+                incident_range_filters(start, end, Some("2026-08-12T10:00:00Z"), None),
+            ),
+            (
+                cursor,
+                incident_range_filters(start, end, Some("2026-08-12T10:00:00Z|"), None),
+            ),
+            (
+                cursor,
+                incident_range_filters(start, end, Some("not-an-instant|inc-0001"), None),
+            ),
+        ];
+        for (message, filters) in refused {
+            let (status, body) = incident_list(&state, filters).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(body["error"]["code"], "alert_validation");
+            assert_eq!(body["error"]["message"], message);
+        }
+    }
+
     #[tokio::test]
     async fn incident_list_and_detail_show_state_evidence_and_suppressions() {
         let (_dir, state) = test_state().await;
@@ -4324,6 +4693,9 @@ mod tests {
                 rule_key: Some("node.rpc_unreachable".to_owned()),
                 subject_kind: None,
                 subject_key: None,
+                from: None,
+                to: None,
+                before: None,
                 limit: None,
             }),
             Extension(request_id()),
@@ -4376,6 +4748,9 @@ mod tests {
                 rule_key: None,
                 subject_kind: None,
                 subject_key: None,
+                from: None,
+                to: None,
+                before: None,
                 limit: None,
             }),
             Extension(request_id()),
@@ -4493,6 +4868,9 @@ mod tests {
                 rule_key: None,
                 subject_kind: None,
                 subject_key: None,
+                from: None,
+                to: None,
+                before: None,
                 limit: None,
             }),
             Extension(request_id()),

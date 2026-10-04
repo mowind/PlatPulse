@@ -94,6 +94,7 @@ impl Modify for AgentBearerScheme {
         // The mount paths that Agent's Host storage evidence is stored under,
         // because the path is the identity of the series (design §11.6).
         crate::http::admin::admin_agent_storage_mounts,
+        crate::http::admin::admin_node_investigation,
         crate::http::admin::admin_node_transfers,
         crate::http::admin::create_node_transfer,
         crate::http::admin::admin_transfer_detail,
@@ -389,6 +390,15 @@ impl Modify for AgentBearerScheme {
         crate::http::public::PublicAccessSettings,
         crate::http::agent::EnrollResponse,
         crate::http::agent::RecoverResponse,
+        crate::investigation::InvestigationResponse,
+        crate::investigation::InvestigationWindowResponse,
+        crate::investigation::InvestigationPresetResponse,
+        crate::investigation::InvestigationSourceResponse,
+        crate::investigation::InvestigationGrainResponse,
+        crate::investigation::InvestigationHoleResponse,
+        crate::investigation::InvestigationBoundaryResponse,
+        crate::investigation::InvestigationComponentResponse,
+        crate::investigation::InvestigationAnswerPathResponse,
     )),
     modifiers(&AgentBearerScheme),
     tags(
