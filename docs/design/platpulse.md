@@ -824,11 +824,12 @@ PlatPulse 当前实现是：
 
 - 趋势以「配置日历的一日」为单位，而不是以 UTC 日为单位：`from`/`to` 用 UTC 瞬时表达，但归属到该瞬时所在的配置 IANA 本地日，`to` 含其落入的本地日，因此 N 天窗口对应 N+1 个配置本地日。日/月边界由 `local_day_bounds`（validator.rs:2243）、`local_period_at`（:2273）、`local_midnight`（:2205）计算；DST 抹掉的午夜（例如 America/Santiago 的 00:00 不存在）取该本地日最早的合法瞬时，桶仍属于真实的本地日。配置时区来自 `[validator_provider] timezone`：配置加载时若不能解析成 IANA 名即 `ConfigError::InvalidValidatorTimezone` 启动失败，读取时若仍不能解析则返回 `InvalidTimezone` 400——两处都不回退成 UTC。
 - 查询有界且披露完整：窗口上限 730 天（`TREND_MAX_WINDOW_DAYS`，超出即钳制并在响应里标 `clamped`），`limit` 默认 90、上限 366（`TREND_MAX_LIMIT`）；分页游标 `before` 是排他游标（严格更旧的配置本地日），响应给出 `continuation`；截断只丢最旧的日，且 `expectedDays`/`observedDays`/`missingDays` 只统计「已应答的那一段」，应答段之外的日绝不算作静默（`coverage` 因此区分 `empty` 与 `unavailable`）。
-- 每个点披露真实的取样时间与来源：`sampleTime` 为 `provider` 或 `receipt`（provider_timestamp 优先、否则 receipt，与 §15.5 的 `analytics_period` 同一规则），`delaySeconds` 在任一时间不可用时为 null（绝不写 0），`clockSuspect` 标记 Provider 时间早于接收时间；行里没有的指标就是 Unknown，绝不呈现为 0。
-- 累计语义写死在契约里：`counterSemantics` 固定为 `"cumulative"`，reward/block 是累计值，WebUI 也标注为累计，绝不差分出周期收益或净收益。
+- 每个点披露真实的取样时间与来源：`sampleTime` 为 `provider` 或 `receipt`（provider_timestamp 优先、否则 receipt，与 §15.5 的 `analytics_period` 同一规则），并同时给出三个具名瞬时（sample_at、provider_timestamp、received_at），因此 provider 优先的取样时间绝不会脱离它旁边的 receipt 单独出现；`delaySeconds` 在任一时间不可用时为 null（绝不写 0），`clockSuspect` 标记 Provider 时间早于接收时间；行里没有的指标就是 Unknown，绝不呈现为 0。
+- `coverage=partial` 有两种诚实读法，由应答自身的数字决定：已应答段内确有缺行（`missingDays > 0`）是「静默之外的缺失」，而 `missingDays == 0` 只是窗口未答完（truncated/clamped），此时绝不能说已答段内有缺失。
+- 累计语义写死在契约里：`counterSemantics` 固定为 `"cumulative"`，reward/block 是累计值，WebUI 也标注为累计，绝不差分出周期收益或净收益；stake 是该次观测的余额快照，不是累计计数器，因此文案不得把 stake 归入累计措辞。
 - 其他时区已存在的行既不合并、也不静默按 UTC 重桶：响应把它们计为 `foreignRows`/`foreignTimezones` 并明确披露，配置日历上的那几天仍如实显示为静默。
 - Story 68：Purge 删除该 Node 的 `node_validator_links`，因此趋势里的关联列表只列出仍能解析到存活 Node 的区间，并给出 `deletedNodes` 与 `associationHistoryPartial=true`，说明已删 Node 的关联是「这里不可用」而不是「从未存在」，也绝不把它们重新挂到别的存活 Node 上；共享 Validator 身份与其已存快照日保留，趋势仍可读取。
-- rank 序列的真实性由同一刷新周期保证：每日快照行现在由 `record_snapshot_rank`（validator.rs:2620）在同一 refresh 事务内写入该本地日的 rank（权威缺席写 NULL），失败保留 last-good、绝不编造；由于 `rebuild_monthly_aggregate` 没有零行保护，只有确实更新到该日行时才重建该月聚合。
+- rank 归属由同一观测周期保证（复审 F1）：`record_daily_snapshot` 返回它真正落盘的那一天（`StoredDay { local_date, month_key }`），`apply_provider_result` 以 `AppliedDetail.stored_day` 把它交给 `record_snapshot_rank`（validator.rs:2620），后者只更新那一天的行（权威缺席写 NULL），不再按 receipt 瞬时重新推算一个可能无行或错日的日期。因此 provider 时间戳落在前一个配置本地日时，rank 随那次观测写到那一天而不丢失；detail 失败（`stored_day: None`）或 ranking 失败的周期不写任何 rank，保留该日 last-good——这一行只有唯一的 sample time，rank 必须与它所属的观测同周期写入，否则会假借旧观测的时间戳。由于 `rebuild_monthly_aggregate` 没有零行保护，只有确实更新到该日行时才重建该月聚合。
 - 表面：Admin 只读端点 `GET /api/admin/v1/validators/{validator_id}/trend`（Owner 守卫沿用 `http/mod.rs` 的 `/api/admin/v1` 嵌套，见 WebUI §15.21）。
 
 ### 15.5 一次性 Validator 模型迁移

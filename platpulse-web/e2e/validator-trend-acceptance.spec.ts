@@ -17,9 +17,15 @@
  * starts at 18:15:00Z of the previous UTC day, so a surface that quietly bucketed
  * by UTC midnight would fail this spec instead of passing on a zone whose offset
  * happens to be zero.
+ *
+ * The viewport matrix also captures the panel as screenshot evidence under
+ * docs/visual-migration/emerald/validator-trend-219 (ADR 0002: evidence at the
+ * fixed viewport matrix, never a gate — no baseline is recorded, no screenshot
+ * is compared, and the assertions above and below are what fail this spec).
  */
 
 import { expect, test, type Locator, type Page } from '@playwright/test'
+import { mkdir } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 
 import type { AdminValidatorTrendResponse } from '../src/api/generated'
@@ -71,6 +77,8 @@ const LONG_DAYS = 90
 const LONG_LIMIT = 31
 const DAY_MS = 86_400_000
 const TREND_QUERY = '/trend?'
+/** Where the matrix's evidence captures land, relative to platpulse-web. */
+const EVIDENCE = '../docs/visual-migration/emerald/validator-trend-219'
 
 // ---------------------------------------------------------- configured calendar
 
@@ -548,9 +556,10 @@ test('the Owner reads the real Kathmandu daily trend and it survives a Node purg
       await expect(panel.locator('[data-slot="validator-trend-truncated"]')).toHaveCount(0)
 
       // The cumulative counters are named as cumulative, with the sentence that
-      // keeps them from reading as period earnings.
+      // keeps them from reading as period earnings; stake is stated as the
+      // balance it is, not as a third cumulative counter.
       await expect(panel.locator('[data-slot="validator-trend-counters"]')).toHaveText(
-        'Reward, block and stake values are the cumulative Provider counters as of each sample. This surface never computes period earnings, net profit, or a re-bucketed series from them.',
+        'Reward and block values are cumulative Provider counters as of each sample; stake is the balance the Provider reported at that sample. This surface never computes period earnings, net profit, or a re-bucketed series from them.',
       )
       await expect(panel.locator('[data-slot="validator-trend-foreign"]')).toHaveText(
         '1 stored snapshot(s) for this Validator inside this stretch were formed in another configured timezone (UTC). They are disclosed here and are never merged into the configured calendar or quietly re-bucketed.',
@@ -590,7 +599,14 @@ test('the Owner reads the real Kathmandu daily trend and it survives a Node purg
       await expect(liveRow.locator('th[scope="row"]')).toContainText('Month ' + today.slice(0, 7))
       await expect(rowCell(liveRow, 'Rank')).toHaveText('1')
       await expect(rowCell(liveRow, 'Sample time')).toContainText('Server receipt (fallback)')
-      await expect(rowCell(liveRow, 'Sample time')).toContainText(displayedAt(newest.sampleAt))
+      await expect(rowCell(liveRow, 'Sample time')).toContainText('Sample ' + displayedAt(newest.sampleAt))
+      // The replay's detail answer carries no Provider timestamp, so the
+      // Provider instant says Unknown instead of repeating the receipt that
+      // stood in for it; the receipt is still stated as the receipt.
+      await expect(rowCell(liveRow, 'Sample time')).toContainText('Provider Unknown')
+      await expect(rowCell(liveRow, 'Sample time')).toContainText(
+        'Receipt ' + displayedAt(newest.receivedAt),
+      )
       await expect(rowCell(liveRow, 'Delay')).toHaveText('Unknown')
       await expect(rowCell(liveRow, 'Source')).toContainText('platscan')
       // The replay's detail answer carries no epoch, and an unknown value is
@@ -611,7 +627,13 @@ test('the Owner reads the real Kathmandu daily trend and it survives a Node purg
       )
       await expect(rowCell(providerRow, 'Sample time')).toContainText('Provider timestamp')
       await expect(rowCell(providerRow, 'Sample time')).toContainText(
-        displayedAt(providerPoint.sampleAt),
+        'Sample ' + displayedAt(providerPoint.sampleAt),
+      )
+      await expect(rowCell(providerRow, 'Sample time')).toContainText(
+        'Provider ' + displayedAt(providerPoint.providerTimestamp),
+      )
+      await expect(rowCell(providerRow, 'Sample time')).toContainText(
+        'Receipt ' + displayedAt(providerPoint.receivedAt),
       )
       await expect(rowCell(providerRow, 'Delay')).toHaveText('2m')
 
@@ -817,6 +839,14 @@ test('the trend panel holds its geometry and disclosure at every viewport and th
           )
           await expectLocalTableScroll(page, 'validator-trend-points')
           await expectNoHorizontalOverflow(page)
+          // Evidence, taken before the narrow passes change the window so every
+          // capture shows the same default preset. Nothing compares these files.
+          await mkdir(EVIDENCE, { recursive: true })
+          await page.screenshot({
+            path: EVIDENCE + '/' + viewport.width + 'x' + viewport.height + '-' + colorScheme + '.png',
+            fullPage: true,
+            animations: 'disabled',
+          })
 
           if (viewport.width <= 768) {
             await expectVisibleInteractiveTargets(page)

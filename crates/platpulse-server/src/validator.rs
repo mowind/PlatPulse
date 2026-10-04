@@ -2580,6 +2580,18 @@ pub async fn load_daily_trend(
     })
 }
 
+/// The configured local day one detail read stored its snapshot under (#219).
+/// A ranking answer is attached to this day, so a rank is never written onto a
+/// day the same refresh cycle did not observe.
+struct StoredDay {
+    local_date: String,
+    month_key: String,
+}
+
+/// Store one detail reading on its configured local day, replacing the stored
+/// row only when this reading is newer. Returns whether the write changed
+/// stored rows together with the day it was addressed to, so the caller can
+/// place same-cycle ranking evidence on exactly that day (#219).
 async fn record_daily_snapshot(
     tx: &mut Transaction<'_, Sqlite>,
     validator_id: &str,
@@ -2588,7 +2600,7 @@ async fn record_daily_snapshot(
     observation_key: &str,
     received_at: &str,
     timezone: &str,
-) -> Result<(bool, String), ValidatorError> {
+) -> Result<(bool, StoredDay), ValidatorError> {
     let (local_date, month_key, sample_at) = analytics_period(observation, received_at, timezone)?;
     let result = sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id, timezone, local_date) DO UPDATE SET snapshot_id=excluded.snapshot_id, month_key=excluded.month_key, sample_at=excluded.sample_at, received_at=excluded.received_at, provider_timestamp=excluded.provider_timestamp, source=excluded.source, observation_key=excluded.observation_key, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count WHERE excluded.sample_at > validator_daily_snapshots.sample_at OR (excluded.sample_at = validator_daily_snapshots.sample_at AND excluded.observation_key > validator_daily_snapshots.observation_key)")
         .bind(uuid::Uuid::new_v4().to_string())
@@ -2609,36 +2621,47 @@ async fn record_daily_snapshot(
         .bind(observation.block_count)
         .execute(&mut **tx)
         .await?;
-    Ok((result.rows_affected() > 0, month_key))
+    Ok((
+        result.rows_affected() > 0,
+        StoredDay {
+            local_date,
+            month_key,
+        },
+    ))
 }
 
-/// Store one rank reading on the configured local day's stored snapshot, and
-/// refresh that month's aggregate because the aggregate caches the month's
-/// rank range and last reading (#219). A missing snapshot row for that day is
-/// a no-op: a ranking answer never invents a day nobody observed, and rows
-/// stored under another timezone are never touched.
+/// Store one rank reading on a day this refresh cycle observed, and refresh
+/// that month's aggregate because the aggregate caches the month's rank range
+/// and last reading (#219).
+///
+/// The day is the one the cycle's own detail read stored, never the receipt
+/// day: a rank therefore carries the calendar placement and the observation
+/// time of the reading it arrived with, and a cycle that stored no snapshot
+/// leaves every retained rank untouched instead of attaching a fresh rank to
+/// an older day's evidence. Rows stored under another timezone are never
+/// touched, and a missing row for the requested day is a no-op because a
+/// ranking answer never invents a day nobody observed.
 async fn record_snapshot_rank(
     tx: &mut Transaction<'_, Sqlite>,
     validator_id: &str,
     timezone: &str,
     rank: Option<i64>,
-    instant: OffsetDateTime,
+    day: &StoredDay,
     now: &str,
 ) -> Result<(), ValidatorError> {
-    let (local_date, month_key) = local_period_at(timezone, instant)?;
     let stored = sqlx::query(
         "UPDATE validator_daily_snapshots SET rank = ? WHERE validator_id = ? AND timezone = ? AND local_date = ?",
     )
     .bind(rank)
     .bind(validator_id)
     .bind(timezone)
-    .bind(&local_date)
+    .bind(&day.local_date)
     .execute(&mut **tx)
     .await?;
     if stored.rows_affected() == 0 {
         return Ok(());
     }
-    rebuild_monthly_aggregate(tx, validator_id, timezone, &month_key, now).await
+    rebuild_monthly_aggregate(tx, validator_id, timezone, &day.month_key, now).await
 }
 
 async fn rebuild_monthly_aggregate(
@@ -2940,8 +2963,14 @@ pub async fn refresh_all_with_channels_in_timezone(
             Some(result) => ranking_lookup(result, &validator_node_id),
             None => NetworkRankingLookup::Error("ranking was not collected".to_owned()),
         };
-        let (ranking_changed, ranking_invalidated) =
-            apply_ranking_result(&mut tx, &validator_id, lookup, timezone).await?;
+        let (ranking_changed, ranking_invalidated) = apply_ranking_result(
+            &mut tx,
+            &validator_id,
+            lookup,
+            timezone,
+            detail.stored_day.as_ref(),
+        )
+        .await?;
         let alert_changes = crate::alerts::evaluate_validator_in_transaction(
             &mut tx,
             &validator_id,
@@ -2953,13 +2982,13 @@ pub async fn refresh_all_with_channels_in_timezone(
         if alert_changes > 0 {
             summary.alert_invalidations += alert_changes;
         }
-        if detail.0 {
+        if detail.stored {
             summary.successful += 1;
         }
-        if detail.1 || ranking_changed {
+        if detail.activity_changed || ranking_changed {
             summary.changed += 1;
         }
-        if detail.2 || ranking_invalidated {
+        if detail.invalidated || ranking_invalidated {
             summary.invalidations += 1;
             summary.invalidated_network_keys.push(network_key);
             summary.invalidated_validator_ids.push(validator_id);
@@ -3244,13 +3273,24 @@ fn ranking_observation_key(rank: i64, cohort_size: i64) -> String {
     format!("ranking:{rank}/{cohort_size}")
 }
 
+/// What one detail read changed, and the configured local day it stored a
+/// snapshot for (#219). `stored_day` is `None` when this cycle stored no
+/// snapshot at all, which is what keeps same-cycle ranking evidence off days
+/// nobody observed.
+struct AppliedDetail {
+    stored: bool,
+    activity_changed: bool,
+    invalidated: bool,
+    stored_day: Option<StoredDay>,
+}
+
 async fn apply_provider_result(
     tx: &mut Transaction<'_, Sqlite>,
     source: &str,
     validator_id: &str,
     result: ValidatorProviderResult,
     timezone: &str,
-) -> Result<(bool, bool, bool), ValidatorError> {
+) -> Result<AppliedDetail, ValidatorError> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let existing = sqlx::query_as::<_, ValidatorInsightRecord>(INSIGHT_SELECT)
         .bind(validator_id)
@@ -3281,7 +3321,7 @@ async fn apply_provider_result(
                 .bind(validator_id)
                 .execute(&mut **tx)
                 .await?;
-                let (analytics_changed, month_key) = record_daily_snapshot(
+                let (analytics_changed, stored_day) = record_daily_snapshot(
                     tx,
                     validator_id,
                     source,
@@ -3291,12 +3331,14 @@ async fn apply_provider_result(
                     timezone,
                 )
                 .await?;
-                rebuild_monthly_aggregate(tx, validator_id, timezone, &month_key, &now).await?;
-                return Ok((
-                    true,
+                rebuild_monthly_aggregate(tx, validator_id, timezone, &stored_day.month_key, &now)
+                    .await?;
+                return Ok(AppliedDetail {
+                    stored: true,
                     activity_changed,
-                    analytics_changed || activity_changed,
-                ));
+                    invalidated: analytics_changed || activity_changed,
+                    stored_day: Some(stored_day),
+                });
             }
 
             let decreases = counter_decreases(existing.as_ref(), &observation);
@@ -3344,7 +3386,7 @@ async fn apply_provider_result(
                 .bind(&now)
                 .execute(&mut **tx)
                 .await?;
-            let (analytics_changed, month_key) = record_daily_snapshot(
+            let (analytics_changed, stored_day) = record_daily_snapshot(
                 tx,
                 validator_id,
                 &source,
@@ -3354,12 +3396,14 @@ async fn apply_provider_result(
                 timezone,
             )
             .await?;
-            rebuild_monthly_aggregate(tx, validator_id, timezone, &month_key, &now).await?;
-            Ok((
-                true,
+            rebuild_monthly_aggregate(tx, validator_id, timezone, &stored_day.month_key, &now)
+                .await?;
+            Ok(AppliedDetail {
+                stored: true,
                 activity_changed,
-                analytics_changed || activity_changed,
-            ))
+                invalidated: analytics_changed || activity_changed,
+                stored_day: Some(stored_day),
+            })
         }
         outcome => {
             let (name, diagnostic) = match outcome {
@@ -3389,7 +3433,12 @@ async fn apply_provider_result(
                 .bind(&now)
                 .execute(&mut **tx)
                 .await?;
-            Ok((false, false, invalidated))
+            Ok(AppliedDetail {
+                stored: false,
+                activity_changed: false,
+                invalidated,
+                stored_day: None,
+            })
         }
     }
 }
@@ -3400,16 +3449,21 @@ async fn apply_provider_result(
 /// detail failure never clears a last-good rank (#158).
 ///
 /// The answer also reaches that Validator's snapshot for the configured local
-/// day, because a daily rank trend can only describe ranks the ranking
-/// endpoint actually reported (#219). The day carries the newest rank reading
-/// for it: an authoritative "not in the cohort" answer stores NULL, and a
-/// failed ranking attempt leaves the stored reading untouched, exactly like
-/// the current-state columns above it.
+/// day the same refresh cycle observed, because a daily rank trend can only
+/// describe ranks the ranking endpoint actually reported for a day that was
+/// observed (#219). `stored_day` is that day, taken from the cycle's own
+/// detail read: a cycle that stored no snapshot writes no rank, so a fresh
+/// ranking answer is never attached to an older day's evidence or to a day
+/// nobody observed. The day carries the newest rank reading for it: an
+/// authoritative "not in the cohort" answer stores NULL, and a failed ranking
+/// attempt leaves the stored reading untouched, exactly like the current-state
+/// columns above it.
 async fn apply_ranking_result(
     tx: &mut Transaction<'_, Sqlite>,
     validator_id: &str,
     lookup: NetworkRankingLookup,
     timezone: &str,
+    stored_day: Option<&StoredDay>,
 ) -> Result<(bool, bool), ValidatorError> {
     let now_instant = crate::auth::now_utc();
     let now = crate::auth::format_rfc3339(now_instant);
@@ -3500,8 +3554,9 @@ async fn apply_ranking_result(
                 .bind(validator_id)
                 .execute(&mut **tx)
                 .await?;
-            record_snapshot_rank(tx, validator_id, timezone, stored_rank, now_instant, &now)
-                .await?;
+            if let Some(day) = stored_day {
+                record_snapshot_rank(tx, validator_id, timezone, stored_rank, day, &now).await?;
+            }
             Ok((confirmed_ranking_change, invalidated))
         }
         NetworkRankingLookup::Unranked { cohort_size } => {
@@ -3517,7 +3572,9 @@ async fn apply_ranking_result(
                 .bind(validator_id)
                 .execute(&mut **tx)
                 .await?;
-            record_snapshot_rank(tx, validator_id, timezone, None, now_instant, &now).await?;
+            if let Some(day) = stored_day {
+                record_snapshot_rank(tx, validator_id, timezone, None, day, &now).await?;
+            }
             Ok((false, invalidated))
         }
         failure => {
@@ -5980,6 +6037,10 @@ mod tests {
         let (validator, _) = create_validator(&db, "platon-mainnet", "0xranked", None, &owner_id)
             .await
             .unwrap();
+        // A detail reading stamped on the previous configured local day, used
+        // by the last cycle below to place a rank on the day it describes.
+        let delayed =
+            crate::auth::format_rfc3339(crate::auth::now_utc() - time::Duration::hours(24));
         let provider = FakeProvider {
             results: std::sync::Mutex::new(vec![
                 ValidatorProviderResult::Success(Box::new(ValidatorObservation {
@@ -5988,16 +6049,31 @@ mod tests {
                     ..Default::default()
                 })),
                 // A detail failure in a later cycle must neither invent a day
-                // nor erase the rank the ranking endpoint answered.
+                // nor rewrite that day's rank from a reading no day observed.
                 ValidatorProviderResult::Error("provider timeout".to_owned()),
                 ValidatorProviderResult::Error("provider timeout".to_owned()),
-                ValidatorProviderResult::Error("provider timeout".to_owned()),
+                // A detail reading identical to the stored one: whether the
+                // two cycles share a wall-clock second or not, the day keeps
+                // the same values, so this test states the rank's placement and
+                // never depends on the second the cycles happened to land in.
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
+                    stake_amount: Some("10".to_owned()),
+                    delegator_count: Some(4),
+                    ..Default::default()
+                })),
+                ValidatorProviderResult::Success(Box::new(ValidatorObservation {
+                    provider_timestamp: Some(delayed.clone()),
+                    stake_amount: Some("13".to_owned()),
+                    delegator_count: Some(4),
+                    ..Default::default()
+                })),
             ]),
             rankings: std::sync::Mutex::new(vec![
                 ranking_with(240, &[("0xranked", 42)]),
                 ranking_with(240, &[("0xranked", 40)]),
                 RankingProviderResult::Error("ranking timeout".to_owned()),
                 ranking_with(240, &[("0xother", 3)]),
+                ranking_with(240, &[("0xranked", 7)]),
             ]),
             ..FakeProvider::default()
         };
@@ -6030,14 +6106,19 @@ mod tests {
         assert_eq!(monthly[0].rank_max, Some(42));
         assert_eq!(monthly[0].rank_last, Some(42));
 
-        // A second cycle answers a new rank while its detail call fails: the
-        // day keeps its last-good metrics and adopts the newest rank reading.
+        // A cycle whose detail call fails stores no day, so it writes no rank
+        // either: the day's rank always arrives with the observation it
+        // belongs to, and failing evidence keeps the last-good reading.
         refresh_kathmandu(&db, &provider, &channels).await.unwrap();
         let daily = list_daily_snapshots(&db, &validator.validator_id, 10)
             .await
             .unwrap();
         assert_eq!(daily.len(), 1, "a failed detail cycle invents no snapshot");
-        assert_eq!(daily[0].rank, Some(40));
+        assert_eq!(
+            daily[0].rank,
+            Some(42),
+            "a cycle that observed no day writes no rank onto one"
+        );
         assert_eq!(daily[0].stake_amount.as_deref(), Some("10"));
 
         // A failed ranking attempt keeps the last-good reading: an unavailable
@@ -6046,7 +6127,7 @@ mod tests {
         let daily = list_daily_snapshots(&db, &validator.validator_id, 10)
             .await
             .unwrap();
-        assert_eq!(daily[0].rank, Some(40));
+        assert_eq!(daily[0].rank, Some(42));
 
         // An authoritative cohort that omits this Validator stores the absence
         // of a rank, which is what the ranking endpoint actually reported.
@@ -6060,6 +6141,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(monthly[0].rank_last, None);
+
+        // A detail reading stamped on the previous configured local day stores
+        // that day, and the same cycle's rank lands with it instead of on the
+        // receipt day or on a day nobody observed.
+        refresh_kathmandu(&db, &provider, &channels).await.unwrap();
+        let daily = list_daily_snapshots(&db, &validator.validator_id, 10)
+            .await
+            .unwrap();
+        assert_eq!(daily.len(), 2, "the delayed reading adds its own day");
+        let yesterday = local_date_at(
+            "Asia/Kathmandu",
+            crate::auth::now_utc() - time::Duration::hours(24),
+        )
+        .unwrap();
+        assert_eq!(daily[1].local_date, yesterday);
+        assert_eq!(
+            daily[1].provider_timestamp.as_deref(),
+            Some(delayed.as_str())
+        );
+        assert_eq!(
+            daily[1].rank,
+            Some(7),
+            "the rank is placed on the day its own cycle stored"
+        );
+        assert_eq!(
+            daily[0].rank, None,
+            "the receipt day keeps the reading it was observed with"
+        );
+        assert_eq!(
+            daily[0].stake_amount.as_deref(),
+            Some("10"),
+            "the receipt day keeps the reading it was observed with"
+        );
     }
 
     #[tokio::test]

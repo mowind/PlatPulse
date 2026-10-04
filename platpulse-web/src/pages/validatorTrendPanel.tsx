@@ -11,14 +11,16 @@
  * answer proves holds no snapshot breaks the line and is listed as a silence,
  * and a metric a stored row never carried is Unknown rather than zero.
  *
- * Reward, block and stake values are cumulative Provider counters as of each
- * sample: the panel says so and never derives period earnings, net profit, or a
- * re-bucketed series from them.
+ * Reward and block values are cumulative Provider counters as of each sample,
+ * and stake is the balance the Provider reported then: the panel labels each as
+ * what it is and never derives period earnings, net profit, or a re-bucketed
+ * series from them.
  */
-import { useState, type ReactNode } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router'
 import { useAdminValidatorTrend } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
+import { DetailItem, DetailList } from '../components/DetailList'
 import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
 import { CardX } from '../components/ui/card-x'
@@ -43,6 +45,7 @@ import {
   validatorTrendRange,
   validatorTrendSampleTimeLabel,
   validatorTrendStretchNotice,
+  validatorTrendTimestamps,
   validatorTrendTruncationNotice,
   type ValidatorTrendSeries,
 } from '../validatorTrend'
@@ -52,20 +55,6 @@ import type {
 } from '../api/generated'
 
 const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD_STATIC)
-
-/** Emerald detail grid: label above its value, stacked on narrow viewports. */
-function DetailList({ children }: { children: ReactNode }) {
-  return <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</dl>
-}
-
-function DetailItem({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-xs font-medium tracking-wider text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 min-w-0 break-words text-sm">{children}</dd>
-    </div>
-  )
-}
 
 /** The window an Operator is looking at, and the ways it moves. The answered
  *  range is fixed per selection, so the query key stays stable while the page
@@ -273,9 +262,14 @@ function PointsTable({
                 </td>
                 <td data-label="Sample time" className="min-w-0 px-3 py-3">
                   <span className="block">{validatorTrendSampleTimeLabel(point.sampleTime)}</span>
-                  <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                    {formatObservedAt(point.sampleAt)}
-                  </span>
+                  {validatorTrendTimestamps(point).map((stamp) => (
+                    <span
+                      key={stamp.label}
+                      className="mt-0.5 block text-[11px] text-muted-foreground"
+                    >
+                      {stamp.label} {stamp.value}
+                    </span>
+                  ))}
                 </td>
                 <td data-label="Delay" className="min-w-0 px-3 py-3">
                   {validatorTrendDelay(point.delaySeconds, point.clockSuspect)}

@@ -15,24 +15,12 @@
  * with the captured node id ranking first on page 1.
  */
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 
-/** Resolved the same way `server-harness.ts` does: the repo root is the
- *  directory that holds both the Cargo workspace and the web package. */
-function findRepoRoot(): string {
-  let directory = process.cwd()
-  for (;;) {
-    if (existsSync(join(directory, 'Cargo.toml')) && existsSync(join(directory, 'platpulse-web'))) return directory
-    const parent = dirname(directory)
-    if (parent === directory) {
-      throw new Error('could not locate the PlatPulse repository root from ' + process.cwd())
-    }
-    directory = parent
-  }
-}
+import { findRepoRoot } from './repo-root'
 
 export const PLATSCAN_FIXTURE_DIR = join(
   findRepoRoot(),

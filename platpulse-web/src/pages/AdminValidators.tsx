@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import {
   AdminApiError,
@@ -7,6 +7,7 @@ import {
   useAdminValidators,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
+import { DetailItem, DetailList } from '../components/DetailList'
 import { StatusBadge, formatObservedAt, freshnessLabel } from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
 import { CardX } from '../components/ui/card-x'
@@ -54,20 +55,6 @@ import { ValidatorTrendPanel } from './validatorTrendPanel'
  */
 
 const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD_STATIC)
-
-/** Emerald detail grid: label above its value, stacked on narrow viewports. */
-function DetailList({ children }: { children: ReactNode }) {
-  return <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</dl>
-}
-
-function DetailItem({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-xs font-medium tracking-wider text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 min-w-0 break-words text-sm">{children}</dd>
-    </div>
-  )
-}
 
 function Unavailable({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (

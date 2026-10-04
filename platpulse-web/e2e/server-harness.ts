@@ -2,7 +2,9 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
+
+import { findRepoRoot } from './repo-root'
 
 /**
  * Disposable Server harness for the management acceptance suite (issue #166,
@@ -109,21 +111,6 @@ export interface DisposableServer {
   restart(): Promise<void>
   /** Stop the Server and delete every temporary artifact. */
   dispose(): Promise<void>
-}
-
-/** Walk up from the invocation directory so the harness does not depend on the
- *  Playwright cwd happening to be `platpulse-web`. */
-function findRepoRoot(): string {
-  let directory = process.cwd()
-  for (;;) {
-    if (existsSync(join(directory, 'Cargo.toml')) && existsSync(join(directory, 'platpulse-web'))) {
-      return directory
-    }
-    const parent = dirname(directory)
-    if (parent === directory) break
-    directory = parent
-  }
-  throw new Error(`could not locate the PlatPulse repository root from ${process.cwd()}`)
 }
 
 const REPO_ROOT = findRepoRoot()

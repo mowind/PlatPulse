@@ -15,9 +15,10 @@
  *   never a zero: the plot breaks there and the silence is listed.
  * - A metric a stored row never carried (rank, delegator count, delay) is
  *   Unknown; a delay that cannot be measured is null rather than 0.
- * - Reward, block and stake values are cumulative Provider counters as of each
- *   sample. They are labelled cumulative and are never differenced into period
- *   earnings, net profit, or a silently re-bucketed series.
+ * - Reward and block values are cumulative Provider counters as of each sample;
+ *   stake is the balance the Provider reported at that sample. Each is labelled
+ *   as what it is and is never differenced into period earnings, net profit, or
+ *   a silently re-bucketed series.
  * - Coverage is disclosed rather than assumed: days requested, answered,
  *   expected, observed and missing, plus every day the answer did not reach
  *   (a clamped window, a truncated page, an exclusive cursor) are all said out
@@ -32,6 +33,7 @@ import type {
   AdminValidatorTrendPoint,
   AdminValidatorTrendResponse,
 } from './api/generated'
+import { formatObservedAt } from './components/StatusBadge'
 import { formatDuration } from './formatDuration'
 import type { ValidatorTone } from './validators'
 
@@ -118,12 +120,6 @@ const COVERAGE: Record<string, ValidatorTrendNotice> = {
     tone: 'ok',
     description: 'Every configured local day in the answered stretch carries a stored snapshot.',
   },
-  partial: {
-    label: 'Partial',
-    tone: 'warning',
-    description:
-      'Some configured local days in the answered stretch carry no stored snapshot. The days that do are shown; the missing ones are listed as silences, never as zeros.',
-  },
   unavailable: {
     label: 'Unavailable',
     tone: 'warning',
@@ -145,12 +141,35 @@ export function validatorTrendCoverage(
   page: AdminValidatorTrendResponse | undefined,
 ): ValidatorTrendNotice {
   if (!page) return { label: 'Unknown', tone: 'neutral', description: 'No answer yet.' }
+  if ((page.coverage ?? '').trim().toLowerCase() === 'partial') return partialNotice(page)
   const known = COVERAGE[(page.coverage ?? '').trim().toLowerCase()]
   if (known) return known
   return {
     label: 'Unknown',
     tone: 'neutral',
     description: 'The Server reported a coverage verdict this surface does not know.',
+  }
+}
+
+/** Partial has two honest readings and the answer's own numbers choose which
+ *  one is said: a proven silence inside the answered stretch, or an answered
+ *  stretch that is itself short of the requested window — a truncated page or a
+ *  clamped one. Claiming missing days the answer never proved would report a
+ *  silence that is only ever an unanswered window. */
+function partialNotice(page: AdminValidatorTrendResponse): ValidatorTrendNotice {
+  if (typeof page.missingDays === 'number' && page.missingDays > 0) {
+    return {
+      label: 'Partial',
+      tone: 'warning',
+      description:
+        'Some configured local days in the answered stretch carry no stored snapshot. The days that do are shown; the missing ones are listed as silences, never as zeros.',
+    }
+  }
+  return {
+    label: 'Partial',
+    tone: 'warning',
+    description:
+      'Every configured local day in the answered stretch carries a stored snapshot, but the answered stretch is not the whole requested window: the rest of the window is unanswered rather than silent.',
   }
 }
 
@@ -241,7 +260,7 @@ export function validatorTrendCounterNotice(
 ): string {
   const semantics = (page?.counterSemantics ?? '').trim().toLowerCase()
   if (semantics === 'cumulative') {
-    return 'Reward, block and stake values are the cumulative Provider counters as of each sample. This surface never computes period earnings, net profit, or a re-bucketed series from them.'
+    return 'Reward and block values are cumulative Provider counters as of each sample; stake is the balance the Provider reported at that sample. This surface never computes period earnings, net profit, or a re-bucketed series from them.'
   }
   if (semantics.length === 0) {
     return 'The Server did not state what these counters mean, so no reading is claimed.'
@@ -272,6 +291,27 @@ export function validatorTrendSampleTimeLabel(sampleTime: string | null | undefi
   if (value === 'provider') return 'Provider timestamp'
   if (value === 'receipt') return 'Server receipt (fallback)'
   return 'Unknown'
+}
+
+/** One labelled instant of a stored day. */
+export type ValidatorTrendTimestamp = { label: string; value: string }
+
+/** The three instants a stored day carries, each named: the instant that chose
+ *  the day, the Provider's own timestamp, and the Server receipt. A day whose
+ *  sample time came from the Provider is therefore never shown without the
+ *  receipt it was measured against, and a Provider timestamp the observation
+ *  never carried reads Unknown rather than borrowing the receipt (#219). */
+export function validatorTrendTimestamps(
+  point: AdminValidatorTrendPoint,
+): ValidatorTrendTimestamp[] {
+  return [
+    { label: 'Sample', value: formatObservedAt(point.sampleAt) },
+    {
+      label: 'Provider',
+      value: point.providerTimestamp ? formatObservedAt(point.providerTimestamp) : 'Unknown',
+    },
+    { label: 'Receipt', value: formatObservedAt(point.receivedAt) },
+  ]
 }
 
 /** The delay between the Provider's stamp and the Server receipt. An unknown

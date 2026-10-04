@@ -1047,6 +1047,11 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     };
     state = state.with_geo_provider(geo_selection);
     if let Some(provider_config) = config.validator_provider.clone() {
+        // The configured calendar is a read contract for retained Validator
+        // evidence, so it is installed even when the Provider itself cannot
+        // start: a disabled or failed Provider must never silently re-read
+        // stored days in UTC (#219).
+        state = state.with_validator_timezone(provider_config.timezone.clone());
         match crate::validator::PlatScanValidatorProvider::new(
             provider_config.networks.clone(),
             std::time::Duration::from_secs(provider_config.timeout_seconds),
@@ -1054,8 +1059,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             Ok(provider) => {
                 state = state
                     .with_validator_provider(std::sync::Arc::new(provider))
-                    .with_validator_freshness_seconds(provider_config.stale_after_seconds())
-                    .with_validator_timezone(provider_config.timezone.clone());
+                    .with_validator_freshness_seconds(provider_config.stale_after_seconds());
             }
             Err(error) => eprintln!(
                 "Validator Provider disabled: {}",

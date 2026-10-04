@@ -30,6 +30,7 @@ import {
   validatorTrendRange,
   validatorTrendSampleTimeLabel,
   validatorTrendStretchNotice,
+  validatorTrendTimestamps,
   validatorTrendTruncationNotice,
   validatorTrendValue,
 } from './validatorTrend'
@@ -134,6 +135,30 @@ describe('validatorTrendCoverage', () => {
     expect(validatorTrendCoverage(undefined).label).toBe('Unknown')
     expect(validatorTrendCoverage(page({ coverage: 'something-new' })).label).toBe('Unknown')
     expect(validatorTrendCoverage(page({ coverage: 'something-new' })).tone).toBe('neutral')
+  })
+
+  it('says a silence only when the answer proves one, and an unanswered window otherwise', () => {
+    const silence = validatorTrendCoverage(page({ coverage: 'partial', missingDays: 2 }))
+    expect(silence.label).toBe('Partial')
+    expect(silence.description).toContain('carry no stored snapshot')
+    expect(silence.description).toContain('silences, never as zeros')
+
+    // A full page that is only short of the requested window is partial for a
+    // truncation, not because a day inside the answered stretch is missing.
+    const unanswered = validatorTrendCoverage(
+      page({
+        coverage: 'partial',
+        expectedDays: 32,
+        missingDays: 0,
+        observedDays: 31,
+        truncated: true,
+      }),
+    )
+    expect(unanswered.label).toBe('Partial')
+    expect(unanswered.tone).toBe('warning')
+    expect(unanswered.description).not.toContain('carry no stored snapshot')
+    expect(unanswered.description).toContain('not the whole requested window')
+    expect(unanswered.description).toContain('unanswered rather than silent')
   })
 })
 
@@ -269,6 +294,10 @@ describe('validatorTrendCounterNotice', () => {
     const notice = validatorTrendCounterNotice(page())
     expect(notice).toContain('cumulative Provider counters')
     expect(notice).toContain('never computes period earnings, net profit, or a re-bucketed series')
+    // Stake is an observed balance, not a Provider counter: the cumulative
+    // reading is stated for the two counters it really describes.
+    expect(notice).toContain('stake is the balance the Provider reported at that sample')
+    expect(notice).not.toContain('Reward, block and stake')
   })
 
   it('claims no reading when the Server states no semantics', () => {
@@ -284,6 +313,22 @@ describe('validatorTrendSampleTimeLabel and validatorTrendDelay', () => {
     expect(validatorTrendSampleTimeLabel('provider')).toBe('Provider timestamp')
     expect(validatorTrendSampleTimeLabel('receipt')).toBe('Server receipt (fallback)')
     expect(validatorTrendSampleTimeLabel(null)).toBe('Unknown')
+  })
+
+  it('states the sample, the Provider timestamp and the receipt as three named instants', () => {
+    const stamps = validatorTrendTimestamps(point())
+    expect(stamps.map((stamp) => stamp.label)).toEqual(['Sample', 'Provider', 'Receipt'])
+    expect(stamps[0].value).toContain('2026-01-31 15:00:00 UTC')
+    expect(stamps[1].value).toContain('2026-01-31 15:00:00 UTC')
+    expect(stamps[2].value).toContain('2026-01-31 15:00:30 UTC')
+
+    // A day chosen from the receipt says so, and a Provider timestamp the
+    // observation never carried stays Unknown instead of borrowing it.
+    const receiptOnly = validatorTrendTimestamps(
+      point({ providerTimestamp: null, sampleTime: 'receipt' }),
+    )
+    expect(receiptOnly[1]).toEqual({ label: 'Provider', value: 'Unknown' })
+    expect(receiptOnly[2].value).toContain('2026-01-31 15:00:30 UTC')
   })
 
   it('never reads an unmeasured delay as zero', () => {

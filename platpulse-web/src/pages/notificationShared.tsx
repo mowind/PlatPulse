@@ -1,9 +1,10 @@
-import { useId, useState, type FormEvent, type ReactNode } from 'react'
+import { useId, useState, type FormEvent } from 'react'
 import { Link, NavLink } from 'react-router'
 
 import { AdminApiError, useAdminNotificationRequest } from '../api/admin'
 import type { NotificationRequestResult } from '../api/generated'
 import { useAuth } from '../auth/AuthContext'
+import { DetailItem, DetailList } from '../components/DetailList'
 import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
 import { CardX } from '../components/ui/card-x'
@@ -75,18 +76,10 @@ export function FormFeedbackNote({ feedback }: { feedback: FormFeedback | null }
   )
 }
 
-export function DetailList({ children }: { children: ReactNode }) {
-  return <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</dl>
-}
-
-export function DetailItem({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-xs font-medium tracking-wider text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 min-w-0 break-words text-sm">{children}</dd>
-    </div>
-  )
-}
+// The Emerald detail grid has a single owner (components/DetailList.tsx) so the
+// Owner surfaces cannot drift apart; re-exported here because the pages that
+// speak this shared vocabulary already import it from this module.
+export { DetailItem, DetailList }
 
 const SECTION_LINK =
   'inline-flex min-h-11 items-center rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50'
