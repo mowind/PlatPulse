@@ -58,9 +58,16 @@ export async function focusByKeyboard(page: Page, target: Locator): Promise<Loca
   throw new Error('keyboard focus never reached the control ' + target)
 }
 
-/** A wide table scrolls inside its own region, never the document. */
-export async function expectLocalTableScroll(page: Page, slot: string) {
-  const overflowX = await page
+/** A wide table scrolls inside its own region, never the document. A page that
+ * renders more than one table names the region it means, so the assertion can
+ * never read another region's table. */
+export async function expectLocalTableScroll(
+  page: Page,
+  slot: string,
+  within?: string,
+) {
+  const region = within ? page.locator(within) : page
+  const overflowX = await region
     .locator('[data-slot="' + slot + '"]')
     .evaluate((table) => getComputedStyle(table.parentElement ?? table).overflowX)
   expect(overflowX, slot + ' must scroll inside its own region').toBe('auto')

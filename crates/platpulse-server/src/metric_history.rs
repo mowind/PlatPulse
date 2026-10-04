@@ -69,10 +69,18 @@
 //!   silence, so a stretch that straddles a tier boundary is still reported as
 //!   the gap it is.
 
+use sqlx::query::{Query, QueryAs, QueryScalar};
+use sqlx::sqlite::SqliteArguments;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use time::OffsetDateTime;
 
 use crate::auth::{format_rfc3339, parse_rfc3339};
+use crate::capacity::SkippedScope;
+
+/// The per-Host mount contract limit (platpulse-core/src/observation.rs:73):
+/// one Report states at most this many mounts, which is what bounds the per-mount
+/// Host storage series a single Report can add.
+pub const MAX_HOST_MOUNTS: usize = 128;
 
 /// The Node metric series the Server stores raw and serves to Admin.
 pub const NODE_METRIC_SERIES: [&str; 5] = [
@@ -86,6 +94,235 @@ pub const NODE_METRIC_SERIES: [&str; 5] = [
 /// Whether a metric name is one of the stored Node series.
 pub fn is_node_metric(metric: &str) -> bool {
     NODE_METRIC_SERIES.contains(&metric)
+}
+
+/// The Host metric series the Server stores raw and serves to Admin (issue
+/// #215, design §11.4).
+///
+/// They are the readings the Agent already collects for the machine it runs on:
+/// CPU, physical memory, Load 1/5/15, network rate and per-mount storage. A Host
+/// runs several Nodes, so these series belong to the Agent: they are stored once
+/// per Agent, referenced by every Node view of that Agent, and never deleted by
+/// one Node's Purge (parent #202 story 51).
+///
+/// The values are the collected quantities - bytes, percent, a load average,
+/// bytes per second - never a ratio this Server baked out of two of them, so a
+/// stored `memory_total_bytes` or `disk_total_bytes` stays able to re-derive
+/// the percentage that was true at that instant.
+///
+/// The two storage series are dimensioned by mount path (story 52): storage
+/// history is identified by Agent and path, never by a device identity the
+/// Server cannot honestly claim.
+pub const HOST_METRIC_SERIES: [&str; 10] = [
+    "cpu_percent",
+    "memory_used_bytes",
+    "memory_total_bytes",
+    "load1",
+    "load5",
+    "load15",
+    "network_rx_bytes_per_sec",
+    "network_tx_bytes_per_sec",
+    "disk_used_bytes",
+    "disk_total_bytes",
+];
+
+/// Whether a metric name is one of the stored Host series. The name alone does
+/// not identify a series: the two storage series are told apart by the mount
+/// path they were read from.
+pub fn is_host_metric(metric: &str) -> bool {
+    HOST_METRIC_SERIES.contains(&metric)
+}
+
+/// Which tables and key columns hold one scope's metric history (issue #215).
+///
+/// There is one history engine, not one per scope. A scope differs in exactly
+/// three ways: the tables it writes, the column that names its owner (a Node or
+/// an Agent), and whether its series identity carries a dimension. Host storage
+/// series do: their dimension is the mount path, so a path that moves to another
+/// filesystem starts a new series instead of claiming the old one, and the skip
+/// counts of two mounts are never merged into one number.
+#[derive(Debug, Clone, Copy)]
+pub struct HistorySchema {
+    pub raw_table: &'static str,
+    pub aggregate_table: &'static str,
+    pub ledger_table: &'static str,
+    /// The column naming the owner of the series: `node_id` or `agent_id`.
+    pub scope_column: &'static str,
+    /// Whether the series identity of this scope includes a dimension.
+    pub has_dimension: bool,
+    /// How a write of this scope that protection refused is spelled in the
+    /// capacity ledger.
+    pub skipped_scope: SkippedScope,
+}
+
+/// The Node scope: one set of series per Node, keyed by Node (issues #213 and
+/// #214).
+pub const NODE_HISTORY: HistorySchema = HistorySchema {
+    raw_table: "node_metric_samples",
+    aggregate_table: "node_metric_aggregates",
+    ledger_table: "node_metric_series_state",
+    scope_column: "node_id",
+    has_dimension: false,
+    skipped_scope: SkippedScope::Node,
+};
+
+/// The Host scope: one set of series per Agent, shared by every Node of that
+/// Agent, dimensioned by mount path for the storage series (issue #215).
+pub const HOST_HISTORY: HistorySchema = HistorySchema {
+    raw_table: "host_metric_samples",
+    aggregate_table: "host_metric_aggregates",
+    ledger_table: "host_metric_series_state",
+    scope_column: "agent_id",
+    has_dimension: true,
+    skipped_scope: SkippedScope::Host,
+};
+
+impl HistorySchema {
+    /// Render one statement template for this scope.
+    ///
+    /// Every statement below is written once and filled in here: `{raw}`,
+    /// `{agg}` and `{ledger}` are table names, `{scope}` is the owner
+    /// column, and the dimension fragments are dropped entirely for a scope
+    /// whose series have no dimension. One definition therefore keeps one bind
+    /// order for both scopes, and a dimensioned series cannot be reached through
+    /// a statement that forgot its dimension: the predicate is part of the
+    /// template, not something each caller has to remember.
+    pub fn sql(&self, template: &str) -> String {
+        template
+            .replace("{raw}", self.raw_table)
+            .replace("{agg}", self.aggregate_table)
+            .replace("{ledger}", self.ledger_table)
+            .replace("{scope}", self.scope_column)
+            .replace(
+                "{dim_column}",
+                if self.has_dimension {
+                    ", dimension"
+                } else {
+                    ""
+                },
+            )
+            .replace("{dim_bind}", if self.has_dimension { ", ?" } else { "" })
+            .replace(
+                "{dim_predicate}",
+                if self.has_dimension {
+                    " AND dimension = ?"
+                } else {
+                    ""
+                },
+            )
+    }
+}
+
+/// The identity of one series inside a scope.
+#[derive(Debug, Clone, Copy)]
+pub struct SeriesKey<'a> {
+    pub metric: &'a str,
+    /// The mount path of a per-mount Host series. Empty for every series whose
+    /// scope has no dimension.
+    pub dimension: &'a str,
+}
+
+/// One scope's series: the schema that holds it, the Agent or Node that owns it,
+/// and the metric - with its dimension - that identifies it inside that scope.
+#[derive(Debug, Clone, Copy)]
+pub struct SeriesScope<'a> {
+    pub schema: &'a HistorySchema,
+    pub scope_key: &'a str,
+    pub series: SeriesKey<'a>,
+}
+
+impl<'a> SeriesScope<'a> {
+    /// The series of one Node.
+    pub fn node(node_id: &'a str, metric: &'a str) -> Self {
+        Self {
+            schema: &NODE_HISTORY,
+            scope_key: node_id,
+            series: SeriesKey {
+                metric,
+                dimension: "",
+            },
+        }
+    }
+
+    /// The shared series of one Agent. `dimension` is the mount path for the
+    /// storage series and empty for every other Host series.
+    pub fn host(agent_id: &'a str, metric: &'a str, dimension: &'a str) -> Self {
+        Self {
+            schema: &HOST_HISTORY,
+            scope_key: agent_id,
+            series: SeriesKey { metric, dimension },
+        }
+    }
+
+    /// The statement text of one template for this scope.
+    fn sql(&self, template: &str) -> String {
+        self.schema.sql(template)
+    }
+
+    /// Bind the series identity of one statement: the owner, the metric, and,
+    /// when the scope has one, the dimension that separates two series of that
+    /// owner and metric.
+    ///
+    /// sqlx binds placeholders in call order, so this must be called at the
+    /// point in the chain where the series predicate appears in the statement
+    /// text. Every read statement and every upsert in this module starts with
+    /// `{scope} = ? AND metric = ?`, so there it is called first, straight
+    /// around a fresh statement. The two statements that rewrite a bucket begin
+    /// with a `SET` clause instead — see their own notes — and there the call
+    /// wraps a statement that has already been given its `SET` values.
+    fn bind_series<'q, S: SeriesStatement<'q>>(&'q self, stmt: S) -> S {
+        let stmt = stmt.bind_owner_metric(self.scope_key, self.series.metric);
+        if self.schema.has_dimension {
+            stmt.bind_dimension(self.series.dimension)
+        } else {
+            stmt
+        }
+    }
+}
+
+/// A statement that has not been given its series identity yet.
+///
+/// Every statement in this module starts with the same binds — the owner, the
+/// metric, and the dimension when the scope has one — but sqlx exposes three
+/// statement shapes (an untyped row statement, a typed one and a scalar one)
+/// that share no trait, so each one states how it binds a single column and
+/// [`SeriesScope::bind_series`] decides which columns the scope binds.
+trait SeriesStatement<'q> {
+    /// Bind the series owner and its metric.
+    fn bind_owner_metric(self, scope_key: &'q str, metric: &'q str) -> Self;
+
+    /// Bind the dimension that separates two series of one owner and metric.
+    fn bind_dimension(self, dimension: &'q str) -> Self;
+}
+
+impl<'q> SeriesStatement<'q> for Query<'q, Sqlite, SqliteArguments<'q>> {
+    fn bind_owner_metric(self, scope_key: &'q str, metric: &'q str) -> Self {
+        self.bind(scope_key).bind(metric)
+    }
+
+    fn bind_dimension(self, dimension: &'q str) -> Self {
+        self.bind(dimension)
+    }
+}
+
+impl<'q, O> SeriesStatement<'q> for QueryAs<'q, Sqlite, O, SqliteArguments<'q>> {
+    fn bind_owner_metric(self, scope_key: &'q str, metric: &'q str) -> Self {
+        self.bind(scope_key).bind(metric)
+    }
+
+    fn bind_dimension(self, dimension: &'q str) -> Self {
+        self.bind(dimension)
+    }
+}
+
+impl<'q, O> SeriesStatement<'q> for QueryScalar<'q, Sqlite, O, SqliteArguments<'q>> {
+    fn bind_owner_metric(self, scope_key: &'q str, metric: &'q str) -> Self {
+        self.bind(scope_key).bind(metric)
+    }
+
+    fn bind_dimension(self, dimension: &'q str) -> Self {
+        self.bind(dimension)
+    }
 }
 
 /// The design's raw window: the most recent 24 hours (§11.4).
@@ -441,8 +678,8 @@ pub struct MetricRange {
 /// its own and a test can pin every boundary.
 #[derive(Debug, Clone)]
 pub struct RangeQuery<'a> {
-    pub node_id: &'a str,
-    pub metric: &'a str,
+    /// The series this request reads: the owning scope, metric and dimension.
+    pub scope: SeriesScope<'a>,
     /// The requested stretch, both ends inclusive.
     pub from: OffsetDateTime,
     pub to: OffsetDateTime,
@@ -886,20 +1123,19 @@ pub enum Delivery {
 /// widening stays a replay instead of being counted a second time.
 pub async fn classify_delivery(
     tx: &mut Transaction<'_, Sqlite>,
-    node_id: &str,
-    metric: &str,
+    scope: &SeriesScope<'_>,
     observed_at: &str,
     stored_value: Option<f64>,
     value: f64,
     cutoff: &str,
 ) -> Result<Delivery, sqlx::Error> {
-    let ledger: Option<(String, String)> = sqlx::query_as(
-        "SELECT last_observed_at, released_before FROM node_metric_series_state WHERE node_id = ? AND metric = ?",
-    )
-    .bind(node_id)
-    .bind(metric)
-    .fetch_optional(&mut **tx)
-    .await?;
+    let sql = scope.sql(
+        "SELECT last_observed_at, released_before FROM {ledger} WHERE {scope} = ? AND metric = ?{dim_predicate}",
+    );
+    let ledger: Option<(String, String)> = scope
+        .bind_series(sqlx::query_as(&sql))
+        .fetch_optional(&mut **tx)
+        .await?;
     let (high_water, released_before) = match ledger {
         Some((last_observed_at, released_before)) => {
             (Some(last_observed_at), Some(released_before))
@@ -970,8 +1206,7 @@ pub fn outside_retained_window(stored_value: Option<f64>, observed_at: &str, cut
 /// as fresh coverage.
 pub async fn record_delivery(
     tx: &mut Transaction<'_, Sqlite>,
-    node_id: &str,
-    metric: &str,
+    scope: &SeriesScope<'_>,
     observed_at: &str,
     received_at: &str,
     delivery: Delivery,
@@ -979,38 +1214,63 @@ pub async fn record_delivery(
     let is_new = delivery == Delivery::Observed;
     let is_correction = delivery == Delivery::Correction;
     let is_replay = delivery == Delivery::Replay;
-    sqlx::query(
-        "INSERT INTO node_metric_series_state (node_id, metric, first_observed_at, last_observed_at, last_received_at, observation_count, replayed_count, corrected_count, updated_at) VALUES (?, ?, ?, ?, ?, 1, 0, 0, ?) ON CONFLICT(node_id, metric) DO UPDATE SET first_observed_at = MIN(node_metric_series_state.first_observed_at, excluded.first_observed_at), last_received_at = CASE WHEN excluded.last_observed_at >= node_metric_series_state.last_observed_at THEN excluded.last_received_at ELSE node_metric_series_state.last_received_at END, last_observed_at = MAX(node_metric_series_state.last_observed_at, excluded.last_observed_at), observation_count = node_metric_series_state.observation_count + ?, replayed_count = node_metric_series_state.replayed_count + ?, corrected_count = node_metric_series_state.corrected_count + ?, updated_at = excluded.updated_at",
-    )
-    .bind(node_id)
-    .bind(metric)
-    .bind(observed_at)
-    .bind(observed_at)
-    .bind(received_at)
-    .bind(received_at)
-    .bind(if is_new { 1_i64 } else { 0 })
-    .bind(if is_replay { 1_i64 } else { 0 })
-    .bind(if is_correction { 1_i64 } else { 0 })
-    .execute(&mut **tx)
-    .await?;
+    let sql = scope.sql(
+        "INSERT INTO {ledger} ({scope}, metric{dim_column}, first_observed_at, last_observed_at, last_received_at, observation_count, replayed_count, corrected_count, updated_at) VALUES (?, ?{dim_bind}, ?, ?, ?, 1, 0, 0, ?) ON CONFLICT({scope}, metric{dim_column}) DO UPDATE SET first_observed_at = MIN({ledger}.first_observed_at, excluded.first_observed_at), last_received_at = CASE WHEN excluded.last_observed_at >= {ledger}.last_observed_at THEN excluded.last_received_at ELSE {ledger}.last_received_at END, last_observed_at = MAX({ledger}.last_observed_at, excluded.last_observed_at), observation_count = {ledger}.observation_count + ?, replayed_count = {ledger}.replayed_count + ?, corrected_count = {ledger}.corrected_count + ?, updated_at = excluded.updated_at",
+    );
+    scope
+        .bind_series(sqlx::query(&sql))
+        .bind(observed_at)
+        .bind(observed_at)
+        .bind(received_at)
+        .bind(received_at)
+        .bind(if is_new { 1_i64 } else { 0 })
+        .bind(if is_replay { 1_i64 } else { 0 })
+        .bind(if is_correction { 1_i64 } else { 0 })
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }
 
 /// The value the Server already holds for one observation time, if any.
 pub async fn stored_value(
     tx: &mut Transaction<'_, Sqlite>,
-    node_id: &str,
-    metric: &str,
+    scope: &SeriesScope<'_>,
     observed_at: &str,
 ) -> Result<Option<f64>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT value FROM node_metric_samples WHERE node_id = ? AND metric = ? AND observed_at = ?",
-    )
-    .bind(node_id)
-    .bind(metric)
-    .bind(observed_at)
-    .fetch_optional(&mut **tx)
-    .await
+    let sql = scope.sql(
+        "SELECT value FROM {raw} WHERE {scope} = ? AND metric = ?{dim_predicate} AND observed_at = ?",
+    );
+    scope
+        .bind_series(sqlx::query_scalar(&sql))
+        .bind(observed_at)
+        .fetch_optional(&mut **tx)
+        .await
+}
+
+/// Store one raw observation, or restate the value of a stored one.
+///
+/// The statement is the schema's, so a dimensioned series is written and
+/// matched on its dimension: two mounts observed in the same Report keep their
+/// own rows, and a restatement reaches the mount path it names rather than the
+/// first row that shares an instant.
+pub async fn store_sample(
+    tx: &mut Transaction<'_, Sqlite>,
+    scope: &SeriesScope<'_>,
+    observed_at: &str,
+    received_at: &str,
+    value: f64,
+) -> Result<(), sqlx::Error> {
+    let sql = scope.sql(
+        "INSERT INTO {raw} ({scope}, metric{dim_column}, observed_at, received_at, value) VALUES (?, ?{dim_bind}, ?, ?, ?) ON CONFLICT({scope}, metric{dim_column}, observed_at) DO UPDATE SET value = excluded.value",
+    );
+    scope
+        .bind_series(sqlx::query(&sql))
+        .bind(observed_at)
+        .bind(received_at)
+        .bind(value)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 /// The evidence floor a counted observation that no row can answer for leaves.
@@ -1031,19 +1291,17 @@ pub fn counted_evidence_floor(observed_at: &str) -> Option<String> {
 /// Move one series' evidence floor forward, never back.
 pub async fn stamp_evidence_floor(
     tx: &mut Transaction<'_, Sqlite>,
-    node_id: &str,
-    metric: &str,
+    scope: &SeriesScope<'_>,
     floor: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE node_metric_series_state SET released_before = MAX(released_before, ?) WHERE node_id = ? AND metric = ? AND released_before < ?",
-    )
-    .bind(floor)
-    .bind(node_id)
-    .bind(metric)
-    .bind(floor)
-    .execute(&mut **tx)
-    .await?;
+    let sql = scope.sql(
+        "UPDATE {ledger} SET released_before = MAX(released_before, ?) WHERE {scope} = ? AND metric = ?{dim_predicate} AND released_before < ?",
+    );
+    scope
+        .bind_series(sqlx::query(&sql).bind(floor))
+        .bind(floor)
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }
 
@@ -1056,26 +1314,10 @@ pub async fn stamp_evidence_floor(
 /// *observation* rather than the newest delivery, and the row's update instant
 /// moves on every accepted observation so a bucket that changed only in count
 /// is still visibly current.
-const AGGREGATE_UPSERT_SQL: &str = "INSERT INTO node_metric_aggregates (node_id, metric, grain_seconds, bucket_start, sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at, last_received_at, max_gap_seconds, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (node_id, metric, grain_seconds, bucket_start) DO UPDATE SET sample_count = node_metric_aggregates.sample_count + 1, min_value = MIN(node_metric_aggregates.min_value, excluded.min_value), max_value = MAX(node_metric_aggregates.max_value, excluded.max_value), last_value = CASE WHEN excluded.last_observed_at >= node_metric_aggregates.last_observed_at THEN excluded.last_value ELSE node_metric_aggregates.last_value END, first_observed_at = MIN(node_metric_aggregates.first_observed_at, excluded.first_observed_at), last_observed_at = MAX(node_metric_aggregates.last_observed_at, excluded.last_observed_at), last_received_at = CASE WHEN excluded.last_observed_at >= node_metric_aggregates.last_observed_at THEN excluded.last_received_at ELSE node_metric_aggregates.last_received_at END, max_gap_seconds = MAX(node_metric_aggregates.max_gap_seconds, excluded.max_gap_seconds), updated_at = excluded.updated_at";
+const AGGREGATE_UPSERT_SQL: &str = "INSERT INTO {agg} ({scope}, metric{dim_column}, grain_seconds, bucket_start, sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at, last_received_at, max_gap_seconds, updated_at) VALUES (?, ?{dim_bind}, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ({scope}, metric{dim_column}, grain_seconds, bucket_start) DO UPDATE SET sample_count = {agg}.sample_count + 1, min_value = MIN({agg}.min_value, excluded.min_value), max_value = MAX({agg}.max_value, excluded.max_value), last_value = CASE WHEN excluded.last_observed_at >= {agg}.last_observed_at THEN excluded.last_value ELSE {agg}.last_value END, first_observed_at = MIN({agg}.first_observed_at, excluded.first_observed_at), last_observed_at = MAX({agg}.last_observed_at, excluded.last_observed_at), last_received_at = CASE WHEN excluded.last_observed_at >= {agg}.last_observed_at THEN excluded.last_received_at ELSE {agg}.last_received_at END, max_gap_seconds = MAX({agg}.max_gap_seconds, excluded.max_gap_seconds), updated_at = excluded.updated_at";
 
-/// Accumulate one accepted observation into both aggregate tiers.
-///
-/// This is called inside the receipt transaction, and only for an observation
-/// the delivery classification accepted as new, so a bucket can never count
-/// something the series ledger did not count: a replayed Report, a repeated
-/// delivery of an instant already counted and a sample the low-space
-/// protection refused do not reach this function at all. Both tiers are written
-/// whatever the raw window's policy currently is, because the tiers answer a
-/// stretch the raw window may cover today and release tomorrow, and skipping
-/// the write under a wide policy would leave a hole if the policy were later
-/// narrowed.
-///
-/// An instant that is not a canonical RFC 3339 UTC value is refused by the
-/// bucket alignment and contributes no bucket. Stored observations are
-/// canonical by construction (the tables constrain their length), so this is a
-/// guard rather than a policy.
 /// What a bucket already knows about its own continuity.
-const BUCKET_GAP_STATE_SQL: &str = "SELECT first_observed_at, last_observed_at, max_gap_seconds FROM node_metric_aggregates WHERE node_id = ? AND metric = ? AND grain_seconds = ? AND bucket_start = ?";
+const BUCKET_GAP_STATE_SQL: &str = "SELECT first_observed_at, last_observed_at, max_gap_seconds FROM {agg} WHERE {scope} = ? AND metric = ?{dim_predicate} AND grain_seconds = ? AND bucket_start = ?";
 
 /// The gap a newly arriving observation is known to leave inside its bucket.
 ///
@@ -1111,14 +1353,31 @@ fn candidate_gap_seconds(
     0
 }
 
+/// Accumulate one accepted observation into both aggregate tiers.
+///
+/// This is called inside the receipt transaction, and only for an observation
+/// the delivery classification accepted as new, so a bucket can never count
+/// something the series ledger did not count: a replayed Report, a repeated
+/// delivery of an instant already counted and a sample the low-space
+/// protection refused do not reach this function at all. Both tiers are written
+/// whatever the raw window's policy currently is, because the tiers answer a
+/// stretch the raw window may cover today and release tomorrow, and skipping
+/// the write under a wide policy would leave a hole if the policy were later
+/// narrowed.
+///
+/// An instant that is not a canonical RFC 3339 UTC value is refused by the
+/// bucket alignment and contributes no bucket. Stored observations are
+/// canonical by construction (the tables constrain their length), so this is a
+/// guard rather than a policy.
 pub async fn record_aggregates(
     tx: &mut Transaction<'_, Sqlite>,
-    node_id: &str,
-    metric: &str,
+    scope: &SeriesScope<'_>,
     observed_at: &str,
     received_at: &str,
     value: f64,
 ) -> Result<(), sqlx::Error> {
+    let gap_state_sql = scope.sql(BUCKET_GAP_STATE_SQL);
+    let upsert_sql = scope.sql(AGGREGATE_UPSERT_SQL);
     for grain_seconds in AGGREGATE_GRAINS {
         let Some(bucket_start) = aligned_bucket_start(observed_at, grain_seconds) else {
             continue;
@@ -1127,9 +1386,8 @@ pub async fn record_aggregates(
         // coverage is decided by the largest gap between two observations it
         // counted, so that figure is maintained here rather than guessed at read
         // time from two instants and a count.
-        let stored = sqlx::query_as::<_, (String, String, i64)>(BUCKET_GAP_STATE_SQL)
-            .bind(node_id)
-            .bind(metric)
+        let stored = scope
+            .bind_series(sqlx::query_as::<_, (String, String, i64)>(&gap_state_sql))
             .bind(grain_seconds)
             .bind(&bucket_start)
             .fetch_optional(&mut **tx)
@@ -1137,9 +1395,8 @@ pub async fn record_aggregates(
         let max_gap_seconds = stored.map_or(0, |(first, last, recorded)| {
             recorded.max(candidate_gap_seconds(&first, &last, observed_at))
         });
-        sqlx::query(AGGREGATE_UPSERT_SQL)
-            .bind(node_id)
-            .bind(metric)
+        scope
+            .bind_series(sqlx::query(&upsert_sql))
             .bind(grain_seconds)
             .bind(&bucket_start)
             .bind(value)
@@ -1157,17 +1414,24 @@ pub async fn record_aggregates(
 }
 
 /// The envelope the raw rows still retained for one bucket window prove.
-const BUCKET_ENVELOPE_SQL: &str = "SELECT COUNT(*), MIN(value), MAX(value) FROM node_metric_samples WHERE node_id = ? AND metric = ? AND observed_at >= ? AND observed_at < ?";
+const BUCKET_ENVELOPE_SQL: &str = "SELECT COUNT(*), MIN(value), MAX(value) FROM {raw} WHERE {scope} = ? AND metric = ?{dim_predicate} AND observed_at >= ? AND observed_at < ?";
+
+/// The first raw row retained for one bucket window.
+const NEWEST_RAW_FIRST_SQL: &str = "SELECT MIN(observed_at) FROM {raw} WHERE {scope} = ? AND metric = ?{dim_predicate} AND observed_at >= ? AND observed_at < ?";
 
 /// The newest raw row retained for one bucket window.
-const BUCKET_NEWEST_SQL: &str = "SELECT observed_at, received_at, value FROM node_metric_samples WHERE node_id = ? AND metric = ? AND observed_at >= ? AND observed_at < ? ORDER BY observed_at DESC LIMIT 1";
+const BUCKET_NEWEST_SQL: &str = "SELECT observed_at, received_at, value FROM {raw} WHERE {scope} = ? AND metric = ?{dim_predicate} AND observed_at >= ? AND observed_at < ? ORDER BY observed_at DESC LIMIT 1";
 
 /// How many observations the stored bucket counted.
-const BUCKET_STATE_SQL: &str = "SELECT sample_count FROM node_metric_aggregates WHERE node_id = ? AND metric = ? AND grain_seconds = ? AND bucket_start = ?";
+const BUCKET_STATE_SQL: &str = "SELECT sample_count FROM {agg} WHERE {scope} = ? AND metric = ?{dim_predicate} AND grain_seconds = ? AND bucket_start = ?";
 
 /// Replace a bucket's whole envelope from rows that account for every
 /// observation the bucket counted.
-const BUCKET_REPLACE_SQL: &str = "UPDATE node_metric_aggregates SET min_value = ?, max_value = ?, last_value = ?, first_observed_at = ?, last_observed_at = ?, last_received_at = ?, updated_at = ? WHERE node_id = ? AND metric = ? AND grain_seconds = ? AND bucket_start = ?";
+///
+/// A `SET` clause comes before the `WHERE` one in the statement text, so a
+/// caller binds the seven envelope values first and gives the statement its
+/// series identity after them (see `SeriesScope::bind_series`).
+const BUCKET_REPLACE_SQL: &str = "UPDATE {agg} SET min_value = ?, max_value = ?, last_value = ?, first_observed_at = ?, last_observed_at = ?, last_received_at = ?, updated_at = ? WHERE {scope} = ? AND metric = ?{dim_predicate} AND grain_seconds = ? AND bucket_start = ?";
 
 /// Carry a corrected reading into a bucket whose envelope is not fully
 /// accounted for by retained rows.
@@ -1187,7 +1451,10 @@ const BUCKET_REPLACE_SQL: &str = "UPDATE node_metric_aggregates SET min_value = 
 /// observation's instant - a delay and a newest point computed from a pair that
 /// never existed. The instant the value is carried to is a real observation of
 /// the bucket's own window, so the pair names one true reading.
-const BUCKET_CARRY_SQL: &str = "UPDATE node_metric_aggregates SET min_value = MIN(node_metric_aggregates.min_value, ?), max_value = MAX(node_metric_aggregates.max_value, ?), last_value = CASE WHEN node_metric_aggregates.last_observed_at <= ? THEN ? ELSE node_metric_aggregates.last_value END, last_observed_at = CASE WHEN node_metric_aggregates.last_observed_at <= ? THEN ? ELSE node_metric_aggregates.last_observed_at END, last_received_at = CASE WHEN node_metric_aggregates.last_observed_at <= ? THEN ? ELSE node_metric_aggregates.last_received_at END, updated_at = ? WHERE node_id = ? AND metric = ? AND grain_seconds = ? AND bucket_start = ?";
+///
+/// Its `SET` clause also precedes the `WHERE` one, so the caller binds those
+/// nine values before the series identity (see `SeriesScope::bind_series`).
+const BUCKET_CARRY_SQL: &str = "UPDATE {agg} SET min_value = MIN({agg}.min_value, ?), max_value = MAX({agg}.max_value, ?), last_value = CASE WHEN {agg}.last_observed_at <= ? THEN ? ELSE {agg}.last_value END, last_observed_at = CASE WHEN {agg}.last_observed_at <= ? THEN ? ELSE {agg}.last_observed_at END, last_received_at = CASE WHEN {agg}.last_observed_at <= ? THEN ? ELSE {agg}.last_received_at END, updated_at = ? WHERE {scope} = ? AND metric = ?{dim_predicate} AND grain_seconds = ? AND bucket_start = ?";
 
 /// Re-derive the buckets that counted a corrected observation.
 ///
@@ -1210,12 +1477,17 @@ const BUCKET_CARRY_SQL: &str = "UPDATE node_metric_aggregates SET min_value = MI
 /// ledger already counted the instant.
 pub async fn recompute_aggregates(
     tx: &mut Transaction<'_, Sqlite>,
-    node_id: &str,
-    metric: &str,
+    scope: &SeriesScope<'_>,
     observed_at: &str,
     received_at: &str,
     value: f64,
 ) -> Result<(), sqlx::Error> {
+    let state_sql = scope.sql(BUCKET_STATE_SQL);
+    let envelope_sql = scope.sql(BUCKET_ENVELOPE_SQL);
+    let newest_sql = scope.sql(BUCKET_NEWEST_SQL);
+    let first_sql = scope.sql(NEWEST_RAW_FIRST_SQL);
+    let replace_sql = scope.sql(BUCKET_REPLACE_SQL);
+    let carry_sql = scope.sql(BUCKET_CARRY_SQL);
     for grain_seconds in AGGREGATE_GRAINS {
         let Some(bucket_start) = aligned_bucket_start(observed_at, grain_seconds) else {
             continue;
@@ -1224,9 +1496,8 @@ pub async fn recompute_aggregates(
             continue;
         };
         let bucket_end = format_rfc3339(start + time::Duration::seconds(grain_seconds));
-        let stored = sqlx::query_as::<_, (i64,)>(BUCKET_STATE_SQL)
-            .bind(node_id)
-            .bind(metric)
+        let stored = scope
+            .bind_series(sqlx::query_as::<_, (i64,)>(&state_sql))
             .bind(grain_seconds)
             .bind(&bucket_start)
             .fetch_optional(&mut **tx)
@@ -1238,9 +1509,10 @@ pub async fn recompute_aggregates(
         let Some((stored_count,)) = stored else {
             continue;
         };
-        let envelope = sqlx::query_as::<_, (i64, Option<f64>, Option<f64>)>(BUCKET_ENVELOPE_SQL)
-            .bind(node_id)
-            .bind(metric)
+        let envelope = scope
+            .bind_series(sqlx::query_as::<_, (i64, Option<f64>, Option<f64>)>(
+                &envelope_sql,
+            ))
             .bind(&bucket_start)
             .bind(&bucket_end)
             .fetch_one(&mut **tx)
@@ -1250,32 +1522,32 @@ pub async fn recompute_aggregates(
             continue;
         }
         if retained_count == stored_count {
-            let newest = sqlx::query_as::<_, (String, String, f64)>(BUCKET_NEWEST_SQL)
-                .bind(node_id)
-                .bind(metric)
+            let newest = scope
+                .bind_series(sqlx::query_as::<_, (String, String, f64)>(&newest_sql))
                 .bind(&bucket_start)
                 .bind(&bucket_end)
                 .fetch_one(&mut **tx)
                 .await?;
-            let first_observed_at = sqlx::query_scalar::<_, String>(
-                "SELECT MIN(observed_at) FROM node_metric_samples WHERE node_id = ? AND metric = ? AND observed_at >= ? AND observed_at < ?",
-            )
-            .bind(node_id)
-            .bind(metric)
-            .bind(&bucket_start)
-            .bind(&bucket_end)
-            .fetch_one(&mut **tx)
-            .await?;
-            sqlx::query(BUCKET_REPLACE_SQL)
-                .bind(retained_min)
-                .bind(retained_max)
-                .bind(newest.2)
-                .bind(&first_observed_at)
-                .bind(&newest.0)
-                .bind(&newest.1)
-                .bind(received_at)
-                .bind(node_id)
-                .bind(metric)
+            let first_observed_at = scope
+                .bind_series(sqlx::query_scalar::<_, String>(&first_sql))
+                .bind(&bucket_start)
+                .bind(&bucket_end)
+                .fetch_one(&mut **tx)
+                .await?;
+            // The series binds sit in the chain where the statement text
+            // states them: after the seven envelope values its SET clause
+            // names, and before the bucket it selects.
+            scope
+                .bind_series(
+                    sqlx::query(&replace_sql)
+                        .bind(retained_min)
+                        .bind(retained_max)
+                        .bind(newest.2)
+                        .bind(&first_observed_at)
+                        .bind(&newest.0)
+                        .bind(&newest.1)
+                        .bind(received_at),
+                )
                 .bind(grain_seconds)
                 .bind(&bucket_start)
                 .execute(&mut **tx)
@@ -1286,18 +1558,21 @@ pub async fn recompute_aggregates(
             // knows is the corrected reading itself: it is inside the bucket, so
             // the envelope must contain it, and the extremes it cannot restate
             // stand rather than being narrowed to a subset of the evidence.
-            sqlx::query(BUCKET_CARRY_SQL)
-                .bind(value)
-                .bind(value)
-                .bind(observed_at)
-                .bind(value)
-                .bind(observed_at)
-                .bind(observed_at)
-                .bind(observed_at)
-                .bind(received_at)
-                .bind(received_at)
-                .bind(node_id)
-                .bind(metric)
+            // Same order as the replace above: the values its SET clause
+            // names come first, then the series identity, then the bucket.
+            scope
+                .bind_series(
+                    sqlx::query(&carry_sql)
+                        .bind(value)
+                        .bind(value)
+                        .bind(observed_at)
+                        .bind(value)
+                        .bind(observed_at)
+                        .bind(observed_at)
+                        .bind(observed_at)
+                        .bind(received_at)
+                        .bind(received_at),
+                )
                 .bind(grain_seconds)
                 .bind(&bucket_start)
                 .execute(&mut **tx)
@@ -1385,7 +1660,7 @@ pub async fn load_range(
         return Ok(MetricRange {
             points: Vec::new(),
             segments: Vec::new(),
-            ledger: load_ledger(pool, query.node_id, query.metric).await?,
+            ledger: load_ledger(pool, &query.scope).await?,
             gaps: Vec::new(),
             coverage_seconds: 0,
             truncated: false,
@@ -1440,8 +1715,7 @@ pub async fn load_range(
         Some(ref minute) if below_raw_cutoff && minute.as_str() < raw_handoff.as_str() => {
             let (counted, stored) = straddling_minute_ledger(
                 pool,
-                query.node_id,
-                query.metric,
+                &query.scope,
                 ONE_MINUTE_SECONDS,
                 minute,
                 &raw_handoff,
@@ -1467,15 +1741,8 @@ pub async fn load_range(
     let mut measured_cadence: Option<i64> = None;
     let raw_from = raw_floor;
     if remaining > 0 && raw_from <= raw_ceiling {
-        let (samples, segment_truncated) = read_raw_samples(
-            pool,
-            query.node_id,
-            query.metric,
-            &raw_from,
-            &raw_ceiling,
-            remaining,
-        )
-        .await?;
+        let (samples, segment_truncated) =
+            read_raw_samples(pool, &query.scope, &raw_from, &raw_ceiling, remaining).await?;
         let cadence = observed_cadence_seconds(&samples);
         measured_cadence = Some(cadence).filter(|cadence| *cadence > 0);
         remaining -= samples.len() as i64;
@@ -1581,8 +1848,7 @@ pub async fn load_range(
             if region_from < region_to
                 && buckets_hold_evidence(
                     pool,
-                    query.node_id,
-                    query.metric,
+                    &query.scope,
                     grain_seconds,
                     &region_from,
                     &region_to,
@@ -1598,8 +1864,7 @@ pub async fn load_range(
         }
         let (buckets, segment_truncated) = read_aggregates(
             pool,
-            query.node_id,
-            query.metric,
+            &query.scope,
             grain_seconds,
             &region_from,
             &region_to,
@@ -1641,7 +1906,7 @@ pub async fn load_range(
     let continuation = truncated
         .then(|| points.first().map(|point| point.instant.clone()))
         .flatten();
-    let pauses = load_pauses(pool, query.node_id, query.metric, &from_text, &to_text).await?;
+    let pauses = load_pauses(pool, &query.scope, &from_text, &to_text).await?;
     // The cadence the gap and coverage rule judges a point by is not always the
     // point's own resolution: a series that reports about once a minute really
     // was silent for five of them however coarsely the stretch is drawn, so a
@@ -1683,7 +1948,7 @@ pub async fn load_range(
         to_text.as_str()
     };
     let continuity = continuity_from(&judged, &pauses, &from_text, window_end);
-    let ledger = load_ledger(pool, query.node_id, query.metric).await?;
+    let ledger = load_ledger(pool, &query.scope).await?;
     Ok(MetricRange {
         points,
         segments,
@@ -1696,7 +1961,7 @@ pub async fn load_range(
 }
 
 /// The stored observations of the raw window, oldest first.
-const RANGE_SAMPLE_SQL: &str = "SELECT observed_at, received_at, value FROM node_metric_samples WHERE node_id = ? AND metric = ? AND observed_at >= ? AND observed_at <= ? ORDER BY observed_at DESC LIMIT ?";
+const RANGE_SAMPLE_SQL: &str = "SELECT observed_at, received_at, value FROM {raw} WHERE {scope} = ? AND metric = ?{dim_predicate} AND observed_at >= ? AND observed_at <= ? ORDER BY observed_at DESC LIMIT ?";
 
 /// The buckets of one tier over one stretch, newest first so the limit is spent
 /// on the newest evidence.
@@ -1705,7 +1970,7 @@ const RANGE_SAMPLE_SQL: &str = "SELECT observed_at, received_at, value FROM node
 /// columns are exactly the series and the tier and whose last column is the
 /// bucket start, so neither the read nor its limit walks a table that grows
 /// with the fleet.
-const RANGE_BUCKET_SQL: &str = "SELECT bucket_start, grain_seconds, sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at, last_received_at, max_gap_seconds FROM node_metric_aggregates WHERE node_id = ? AND metric = ? AND grain_seconds = ? AND bucket_start >= ? AND bucket_start < ? ORDER BY bucket_start DESC LIMIT ?";
+const RANGE_BUCKET_SQL: &str = "SELECT bucket_start, grain_seconds, sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at, last_received_at, max_gap_seconds FROM {agg} WHERE {scope} = ? AND metric = ?{dim_predicate} AND grain_seconds = ? AND bucket_start >= ? AND bucket_start < ? ORDER BY bucket_start DESC LIMIT ?";
 
 /// Whether a stretch the answer's budget could not afford holds any evidence.
 ///
@@ -1715,7 +1980,7 @@ const RANGE_BUCKET_SQL: &str = "SELECT bucket_start, grain_seconds, sample_count
 /// exists to prevent. The probe is one indexed lookup, never a read of the
 /// stretch itself, and it is served by the aggregate table's primary key like
 /// the read itself.
-const BUCKET_EVIDENCE_EXISTS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM node_metric_aggregates WHERE node_id = ? AND metric = ? AND grain_seconds = ? AND bucket_start >= ? AND bucket_start < ?)";
+const BUCKET_EVIDENCE_EXISTS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM {agg} WHERE {scope} = ? AND metric = ?{dim_predicate} AND grain_seconds = ? AND bucket_start >= ? AND bucket_start < ?)";
 
 /// What one straddling minute holds on both sides of the tier seam: how many
 /// observations the minute's bucket counted, and how many raw rows the minute
@@ -1731,22 +1996,21 @@ const BUCKET_EVIDENCE_EXISTS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM node_metri
 /// years later, at the aggregate family's own cutoff - so a bucket's count is at
 /// least the rows still stored in its minute whenever the tier really counted
 /// the minute, and only that bucket is handed over.
-const STRADDLING_MINUTE_LEDGER_SQL: &str = "SELECT COALESCE((SELECT sample_count FROM node_metric_aggregates WHERE node_id = ? AND metric = ? AND grain_seconds = ? AND bucket_start = ?), 0), (SELECT COUNT(*) FROM node_metric_samples WHERE node_id = ? AND metric = ? AND observed_at >= ? AND observed_at < ?)";
+const STRADDLING_MINUTE_LEDGER_SQL: &str = "SELECT COALESCE((SELECT sample_count FROM {agg} WHERE {scope} = ? AND metric = ?{dim_predicate} AND grain_seconds = ? AND bucket_start = ?), 0), (SELECT COUNT(*) FROM {raw} WHERE {scope} = ? AND metric = ?{dim_predicate} AND observed_at >= ? AND observed_at < ?)";
 
 /// The series ledger read on every range request.
-const SERIES_LEDGER_SQL: &str = "SELECT first_observed_at, last_observed_at, last_received_at, observation_count, replayed_count, corrected_count FROM node_metric_series_state WHERE node_id = ? AND metric = ?";
+const SERIES_LEDGER_SQL: &str = "SELECT first_observed_at, last_observed_at, last_received_at, observation_count, replayed_count, corrected_count FROM {ledger} WHERE {scope} = ? AND metric = ?{dim_predicate}";
 
 async fn read_raw_samples(
     pool: &SqlitePool,
-    node_id: &str,
-    metric: &str,
+    scope: &SeriesScope<'_>,
     from: &str,
     to: &str,
     limit: i64,
 ) -> Result<(Vec<MetricSample>, bool), sqlx::Error> {
-    let rows = sqlx::query_as::<_, (String, String, f64)>(RANGE_SAMPLE_SQL)
-        .bind(node_id)
-        .bind(metric)
+    let sql = scope.sql(RANGE_SAMPLE_SQL);
+    let rows = scope
+        .bind_series(sqlx::query_as::<_, (String, String, f64)>(&sql))
         .bind(from)
         .bind(to)
         .bind(limit + 1)
@@ -1770,19 +2034,18 @@ async fn read_raw_samples(
 /// no bucket for the minute) and the number of raw rows the minute still stores.
 async fn straddling_minute_ledger(
     pool: &SqlitePool,
-    node_id: &str,
-    metric: &str,
+    scope: &SeriesScope<'_>,
     grain_seconds: i64,
     minute: &str,
     minute_end: &str,
 ) -> Result<(i64, i64), sqlx::Error> {
-    let (counted, stored): (i64, i64) = sqlx::query_as(STRADDLING_MINUTE_LEDGER_SQL)
-        .bind(node_id)
-        .bind(metric)
-        .bind(grain_seconds)
-        .bind(minute)
-        .bind(node_id)
-        .bind(metric)
+    let sql = scope.sql(STRADDLING_MINUTE_LEDGER_SQL);
+    // The minute is asked about twice - once of the tier and once of the raw
+    // window - so its series identity is bound twice, in the order the two
+    // subqueries read it.
+    let first_half = scope.bind_series(sqlx::query_as::<_, (i64, i64)>(&sql));
+    let (counted, stored): (i64, i64) = scope
+        .bind_series(first_half.bind(grain_seconds).bind(minute))
         .bind(minute)
         .bind(minute_end)
         .fetch_one(pool)
@@ -1795,15 +2058,14 @@ async fn straddling_minute_ledger(
 /// covered by this same probe, so no separate raw-side lookup is needed.
 async fn buckets_hold_evidence(
     pool: &SqlitePool,
-    node_id: &str,
-    metric: &str,
+    scope: &SeriesScope<'_>,
     grain_seconds: i64,
     from: &str,
     to: &str,
 ) -> Result<bool, sqlx::Error> {
-    let (exists,): (bool,) = sqlx::query_as(BUCKET_EVIDENCE_EXISTS_SQL)
-        .bind(node_id)
-        .bind(metric)
+    let sql = scope.sql(BUCKET_EVIDENCE_EXISTS_SQL);
+    let (exists,): (bool,) = scope
+        .bind_series(sqlx::query_as(&sql))
         .bind(grain_seconds)
         .bind(from)
         .bind(to)
@@ -1814,24 +2076,24 @@ async fn buckets_hold_evidence(
 
 async fn read_aggregates(
     pool: &SqlitePool,
-    node_id: &str,
-    metric: &str,
+    scope: &SeriesScope<'_>,
     grain_seconds: i64,
     from: &str,
     to: &str,
     limit: i64,
 ) -> Result<(Vec<MetricAggregate>, bool), sqlx::Error> {
-    let rows = sqlx::query_as::<_, (String, i64, i64, f64, f64, f64, String, String, String, i64)>(
-        RANGE_BUCKET_SQL,
-    )
-    .bind(node_id)
-    .bind(metric)
-    .bind(grain_seconds)
-    .bind(from)
-    .bind(to)
-    .bind(limit + 1)
-    .fetch_all(pool)
-    .await?;
+    let sql = scope.sql(RANGE_BUCKET_SQL);
+    let rows = scope
+        .bind_series(sqlx::query_as::<
+            _,
+            (String, i64, i64, f64, f64, f64, String, String, String, i64),
+        >(&sql))
+        .bind(grain_seconds)
+        .bind(from)
+        .bind(to)
+        .bind(limit + 1)
+        .fetch_all(pool)
+        .await?;
     let truncated = rows.len() as i64 > limit;
     let mut buckets: Vec<MetricAggregate> = rows
         .into_iter()
@@ -1868,33 +2130,30 @@ async fn read_aggregates(
 
 async fn load_ledger(
     pool: &SqlitePool,
-    node_id: &str,
-    metric: &str,
+    scope: &SeriesScope<'_>,
 ) -> Result<Option<SeriesLedger>, sqlx::Error> {
-    Ok(
-        sqlx::query_as::<_, (String, String, String, i64, i64, i64)>(SERIES_LEDGER_SQL)
-            .bind(node_id)
-            .bind(metric)
-            .fetch_optional(pool)
-            .await?
-            .map(
-                |(
-                    first_observed_at,
-                    last_observed_at,
-                    last_received_at,
-                    observation_count,
-                    replayed_count,
-                    corrected_count,
-                )| SeriesLedger {
-                    first_observed_at,
-                    last_observed_at,
-                    last_received_at,
-                    observation_count,
-                    replayed_count,
-                    corrected_count,
-                },
-            ),
-    )
+    let sql = scope.sql(SERIES_LEDGER_SQL);
+    Ok(scope
+        .bind_series(sqlx::query_as::<_, (String, String, String, i64, i64, i64)>(&sql))
+        .fetch_optional(pool)
+        .await?
+        .map(
+            |(
+                first_observed_at,
+                last_observed_at,
+                last_received_at,
+                observation_count,
+                replayed_count,
+                corrected_count,
+            )| SeriesLedger {
+                first_observed_at,
+                last_observed_at,
+                last_received_at,
+                observation_count,
+                replayed_count,
+                corrected_count,
+            },
+        ))
 }
 
 /// The protection-pause lookup runs on every Owner metric-history request.
@@ -1905,7 +2164,7 @@ async fn load_ledger(
 /// scan here would make the range route cost grow with every Node that has ever
 /// recorded a protection loss (migration 0066, issue #213). Held as a constant
 /// so the plan test beside it asserts the statement the route really runs.
-const PAUSE_LOOKUP_SQL: &str = "SELECT first_skipped_at, last_skipped_at, skipped_count FROM capacity_skipped_series WHERE scope_kind = 'node' AND scope_key = ? AND metric = ? AND last_skipped_at >= ? AND first_skipped_at <= ? ORDER BY first_skipped_at";
+const PAUSE_LOOKUP_SQL: &str = "SELECT first_skipped_at, last_skipped_at, skipped_count FROM capacity_skipped_series WHERE scope_kind = ? AND scope_key = ? AND metric = ? AND dimension = ? AND last_skipped_at >= ? AND first_skipped_at <= ? ORDER BY first_skipped_at";
 
 /// Protection losses recorded for one series inside the window.
 ///
@@ -1913,14 +2172,15 @@ const PAUSE_LOOKUP_SQL: &str = "SELECT first_skipped_at, last_skipped_at, skippe
 /// suffered, so a protected stretch is never reported as an unexplained gap.
 async fn load_pauses(
     pool: &SqlitePool,
-    node_id: &str,
-    metric: &str,
+    scope: &SeriesScope<'_>,
     from: &str,
     to: &str,
 ) -> Result<Vec<ProtectionPause>, sqlx::Error> {
     let rows = sqlx::query_as::<_, (String, String, i64)>(PAUSE_LOOKUP_SQL)
-        .bind(node_id)
-        .bind(metric)
+        .bind(scope.schema.skipped_scope.as_str())
+        .bind(scope.scope_key)
+        .bind(scope.series.metric)
+        .bind(scope.series.dimension)
         .bind(from)
         .bind(to)
         .fetch_all(pool)
@@ -2278,6 +2538,12 @@ mod tests {
     const TIER_NODE: &str = "tier-node";
     const TIER_METRIC: &str = "process_cpu_percent";
 
+    /// The series every tier test writes and reads: one Node's own process
+    /// series, the scope boundary the engine is generalized over.
+    fn tier_scope() -> SeriesScope<'static> {
+        SeriesScope::node(TIER_NODE, TIER_METRIC)
+    }
+
     /// A real temp SQLite database with one private Node, so every tier test
     /// runs the statements the Server runs against the schema the Server ships.
     async fn tier_store() -> (tempfile::TempDir, sqlx::SqlitePool) {
@@ -2313,31 +2579,17 @@ mod tests {
 
     async fn record(pool: &sqlx::SqlitePool, observed_at: &str, received_at: &str, value: f64) {
         let mut tx = pool.begin().await.unwrap();
-        record_aggregates(
-            &mut tx,
-            TIER_NODE,
-            TIER_METRIC,
-            observed_at,
-            received_at,
-            value,
-        )
-        .await
-        .unwrap();
+        record_aggregates(&mut tx, &tier_scope(), observed_at, received_at, value)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
     }
 
     async fn correct(pool: &sqlx::SqlitePool, observed_at: &str, received_at: &str, value: f64) {
         let mut tx = pool.begin().await.unwrap();
-        recompute_aggregates(
-            &mut tx,
-            TIER_NODE,
-            TIER_METRIC,
-            observed_at,
-            received_at,
-            value,
-        )
-        .await
-        .unwrap();
+        recompute_aggregates(&mut tx, &tier_scope(), observed_at, received_at, value)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
     }
 
@@ -2592,8 +2844,7 @@ mod tests {
         load_range(
             pool,
             RangeQuery {
-                node_id: TIER_NODE,
-                metric: TIER_METRIC,
+                scope: tier_scope(),
                 from: at(from),
                 to: at(to),
                 before: before.map(at),
@@ -2621,8 +2872,7 @@ mod tests {
         load_range(
             pool,
             RangeQuery {
-                node_id: TIER_NODE,
-                metric: TIER_METRIC,
+                scope: tier_scope(),
                 from: at(from),
                 to: at(to),
                 before: None,
@@ -3336,5 +3586,298 @@ mod tests {
             "2025-12-31T23:59:59Z",
             cutoff
         ));
+    }
+
+    // ---- Issue #215: the same tiers behind one Agent's shared Host series ----
+
+    const HOST_AGENT: &str = "tier-agent";
+    const HOST_STORAGE_METRIC: &str = "disk_used_bytes";
+
+    /// One mount path of the Agent's shared storage series. The mount path is the
+    /// dimension, so two mounts are two series of one scope and one metric.
+    fn host_scope(mount_path: &'static str) -> SeriesScope<'static> {
+        SeriesScope::host(HOST_AGENT, HOST_STORAGE_METRIC, mount_path)
+    }
+
+    async fn record_host(
+        pool: &sqlx::SqlitePool,
+        mount_path: &'static str,
+        observed_at: &str,
+        received_at: &str,
+        value: f64,
+    ) {
+        let mut tx = pool.begin().await.unwrap();
+        record_delivery(
+            &mut tx,
+            &host_scope(mount_path),
+            observed_at,
+            received_at,
+            Delivery::Observed,
+        )
+        .await
+        .unwrap();
+        record_aggregates(
+            &mut tx,
+            &host_scope(mount_path),
+            observed_at,
+            received_at,
+            value,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    async fn correct_host(
+        pool: &sqlx::SqlitePool,
+        mount_path: &'static str,
+        observed_at: &str,
+        received_at: &str,
+        value: f64,
+    ) {
+        let mut tx = pool.begin().await.unwrap();
+        recompute_aggregates(
+            &mut tx,
+            &host_scope(mount_path),
+            observed_at,
+            received_at,
+            value,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    async fn keep_raw_host(
+        pool: &sqlx::SqlitePool,
+        mount_path: &'static str,
+        observed_at: &str,
+        value: f64,
+    ) {
+        sqlx::query("INSERT INTO host_metric_samples (agent_id, metric, dimension, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?, ?)")
+            .bind(HOST_AGENT)
+            .bind(HOST_STORAGE_METRIC)
+            .bind(mount_path)
+            .bind(observed_at)
+            .bind(observed_at)
+            .bind(value)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    /// sample_count, min, max, last, first_observed_at, last_observed_at
+    async fn host_bucket(
+        pool: &sqlx::SqlitePool,
+        mount_path: &'static str,
+        grain_seconds: i64,
+        bucket_start: &str,
+    ) -> Option<(i64, f64, f64, f64, String, String)> {
+        sqlx::query_as("SELECT sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at FROM host_metric_aggregates WHERE agent_id = ? AND metric = ? AND dimension = ? AND grain_seconds = ? AND bucket_start = ?")
+            .bind(HOST_AGENT)
+            .bind(HOST_STORAGE_METRIC)
+            .bind(mount_path)
+            .bind(grain_seconds)
+            .bind(bucket_start)
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn host_bucket_count(pool: &sqlx::SqlitePool) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM host_metric_aggregates")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn host_ledger_count(pool: &sqlx::SqlitePool) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM host_metric_series_state")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn read_host_tiers(
+        pool: &sqlx::SqlitePool,
+        mount_path: &'static str,
+        from: &str,
+        to: &str,
+        limit: i64,
+    ) -> MetricRange {
+        load_range(
+            pool,
+            RangeQuery {
+                scope: host_scope(mount_path),
+                from: at(from),
+                to: at(to),
+                before: None,
+                limit,
+                raw_cutoff: at(TIER_RAW_CUTOFF),
+                now: at(TIER_NOW),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Issue #215: a Host series is identified by its owner, its metric and the
+    /// mount path the Agent reported, so two mounts of one Agent are two series
+    /// everywhere - in the tiers, in the ledger and in the answer the reader gives.
+    #[tokio::test]
+    async fn two_mounts_of_one_host_storage_series_keep_their_own_tiers() {
+        let (_dir, pool) = tier_store().await;
+        assert_eq!(host_bucket_count(&pool).await, 0);
+        assert_eq!(host_ledger_count(&pool).await, 0);
+
+        // The same Agent, metric and instant: only the mount path separates them.
+        record_host(
+            &pool,
+            "/data",
+            "2026-03-04T05:16:10Z",
+            "2026-03-04T05:16:11Z",
+            100.0,
+        )
+        .await;
+        record_host(
+            &pool,
+            "/mnt/data",
+            "2026-03-04T05:16:10Z",
+            "2026-03-04T05:16:11Z",
+            900.0,
+        )
+        .await;
+        assert_eq!(
+            host_bucket_count(&pool).await,
+            4,
+            "each mount writes its own minute and five-minute bucket"
+        );
+        assert_eq!(
+            host_ledger_count(&pool).await,
+            2,
+            "each mount keeps its own ledger row"
+        );
+        let data = host_bucket(&pool, "/data", ONE_MINUTE_SECONDS, "2026-03-04T05:16:00Z")
+            .await
+            .unwrap();
+        assert_eq!(data.3, 100.0);
+        let logs = host_bucket(
+            &pool,
+            "/mnt/data",
+            ONE_MINUTE_SECONDS,
+            "2026-03-04T05:16:00Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(logs.3, 900.0, "one mount's reading is not the other's");
+
+        // A second reading of one mount counts into that mount's bucket only.
+        record_host(
+            &pool,
+            "/data",
+            "2026-03-04T05:16:40Z",
+            "2026-03-04T05:16:41Z",
+            120.0,
+        )
+        .await;
+        let data = host_bucket(&pool, "/data", ONE_MINUTE_SECONDS, "2026-03-04T05:16:00Z")
+            .await
+            .unwrap();
+        assert_eq!(data.0, 2);
+        assert_eq!(data.2, 120.0);
+        let logs = host_bucket(
+            &pool,
+            "/mnt/data",
+            ONE_MINUTE_SECONDS,
+            "2026-03-04T05:16:00Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(logs.0, 1);
+        assert_eq!(logs.2, 900.0);
+        assert_eq!(host_ledger_count(&pool).await, 2);
+
+        // The reader answers one mount path at a time, and never mixes them.
+        let data_range = read_host_tiers(&pool, "/data", TIER_FROM, TIER_NOW, 5_000).await;
+        assert_eq!(instants(&data_range), vec!["2026-03-04T05:15:00Z"]);
+        assert_eq!(grains(&data_range), vec!["5m"]);
+        assert_eq!(data_range.points[0].min_value, 100.0);
+        assert_eq!(data_range.points[0].max_value, 120.0);
+        assert_eq!(data_range.points[0].sample_count, 2);
+        let logs_range = read_host_tiers(&pool, "/mnt/data", TIER_FROM, TIER_NOW, 5_000).await;
+        assert_eq!(instants(&logs_range), vec!["2026-03-04T05:15:00Z"]);
+        assert_eq!(logs_range.points[0].min_value, 900.0);
+        assert_eq!(logs_range.points[0].max_value, 900.0);
+        assert_eq!(logs_range.points[0].sample_count, 1);
+
+        // A mount path the Agent never reported is an empty series, not another
+        // mount's history.
+        let never = read_host_tiers(&pool, "/mnt/never", TIER_FROM, TIER_NOW, 5_000).await;
+        assert!(never.points.is_empty());
+
+        // And the Node scope cannot reach the Agent's shared series at all.
+        let node_range = read_tiers(&pool, TIER_FROM, TIER_NOW, None, 5_000).await;
+        assert!(node_range.points.is_empty());
+    }
+
+    /// Issue #215: correcting one mount's reading restates that mount's bucket and
+    /// leaves every other mount of the same Agent, metric and instant alone.
+    #[tokio::test]
+    async fn a_host_correction_restates_only_the_mount_it_names() {
+        let (_dir, pool) = tier_store().await;
+        record_host(
+            &pool,
+            "/data",
+            "2026-03-04T05:06:10Z",
+            "2026-03-04T05:06:11Z",
+            1.0,
+        )
+        .await;
+        record_host(
+            &pool,
+            "/data",
+            "2026-03-04T05:06:40Z",
+            "2026-03-04T05:06:41Z",
+            5.0,
+        )
+        .await;
+        record_host(
+            &pool,
+            "/mnt/data",
+            "2026-03-04T05:06:40Z",
+            "2026-03-04T05:06:41Z",
+            900.0,
+        )
+        .await;
+        keep_raw_host(&pool, "/data", "2026-03-04T05:06:10Z", 1.0).await;
+        keep_raw_host(&pool, "/data", "2026-03-04T05:06:40Z", 2.0).await;
+        correct_host(
+            &pool,
+            "/data",
+            "2026-03-04T05:06:40Z",
+            "2026-03-04T05:40:00Z",
+            2.0,
+        )
+        .await;
+
+        let data = host_bucket(&pool, "/data", ONE_MINUTE_SECONDS, "2026-03-04T05:06:00Z")
+            .await
+            .unwrap();
+        assert_eq!(data.0, 2, "a correction is not a new observation");
+        assert_eq!(data.1, 1.0);
+        assert_eq!(data.2, 2.0, "the corrected extreme is restated");
+        assert_eq!(data.3, 2.0);
+        let logs = host_bucket(
+            &pool,
+            "/mnt/data",
+            ONE_MINUTE_SECONDS,
+            "2026-03-04T05:06:00Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(logs.0, 1, "the other mount counted nothing extra");
+        assert_eq!(logs.1, 900.0);
+        assert_eq!(logs.2, 900.0, "the other mount's extreme stands");
+        assert_eq!(logs.3, 900.0);
     }
 }

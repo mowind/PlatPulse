@@ -132,21 +132,43 @@ const PROTECTED_CAPACITY = {
       resumedTotalBytes: null,
       resumedAvailableBytes: null,
       updatedAt: '2026-03-01T02:05:00Z',
-      skippedSampleCount: 4,
-      skippedSeriesTotal: 3,
+      skippedSampleCount: 6,
+      skippedSeriesTotal: 5,
       skippedSeries: [
         {
           scopeKind: 'host',
           scopeKey: '0195f2a1-0011-4011-8011-000000000011',
           metric: 'network_rx_bytes_per_sec',
+          dimension: '',
+          skippedCount: 2,
+          firstSkippedAt: '2026-03-01T02:00:30Z',
+          lastSkippedAt: '2026-03-01T02:04:30Z',
+        },
+        // Two mounts of one Host are two series: one scope and one metric, told
+        // apart by the mount path the Agent reported.
+        {
+          scopeKind: 'host',
+          scopeKey: '0195f2a1-0011-4011-8011-000000000011',
+          metric: 'disk_used_bytes',
+          dimension: '/',
           skippedCount: 2,
           firstSkippedAt: '2026-03-01T02:00:30Z',
           lastSkippedAt: '2026-03-01T02:04:30Z',
         },
         {
+          scopeKind: 'host',
+          scopeKey: '0195f2a1-0011-4011-8011-000000000011',
+          metric: 'disk_used_bytes',
+          dimension: '/data',
+          skippedCount: 1,
+          firstSkippedAt: '2026-03-01T02:00:30Z',
+          lastSkippedAt: '2026-03-01T02:00:30Z',
+        },
+        {
           scopeKind: 'node',
           scopeKey: '0195f2a1-0014-4014-8014-000000000014',
           metric: 'process_cpu_percent',
+          dimension: '',
           skippedCount: 1,
           firstSkippedAt: '2026-03-01T02:00:30Z',
           lastSkippedAt: '2026-03-01T02:00:30Z',
@@ -635,8 +657,14 @@ describe('PAGE-ADMIN-OPERATIONS (task ledger)', () => {
     expect(gap.textContent).toContain('2 skipped')
     expect(gap.textContent).toContain('node:0195f2a1-0014-4014-8014-000000000014')
     expect(gap.textContent).toContain('process_cpu_percent')
+    // Two mounts of one Host are two rows, each named by the path the Agent
+    // reported: a row keyed and labelled by scope and metric alone would merge
+    // them into one entry and one React key.
+    expect(gap.querySelectorAll('li')).toHaveLength(4)
+    expect(gap.textContent).toContain('disk_used_bytes · /')
+    expect(gap.textContent).toContain('disk_used_bytes · /data')
     // The worst-N bound is named instead of pretending the list is complete.
-    expect(text).toContain('3 series lost samples in total')
+    expect(text).toContain('5 series lost samples in total')
     // Optional history only: the Operation ledger is unaffected.
     expect(screen.getByRole('table', { name: /Recorded Operations/ })).toBeTruthy()
   })

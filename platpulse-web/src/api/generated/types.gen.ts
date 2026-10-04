@@ -111,6 +111,286 @@ export type AdminBlockHistoryResponse = {
 };
 
 /**
+ * A stretch of the window in which the Server stores no observation.
+ *
+ * Reported as a gap with its kind, so no surface has to bridge silence, hold a
+ * constant value across it, or draw it as a zero (design §11.4).
+ */
+export type AdminMetricGap = {
+    from: string;
+    /**
+     * `collection_gap` (nobody observed) or `protection_pause` (the operator
+     * chose to pause collection).
+     */
+    kind: string;
+    reason: string;
+    seconds: number;
+    /**
+     * Counted losses behind a `protection_pause` (issue #212 evidence).
+     */
+    skippedCount?: number | null;
+    to: string;
+};
+
+/**
+ * Owner-only metric history for one Node series (issues #213 and #214, design
+ * §11.4 and §11.6): the stored observations of the raw window, the aggregate
+ * buckets that answer the stretches beyond it, the silences between them, and
+ * the state of the series behind them.
+ */
+export type AdminMetricHistoryResponse = {
+    /**
+     * True while the Server serves the 1-minute and 5-minute tiers for the
+     * stretches older than the raw window (issue #214).
+     */
+    aggregateSupported: boolean;
+    /**
+     * `None` while the whole requested range is answerable, `partial` when it
+     * was clamped to the investigation horizon, `unavailable` when it is older
+     * than any retained history.
+     */
+    availability?: string | null;
+    /**
+     * When the answer is truncated, the coordinate to pass back as `before` for
+     * the next, older page. `None` when the answer reaches the oldest end of
+     * the requested range.
+     */
+    continuation?: string | null;
+    /**
+     * The series' dimension: the mount path of a Host storage series, empty for
+     * every series that exists once per owner.
+     */
+    dimension: string;
+    /**
+     * The answered range, after clamping to the investigation horizon.
+     */
+    from: string;
+    gaps: Array<AdminMetricGap>;
+    /**
+     * The finest grain this answer carries: `raw`, `1m`, `5m`, or `none`
+     * when no tier holds anything for the requested range.
+     */
+    grain: string;
+    /**
+     * The oldest age any tier answers, in days: the investigation horizon the
+     * 5-minute tier and its retention family both declare.
+     */
+    historyHorizonDays: number;
+    items: Array<AdminMetricSample>;
+    metric: string;
+    /**
+     * The Node whose page asked for the answer, when a Node page asked. Null on
+     * the Agent route; on a Host answer it names the Node that asked, so no
+     * surface presents shared evidence as one Node's own.
+     */
+    nodeId?: string | null;
+    /**
+     * The configured raw window, which decides where the raw tier ends.
+     */
+    rawRetentionDays: number;
+    /**
+     * The range the caller asked for, so a clamped or paged answer says what it
+     * clamped or narrowed.
+     */
+    requestedFrom: string;
+    /**
+     * The identity the series is stored under: the Node ID, or the Agent ID.
+     */
+    scopeKey: string;
+    /**
+     * `node` when the series belongs to one Node's own process, `host` when it
+     * is the Host series the Agent collected once for every Node on it.
+     */
+    scopeKind: string;
+    /**
+     * Which tier answered which stretch, oldest stretch first.
+     */
+    segments: Array<AdminMetricSegment>;
+    series: AdminMetricSeries;
+    /**
+     * The answered range's end: the requested `to`, or the exclusive paging
+     * cursor when the caller paged with `before`.
+     */
+    to: string;
+    /**
+     * True when any tier had more evidence than the caller's limit: the newest
+     * points are returned and the rest is reported, never dropped silently.
+     */
+    truncated: boolean;
+    windowSeconds: number;
+};
+
+/**
+ * One stored raw observation with the timing evidence that belongs to it.
+ */
+export type AdminMetricSample = {
+    clockNote?: string | null;
+    /**
+     * The observation is stamped after the receipt: the Agent clock is ahead.
+     */
+    clockSuspect: boolean;
+    /**
+     * `received_at - last_observed_at` for this very point, so spool and
+     * transport delay are visible per observation. Unknown when either
+     * timestamp is unusable — never reported as zero.
+     */
+    delaySeconds?: number | null;
+    /**
+     * The oldest observation this point holds: the other end of the stretch it
+     * really testifies to, and equal to `observedAt` for a raw sample. A bucket
+     * whose two ends are far apart states a span, not continuity - a surface
+     * that says how long the point covers must measure it between these two
+     * instants, never from the bucket's own aligned start (review F1).
+     */
+    firstObservedAt: string;
+    /**
+     * The grain this point was served at: `raw`, `1m` or `5m`.
+     */
+    grain: string;
+    /**
+     * The newest observation this point holds. Equal to `observedAt` for a raw
+     * sample; for a bucket it is the instant inside the bucket that delay and
+     * clock suspicion are measured from.
+     */
+    lastObservedAt: string;
+    /**
+     * The widest interval the bucket recorded between two of its consecutive
+     * observations (0 for a raw sample, and for a bucket that counted one).
+     * This is measured evidence about the inside of a bucket: a surface can
+     * compare it with the cadence it sees and draw a line break where the
+     * Server proved a hole instead of a continuous stretch. Zero means the
+     * observations it counted were contiguous, never that nobody measured.
+     */
+    maxGapSeconds: number;
+    maxValue: number;
+    /**
+     * The extremes of the observations behind this point. A raw sample is its
+     * own extreme; a bucket keeps the spike the raw samples would have shown.
+     */
+    minValue: number;
+    /**
+     * The point's coordinate: the observation instant of a raw sample, or the
+     * aligned start of an aggregate bucket.
+     */
+    observedAt: string;
+    /**
+     * For a raw sample, the receipt that carried it. For a bucket, the receipt
+     * of the bucket's newest observation.
+     */
+    receivedAt: string;
+    /**
+     * Observations behind this point: 1 for a raw sample, the bucket's counted
+     * observations for a bucket. A thin bucket says so here instead of looking
+     * like a closed stretch.
+     */
+    sampleCount: number;
+    /**
+     * `raw` for a stored observation, `aggregate` for a bucket that
+     * summarizes observations the raw window no longer holds.
+     */
+    source: string;
+    /**
+     * A raw sample's value, or a bucket's newest value.
+     */
+    value: number;
+};
+
+/**
+ * One tier's stretch of a metric-history answer.
+ *
+ * It tells the caller which grain answered which stretch, so no surface has to
+ * infer the resolution from the points themselves or present a bucket as if it
+ * were a sample (design §11.6).
+ */
+export type AdminMetricSegment = {
+    /**
+     * The stretch this segment answers: the older end inclusive, the newer end
+     * exclusive, matching what the reader asked of the tier.
+     */
+    from: string;
+    /**
+     * `raw`, `1m` or `5m`.
+     */
+    grain: string;
+    /**
+     * Points this answer carries for the segment.
+     */
+    pointCount: number;
+    /**
+     * `raw` or `aggregate`.
+     */
+    source: string;
+    to: string;
+    /**
+     * True when the segment hit the answer's limit, so the stretch holds more
+     * evidence than this answer carries for it.
+     */
+    truncated: boolean;
+};
+
+/**
+ * What the Server knows about the series itself, independent of the window.
+ */
+export type AdminMetricSeries = {
+    /**
+     * Observations whose value changed: counted separately too.
+     */
+    correctedCount: number;
+    /**
+     * Seconds the samples prove they were observed.
+     */
+    coverageSeconds: number;
+    /**
+     * The oldest observation ever recorded. It outlives the samples and is not
+     * evidence that raw history survives that far back, and it is deliberately
+     * not called the moment the series was enabled: the Node may have been
+     * collecting before the first Report this Server accepted, so the Server
+     * reports what it has evidence for.
+     */
+    firstObservedAt?: string | null;
+    /**
+     * The newest observation instant the series ever recorded. A series-level
+     * stamp: it outlives the samples, and it is not evidence that a stored
+     * sample exists at that instant any more.
+     */
+    lastObservedAt?: string | null;
+    /**
+     * The receipt time of the delivery that recorded the newest observation:
+     * a series-level delivery stamp, so it can belong to a later restatement of
+     * that instant rather than to the sample the answer carries. The per-sample
+     * receipt is `items[].receivedAt`.
+     */
+    lastReceivedAt?: string | null;
+    /**
+     * That same newest stored sample is stamped after its receipt: the Agent
+     * clock is ahead of the Server's.
+     */
+    latestClockSuspect: boolean;
+    /**
+     * `receivedAt - observedAt` of the newest stored sample in this answer,
+     * measured from that one row. Unknown when the answer holds no stored
+     * sample — never reported as zero.
+     */
+    latestDelaySeconds?: number | null;
+    observationCount: number;
+    /**
+     * False when this Node never reported the series: shown as absent, not as
+     * zero.
+     */
+    observed: boolean;
+    /**
+     * Deliveries that restated an observation already stored: counted
+     * separately, never as new observations.
+     */
+    replayedCount: number;
+    /**
+     * Samples this answer actually carries.
+     */
+    sampledCount: number;
+    windowSeconds: number;
+};
+
+/**
  * Owner-only Network Registry projection (design §7.1). The complete
  * validated identity tuple is presented as Server-owned expected identity;
  * observed Agent text never creates or rewrites Registry entries.
@@ -241,267 +521,6 @@ export type AdminNodeListItem = {
      */
     updated_at: string;
     visibility: string;
-};
-
-/**
- * A stretch of the window in which the Server stores no observation.
- *
- * Reported as a gap with its kind, so no surface has to bridge silence, hold a
- * constant value across it, or draw it as a zero (design §11.4).
- */
-export type AdminNodeMetricGap = {
-    from: string;
-    /**
-     * `collection_gap` (nobody observed) or `protection_pause` (the operator
-     * chose to pause collection).
-     */
-    kind: string;
-    reason: string;
-    seconds: number;
-    /**
-     * Counted losses behind a `protection_pause` (issue #212 evidence).
-     */
-    skippedCount?: number | null;
-    to: string;
-};
-
-/**
- * Owner-only metric history for one Node series (issues #213 and #214, design
- * §11.4 and §11.6): the stored observations of the raw window, the aggregate
- * buckets that answer the stretches beyond it, the silences between them, and
- * the state of the series behind them.
- */
-export type AdminNodeMetricHistoryResponse = {
-    /**
-     * True while the Server serves the 1-minute and 5-minute tiers for the
-     * stretches older than the raw window (issue #214).
-     */
-    aggregateSupported: boolean;
-    /**
-     * `None` while the whole requested range is answerable, `partial` when it
-     * was clamped to the investigation horizon, `unavailable` when it is older
-     * than any retained history.
-     */
-    availability?: string | null;
-    /**
-     * When the answer is truncated, the coordinate to pass back as `before` for
-     * the next, older page. `None` when the answer reaches the oldest end of
-     * the requested range.
-     */
-    continuation?: string | null;
-    /**
-     * The answered range, after clamping to the investigation horizon.
-     */
-    from: string;
-    gaps: Array<AdminNodeMetricGap>;
-    /**
-     * The finest grain this answer carries: `raw`, `1m`, `5m`, or `none`
-     * when no tier holds anything for the requested range.
-     */
-    grain: string;
-    /**
-     * The oldest age any tier answers, in days: the investigation horizon the
-     * 5-minute tier and its retention family both declare.
-     */
-    historyHorizonDays: number;
-    items: Array<AdminNodeMetricSample>;
-    metric: string;
-    nodeId: string;
-    /**
-     * The configured raw window, which decides where the raw tier ends.
-     */
-    rawRetentionDays: number;
-    /**
-     * The range the caller asked for, so a clamped or paged answer says what it
-     * clamped or narrowed.
-     */
-    requestedFrom: string;
-    /**
-     * Which tier answered which stretch, oldest stretch first.
-     */
-    segments: Array<AdminNodeMetricSegment>;
-    series: AdminNodeMetricSeries;
-    /**
-     * The answered range's end: the requested `to`, or the exclusive paging
-     * cursor when the caller paged with `before`.
-     */
-    to: string;
-    /**
-     * True when any tier had more evidence than the caller's limit: the newest
-     * points are returned and the rest is reported, never dropped silently.
-     */
-    truncated: boolean;
-    windowSeconds: number;
-};
-
-/**
- * One stored raw observation with the timing evidence that belongs to it.
- */
-export type AdminNodeMetricSample = {
-    clockNote?: string | null;
-    /**
-     * The observation is stamped after the receipt: the Agent clock is ahead.
-     */
-    clockSuspect: boolean;
-    /**
-     * `received_at - last_observed_at` for this very point, so spool and
-     * transport delay are visible per observation. Unknown when either
-     * timestamp is unusable — never reported as zero.
-     */
-    delaySeconds?: number | null;
-    /**
-     * The oldest observation this point holds: the other end of the stretch it
-     * really testifies to, and equal to `observedAt` for a raw sample. A bucket
-     * whose two ends are far apart states a span, not continuity - a surface
-     * that says how long the point covers must measure it between these two
-     * instants, never from the bucket's own aligned start (review F1).
-     */
-    firstObservedAt: string;
-    /**
-     * The grain this point was served at: `raw`, `1m` or `5m`.
-     */
-    grain: string;
-    /**
-     * The newest observation this point holds. Equal to `observedAt` for a raw
-     * sample; for a bucket it is the instant inside the bucket that delay and
-     * clock suspicion are measured from.
-     */
-    lastObservedAt: string;
-    /**
-     * The widest interval the bucket recorded between two of its consecutive
-     * observations (0 for a raw sample, and for a bucket that counted one).
-     * This is measured evidence about the inside of a bucket: a surface can
-     * compare it with the cadence it sees and draw a line break where the
-     * Server proved a hole instead of a continuous stretch. Zero means the
-     * observations it counted were contiguous, never that nobody measured.
-     */
-    maxGapSeconds: number;
-    maxValue: number;
-    /**
-     * The extremes of the observations behind this point. A raw sample is its
-     * own extreme; a bucket keeps the spike the raw samples would have shown.
-     */
-    minValue: number;
-    /**
-     * The point's coordinate: the observation instant of a raw sample, or the
-     * aligned start of an aggregate bucket.
-     */
-    observedAt: string;
-    /**
-     * For a raw sample, the receipt that carried it. For a bucket, the receipt
-     * of the bucket's newest observation.
-     */
-    receivedAt: string;
-    /**
-     * Observations behind this point: 1 for a raw sample, the bucket's counted
-     * observations for a bucket. A thin bucket says so here instead of looking
-     * like a closed stretch.
-     */
-    sampleCount: number;
-    /**
-     * `raw` for a stored observation, `aggregate` for a bucket that
-     * summarizes observations the raw window no longer holds.
-     */
-    source: string;
-    /**
-     * A raw sample's value, or a bucket's newest value.
-     */
-    value: number;
-};
-
-/**
- * One tier's stretch of a metric-history answer.
- *
- * It tells the caller which grain answered which stretch, so no surface has to
- * infer the resolution from the points themselves or present a bucket as if it
- * were a sample (design §11.6).
- */
-export type AdminNodeMetricSegment = {
-    /**
-     * The stretch this segment answers: the older end inclusive, the newer end
-     * exclusive, matching what the reader asked of the tier.
-     */
-    from: string;
-    /**
-     * `raw`, `1m` or `5m`.
-     */
-    grain: string;
-    /**
-     * Points this answer carries for the segment.
-     */
-    pointCount: number;
-    /**
-     * `raw` or `aggregate`.
-     */
-    source: string;
-    to: string;
-    /**
-     * True when the segment hit the answer's limit, so the stretch holds more
-     * evidence than this answer carries for it.
-     */
-    truncated: boolean;
-};
-
-/**
- * What the Server knows about the series itself, independent of the window.
- */
-export type AdminNodeMetricSeries = {
-    /**
-     * Observations whose value changed: counted separately too.
-     */
-    correctedCount: number;
-    /**
-     * Seconds the samples prove they were observed.
-     */
-    coverageSeconds: number;
-    /**
-     * The oldest observation ever recorded. It outlives the samples and is not
-     * evidence that raw history survives that far back, and it is deliberately
-     * not called the moment the series was enabled: the Node may have been
-     * collecting before the first Report this Server accepted, so the Server
-     * reports what it has evidence for.
-     */
-    firstObservedAt?: string | null;
-    /**
-     * The newest observation instant the series ever recorded. A series-level
-     * stamp: it outlives the samples, and it is not evidence that a stored
-     * sample exists at that instant any more.
-     */
-    lastObservedAt?: string | null;
-    /**
-     * The receipt time of the delivery that recorded the newest observation:
-     * a series-level delivery stamp, so it can belong to a later restatement of
-     * that instant rather than to the sample the answer carries. The per-sample
-     * receipt is `items[].receivedAt`.
-     */
-    lastReceivedAt?: string | null;
-    /**
-     * That same newest stored sample is stamped after its receipt: the Agent
-     * clock is ahead of the Server's.
-     */
-    latestClockSuspect: boolean;
-    /**
-     * `receivedAt - observedAt` of the newest stored sample in this answer,
-     * measured from that one row. Unknown when the answer holds no stored
-     * sample — never reported as zero.
-     */
-    latestDelaySeconds?: number | null;
-    observationCount: number;
-    /**
-     * False when this Node never reported the series: shown as absent, not as
-     * zero.
-     */
-    observed: boolean;
-    /**
-     * Deliveries that restated an observation already stored: counted
-     * separately, never as new observations.
-     */
-    replayedCount: number;
-    /**
-     * Samples this answer actually carries.
-     */
-    sampledCount: number;
-    windowSeconds: number;
 };
 
 /**
@@ -1254,6 +1273,12 @@ export type CapacitySampleDto = {
  * One series whose optional history lost samples while protection was active.
  */
 export type CapacitySkippedSeriesDto = {
+    /**
+     * The series' dimension: the mount path of a Host storage series, empty for
+     * every series an owner and metric identify on their own. Two mounts of one
+     * Host are two series, so their losses are counted apart rather than merged.
+     */
+    dimension: string;
     /**
      * The first skipped observation, in RFC 3339.
      */
@@ -3537,6 +3562,59 @@ export type SetAgentMetadataResponses = {
 
 export type SetAgentMetadataResponse = SetAgentMetadataResponses[keyof SetAgentMetadataResponses];
 
+export type AdminAgentMetricHistoryData = {
+    body?: never;
+    path: {
+        /**
+         * Agent ID
+         */
+        agent_id: string;
+    };
+    query: {
+        /**
+         * Stored Host metric series the Agent collected
+         */
+        metric: string;
+        /**
+         * Mount path of a Host storage series (disk_used_bytes, disk_total_bytes); empty for every other Host series
+         */
+        dimension?: string;
+        /**
+         * Canonical RFC 3339 UTC start of the range, second precision (default: 24 hours before to)
+         */
+        from?: string;
+        /**
+         * Canonical RFC 3339 UTC end of the range, second precision (default: now)
+         */
+        to?: string;
+        /**
+         * Canonical RFC 3339 UTC exclusive upper bound for paging: the continuation coordinate a truncated answer returned
+         */
+        before?: string;
+        /**
+         * Maximum points across every tier
+         */
+        limit?: number;
+    };
+    url: '/api/admin/v1/agents/{agent_id}/metric-history';
+};
+
+export type AdminAgentMetricHistoryErrors = {
+    400: ApiErrorBody;
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AdminAgentMetricHistoryError = AdminAgentMetricHistoryErrors[keyof AdminAgentMetricHistoryErrors];
+
+export type AdminAgentMetricHistoryResponses = {
+    200: AdminMetricHistoryResponse;
+};
+
+export type AdminAgentMetricHistoryResponse = AdminAgentMetricHistoryResponses[keyof AdminAgentMetricHistoryResponses];
+
 export type AdminRecoveryTokenData = {
     body: TokenLifetimeRequest;
     path: {
@@ -4518,6 +4596,59 @@ export type AdminNodeHistoryResponses = {
 
 export type AdminNodeHistoryResponse = AdminNodeHistoryResponses[keyof AdminNodeHistoryResponses];
 
+export type AdminNodeHostMetricHistoryData = {
+    body?: never;
+    path: {
+        /**
+         * Node ID
+         */
+        node_id: string;
+    };
+    query: {
+        /**
+         * Stored Host metric series of the Agent that owns this Node
+         */
+        metric: string;
+        /**
+         * Mount path of a Host storage series (disk_used_bytes, disk_total_bytes); empty for every other Host series
+         */
+        dimension?: string;
+        /**
+         * Canonical RFC 3339 UTC start of the range, second precision (default: 24 hours before to)
+         */
+        from?: string;
+        /**
+         * Canonical RFC 3339 UTC end of the range, second precision (default: now)
+         */
+        to?: string;
+        /**
+         * Canonical RFC 3339 UTC exclusive upper bound for paging: the continuation coordinate a truncated answer returned
+         */
+        before?: string;
+        /**
+         * Maximum points across every tier
+         */
+        limit?: number;
+    };
+    url: '/api/admin/v1/nodes/{node_id}/host-metric-history';
+};
+
+export type AdminNodeHostMetricHistoryErrors = {
+    400: ApiErrorBody;
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AdminNodeHostMetricHistoryError = AdminNodeHostMetricHistoryErrors[keyof AdminNodeHostMetricHistoryErrors];
+
+export type AdminNodeHostMetricHistoryResponses = {
+    200: AdminMetricHistoryResponse;
+};
+
+export type AdminNodeHostMetricHistoryResponse = AdminNodeHostMetricHistoryResponses[keyof AdminNodeHostMetricHistoryResponses];
+
 export type SetNodeMetadataData = {
     body: NodeMetadataRequest;
     path: {
@@ -4554,7 +4685,7 @@ export type AdminNodeMetricHistoryData = {
     };
     query: {
         /**
-         * Stored Node metric series
+         * Stored Node Process metric series
          */
         metric: string;
         /**
@@ -4588,10 +4719,10 @@ export type AdminNodeMetricHistoryErrors = {
 export type AdminNodeMetricHistoryError = AdminNodeMetricHistoryErrors[keyof AdminNodeMetricHistoryErrors];
 
 export type AdminNodeMetricHistoryResponses = {
-    200: AdminNodeMetricHistoryResponse;
+    200: AdminMetricHistoryResponse;
 };
 
-export type AdminNodeMetricHistoryResponse2 = AdminNodeMetricHistoryResponses[keyof AdminNodeMetricHistoryResponses];
+export type AdminNodeMetricHistoryResponse = AdminNodeMetricHistoryResponses[keyof AdminNodeMetricHistoryResponses];
 
 export type AdminNodePeerChurnData = {
     body?: never;

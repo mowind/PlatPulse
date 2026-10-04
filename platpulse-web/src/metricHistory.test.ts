@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
+  HOST_METRIC_SERIES,
   METRIC_HISTORY_MAX_COLUMNS,
   METRIC_HISTORY_PRESETS,
   METRIC_HISTORY_SAMPLE_LIMIT,
+  NODE_METRIC_SERIES,
   bucketMetricSamples,
   formatCanonicalInstant,
   formatHistoryDuration,
   formatSampleDelay,
+  hostMetricDefinition,
+  hostMetricNeedsMount,
   metricAvailabilityNotice,
   metricBandPath,
   metricChartGeometry,
@@ -635,6 +639,84 @@ describe('metric history presentation', () => {
     expect(nodeMetricDefinition('peer_inbound_count').label).toBe('Peer inbound')
     expect(nodeMetricDefinition('data_directory_percent').fixedMax).toBe(100)
     // An unknown metric falls back to the first series instead of throwing.
-    expect(nodeMetricDefinition('carrier_pigeons').metric).toBe('process_cpu_percent')
+    expect(nodeMetricDefinition('carrier_pigeons').metric).toBe(
+      'process_cpu_percent',
+    )
+  })
+
+  it('describes every stored Host series and names the ones a mount path identifies', () => {
+    expect(HOST_METRIC_SERIES.map((series) => series.metric)).toEqual([
+      'cpu_percent',
+      'memory_used_bytes',
+      'memory_total_bytes',
+      'load1',
+      'load5',
+      'load15',
+      'network_rx_bytes_per_sec',
+      'network_tx_bytes_per_sec',
+      'disk_used_bytes',
+      'disk_total_bytes',
+    ])
+    expect(
+      HOST_METRIC_SERIES.every(
+        (series) =>
+          series.label.length > 0 &&
+          series.unit.length > 0 &&
+          series.description.length > 0,
+      ),
+    ).toBe(true)
+    // Host CPU is a share of the machine, so it has no ceiling to clamp to the
+    // way a Node's own process percentage has.
+    expect(
+      HOST_METRIC_SERIES.every((series) => series.fixedMax === undefined),
+    ).toBe(true)
+    expect(nodeMetricDefinition('data_directory_percent').fixedMax).toBe(100)
+    // Each quantity is shown in its own unit, never as a bare number.
+    expect(hostMetricDefinition('cpu_percent').format(11)).toBe('11%')
+    expect(
+      hostMetricDefinition('memory_total_bytes').format(17_179_869_184),
+    ).toBe('16.0 GiB')
+    expect(hostMetricDefinition('load1').format(0.4)).toBe('0.40')
+    expect(
+      hostMetricDefinition('network_rx_bytes_per_sec').format(1_048_576),
+    ).toBe('1.00 MiB/s')
+    expect(hostMetricDefinition('disk_used_bytes').format(100)).toBe('100 B')
+    // Only the storage series is identified by a mount path, so only those ask
+    // for one before reading.
+    expect(
+      HOST_METRIC_SERIES.filter((series) =>
+        hostMetricNeedsMount(series.metric),
+      ).map((series) => series.metric),
+    ).toEqual(['disk_used_bytes', 'disk_total_bytes'])
+    expect(hostMetricNeedsMount('carrier_pigeons')).toBe(false)
+    // An unknown metric falls back to the first Host series instead of throwing.
+    expect(hostMetricDefinition('carrier_pigeons').metric).toBe('cpu_percent')
+    expect(hostMetricDefinition('disk_total_bytes').label).toBe(
+      'Host storage capacity',
+    )
+  })
+
+  it('presents the Host series as the machine the Agent runs on, not one Node', () => {
+    expect(hostMetricDefinition('cpu_percent').description).toContain(
+      'not one Node process',
+    )
+    expect(hostMetricDefinition('disk_used_bytes').description).toContain(
+      'mount path',
+    )
+    expect(hostMetricDefinition('disk_used_bytes').description).toContain(
+      'a different series',
+    )
+    expect(hostMetricDefinition('disk_total_bytes').description).toContain(
+      'never shown without the capacity',
+    )
+    expect(
+      hostMetricDefinition('network_tx_bytes_per_sec').description,
+    ).toContain('shared by every Node')
+    // The Node series are a different vocabulary and stay untouched by this one:
+    // no name is shared, and Node-only names never appear among the Host ones.
+    const hostNames = HOST_METRIC_SERIES.map((series) => String(series.metric))
+    const nodeNames = NODE_METRIC_SERIES.map((series) => String(series.metric))
+    expect(hostNames.filter((name) => nodeNames.includes(name))).toEqual([])
+    expect(hostNames).not.toContain('process_cpu_percent')
   })
 })

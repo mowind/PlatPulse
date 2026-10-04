@@ -1,4 +1,12 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { adminQueryClient } from '../api/admin'
@@ -237,6 +245,107 @@ function mockFetch(
   })
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
+}
+
+/** The Node's own Process series panel, named apart from the shared Host one. */
+function nodeProcessPanel(): HTMLElement {
+  const panel = document.querySelector(
+    '[data-slot="metric-history-panel"][data-surface="node-process"]',
+  )
+  if (!panel)
+    throw new Error('the Node Process metric history panel is not rendered')
+  return panel as HTMLElement
+}
+
+/** The shared Host series panel of the Node page, named apart from the Node's
+ * own Process series. */
+function nodeHostPanel(): HTMLElement {
+  const panel = document.querySelector(
+    '[data-slot="metric-history-panel"][data-surface="node-host"]',
+  )
+  if (!panel)
+    throw new Error('the shared Host metric history panel is not rendered')
+  return panel as HTMLElement
+}
+
+/** The Agent's Host series as the Server answers it: observations of the machine
+ * the Agent watches, stored once for every Node it serves. */
+function hostHistoryFixture(overrides: Record<string, unknown> = {}) {
+  const HOUR_MS = 60 * 60 * 1000
+  const instant = (offsetMs: number) =>
+    new Date(Date.now() + offsetMs).toISOString().replace(/\.\d{3}Z$/, 'Z')
+  return {
+    scopeKind: 'host',
+    scopeKey: NODE_A.agent_id,
+    nodeId: NODE_A.node_id,
+    metric: 'cpu_percent',
+    dimension: '',
+    from: instant(-24 * HOUR_MS),
+    to: instant(0),
+    requestedFrom: instant(-24 * HOUR_MS),
+    availability: null,
+    rawRetentionDays: 1,
+    grain: 'raw',
+    aggregateSupported: true,
+    historyHorizonDays: 30,
+    windowSeconds: 86400,
+    truncated: false,
+    continuation: null,
+    segments: [
+      {
+        from: instant(-24 * HOUR_MS),
+        to: instant(0),
+        grain: 'raw',
+        source: 'raw',
+        pointCount: 2,
+        truncated: false,
+      },
+    ],
+    series: {
+      observed: true,
+      firstObservedAt: instant(-2 * HOUR_MS),
+      lastObservedAt: instant(-1 * HOUR_MS),
+      lastReceivedAt: instant(-1 * HOUR_MS + 1000),
+      observationCount: 2,
+      replayedCount: 0,
+      correctedCount: 0,
+      sampledCount: 2,
+      coverageSeconds: 60,
+      windowSeconds: 86400,
+      latestDelaySeconds: 1,
+      latestClockSuspect: false,
+    },
+    items: [
+      {
+        observedAt: instant(-2 * HOUR_MS),
+        receivedAt: instant(-2 * HOUR_MS + 1000),
+        value: 11,
+        grain: 'raw',
+        source: 'raw',
+        minValue: 11,
+        maxValue: 11,
+        sampleCount: 1,
+        lastObservedAt: instant(-2 * HOUR_MS),
+        delaySeconds: 1,
+        clockSuspect: false,
+      },
+      {
+        observedAt: instant(-1 * HOUR_MS),
+        receivedAt: instant(-1 * HOUR_MS + 1000),
+        value: 2.5,
+        grain: 'raw',
+        source: 'raw',
+        minValue: 2.5,
+        maxValue: 2.5,
+        sampleCount: 1,
+        lastObservedAt: instant(-1 * HOUR_MS),
+        delaySeconds: 1,
+        clockSuspect: false,
+      },
+    ],
+    gaps: [],
+    ...overrides,
+  }
 }
 
 async function renderAt(path: string) {
@@ -622,16 +731,27 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
 
     // Another series this Node never reported is named as absent: no chart,
     // no zero line.
-    fireEvent.change(screen.getByLabelText('Metric series'), {
-      target: { value: 'data_directory_percent' },
-    })
-    expect(await screen.findByText(/never reported Data directory/)).toBeTruthy()
-    expect(document.querySelector('[data-slot="metric-history-chart"]')).toBeNull()
-    expect(document.querySelector('[data-slot="metric-history-gap-band"]')).toBeNull()
-    expect(document.querySelector('[data-slot="metric-history-segments"]')).toBeNull()
+    fireEvent.change(
+      within(nodeProcessPanel()).getByLabelText('Metric series'),
+      {
+        target: { value: 'data_directory_percent' },
+      },
+    )
+    expect(
+      await screen.findByText(/never reported Data directory/),
+    ).toBeTruthy()
+    expect(
+      document.querySelector('[data-slot="metric-history-chart"]'),
+    ).toBeNull()
+    expect(
+      document.querySelector('[data-slot="metric-history-gap-band"]'),
+    ).toBeNull()
+    expect(
+      document.querySelector('[data-slot="metric-history-segments"]'),
+    ).toBeNull()
   })
 
-it('reports a sample stamped after its receipt as ahead of receipt, and keeps an isolated spike visible', async () => {
+  it('reports a sample stamped after its receipt as ahead of receipt, and keeps an isolated spike visible', async () => {
     const cpus = [
       { observedAt: canonical(-30 * MINUTE), value: 10 },
       { observedAt: canonical(-29 * MINUTE), value: 90 },
@@ -747,8 +867,12 @@ it('reports a sample stamped after its receipt as ahead of receipt, and keeps an
     // The ledger outlives the released samples: the state is still reported.
     expect(screen.getByText('1 stored observation(s) since the first one')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: '1 hour' }))
-    expect(await screen.findByText(/more samples than one answer carries/)).toBeTruthy()
+    fireEvent.click(
+      within(nodeProcessPanel()).getByRole('button', { name: '1 hour' }),
+    )
+    expect(
+      await screen.findByText(/more samples than one answer carries/),
+    ).toBeTruthy()
     expect(call).toBeGreaterThan(1)
 
     // The Server names the coordinate to continue from, and the panel asks for
@@ -1176,5 +1300,183 @@ it('reports a sample stamped after its receipt as ahead of receipt, and keeps an
       screen.getByRole('button', { name: 'Confirm permanent deletion' }),
     ).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy()
+  })
+
+  it("reads the Agent's shared Host series on a Node page and names the Agent it belongs to", async () => {
+    const hostCalls: string[] = []
+    const processCalls: string[] = []
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/host-metric-history*':
+        (request) => {
+          hostCalls.push(request.url)
+          return jsonResponse(hostHistoryFixture(), 200)
+        },
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/metric-history*':
+        (request) => {
+          processCalls.push(request.url)
+          return jsonResponse(metricHistoryFixture(), 200)
+        },
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(NODE_A_DETAIL, 200),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    await screen.findByRole('heading', { level: 1, name: /Node A/ })
+    // Two panels with two subjects: this Node's own Process series and the
+    // machine the Agent observes once for every Node of it.
+    expect(
+      within(nodeProcessPanel()).getByRole('heading', {
+        level: 2,
+        name: 'Metric history',
+      }),
+    ).toBeTruthy()
+    expect(
+      within(nodeHostPanel()).getByRole('heading', {
+        level: 2,
+        name: 'Host metric history',
+      }),
+    ).toBeTruthy()
+    expect(
+      within(nodeHostPanel()).getByText(/never reported|not one Node process/),
+    ).toBeTruthy()
+
+    // The Host panel asks the shared Agent series on its own route, never the
+    // Node's own metric, and it says which Agent the series belongs to.
+    await waitFor(() => {
+      expect(hostCalls.length).toBeGreaterThan(0)
+    })
+    const asked = decodeURIComponent(hostCalls[0])
+    expect(asked).toContain(`/nodes/${NODE_A.node_id}/host-metric-history`)
+    expect(asked).toContain('metric=cpu_percent')
+    expect(asked).toContain('dimension=')
+    expect(
+      processCalls.every((url) => url.includes('metric=process_cpu_percent')),
+    ).toBe(true)
+    const owner = nodeHostPanel().querySelector(
+      '[data-slot="host-metric-history-owner"]',
+    )
+    expect(owner?.textContent).toContain(NODE_A.agent_id)
+    expect(owner?.textContent).toContain('does not remove it')
+
+    // The machine's own reading is charted and listed in its own unit.
+    const hostPanel = nodeHostPanel()
+    expect(
+      hostPanel.querySelector('[data-slot="metric-history-chart"]'),
+    ).not.toBeNull()
+    const samples =
+      hostPanel.querySelector('[data-slot="metric-history-samples"]')
+        ?.textContent ?? ''
+    expect(samples).toContain('11%')
+    expect(samples).toContain('2.5%')
+    expect(
+      within(hostPanel).getByRole('button', { name: '1 hour' }),
+    ).toBeTruthy()
+  })
+
+  it('asks for the mount path before reading a Host storage series, and reads the series each path names', async () => {
+    const hostCalls: string[] = []
+    const instant = (offsetMs: number) =>
+      new Date(Date.now() + offsetMs).toISOString().replace(/\.\d{3}Z$/, 'Z')
+    const storageItem = (value: number) => ({
+      observedAt: instant(-60 * 60 * 1000),
+      receivedAt: instant(-60 * 60 * 1000 + 1000),
+      value,
+      grain: 'raw',
+      source: 'raw',
+      minValue: value,
+      maxValue: value,
+      sampleCount: 1,
+      lastObservedAt: instant(-60 * 60 * 1000),
+      delaySeconds: 1,
+      clockSuspect: false,
+    })
+    // '/data' and '/data ' are two mounts the Agent reported, so each path reads
+    // the value recorded for that path alone.
+    const storageValue = (dimension: string) =>
+      dimension === '/data' ? 100 : dimension === '/data ' ? 200 : 900
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/host-metric-history*':
+        (request) => {
+          hostCalls.push(request.url)
+          const dimension =
+            new URL(request.url).searchParams.get('dimension') ?? ''
+          return jsonResponse(
+            hostHistoryFixture({
+              metric: 'disk_used_bytes',
+              dimension,
+              items: dimension === '' ? [] : [storageItem(storageValue(dimension))],
+            }),
+            200,
+          )
+        },
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/metric-history*':
+        () => jsonResponse(metricHistoryFixture(), 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(NODE_A_DETAIL, 200),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    await screen.findByRole('heading', { level: 1, name: /Node A/ })
+    // A storage series is identified by the mount path the Agent reported, so
+    // the panel names no series until the Operator gives the path.
+    const beforeMetric = hostCalls.length
+    fireEvent.change(within(nodeHostPanel()).getByLabelText('Metric series'), {
+      target: { value: 'disk_used_bytes' },
+    })
+    expect(
+      await within(nodeHostPanel()).findByText(
+        /Enter the mount path the Agent reported/,
+      ),
+    ).toBeTruthy()
+    expect(
+      nodeHostPanel().querySelector('[data-slot="metric-history-chart"]'),
+    ).toBeNull()
+    // An empty path is not a mount, so no query is issued for it: the panel does
+    // not ask the Server for the series without an identity and then mask it.
+    expect(hostCalls.length).toBe(beforeMetric)
+
+    const mountInput = within(nodeHostPanel()).getByLabelText('Mount path')
+    const beforeMount = hostCalls.length
+    fireEvent.change(mountInput, { target: { value: '/data' } })
+    await waitFor(() => {
+      expect(hostCalls.length).toBeGreaterThan(beforeMount)
+    })
+    const dataCall = decodeURIComponent(hostCalls[hostCalls.length - 1])
+    expect(dataCall).toContain('metric=disk_used_bytes')
+    expect(dataCall).toContain('dimension=/data')
+    const usedBytes = () =>
+      nodeHostPanel().querySelector('[data-slot="metric-history-samples"]')
+        ?.textContent ?? ''
+    await waitFor(() => {
+      expect(usedBytes()).toContain('100 B')
+    })
+
+    // Another path is another series, not the same one continued.
+    fireEvent.change(mountInput, { target: { value: '/mnt/data' } })
+    await waitFor(() => {
+      expect(decodeURIComponent(hostCalls[hostCalls.length - 1])).toContain(
+        'dimension=/mnt/data',
+      )
+    })
+    await waitFor(() => {
+      expect(usedBytes()).toContain('900 B')
+    })
+    expect(usedBytes()).not.toContain('100 B')
+
+    // A mount identity is literal, so a path that differs only in surrounding
+    // whitespace is a different mount: '/data ' is read as the series the Agent
+    // reported for it, never trimmed into '/data' and read as that one instead.
+    fireEvent.change(mountInput, { target: { value: '/data ' } })
+    await waitFor(() => {
+      expect(
+        new URL(hostCalls[hostCalls.length - 1]).searchParams.get('dimension'),
+      ).toBe('/data ')
+    })
+    await waitFor(() => {
+      expect(usedBytes()).toContain('200 B')
+    })
+    expect(usedBytes()).not.toContain('100 B')
   })
 })

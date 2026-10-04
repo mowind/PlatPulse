@@ -29,6 +29,12 @@ path for one fresh Node, so the one minute and five minute rows, the answers the
 serve and the cleanup that releases them are measured against what the Server
 counted rather than against what it can still hold.
 
+The Host family that issue #215 made shared per Agent is measured by the last
+phase of the same run: the eight quantities every Report above already carried
+are audited once for the Agent, the Agent route and the Node host route of that
+Agent's Nodes are compared point by point, and one Report carrying two mounts
+measures what a mount path adds to the family and to its ledger.
+
 Usage:
     python3 scripts/metric-history-baseline.py --output-root target/metric-history-baseline
 """
@@ -318,6 +324,10 @@ def write_config(path: Path, state_dir: Path, port: int, floor: int) -> None:
     )
 
 
+def table_columns(db_path: Path, table: str) -> tuple:
+    return tuple(row["name"] for row in sqlite_rows(db_path, "PRAGMA table_info(" + table + ")"))
+
+
 def sqlite_rows(db_path: Path, sql: str) -> list:
     connection = sqlite3.connect("file:" + str(db_path) + "?mode=ro", uri=True)
     try:
@@ -364,6 +374,41 @@ def read_history(client: Client, cookie: str, node_id: str, metric: str, query: 
             "GET metric-history failed with status " + str(status) + ": " + body.decode("utf-8")[:400]
         )
     return json.loads(body), elapsed_ms, len(body)
+
+
+def agent_history_url(agent_id: str, metric: str, query: str = "") -> str:
+    """Issue #215: the Owner-only route that serves the Host series one Agent
+    collected once, for every Node on it."""
+    return "/api/admin/v1/agents/" + agent_id + "/metric-history?metric=" + metric + query
+
+
+def node_host_history_url(node_id: str, metric: str, query: str = "") -> str:
+    """The same shared series reached through one of the Agent's Nodes."""
+    return "/api/admin/v1/nodes/" + node_id + "/host-metric-history?metric=" + metric + query
+
+
+def read_shared_history(client: Client, cookie: str, path: str):
+    status, _, body, elapsed_ms = admin_get(client, cookie, path)
+    if status != 200:
+        raise BaselineError(
+            "GET " + path + " failed with status " + str(status) + ": " + body.decode("utf-8")[:400]
+        )
+    return json.loads(body), elapsed_ms, len(body)
+
+
+def refusal_code(client: Client, cookie: str, path: str) -> dict:
+    """The refusal a route owes a request for the other family's series."""
+    status, _, body, _ = admin_get(client, cookie, path)
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        payload = {}
+    error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+    return {
+        "status": status,
+        "code": error.get("code"),
+        "message": str(error.get("message") or "")[:200],
+    }
 
 
 def create_enrollment_token(binary: Path, config: Path) -> str:
@@ -610,6 +655,74 @@ TIER_PLANT_SURVIVING_AGE_SECONDS = 29 * 86400
 # multi-Node inventory - and each planted Node plus the trigger Node declares
 # the next one.
 TIER_INVENTORY_REVISIONS = (2001, 2002, 2003, 2004)
+
+# -- issue #215: the Host family stored once per Agent --------------------
+#
+# A Report states its Host quantities once, for the Agent that collected them,
+# and the Server stores them under that Agent
+# (crates/platpulse-server/src/http/report_ingestion.rs:807-874 host_series_samples,
+# called at :1163-1173). HOST_METRIC_SERIES
+# (crates/platpulse-server/src/metric_history.rs:116-127) is ten series: eight
+# stated per Host observation, plus two storage series whose dimension is the
+# mount path the Agent reported. Nothing in the family is counted per Node, so
+# the phase below audits its cardinality against the Nodes this run registered
+# and against the nodes that stored Node series of their own.
+HOST_SHARED_SERIES = (
+    "cpu_percent",
+    "load1",
+    "load5",
+    "load15",
+    "memory_total_bytes",
+    "memory_used_bytes",
+    "network_rx_bytes_per_sec",
+    "network_tx_bytes_per_sec",
+)
+HOST_MOUNT_SERIES = ("disk_total_bytes", "disk_used_bytes")
+DECLARED_HOST_FAMILY = (
+    "cpu_percent",
+    "disk_total_bytes",
+    "disk_used_bytes",
+    "load1",
+    "load15",
+    "load5",
+    "memory_total_bytes",
+    "memory_used_bytes",
+    "network_rx_bytes_per_sec",
+    "network_tx_bytes_per_sec",
+)
+# The declared family is the guard: editing HOST_SHARED_SERIES without editing
+# DECLARED_HOST_FAMILY, or drifting from the Server's own tuple, fails the run.
+HOST_FAMILY = tuple(sorted(HOST_SHARED_SERIES + HOST_MOUNT_SERIES))
+# The per-Host mount contract limit, and the batches the Server cleans the
+# family with (crates/platpulse-server/src/metric_history.rs:83 MAX_HOST_MOUNTS;
+# crates/platpulse-server/src/retention.rs:210-213 and :218
+# HOST_METRIC_CLEANUP_BATCH = 512; :241 and :252 AGGREGATE_CLEANUP_BATCH = 2048,
+# both guarded by compile-time assertions that they cover one maximal Host
+# Report: HOST_METRIC_SERIES.len() + 2 * MAX_HOST_MOUNTS = 266 rows).
+MAX_HOST_MOUNTS = 128
+HOST_METRIC_CLEANUP_BATCH = 512
+AGGREGATE_CLEANUP_BATCH = 2048
+# What one Report really carries: eight shared rows, plus two per mount.
+MAX_HOST_ROWS_PER_REPORT = len(HOST_SHARED_SERIES) + 2 * MAX_HOST_MOUNTS
+SERVER_MAX_HOST_ROWS_PER_REPORT = len(HOST_FAMILY) + 2 * MAX_HOST_MOUNTS
+# Issue #215 keeps the family as it is: no Swap series and no disk throughput
+# series are part of it, and this run neither registers nor measures any.
+HOST_FORBIDDEN_TOKENS = (
+    "swap",
+    "iops",
+    "disk_read",
+    "disk_write",
+    "io_wait",
+    "read_bytes_per_sec",
+    "write_bytes_per_sec",
+)
+# The planted Host Report carries the fixture's own single-Node inventory, so it
+# cannot reuse a tier revision: a Report whose declared revision is below the
+# accepted one is rejected outright, and the tier phase left 2004
+# (TIER_INVENTORY_REVISIONS[-1]) accepted. It declares the next block instead,
+# the way MULTI_NODE_INVENTORY_REVISION (1001) followed DRAIN_INVENTORY_REVISION
+# (1002) and the tier revisions followed that.
+HOST_INVENTORY_REVISION = 3001
 
 
 def aligned_bucket_start(observed_at: str, grain_seconds: int) -> str:
@@ -2155,6 +2268,230 @@ class BaselineRun:
             "wall_seconds": round(time.monotonic() - started, 3),
         }
 
+    # -- issue #215: the Host family stored once per Agent -----------------
+
+    def host_family_rows(self) -> list:
+        """One row per stored (metric, dimension) series of the Host family."""
+        return sqlite_rows(
+            self.db_path,
+            "SELECT metric, dimension, COUNT(*) AS samples,"
+            " MIN(observed_at) AS first_observed_at, MAX(observed_at) AS last_observed_at"
+            " FROM host_metric_samples GROUP BY metric, dimension"
+            " ORDER BY metric, dimension",
+        )
+
+    def host_ledger_rows(self, agent_id: str) -> list:
+        """The per-series ledger of the Host family, for one Agent."""
+        return sqlite_rows(
+            self.db_path,
+            "SELECT metric, dimension FROM host_metric_series_state"
+            " WHERE agent_id = '" + agent_id + "' ORDER BY metric, dimension",
+        )
+
+    def host_footprint(self) -> dict:
+        """The page footprint of the raw Host table, its indexes and its ledger,
+        measured the way the tier phase measures the aggregates (dbstat), so the
+        bytes per row below are a measured number rather than a projection."""
+        page_size = sqlite_scalar(self.db_path, "PRAGMA page_size")
+        try:
+            rows = sqlite_rows(
+                self.db_path,
+                "SELECT name, SUM(pgsize) AS bytes FROM dbstat WHERE name LIKE 'host_metric%'"
+                " GROUP BY name ORDER BY name",
+            )
+        except sqlite3.Error as error:
+            return {"available": False, "reason": str(error)}
+        objects = {row["name"]: row["bytes"] for row in rows}
+        total = sum(objects.values())
+        raw = objects.get("host_metric_samples", 0)
+        samples = sqlite_scalar(self.db_path, "SELECT COUNT(*) FROM host_metric_samples") or 0
+        return {
+            "available": True,
+            "objects": objects,
+            "raw_bytes": raw,
+            "family_bytes": total,
+            "bytes_per_sample": round(raw / samples, 3) if samples else None,
+            "pages": round(total / page_size, 3) if page_size else None,
+            "page_size": page_size,
+            "samples": samples,
+        }
+
+    def host_route_reads(self, agent_id: str, node_ids: list) -> dict:
+        """The Agent route, and the host route of the Agent's Nodes, read over
+        the same window so their answers can be compared point by point."""
+        window = "&from=" + self.window_from() + "&to=" + self.window_to() + "&limit=5000"
+        reads = {}
+        latencies = []
+        for metric in ("cpu_percent", "memory_used_bytes", "load1", "network_rx_bytes_per_sec"):
+            payload, elapsed_ms, payload_bytes = read_shared_history(
+                self.client, self.cookie, agent_history_url(agent_id, metric, window)
+            )
+            latencies.append(elapsed_ms)
+            reads[metric] = {
+                "items": len(payload["items"]),
+                "window_seconds": payload["windowSeconds"],
+                "scope_kind": payload.get("scopeKind"),
+                "scope_key": payload.get("scopeKey"),
+                "node_id": payload.get("nodeId"),
+                "dimension": payload.get("dimension"),
+                "gaps": len(payload["gaps"]),
+                "latency_ms": round(elapsed_ms, 3),
+                "payload_bytes": payload_bytes,
+                "points": [[item["observedAt"], item["value"]] for item in payload["items"]],
+                "series": self.ledger(payload),
+            }
+        by_node = {}
+        for node_id in node_ids:
+            payload, elapsed_ms, payload_bytes = read_shared_history(
+                self.client, self.cookie, node_host_history_url(node_id, "cpu_percent", window)
+            )
+            by_node[node_id] = {
+                "items": len(payload["items"]),
+                "scope_kind": payload.get("scopeKind"),
+                "scope_key": payload.get("scopeKey"),
+                "node_id": payload.get("nodeId"),
+                "latency_ms": round(elapsed_ms, 3),
+                "payload_bytes": payload_bytes,
+                "points": [[item["observedAt"], item["value"]] for item in payload["items"]],
+            }
+        return {"reads": reads, "by_node": by_node, "latency_ms": latencies}
+
+    def phase_host(self, release: dict) -> dict:
+        """Issue #215: the Host quantities a Report states are stored once for
+        the Agent that collected them, not once per Node, and the storage pair is
+        named by the mount path the Agent reported.
+
+        Every Report above already carried the fixture's Host block, which states
+        the eight shared quantities and no mount, so this phase audits the family
+        those Reports produced, reads it back through every route that serves it,
+        and then plants one Report that carries two mounts to measure what a
+        mount adds to the family.
+        """
+        started = time.perf_counter()
+        self.restart_with_floor(CLEARED_FLOOR)
+        agent_id = self.agent["agent_id"]
+        columns = table_columns(self.db_path, "host_metric_samples")
+        family_before = self.host_family_rows()
+        ledger_before = self.host_ledger_rows(agent_id)
+        node_ids = [
+            row["node_id"]
+            for row in sqlite_rows(
+                self.db_path,
+                "SELECT node_id FROM nodes WHERE agent_id = '" + agent_id + "' ORDER BY node_id",
+            )
+        ]
+        nodes_with_their_own_series = sqlite_scalar(
+            self.db_path, "SELECT COUNT(DISTINCT node_id) FROM node_metric_series_state"
+        )
+        routes = self.host_route_reads(agent_id, node_ids[:2])
+        mountless, _, _ = read_shared_history(
+            self.client,
+            self.cookie,
+            agent_history_url(
+                agent_id,
+                "disk_used_bytes",
+                "&from=" + self.window_from() + "&to=" + self.window_to() + "&limit=5000",
+            ),
+        )
+        refusals = {
+            "the Agent route refuses a Node series": refusal_code(
+                self.client, self.cookie, agent_history_url(agent_id, "process_cpu_percent")
+            ),
+            "the Node host route refuses a Node series": refusal_code(
+                self.client, self.cookie, node_host_history_url(node_ids[0], "process_cpu_percent")
+            ),
+            "the Node route refuses a Host series": refusal_code(
+                self.client, self.cookie, history_url(node_ids[0], "cpu_percent")
+            ),
+        }
+        rows_at_or_before_the_released_instant = sqlite_scalar(
+            self.db_path,
+            "SELECT COUNT(*) FROM host_metric_samples WHERE observed_at <= '"
+            + release["released_instant"]
+            + "'",
+        )
+        footprint = self.host_footprint()
+        # One Report that carries two mounts: the storage pair is stored once per
+        # mount path, and only for the Agent that reported it.
+        high_water = sqlite_scalar(self.db_path, "SELECT MAX(observed_at) FROM host_metric_samples")
+        planted_at = (parse_instant(high_water) + timedelta(seconds=1)).strftime(CANONICAL)
+        mounts = [
+            {"mount_path": "/", "total_bytes": 274877906944, "used_bytes": 137438953472},
+            {"mount_path": "/data", "total_bytes": 1099511627776, "used_bytes": 549755813888},
+        ]
+        report = build_report(self.fixture, self.agent, 0, planted_at, 12.5, 21000, report_id_for(0))
+        # The fixture's revision belongs to the fixture's own single-Node
+        # inventory and the accepted revision is already the last tier one, so the
+        # planted Report declares the next revision with the inventory it carries.
+        report["inventory"]["revision"] = HOST_INVENTORY_REVISION
+        report["host"]["disk"]["latest"] = {"mounts": copy.deepcopy(mounts)}
+        planted = self.submit("host mounts", planted_at, 12.5, 21000, report=report)
+        family_after = self.host_family_rows()
+        ledger_after = self.host_ledger_rows(agent_id)
+        span = "&from=" + planted_at + "&to=" + instant(1) + "&limit=5000"
+        mount_reads = {}
+        for mount in mounts:
+            dimension = mount["mount_path"]
+            payload, elapsed_ms, payload_bytes = read_shared_history(
+                self.client,
+                self.cookie,
+                agent_history_url(agent_id, "disk_used_bytes", "&dimension=" + dimension + span),
+            )
+            mount_reads[dimension] = {
+                "items": len(payload["items"]),
+                "dimension": payload.get("dimension"),
+                "scope_kind": payload.get("scopeKind"),
+                "points": [[item["observedAt"], item["value"]] for item in payload["items"]],
+                "latency_ms": round(elapsed_ms, 3),
+                "payload_bytes": payload_bytes,
+            }
+        return {
+            "issue": 215,
+            "agent_id": agent_id,
+            "columns": list(columns),
+            "family_before": family_before,
+            "family_after": family_after,
+            "ledger_before": ledger_before,
+            "ledger_after": ledger_after,
+            "nodes": len(node_ids),
+            "nodes_with_their_own_series": nodes_with_their_own_series,
+            "routes": routes,
+            "mountless_read": {
+                "items": len(mountless["items"]),
+                "dimension": mountless.get("dimension"),
+                "scope_kind": mountless.get("scopeKind"),
+                "series": self.ledger(mountless),
+            },
+            "refusals": refusals,
+            "released_instant": release["released_instant"],
+            "rows_at_or_before_the_released_instant": rows_at_or_before_the_released_instant,
+            "footprint": footprint,
+            "planted": {
+                "observed_at": planted_at,
+                "inventory_revision": HOST_INVENTORY_REVISION,
+                "disposition": planted["disposition"],
+                "reason": planted["reason"],
+                "mounts": mounts,
+                "mount_reads": mount_reads,
+            },
+            "bounds": {
+                "declared_host_family": list(DECLARED_HOST_FAMILY),
+                "measured_family": list(HOST_FAMILY),
+                "shared_series": list(HOST_SHARED_SERIES),
+                "mount_series": list(HOST_MOUNT_SERIES),
+                "max_host_mounts": MAX_HOST_MOUNTS,
+                "max_host_rows_per_report": MAX_HOST_ROWS_PER_REPORT,
+                "server_max_host_rows_per_report": SERVER_MAX_HOST_ROWS_PER_REPORT,
+                "host_metric_cleanup_batch": HOST_METRIC_CLEANUP_BATCH,
+                "aggregate_cleanup_batch": AGGREGATE_CLEANUP_BATCH,
+                "forbidden_tokens": list(HOST_FORBIDDEN_TOKENS),
+                "forbidden_in_family": [
+                    token for token in HOST_FORBIDDEN_TOKENS if any(token in metric for metric in HOST_FAMILY)
+                ],
+            },
+            "wall_seconds": round(time.monotonic() - started, 3),
+        }
+
     def phase_storage(self) -> dict:
         self.stop_server()
         tables = (
@@ -2201,6 +2538,7 @@ class BaselineRun:
         multi_node: dict,
         tiers: dict,
         storage: dict,
+        host: dict,
     ) -> list:
         full = reads["24h"]
         planned = self.planned_coverage()
@@ -2991,6 +3329,218 @@ class BaselineRun:
                 and beyond_horizon["effective_from"] > beyond_horizon["requested_from"],
             ),
         ])
+
+        # -- issue #215: the Host family stored once per Agent --
+        host_bounds = host["bounds"]
+        host_family_before = sorted({row["metric"] for row in host["family_before"]})
+        host_dimensions_before = sorted({row["dimension"] for row in host["family_before"]})
+        host_family_after = sorted({row["metric"] for row in host["family_after"]})
+        host_dimensions_after = sorted({row["dimension"] for row in host["family_after"]})
+        mount_paths = sorted(mount["mount_path"] for mount in host["planted"]["mounts"])
+        mount_series_expected = 2 * len(mount_paths)
+        agent_reads = host["routes"]["reads"]
+        node_reads = host["routes"]["by_node"]
+        mounts_read = host["planted"]["mount_reads"]
+        checks.extend([
+            check(
+                "the declared Host family is the Server's ten series",
+                "DECLARED_HOST_FAMILY equals the eight shared series plus the two storage series, "
+                "and no Swap or disk-IO token is part of either",
+                json.dumps(
+                    {
+                        "declared": host_bounds["declared_host_family"],
+                        "family": host_bounds["measured_family"],
+                        "shared": host_bounds["shared_series"],
+                        "mount": host_bounds["mount_series"],
+                        "forbidden_in_family": host_bounds["forbidden_in_family"],
+                    }
+                ),
+                host_bounds["declared_host_family"] == host_bounds["measured_family"]
+                and host_bounds["measured_family"] == sorted(HOST_SHARED_SERIES + HOST_MOUNT_SERIES)
+                and host_bounds["forbidden_in_family"] == [],
+            ),
+            check(
+                "the Host family stays inside the mount contract and the cleanup batches",
+                "MAX_HOST_MOUNTS "
+                + str(MAX_HOST_MOUNTS)
+                + ", so one maximal Host Report is "
+                + str(SERVER_MAX_HOST_ROWS_PER_REPORT)
+                + " rows: the raw batch "
+                + str(HOST_METRIC_CLEANUP_BATCH)
+                + " and the aggregate batch "
+                + str(AGGREGATE_CLEANUP_BATCH)
+                + " both cover it",
+                json.dumps(host_bounds),
+                host_bounds["max_host_mounts"] == 128
+                and host_bounds["max_host_rows_per_report"] == 264
+                and host_bounds["server_max_host_rows_per_report"] == 266
+                and host_bounds["host_metric_cleanup_batch"] == 512
+                and host_bounds["aggregate_cleanup_batch"] == 2048
+                and host_bounds["host_metric_cleanup_batch"] >= host_bounds["server_max_host_rows_per_report"]
+                and host_bounds["aggregate_cleanup_batch"] >= host_bounds["server_max_host_rows_per_report"],
+            ),
+            check(
+                "every Report above stored the eight shared Host series and no mount series",
+                "the fixture states no mount, so the family holds exactly "
+                + str(len(HOST_SHARED_SERIES))
+                + " series, all of them with an empty dimension",
+                json.dumps(
+                    {
+                        "metrics": host_family_before,
+                        "dimensions": host_dimensions_before,
+                        "ledger_rows": len(host["ledger_before"]),
+                        "series": [
+                            {"metric": row["metric"], "dimension": row["dimension"], "samples": row["samples"]}
+                            for row in host["family_before"]
+                        ],
+                    }
+                ),
+                host_family_before == sorted(HOST_SHARED_SERIES)
+                and host_dimensions_before == [""]
+                and len(host["ledger_before"]) == len(HOST_SHARED_SERIES),
+            ),
+            check(
+                "a Host row is owned by its Agent and dimensioned by a mount, never by a Node",
+                "host_metric_samples carries agent_id and dimension and no node_id column",
+                json.dumps({"columns": host["columns"]}),
+                "agent_id" in host["columns"]
+                and "dimension" in host["columns"]
+                and "node_id" not in host["columns"],
+            ),
+            check(
+                "the Host family does not scale with the Node count",
+                str(host["nodes"])
+                + " Nodes of the one Agent share "
+                + str(len(HOST_SHARED_SERIES) + mount_series_expected)
+                + " series: "
+                + str(len(HOST_SHARED_SERIES))
+                + " shared plus "
+                + str(mount_series_expected)
+                + " for the two planted mounts",
+                json.dumps(
+                    {
+                        "nodes": host["nodes"],
+                        "nodes_with_their_own_series": host["nodes_with_their_own_series"],
+                        "ledger_rows": len(host["ledger_after"]),
+                        "ledger_metrics": sorted({row["metric"] for row in host["ledger_after"]}),
+                        "family_after": host_family_after,
+                        "dimensions_after": host_dimensions_after,
+                    }
+                ),
+                len(host["ledger_after"]) == len(HOST_SHARED_SERIES) + mount_series_expected
+                and host_family_after == sorted(HOST_FAMILY)
+                and host_dimensions_after == sorted([""] + mount_paths)
+                and host["nodes"] > len(host["ledger_after"])
+                and host["nodes_with_their_own_series"] > len(host["ledger_after"]),
+            ),
+            check(
+                "a mount path names its own storage series",
+                "the planted Report is accepted and its two mounts are read back at "
+                + host["planted"]["observed_at"]
+                + " with the used bytes it reported",
+                json.dumps(
+                    {
+                        "observed_at": host["planted"]["observed_at"],
+                        "disposition": host["planted"]["disposition"],
+                        "reason": host["planted"]["reason"],
+                        "mounts": host["planted"]["mounts"],
+                        "reads": mounts_read,
+                    }
+                ),
+                host["planted"]["disposition"] == "accepted"
+                and all(
+                    mounts_read[path]["items"] == 1
+                    and mounts_read[path]["dimension"] == path
+                    and mounts_read[path]["points"] == [[host["planted"]["observed_at"], mount["used_bytes"]]]
+                    for path, mount in (
+                        (mount["mount_path"], mount) for mount in host["planted"]["mounts"]
+                    )
+                ),
+            ),
+            check(
+                "a storage series with no mount path holds nothing",
+                "disk_used_bytes is only ever stored under the mount path that reported it, so the "
+                "dimension-less series answers 0 items and an empty ledger",
+                json.dumps(host["mountless_read"]),
+                host["mountless_read"]["items"] == 0
+                and host["mountless_read"]["dimension"] == ""
+                and host["mountless_read"]["series"]["observationCount"] == 0,
+            ),
+            check(
+                "every Node of the Agent reads the shared series the Agent route serves",
+                "cpu_percent answers the same "
+                + str(agent_reads["cpu_percent"]["items"])
+                + " points through the Agent route and through "
+                + str(len(node_reads))
+                + " of its Nodes, and the Agent route names the Agent as the owner",
+                json.dumps(
+                    {
+                        "agent_items": {metric: agent_reads[metric]["items"] for metric in sorted(agent_reads)},
+                        "agent_scope": {
+                            "scope_kind": agent_reads["cpu_percent"]["scope_kind"],
+                            "scope_key": agent_reads["cpu_percent"]["scope_key"],
+                            "node_id": agent_reads["cpu_percent"]["node_id"],
+                            "dimension": agent_reads["cpu_percent"]["dimension"],
+                            "gaps": agent_reads["cpu_percent"]["gaps"],
+                        },
+                        "nodes": {
+                            node_id: {
+                                "items": row["items"],
+                                "scope_kind": row["scope_kind"],
+                                "scope_key": row["scope_key"],
+                                "node_id": row["node_id"],
+                                "same_points": row["points"] == agent_reads["cpu_percent"]["points"],
+                            }
+                            for node_id, row in sorted(node_reads.items())
+                        },
+                        "latency_ms": [round(value, 3) for value in host["routes"]["latency_ms"]],
+                        "payload_bytes": {
+                            metric: agent_reads[metric]["payload_bytes"] for metric in sorted(agent_reads)
+                        },
+                    }
+                ),
+                agent_reads["cpu_percent"]["items"] > 0
+                and agent_reads["cpu_percent"]["scope_kind"] == "host"
+                and agent_reads["cpu_percent"]["scope_key"] == host["agent_id"]
+                and agent_reads["cpu_percent"]["node_id"] is None
+                and all(
+                    row["points"] == agent_reads["cpu_percent"]["points"] for row in node_reads.values()
+                )
+                and all(
+                    agent_reads[metric]["items"] == agent_reads["cpu_percent"]["items"] for metric in agent_reads
+                ),
+            ),
+            check(
+                "every route refuses the other family's series",
+                "the Agent route and the Node host route answer 400 invalid_metric for a Node series, "
+                "and the Node route answers 400 invalid_metric for a Host series",
+                json.dumps(host["refusals"]),
+                all(
+                    row["status"] == 400 and row["code"] == "invalid_metric"
+                    for row in host["refusals"].values()
+                ),
+            ),
+            check(
+                "the raw window releases the Host rows the same way it releases Node rows",
+                "no Host row is left at or before the released instant " + host["released_instant"],
+                json.dumps(
+                    {
+                        "released_instant": host["released_instant"],
+                        "rows_at_or_before": host["rows_at_or_before_the_released_instant"],
+                    }
+                ),
+                host["rows_at_or_before_the_released_instant"] == 0,
+            ),
+            check(
+                "the Host family footprint is measured rather than projected",
+                "dbstat reports the raw table and every index on it, so the bytes per row are measured",
+                json.dumps(host["footprint"]),
+                bool(host["footprint"]["available"])
+                and host["footprint"]["samples"] > 0
+                and host["footprint"]["raw_bytes"] > 0
+                and host["footprint"]["bytes_per_sample"] is not None,
+            ),
+        ])
         return checks
 
     # -- orchestration -----------------------------------------------------
@@ -3033,7 +3583,11 @@ class BaselineRun:
         # a page-level storage baseline by stopping the Server, which phase_storage
         # has already done.
         tiers = self.phase_tiers()
-        checks = self.evaluate(load, restatements, release, reads, multi_node, tiers, storage)
+        # The Host family phase (issue #215) runs last: it audits the family every
+        # Report above already wrote, and the one Report it plants must stay
+        # outside the exact counts those earlier phases assert.
+        host = self.phase_host(release)
+        checks = self.evaluate(load, restatements, release, reads, multi_node, tiers, storage, host)
         return {
             "issue": 213,
             "title": "Story 47 baseline: a measured 24 hour raw Node metric history",
@@ -3045,6 +3599,7 @@ class BaselineRun:
                 "reads": reads,
                 "multi_node": multi_node,
                 "tiers": tiers,
+                "host": host,
                 "storage": storage,
             },
             "checks": checks,
@@ -3066,6 +3621,16 @@ class BaselineRun:
                 " truncated to the newest samples rather than in full.",
                 "The Server ran in development mode without TLS and without a reverse proxy, and the build is a"
                 " debug build.",
+                "The Host family (issue #215) was measured with one Agent: that its series are shared by every"
+                " Node of that Agent, and not split per Node, is measured here, but the separation between two"
+                " Agents is measured by scripts/capacity-baseline.py and by"
+                " crates/platpulse-server/tests/host_metric_history.rs:1115 instead.",
+                "No low-space pause was produced in this run, so the per-mount accounting of a paused series"
+                " (two mounts, two counted losses) is registered by scripts/capacity-baseline.py and by"
+                " crates/platpulse-server/tests/host_metric_history.rs:1295 rather than measured here.",
+                "The load fixture states no mount, so a maximal Host Report of 264 rows is registered as a bound"
+                " (MAX_HOST_ROWS_PER_REPORT) rather than produced: the largest Host Report this run submitted"
+                " carried two mounts.",
                 "These items must be appended to this same report by a follow-up ticket; nothing here is a"
                 " production guarantee.",
             ],
@@ -3081,6 +3646,7 @@ def write_markdown_report(report: dict, path: Path) -> None:
     load = report["phases"]["load"]
     reads = report["phases"]["reads"]
     storage = report["phases"]["storage"]
+    host = report["phases"]["host"]
     lines = []
     lines.append("# Issue #213 Story 47 baseline — raw 24 hour Node metric history")
     lines.append("")
@@ -3424,6 +3990,80 @@ def write_markdown_report(report: dict, path: Path) -> None:
         + later_report["observed_at"]
         + "): its own tiers "
         + json.dumps(later_report["tier_rows"])
+    )
+    lines.append("")
+    lines.append("## Host resource history (issue #215)")
+    lines.append("")
+    lines.append(
+        "- One Agent stored "
+        + str(len(host["ledger_after"]))
+        + " Host series for "
+        + str(host["nodes"])
+        + " Nodes ("
+        + str(len(HOST_SHARED_SERIES))
+        + " shared plus "
+        + str(len(host["planted"]["mounts"]) * 2)
+        + " for the two planted mounts): "
+        + str(host["nodes_with_their_own_series"])
+        + " of those Nodes stored Node series of their own, and the raw table carries "
+        + ", ".join(host["columns"])
+    )
+    lines.append(
+        "- Before the planted Report the family was "
+        + ", ".join(HOST_SHARED_SERIES)
+        + " under the empty dimension, "
+        + str(host["family_before"][0]["samples"] if host["family_before"] else 0)
+        + " samples per series"
+    )
+    lines.append(
+        "- The Agent route and "
+        + str(len(host["routes"]["by_node"]))
+        + " Node host routes answered the same "
+        + str(host["routes"]["reads"]["cpu_percent"]["items"])
+        + " cpu_percent points (p50 "
+        + str(round(percentile(host["routes"]["latency_ms"], 0.5), 3))
+        + "ms over "
+        + str(len(host["routes"]["latency_ms"]))
+        + " reads, payload "
+        + str(host["routes"]["reads"]["cpu_percent"]["payload_bytes"])
+        + " bytes)"
+    )
+    lines.append(
+        "- Planted one Report with "
+        + str(len(host["planted"]["mounts"]))
+        + " mounts at "
+        + host["planted"]["observed_at"]
+        + " ("
+        + str(host["planted"]["disposition"])
+        + "): "
+        + json.dumps(host["planted"]["mount_reads"])
+    )
+    lines.append(
+        "- Bounds: MAX_HOST_MOUNTS "
+        + str(host["bounds"]["max_host_mounts"])
+        + ", one maximal Host Report "
+        + str(host["bounds"]["server_max_host_rows_per_report"])
+        + " rows against cleanup batches "
+        + str(host["bounds"]["host_metric_cleanup_batch"])
+        + " raw and "
+        + str(host["bounds"]["aggregate_cleanup_batch"])
+        + " aggregate; forbidden Swap or disk-IO tokens in the family "
+        + str(len(host["bounds"]["forbidden_in_family"]))
+    )
+    lines.append(
+        "- dbstat "
+        + json.dumps(host["footprint"]["objects"])
+        + ", "
+        + str(host["footprint"]["bytes_per_sample"])
+        + " bytes per Host sample"
+    )
+    lines.append(
+        "- Released boundary: "
+        + str(host["rows_at_or_before_the_released_instant"])
+        + " Host rows at or before "
+        + host["released_instant"]
+        + "; route refusals "
+        + json.dumps({name: row["code"] for name, row in sorted(host["refusals"].items())})
     )
     lines.append("")
     lines.append("## Checks")

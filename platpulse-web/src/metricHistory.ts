@@ -10,6 +10,8 @@
 // bucket keeps the range and the count of the observations it summarizes and is
 // never drawn as one stored sample; a raw sample is never approximated here.
 
+import { formatBytes, formatBytesPerSecond } from './formatBytes'
+
 /** Stored Node metric series (mirrors the Server's NODE_METRIC_SERIES). */
 export type NodeMetricKey =
   | 'process_cpu_percent'
@@ -18,8 +20,11 @@ export type NodeMetricKey =
   | 'peer_inbound_count'
   | 'peer_outbound_count'
 
-export type NodeMetricDefinition = {
-  metric: NodeMetricKey
+/** One stored metric series as the panel presents it. The Node Process series
+ * and the Host series the Agent collected share this shape, so both are drawn
+ * by the same chart, table and range controls. */
+export type MetricDefinition = {
+  metric: string
   label: string
   /** Unit line under the title. */
   unit: string
@@ -30,7 +35,13 @@ export type NodeMetricDefinition = {
   /** A fixed axis maximum when the series has a natural ceiling. */
   fixedMax?: number
   description: string
+  /** True when the series exists once per mount path instead of once per
+   * owner: two mounts are two series, and the panel must ask which one
+   * (issue #215, design §11.6). */
+  perMount?: boolean
 }
+
+export type NodeMetricDefinition = MetricDefinition & { metric: NodeMetricKey }
 
 const percent = (value: number) => value.toFixed(value >= 10 ? 0 : 1) + '%'
 const count = (value: number) => Math.round(value).toString()
@@ -83,6 +94,128 @@ export const NODE_METRIC_SERIES: NodeMetricDefinition[] = [
 
 export function nodeMetricDefinition(metric: string): NodeMetricDefinition {
   return NODE_METRIC_SERIES.find((item) => item.metric === metric) ?? NODE_METRIC_SERIES[0]
+}
+
+/** Stored Host metric series the Agent collected for the machine it runs on
+ * (mirrors the Server's HOST_METRIC_SERIES). They are stored once per Agent and
+ * are shared by every Node of it, so they are never presented as one Node's own
+ * (issue #215, design §11.6). */
+export type HostMetricKey =
+  | 'cpu_percent'
+  | 'memory_used_bytes'
+  | 'memory_total_bytes'
+  | 'load1'
+  | 'load5'
+  | 'load15'
+  | 'network_rx_bytes_per_sec'
+  | 'network_tx_bytes_per_sec'
+  | 'disk_used_bytes'
+  | 'disk_total_bytes'
+
+export type HostMetricDefinition = MetricDefinition & { metric: HostMetricKey }
+
+const load = (value: number) => value.toFixed(2)
+const rate = (value: number) => formatBytesPerSecond(value)
+const bytes = (value: number) => formatBytes(value)
+
+export const HOST_METRIC_SERIES: HostMetricDefinition[] = [
+  {
+    metric: 'cpu_percent',
+    label: 'Host CPU',
+    unit: 'percent, as the Agent measured the machine',
+    axisFormat: percent,
+    format: percent,
+    description:
+      'Host CPU is the machine the Agent runs on, not one Node process. It has no ceiling.',
+  },
+  {
+    metric: 'memory_used_bytes',
+    label: 'Host memory used',
+    unit: 'physical memory in use',
+    axisFormat: bytes,
+    format: bytes,
+    description:
+      'Physical memory used on the Host. The total it is compared against is stored as its own series.',
+  },
+  {
+    metric: 'memory_total_bytes',
+    label: 'Host memory total',
+    unit: 'physical memory installed',
+    axisFormat: bytes,
+    format: bytes,
+    description:
+      'Physical memory the Agent reported for the Host. A total that changes is a real change of the machine.',
+  },
+  {
+    metric: 'load1',
+    label: 'Host Load 1',
+    unit: '1-minute run-queue average',
+    axisFormat: load,
+    format: load,
+    description: 'The Host 1-minute load average as the Agent read it.',
+  },
+  {
+    metric: 'load5',
+    label: 'Host Load 5',
+    unit: '5-minute run-queue average',
+    axisFormat: load,
+    format: load,
+    description: 'The Host 5-minute load average as the Agent read it.',
+  },
+  {
+    metric: 'load15',
+    label: 'Host Load 15',
+    unit: '15-minute run-queue average',
+    axisFormat: load,
+    format: load,
+    description: 'The Host 15-minute load average as the Agent read it.',
+  },
+  {
+    metric: 'network_rx_bytes_per_sec',
+    label: 'Host network in',
+    unit: 'bytes per second received',
+    axisFormat: rate,
+    format: rate,
+    description: 'Host-wide receive rate, shared by every Node on that Host.',
+  },
+  {
+    metric: 'network_tx_bytes_per_sec',
+    label: 'Host network out',
+    unit: 'bytes per second sent',
+    axisFormat: rate,
+    format: rate,
+    description: 'Host-wide send rate, shared by every Node on that Host.',
+  },
+  {
+    metric: 'disk_used_bytes',
+    label: 'Host storage used',
+    unit: 'bytes used on one mount path',
+    axisFormat: bytes,
+    format: bytes,
+    perMount: true,
+    description:
+      'One series per mount path the Agent reported. The path identifies the series: a path that changed is a different series, and the panel never claims it is the same device.',
+  },
+  {
+    metric: 'disk_total_bytes',
+    label: 'Host storage capacity',
+    unit: 'bytes of one mount path',
+    axisFormat: bytes,
+    format: bytes,
+    perMount: true,
+    description:
+      'The capacity of the mount path the used bytes are measured against, so a used value is never shown without the capacity it belongs to.',
+  },
+]
+
+export function hostMetricDefinition(metric: string): HostMetricDefinition {
+  return HOST_METRIC_SERIES.find((item) => item.metric === metric) ?? HOST_METRIC_SERIES[0]
+}
+
+/** Whether this Host series is identified by a mount path, so the panel asks
+ * for the path before it reads a series. */
+export function hostMetricNeedsMount(metric: string): boolean {
+  return hostMetricDefinition(metric).perMount === true
 }
 
 /** Range presets the Owner can pick. The raw window is 24 hours by default;

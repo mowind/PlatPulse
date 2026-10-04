@@ -437,12 +437,19 @@ async fn optional_history_pauses_under_pressure_and_recovers_with_a_visible_gap(
         "the interval stays open while the pressure lasts"
     );
     assert_eq!(
-        open.skipped_sample_count, 4,
-        "the two Agent host series and the two Node process series produced four samples"
+        open.skipped_sample_count, 10,
+        "the eight Host series one Report carries and the two Node process series \
+         produced ten samples"
     );
-    assert_eq!(open.skipped_series_total, 4);
+    assert_eq!(open.skipped_series_total, 10);
     let metrics = skipped_series_keys(open);
     for expected in [
+        "cpu_percent",
+        "memory_total_bytes",
+        "memory_used_bytes",
+        "load1",
+        "load5",
+        "load15",
         "network_rx_bytes_per_sec",
         "network_tx_bytes_per_sec",
         "process_cpu_percent",
@@ -477,7 +484,7 @@ async fn optional_history_pauses_under_pressure_and_recovers_with_a_visible_gap(
         overview["activeIntervalId"],
         Value::String(open.interval_id.clone())
     );
-    assert_eq!(overview["recentIntervals"][0]["skippedSampleCount"], 4);
+    assert_eq!(overview["recentIntervals"][0]["skippedSampleCount"], 10);
     assert!(
         overview["recentIntervals"][0]["skippedSeries"][0]["metric"]
             .as_str()
@@ -519,7 +526,11 @@ async fn optional_history_pauses_under_pressure_and_recovers_with_a_visible_gap(
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
-    assert_eq!(harness.count("host_metric_samples").await, 2);
+    assert_eq!(
+        harness.count("host_metric_samples").await,
+        8,
+        "one Report states its Host's cpu, memory, load and network once each"
+    );
     assert_eq!(harness.count("node_metric_samples").await, 2);
 
     let intervals = recent_intervals(harness.pool(), ADMIN_RECENT_INTERVAL_LIMIT)
@@ -538,11 +549,11 @@ async fn optional_history_pauses_under_pressure_and_recovers_with_a_visible_gap(
     );
     assert!(closed.resumed_total_bytes.unwrap() > 0);
     assert_eq!(
-        closed.skipped_sample_count, 4,
+        closed.skipped_sample_count, 10,
         "ending the interval keeps the record of what was lost"
     );
     assert_eq!(
-        closed.skipped_series_total, 4,
+        closed.skipped_series_total, 10,
         "the visible gap survives the recovery"
     );
 }
@@ -602,7 +613,7 @@ async fn a_tick_adopts_an_open_interval_the_startup_read_missed() {
         .await
         .unwrap();
     assert_eq!(intervals[0].interval_id, ORPHAN_INTERVAL);
-    assert_eq!(intervals[0].skipped_sample_count, 4);
+    assert_eq!(intervals[0].skipped_sample_count, 10);
 
     // And when the pressure is gone, a tick closes the adopted interval instead
     // of leaving it open forever.
@@ -727,7 +738,7 @@ async fn a_replayed_reading_is_not_counted_as_a_second_lost_sample() {
         .await
         .unwrap();
     assert_eq!(intervals.len(), 1);
-    assert_eq!(intervals[0].skipped_sample_count, 4);
+    assert_eq!(intervals[0].skipped_sample_count, 10);
 
     // The second Report is a new Report (new id, later generation time) that
     // replays the same readings at the same observation times.
@@ -764,11 +775,11 @@ async fn a_replayed_reading_is_not_counted_as_a_second_lost_sample() {
         .unwrap();
     assert_eq!(intervals.len(), 1, "the replay opens no second interval");
     assert_eq!(
-        intervals[0].skipped_sample_count, 4,
-        "one replayed reading is still one lost sample, not two"
+        intervals[0].skipped_sample_count, 10,
+        "a replayed Report is still ten lost samples, not twenty"
     );
-    assert_eq!(intervals[0].skipped_series_total, 4);
-    assert_eq!(harness.count("capacity_skipped_series").await, 4);
+    assert_eq!(intervals[0].skipped_series_total, 10);
+    assert_eq!(harness.count("capacity_skipped_series").await, 10);
     assert_eq!(harness.count("host_metric_samples").await, 0);
     assert_eq!(harness.count("node_metric_samples").await, 0);
 }
@@ -803,6 +814,7 @@ async fn skipped_counting_advances_only_on_a_reading_newer_than_the_mark() {
             SkippedScope::Host,
             AGENT,
             METRIC,
+            "",
             observed_at,
         )
         .await

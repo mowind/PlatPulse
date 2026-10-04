@@ -171,6 +171,35 @@ function mockFetch(routes: Record<string, (ctx: RouteContext) => Response | Prom
   return fetchMock
 }
 
+/** The Diagnostics section, kept apart from the Host history panel that reads the same Host. */
+function diagnosticsSection(): HTMLElement {
+  const section = document.querySelector(
+    'section[aria-labelledby="agent-diagnostics-heading"]',
+  )
+  if (!section) throw new Error('the Diagnostics section is not rendered')
+  return section as HTMLElement
+}
+
+/** The Credentials section, kept apart from the Host history panel that also reports errors. */
+function credentialsSection(): HTMLElement {
+  const section = document.querySelector(
+    'section[aria-labelledby="agent-credentials-heading"]',
+  )
+  if (!section) throw new Error('the Credentials section is not rendered')
+  return section as HTMLElement
+}
+
+/** The Agent's own section for the Host it observes once, kept apart from the
+ * Diagnostics section that reports the same Host's latest observation. */
+function agentHostSection(): HTMLElement {
+  const section = document.querySelector(
+    'section[aria-label="Host resource history"]',
+  )
+  if (!section)
+    throw new Error('the Host resource history section is not rendered')
+  return section as HTMLElement
+}
+
 async function renderAt(path: string) {
   render(<App />)
   await act(async () => {
@@ -559,7 +588,7 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     ).toContain('No Inventory rejection recorded')
     expect(screen.getByText('Credentials')).toBeTruthy()
     expect(screen.getByText('Diagnostics')).toBeTruthy()
-    expect(screen.getByText('Host CPU')).toBeTruthy()
+    expect(within(diagnosticsSection()).getByText('Host CPU')).toBeTruthy()
     expect(screen.getByText('Host memory used / total')).toBeTruthy()
     expect(screen.getByText('memory', { exact: true })).toBeTruthy()
     expect(screen.getByText(/state revision 7 · value revision 11/)).toBeTruthy()
@@ -792,9 +821,10 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
           200,
         )
       },
-      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () => jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
-      [`/api/admin/v1/agents/${AGENT_ID}/credentials/${CREDENTIAL_ID}/revoke`]: () =>
-        errorBody('credential_already_revoked', 409),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () =>
+        jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/credentials/${CREDENTIAL_ID}/revoke`]:
+        () => errorBody('credential_already_revoked', 409),
     })
     renderAt(`/admin/agents/${AGENT_ID}`)
 
@@ -802,13 +832,15 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }))
     fireEvent.click(screen.getByRole('button', { name: 'Confirm revoke' }))
 
-    const alert = await screen.findByRole('alert')
+    const alert = await within(credentialsSection()).findByRole('alert')
     expect(alert.textContent).toContain('credential_already_revoked')
     // PATTERN-CONFLICT-RELOAD: the authoritative state is refetched and
     // shows the credential as revoked; the typed error remains visible.
     await waitFor(() => expect(detailCalls).toBeGreaterThan(1))
     expect(await screen.findByText('Revoked', { exact: true })).toBeTruthy()
-    expect(screen.getByRole('alert').textContent).toContain('credential_already_revoked')
+    expect(
+      within(credentialsSection()).getByRole('alert').textContent,
+    ).toContain('credential_already_revoked')
   })
 
   it('saves and reads back the Server-owned display name and notes', async () => {
@@ -1089,7 +1121,196 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
       items: [{ kind: 'agent_security_event', evidence_key: 'security-2' }],
     })
     await waitFor(() =>
-      expect(screen.queryByRole('button', { name: 'Acknowledge current Agent items' })).toBeNull(),
+      expect(
+        screen.queryByRole('button', {
+          name: 'Acknowledge current Agent items',
+        }),
+      ).toBeNull(),
     )
+  })
+
+  it('reads the Host resource history from the Agent that observed it once, apart from its Nodes', async () => {
+    const hostCalls: string[] = []
+    const instant = (offsetMs: number) =>
+      new Date(Date.now() + offsetMs).toISOString().replace(/\.\d{3}Z$/, 'Z')
+    const hourAgo = instant(-60 * 60 * 1000)
+    const sample = (value: number) => ({
+      observedAt: hourAgo,
+      receivedAt: instant(-60 * 60 * 1000 + 1000),
+      value,
+      grain: 'raw',
+      source: 'raw',
+      minValue: value,
+      maxValue: value,
+      sampleCount: 1,
+      lastObservedAt: hourAgo,
+      delaySeconds: 1,
+      clockSuspect: false,
+    })
+    const historyResponse = (
+      metric: string,
+      dimension: string,
+      items: unknown[],
+    ) => ({
+      scopeKind: 'host',
+      scopeKey: AGENT_ID,
+      nodeId: null,
+      metric,
+      dimension,
+      from: instant(-24 * 60 * 60 * 1000),
+      to: instant(0),
+      requestedFrom: instant(-24 * 60 * 60 * 1000),
+      availability: null,
+      rawRetentionDays: 1,
+      grain: 'raw',
+      aggregateSupported: true,
+      historyHorizonDays: 30,
+      windowSeconds: 86400,
+      truncated: false,
+      continuation: null,
+      segments: [
+        {
+          from: instant(-24 * 60 * 60 * 1000),
+          to: instant(0),
+          grain: 'raw',
+          source: 'raw',
+          pointCount: items.length,
+          truncated: false,
+        },
+      ],
+      series: {
+        observed: items.length > 0,
+        firstObservedAt: items.length > 0 ? hourAgo : null,
+        lastObservedAt: items.length > 0 ? hourAgo : null,
+        lastReceivedAt:
+          items.length > 0 ? instant(-60 * 60 * 1000 + 1000) : null,
+        observationCount: items.length,
+        replayedCount: 0,
+        correctedCount: 0,
+        sampledCount: items.length,
+        coverageSeconds: 60,
+        windowSeconds: 86400,
+        latestDelaySeconds: 1,
+        latestClockSuspect: false,
+      },
+      items,
+      gaps: [],
+    })
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () =>
+        jsonResponse(AGENT_DIAGNOSTIC, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () =>
+        jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/metric-history*`]: (ctx) => {
+        hostCalls.push(ctx.request.url)
+        const dimension =
+          new URL(ctx.request.url).searchParams.get('dimension') ?? ''
+        if (dimension === '')
+          return jsonResponse(
+            historyResponse('cpu_percent', '', [sample(11), sample(2.5)]),
+            200,
+          )
+        return jsonResponse(
+          historyResponse('disk_used_bytes', dimension, [
+            // '/data' and '/data ' are two mounts the Agent reported, so each
+            // path reads the value recorded for that path alone.
+            sample(dimension === '/data' ? 100 : dimension === '/data ' ? 200 : 900),
+          ]),
+          200,
+        )
+      },
+    })
+    renderAt(`/admin/agents/${AGENT_ID}`)
+
+    await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
+    // 06: the shared Host series is its own section, not a row inside the
+    // Diagnostics section that reports the same Host's latest observation.
+    await screen.findByRole('heading', {
+      level: 2,
+      name: 'Host resource history',
+    })
+    const section = agentHostSection()
+    expect(section.textContent).toContain('06')
+    expect(
+      within(section).getByRole('heading', {
+        level: 2,
+        name: 'Host resource history',
+      }),
+    ).toBeTruthy()
+    expect(
+      within(section).getByText(/belongs to the Agent, not to a Node/),
+    ).toBeTruthy()
+    // A shared reading names whose evidence it is and how many Nodes read it.
+    const owner = section.querySelector(
+      '[data-slot="host-metric-history-owner"]',
+    )
+    expect(owner?.textContent).toContain(AGENT_ID)
+    expect(owner?.textContent).toContain('2 retained Nodes')
+    // The Agent's Host series is never the Node Process series.
+    expect(within(section).queryByText('Process CPU')).toBeNull()
+
+    await waitFor(() => expect(hostCalls.length).toBeGreaterThan(0))
+    const asked = decodeURIComponent(hostCalls[0])
+    expect(asked).toContain(`/agents/${AGENT_ID}/metric-history`)
+    expect(asked).toContain('metric=cpu_percent')
+    const samples = () =>
+      section.querySelector('[data-slot="metric-history-samples"]')
+        ?.textContent ?? ''
+    await waitFor(() => expect(samples()).toContain('11%'))
+    expect(samples()).toContain('2.5%')
+    expect(
+      section.querySelector('[data-slot="metric-history-chart"]'),
+    ).not.toBeNull()
+
+    // A storage series is named by the mount path the Agent reported, so the
+    // panel asks for the path before it claims any series.
+    const beforeMetric = hostCalls.length
+    fireEvent.change(within(section).getByLabelText('Metric series'), {
+      target: { value: 'disk_used_bytes' },
+    })
+    expect(
+      await within(section).findByText(
+        /Enter the mount path the Agent reported/,
+      ),
+    ).toBeTruthy()
+    expect(
+      section.querySelector('[data-slot="metric-history-chart"]'),
+    ).toBeNull()
+    // An empty path is not a mount, so no query is issued for it: the panel does
+    // not ask the Server for a series without an identity and then mask it.
+    expect(hostCalls.length).toBe(beforeMetric)
+    const beforeMount = hostCalls.length
+    fireEvent.change(within(section).getByLabelText('Mount path'), {
+      target: { value: '/data' },
+    })
+    await waitFor(() => expect(hostCalls.length).toBeGreaterThan(beforeMount))
+    expect(decodeURIComponent(hostCalls[hostCalls.length - 1])).toContain(
+      'dimension=/data',
+    )
+    await waitFor(() => expect(samples()).toContain('100 B'))
+
+    // A mount identity is literal, so a path that differs only in surrounding
+    // whitespace is a different mount: '/data ' is read as the series the Agent
+    // reported for it, never trimmed into '/data' and read as that one instead.
+    fireEvent.change(within(section).getByLabelText('Mount path'), {
+      target: { value: '/data ' },
+    })
+    await waitFor(() =>
+      expect(
+        new URL(hostCalls[hostCalls.length - 1]).searchParams.get('dimension'),
+      ).toBe('/data '),
+    )
+    await waitFor(() => expect(samples()).toContain('200 B'))
+    expect(samples()).not.toContain('100 B')
+
+    // The Host family never offers the Node Process series.
+    const options = Array.from(
+      within(section)
+        .getByLabelText('Metric series')
+        .querySelectorAll('option'),
+    ).map((option) => (option as HTMLOptionElement).value)
+    expect(options).toContain('disk_total_bytes')
+    expect(options).not.toContain('process_cpu_percent')
   })
 })

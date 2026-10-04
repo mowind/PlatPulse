@@ -12,11 +12,24 @@ import {
   updateAgentMetadata,
   useAdminAgentAudit,
   useAdminAgentDetail,
+  useAdminAgentHostMetricHistory,
   useAdminAgentRemovalImpact,
   useAdminDiagnostics,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
-import { formatBytesUnknown, formatBytesPerSecond, formatIdentifier, formatPercent } from '../formatBytes'
+import { HOST_METRIC_SERIES } from '../metricHistory'
+import {
+  HostMountPathControl,
+  MetricHistoryBody,
+  useHostMetricSelection,
+  useMetricHistoryWindow,
+} from './metricHistoryPanel'
+import {
+  formatBytesUnknown,
+  formatBytesPerSecond,
+  formatIdentifier,
+  formatPercent,
+} from '../formatBytes'
 import { livenessTone, receiptTimeText } from '../agentDiagnostics'
 import {
   StatusBadge,
@@ -730,18 +743,34 @@ export function AdminAgentDetail() {
             </div>
             <DiagnosticsPanel agent={agent.data} />
           </section>
+          <section className="space-y-3" aria-label="Host resource history">
+            <span className="text-[11px] font-medium text-muted-foreground">
+              06
+            </span>
+            <HostMetricHistoryPanel agent={agent.data} />
+          </section>
           <section className="space-y-3" aria-labelledby="agent-audit-heading">
             <div className="space-y-1">
-              <span className="text-[11px] font-medium text-muted-foreground">06</span>
-              <h2 id="agent-audit-heading" className="text-lg font-semibold">Audit</h2>
-              <p className="text-sm text-muted-foreground">Immutable, redacted lifecycle events for this Agent.</p>
+              <span className="text-[11px] font-medium text-muted-foreground">
+                07
+              </span>
+              <h2 id="agent-audit-heading" className="text-lg font-semibold">
+                Audit
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                Immutable, redacted lifecycle events for this Agent.
+              </p>
             </div>
             <AuditTrailPanel audit={audit} agentId={agentId} />
           </section>
           <section className="space-y-3" aria-labelledby="agent-removal-heading">
             <div className="space-y-1">
-              <span className="text-[11px] font-medium text-muted-foreground">07</span>
-              <h2 id="agent-removal-heading" className="text-lg font-semibold">Danger zone</h2>
+              <span className="text-[11px] font-medium text-muted-foreground">
+                08
+              </span>
+              <h2 id="agent-removal-heading" className="text-lg font-semibold">
+                Danger zone
+              </h2>
               <p className="text-sm text-muted-foreground">
                 Irreversible Owner disposition. Credential revocation and Agent removal are
                 separate actions.
@@ -1560,6 +1589,66 @@ function AgentRemovalPanel({
         </div>
       )}
     </CardX>
+  )
+}
+
+/**
+ * The Host series of this Agent (issue #215, design §11.5): the machine's CPU, physical memory,
+ * load averages, network rate and per-mount storage. The Agent observes its Host once and the
+ * Server stores that observation once, so every Node this Agent reports reads the same series
+ * instead of a copy of it, and the Agent is named on the card so a shared reading is never
+ * presented as one Node's own. A storage series exists once per mount path, so the Operator names
+ * the path the Agent reported and a changed path is a different series rather than a continued one.
+ */
+const AGENT_HOST_INTRO =
+  "Stored observations of the machine this Agent observes once for every Node it serves. The series belongs to the Agent, not to a Node: the same evidence is read here and on the page of each Node the Agent reports, and no single Node's Purge removes it."
+
+function HostMetricHistoryPanel({ agent }: { agent: AgentDiagnostic }) {
+  const { generation } = useAuth()
+  const history = useMetricHistoryWindow(24)
+  const selection = useHostMetricSelection(history)
+  const query = useAdminAgentHostMetricHistory(
+    generation,
+    agent.agent_id,
+    selection.metric,
+    selection.dimension,
+    history.range.from,
+    history.range.to,
+    history.olderThan ?? undefined,
+  )
+  const retained = agent.nodes.length
+  return (
+    <MetricHistoryBody
+      title="Host resource history"
+      subject="Host"
+      surface="agent-host"
+      intro={AGENT_HOST_INTRO}
+      definitions={HOST_METRIC_SERIES}
+      selection={selection}
+      extraControl={
+        selection.needsMount ? (
+          <HostMountPathControl
+            value={selection.mountPath}
+            onChange={selection.onMountPath}
+          />
+        ) : undefined
+      }
+      note={
+        <p
+          className="mt-2 text-xs text-muted-foreground"
+          data-slot="host-metric-history-owner"
+        >
+          The Agent <span className="break-all font-mono">{agent.agent_id}</span> reports
+          this Host once and the Server stores it once, so the same series answers here
+          and on each of the {retained} retained Node{retained === 1 ? '' : 's'} it
+          reports; a Node's own Process series stays separate.
+        </p>
+      }
+      promptWhenUnasked="Enter the mount path the Agent reported to read one storage series."
+      view={history}
+      answer={query}
+      unasked={!selection.asked}
+    />
   )
 }
 

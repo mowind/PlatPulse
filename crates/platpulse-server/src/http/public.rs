@@ -1433,7 +1433,7 @@ pub(crate) async fn public_node_metrics(
     let from = format_rfc3339(from);
     let to = format_rfc3339(to);
     let metric_rows = sqlx::query_as::<_, MetricHistoryRow>(
-        "SELECT metric, observed_at AS sampled_at, value FROM node_metric_samples AS current WHERE node_id=? AND (received_at>=? OR received_at=(SELECT MAX(received_at) FROM node_metric_samples AS previous WHERE previous.node_id=current.node_id AND previous.metric=current.metric AND previous.received_at<?)) UNION ALL SELECT metric, observed_at AS sampled_at, value FROM host_metric_samples AS current WHERE agent_id=? AND (received_at>=? OR received_at=(SELECT MAX(received_at) FROM host_metric_samples AS previous WHERE previous.agent_id=current.agent_id AND previous.metric=current.metric AND previous.received_at<?)) ORDER BY sampled_at, metric",
+        "SELECT metric, observed_at AS sampled_at, value FROM node_metric_samples AS current WHERE node_id=? AND (received_at>=? OR received_at=(SELECT MAX(received_at) FROM node_metric_samples AS previous WHERE previous.node_id=current.node_id AND previous.metric=current.metric AND previous.received_at<?)) UNION ALL SELECT metric, observed_at AS sampled_at, value FROM host_metric_samples AS current WHERE agent_id=? AND metric IN ('network_rx_bytes_per_sec', 'network_tx_bytes_per_sec') AND (received_at>=? OR received_at=(SELECT MAX(received_at) FROM host_metric_samples AS previous WHERE previous.agent_id=current.agent_id AND previous.metric=current.metric AND previous.received_at<?)) ORDER BY sampled_at, metric",
     )
     .bind(&node_id)
     .bind(&from)

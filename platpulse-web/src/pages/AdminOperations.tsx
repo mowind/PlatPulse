@@ -268,13 +268,25 @@ function CapacityPanel() {
                     <ul data-slot="capacity-skipped-series" className="space-y-1">
                       {interval.skippedSeries.map((series) => (
                         <li
-                          key={series.scopeKind + series.scopeKey + series.metric}
+                          key={
+                            series.scopeKind +
+                            series.scopeKey +
+                            series.metric +
+                            series.dimension
+                          }
                           className="min-w-0 break-words"
                         >
                           <span className="font-mono text-xs">
                             {series.scopeKind + ':' + series.scopeKey}
                           </span>{' '}
-                          <span className="text-muted-foreground">{series.metric}</span>{' '}
+                          {/* Two mounts of one Host are two series: the mount path
+                              is part of the identity, so a shared key or a label
+                              that stops at the metric would merge them. */}
+                          <span className="text-muted-foreground">
+                            {series.dimension === ''
+                              ? series.metric
+                              : series.metric + ' · ' + series.dimension}
+                          </span>{' '}
                           <span>{String(series.skippedCount) + ' skipped'}</span>
                           <span className="block text-xs text-muted-foreground">
                             {formatObservedAt(series.firstSkippedAt) +

@@ -792,6 +792,87 @@ fn metric_observed_at<T>(observation: &ComponentObservation<T>) -> Option<Rfc333
     })
 }
 
+/// The Host series one Report carries, as (metric, dimension, observed_at,
+/// value).
+///
+/// Host evidence belongs to the Agent, never to a Node of it: one Report states
+/// each quantity once and the history stores it once, so six Nodes on two Hosts
+/// bill two series sets and no Node owns a copy of its Host's totals (design
+/// §11.6, issue #215). The storage series are dimensioned by mount path, so a
+/// path that moves to another filesystem starts a new series instead of
+/// inheriting the old one's history.
+///
+/// Only quantities the Report actually carried are listed: a component with no
+/// latest value states nothing, and a missing reading is not zero.
+fn host_series_samples(
+    host: &platpulse_core::observation::HostObservation,
+) -> Vec<(&'static str, &str, Rfc3339, f64)> {
+    let mut samples: Vec<(&'static str, &str, Rfc3339, f64)> = Vec::new();
+    if let (Some(cpu_percent), Some(observed_at)) = (
+        host.cpu_percent.latest,
+        metric_observed_at(&host.cpu_percent),
+    ) {
+        samples.push(("cpu_percent", "", observed_at, cpu_percent));
+    }
+    if let (Some(memory), Some(observed_at)) =
+        (host.memory.latest, metric_observed_at(&host.memory))
+    {
+        samples.push((
+            "memory_used_bytes",
+            "",
+            observed_at,
+            memory.used_bytes as f64,
+        ));
+        samples.push((
+            "memory_total_bytes",
+            "",
+            observed_at,
+            memory.total_bytes as f64,
+        ));
+    }
+    if let (Some(load), Some(observed_at)) = (host.load.latest, metric_observed_at(&host.load)) {
+        samples.push(("load1", "", observed_at, load.load1));
+        samples.push(("load5", "", observed_at, load.load5));
+        samples.push(("load15", "", observed_at, load.load15));
+    }
+    if let (Some(network), Some(observed_at)) = (
+        host.network_throughput.latest,
+        metric_observed_at(&host.network_throughput),
+    ) {
+        samples.push((
+            "network_rx_bytes_per_sec",
+            "",
+            observed_at,
+            network.rx_bytes_per_sec as f64,
+        ));
+        samples.push((
+            "network_tx_bytes_per_sec",
+            "",
+            observed_at,
+            network.tx_bytes_per_sec as f64,
+        ));
+    }
+    if let (Some(disk), Some(observed_at)) =
+        (host.disk.latest.as_ref(), metric_observed_at(&host.disk))
+    {
+        for mount in &disk.mounts {
+            samples.push((
+                "disk_used_bytes",
+                mount.mount_path.as_str(),
+                observed_at,
+                mount.used_bytes as f64,
+            ));
+            samples.push((
+                "disk_total_bytes",
+                mount.mount_path.as_str(),
+                observed_at,
+                mount.total_bytes as f64,
+            ));
+        }
+    }
+    samples
+}
+
 /// The raw metric window a delivery in this Report is judged against.
 ///
 /// The cutoff comes from the persisted `raw_metric_sample` policy, the same
@@ -805,7 +886,15 @@ async fn metric_window_cutoff(tx: &mut Transaction<'_, Sqlite>) -> Result<String
     ))
 }
 
-/// Record one Node metric sample, unless optional history is paused.
+/// Record one metric sample for a scope's series, unless optional history is
+/// paused.
+///
+/// One writer serves both scopes (issue #215): a Host series is the same
+/// evidence as a Node series. The scope selects the tables, the column that
+/// names the owner, and whether the series identity carries a dimension (the
+/// mount path of a storage series), so every rule below - the delivery
+/// classification, the raw window's cutoff, the aggregate tiers, the ledger and
+/// the skipped-series record - is one rule for both.
 ///
 /// Nothing here expires history: raw samples are bounded by the retention
 /// policy family `raw_metric_sample` (issue #213), because a fixed per-series
@@ -818,11 +907,10 @@ async fn metric_window_cutoff(tx: &mut Transaction<'_, Sqlite>) -> Result<String
 /// The gap record shares the ingestion transaction, so "sample skipped" and
 /// "gap recorded" commit together and a failure rolls the whole Report back.
 /// The series ledger moves in this same transaction.
-async fn save_node_metric(
+async fn save_metric_sample(
     tx: &mut Transaction<'_, Sqlite>,
     history: &crate::capacity::HistoryGate,
-    node_id: &str,
-    metric: &str,
+    scope: &crate::metric_history::SeriesScope<'_>,
     observed_at: Rfc3339,
     received_at: &str,
     value: f64,
@@ -834,18 +922,11 @@ async fn save_node_metric(
     // ledger and the raw window's own cutoff answer that, not the sample row
     // alone: retention releases the row once it leaves the window while the
     // ledger keeps counting.
-    let stored = crate::metric_history::stored_value(tx, node_id, metric, &observed_at).await?;
+    let stored = crate::metric_history::stored_value(tx, scope, &observed_at).await?;
     let cutoff = metric_window_cutoff(tx).await?;
-    let delivery = crate::metric_history::classify_delivery(
-        tx,
-        node_id,
-        metric,
-        &observed_at,
-        stored,
-        value,
-        &cutoff,
-    )
-    .await?;
+    let delivery =
+        crate::metric_history::classify_delivery(tx, scope, &observed_at, stored, value, &cutoff)
+            .await?;
     if let crate::capacity::HistoryGate::Paused { interval_id } = history {
         // An observation the Server has already counted is not new history: a
         // repeated last-good sample is not a second lost sample (design §11.5,
@@ -856,9 +937,10 @@ async fn save_node_metric(
         return crate::capacity::record_skipped_series(
             tx,
             interval_id,
-            crate::capacity::SkippedScope::Node,
-            node_id,
-            metric,
+            scope.schema.skipped_scope,
+            scope.scope_key,
+            scope.series.metric,
+            scope.series.dimension,
             &observed_at,
         )
         .await;
@@ -872,14 +954,7 @@ async fn save_node_metric(
     // the Server deliberately stopped holding (issue #213).
     let released = crate::metric_history::outside_retained_window(stored, &observed_at, &cutoff);
     if !released && delivery != Delivery::Replay {
-        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?) ON CONFLICT(node_id, metric, observed_at) DO UPDATE SET value=excluded.value")
-            .bind(node_id)
-            .bind(metric)
-            .bind(&observed_at)
-            .bind(received_at)
-            .bind(value)
-            .execute(&mut **tx)
-            .await?;
+        crate::metric_history::store_sample(tx, scope, &observed_at, received_at, value).await?;
     }
     // The tiers beyond the raw window accumulate in this same transaction: an
     // observation the Server counted advances its minute and five-minute
@@ -891,21 +966,13 @@ async fn save_node_metric(
     // #214, design §11.6).
     match delivery {
         Delivery::Observed => {
-            crate::metric_history::record_aggregates(
-                tx,
-                node_id,
-                metric,
-                &observed_at,
-                received_at,
-                value,
-            )
-            .await?;
+            crate::metric_history::record_aggregates(tx, scope, &observed_at, received_at, value)
+                .await?;
         }
         Delivery::Correction => {
             crate::metric_history::recompute_aggregates(
                 tx,
-                node_id,
-                metric,
+                scope,
                 &observed_at,
                 received_at,
                 value,
@@ -916,15 +983,7 @@ async fn save_node_metric(
     }
     // The ledger moves with the sample it describes, so a committed Report can
     // never leave the count describing a sample the Server does not hold.
-    crate::metric_history::record_delivery(
-        tx,
-        node_id,
-        metric,
-        &observed_at,
-        received_at,
-        delivery,
-    )
-    .await?;
+    crate::metric_history::record_delivery(tx, scope, &observed_at, received_at, delivery).await?;
     // A first-time observation the window cannot hold is counted while it is
     // stored nowhere, so the instant it was counted at is recorded as evidence
     // the Server no longer holds: a later carry of the same instant — after the
@@ -932,68 +991,9 @@ async fn save_node_metric(
     // observation.
     if released && delivery == Delivery::Observed {
         if let Some(floor) = crate::metric_history::counted_evidence_floor(&observed_at) {
-            crate::metric_history::stamp_evidence_floor(tx, node_id, metric, &floor).await?;
+            crate::metric_history::stamp_evidence_floor(tx, scope, &floor).await?;
         }
     }
-    Ok(())
-}
-
-/// Record one Agent host metric sample, unless optional history is paused.
-///
-/// See crate::capacity::HistoryGate and the Node sibling above: under pressure
-/// the sample is skipped and the gap is recorded in the same transaction.
-/// Nothing here expires history either: the `raw_metric_sample` retention
-/// family owns expiration (issue #213).
-async fn save_host_metric(
-    tx: &mut Transaction<'_, Sqlite>,
-    history: &crate::capacity::HistoryGate,
-    agent_id: &str,
-    metric: &str,
-    observed_at: Rfc3339,
-    received_at: &str,
-    value: f64,
-) -> Result<(), sqlx::Error> {
-    let observed_at = observed_at.to_string();
-    // Same rule as the Node sibling above: a sample the Server already holds at
-    // this observation time is not a lost sample.
-    let stored: Option<f64> = sqlx::query_scalar(
-        "SELECT value FROM host_metric_samples WHERE agent_id = ? AND metric = ? AND observed_at = ?",
-    )
-    .bind(agent_id)
-    .bind(metric)
-    .bind(&observed_at)
-    .fetch_optional(&mut **tx)
-    .await?;
-    let cutoff = metric_window_cutoff(tx).await?;
-    if let crate::capacity::HistoryGate::Paused { interval_id } = history {
-        if stored == Some(value) {
-            return Ok(());
-        }
-        return crate::capacity::record_skipped_series(
-            tx,
-            interval_id,
-            crate::capacity::SkippedScope::Host,
-            agent_id,
-            metric,
-            &observed_at,
-        )
-        .await;
-    }
-    // A host delivery the raw window can no longer answer with, and that the
-    // Server holds nothing for, is not written back: see the Node sibling above.
-    // Host samples carry no ledger, so this is the only rule that keeps an
-    // ancient re-delivery from being stored only to be released again.
-    if crate::metric_history::outside_retained_window(stored, &observed_at, &cutoff) {
-        return Ok(());
-    }
-    sqlx::query("INSERT INTO host_metric_samples (agent_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?) ON CONFLICT(agent_id, metric, observed_at) DO UPDATE SET value=excluded.value")
-        .bind(agent_id)
-        .bind(metric)
-        .bind(&observed_at)
-        .bind(received_at)
-        .bind(value)
-        .execute(&mut **tx)
-        .await?;
     Ok(())
 }
 
@@ -1157,28 +1157,17 @@ async fn save_current<I: ReportInventory>(
                 .bind(&agent_id).bind(&mount.mount_path).bind(mount.total_bytes as i64).bind(mount.used_bytes as i64).bind(received_at).execute(&mut **tx).await?;
         }
     }
-    if let (Some(network), Some(observed_at)) = (
-        host.network_throughput.latest,
-        metric_observed_at(&host.network_throughput),
-    ) {
-        save_host_metric(
+    // Every Host series this Report carries is stored once, under the Agent
+    // that owns it: a Node view reads these series through its Agent and keeps
+    // no copy of its own (design §11.6, issue #215).
+    for (metric, dimension, observed_at, value) in host_series_samples(host) {
+        save_metric_sample(
             tx,
             history,
-            &agent_id,
-            "network_rx_bytes_per_sec",
+            &crate::metric_history::SeriesScope::host(&agent_id, metric, dimension),
             observed_at,
             received_at,
-            network.rx_bytes_per_sec as f64,
-        )
-        .await?;
-        save_host_metric(
-            tx,
-            history,
-            &agent_id,
-            "network_tx_bytes_per_sec",
-            observed_at,
-            received_at,
-            network.tx_bytes_per_sec as f64,
+            value,
         )
         .await?;
     }
@@ -1367,22 +1356,20 @@ async fn save_current<I: ReportInventory>(
         if let (Some(process), Some(observed_at)) =
             (node.process.latest, metric_observed_at(&node.process))
         {
-            save_node_metric(
+            save_metric_sample(
                 tx,
                 history,
-                &node_id,
-                "process_cpu_percent",
+                &crate::metric_history::SeriesScope::node(&node_id, "process_cpu_percent"),
                 observed_at,
                 received_at,
                 process.cpu_percent,
             )
             .await?;
             if let Some(memory) = host.memory.latest.filter(|memory| memory.total_bytes > 0) {
-                save_node_metric(
+                save_metric_sample(
                     tx,
                     history,
-                    &node_id,
-                    "process_memory_percent",
+                    &crate::metric_history::SeriesScope::node(&node_id, "process_memory_percent"),
                     observed_at,
                     received_at,
                     process.memory_bytes as f64 * 100.0 / memory.total_bytes as f64,
@@ -1409,11 +1396,10 @@ async fn save_current<I: ReportInventory>(
             // divides: stamping it at the newer one would present a carried
             // size over a new capacity (or the reverse) as a fresh observation
             // of the percentage.
-            save_node_metric(
+            save_metric_sample(
                 tx,
                 history,
-                &node_id,
-                "data_directory_percent",
+                &crate::metric_history::SeriesScope::node(&node_id, "data_directory_percent"),
                 size_observed_at.min(capacity_observed_at),
                 received_at,
                 size as f64 * 100.0 / capacity as f64,
@@ -1430,21 +1416,19 @@ async fn save_current<I: ReportInventory>(
                 .filter(|peer| peer.direction == PeerDirection::Inbound)
                 .count();
             let outbound = snapshot.peers.len().saturating_sub(inbound);
-            save_node_metric(
+            save_metric_sample(
                 tx,
                 history,
-                &node_id,
-                "peer_inbound_count",
+                &crate::metric_history::SeriesScope::node(&node_id, "peer_inbound_count"),
                 observed_at,
                 received_at,
                 inbound as f64,
             )
             .await?;
-            save_node_metric(
+            save_metric_sample(
                 tx,
                 history,
-                &node_id,
-                "peer_outbound_count",
+                &crate::metric_history::SeriesScope::node(&node_id, "peer_outbound_count"),
                 observed_at,
                 received_at,
                 outbound as f64,

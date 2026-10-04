@@ -315,6 +315,10 @@ pub struct CapacitySkippedSeries {
     pub scope_kind: String,
     pub scope_key: String,
     pub metric: String,
+    /// The mount path of a per-mount Host series, empty for every scope and
+    /// metric whose series has no dimension. Without it two mounts of one Host
+    /// would be listed as one series that lost twice as many readings.
+    pub dimension: String,
     pub skipped_count: i64,
     pub first_skipped_at: String,
     pub last_skipped_at: String,
@@ -773,15 +777,17 @@ pub async fn record_skipped_series(
     scope: SkippedScope,
     scope_key: &str,
     metric: &str,
+    dimension: &str,
     observed_at: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO capacity_skipped_series (interval_id, scope_kind, scope_key, metric, skipped_count, first_skipped_at, last_skipped_at) VALUES (?, ?, ?, ?, 1, ?, ?) ON CONFLICT(interval_id, scope_kind, scope_key, metric) DO UPDATE SET skipped_count = capacity_skipped_series.skipped_count + 1, first_skipped_at = MIN(capacity_skipped_series.first_skipped_at, excluded.first_skipped_at), last_skipped_at = MAX(capacity_skipped_series.last_skipped_at, excluded.last_skipped_at) WHERE excluded.last_skipped_at > capacity_skipped_series.last_skipped_at",
+        "INSERT INTO capacity_skipped_series (interval_id, scope_kind, scope_key, metric, dimension, skipped_count, first_skipped_at, last_skipped_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?) ON CONFLICT(interval_id, scope_kind, scope_key, metric, dimension) DO UPDATE SET skipped_count = capacity_skipped_series.skipped_count + 1, first_skipped_at = MIN(capacity_skipped_series.first_skipped_at, excluded.first_skipped_at), last_skipped_at = MAX(capacity_skipped_series.last_skipped_at, excluded.last_skipped_at) WHERE excluded.last_skipped_at > capacity_skipped_series.last_skipped_at",
     )
     .bind(interval_id)
     .bind(scope.as_str())
     .bind(scope_key)
     .bind(metric)
+    .bind(dimension)
     .bind(observed_at)
     .bind(observed_at)
     .execute(&mut **tx)
@@ -838,8 +844,8 @@ pub async fn recent_intervals(
         .bind(&interval_id)
         .fetch_one(pool)
         .await?;
-        let series = sqlx::query_as::<_, (String, String, String, i64, String, String)>(
-            "SELECT scope_kind, scope_key, metric, skipped_count, first_skipped_at, last_skipped_at FROM capacity_skipped_series WHERE interval_id = ? ORDER BY skipped_count DESC, last_skipped_at DESC, scope_key ASC, metric ASC LIMIT ?",
+        let series = sqlx::query_as::<_, (String, String, String, String, i64, String, String)>(
+            "SELECT scope_kind, scope_key, metric, dimension, skipped_count, first_skipped_at, last_skipped_at FROM capacity_skipped_series WHERE interval_id = ? ORDER BY skipped_count DESC, last_skipped_at DESC, scope_key ASC, metric ASC, dimension ASC LIMIT ?",
         )
         .bind(&interval_id)
         .bind(ADMIN_SKIPPED_SERIES_LIMIT)
@@ -868,6 +874,7 @@ pub async fn recent_intervals(
                         scope_kind,
                         scope_key,
                         metric,
+                        dimension,
                         skipped_count,
                         first_skipped_at,
                         last_skipped_at,
@@ -876,6 +883,7 @@ pub async fn recent_intervals(
                             scope_kind,
                             scope_key,
                             metric,
+                            dimension,
                             skipped_count,
                             first_skipped_at,
                             last_skipped_at,
@@ -1119,6 +1127,7 @@ mod tests {
             SkippedScope::Node,
             "0195f2a1-0014-4014-8014-000000000014",
             "process_cpu_percent",
+            "",
             "2026-08-12T09:59:55Z",
         )
         .await
@@ -1129,6 +1138,7 @@ mod tests {
             SkippedScope::Node,
             "0195f2a1-0014-4014-8014-000000000014",
             "process_cpu_percent",
+            "",
             "2026-08-12T10:00:05Z",
         )
         .await
@@ -1139,7 +1149,44 @@ mod tests {
             SkippedScope::Host,
             "0195f2a1-0011-4011-8011-000000000011",
             "network_rx_bytes_per_sec",
+            "",
             "2026-08-12T10:00:05Z",
+        )
+        .await
+        .unwrap();
+        // Two mounts of one Host lose samples in the same pause. They are two
+        // series, not one that lost twice: the mount path is part of the
+        // identity, exactly as it is in the history tables.
+        record_skipped_series(
+            &mut tx,
+            &interval_id,
+            SkippedScope::Host,
+            "0195f2a1-0011-4011-8011-000000000011",
+            "disk_used_bytes",
+            "/data",
+            "2026-08-12T09:59:55Z",
+        )
+        .await
+        .unwrap();
+        record_skipped_series(
+            &mut tx,
+            &interval_id,
+            SkippedScope::Host,
+            "0195f2a1-0011-4011-8011-000000000011",
+            "disk_used_bytes",
+            "/data",
+            "2026-08-12T10:00:00Z",
+        )
+        .await
+        .unwrap();
+        record_skipped_series(
+            &mut tx,
+            &interval_id,
+            SkippedScope::Host,
+            "0195f2a1-0011-4011-8011-000000000011",
+            "disk_total_bytes",
+            "/var",
+            "2026-08-12T10:00:16Z",
         )
         .await
         .unwrap();
@@ -1149,11 +1196,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].skipped_sample_count, 3);
-        assert_eq!(records[0].skipped_series_total, 2);
-        assert_eq!(records[0].skipped_series.len(), 2);
+        assert_eq!(records[0].skipped_sample_count, 6);
+        assert_eq!(records[0].skipped_series_total, 4);
+        assert_eq!(records[0].skipped_series.len(), 4);
         assert_eq!(records[0].skipped_series[0].scope_kind, "node");
         assert_eq!(records[0].skipped_series[0].skipped_count, 2);
+        assert_eq!(records[0].skipped_series[0].dimension, "");
         assert_eq!(
             records[0].skipped_series[0].first_skipped_at,
             "2026-08-12T09:59:55Z"
@@ -1163,6 +1211,24 @@ mod tests {
             "2026-08-12T10:00:05Z"
         );
         assert_eq!(records[0].skipped_series[1].scope_kind, "host");
+        assert_eq!(records[0].skipped_series[1].metric, "disk_used_bytes");
+        assert_eq!(records[0].skipped_series[1].dimension, "/data");
+        assert_eq!(records[0].skipped_series[1].skipped_count, 2);
+        assert_eq!(
+            records[0].skipped_series[1].first_skipped_at,
+            "2026-08-12T09:59:55Z"
+        );
+        assert_eq!(
+            records[0].skipped_series[1].last_skipped_at,
+            "2026-08-12T10:00:00Z"
+        );
+        let var = records[0]
+            .skipped_series
+            .iter()
+            .find(|series| series.dimension == "/var")
+            .expect("the second mount is its own series");
+        assert_eq!(var.metric, "disk_total_bytes");
+        assert_eq!(var.skipped_count, 1);
 
         // Rolling back the ingestion transaction removes the gap record with
         // the rest of that Report's writes.
@@ -1173,6 +1239,7 @@ mod tests {
             SkippedScope::Node,
             "0195f2a1-0014-4014-8014-000000000014",
             "peer_inbound_count",
+            "",
             "2026-08-12T10:00:15Z",
         )
         .await
@@ -1181,8 +1248,8 @@ mod tests {
         let records = recent_intervals(pool, ADMIN_RECENT_INTERVAL_LIMIT)
             .await
             .unwrap();
-        assert_eq!(records[0].skipped_sample_count, 3);
-        assert_eq!(records[0].skipped_series_total, 2);
+        assert_eq!(records[0].skipped_sample_count, 6);
+        assert_eq!(records[0].skipped_series_total, 4);
         database.close().await;
     }
 }

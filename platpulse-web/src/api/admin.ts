@@ -9,7 +9,7 @@
 
 import { QueryClient, useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
-import { METRIC_HISTORY_SAMPLE_LIMIT } from '../metricHistory'
+import { hostMetricNeedsMount, METRIC_HISTORY_SAMPLE_LIMIT } from '../metricHistory'
 import {
   requestGenerated,
   setActiveAccessGeneration,
@@ -27,6 +27,7 @@ import {
   acknowledgeIncident as acknowledgeIncidentApi,
   adminAgentAudit,
   adminAgentDetail,
+  adminAgentMetricHistory as adminAgentMetricHistoryApi,
   adminAgentRemovalPreview,
   adminEnrollmentToken,
   adminGeoStatus,
@@ -34,6 +35,7 @@ import {
   adminNetworkDetail,
   adminNetworks,
   adminNodeDetail,
+  adminNodeHostMetricHistory as adminNodeHostMetricHistoryApi,
   adminNodeMetricHistory as adminNodeMetricHistoryApi,
   adminNodePeerChurn,
   adminNodePeerHistory,
@@ -162,10 +164,10 @@ import {
   type SilenceMutationResponse,
   type AdminNetworkDetail,
   type AdminNodeDetail,
-  type AdminNodeMetricGap,
-  type AdminNodeMetricHistoryResponse,
-  type AdminNodeMetricSample,
-  type AdminNodeMetricSeries,
+  type AdminMetricGap,
+  type AdminMetricHistoryResponse,
+  type AdminMetricSample,
+  type AdminMetricSeries,
   type AgentAttentionAcknowledgmentResponse,
   type AttentionAcknowledgment,
   type PeerChurnDiagnostic,
@@ -241,6 +243,26 @@ const adminKeys = {
     ['admin', 'nodes', nodeId, 'metric-history'] as const,
   nodeMetricHistory: (nodeId: string, metric: string, from: string, to: string) =>
     [...adminKeys.nodeMetricHistoryRoot(nodeId), metric, from, to] as const,
+  nodeHostMetricHistoryRoot: (nodeId: string) =>
+    ['admin', 'nodes', nodeId, 'host-metric-history'] as const,
+  nodeHostMetricHistory: (
+    nodeId: string,
+    metric: string,
+    dimension: string,
+    from: string,
+    to: string,
+  ) =>
+    [...adminKeys.nodeHostMetricHistoryRoot(nodeId), metric, dimension, from, to] as const,
+  agentHostMetricHistoryRoot: (agentId: string) =>
+    ['admin', 'agents', agentId, 'host-metric-history'] as const,
+  agentHostMetricHistory: (
+    agentId: string,
+    metric: string,
+    dimension: string,
+    from: string,
+    to: string,
+  ) =>
+    [...adminKeys.agentHostMetricHistoryRoot(agentId), metric, dimension, from, to] as const,
   nodeValidatorLinks: (nodeId: string) => ['admin', 'nodes', nodeId, 'validator-links'] as const,
   validators: ['admin', 'validators'] as const,
   validatorDetail: (validatorId: string) => ['admin', 'validators', validatorId] as const,
@@ -535,7 +557,7 @@ export async function fetchAdminNodeMetricHistory(
   to: string,
   before?: string,
   signal?: AbortSignal,
-): Promise<AdminNodeMetricHistory> {
+): Promise<AdminMetricHistory> {
   return requestAdmin(
     () =>
       adminNodeMetricHistoryApi({
@@ -559,13 +581,14 @@ export async function fetchAdminNodeMetricHistory(
 }
 
 /** One stored raw observation with the timing evidence that belongs to it. */
-export type AdminNodeMetricSampleDto = AdminNodeMetricSample
+export type AdminMetricSampleDto = AdminMetricSample
 /** A stretch of the answered window with no stored observation. */
-export type AdminNodeMetricGapDto = AdminNodeMetricGap
+export type AdminMetricGapDto = AdminMetricGap
 /** What the Server knows about the series itself, independent of the window. */
-export type AdminNodeMetricSeriesDto = AdminNodeMetricSeries
-/** Owner-only raw metric history answer for one Node series. */
-export type AdminNodeMetricHistory = AdminNodeMetricHistoryResponse
+export type AdminMetricSeriesDto = AdminMetricSeries
+/** One metric history answer: a Node Process series, or the Host series the
+ * Agent collected once for every Node on it (issue #215). */
+export type AdminMetricHistory = AdminMetricHistoryResponse
 
 export function useAdminNodeMetricHistory(
   generation: number,
@@ -585,6 +608,129 @@ export function useAdminNodeMetricHistory(
     // No placeholder: another Node's or another range's samples must never
     // render under this series.
     enabled: nodeId.length > 0 && metric.length > 0 && from.length > 0 && to.length > 0,
+  })
+}
+
+/** Owner-only Host metric history the Agent collected for the machine it runs
+ * on (issue #215): CPU, physical memory, Load 1/5/15, network rate and
+ * per-mount storage, stored once per Agent and shared by every Node of it.
+ * Read through the Agent route when the Agent is the page's subject. */
+export async function fetchAdminAgentHostMetricHistory(
+  agentId: string,
+  metric: string,
+  dimension: string,
+  from: string,
+  to: string,
+  before?: string,
+  signal?: AbortSignal,
+): Promise<AdminMetricHistory> {
+  return requestAdmin(
+    () =>
+      adminAgentMetricHistoryApi({
+        path: { agent_id: agentId },
+        query: {
+          metric,
+          // The dimension is sent even when empty: it is the series identity of
+          // a per-mount storage series, so the Server is asked for exactly one
+          // series rather than left to guess which mount was meant.
+          dimension,
+          from,
+          to,
+          limit: METRIC_HISTORY_SAMPLE_LIMIT,
+          ...(before ? { before } : {}),
+        },
+        signal,
+      }),
+    'Unable to load the Host metric history',
+  )
+}
+
+/** The same Host series, read from the Node page that shows one of the Nodes
+ * running on that Host. The answer names the Agent the series belongs to, so a
+ * Node page presents shared evidence as the Host's rather than its own. */
+export async function fetchAdminNodeHostMetricHistory(
+  nodeId: string,
+  metric: string,
+  dimension: string,
+  from: string,
+  to: string,
+  before?: string,
+  signal?: AbortSignal,
+): Promise<AdminMetricHistory> {
+  return requestAdmin(
+    () =>
+      adminNodeHostMetricHistoryApi({
+        path: { node_id: nodeId },
+        query: {
+          metric,
+          dimension,
+          from,
+          to,
+          limit: METRIC_HISTORY_SAMPLE_LIMIT,
+          ...(before ? { before } : {}),
+        },
+        signal,
+      }),
+    'Unable to load the Host metric history',
+  )
+}
+
+export function useAdminAgentHostMetricHistory(
+  generation: number,
+  agentId: string,
+  metric: string,
+  dimension: string,
+  from: string,
+  to: string,
+  before?: string,
+) {
+  return useQuery({
+    queryKey: [
+      ...adminKeys.agentHostMetricHistory(agentId, metric, dimension, from, to),
+      before ?? 'newest',
+      generation,
+    ],
+    queryFn: ({ signal }) =>
+      fetchAdminAgentHostMetricHistory(agentId, metric, dimension, from, to, before, signal),
+    // No placeholder: two mounts are two series, and neither this range's
+    // samples nor another mount's may render under the selected one.
+    // A storage series has no identity until the Operator names the mount path,
+    // so an empty dimension is not asked for at all rather than answered with an
+    // empty series the panel would then have to mask.
+    enabled:
+      agentId.length > 0 &&
+      metric.length > 0 &&
+      (!hostMetricNeedsMount(metric) || dimension.length > 0) &&
+      from.length > 0 &&
+      to.length > 0,
+  })
+}
+
+export function useAdminNodeHostMetricHistory(
+  generation: number,
+  nodeId: string,
+  metric: string,
+  dimension: string,
+  from: string,
+  to: string,
+  before?: string,
+) {
+  return useQuery({
+    queryKey: [
+      ...adminKeys.nodeHostMetricHistory(nodeId, metric, dimension, from, to),
+      before ?? 'newest',
+      generation,
+    ],
+    queryFn: ({ signal }) =>
+      fetchAdminNodeHostMetricHistory(nodeId, metric, dimension, from, to, before, signal),
+    // No queried series before it has an identity: a storage series is named by
+    // the mount path, so the panel does not ask for the empty dimension.
+    enabled:
+      nodeId.length > 0 &&
+      metric.length > 0 &&
+      (!hostMetricNeedsMount(metric) || dimension.length > 0) &&
+      from.length > 0 &&
+      to.length > 0,
   })
 }
 
@@ -1510,7 +1656,19 @@ function applyAdminInvalidation(resource: string, resourceId: string | undefined
     }
   })()
   if (resourceId && resource === 'node') {
-    keys.push(adminKeys.nodeDetail(resourceId), adminKeys.nodePeerChurn(resourceId), adminKeys.nodePeerHistory(resourceId), adminKeys.nodeTransfers(resourceId), adminKeys.nodeMetricHistoryRoot(resourceId))
+    keys.push(
+      adminKeys.nodeDetail(resourceId),
+      adminKeys.nodePeerChurn(resourceId),
+      adminKeys.nodePeerHistory(resourceId),
+      adminKeys.nodeTransfers(resourceId),
+      adminKeys.nodeMetricHistoryRoot(resourceId),
+      // The Host series a Node page reads are the Agent's, so a Node signal
+      // refreshes that page's view of them too (issue #215).
+      adminKeys.nodeHostMetricHistoryRoot(resourceId),
+    )
+  }
+  if (resourceId && resource === 'agent') {
+    keys.push(adminKeys.agentHostMetricHistoryRoot(resourceId))
   }
   if (resourceId && resource === 'network') keys.push(adminKeys.networkDetail(resourceId))
   if (resourceId && resource === 'validator') keys.push(adminKeys.validatorDetail(resourceId))

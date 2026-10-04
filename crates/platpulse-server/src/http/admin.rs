@@ -4328,6 +4328,10 @@ async fn admin_node_history(
 #[derive(Debug, Deserialize)]
 struct AdminMetricHistoryQuery {
     metric: Option<String>,
+    /// The mount path of a Host storage series. Absent or empty reads the
+    /// series of an owner that has one of its own, and an unknown mount path
+    /// answers as a series that was never observed.
+    dimension: Option<String>,
     from: Option<String>,
     to: Option<String>,
     /// Exclusive upper bound of a paging request: the continuation coordinate a
@@ -4339,7 +4343,7 @@ struct AdminMetricHistoryQuery {
 /// One stored raw observation with the timing evidence that belongs to it.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct AdminNodeMetricSample {
+pub struct AdminMetricSample {
     /// The point's coordinate: the observation instant of a raw sample, or the
     /// aligned start of an aggregate bucket.
     pub observed_at: String,
@@ -4393,7 +4397,7 @@ pub struct AdminNodeMetricSample {
 /// constant value across it, or draw it as a zero (design §11.4).
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct AdminNodeMetricGap {
+pub struct AdminMetricGap {
     pub from: String,
     pub to: String,
     pub seconds: i64,
@@ -4408,7 +4412,7 @@ pub struct AdminNodeMetricGap {
 /// What the Server knows about the series itself, independent of the window.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct AdminNodeMetricSeries {
+pub struct AdminMetricSeries {
     /// False when this Node never reported the series: shown as absent, not as
     /// zero.
     pub observed: bool,
@@ -4454,7 +4458,7 @@ pub struct AdminNodeMetricSeries {
 /// were a sample (design §11.6).
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct AdminNodeMetricSegment {
+pub struct AdminMetricSegment {
     /// The stretch this segment answers: the older end inclusive, the newer end
     /// exclusive, matching what the reader asked of the tier.
     pub from: String,
@@ -4476,9 +4480,20 @@ pub struct AdminNodeMetricSegment {
 /// the state of the series behind them.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct AdminNodeMetricHistoryResponse {
-    pub node_id: String,
+pub struct AdminMetricHistoryResponse {
+    /// `node` when the series belongs to one Node's own process, `host` when it
+    /// is the Host series the Agent collected once for every Node on it.
+    pub scope_kind: String,
+    /// The identity the series is stored under: the Node ID, or the Agent ID.
+    pub scope_key: String,
+    /// The Node whose page asked for the answer, when a Node page asked. Null on
+    /// the Agent route; on a Host answer it names the Node that asked, so no
+    /// surface presents shared evidence as one Node's own.
+    pub node_id: Option<String>,
     pub metric: String,
+    /// The series' dimension: the mount path of a Host storage series, empty for
+    /// every series that exists once per owner.
+    pub dimension: String,
     /// The answered range, after clamping to the investigation horizon.
     pub from: String,
     /// The answered range's end: the requested `to`, or the exclusive paging
@@ -4503,10 +4518,10 @@ pub struct AdminNodeMetricHistoryResponse {
     /// stretches older than the raw window (issue #214).
     pub aggregate_supported: bool,
     /// Which tier answered which stretch, oldest stretch first.
-    pub segments: Vec<AdminNodeMetricSegment>,
-    pub items: Vec<AdminNodeMetricSample>,
-    pub gaps: Vec<AdminNodeMetricGap>,
-    pub series: AdminNodeMetricSeries,
+    pub segments: Vec<AdminMetricSegment>,
+    pub items: Vec<AdminMetricSample>,
+    pub gaps: Vec<AdminMetricGap>,
+    pub series: AdminMetricSeries,
     pub window_seconds: i64,
     /// True when any tier had more evidence than the caller's limit: the newest
     /// points are returned and the rest is reported, never dropped silently.
@@ -4523,14 +4538,14 @@ pub struct AdminNodeMetricHistoryResponse {
     tag = "admin",
     params(
         ("node_id" = String, Path, description = "Node ID"),
-        ("metric" = String, Query, description = "Stored Node metric series"),
+        ("metric" = String, Query, description = "Stored Node Process metric series"),
         ("from" = Option<String>, Query, description = "Canonical RFC 3339 UTC start of the range, second precision (default: 24 hours before to)"),
         ("to" = Option<String>, Query, description = "Canonical RFC 3339 UTC end of the range, second precision (default: now)"),
         ("before" = Option<String>, Query, description = "Canonical RFC 3339 UTC exclusive upper bound for paging: the continuation coordinate a truncated answer returned"),
         ("limit" = Option<i64>, Query, minimum = 1, maximum = 20000, description = "Maximum points across every tier")
     ),
     responses(
-        (status = 200, body = AdminNodeMetricHistoryResponse),
+        (status = 200, body = AdminMetricHistoryResponse),
         (status = 400, body = crate::http::ApiErrorBody),
         (status = 401, body = crate::http::ApiErrorBody),
         (status = 403, body = crate::http::ApiErrorBody),
@@ -4548,37 +4563,14 @@ async fn admin_node_metric_history(
     >,
     Path(node_id): Path<String>,
 ) -> Response {
+    let params = match metric_history_params(query, &request_id.0) {
+        Ok(params) => params,
+        Err(response) => return *response,
+    };
     // A query the typed extractor cannot read — a duplicate parameter, a limit
     // that is not a number — is answered with the repo's stable JSON error
     // envelope instead of a framework-generated plain-text rejection, so no
     // client has to parse two shapes out of the same route.
-    let params = match query {
-        Ok(axum::extract::Query(params)) => params,
-        Err(_) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::BAD_REQUEST,
-                "invalid_query",
-                "query is not valid for metric history",
-            );
-        }
-    };
-    let unavailable = || {
-        mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        )
-    };
-    let invalid_range = || {
-        mutation_error(
-            &request_id.0,
-            StatusCode::BAD_REQUEST,
-            "invalid_history_range",
-            "history range is invalid",
-        )
-    };
     let Some(metric) = params
         .metric
         .as_deref()
@@ -4590,6 +4582,281 @@ async fn admin_node_metric_history(
             "invalid_metric",
             "metric is not a stored node metric series",
         );
+    };
+    let metric = metric.to_owned();
+    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id=?")
+        .bind(&node_id)
+        .fetch_optional(state.db().pool())
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => return not_found_response(&request_id.0),
+        Err(_) => return unavailable_response(&request_id.0),
+    }
+    // These series belong to the Node's own process and are stored under it, so
+    // the answer says so: they are never the Host series of the Agent that owns
+    // this Node, which the sibling route answers (design §11.6).
+    let node_scope_key = node_id.clone();
+    metric_history_response(
+        &state,
+        &request_id.0,
+        params,
+        crate::metric_history::SeriesScope::node(&node_scope_key, &metric),
+        MetricHistoryIdentity {
+            scope_kind: "node",
+            scope_key: node_scope_key.clone(),
+            node_id: Some(node_id),
+            dimension: String::new(),
+        },
+    )
+    .await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/agents/{agent_id}/metric-history",
+    tag = "admin",
+    params(
+        ("agent_id" = String, Path, description = "Agent ID"),
+        ("metric" = String, Query, description = "Stored Host metric series the Agent collected"),
+        ("dimension" = Option<String>, Query, description = "Mount path of a Host storage series (disk_used_bytes, disk_total_bytes); empty for every other Host series"),
+        ("from" = Option<String>, Query, description = "Canonical RFC 3339 UTC start of the range, second precision (default: 24 hours before to)"),
+        ("to" = Option<String>, Query, description = "Canonical RFC 3339 UTC end of the range, second precision (default: now)"),
+        ("before" = Option<String>, Query, description = "Canonical RFC 3339 UTC exclusive upper bound for paging: the continuation coordinate a truncated answer returned"),
+        ("limit" = Option<i64>, Query, minimum = 1, maximum = 20000, description = "Maximum points across every tier")
+    ),
+    responses(
+        (status = 200, body = AdminMetricHistoryResponse),
+        (status = 400, body = crate::http::ApiErrorBody),
+        (status = 401, body = crate::http::ApiErrorBody),
+        (status = 403, body = crate::http::ApiErrorBody),
+        (status = 404, body = crate::http::ApiErrorBody),
+        (status = 503, body = crate::http::ApiErrorBody)
+    )
+)]
+async fn admin_agent_metric_history(
+    State(state): State<AppState>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+    query: Result<
+        axum::extract::Query<AdminMetricHistoryQuery>,
+        axum::extract::rejection::QueryRejection,
+    >,
+    Path(agent_id): Path<String>,
+) -> Response {
+    let params = match metric_history_params(query, &request_id.0) {
+        Ok(params) => params,
+        Err(response) => return *response,
+    };
+    let Some(metric) = params
+        .metric
+        .as_deref()
+        .filter(|metric| crate::metric_history::is_host_metric(metric))
+    else {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "invalid_metric",
+            "metric is not a stored host metric series",
+        );
+    };
+    let metric = metric.to_owned();
+    if let Err(response) = host_owner_exists(&state, &request_id.0, &agent_id).await {
+        return response;
+    }
+    // The series this Agent collected once for every Node on it.
+    let dimension = params.dimension.clone().unwrap_or_default();
+    let agent_scope_key = agent_id.clone();
+    metric_history_response(
+        &state,
+        &request_id.0,
+        params,
+        crate::metric_history::SeriesScope::host(&agent_scope_key, &metric, &dimension),
+        MetricHistoryIdentity {
+            scope_kind: "host",
+            scope_key: agent_scope_key.clone(),
+            node_id: None,
+            dimension: dimension.clone(),
+        },
+    )
+    .await
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/nodes/{node_id}/host-metric-history",
+    tag = "admin",
+    params(
+        ("node_id" = String, Path, description = "Node ID"),
+        ("metric" = String, Query, description = "Stored Host metric series of the Agent that owns this Node"),
+        ("dimension" = Option<String>, Query, description = "Mount path of a Host storage series (disk_used_bytes, disk_total_bytes); empty for every other Host series"),
+        ("from" = Option<String>, Query, description = "Canonical RFC 3339 UTC start of the range, second precision (default: 24 hours before to)"),
+        ("to" = Option<String>, Query, description = "Canonical RFC 3339 UTC end of the range, second precision (default: now)"),
+        ("before" = Option<String>, Query, description = "Canonical RFC 3339 UTC exclusive upper bound for paging: the continuation coordinate a truncated answer returned"),
+        ("limit" = Option<i64>, Query, minimum = 1, maximum = 20000, description = "Maximum points across every tier")
+    ),
+    responses(
+        (status = 200, body = AdminMetricHistoryResponse),
+        (status = 400, body = crate::http::ApiErrorBody),
+        (status = 401, body = crate::http::ApiErrorBody),
+        (status = 403, body = crate::http::ApiErrorBody),
+        (status = 404, body = crate::http::ApiErrorBody),
+        (status = 503, body = crate::http::ApiErrorBody)
+    )
+)]
+async fn admin_node_host_metric_history(
+    State(state): State<AppState>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+    query: Result<
+        axum::extract::Query<AdminMetricHistoryQuery>,
+        axum::extract::rejection::QueryRejection,
+    >,
+    Path(node_id): Path<String>,
+) -> Response {
+    let params = match metric_history_params(query, &request_id.0) {
+        Ok(params) => params,
+        Err(response) => return *response,
+    };
+    let Some(metric) = params
+        .metric
+        .as_deref()
+        .filter(|metric| crate::metric_history::is_host_metric(metric))
+    else {
+        return mutation_error(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "invalid_metric",
+            "metric is not a stored host metric series",
+        );
+    };
+    let metric = metric.to_owned();
+    // Which Agent's Host series this Node reads is a fact of its registration:
+    // a Node owns none of them, and the answer names the Agent that does, so one
+    // Node's page never presents the shared totals as that Node's own (design
+    // §11.6).
+    let agent_id =
+        match sqlx::query_scalar::<_, String>("SELECT agent_id FROM nodes WHERE node_id=?")
+            .bind(&node_id)
+            .fetch_optional(state.db().pool())
+            .await
+        {
+            Ok(Some(agent_id)) => agent_id,
+            Ok(None) => return not_found_response(&request_id.0),
+            Err(_) => return unavailable_response(&request_id.0),
+        };
+    let dimension = params.dimension.clone().unwrap_or_default();
+    let agent_scope_key = agent_id.clone();
+    metric_history_response(
+        &state,
+        &request_id.0,
+        params,
+        crate::metric_history::SeriesScope::host(&agent_scope_key, &metric, &dimension),
+        MetricHistoryIdentity {
+            scope_kind: "host",
+            scope_key: agent_scope_key.clone(),
+            node_id: Some(node_id),
+            dimension: dimension.clone(),
+        },
+    )
+    .await
+}
+
+/// The parsed query, or the answer a query the typed extractor cannot read gets.
+fn metric_history_params(
+    query: Result<
+        axum::extract::Query<AdminMetricHistoryQuery>,
+        axum::extract::rejection::QueryRejection,
+    >,
+    request_id: &str,
+) -> Result<AdminMetricHistoryQuery, Box<Response>> {
+    match query {
+        Ok(axum::extract::Query(params)) => Ok(params),
+        // The rejection is the route's usual error envelope, boxed so this call
+        // chain's Result stays small: the envelope is built once on a malformed
+        // query, and all three handlers would otherwise carry its size in every
+        // successful answer they return.
+        Err(_) => Err(Box::new(mutation_error(
+            request_id,
+            StatusCode::BAD_REQUEST,
+            "invalid_query",
+            "query is not valid for metric history",
+        ))),
+    }
+}
+
+/// Whether the Agent a shared Host series is stored under is registered.
+async fn host_owner_exists(
+    state: &AppState,
+    request_id: &str,
+    agent_id: &str,
+) -> Result<(), Response> {
+    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM agents WHERE agent_id=?")
+        .bind(agent_id)
+        .fetch_optional(state.db().pool())
+        .await
+    {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(not_found_response(request_id)),
+        Err(_) => Err(unavailable_response(request_id)),
+    }
+}
+
+/// The answer a Node or Agent the Server does not know gets, in the shape every
+/// other missing resource answers with.
+fn not_found_response(request_id: &str) -> Response {
+    mutation_error(
+        request_id,
+        StatusCode::NOT_FOUND,
+        "not_found",
+        "resource not found",
+    )
+}
+
+/// The answer every metric-history route gives when the database cannot be read.
+fn unavailable_response(request_id: &str) -> Response {
+    mutation_error(
+        request_id,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "unavailable",
+        "server database is unavailable",
+    )
+}
+
+/// The identity an Owner metric-history answer states: which scope the series is
+/// stored under, which Node page asked for it, and which dimension separates two
+/// series of one owner and metric.
+struct MetricHistoryIdentity {
+    /// `node` for a Node's own process series, `host` for the Host series one
+    /// Agent collected once for every Node on it.
+    scope_kind: &'static str,
+    /// The identity the series is stored under: the Node ID, or the Agent ID.
+    scope_key: String,
+    /// The Node whose page asked for the answer, when a Node page asked.
+    node_id: Option<String>,
+    /// The series' dimension: the mount path of a Host storage series, empty for
+    /// every series that exists once per owner.
+    dimension: String,
+}
+
+/// One Owner metric-history answer, shared by the Node, the Agent and the
+/// Node-Host routes: all three read the same engine, clamp the range the same
+/// way and state the same evidence (design §11.4, §11.6).
+async fn metric_history_response(
+    state: &AppState,
+    request_id: &str,
+    params: AdminMetricHistoryQuery,
+    scope: crate::metric_history::SeriesScope<'_>,
+    identity: MetricHistoryIdentity,
+) -> Response {
+    let unavailable = || unavailable_response(request_id);
+    let invalid_range = || {
+        mutation_error(
+            request_id,
+            StatusCode::BAD_REQUEST,
+            "invalid_history_range",
+            "history range is invalid",
+        )
     };
     let raw_retention_days =
         match crate::retention::metric_sample_retention_days(state.db().pool()).await {
@@ -4630,22 +4897,6 @@ async fn admin_node_metric_history(
     {
         return invalid_range();
     }
-    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id=?")
-        .bind(&node_id)
-        .fetch_optional(state.db().pool())
-        .await
-    {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::NOT_FOUND,
-                "not_found",
-                "resource not found",
-            );
-        }
-        Err(_) => return unavailable(),
-    }
     // How far back history can be answered is a fact of the retention policy,
     // not of the answer: the range is clamped to the investigation horizon and
     // the clamping is reported.
@@ -4677,8 +4928,7 @@ async fn admin_node_metric_history(
     let range = match crate::metric_history::load_range(
         state.db().pool(),
         crate::metric_history::RangeQuery {
-            node_id: &node_id,
-            metric,
+            scope,
             from: effective_from,
             to,
             before,
@@ -4704,7 +4954,7 @@ async fn admin_node_metric_history(
                 Some(timing) => (Some(timing.delay_seconds), timing.clock_note),
                 None => (None, None),
             };
-            AdminNodeMetricSample {
+            AdminMetricSample {
                 observed_at: point.instant.clone(),
                 received_at: point.received_at.clone(),
                 value: point.value,
@@ -4749,7 +4999,7 @@ async fn admin_node_metric_history(
     let segments = range
         .segments
         .iter()
-        .map(|segment| AdminNodeMetricSegment {
+        .map(|segment| AdminMetricSegment {
             from: segment.from.clone(),
             to: segment.to.clone(),
             grain: segment.grain.to_owned(),
@@ -4761,7 +5011,7 @@ async fn admin_node_metric_history(
     let gaps = range
         .gaps
         .iter()
-        .map(|gap| AdminNodeMetricGap {
+        .map(|gap| AdminMetricGap {
             from: gap.from.clone(),
             to: gap.to.clone(),
             seconds: gap.seconds,
@@ -4789,7 +5039,7 @@ async fn admin_node_metric_history(
             let latest = range.points.last().and_then(|point| {
                 crate::metric_history::sample_timing(&point.last_observed_at, &point.received_at)
             });
-            AdminNodeMetricSeries {
+            AdminMetricSeries {
                 observed: true,
                 first_observed_at: Some(ledger.first_observed_at.clone()),
                 last_observed_at: Some(ledger.last_observed_at.clone()),
@@ -4806,7 +5056,7 @@ async fn admin_node_metric_history(
                     .is_some_and(|timing| timing.clock_note.is_some()),
             }
         }
-        None => AdminNodeMetricSeries {
+        None => AdminMetricSeries {
             observed: false,
             first_observed_at: None,
             last_observed_at: None,
@@ -4825,9 +5075,12 @@ async fn admin_node_metric_history(
     // an intermediary or a browser cache and replayed to another session
     // (design §12.4, webui.md §6.4).
     no_store(
-        Json(AdminNodeMetricHistoryResponse {
-            node_id,
-            metric: metric.to_owned(),
+        Json(AdminMetricHistoryResponse {
+            scope_kind: identity.scope_kind.to_owned(),
+            scope_key: identity.scope_key,
+            node_id: identity.node_id,
+            metric: scope.series.metric.to_owned(),
+            dimension: identity.dimension,
             from: crate::auth::format_rfc3339(effective_from),
             to: crate::auth::format_rfc3339(effective_to),
             requested_from: crate::auth::format_rfc3339(from),
@@ -6818,6 +7071,17 @@ pub fn router() -> Router<AppState> {
         .route(
             "/nodes/{node_id}/metric-history",
             get(admin_node_metric_history),
+        )
+        // The Agent's shared Host series: the same evidence every Node on that
+        // Host reads, answered from the Agent page and from any Node page
+        // (design §11.6).
+        .route(
+            "/nodes/{node_id}/host-metric-history",
+            get(admin_node_host_metric_history),
+        )
+        .route(
+            "/agents/{agent_id}/metric-history",
+            get(admin_agent_metric_history),
         )
         .route("/networks", get(admin_networks))
         .route("/networks/{network_key}", get(admin_network_detail))

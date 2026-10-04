@@ -50,7 +50,66 @@ AGENT_COUNT = 2
 NODES_PER_AGENT = 3
 SLOW_SCAN_EVERY = 4
 
-HOST_METRICS = ("network_rx_bytes_per_sec", "network_tx_bytes_per_sec")
+# Issue #215 moved the Host quantities a Report carries into the shared metric
+# history: eight series stated once per Agent, plus two storage series named by
+# the mount path the Agent reported (crates/platpulse-server/src/metric_history.rs:116-127
+# HOST_METRIC_SERIES, filled by crates/platpulse-server/src/http/report_ingestion.rs:807-874
+# host_series_samples). Before #215 the generic optional writer accepted only the
+# two network rates, so this baseline counted two Host samples per Report; the
+# Server now stores every Host quantity the Report carries, always under the
+# Agent that collected it, and never once per Node.
+HOST_METRICS = (
+    "cpu_percent",
+    "load1",
+    "load5",
+    "load15",
+    "memory_total_bytes",
+    "memory_used_bytes",
+    "network_rx_bytes_per_sec",
+    "network_tx_bytes_per_sec",
+)
+HOST_MOUNT_METRICS = ("disk_total_bytes", "disk_used_bytes")
+# The family the Server declares per Host. Editing HOST_METRICS above without
+# changing this tuple fails the run, which is what makes it a guard.
+DECLARED_HOST_FAMILY = (
+    "cpu_percent",
+    "disk_total_bytes",
+    "disk_used_bytes",
+    "load1",
+    "load15",
+    "load5",
+    "memory_total_bytes",
+    "memory_used_bytes",
+    "network_rx_bytes_per_sec",
+    "network_tx_bytes_per_sec",
+)
+HOST_FAMILY_METRICS = tuple(sorted(HOST_METRICS + HOST_MOUNT_METRICS))
+# The mount contract of one Host observation (crates/platpulse-core/src/observation.rs:73)
+# and the cleanup batches the Server asserts at compile time over one maximal
+# Report (crates/platpulse-server/src/retention.rs:218-255: HOST_METRIC_CLEANUP_BATCH
+# = 512 raw rows, AGGREGATE_CLEANUP_BATCH = 2048 aggregate rows, both proven >=
+# HOST_METRIC_SERIES.len() + 2 * MAX_HOST_MOUNTS).
+MAX_HOST_MOUNTS = 128
+HOST_METRIC_CLEANUP_BATCH = 512
+AGGREGATE_CLEANUP_BATCH = 2048
+# One maximal Host Report carries the eight shared series plus two rows per
+# mount: 8 + 2 * 128 = 264 rows. The Server's own bound counts the mount-named
+# pair twice (10 + 2 * 128 = 266), which is the conservative number the cleanup
+# batches must cover.
+MAX_HOST_ROWS_PER_REPORT = len(HOST_METRICS) + 2 * MAX_HOST_MOUNTS
+SERVER_MAX_HOST_ROWS_PER_REPORT = len(HOST_FAMILY_METRICS) + 2 * MAX_HOST_MOUNTS
+# Issue #215 excludes Swap and disk-throughput series from this family, so no
+# member may be named like one and the guard below fails on a token match.
+HOST_FORBIDDEN_TOKENS = (
+    "swap",
+    "iops",
+    "disk_read",
+    "disk_write",
+    "io_wait",
+    "read_bytes_per_sec",
+    "write_bytes_per_sec",
+)
+
 STEADY_NODE_METRICS = ("process_cpu_percent", "process_memory_percent")
 SLOW_SCAN_NODE_METRICS = ("data_directory_percent", "peer_inbound_count", "peer_outbound_count")
 
@@ -111,7 +170,13 @@ def utc_now() -> str:
 
 def advance_timestamp(previous: str | None) -> str:
     """Never reuse a second already used for a sample primary key."""
-    now = datetime.now(timezone.utc)
+    # The cursor is a whole second, so the guard has to compare whole seconds:
+    # a clock a fraction of a second past the last instant still formats to the
+    # same string, and delivering that instant twice would offer the Server a
+    # second observation of a sample it already counted, which it classifies as
+    # a replay rather than as another lost sample. Truncating first makes the
+    # comparison exact.
+    now = datetime.now(timezone.utc).replace(microsecond=0)
     if previous is not None:
         last = datetime.strptime(previous, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
         if now <= last:
@@ -708,12 +773,21 @@ def core_counts(db_path: Path) -> dict:
     return {table: sqlite_scalar(db_path, "SELECT COUNT(*) FROM " + table) for table in CORE_TABLES}
 
 
+def table_columns(db_path: Path, table: str) -> tuple:
+    "The declared column names of a table, in declaration order."
+    return tuple(row["name"] for row in sqlite_rows(db_path, "PRAGMA table_info(" + table + ")"))
+
+
 def optional_counts(db_path: Path) -> dict:
     return {
         "host_samples": sqlite_scalar(db_path, "SELECT COUNT(*) FROM host_metric_samples"),
         "node_samples": sqlite_scalar(db_path, "SELECT COUNT(*) FROM node_metric_samples"),
         "host_series": sqlite_scalar(
             db_path, "SELECT COUNT(*) FROM (SELECT DISTINCT agent_id, metric FROM host_metric_samples)"
+        ),
+        "host_dimensions": sqlite_rows(
+            db_path,
+            "SELECT dimension, COUNT(*) AS samples FROM host_metric_samples GROUP BY dimension ORDER BY dimension",
         ),
         "node_series": sqlite_scalar(
             db_path, "SELECT COUNT(*) FROM (SELECT DISTINCT node_id, metric FROM node_metric_samples)"
@@ -823,8 +897,8 @@ def capacity_gauges(client: Client) -> list[str]:
 def skipped_series_rows(db_path: Path) -> list[dict]:
     return sqlite_rows(
         db_path,
-        "SELECT scope_kind, scope_key, metric, skipped_count, first_skipped_at, last_skipped_at "
-        "FROM capacity_skipped_series ORDER BY scope_kind, metric, scope_key",
+        "SELECT scope_kind, scope_key, metric, dimension, skipped_count, first_skipped_at, last_skipped_at "
+        "FROM capacity_skipped_series ORDER BY scope_kind, metric, scope_key, dimension",
     )
 
 
@@ -933,6 +1007,54 @@ class BaselineRun:
             raise BaselineError(label + " report submission failed: " + json.dumps(rejected))
         return {"label": label, "observed_at": observed_at, "slow_scan": slow_scan, "outcomes": outcomes}
 
+    def host_family_declaration(self) -> dict:
+        "Register the Host family this baseline expects the Server to store (issue #215)."
+        forbidden = tuple(
+            name for name in HOST_FAMILY_METRICS if any(token in name for token in HOST_FORBIDDEN_TOKENS)
+        )
+        self.checks.append(Check("declared Host series", DECLARED_HOST_FAMILY, HOST_FAMILY_METRICS))
+        self.checks.append(Check("no Swap or disk-IO series in the Host family", (), forbidden))
+        self.checks.append(
+            Check(
+                "Host raw cleanup batch covers one maximal Host Report",
+                True,
+                HOST_METRIC_CLEANUP_BATCH >= SERVER_MAX_HOST_ROWS_PER_REPORT,
+            )
+        )
+        self.checks.append(
+            Check(
+                "Host aggregate cleanup batch covers one maximal Host Report",
+                True,
+                AGGREGATE_CLEANUP_BATCH >= SERVER_MAX_HOST_ROWS_PER_REPORT,
+            )
+        )
+        return {
+            "issue": 215,
+            "title": "Shared Host resource history",
+            "shared_series": list(HOST_METRICS),
+            "mount_series": list(HOST_MOUNT_METRICS),
+            "declared_series": list(HOST_FAMILY_METRICS),
+            "storage": {
+                "raw_table": "host_metric_samples",
+                "aggregate_table": "host_metric_aggregates",
+                "ledger_table": "host_metric_series_state",
+                "owner": "agent_id",
+                "dimension": "the mount path for the storage series, empty for the shared series",
+            },
+            "bounds": {
+                "max_host_mounts": MAX_HOST_MOUNTS,
+                "rows_per_maximal_report": MAX_HOST_ROWS_PER_REPORT,
+                "server_declared_rows_per_maximal_report": SERVER_MAX_HOST_ROWS_PER_REPORT,
+                "host_metric_cleanup_batch": HOST_METRIC_CLEANUP_BATCH,
+                "aggregate_cleanup_batch": AGGREGATE_CLEANUP_BATCH,
+            },
+            "forbidden_tokens": list(HOST_FORBIDDEN_TOKENS),
+            "mount_dimension_measured": False,
+            "mount_dimension_note": "The Reports this baseline submits state no mount (the Host fixture's "
+            "disk.mounts is empty), so the two mount-named storage series are registered and checked as "
+            "absent rather than measured.",
+        }
+
     def steady_phase(self, baseline: dict) -> dict:
         "Measure the write path, then read the database with the Server stopped."
         # baseline carries the stopped-Server measurement taken just before the
@@ -979,6 +1101,7 @@ class BaselineRun:
             - baseline["optional"]["node_samples"]
         )
         host_samples = counts["host_samples"] - baseline["optional"]["host_samples"]
+        node_samples = counts["node_samples"] - baseline["optional"]["node_samples"]
         receipts_added = core["agent_report_receipts"] - baseline["core"]["agent_report_receipts"]
         self.checks.append(Check("steady optional samples", expected_samples, observed_samples))
         self.checks.append(Check("steady host submissions", rounds * AGENT_COUNT, len(latencies)))
@@ -986,6 +1109,53 @@ class BaselineRun:
             Check("steady host optional samples", rounds * AGENT_COUNT * len(HOST_METRICS), host_samples)
         )
         self.checks.append(Check("steady core receipts added", rounds * AGENT_COUNT, receipts_added))
+        # Issue #215: the Host rows a Report states are stored once for the Agent
+        # that collected them, so their count per Report does not follow the Node
+        # count the same Report carries.
+        submissions = max(1, len(latencies))
+        host_rows_per_report = host_samples / submissions
+        node_rows_per_report = node_samples / submissions
+        self.checks.append(
+            Check(
+                "steady Host rows per Report do not scale with the Node count",
+                float(len(HOST_METRICS)),
+                host_rows_per_report,
+            )
+        )
+        # The Node side of the same contrast: its rows per Report follow both the
+        # Node count and the slower scan the phase runs every SLOW_SCAN_EVERY
+        # rounds, which is exactly why the Host side above must not.
+        expected_node_rows_per_report = (
+            (rounds - len(slow_rounds)) * NODES_PER_AGENT * len(STEADY_NODE_METRICS)
+            + len(slow_rounds) * NODES_PER_AGENT * (len(STEADY_NODE_METRICS) + len(SLOW_SCAN_NODE_METRICS))
+        ) / rounds
+        self.checks.append(
+            Check(
+                "steady Node rows per Report follow the Node count and the slow scan",
+                expected_node_rows_per_report,
+                node_rows_per_report,
+            )
+        )
+        self.checks.append(
+            Check("steady Host series stored", AGENT_COUNT * len(HOST_METRICS), counts["host_series"])
+        )
+        self.checks.append(
+            Check(
+                "steady Host samples carry no Node or mount identity",
+                ("",),
+                tuple(sorted(str(row["dimension"]) for row in counts["host_dimensions"])),
+            )
+        )
+        self.checks.append(
+            Check(
+                "steady every declared Host series was stored",
+                tuple(sorted(HOST_METRICS)),
+                tuple(row["metric"] for row in counts["host_by_metric"]),
+            )
+        )
+        columns = table_columns(self.db_path, "host_metric_samples")
+        self.checks.append(Check("host sample rows carry no Node identity", False, "node_id" in columns))
+        self.checks.append(Check("host sample rows are dimensioned by mount path", True, "dimension" in columns))
         return {
             "rounds": rounds,
             "interval_seconds": self.args.interval,
@@ -1003,6 +1173,12 @@ class BaselineRun:
             },
             "throughput_submissions_per_second": round(len(latencies) / duration, 3) if duration > 0 else None,
             "host_optional_samples": host_samples,
+            "node_optional_samples": node_samples,
+            "host_rows_per_report": host_rows_per_report,
+            "node_rows_per_report": node_rows_per_report,
+            "host_dimensions": counts["host_dimensions"],
+            "host_by_metric": counts["host_by_metric"],
+            "host_sample_columns": list(columns),
             "receipts_added": receipts_added,
             "baseline_core_counts": baseline["core"],
             "baseline_optional_counts": baseline["optional"],
@@ -1038,9 +1214,43 @@ class BaselineRun:
         optional_after = optional_counts(self.db_path)
         series_rows = skipped_series_rows(self.db_path)
         skipped_samples = sum(int(row["skipped_count"]) for row in series_rows)
+        host_series_rows = [row for row in series_rows if row["scope_kind"] == "host"]
+        node_series_rows = [row for row in series_rows if row["scope_kind"] == "node"]
+        host_skipped = sum(int(row["skipped_count"]) for row in host_series_rows)
+        node_skipped = sum(int(row["skipped_count"]) for row in node_series_rows)
         intervals = interval_rows(self.db_path)
         expected_samples = rounds * AGENT_COUNT * (len(HOST_METRICS) + NODES_PER_AGENT * len(STEADY_NODE_METRICS))
         self.checks.append(Check("pressure skipped samples", expected_samples, skipped_samples))
+        # Issue #215: a paused Host series is recorded against the Agent, so the
+        # losses of one Agent are one row per Host series, independent of Nodes.
+        self.checks.append(
+            Check(
+                "pressure Host samples skipped once per Agent",
+                rounds * AGENT_COUNT * len(HOST_METRICS),
+                host_skipped,
+            )
+        )
+        self.checks.append(
+            Check(
+                "pressure Node samples skipped once per Node",
+                rounds * AGENT_COUNT * NODES_PER_AGENT * len(STEADY_NODE_METRICS),
+                node_skipped,
+            )
+        )
+        self.checks.append(
+            Check(
+                "pressure Host series skipped",
+                AGENT_COUNT * len(HOST_METRICS),
+                len(host_series_rows),
+            )
+        )
+        self.checks.append(
+            Check(
+                "pressure Host series are recorded without a mount",
+                ("",),
+                tuple(sorted({str(row["dimension"]) for row in host_series_rows})),
+            )
+        )
         self.checks.append(
             Check(
                 "pressure optional samples unchanged",
@@ -1067,6 +1277,10 @@ class BaselineRun:
             "optional_counts_before": optional_before,
             "optional_counts_after": optional_after,
             "skipped_samples": skipped_samples,
+            "host_skipped_samples": host_skipped,
+            "node_skipped_samples": node_skipped,
+            "host_skipped_series": len(host_series_rows),
+            "node_skipped_series": len(node_series_rows),
             "skipped_series": series_rows,
             "intervals": intervals,
             "submissions": submissions,
@@ -1103,7 +1317,23 @@ class BaselineRun:
         observed_samples = (optional_after["host_samples"] - optional_before["host_samples"]) + (
             optional_after["node_samples"] - optional_before["node_samples"]
         )
+        host_resumed = optional_after["host_samples"] - optional_before["host_samples"]
+        node_resumed = optional_after["node_samples"] - optional_before["node_samples"]
         self.checks.append(Check("recovery optional samples resumed", expected_samples, observed_samples))
+        self.checks.append(
+            Check(
+                "recovery Host samples resumed once per Agent",
+                rounds * AGENT_COUNT * len(HOST_METRICS),
+                host_resumed,
+            )
+        )
+        self.checks.append(
+            Check(
+                "recovery Node samples resumed once per Node",
+                rounds * AGENT_COUNT * NODES_PER_AGENT * len(STEADY_NODE_METRICS),
+                node_resumed,
+            )
+        )
         closed = [row for row in intervals if row["ended_at"] is not None]
         self.checks.append(Check("protection interval closed once", 1, len(closed)))
         if closed:
@@ -1118,6 +1348,8 @@ class BaselineRun:
             "core_counts_after": core_after,
             "optional_counts_before": optional_before,
             "optional_counts_after": optional_after,
+            "host_samples_resumed": host_resumed,
+            "node_samples_resumed": node_resumed,
             "intervals": intervals,
             "skipped_series": skipped_series_rows(self.db_path),
             "submissions": submissions,
@@ -1141,6 +1373,11 @@ class BaselineRun:
 
         self.template = json.loads((FIXTURE_DIR / "report_v1_canonical.json").read_text(encoding="utf-8"))
         self.minimal = json.loads((FIXTURE_DIR / "report_v1_minimal.json").read_text(encoding="utf-8"))
+
+        # Issue #215 registers the shared Host family before any load runs: the
+        # declared series, the family's exclusions, and the cleanup batches the
+        # Server proves at compile time over one maximal Host Report.
+        host_family = self.host_family_declaration()
 
         steady_sample = filesystem_sample(self.state_dir)
         if steady_sample["available_bytes"] <= STEADY_RESUME_BYTES * 2:
@@ -1251,6 +1488,7 @@ class BaselineRun:
                 "network": NETWORK,
             },
             "phases": {"steady": steady, "pressure": pressure, "recovery": recovery},
+            "host_family": host_family,
             "read_path": reads,
             "storage": storage,
             "storage_per_report_bytes": {
@@ -1297,6 +1535,13 @@ class BaselineRun:
                 "filesystem deployment was exercised.",
                 "The Server ran in development mode without TLS and without a reverse proxy.",
                 "A release-profile build was not measured.",
+                "The Host family carries no mount in this baseline: every submitted Report states the eight shared "
+                "Host series only, so the two mount-named storage series are registered and checked as absent "
+                "rather than measured, and no mount was ever removed or renamed between Reports.",
+                "No Node is shared between the two Agents: the sharing measured here is one Agent's Host stored "
+                "once for the three Nodes it collects for, and the two Agents keeping separate Host series.",
+                "Swap and disk-throughput series are not part of the Host family (issue #215) and were neither "
+                "registered nor measured.",
                 "These items must be appended to this same report by a follow-up ticket; nothing here is a production "
                 "guarantee.",
             ],
@@ -1341,6 +1586,33 @@ def write_markdown_report(report: dict, path: Path) -> None:
         "| WAL peak during load | " + human_bytes(steady["storage_peak"]["wal_bytes"]) + " |",
         "| Database / WAL after shutdown | " + human_bytes(steady["storage_after_shutdown"]["database_bytes"]) + " / " + human_bytes(steady["storage_after_shutdown"]["wal_bytes"]) + " (the WAL is checkpointed away by the shutdown, so this is not the load's WAL) |",
         "| Core receipts | " + str(steady["core_counts"]["agent_report_receipts"]) + " |",
+        "",
+        "## Host resource history (issue #215)",
+        "",
+        "- Declared family: " + ", ".join(report["host_family"]["declared_series"]) + " ("
+        + str(len(report["host_family"]["shared_series"])) + " shared series + "
+        + str(len(report["host_family"]["mount_series"])) + " per mount; no Swap or disk-IO series)",
+        "- Stored once per Agent under " + report["host_family"]["storage"]["owner"] + " in "
+        + report["host_family"]["storage"]["raw_table"] + " / " + report["host_family"]["storage"]["aggregate_table"]
+        + " / " + report["host_family"]["storage"]["ledger_table"] + ", dimensioned by "
+        + report["host_family"]["storage"]["dimension"],
+        "- Host samples per Report: " + str(steady["host_rows_per_report"]) + " against "
+        + str(steady["node_rows_per_report"]) + " Node samples per Report for the same "
+        + str(NODES_PER_AGENT) + " Nodes, so Host rows do not follow the Node count",
+        "- Host series stored: " + str(steady["optional_counts"]["host_series"]) + " (expected "
+        + str(AGENT_COUNT * len(HOST_METRICS)) + "), dimensions " + json.dumps(steady["host_dimensions"])
+        + ", columns " + json.dumps(steady["host_sample_columns"]),
+        "- Per-Report bound: " + str(report["host_family"]["bounds"]["rows_per_maximal_report"]) + " rows at "
+        + str(report["host_family"]["bounds"]["max_host_mounts"]) + " mounts, inside the Server's conservative "
+        + str(report["host_family"]["bounds"]["server_declared_rows_per_maximal_report"]) + " rows and the cleanup "
+        + "batches of " + str(report["host_family"]["bounds"]["host_metric_cleanup_batch"]) + " raw / "
+        + str(report["host_family"]["bounds"]["aggregate_cleanup_batch"]) + " aggregate rows",
+        "- Paused Host samples: " + str(pressure["host_skipped_samples"]) + " across "
+        + str(pressure["host_skipped_series"]) + " Host series, against " + str(pressure["node_skipped_samples"])
+        + " Node samples paused in the same window",
+        "- Resumed Host samples: " + str(recovery["host_samples_resumed"]) + " Host / "
+        + str(recovery["node_samples_resumed"]) + " Node",
+        "- Mount-covered series: not measured - " + report["host_family"]["mount_dimension_note"],
         "",
         "## Read path (p50 / p95)",
         "",

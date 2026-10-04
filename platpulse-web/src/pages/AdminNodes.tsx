@@ -14,6 +14,7 @@ import {
   purgeNode,
   updateNodeMetadata,
   useAdminNodeDetail,
+  useAdminNodeHostMetricHistory,
   useAdminNodeMetricHistory,
   useAdminNodePurgeImpact,
   useAdminNodes,
@@ -40,27 +41,17 @@ import { Input, Select } from '../components/ui/input'
 import { cn } from '../lib/utils'
 import { SURFACE_CARD_STATIC, SURFACE_TOOLBAR } from '../lib/surface'
 import {
-  METRIC_HISTORY_PRESETS,
+  HOST_METRIC_SERIES,
   NODE_METRIC_SERIES,
-  formatHistoryDuration,
-  formatSampleDelay,
-  metricAvailabilityNotice,
-  metricBandPath,
-  metricChartGeometry,
-  metricGapKindLabel,
-  metricGrainShortLabel,
-  metricHistoryRange,
-  metricLinePath,
-  metricLineRuns,
-  metricPointIsAggregate,
-  metricPointLabel,
-  metricPointProvesHole,
-  metricSampleSummary,
-  metricSegmentLabel,
-  metricTierNotice,
   nodeMetricDefinition,
   type NodeMetricKey,
 } from '../metricHistory'
+import {
+  HostMountPathControl,
+  MetricHistoryBody,
+  useHostMetricSelection,
+  useMetricHistoryWindow,
+} from './metricHistoryPanel'
 import type {
   AdminNodeDetail as AdminNodeDetailDto,
   AdminNodeListItem,
@@ -655,6 +646,7 @@ export function AdminNodeDetail() {
           <LifecyclePanel node={query.data} />
           <HealthPanel node={query.data} />
           <MetricHistoryPanel node={query.data} />
+          <HostMetricHistoryPanel node={query.data} />
           <IdentityPanel node={query.data} />
           <RpcDiagnosticsPanel node={query.data} />
           <PurgePanel node={query.data} csrfToken={csrfToken} onPurged={setPurged} />
@@ -907,547 +899,105 @@ function HealthPanel({ node }: { node: AdminNodeDetailDto }) {
   )
 }
 
-/** Owner-only metric history of one Node series (issues #213 and #214, design
- * §11.4 and §11.6): the stored observations with the timing evidence that
- * belongs to each one, the aggregate buckets that answer the stretches older
- * than the raw window, the silences between them, and the state of the series
- * itself. A series the Node never reported is named as absent, a range older
- * than the investigation horizon is answered as unavailable, and nothing is
- * ever filled in with zeros or a line drawn across a stretch the Server did
- * not observe. A bucket says how many observations it counted and never passes
- * itself off as one stored sample. */
+/**
+ * PAGE-ADMIN-NODES and PAGE-ADMIN-NODE-DETAIL (design §4.3, §8.2, §11.4, §11.6; webui.md §8.2):
+ * the Node's OWN Process series, charted through the shared metric-history body so this Node's
+ * Process and the Host series it shares with its siblings are answered by one implementation.
+ */
+const NODE_PROCESS_INTRO =
+  'Stored observations for one Node Process series, with the delay between observing and receiving each one, the aggregate buckets that answer the stretches older than the raw window, the silences between them, and the series state that outlives them all. Every value is evidence the Server still holds: a stored observation, or a bucket that kept the count, the minimum and the maximum of the observations it summarizes, never a value averaged over an interval the Server cannot restate.'
+
 function MetricHistoryPanel({ node }: { node: AdminNodeDetailDto }) {
   const { generation } = useAuth()
   const [metric, setMetric] = useState<NodeMetricKey>('process_cpu_percent')
-  const [hours, setHours] = useState<number>(24)
-  // The answered range is fixed per selection: the query key stays stable
-  // while the page is open, and "Reload window" moves it explicitly.
-  const [range, setRange] = useState(() => metricHistoryRange(24, new Date()))
-  // The exclusive cursor of the page being shown, when the Operator walked
-  // into an older answer: the Server names the coordinate to continue from and
-  // the panel asks for it rather than pretending one answer holds 30 days.
-  const [olderThan, setOlderThan] = useState<string | null>(null)
+  const history = useMetricHistoryWindow(24)
   const definition = nodeMetricDefinition(metric)
   const query = useAdminNodeMetricHistory(
     generation,
     node.node_id,
     metric,
-    range.from,
-    range.to,
-    olderThan ?? undefined,
+    history.range.from,
+    history.range.to,
+    history.olderThan ?? undefined,
   )
-  const data = query.data
-  const fixedMax = definition.fixedMax
-  const geometry = useMemo(
-    () =>
-      data
-        ? metricChartGeometry(
-            data.items,
-            data.gaps,
-            Date.parse(data.from),
-            Date.parse(data.to),
-            fixedMax,
-          )
-        : null,
-    [data, fixedMax],
-  )
-  const notice = metricAvailabilityNotice(data?.availability)
-  // Older fixtures predate the segments field: an answer without segments is
-  // read as an answer whose single stretch is the raw window.
-  const segments = data?.segments ?? []
-  const tierNotice = metricTierNotice(segments)
-  const series = data?.series
-  const newest = data ? data.items.slice(-8).reverse() : []
-  const state = !data ? 'Loading' : series?.observed ? 'Observed' : 'Never observed'
-  const stateTone = !data ? 'neutral' : series?.observed ? 'ok' : 'neutral'
-
-  function selectRange(nextHours: number) {
-    setHours(nextHours)
-    setOlderThan(null)
-    setRange(metricHistoryRange(nextHours, new Date()))
-  }
-
   return (
-    <CardX
-      size="medium"
-      className={CARD_SURFACE}
-      header={
-        <>
-          <h2 className="text-lg font-semibold">Metric history</h2>
-          <StatusBadge status={state} tone={stateTone} />
-        </>
+    <MetricHistoryBody
+      title="Metric history"
+      subject="Node"
+      surface="node-process"
+      intro={NODE_PROCESS_INTRO}
+      definitions={NODE_METRIC_SERIES}
+      selection={{
+        metric,
+        definition,
+        onMetric(next) {
+          history.setOlderThan(null)
+          setMetric(next as NodeMetricKey)
+        },
+      }}
+      view={history}
+      answer={query}
+    />
+  )
+}
+
+/**
+ * The Host series of the Agent this Node belongs to (issue #215, design §11.5): the machine's CPU,
+ * physical memory, load averages, network rate and per-mount storage, stored once per Agent and
+ * counted once per Agent. It is not the Node's Process series, so the two never share a chart, and
+ * the Agent that owns the evidence is named on the card: a reading two Nodes show is never silent
+ * about whose it is. A storage series exists once per mount path, so the Operator names the path the
+ * Agent reported and a changed path is a different series rather than a continued one.
+ */
+const HOST_INTRO =
+  "Stored observations of the machine the Agent behind this Node observes once for every Node it serves. The series belongs to the Agent, not to this Node: it is the same evidence here, on the Agent's page, and on every other Node of that Agent, and no Node's Purge removes it."
+
+function HostMetricHistoryPanel({ node }: { node: AdminNodeDetailDto }) {
+  const { generation } = useAuth()
+  const history = useMetricHistoryWindow(24)
+  const selection = useHostMetricSelection(history)
+  // The route is the Node's, because the page is this Node's page; the answer
+  // names the Agent whose shared series it is.
+  const query = useAdminNodeHostMetricHistory(
+    generation,
+    node.node_id,
+    selection.metric,
+    selection.dimension,
+    history.range.from,
+    history.range.to,
+    history.olderThan ?? undefined,
+  )
+  return (
+    <MetricHistoryBody
+      title="Host metric history"
+      subject="Host"
+      surface="node-host"
+      intro={HOST_INTRO}
+      definitions={HOST_METRIC_SERIES}
+      selection={selection}
+      extraControl={
+        selection.needsMount ? (
+          <HostMountPathControl
+            value={selection.mountPath}
+            onChange={selection.onMountPath}
+          />
+        ) : undefined
       }
-    >
-      <p className="text-sm text-muted-foreground">
-        Stored observations for one Node series, with the delay between observing and receiving
-        each one, the aggregate buckets that answer the stretches older than the raw window, the
-        silences between them, and the series state that outlives them all. Every value is
-        evidence the Server still holds: a stored observation, or a bucket that kept the count,
-        the minimum and the maximum of the observations it summarizes, never a value averaged
-        over an interval the Server cannot restate.
-      </p>
-      <div className="mt-3 flex flex-wrap items-end gap-3">
-        <label className="grid min-w-40 gap-1 text-xs font-medium text-muted-foreground">
-          Metric series
-          <Select
-            className="min-h-11"
-            value={metric}
-            onChange={(event) => {
-              setOlderThan(null)
-              setMetric(event.currentTarget.value as NodeMetricKey)
-            }}
-          >
-            {NODE_METRIC_SERIES.map((item) => (
-              <option key={item.metric} value={item.metric}>
-                {item.label}
-              </option>
-            ))}
-          </Select>
-        </label>
-        <div className="flex flex-wrap gap-2" role="group" aria-label="History range">
-          {METRIC_HISTORY_PRESETS.map((preset) => (
-            <Button
-              key={preset.label}
-              variant={hours === preset.hours ? 'default' : 'outline'}
-              aria-pressed={hours === preset.hours}
-              className="min-h-11"
-              onClick={() => selectRange(preset.hours)}
-            >
-              {preset.label}
-            </Button>
-          ))}
-        </div>
-        <Button
-          variant="outline"
-          className="min-h-11"
-          onClick={() => {
-            setOlderThan(null)
-            setRange(metricHistoryRange(hours, new Date()))
-          }}
+      note={
+        <p
+          className="mt-2 text-xs text-muted-foreground"
+          data-slot="host-metric-history-owner"
         >
-          Reload window
-        </Button>
-      </div>
-      <p className="mt-2 text-xs text-muted-foreground">
-        {definition.label}: {definition.unit}. {definition.description}
-      </p>
-      {!data && query.isPending && (
-        <p className="mt-3 flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
-          <StatusBadge status="Loading" tone="neutral" /> Loading the stored series…
+          The Agent <span className="break-all font-mono">{node.agent_id}</span> reports
+          this Host once for every Node it observes, so this is the same series here and
+          on its sibling Nodes; this Node's own Purge does not remove it.
         </p>
-      )}
-      {query.isError && (
-        <div
-          className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
-          role="alert"
-        >
-          <StatusBadge status="Error" tone="error" />{' '}
-          <span className="min-w-0 break-words">
-            {query.error instanceof Error ? query.error.message : 'Unable to load the metric history'}
-          </span>
-          <Button variant="link" size="sm" onClick={() => void query.refetch()}>
-            Try again
-          </Button>
-        </div>
-      )}
-      {data && query.isRefetchError && (
-        <div
-          className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
-          role="alert"
-        >
-          <StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last
-          successful samples.
-        </div>
-      )}
-      {data && notice && (
-        <p className="mt-3 text-sm text-muted-foreground" data-slot="metric-history-availability">
-          {notice}
-        </p>
-      )}
-      {data && tierNotice && (
-        <p className="mt-3 text-sm text-muted-foreground" data-slot="metric-history-tiers">
-          {tierNotice}
-        </p>
-      )}
-      {data && (
-        <>
-          <div className="mt-3">
-            <DetailList>
-              <DetailItem label="Ledger">
-                {series?.observed
-                  ? series.observationCount + ' stored observation(s) since the first one'
-                  : 'No observation was ever recorded for this series'}
-              </DetailItem>
-              <DetailItem label="First observed">{formatObservedAt(series?.firstObservedAt)}</DetailItem>
-              <DetailItem label="Last observed">{formatObservedAt(series?.lastObservedAt)}</DetailItem>
-              <DetailItem label="Last received">{formatObservedAt(series?.lastReceivedAt)}</DetailItem>
-              <DetailItem label="Coverage">
-                {formatHistoryDuration(series?.coverageSeconds ?? 0)} of{' '}
-                {formatHistoryDuration(series?.windowSeconds ?? 0)}
-                <span className="text-[11px] text-muted-foreground">
-                  {' '}· proven only between stored samples, never assumed across a silence or
-                  inside a bucket that measured a hole of its own
-                </span>
-              </DetailItem>
-              <DetailItem label="Carried deliveries">
-                {series?.replayedCount ?? 0} replay(s), {series?.correctedCount ?? 0} correction(s)
-                <span className="text-[11px] text-muted-foreground">
-                  {' '}· counted apart from observations
-                </span>
-              </DetailItem>
-              <DetailItem label="Points in this answer">
-                {series?.sampledCount ?? 0} · grain {metricGrainShortLabel(data.grain)}
-                {data.aggregateSupported ? '' : ' (raw only)'}
-              </DetailItem>
-              <DetailItem label="Newest delay">
-                {formatSampleDelay(series?.latestDelaySeconds)}
-                {series?.latestClockSuspect && (
-                  <span className="text-destructive"> · clock suspect</span>
-                )}
-              </DetailItem>
-              <DetailItem label="Retained raw window">
-                {data.rawRetentionDays} {data.rawRetentionDays === 1 ? 'day' : 'days'} · requested
-                from {formatObservedAt(data.requestedFrom)}
-              </DetailItem>
-              <DetailItem label="Investigation horizon">
-                {data.historyHorizonDays} days · older stretches are answered by buckets, never by
-                a recreated sample
-              </DetailItem>
-            </DetailList>
-          </div>
-          {data.truncated && (
-            <p className="mt-3 text-sm" role="status" data-slot="metric-history-truncated">
-              This window holds more samples than one answer carries: the newest{' '}
-              {data.items.length} points of this answer are drawn and the older ones are omitted, so
-              the plot starts at the oldest point it actually has rather than inventing one at the
-              window edge. The Server spends one budget on a whole answer and keeps the newest
-              points of every tier, so the omitted stretch is a seam and never a hole in the middle.
-              While the Server names a continuation coordinate, 'Load older points' follows it one
-              page at a time rather than dropping back to the newest answer.
-            </p>
-          )}
-          {/* The Server names the coordinate to continue from while the answer
-              is truncated, and one cursor reaches every older page: the control
-              stays as long as there is a coordinate to ask for, so an answer
-              that is still truncated can be walked older again and again
-              instead of the Owner being stopped on the second page. */}
-          {data.continuation && (
-            <Button
-              variant="outline"
-              className="mt-2 min-h-11"
-              data-slot="metric-history-older"
-              onClick={() => setOlderThan(data.continuation ?? null)}
-            >
-              Load older points
-            </Button>
-          )}
-          {olderThan !== null && (
-            <p
-              className="mt-3 flex flex-wrap items-center gap-2 text-sm text-muted-foreground"
-              role="status"
-              data-slot="metric-history-page"
-            >
-              <span className="min-w-0 break-words">
-                An older page the Server continued into: this answer ends at{' '}
-                {formatObservedAt(data.to)}, the coordinate the next-newer answer stopped at, and
-                starts at {formatObservedAt(data.from)}. No point is skipped between two pages.
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                className="min-h-11"
-                onClick={() => setOlderThan(null)}
-              >
-                Return to the newest points
-              </Button>
-            </p>
-          )}
-          {series && !series.observed && (
-            <p className="mt-3 text-sm text-muted-foreground" role="status" data-slot="metric-history-empty">
-              This Node never reported {definition.label}. Nothing is charted and nothing is shown
-              as zero; the series appears with the first accepted observation.
-            </p>
-          )}
-          {series?.observed && data.items.length === 0 && (
-            <p className="mt-3 text-sm text-muted-foreground" role="status" data-slot="metric-history-empty">
-              The series is observed, but no stored sample falls inside this window, and no
-              aggregate bucket answers for it either. The value is reported as unknown, never as
-              zero.
-            </p>
-          )}
-          {geometry && geometry.samples > 0 && (
-            <div className="mt-3 grid min-w-0 grid-cols-[3rem_minmax(0,1fr)] gap-x-2">
-              <div
-                className="flex flex-col justify-between pr-1 text-right text-[11px] tabular-nums text-muted-foreground"
-                aria-hidden="true"
-              >
-                <span>{definition.axisFormat(geometry.max)}</span>
-                <span>{definition.axisFormat(geometry.max / 2)}</span>
-                <span>{definition.axisFormat(0)}</span>
-              </div>
-              <svg
-                viewBox="0 0 600 150"
-                preserveAspectRatio="none"
-                role="img"
-                aria-label={
-                  definition.label +
-                  ' history from ' +
-                  formatObservedAt(data.from) +
-                  ' to ' +
-                  formatObservedAt(data.to) +
-                  ' at ' +
-                  metricGrainShortLabel(data.grain) +
-                  ' grain'
-                }
-                className="col-start-2 h-40 w-full text-primary"
-                data-slot="metric-history-chart"
-              >
-                <title>
-                  {definition.label} history over {formatHistoryDuration(data.windowSeconds)},{' '}
-                  {geometry.samples} point(s) standing for {geometry.weight} observation(s)
-                </title>
-                <desc>
-                  {geometry.samples} point(s) standing for {geometry.weight} observation(s) folded
-                  into {geometry.segments.length} drawn stretch(es); {geometry.aggregatedPoints} of
-                  them are aggregate buckets, drawn as squares across the stretch each one covers,
-                  and {geometry.holedPoints} of those proved a hole inside their own stretch, so no
-                  line is drawn across them;{' '}
-                  {data.gaps.length} reported silence(s) are left undrawn.
-                </desc>
-                <g aria-hidden="true">
-                  <line x1="0" y1="8" x2="600" y2="8" className="stroke-border [vector-effect:non-scaling-stroke]" />
-                  <line x1="0" y1="75" x2="600" y2="75" className="stroke-border [vector-effect:non-scaling-stroke]" />
-                  <line x1="0" y1="142" x2="600" y2="142" className="stroke-border [vector-effect:non-scaling-stroke]" />
-                  {geometry.gapBands.map((band) => (
-                    <rect
-                      key={band.x.toFixed(2)}
-                      data-slot="metric-history-gap-band"
-                      className="fill-muted-foreground opacity-20"
-                      x={band.x}
-                      y={8}
-                      width={Math.max(1, band.width)}
-                      height={134}
-                    />
-                  ))}
-                </g>
-                <g aria-hidden="true">
-                  {geometry.segments.map((segment, index) => (
-                    <g key={segment[0].x.toFixed(2) + '-' + index}>
-                      {/* A stretch is only drawn as one line where its own
-                          columns were continuous: a bucket that measured a hole
-                          inside the stretch it stands for is not joined to
-                          either neighbour, so the break the Server measured is
-                          visible instead of being drawn over. */}
-                      {metricLineRuns(segment).map((run, runIndex) =>
-                        run.length > 1 ? (
-                          <g key={'stretch-' + runIndex}>
-                            <path
-                              className="fill-current opacity-15"
-                              d={metricBandPath(run)}
-                            />
-                            <path
-                              data-slot="metric-history-line"
-                              className="fill-none stroke-current [vector-effect:non-scaling-stroke]"
-                              strokeWidth={2}
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d={metricLinePath(run)}
-                            />
-                          </g>
-                        ) : null,
-                      )}
-                      {segment.map((point) =>
-                        point.aggregateCount > 0 ? (
-                          /* A bucket is drawn as a square marker, not as a dot:
-                             a dot claims one stored observation, a square says
-                             the Server kept a counted stretch here. */
-                          <rect
-                            key={'bucket-' + point.x.toFixed(2)}
-                            data-slot="metric-history-bucket"
-                            data-hole={point.provenHole ? 'proved' : undefined}
-                            className="fill-current"
-                            x={point.x - 2.5}
-                            y={point.y - 2.5}
-                            width={5}
-                            height={5}
-                          />
-                        ) : null,
-                      )}
-                      {segment.length === 1 && (
-                        <>
-                          {/* One column, but possibly several observations: a
-                              vertical whisker spans the bucket's minimum and
-                              maximum so an isolated spike is never hidden by
-                              the single point drawn at its newest value. It
-                              stays inside the column: no line is interpolated
-                              across the time the column does not cover. */}
-                          <line
-                            data-slot="metric-history-whisker"
-                            className="stroke-current [vector-effect:non-scaling-stroke]"
-                            strokeWidth={2}
-                            strokeLinecap="round"
-                            x1={segment[0].x}
-                            x2={segment[0].x}
-                            y1={segment[0].top}
-                            y2={segment[0].bottom}
-                          />
-                          <circle
-                            data-slot="metric-history-point"
-                            className="fill-current stroke-background [vector-effect:non-scaling-stroke]"
-                            strokeWidth={1.5}
-                            cx={segment[0].x}
-                            cy={segment[0].y}
-                            r={3.5}
-                          />
-                        </>
-                      )}
-                    </g>
-                  ))}
-                </g>
-              </svg>
-              <div
-                className="col-start-2 flex justify-between pt-1 text-[11px] tabular-nums text-muted-foreground"
-                aria-hidden="true"
-              >
-                <span>{formatObservedAt(data.from)}</span>
-                <span>{formatObservedAt(data.to)}</span>
-              </div>
-              {geometry.aggregatedPoints > 0 && (
-                <p className="col-start-2 pt-1 text-[11px] text-muted-foreground" data-slot="metric-history-buckets">
-                  {geometry.aggregatedPoints} of {geometry.samples} drawn points are aggregate
-                  buckets: a circle is one stored observation, a square is a bucket, and the plot
-                  stands for {geometry.weight} observation(s) in total, with every bucket drawn
-                  across the stretch it kept.
-                  {geometry.holedPoints > 0
-                    ? ' ' +
-                      geometry.holedPoints +
-                      ' of them measured a hole inside their own stretch, so the square stands ' +
-                      'alone there and no line is drawn across it: the stretch is not closed.'
-                    : ''}
-                </p>
-              )}
-            </div>
-          )}
-          {segments.length > 0 && (
-            <div className="mt-4" data-slot="metric-history-segments">
-              <h3 className="text-sm font-medium">Tiers in this answer</h3>
-              <ul className="mt-1 space-y-1 text-sm text-muted-foreground">
-                {segments.map((segment) => (
-                  <li key={segment.grain + segment.from + segment.to}>
-                    <span className="font-medium text-foreground">
-                      {metricSegmentLabel(segment)}
-                    </span>
-                    {': '}
-                    {formatObservedAt(segment.from)} → {formatObservedAt(segment.to)}
-                    {segment.pointCount === 0 ? ' · consulted, holds nothing' : ''}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {data.gaps.length > 0 && (
-            <div className="mt-4" data-slot="metric-history-gaps">
-              <h3 className="text-sm font-medium">Silences in this window</h3>
-              <ul className="mt-1 space-y-1 text-sm text-muted-foreground">
-                {data.gaps.map((gap) => (
-                  <li key={gap.from + gap.to}>
-                    <span className="font-medium text-foreground">
-                      {metricGapKindLabel(gap.kind)}
-                    </span>
-                    {': '}
-                    {formatObservedAt(gap.from)} → {formatObservedAt(gap.to)} (
-                    {formatHistoryDuration(gap.seconds)}) · {gap.reason}
-                    {gap.skippedCount != null
-                      ? ' · ' + gap.skippedCount + ' observation(s) skipped'
-                      : ''}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {newest.length > 0 && (
-            <div className="mt-4">
-              <h3 className="text-sm font-medium">Newest observations</h3>
-              <div className="mt-1 overflow-x-auto">
-                <table className="w-full text-left text-sm" data-slot="metric-history-samples">
-                  <thead>
-                    <tr className="text-xs font-medium tracking-wider text-muted-foreground">
-                      <th scope="col" className="py-1 pr-3">Observed</th>
-                      <th scope="col" className="py-1 pr-3">Received</th>
-                      <th scope="col" className="py-1 pr-3">Grain</th>
-                      <th scope="col" className="py-1 pr-3">Value</th>
-                      <th scope="col" className="py-1">Delay</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {newest.map((sample) => {
-                      const summary = metricSampleSummary(sample, geometry?.cadenceSeconds ?? 0)
-                      const aggregate = metricPointIsAggregate(sample)
-                      // The same judgement the plot makes: a bucket whose own
-                      // measured interval reaches the gap threshold did not
-                      // cover its stretch continuously.
-                      const provedHole = metricPointProvesHole(
-                        sample,
-                        geometry?.cadenceSeconds ?? 0,
-                      )
-                      return (
-                        <tr key={sample.observedAt + '-' + sample.value} data-slot="metric-history-sample">
-                          <td className="py-1 pr-3 tabular-nums">
-                            {formatObservedAt(sample.observedAt)}
-                            {aggregate && (
-                              <span className="block text-[11px] text-muted-foreground">
-                                first kept {formatObservedAt(sample.firstObservedAt ?? sample.observedAt)}{' '}
-                                · newest {formatObservedAt(sample.lastObservedAt)}
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-1 pr-3 tabular-nums">{formatObservedAt(sample.receivedAt)}</td>
-                          <td className="py-1 pr-3">
-                            {metricPointLabel(sample)}
-                            {summary && (
-                              <span
-                                className="block text-[11px] text-muted-foreground"
-                                data-slot={provedHole ? 'metric-history-hole' : undefined}
-                              >
-                                {summary}
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-1 pr-3 tabular-nums font-medium">
-                            {definition.format(sample.value)}
-                            {aggregate && (
-                              <span className="block text-[11px] font-normal text-muted-foreground">
-                                {definition.format(sample.minValue ?? sample.value)} to{' '}
-                                {definition.format(sample.maxValue ?? sample.value)}
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-1 tabular-nums">
-                            {formatSampleDelay(sample.delaySeconds)}
-                            {sample.clockSuspect && (
-                              <span className="block text-[11px] text-destructive">
-                                {sample.clockNote ?? 'The observation is stamped after the receipt.'}
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                The newest {newest.length} of {data.items.length} points in this answer. For a
-                bucket the value is its newest reading and the range is its minimum to its maximum,
-                so a spike the Server preserved is visible even where the bucket is drawn as one
-                marker. Observed, received, and the delay belong to the same point, so a spooled or
-                retried delivery stays visible per point.
-              </p>
-            </div>
-          )}
-        </>
-      )}
-    </CardX>
+      }
+      promptWhenUnasked="Enter the mount path the Agent reported to read one storage series."
+      view={history}
+      answer={query}
+      unasked={!selection.asked}
+    />
   )
 }
 

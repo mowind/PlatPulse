@@ -2306,6 +2306,10 @@ pub struct CapacitySkippedSeriesDto {
     pub scope_key: String,
     /// The optional metric that was skipped.
     pub metric: String,
+    /// The series' dimension: the mount path of a Host storage series, empty for
+    /// every series an owner and metric identify on their own. Two mounts of one
+    /// Host are two series, so their losses are counted apart rather than merged.
+    pub dimension: String,
     /// How many readings this series counted as skipped. Counting follows the
     /// recorded high-water mark, so an accepted Report retry that re-sends the
     /// newest reading is never a second lost sample and the number never
@@ -2470,6 +2474,7 @@ fn capacity_interval_dto(record: crate::capacity::CapacityIntervalRecord) -> Cap
                 scope_kind: series.scope_kind,
                 scope_key: series.scope_key,
                 metric: series.metric,
+                dimension: series.dimension,
                 skipped_count: series.skipped_count,
                 first_skipped_at: series.first_skipped_at,
                 last_skipped_at: series.last_skipped_at,
@@ -3959,6 +3964,7 @@ mod tests {
                 crate::capacity::SkippedScope::Node,
                 "node-a",
                 "process_cpu_percent",
+                "",
                 observed_at,
             )
             .await

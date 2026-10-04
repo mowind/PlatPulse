@@ -196,8 +196,9 @@ const _: () = assert!(
 /// can carry 256 Nodes, so 128 rows per Report would lag a maximal Agent behind
 /// its own expiry rate and the backlog would keep growing until low-space
 /// protection paused the very history this family exists to keep. The per-Agent
-/// host table keeps the ordinary batch: a Report adds one row per host metric
-/// (a handful), far below even that bound.
+/// host table needs its own bound for the same reason (issue #215): a Report now
+/// states every collected Host series, and the two per-mount series alone make
+/// that 8 + 2 x mounts, so the ordinary batch would lag a fully mounted Host.
 const TARGET_RAW_METRIC_SAMPLES: &[CleanupTarget] = &[
     CleanupTarget {
         table: "node_metric_samples",
@@ -209,47 +210,92 @@ const TARGET_RAW_METRIC_SAMPLES: &[CleanupTarget] = &[
         table: "host_metric_samples",
         kind: CleanupKind::Delete,
         count_sql: "SELECT COUNT(*) FROM host_metric_samples WHERE observed_at < ?",
-        delete_sql: "DELETE FROM host_metric_samples WHERE rowid IN (SELECT rowid FROM host_metric_samples WHERE observed_at < ? ORDER BY observed_at, agent_id, metric LIMIT 128)",
+        delete_sql: "DELETE FROM host_metric_samples WHERE rowid IN (SELECT rowid FROM host_metric_samples WHERE observed_at < ? ORDER BY observed_at, agent_id, metric LIMIT 512)",
     },
 ];
 
-/// Rows one aggregate-tier cleanup batch may release.
+/// Rows one Host raw-sample cleanup batch may release.
+const HOST_METRIC_CLEANUP_BATCH: i64 = 512;
+
+/// The bound must cover the Host series one Report can state, or this table's
+/// expiry lags its own arrival rate and the history grows without bound on a
+/// fully mounted Host (issue #215). Checked at compile time for the same reason
+/// the per-Node bound is.
+const _: () = assert!(
+    HOST_METRIC_CLEANUP_BATCH
+        >= crate::metric_history::HOST_METRIC_SERIES.len() as i64
+            + 2 * crate::metric_history::MAX_HOST_MOUNTS as i64,
+    "the per-Report Host sample batch must cover one maximal Report"
+);
+
+/// Rows one aggregate-tier cleanup batch may release from one table.
 ///
 /// Each tier's delete is filtered to its own grain, so one accepted Report adds
-/// at most MAX_NODE_OBSERVATIONS x 5 rows to it (one bucket per Node metric
-/// series and tier); 2048 leaves headroom for that protocol maximum, exactly as
-/// the raw sample batch does. Without a per-Report bound the tier a Report keeps
-/// feeding would grow for as long as the process stays up, because its expired
-/// rows only appear once its own window has passed.
+/// at most MAX_NODE_OBSERVATIONS x 5 rows to the Node tier (one bucket per Node
+/// metric series and tier) and at most one bucket per collected Host series to
+/// the Host tier (issue #215: 10 named series plus 2 per mount). 2048 covers
+/// either table's own per-Report arrival on its own, exactly as the raw sample
+/// batch does. Without a per-Report bound the tier a Report keeps feeding would
+/// grow for as long as the process stays up, because its expired rows only
+/// appear once its own window has passed.
 const AGGREGATE_CLEANUP_BATCH: i64 = 2048;
 
 /// See NODE_METRIC_CLEANUP_BATCH: a bound below the rows one maximal Report can
-/// add to a single grain would let the backlog grow at steady state.
+/// add to a single grain would let the backlog grow at steady state. Each table
+/// is deleted by its own target, so each needs its own covering bound.
 const _: () = assert!(
     AGGREGATE_CLEANUP_BATCH >= platpulse_core::protocol::MAX_NODE_OBSERVATIONS as i64 * 5,
     "the per-Report aggregate batch must cover one maximal Report"
 );
+const _: () = assert!(
+    AGGREGATE_CLEANUP_BATCH
+        >= crate::metric_history::HOST_METRIC_SERIES.len() as i64
+            + 2 * crate::metric_history::MAX_HOST_MOUNTS as i64,
+    "the per-Report Host aggregate batch must cover one maximal Host Report"
+);
 
 /// The 1-minute tier the design §11.6 window declares: a bucket is kept for the
 /// 7 days the reader can still be served at that grain, and the delete is a
-/// range read of the node_metric_aggregates_expiry_idx index (grain_seconds,
-/// bucket_start), never a scan of the whole tier.
-const TARGET_ONE_MINUTE_AGGREGATES: &[CleanupTarget] = &[CleanupTarget {
-    table: "node_metric_aggregates",
-    kind: CleanupKind::Delete,
-    count_sql: "SELECT COUNT(*) FROM node_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < ?",
-    delete_sql: "DELETE FROM node_metric_aggregates WHERE rowid IN (SELECT rowid FROM node_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < ? ORDER BY bucket_start LIMIT 2048)",
-}];
+/// range read of the table's own expiry index (grain_seconds, bucket_start),
+/// never a scan of the whole tier.
+///
+/// Node and Host buckets are separate tables but one tier: a Host bucket is fed
+/// by the same Report as a Node one and must expire on the same window, so both
+/// tables are targets of this family rather than of a new family whose window
+/// could drift from the tier it serves (issue #215).
+const TARGET_ONE_MINUTE_AGGREGATES: &[CleanupTarget] = &[
+    CleanupTarget {
+        table: "node_metric_aggregates",
+        kind: CleanupKind::Delete,
+        count_sql: "SELECT COUNT(*) FROM node_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < ?",
+        delete_sql: "DELETE FROM node_metric_aggregates WHERE rowid IN (SELECT rowid FROM node_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < ? ORDER BY bucket_start LIMIT 2048)",
+    },
+    CleanupTarget {
+        table: "host_metric_aggregates",
+        kind: CleanupKind::Delete,
+        count_sql: "SELECT COUNT(*) FROM host_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < ?",
+        delete_sql: "DELETE FROM host_metric_aggregates WHERE rowid IN (SELECT rowid FROM host_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < ? ORDER BY bucket_start LIMIT 2048)",
+    },
+];
 
 /// The 5-minute tier, kept for the whole 30-day investigation horizon. It is the
 /// tier that answers the stretches the 1-minute tier has already released, so it
-/// must outlive it by construction.
-const TARGET_FIVE_MINUTE_AGGREGATES: &[CleanupTarget] = &[CleanupTarget {
-    table: "node_metric_aggregates",
-    kind: CleanupKind::Delete,
-    count_sql: "SELECT COUNT(*) FROM node_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < ?",
-    delete_sql: "DELETE FROM node_metric_aggregates WHERE rowid IN (SELECT rowid FROM node_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < ? ORDER BY bucket_start LIMIT 2048)",
-}];
+/// must outlive it by construction. Both tables back the same tier, exactly as
+/// the 1-minute family does.
+const TARGET_FIVE_MINUTE_AGGREGATES: &[CleanupTarget] = &[
+    CleanupTarget {
+        table: "node_metric_aggregates",
+        kind: CleanupKind::Delete,
+        count_sql: "SELECT COUNT(*) FROM node_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < ?",
+        delete_sql: "DELETE FROM node_metric_aggregates WHERE rowid IN (SELECT rowid FROM node_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < ? ORDER BY bucket_start LIMIT 2048)",
+    },
+    CleanupTarget {
+        table: "host_metric_aggregates",
+        kind: CleanupKind::Delete,
+        count_sql: "SELECT COUNT(*) FROM host_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < ?",
+        delete_sql: "DELETE FROM host_metric_aggregates WHERE rowid IN (SELECT rowid FROM host_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < ? ORDER BY bucket_start LIMIT 2048)",
+    },
+];
 
 /// Stamp the series the incoming cutoff may release evidence for.
 ///
@@ -276,6 +322,8 @@ const TARGET_FIVE_MINUTE_AGGREGATES: &[CleanupTarget] = &[CleanupTarget {
 /// window can still answer for those instants, and the pass that finally deletes
 /// them is the pass that stamps the series.
 const RAW_METRIC_RELEASED_BEFORE_SQL: &str = "WITH expired AS MATERIALIZED (SELECT node_id, metric FROM node_metric_samples WHERE observed_at < ? ORDER BY observed_at, node_id, metric LIMIT 2048) UPDATE node_metric_series_state SET released_before = ? FROM expired WHERE node_metric_series_state.node_id = expired.node_id AND node_metric_series_state.metric = expired.metric AND node_metric_series_state.released_before < ?";
+
+const HOST_RAW_METRIC_RELEASED_BEFORE_SQL: &str = "WITH expired AS MATERIALIZED (SELECT agent_id, metric, dimension FROM host_metric_samples WHERE observed_at < ? ORDER BY observed_at, agent_id, metric LIMIT 512) UPDATE host_metric_series_state SET released_before = ? FROM expired WHERE host_metric_series_state.agent_id = expired.agent_id AND host_metric_series_state.metric = expired.metric AND host_metric_series_state.dimension = expired.dimension AND host_metric_series_state.released_before < ?";
 
 const TARGET_HISTORY_GAPS: &[CleanupTarget] = &[CleanupTarget {
     table: "block_history_gaps",
@@ -735,10 +783,10 @@ pub async fn metric_sample_retention_days_tx(
 /// the rows one Report can add to it (see `TARGET_RAW_METRIC_SAMPLES`), which is
 /// what keeps the two rates equal at steady state: a per-Report bound below the
 /// arrival rate would let the backlog grow even though every Report expires its
-/// own share. The series ledger in `node_metric_series_state` is deliberately
-/// not a target: what a series observed stays knowable after the samples
-/// themselves expire, which is how the Admin surface tells "expired" apart from
-/// "never observed".
+/// own share. The series ledgers (`node_metric_series_state` and, since issue
+/// #215, `host_metric_series_state`) are deliberately not targets: what a series
+/// observed stays knowable after the samples themselves expire, which is how the
+/// Admin surface tells "expired" apart from "never observed".
 pub async fn cleanup_expired_metric_samples(
     pool: &SqlitePool,
     now: time::OffsetDateTime,
@@ -749,12 +797,17 @@ pub async fn cleanup_expired_metric_samples(
         return Ok(0);
     }
     let cutoff = crate::auth::format_rfc3339(family_cutoff(now, retention_days));
-    sqlx::query(RAW_METRIC_RELEASED_BEFORE_SQL)
-        .bind(&cutoff)
-        .bind(&cutoff)
-        .bind(&cutoff)
-        .execute(pool)
-        .await?;
+    for stamp in [
+        RAW_METRIC_RELEASED_BEFORE_SQL,
+        HOST_RAW_METRIC_RELEASED_BEFORE_SQL,
+    ] {
+        sqlx::query(stamp)
+            .bind(&cutoff)
+            .bind(&cutoff)
+            .bind(&cutoff)
+            .execute(pool)
+            .await?;
+    }
     let mut removed = 0;
     for target in catalog_targets(FAMILY_RAW_METRIC_SAMPLE) {
         removed += sqlx::query(target.delete_sql)
