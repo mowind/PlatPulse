@@ -871,42 +871,15 @@ struct PublicValidatorRow {
 }
 
 /// Map the linked Validator's canonical last-good Activity and its currency
-/// for the Public projection. Provider outcomes never fabricate a value:
-/// authoritative empty/not-found is Observing, a successful snapshot shows
-/// the canonical label (Stale when Server freshness expired), and Error
-/// with a last-good Activity is always Stale. Unsupported coverage is
-/// permanent for the Public projection: it projects Unknown even when a
-/// last-good Activity was previously observed (#100, #101).
+/// for the Public projection. The predicates live in
+/// [`validator::project_activity`] so every projection surface answers the same
+/// way (#100, #101, #168, #218).
 fn public_validator_activity(
     outcome: &str,
     activity: Option<&str>,
     freshness: &str,
 ) -> (String, String) {
-    match outcome {
-        "empty" => ("observing".to_owned(), "current".to_owned()),
-        // The deployment answers an absent staking identity with a 200 empty
-        // object; a 404 can only come from routing or a deployment anomaly, so
-        // it is never presented as an observing Validator (#168).
-        "not_found" => ("unknown".to_owned(), "unknown".to_owned()),
-        "success" => match activity {
-            Some(value) => (
-                value.to_owned(),
-                match freshness {
-                    "fresh" => "current",
-                    "stale" => "stale",
-                    _ => "unknown",
-                }
-                .to_owned(),
-            ),
-            None => ("unknown".to_owned(), "unknown".to_owned()),
-        },
-        "error" => match activity {
-            Some(value) => (value.to_owned(), "stale".to_owned()),
-            None => ("unknown".to_owned(), "unknown".to_owned()),
-        },
-        "unsupported" | "not_configured" => ("unknown".to_owned(), "unknown".to_owned()),
-        _ => ("unknown".to_owned(), "unknown".to_owned()),
-    }
+    validator::project_activity(outcome, activity, freshness)
 }
 
 /// Project the Server-owned Current Validator Status for an automatically
@@ -2262,38 +2235,12 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
         ),
         resync_last_progress_at: row.resync_last_progress_at,
         validator: None,
-        validator_identity_reason: validator_identity_reason(
+        validator_identity_reason: validator::automatic_identity_reason(
             row.auto_validator_identity_state.as_deref(),
         ),
         validator_identity_state: row.auto_validator_identity_state,
     };
     (row.network_display_name, node)
-}
-
-/// Sanitized, non-sensitive explanation for a Node without an established
-/// automatic correspondence. An `identified` or not-yet-discovered Node has no
-/// reason.
-fn validator_identity_reason(state: Option<&str>) -> Option<String> {
-    match state {
-        Some("identified") | None => None,
-        Some("missing_public_key") => Some(
-            "No full P2P public key has been observed for this Node, so no Validator can be identified."
-                .to_owned(),
-        ),
-        Some("invalid_public_key") => Some(
-            "The observed P2P public key could not be validated, so no Validator was searched."
-                .to_owned(),
-        ),
-        Some("network_identity_missing") => Some(
-            "No Network Identity has been observed for this Node, so no Validator can be identified."
-                .to_owned(),
-        ),
-        Some("network_identity_mismatch") => Some(
-            "The observed Network Identity does not match this Node's registered Network; no cross-Network Validator was searched."
-                .to_owned(),
-        ),
-        Some(_) => Some("No Validator identity has been established for this Node.".to_owned()),
-    }
 }
 
 const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,

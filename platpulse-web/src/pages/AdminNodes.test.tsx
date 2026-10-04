@@ -219,6 +219,63 @@ const NODE_RPC_ERROR_DETAIL = {
   sync: NODE_A_DETAIL.sync,
 }
 
+/** A full 32-byte P2P public key as the Server projects the observed key. */
+const P2P_KEY_A = '0x' + 'a1'.repeat(64)
+const P2P_KEY_B = '0x' + 'b2'.repeat(64)
+
+/** Automatic Validator identity (issue #218): the correspondence is resolved
+ * from this Node's Network and the full P2P public key its Agent reported. It
+ * is a chain identity, and the Public projection is a separate decision — a
+ * resolved identity is shown in Public only while the Node is Active with an
+ * open automatic Link. */
+const VALIDATOR_IDENTITY_RESOLVED = {
+  nodeId: NODE_A.node_id,
+  nodeDisplayName: 'Node A',
+  networkKey: 'platon-mainnet',
+  lifecycle: 'active',
+  state: 'identified',
+  reason: null,
+  observedValidatorNodeKey: P2P_KEY_A,
+  validatorId: 'v-1',
+  validatorNodeKey: P2P_KEY_A,
+  associationEffective: true,
+  evaluatedAt: '2026-08-12T08:00:00Z',
+}
+
+const NODE_VALIDATOR_RESOLVED_DETAIL = {
+  ...NODE_A_DETAIL,
+  validator_identity: VALIDATOR_IDENTITY_RESOLVED,
+}
+
+/** A conflict is a named unresolved state carrying the Server's own reason:
+ * never an absence, and never a verdict about staking or ownership. */
+const VALIDATOR_IDENTITY_MISMATCHED = {
+  nodeId: '0195f2a1-0015-4015-8015-000000000015',
+  nodeDisplayName: 'Node B (private)',
+  networkKey: 'platon-mainnet',
+  lifecycle: 'active',
+  state: 'network_identity_mismatch',
+  reason:
+    "The P2P public key this Node's Agent reported was not observed for the Network identity of this Node.",
+  observedValidatorNodeKey: P2P_KEY_B,
+  validatorId: null,
+  validatorNodeKey: null,
+  associationEffective: false,
+  evaluatedAt: '2026-08-12T08:00:00Z',
+}
+
+const NODE_VALIDATOR_MISMATCH_DETAIL = {
+  ...NODE_RPC_ERROR_DETAIL,
+  validator_identity: VALIDATOR_IDENTITY_MISMATCHED,
+}
+
+/** A Node the Server has not evaluated carries no evaluation at all, which is
+ * not the assertion that it holds no identity. */
+const NODE_VALIDATOR_UNEVALUATED_DETAIL = {
+  ...NODE_A_DETAIL,
+  validator_identity: null,
+}
+
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -265,6 +322,15 @@ function nodeHostPanel(): HTMLElement {
   )
   if (!panel)
     throw new Error('the shared Host metric history panel is not rendered')
+  return panel as HTMLElement
+}
+
+/** The Validator identity panel of the Node page (issue #218), scoped by its
+ * own heading so an assertion never reads the neighbouring identity panels. */
+function validatorIdentityPanel(): HTMLElement {
+  const heading = screen.getByRole('heading', { level: 2, name: 'Validator identity' })
+  const panel = heading.closest('[data-slot="card-x"]')
+  if (!panel) throw new Error('the Validator identity panel is not rendered')
   return panel as HTMLElement
 }
 
@@ -1478,5 +1544,82 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
       expect(usedBytes()).toContain('200 B')
     })
     expect(usedBytes()).not.toContain('100 B')
+  })
+  it('shows the automatic Validator identity the Server resolved, with its Public projection', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(NODE_VALIDATOR_RESOLVED_DETAIL, 200),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    await screen.findByRole('heading', { level: 1, name: /Node A/ })
+    const panel = validatorIdentityPanel()
+    // The resolved state and the Public projection are named separately: a
+    // resolved identity still needs an Active Node and an open Link to appear
+    // on Home.
+    expect(within(panel).getAllByText('Identified').length).toBeGreaterThan(0)
+    expect(
+      within(panel).getByText(
+        'An automatic Link is open and the Public projection shows this association.',
+      ),
+    ).toBeTruthy()
+    expect(within(panel).getByText('State')).toBeTruthy()
+    expect(within(panel).getByTitle(P2P_KEY_A)).toBeTruthy()
+    expect(panel.querySelector('a[href="/admin/validators/v-1"]')).not.toBeNull()
+    expect(
+      within(panel).getByText('Open, and shown in the Public projection'),
+    ).toBeTruthy()
+    expect(within(panel).getByText('2026-08-12 08:00:00 UTC')).toBeTruthy()
+    expect(within(panel).queryByText('Never evaluated')).toBeNull()
+    expect(within(panel).getAllByText('Active').length).toBeGreaterThan(0)
+  })
+
+  it('keeps an unresolved Validator identity Unknown with the Server reason, never as absence', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0015-4015-8015-000000000015': () =>
+        jsonResponse(NODE_VALIDATOR_MISMATCH_DETAIL, 200),
+    })
+    renderAt('/admin/nodes/0195f2a1-0015-4015-8015-000000000015')
+
+    await screen.findByRole('heading', { level: 1, name: /Node B/ })
+    const panel = validatorIdentityPanel()
+    expect(within(panel).getAllByText('Network identity mismatch').length).toBeGreaterThan(0)
+    expect(
+      within(panel).getByText(
+        "The P2P public key this Node's Agent reported was not observed for the Network identity of this Node.",
+      ),
+    ).toBeTruthy()
+    // The observed key stays inspectable, and no chain Validator is claimed.
+    expect(within(panel).getByTitle(P2P_KEY_B)).toBeTruthy()
+    expect(within(panel).getByText('Not established')).toBeTruthy()
+    expect(panel.querySelector('a[href^="/admin/validators/"]')).toBeNull()
+    expect(within(panel).getByText('No automatic Link to project')).toBeTruthy()
+    expect(within(panel).queryByText('Not a Validator')).toBeNull()
+  })
+
+  it('shows a Node the Server has not evaluated as Not evaluated, not as absence', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(NODE_VALIDATOR_UNEVALUATED_DETAIL, 200),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    await screen.findByRole('heading', { level: 1, name: /Node A/ })
+    const panel = validatorIdentityPanel()
+    expect(within(panel).getAllByText('Not evaluated').length).toBeGreaterThan(0)
+    expect(
+      within(panel).getByText(
+        'No automatic Validator identity evaluation is recorded for this Node yet.',
+      ),
+    ).toBeTruthy()
+    expect(within(panel).getByText('Never evaluated')).toBeTruthy()
+    // The observed key and the lifecycle are Unknown, not empty and not a
+    // definite lifecycle.
+    expect(within(panel).getAllByText('Unknown').length).toBe(2)
+    expect(panel.querySelector('a[href^="/admin/validators/"]')).toBeNull()
+    expect(within(panel).getByText('No automatic Link to project')).toBeTruthy()
   })
 })

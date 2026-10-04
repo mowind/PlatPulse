@@ -5870,6 +5870,60 @@
         }
       }
     },
+    "/api/admin/v1/validator-identities": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Automatic Validator identity coverage for every Node (#218). This is the\nAdmin-only counterpart of the Public per-Node identity fields: it exposes\nthe discovery state for Nodes that were never resolved to a Validator, so\nverification, conflict, and absence states are inspectable instead of being\nsilently absent.",
+        "operationId": "admin_validator_identities",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminNodeValidatorIdentity"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/validator-links": {
       "get": {
         "tags": [
@@ -8377,6 +8431,17 @@
           "updated_at": {
             "type": "string"
           },
+          "validator_identity": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AdminNodeValidatorIdentity",
+                "description": "Automatic Validator identity coverage for this Node (#218): the\ndiscovery state, its sanitized reason, and the currently open automatic\nLink interval. `None` only when the Node row disappeared between the\nmetadata read and this projection; `not_evaluated` means the discovery\ndimension has never examined the Node."
+              }
+            ]
+          },
           "visibility": {
             "type": "string"
           }
@@ -8705,6 +8770,77 @@
           },
           "visibility": {
             "type": "string"
+          }
+        }
+      },
+      "AdminNodeValidatorIdentity": {
+        "type": "object",
+        "description": "One Node's automatic Validator identity coverage on the Owner-only Admin\nsurface (#218, main design §15.4). Every field is Server-owned evidence: the\ndiscovery state, the sanitized reason, and the currently open automatic Link\ninterval. Nothing here is a manual role, an ownership claim, or a\nconsensus-membership statement.",
+        "required": [
+          "nodeId",
+          "networkKey",
+          "lifecycle",
+          "state",
+          "associationEffective"
+        ],
+        "properties": {
+          "associationEffective": {
+            "type": "boolean",
+            "description": "Whether the Public projection also shows this association: Public\nrequires an Active Node, so an inactive Node keeps its identity history\nwithout a projected correspondence."
+          },
+          "evaluatedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the discovery dimension last evaluated this Node."
+          },
+          "lifecycle": {
+            "type": "string"
+          },
+          "networkKey": {
+            "type": "string"
+          },
+          "nodeDisplayName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nodeId": {
+            "type": "string"
+          },
+          "observedValidatorNodeKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The full P2P public key currently observed from this Node."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Sanitized explanation carried by every state except `identified`."
+          },
+          "state": {
+            "type": "string",
+            "description": "Discovery state of the last evaluation, or `not_evaluated` when the\ndiscovery dimension has never examined this Node."
+          },
+          "validatorId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Validator of the currently open automatic Link interval, if any."
+          },
+          "validatorNodeKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "That Validator's own chain identity key."
           }
         }
       },
@@ -9629,9 +9765,23 @@
           "state",
           "freshness",
           "outcome",
-          "counterState"
+          "counterState",
+          "activityState",
+          "currentValidatorStatus",
+          "currentValidatorStatusState"
         ],
         "properties": {
+          "activity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Canonical last-good Validator Activity (#173): Observing stands for an\nauthoritative absence as well as for evidence that cannot be observed."
+          },
+          "activityState": {
+            "type": "string",
+            "description": "Currency of `activity`: `current`, `stale`, or `unknown`."
+          },
           "attemptedAt": {
             "type": [
               "string",
@@ -9647,6 +9797,21 @@
           },
           "counterState": {
             "type": "string"
+          },
+          "currentValidatorStatus": {
+            "type": "string",
+            "description": "Current Validator Status: `validator`, `not_validator`, or `unknown`."
+          },
+          "currentValidatorStatusQualifier": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`locked` or `exiting` while the staking identity is confirmed valid but\nis not normally participating."
+          },
+          "currentValidatorStatusState": {
+            "type": "string",
+            "description": "Currency of the Current Validator Status verdict: `current`, `stale`,\nor `unknown`."
           },
           "delegatorCount": {
             "type": [
@@ -9676,6 +9841,14 @@
           },
           "freshness": {
             "type": "string"
+          },
+          "lastGoodAgeSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Server-computed age of the last-good observation in whole seconds;\nnever 0 for a Validator that has never refreshed successfully."
           },
           "lastGoodReceivedAt": {
             "type": [

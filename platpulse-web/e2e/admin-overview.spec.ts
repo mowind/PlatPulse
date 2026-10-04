@@ -202,6 +202,7 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
       'Agents',
       'Nodes',
       'Networks',
+      'Validators',
       'Tasks',
       'Doctor',
       'Retention',
@@ -219,7 +220,7 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
       await page.keyboard.press('Tab')
       await expect(adminNav.getByRole('link', { name: item, exact: true })).toBeFocused()
     }
-    for (const deferred of ['Validators', 'Alert Rules', 'Data', 'People']) {
+    for (const deferred of ['Alert Rules', 'Data', 'People']) {
       await expect(adminNav.getByRole('link', { name: deferred, exact: true })).toHaveCount(0)
     }
     // Escape closes the drawer, unlocks the body, and restores focus.

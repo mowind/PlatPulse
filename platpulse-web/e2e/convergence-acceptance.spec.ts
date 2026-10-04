@@ -37,6 +37,7 @@ const MVP_ADMIN_SECTIONS: Array<{
   { link: 'Agents', url: '/admin/agents', heading: 'Agents' },
   { link: 'Nodes', url: '/admin/nodes', heading: 'Nodes' },
   { link: 'Networks', url: '/admin/networks', heading: 'Networks' },
+  { link: 'Validators', url: '/admin/validators', heading: 'Validators' },
   { link: 'Tasks', url: '/admin/operations', heading: 'Operations' },
   { link: 'Doctor', url: '/admin/doctor', heading: 'Doctor', primaryButton: 'Run Doctor' },
   { link: 'Retention', url: '/admin/retention', heading: 'Retention' },
@@ -92,7 +93,6 @@ const MVP_ADMIN_SECTIONS: Array<{
 const REMOVED_ADMIN_LABELS = [
   'History Window',
   'Site Access',
-  'Validators',
   'People',
   'Deliveries',
   'Channels',
@@ -110,8 +110,6 @@ const REMOVED_ADMIN_LABELS = [
 const REMOVED_ADMIN_ROUTES: Array<{ route: string; heading?: string | RegExp }> = [
   { route: '/admin/history-window', heading: /History Window/ },
   { route: '/admin/site-access', heading: /Site Access/ },
-  { route: '/admin/validators', heading: 'Validators' },
-  { route: '/admin/validators/v-1', heading: /Validators/ },
   { route: '/admin/access/people', heading: 'People' },
   { route: '/admin/alerts/deliveries', heading: 'Deliveries' },
   { route: '/admin/alerts/channels', heading: 'Channels' },

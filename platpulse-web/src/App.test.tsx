@@ -1410,9 +1410,10 @@ describe('Admin MVP route inventory (issue #92)', () => {
   }
 
   // Complete MVP Admin inventory (issues #92, #111, #203, #204, #205, #206,
-  // #209):
+  // #209, #218):
   // Overview, Agents, Agent Detail, Nodes, Node Detail, Networks, Network
-  // Detail, Operations, Operation Detail, Doctor, Retention, Backups, Backup Artifact
+  // Detail, Validators, Validator Detail, Operations, Operation Detail,
+  // Doctor, Retention, Backups, Backup Artifact
   // Detail, Settings, Incidents,
   // Incident Detail, Alert Rules, Alert Rule Detail, Silences, Maintenance
   // Windows, Notification Overview, Events, Event Detail, Deliveries,
@@ -1431,6 +1432,8 @@ describe('Admin MVP route inventory (issue #92)', () => {
     ['/admin/networks', /Networks/],
     ['/admin/networks/mainnet', /mainnet/],
     ['/admin/networks/no-such-network', /Network unavailable/],
+    ['/admin/validators', /Validators/],
+    ['/admin/validators/no-such-validator', /Validator unavailable/],
     ['/admin/operations', /Operations/],
     ['/admin/operations/op-1', /Operation/],
     ['/admin/doctor', /Doctor/],
@@ -1475,7 +1478,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
       // oriented without coupling this contract to CSS classes.
       expect(screen.getByRole('main')).toBeTruthy()
       const adminNav = screen.getByRole('navigation', { name: 'Admin' })
-      expect(within(adminNav).getAllByRole('link')).toHaveLength(16)
+      expect(within(adminNav).getAllByRole('link')).toHaveLength(17)
       const activeHref = path.startsWith('/admin/operations')
         ? '/admin/operations'
         : path.startsWith('/admin/doctor')
@@ -1492,8 +1495,10 @@ describe('Admin MVP route inventory (issue #92)', () => {
           ? '/admin/nodes'
           : path.startsWith('/admin/networks')
             ? '/admin/networks'
-            : path.startsWith('/admin/alerts/rules')
-              ? '/admin/alerts/rules'
+            : path.startsWith('/admin/validators')
+              ? '/admin/validators'
+              : path.startsWith('/admin/alerts/rules')
+                ? '/admin/alerts/rules'
               : path.startsWith('/admin/alerts/incidents')
                 ? '/admin/alerts/incidents'
                 : path.startsWith('/admin/alerts/silences')
@@ -1512,6 +1517,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
         '/admin/agents': 'Agents',
         '/admin/nodes': 'Nodes',
         '/admin/networks': 'Networks',
+        '/admin/validators': 'Validators',
         '/admin/operations': 'Tasks',
         '/admin/doctor': 'Doctor',
         '/admin/retention': 'Retention',
@@ -1531,8 +1537,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
     }
   })
 
-  // Removed legacy/deferred routes (issue #92): Validator administration,
-  // People, the bare Alerts landing, Delivery/Channel,
+  // Removed legacy/deferred routes (issue #92): People, the bare Alerts landing, Delivery/Channel,
   // Data/Retention, Backup/Restore, Node Transfer,
   // Node Visibility and Agent Enrollment/Recovery/Rotation. Direct
   // navigation must land on the safe Admin fallback — never on a legacy
@@ -1542,8 +1547,6 @@ describe('Admin MVP route inventory (issue #92)', () => {
   const REMOVED_ROUTES: Array<[path: string, legacyHeading: RegExp]> = [
     ['/admin/history-window', /History Window/],
     ['/admin/site-access', /Site Access/],
-    ['/admin/validators', /Validators/],
-    ['/admin/validators/v-1', /Validators/],
     ['/admin/access/people', /People/],
     ['/admin/alerts', /Alerts/],
     ['/admin/alerts/deliveries', /Deliveries/],
@@ -1605,6 +1608,7 @@ describe('Admin MVP route inventory (issue #92)', () => {
       { name: 'Agents', href: '/admin/agents', glyph: 'Cpu' },
       { name: 'Nodes', href: '/admin/nodes', glyph: 'Server' },
       { name: 'Networks', href: '/admin/networks', glyph: 'Network' },
+      { name: 'Validators', href: '/admin/validators', glyph: 'BadgeCheck' },
       { name: 'Tasks', href: '/admin/operations', glyph: 'ClipboardList' },
       { name: 'Doctor', href: '/admin/doctor', glyph: 'Stethoscope' },
       { name: 'Retention', href: '/admin/retention', glyph: 'Hourglass' },
@@ -1627,10 +1631,10 @@ describe('Admin MVP route inventory (issue #92)', () => {
       expect(icon?.getAttribute('aria-hidden')).toBe('true')
       expect(icon?.querySelector('svg')?.getAttribute('data-icon')).toBe(glyph)
     }
-    // Backups stopped being removed in issue #209 and Retention stopped being
-    // removed in issue #210: both are routed Owner page groups now. The legacy
-    // /admin/data/retention paths stay removed and resolve to the fallback.
-    for (const removed of ['History Window', 'Site Access', 'Validators', 'People', 'Deliveries', 'Channels', 'Data', 'Restore', 'Enroll', 'Recover', 'Rotate']) {
+    // Backups stopped being removed in issue #209, Retention in issue #210, and
+    // Validators in issue #218: all three are routed Owner page groups now. The
+    // legacy /admin/data/retention paths stay removed and resolve to the fallback.
+    for (const removed of ['History Window', 'Site Access', 'People', 'Deliveries', 'Channels', 'Data', 'Restore', 'Enroll', 'Recover', 'Rotate']) {
       expect(
         Array.from(adminNav.querySelectorAll('a')).some((element) =>
           element.textContent?.includes(removed),

@@ -47,6 +47,7 @@ import {
   adminRecoveryToken,
   adminValidatorDetail,
   adminValidatorHistory,
+  adminValidatorIdentities,
   adminValidatorAnalytics,
   adminValidatorLinks,
   adminValidators,
@@ -198,6 +199,7 @@ import {
   type ValidatorDetail,
   type AdminValidatorAnalyticsResponse,
   type AdminValidatorHistoryResponse,
+  type AdminNodeValidatorIdentity,
   type NetworkResponse,
   type NetworkUpdateRequest,
   type NodeMetadataRequest,
@@ -288,6 +290,9 @@ const adminKeys = {
   validators: ['admin', 'validators'] as const,
   validatorDetail: (validatorId: string) => ['admin', 'validators', validatorId] as const,
   validatorLinks: ['admin', 'validator-links'] as const,
+  /** Automatic identity coverage for every Node, including Nodes that no
+   * Validator was identified for (issue #218). */
+  validatorIdentities: ['admin', 'validator-identities'] as const,
   networks: ['admin', 'networks'] as const,
   networkDetail: (networkKey: string) => ['admin', 'networks', networkKey] as const,
   people: ['admin', 'people'] as const,
@@ -1036,6 +1041,28 @@ export function useAdminValidatorLinks(
 }
 
 /**
+ * Owner-only automatic identity coverage for every Node (issue #218): the
+ * discovery state, its sanitized reason, and the currently open automatic
+ * Link. Nodes that were never resolved to a Validator are returned too, so an
+ * unresolved or conflicting identity is inspectable instead of absent.
+ */
+export async function fetchAdminValidatorIdentities(
+  signal?: AbortSignal,
+): Promise<AdminNodeValidatorIdentity[]> {
+  return requestAdmin(
+    () => adminValidatorIdentities({ signal }),
+    'Unable to load Validator identity coverage',
+  )
+}
+
+export function useAdminValidatorIdentities(generation: number) {
+  return useQuery({
+    queryKey: [...adminKeys.validatorIdentities, generation],
+    queryFn: ({ signal }) => fetchAdminValidatorIdentities(signal),
+  })
+}
+
+/**
  * Mutation seam: no optimistic state, no automatic retry. Success invalidates
  * the Admin namespace immediately so the panels refetch authoritative REST.
  */
@@ -1746,10 +1773,10 @@ function applyAdminInvalidation(resource: string, resourceId: string | undefined
         // card and the retained Node/Network panels all refetch.
         return [adminKeys.geo, adminKeys.nodes, adminKeys.networks]
       case 'network':
-        return [adminKeys.overview, adminKeys.networks, adminKeys.validators, adminKeys.validatorLinks, adminKeys.nodes]
+        return [adminKeys.overview, adminKeys.networks, adminKeys.validators, adminKeys.validatorLinks, adminKeys.validatorIdentities, adminKeys.nodes]
       case 'validator':
       case 'validator-link':
-        return [adminKeys.validators, adminKeys.validatorLinks, adminKeys.nodes]
+        return [adminKeys.validators, adminKeys.validatorLinks, adminKeys.validatorIdentities, adminKeys.nodes]
       case 'access':
         return [adminKeys.access, adminKeys.people, adminKeys.sessions]
       case 'alerts':

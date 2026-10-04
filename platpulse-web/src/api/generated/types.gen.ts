@@ -548,6 +548,7 @@ export type AdminNodeDetail = {
     sync?: null | SyncDiagnostic;
     transfer?: null | NodeTransfer;
     updated_at: string;
+    validator_identity?: null | AdminNodeValidatorIdentity;
     visibility: string;
 };
 
@@ -665,6 +666,51 @@ export type AdminNodePurgeTarget = {
     rpc_endpoint: string;
     updated_at: string;
     visibility: string;
+};
+
+/**
+ * One Node's automatic Validator identity coverage on the Owner-only Admin
+ * surface (#218, main design §15.4). Every field is Server-owned evidence: the
+ * discovery state, the sanitized reason, and the currently open automatic Link
+ * interval. Nothing here is a manual role, an ownership claim, or a
+ * consensus-membership statement.
+ */
+export type AdminNodeValidatorIdentity = {
+    /**
+     * Whether the Public projection also shows this association: Public
+     * requires an Active Node, so an inactive Node keeps its identity history
+     * without a projected correspondence.
+     */
+    associationEffective: boolean;
+    /**
+     * When the discovery dimension last evaluated this Node.
+     */
+    evaluatedAt?: string | null;
+    lifecycle: string;
+    networkKey: string;
+    nodeDisplayName?: string | null;
+    nodeId: string;
+    /**
+     * The full P2P public key currently observed from this Node.
+     */
+    observedValidatorNodeKey?: string | null;
+    /**
+     * Sanitized explanation carried by every state except `identified`.
+     */
+    reason?: string | null;
+    /**
+     * Discovery state of the last evaluation, or `not_evaluated` when the
+     * discovery dimension has never examined this Node.
+     */
+    state: string;
+    /**
+     * The Validator of the currently open automatic Link interval, if any.
+     */
+    validatorId?: string | null;
+    /**
+     * That Validator's own chain identity key.
+     */
+    validatorNodeKey?: string | null;
 };
 
 export type AdminOverview = {
@@ -1088,14 +1134,42 @@ export type AdminValidatorHistoryResponse = {
 };
 
 export type AdminValidatorInsight = {
+    /**
+     * Canonical last-good Validator Activity (#173): Observing stands for an
+     * authoritative absence as well as for evidence that cannot be observed.
+     */
+    activity?: string | null;
+    /**
+     * Currency of `activity`: `current`, `stale`, or `unknown`.
+     */
+    activityState: string;
     attemptedAt?: string | null;
     blockCount?: number | null;
     counterState: string;
+    /**
+     * Current Validator Status: `validator`, `not_validator`, or `unknown`.
+     */
+    currentValidatorStatus: string;
+    /**
+     * `locked` or `exiting` while the staking identity is confirmed valid but
+     * is not normally participating.
+     */
+    currentValidatorStatusQualifier?: string | null;
+    /**
+     * Currency of the Current Validator Status verdict: `current`, `stale`,
+     * or `unknown`.
+     */
+    currentValidatorStatusState: string;
     delegatorCount?: number | null;
     diagnostic?: string | null;
     displayName?: string | null;
     epoch?: number | null;
     freshness: string;
+    /**
+     * Server-computed age of the last-good observation in whole seconds;
+     * never 0 for a Validator that has never refreshed successfully.
+     */
+    lastGoodAgeSeconds?: number | null;
     lastGoodReceivedAt?: string | null;
     outcome: string;
     providerTimestamp?: string | null;
@@ -6142,6 +6216,27 @@ export type CancelNodeTransferResponses = {
 };
 
 export type CancelNodeTransferResponse = CancelNodeTransferResponses[keyof CancelNodeTransferResponses];
+
+export type AdminValidatorIdentitiesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/validator-identities';
+};
+
+export type AdminValidatorIdentitiesErrors = {
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AdminValidatorIdentitiesError = AdminValidatorIdentitiesErrors[keyof AdminValidatorIdentitiesErrors];
+
+export type AdminValidatorIdentitiesResponses = {
+    200: Array<AdminNodeValidatorIdentity>;
+};
+
+export type AdminValidatorIdentitiesResponse = AdminValidatorIdentitiesResponses[keyof AdminValidatorIdentitiesResponses];
 
 export type AdminValidatorLinksData = {
     body?: never;

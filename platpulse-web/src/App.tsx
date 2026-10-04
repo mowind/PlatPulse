@@ -12,6 +12,7 @@ import AdminNodesList, { AdminNodeDetail } from './pages/AdminNodes'
 import AdminNetworksList, {
   AdminNetworkDetailPage,
 } from './pages/AdminNetworks'
+import AdminValidatorsList, { AdminValidatorDetail } from './pages/AdminValidators'
 import AdminSessions from './pages/AdminSessions'
 import AdminAudit from './pages/AdminAudit'
 import AdminSettings from './pages/AdminSettings'
@@ -173,6 +174,12 @@ const router = createBrowserRouter([
       { path: 'nodes/:nodeId', element: <AdminNodeDetail /> },
       { path: 'networks', element: <AdminNetworksList /> },
       { path: 'networks/:networkKey', element: <AdminNetworkDetailPage /> },
+      // Validator surface (issue #218): the automatic Network-scoped identity
+      // the Server resolved from observed P2P evidence, with the staking
+      // status and last-good evidence behind every verdict. The static
+      // `validators` segment ranks above `validators/:validatorId`.
+      { path: 'validators', element: <AdminValidatorsList /> },
+      { path: 'validators/:validatorId', element: <AdminValidatorDetail /> },
       // Operations surface (issue #208): the durable task ledger and one
       // task's recorded outcome, so queued, running, and terminal work is
       // linkable and survives a reload. The static `operations` segment

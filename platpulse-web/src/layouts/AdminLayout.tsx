@@ -1,4 +1,4 @@
-import { Menu, LayoutDashboard, Cpu, Server, Network, Settings, PanelsTopLeft, ListChecks, SlidersHorizontal, TriangleAlert, BellOff, BellRing, CalendarClock, ClipboardList, Stethoscope, Archive, Hourglass } from 'lucide-react'
+import { Menu, LayoutDashboard, Cpu, Server, Network, BadgeCheck, Settings, PanelsTopLeft, ListChecks, SlidersHorizontal, TriangleAlert, BellOff, BellRing, CalendarClock, ClipboardList, Stethoscope, Archive, Hourglass } from 'lucide-react'
 import BackgroundDecoration from '../components/BackgroundDecoration'
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link, NavLink, Outlet, useOutletContext } from 'react-router'
@@ -252,6 +252,16 @@ export default function AdminLayout() {
             Networks
           </NavLink>
           <NavLink
+            to="/admin/validators"
+            onClick={closeNav}
+            className={({ isActive }) => cn(NAV_LINK, isActive && NAV_LINK_ACTIVE)}
+          >
+            <span data-slot="admin-nav-icon" className="flex w-6 shrink-0 justify-center" aria-hidden="true">
+              <BadgeCheck size={18} strokeWidth={2} data-icon="BadgeCheck" />
+            </span>
+            Validators
+          </NavLink>
+          <NavLink
             to="/admin/operations"
             onClick={closeNav}
             className={({ isActive }) => cn(NAV_LINK, isActive && NAV_LINK_ACTIVE)}
@@ -381,8 +391,11 @@ export default function AdminLayout() {
             Audit
           </NavLink>
           {/* MVP Admin surface (issue #92): deferred groups (data/maintenance,
-              validators, people, transfer, enrollment/recovery/rotation)
-              are not linked here. Tasks and Doctor (issue #208) are the
+              people, transfer, enrollment/recovery/rotation)
+              are not linked here. Validators (issue #218) is a routed entry:
+              the Owner Validator list and detail pages show the automatic
+              Network-scoped identity, the current staking verdict, and the
+              last-good evidence behind it. Tasks and Doctor (issue #208) are the
               routed Operations entries, and Backups (issue #209) is the
               routed artifact surface. Incidents
               (issue #203), Rules (issue #204), Silences, and Maintenance

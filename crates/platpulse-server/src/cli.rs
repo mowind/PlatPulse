@@ -1351,13 +1351,31 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                     // chain key is registered and fetched in the same cycle
                     // (#173). It only writes Validator identity state and never
                     // enters Node health or Server readiness.
-                    if let Err(error) =
-                        crate::validator::discover_automatic_links(provider_state.db()).await
-                    {
-                        eprintln!(
-                            "Validator identity discovery deferred: {}",
-                            crate::redaction::redact_sensitive(&error.to_string())
-                        );
+                    match crate::validator::discover_automatic_links(provider_state.db()).await {
+                        // A pass that opened or closed an automatic Link changes what
+                        // the Admin identity coverage, the Validator registry and the
+                        // Node identity panel answer. Publish the same canonical
+                        // invalidation the Provider refresh uses, because with no
+                        // Provider configured this loop is the only publisher: without
+                        // it an already-open page would keep its stale answer until the
+                        // operator navigated or reloaded.
+                        Ok(summary) if summary.changed_associations() => {
+                            provider_state
+                                .admin_realtime()
+                                .publish("validator", None::<String>, 1);
+                            provider_state.public_realtime().publish(
+                                "validator",
+                                None::<String>,
+                                1,
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            eprintln!(
+                                "Validator identity discovery deferred: {}",
+                                crate::redaction::redact_sensitive(&error.to_string())
+                            );
+                        }
                     }
                     if !provider_configured {
                         continue;

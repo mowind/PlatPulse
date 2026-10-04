@@ -525,7 +525,7 @@ Home 不展示：凭证、RPC Endpoint 原文、内部错误堆栈、Agent/Host 
 5. Settings（按顺序包含 History Window 与 Site Access Mode）；
 6. Sessions 与 Audit。
 
-Server Admin API 另有 People、Validator、Backup/Restore、Transfer 和 Agent credential operations；当前 SPA 没有对应注册路由。Retention 策略读取/允许编辑/影响预览已由 issue #210 注册为 `/admin/retention`（见 WebUI §15.13）：Server 权威 preview 绑定 policy version、scope 与固定 cutoff，执行只按 preview id 排队，过时 preview 被拒绝且不排队；计数是估计而非冻结行集。Alert/Incident/Rule/Silence/Maintenance 与 Notification 的测试、Event/Delivery 历史和请求对账页面已分别由 issue #203、#204、#205、#206 路由（见 WebUI §15.6–§15.9），Operation 台账、Task 详情与 Doctor 页面由 issue #208 路由（见 WebUI §15.11）；Backup artifact 列表、详情与只读校验请求由 issue #209 路由（见 WebUI §15.12），创建与恢复仍是离线命令（ADR 0008）。
+Server Admin API 另有 People、Restore、Transfer 和 Agent credential operations；当前 SPA 没有对应注册路由。Validator 的自动身份覆盖与当前状态已由 issue #218 注册为 `/admin/validators` 与 `/admin/validators/:validatorId`（见 WebUI §15.20）：`GET /api/admin/v1/validator-identities` 与 Node 详情内嵌的 `validator_identity` 来自同一投影，识别状态（Network + 完整 P2P 公钥）与当前质押状态分开呈现，未识别不写成「非 Validator」。Retention 策略读取/允许编辑/影响预览已由 issue #210 注册为 `/admin/retention`（见 WebUI §15.13）：Server 权威 preview 绑定 policy version、scope 与固定 cutoff，执行只按 preview id 排队，过时 preview 被拒绝且不排队；计数是估计而非冻结行集。Alert/Incident/Rule/Silence/Maintenance 与 Notification 的测试、Event/Delivery 历史和请求对账页面已分别由 issue #203、#204、#205、#206 路由（见 WebUI §15.6–§15.9），Operation 台账、Task 详情与 Doctor 页面由 issue #208 路由（见 WebUI §15.11）；Backup artifact 列表、详情与只读校验请求由 issue #209 路由（见 WebUI §15.12），创建与恢复仍是离线命令（ADR 0008）。
 
 Settings 是当前 SPA 全局配置的唯一 canonical route（`/admin/settings`）；旧的 `/admin/history-window` 与 `/admin/site-access` 不重定向，而是进入 Admin 的 Section not found fallback。Server API 仍分别提供 `/api/admin/v1/history-window` 与 `/api/admin/v1/access-mode`。
 
@@ -817,6 +817,8 @@ PlatPulse 当前实现是：
 | Provider 失败或信息过期 | 不产生新的肯定/否定结论 | 保留 last-good 并标 Stale；从未成功则 Unknown |
 
 缺少可信公钥、Network Identity 不匹配或 Network 未配置可用 Provider 时，不能猜测关联，也不能拿其他 Network 或旧手工关联代替。本次业务原则已确定；具体 PlatScan 字段/状态如何证明“当前有效”，尤其 locked/exiting/verifying 和权威否定的条件，仍需主源证据验证，见 Provider 设计。普通 HTTP 失败不是无质押的证据。
+
+实现状态：§15.4 的自动身份识别、当前状态投影与 Admin 呈现已由 issue #218 交付（见 WebUI §15.20）。Server 侧由 `validator.rs` 承担唯一投影（`project_activity`、`automatic_identity_reason`、`last_good_age_seconds`、`list_node_validator_identities`），Public 与 Admin 因此共用同一套判定，不会各自漂移；Admin 新增 `GET /api/admin/v1/validator-identities`、`/admin/validators`、`/admin/validators/:validatorId`，并在 Node 详情内嵌只含识别状态与该身份的公开关联是否投影的 `validator_identity`（不含所有权或角色）。Provider 未配置或不可读时一律为 `unknown`/`Not configured`/`Unknown` 并保留 stale last-good，绝不产生 `not_validator` 或新鲜的 0；缺键、Network Identity 不匹配时只给出未知状态与理由。链上密钥变化结束旧 Link 区间并按边界新开区间，而「无证据」状态（缺公钥、缺 Network Identity）不结束区间；Node Purge 只清该 Node 的识别状态与 Link：被 Purged Node 自己的区间随该 Node 删除而不可重建（读回为无关联），`linkCount` 相应减少，仅当被删 Node 是该身份唯一关联时才为 0；共享 Validator 身份、其保留证据以及其他 Node 的关联历史（含已结束区间）保留。权威缺席的时效沿用 #168 的既有实现（严格校验的空应答一律投影为 `current`，且 `empty` 不更新 `last_good_received_at`），本票不单独改判；但这与上表「Provider 失败或信息过期不产生新的肯定/否定结论，保留 last-good 并标 Stale」的要求不一致——Provider 不再刷新时该缺席不会自然陈旧，只有 `Attempted at`/`Observed at` 可见。因此这是一处继承自 #168 的既有偏差，本票记录为待修缺陷（处置见 `docs/research/issue-218-findings.md` 的 F1），不作为本票达成的一致性结论；locked/exiting/verifying 的权威否定条件仍需主源证据。
 
 ### 15.5 一次性 Validator 模型迁移
 

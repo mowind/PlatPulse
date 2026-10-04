@@ -52,6 +52,22 @@ pub struct AdminValidatorInsight {
     pub epoch: Option<i64>,
     pub block_count: Option<i64>,
     pub counter_state: String,
+    /// Canonical last-good Validator Activity (#173): Observing stands for an
+    /// authoritative absence as well as for evidence that cannot be observed.
+    pub activity: Option<String>,
+    /// Currency of `activity`: `current`, `stale`, or `unknown`.
+    pub activity_state: String,
+    /// Current Validator Status: `validator`, `not_validator`, or `unknown`.
+    pub current_validator_status: String,
+    /// Currency of the Current Validator Status verdict: `current`, `stale`,
+    /// or `unknown`.
+    pub current_validator_status_state: String,
+    /// `locked` or `exiting` while the staking identity is confirmed valid but
+    /// is not normally participating.
+    pub current_validator_status_qualifier: Option<String>,
+    /// Server-computed age of the last-good observation in whole seconds;
+    /// never 0 for a Validator that has never refreshed successfully.
+    pub last_good_age_seconds: Option<i64>,
     pub diagnostic: Option<String>,
 }
 
@@ -285,7 +301,7 @@ pub struct ValidatorLinkListQuery {
     pub node_id: Option<String>,
 }
 
-fn error_response(request_id: &str, error: ValidatorError) -> Response {
+pub(crate) fn error_response(request_id: &str, error: ValidatorError) -> Response {
     let (status, code) = match &error {
         ValidatorError::NetworkNotFound
         | ValidatorError::ValidatorNotFound
@@ -327,6 +343,59 @@ fn error_response(request_id: &str, error: ValidatorError) -> Response {
         .into_response()
 }
 
+/// One Node's automatic Validator identity coverage on the Owner-only Admin
+/// surface (#218, main design §15.4). Every field is Server-owned evidence: the
+/// discovery state, the sanitized reason, and the currently open automatic Link
+/// interval. Nothing here is a manual role, an ownership claim, or a
+/// consensus-membership statement.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminNodeValidatorIdentity {
+    pub node_id: String,
+    pub node_display_name: Option<String>,
+    pub network_key: String,
+    pub lifecycle: String,
+    /// Discovery state of the last evaluation, or `not_evaluated` when the
+    /// discovery dimension has never examined this Node.
+    pub state: String,
+    /// Sanitized explanation carried by every state except `identified`.
+    pub reason: Option<String>,
+    /// The full P2P public key currently observed from this Node.
+    pub observed_validator_node_key: Option<String>,
+    /// The Validator of the currently open automatic Link interval, if any.
+    pub validator_id: Option<String>,
+    /// That Validator's own chain identity key.
+    pub validator_node_key: Option<String>,
+    /// Whether the Public projection also shows this association: Public
+    /// requires an Active Node, so an inactive Node keeps its identity history
+    /// without a projected correspondence.
+    pub association_effective: bool,
+    /// When the discovery dimension last evaluated this Node.
+    pub evaluated_at: Option<String>,
+}
+
+impl From<validator::NodeValidatorIdentityRecord> for AdminNodeValidatorIdentity {
+    fn from(record: validator::NodeValidatorIdentityRecord) -> Self {
+        let state = record
+            .state
+            .clone()
+            .unwrap_or_else(|| "not_evaluated".to_owned());
+        Self {
+            association_effective: record.association_effective(),
+            reason: validator::automatic_identity_reason(Some(&state)),
+            node_id: record.node_id,
+            node_display_name: record.node_display_name,
+            network_key: record.network_key,
+            lifecycle: record.lifecycle,
+            state,
+            observed_validator_node_key: record.observed_node_key,
+            validator_id: record.validator_id,
+            validator_node_key: record.validator_node_key,
+            evaluated_at: record.evaluated_at,
+        }
+    }
+}
+
 async fn validator_dto(
     state: &AppState,
     record: ValidatorRecord,
@@ -338,40 +407,60 @@ async fn validator_dto(
             .await?;
     let insight = validator::load_insight(state.db(), &record.validator_id)
         .await?
-        .map(|row| AdminValidatorInsight {
-            validator_node_id: record.validator_node_id.clone(),
-            display_name: record.display_name.clone(),
-            state: if row.outcome == "success" {
-                validator::freshness(
-                    row.last_good_received_at.as_deref(),
-                    crate::auth::now_utc(),
-                    state.validator_freshness_seconds(),
-                )
-                .to_owned()
-            } else {
-                row.outcome.clone()
-            },
-            freshness: validator::freshness(
+        .map(|row| {
+            let now = crate::auth::now_utc();
+            let freshness = validator::freshness(
                 row.last_good_received_at.as_deref(),
-                crate::auth::now_utc(),
+                now,
                 state.validator_freshness_seconds(),
-            )
-            .to_owned(),
-            outcome: row.outcome,
-            source: row.source,
-            provider_timestamp: row.provider_timestamp,
-            received_at: row.last_good_received_at.clone(),
-            attempted_at: Some(row.last_attempt_received_at),
-            last_good_received_at: row.last_good_received_at,
-            rank: row.rank,
-            stake_amount: row.stake_amount,
-            reward_amount: row.reward_amount,
-            reward_rate: row.reward_rate,
-            delegator_count: row.delegator_count,
-            epoch: row.epoch,
-            block_count: row.block_count,
-            counter_state: row.counter_state,
-            diagnostic: row.diagnostic,
+            );
+            let outcome = row.outcome.as_str();
+            let (activity, activity_state) =
+                validator::project_activity(outcome, row.activity.as_deref(), freshness);
+            // Current Validator Status is projected from the same canonical
+            // outcome/Activity/freshness inputs as every other surface, so a
+            // Provider failure can neither invent an absence nor a fresh zero.
+            let status = validator::current_validator_status(
+                Some(outcome),
+                row.activity.as_deref(),
+                freshness,
+            );
+            AdminValidatorInsight {
+                validator_node_id: record.validator_node_id.clone(),
+                display_name: record.display_name.clone(),
+                state: if outcome == "success" {
+                    freshness.to_owned()
+                } else {
+                    row.outcome.clone()
+                },
+                freshness: freshness.to_owned(),
+                outcome: row.outcome,
+                source: row.source,
+                provider_timestamp: row.provider_timestamp,
+                received_at: row.last_good_received_at.clone(),
+                attempted_at: Some(row.last_attempt_received_at),
+                last_good_received_at: row.last_good_received_at.clone(),
+                rank: row.rank,
+                stake_amount: row.stake_amount,
+                reward_amount: row.reward_amount,
+                reward_rate: row.reward_rate,
+                delegator_count: row.delegator_count,
+                epoch: row.epoch,
+                block_count: row.block_count,
+                counter_state: row.counter_state,
+                activity: Some(activity),
+                activity_state,
+                current_validator_status: status.status.as_str().to_owned(),
+                current_validator_status_state: status.state.to_owned(),
+                current_validator_status_qualifier: status
+                    .qualifier
+                    .map(|value| value.as_str().to_owned()),
+                last_good_age_seconds: validator::last_good_age_seconds(
+                    row.last_good_received_at.as_deref(),
+                    now,
+                ),
+                diagnostic: row.diagnostic,
+            }
         })
         .or_else(|| {
             Some(AdminValidatorInsight {
@@ -393,6 +482,14 @@ async fn validator_dto(
                 epoch: None,
                 block_count: None,
                 counter_state: "normal".to_owned(),
+                // Without a configured Provider the identity is Unknown, not
+                // absent: no Validator, no Activity label, and no age.
+                activity: Some("unknown".to_owned()),
+                activity_state: "unknown".to_owned(),
+                current_validator_status: "unknown".to_owned(),
+                current_validator_status_state: "unknown".to_owned(),
+                current_validator_status_qualifier: None,
+                last_good_age_seconds: None,
                 diagnostic: None,
             })
         });
@@ -844,6 +941,33 @@ pub(crate) async fn admin_validator_analytics(
     })
     .into_response()
 }
+/// Automatic Validator identity coverage for every Node (#218). This is the
+/// Admin-only counterpart of the Public per-Node identity fields: it exposes
+/// the discovery state for Nodes that were never resolved to a Validator, so
+/// verification, conflict, and absence states are inspectable instead of being
+/// silently absent.
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/validator-identities",
+    tag = "admin",
+    responses((status = 200, body = [AdminNodeValidatorIdentity]), (status = 401, body = crate::http::ApiErrorBody), (status = 403, body = crate::http::ApiErrorBody), (status = 503, body = crate::http::ApiErrorBody))
+)]
+pub(crate) async fn admin_validator_identities(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    match validator::list_node_validator_identities(&state.database(), None).await {
+        Ok(records) => Json(
+            records
+                .into_iter()
+                .map(AdminNodeValidatorIdentity::from)
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(error) => error_response(&request_id.0, error),
+    }
+}
+
 pub(crate) fn router() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/validators", get(admin_validators))
@@ -856,6 +980,7 @@ pub(crate) fn router() -> Router<AppState> {
             "/validators/{validator_id}/history",
             get(admin_validator_history),
         )
+        .route("/validator-identities", get(admin_validator_identities))
         .route("/networks/{network_key}/validators", post(create_validator))
         .route("/validator-links", get(admin_validator_links))
         .route(

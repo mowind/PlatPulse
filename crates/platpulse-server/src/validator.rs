@@ -516,6 +516,76 @@ pub fn observed_p2p_public_key(enode: &str) -> Result<String, String> {
     Ok(format!("0x{}", digits.to_ascii_lowercase()))
 }
 
+/// Project the canonical last-good Activity and its currency for a projection
+/// surface. Provider outcomes never fabricate a value: authoritative absence is
+/// Observing, a successful snapshot shows the canonical label (Stale when
+/// Server freshness expired), and Error with a last-good Activity is always
+/// Stale. Unsupported coverage projects Unknown even when a last-good Activity
+/// was previously observed (#100, #101, #168).
+pub fn project_activity(
+    outcome: &str,
+    activity: Option<&str>,
+    freshness: &str,
+) -> (String, String) {
+    match outcome {
+        "empty" => ("observing".to_owned(), "current".to_owned()),
+        // The deployment answers an absent staking identity with a 200 empty
+        // object; a 404 can only come from routing or a deployment anomaly, so
+        // it is never presented as an observing Validator (#168).
+        "not_found" => ("unknown".to_owned(), "unknown".to_owned()),
+        "success" => match activity {
+            Some(value) => (
+                value.to_owned(),
+                match freshness {
+                    "fresh" => "current",
+                    "stale" => "stale",
+                    _ => "unknown",
+                }
+                .to_owned(),
+            ),
+            None => ("unknown".to_owned(), "unknown".to_owned()),
+        },
+        "error" => match activity {
+            Some(value) => (value.to_owned(), "stale".to_owned()),
+            None => ("unknown".to_owned(), "unknown".to_owned()),
+        },
+        "unsupported" | "not_configured" => ("unknown".to_owned(), "unknown".to_owned()),
+        _ => ("unknown".to_owned(), "unknown".to_owned()),
+    }
+}
+
+/// Sanitized, non-sensitive explanation for a Node whose automatic Validator
+/// identity is not established (#173, #218). `identified` has no reason, and a
+/// caller that does not project the discovery dimension at all passes `None`.
+/// Every other state is explained without disclosing secrets and without
+/// implying ownership or consensus membership.
+pub fn automatic_identity_reason(state: Option<&str>) -> Option<String> {
+    match state {
+        Some("identified") | None => None,
+        Some("not_evaluated") => Some(
+            "No automatic Validator identity evaluation has been recorded for this Node yet."
+                .to_owned(),
+        ),
+        Some("missing_public_key") => Some(
+            "No full P2P public key has been observed for this Node, so no Validator can be identified."
+                .to_owned(),
+        ),
+        Some("invalid_public_key") => Some(
+            "The observed P2P public key could not be validated, so no Validator was searched."
+                .to_owned(),
+        ),
+        Some("network_identity_missing") => Some(
+            "No Network Identity has been observed for this Node, so no Validator can be identified."
+                .to_owned(),
+        ),
+        Some("network_identity_mismatch") => Some(
+            "The observed Network Identity does not match this Node's registered Network; no cross-Network Validator was searched."
+                .to_owned(),
+        ),
+        Some(_) => Some("No Validator identity has been established for this Node.".to_owned()),
+    }
+}
+
 /// Current Validator Status of an automatically identified Node identity: the
 /// currently valid staking identity, not current consensus selection or Node
 /// Health (#173, main design §15.4).
@@ -2135,6 +2205,78 @@ pub async fn list_insights(
     Ok(rows)
 }
 
+/// Age of the last successful Provider observation in whole seconds, or `None`
+/// when no last-good value was ever recorded. The Server owns this arithmetic
+/// so every projection reports last-good age the same way, and it is never
+/// rendered as 0 for a Validator that has never had a successful refresh
+/// (#218).
+pub fn last_good_age_seconds(
+    last_good_received_at: Option<&str>,
+    now: OffsetDateTime,
+) -> Option<i64> {
+    let received_at = last_good_received_at.and_then(crate::auth::parse_rfc3339)?;
+    Some((now - received_at).whole_seconds().max(0))
+}
+
+/// One Node's Server-recorded automatic Validator identity: the discovery
+/// evidence state (#173) plus the currently open automatic Link interval.
+/// Nothing here is a manual role, an ownership claim, or a consensus-membership
+/// statement.
+#[derive(Debug, Clone, FromRow)]
+pub struct NodeValidatorIdentityRecord {
+    pub node_id: String,
+    pub node_display_name: Option<String>,
+    pub network_key: String,
+    pub lifecycle: String,
+    /// Discovery state of the last evaluation; `None` when never evaluated.
+    pub state: Option<String>,
+    /// Full P2P public key currently observed from the Node, when identified.
+    pub observed_node_key: Option<String>,
+    /// When the discovery dimension last evaluated this Node.
+    pub evaluated_at: Option<String>,
+    /// The Validator of the currently open automatic Link interval, if any.
+    pub validator_id: Option<String>,
+    /// That Validator's own chain identity key.
+    pub validator_node_key: Option<String>,
+}
+
+impl NodeValidatorIdentityRecord {
+    /// Whether the open interval is effective for the Public projection. The
+    /// interval is Server-recorded evidence on its own; Public additionally
+    /// requires the Node to be Active, so an inactive Node keeps its identity
+    /// history without a projected association (#173, #218).
+    pub fn association_effective(&self) -> bool {
+        self.validator_id.is_some() && self.lifecycle == "active"
+    }
+}
+
+/// List each Node's automatic Validator identity coverage, optionally narrowed
+/// to one Node. The open automatic interval is selected with the same temporal
+/// predicate the Public projection uses, so Admin never reports a
+/// correspondence that Public would not, or the reverse.
+pub async fn list_node_validator_identities(
+    db: &ServerDatabase,
+    node_id: Option<&str>,
+) -> Result<Vec<NodeValidatorIdentityRecord>, ValidatorError> {
+    let now = format_rfc3339(now_utc());
+    let mut sql = String::from(
+        "SELECT n.node_id, n.display_name AS node_display_name, n.network_key, n.lifecycle, s.state, s.observed_node_key, s.updated_at AS evaluated_at, l.validator_id, v.validator_node_id AS validator_node_key FROM nodes n LEFT JOIN node_validator_identity_status s ON s.node_id = n.node_id LEFT JOIN node_validator_links l ON l.link_id = (SELECT l2.link_id FROM node_validator_links l2 WHERE l2.node_id = n.node_id AND l2.origin = 'automatic' AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) ORDER BY l2.valid_from DESC, l2.link_id DESC LIMIT 1) LEFT JOIN validators v ON v.validator_id = l.validator_id",
+    );
+    if node_id.is_some() {
+        sql.push_str(" WHERE n.node_id = ?");
+    }
+    sql.push_str(" ORDER BY n.network_key, n.node_id");
+    let query = sqlx::query_as::<_, NodeValidatorIdentityRecord>(&sql)
+        .bind(&now)
+        .bind(&now);
+    let rows = if let Some(node_id) = node_id {
+        query.bind(node_id).fetch_all(db.pool()).await?
+    } else {
+        query.fetch_all(db.pool()).await?
+    };
+    Ok(rows)
+}
+
 /// Freshness follows the configured Provider refresh interval rather than a
 /// fixed constant: a last-good observation is fresh while it is no older
 /// than `stale_after_seconds`, which defaults to two refresh intervals
@@ -2309,6 +2451,15 @@ pub struct IdentityDiscoverySummary {
     pub closed_intervals: usize,
     /// Nodes left unidentified, each with a persisted reason.
     pub unidentified: usize,
+}
+
+impl IdentityDiscoverySummary {
+    /// Whether this pass opened or closed an automatic Link, so a surface that
+    /// projects the automatic model has something new to read. A pass that only
+    /// re-confirmed the state it had already stored changed nothing a page shows.
+    pub fn changed_associations(&self) -> bool {
+        self.newly_linked > 0 || self.closed_intervals > 0
+    }
 }
 
 /// Identify Node Validator Links automatically from each Active Node's
@@ -5979,6 +6130,133 @@ mod tests {
             .fetch_one(db.pool())
             .await
             .unwrap()
+    }
+
+    #[test]
+    fn project_activity_follows_the_evidence_predicates() {
+        // Authoritative absence is Observing, never Unknown and never a
+        // fabricated Activity.
+        assert_eq!(
+            project_activity("empty", None, "fresh"),
+            ("observing".to_owned(), "current".to_owned())
+        );
+        // A 404 is a routing or deployment anomaly, never an observing
+        // Validator (#168).
+        assert_eq!(
+            project_activity("not_found", Some("active"), "fresh"),
+            ("unknown".to_owned(), "unknown".to_owned())
+        );
+        assert_eq!(
+            project_activity("success", Some("producing"), "fresh"),
+            ("producing".to_owned(), "current".to_owned())
+        );
+        assert_eq!(
+            project_activity("success", Some("producing"), "stale"),
+            ("producing".to_owned(), "stale".to_owned())
+        );
+        // A success without a canonical Activity stays Unknown rather than
+        // inheriting an older label.
+        assert_eq!(
+            project_activity("success", None, "fresh"),
+            ("unknown".to_owned(), "unknown".to_owned())
+        );
+        // A failed refresh retains the last-good Activity, marked Stale.
+        assert_eq!(
+            project_activity("error", Some("active"), "fresh"),
+            ("active".to_owned(), "stale".to_owned())
+        );
+        assert_eq!(
+            project_activity("error", None, "fresh"),
+            ("unknown".to_owned(), "unknown".to_owned())
+        );
+        // Unsupported or unconfigured coverage never projects a stale label.
+        assert_eq!(
+            project_activity("unsupported", Some("active"), "stale"),
+            ("unknown".to_owned(), "unknown".to_owned())
+        );
+        assert_eq!(
+            project_activity("not_configured", None, "unknown"),
+            ("unknown".to_owned(), "unknown".to_owned())
+        );
+    }
+
+    #[test]
+    fn automatic_identity_reason_explains_every_unresolved_state() {
+        // An identified Node, or a caller that does not project the discovery
+        // dimension, carries no reason.
+        assert!(automatic_identity_reason(Some("identified")).is_none());
+        assert!(automatic_identity_reason(None).is_none());
+        for state in [
+            "not_evaluated",
+            "missing_public_key",
+            "invalid_public_key",
+            "network_identity_missing",
+            "network_identity_mismatch",
+            "something_unknown",
+        ] {
+            let reason = automatic_identity_reason(Some(state))
+                .unwrap_or_else(|| panic!("{state} must carry a reason"));
+            assert!(!reason.is_empty());
+            // The copy never claims ownership, consensus membership, or a
+            // negative verdict.
+            assert!(!reason.to_lowercase().contains("owner"));
+            assert!(!reason.to_lowercase().contains("not a validator"));
+        }
+    }
+
+    #[test]
+    fn last_good_age_is_absent_without_a_last_good_value() {
+        let now = OffsetDateTime::parse(
+            "2026-01-01T00:00:00Z",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap();
+        assert_eq!(last_good_age_seconds(None, now), None);
+        assert_eq!(last_good_age_seconds(Some("not a timestamp"), now), None);
+        assert_eq!(
+            last_good_age_seconds(Some("2025-12-31T23:58:30Z"), now),
+            Some(90)
+        );
+        // A clock skew never renders a negative age.
+        assert_eq!(
+            last_good_age_seconds(Some("2026-01-01T00:00:05Z"), now),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn a_discovery_pass_reports_an_association_change_only_when_it_made_one() {
+        let mut summary = IdentityDiscoverySummary {
+            considered: 3,
+            identified: 1,
+            unidentified: 2,
+            ..IdentityDiscoverySummary::default()
+        };
+        assert!(!summary.changed_associations());
+        summary.newly_linked = 1;
+        assert!(summary.changed_associations());
+        summary.newly_linked = 0;
+        summary.closed_intervals = 1;
+        assert!(summary.changed_associations());
+    }
+
+    #[test]
+    fn association_effectiveness_requires_an_open_interval_and_an_active_node() {
+        let record = |lifecycle: &str, validator_id: Option<&str>| NodeValidatorIdentityRecord {
+            node_id: "0195f2a1-0000-4000-8000-000000000001".to_owned(),
+            node_display_name: None,
+            network_key: "platon-mainnet".to_owned(),
+            lifecycle: lifecycle.to_owned(),
+            state: Some("identified".to_owned()),
+            observed_node_key: Some(format!("0x{}", "ab".repeat(64))),
+            evaluated_at: Some("2026-01-01T00:00:00Z".to_owned()),
+            validator_id: validator_id.map(str::to_owned),
+            validator_node_key: validator_id.map(str::to_owned),
+        };
+        assert!(record("active", Some("validator-1")).association_effective());
+        // An inactive Node keeps its recorded interval without projecting it.
+        assert!(!record("inactive", Some("validator-1")).association_effective());
+        assert!(!record("active", None).association_effective());
     }
 
     #[test]

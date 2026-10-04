@@ -2395,6 +2395,12 @@ pub struct AdminNodeDetail {
     /// Most recent two-phase Transfer for this Node (any outcome), with the
     /// Server-owned effective status; `None` when no Transfer ever existed.
     pub transfer: Option<NodeTransfer>,
+    /// Automatic Validator identity coverage for this Node (#218): the
+    /// discovery state, its sanitized reason, and the currently open automatic
+    /// Link interval. `None` only when the Node row disappeared between the
+    /// metadata read and this projection; `not_evaluated` means the discovery
+    /// dimension has never examined the Node.
+    pub validator_identity: Option<super::validators_admin::AdminNodeValidatorIdentity>,
 }
 
 #[utoipa::path(
@@ -2462,6 +2468,20 @@ async fn admin_node_detail(
     .ok()
     .flatten()
     .map(node_transfer_dto);
+    let validator_identity = match crate::validator::list_node_validator_identities(
+        &state.database(),
+        Some(&row.node_id),
+    )
+    .await
+    {
+        Ok(records) => records
+            .into_iter()
+            .next()
+            .map(super::validators_admin::AdminNodeValidatorIdentity::from),
+        // A failed read is not an absence: report the failure instead of
+        // letting the UI render a fabricated not_evaluated identity.
+        Err(error) => return super::validators_admin::error_response(&request_id.0, error),
+    };
     Json(AdminNodeDetail {
         node_id: row.node_id,
         agent_id: row.agent_id,
@@ -2493,6 +2513,7 @@ async fn admin_node_detail(
         network_reference_head: diagnostic.network_reference_head,
         network_reference_confidence: diagnostic.network_reference_confidence,
         transfer,
+        validator_identity,
     })
     .into_response()
 }

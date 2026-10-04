@@ -41,6 +41,7 @@ import { Empty } from '../components/ui/empty'
 import { Input, Select } from '../components/ui/input'
 import { cn } from '../lib/utils'
 import { stateHistoryComponent, type StateHistoryComponent } from '../stateHistory'
+import { validatorIdentityNotice, validatorKeyLabel } from '../validators'
 import { SURFACE_CARD_STATIC, SURFACE_TOOLBAR } from '../lib/surface'
 import {
   HOST_METRIC_SERIES,
@@ -652,6 +653,7 @@ export function AdminNodeDetail() {
           <SyncConsensusHistoryPanel node={query.data} />
           <HostMetricHistoryPanel node={query.data} />
           <IdentityPanel node={query.data} />
+          <ValidatorIdentityPanel node={query.data} />
           <RpcDiagnosticsPanel node={query.data} />
           <PurgePanel node={query.data} csrfToken={csrfToken} onPurged={setPurged} />
         </>
@@ -1253,6 +1255,89 @@ function PurgePanel({
           </div>
         </div>
       )}
+    </CardX>
+  )
+}
+
+/**
+ * Node entry to the Validator dimension (issue #218, design §15.4): the
+ * automatic Network plus full-P2P-key identity the Server resolved for this
+ * Node, what an unresolved evaluation could not establish, and the chain
+ * Validator it belongs to. An unresolved state is Unknown rather than
+ * absence, and the Public projection is not assumed to match this one: a
+ * resolved identity still requires an Active Node before Public shows the
+ * association.
+ */
+function ValidatorIdentityPanel({ node }: { node: AdminNodeDetailDto }) {
+  const identity = node.validator_identity ?? null
+  const notice = identity
+    ? validatorIdentityNotice(identity)
+    : {
+        label: 'Not evaluated',
+        tone: 'neutral' as const,
+        description:
+          'No automatic Validator identity evaluation is recorded for this Node yet.',
+      }
+  return (
+    <CardX
+      size="medium"
+      className={CARD_SURFACE}
+      header={
+        <>
+          <h2 className="text-lg font-semibold">Validator identity</h2>
+          <StatusBadge status={notice.label} tone={notice.tone} />
+        </>
+      }
+    >
+      <p className="text-sm text-muted-foreground">
+        The correspondence is resolved automatically from this Node's Network and the full P2P
+        public key its Agent reported: a chain identity, never an ownership claim, a manual role,
+        or consensus membership. An unresolved identification state stays Unknown instead of
+        absence, and a PlatScan deployment that cannot be read never becomes a negative verdict.
+      </p>
+      <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+        <StatusBadge status={notice.label} tone={notice.tone} />
+        <span className="min-w-0 break-words">{notice.description}</span>
+      </p>
+      <div className="mt-3">
+        <DetailList>
+          <DetailItem label="State">
+            {identity ? notice.label : 'Not evaluated'}
+          </DetailItem>
+          <DetailItem label="Observed P2P public key">
+            <code className="break-all text-[11px]" title={identity?.observedValidatorNodeKey ?? undefined}>
+              {validatorKeyLabel(identity?.observedValidatorNodeKey)}
+            </code>
+          </DetailItem>
+          <DetailItem label="Chain Validator">
+            {identity?.validatorId ? (
+              <Link
+                className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
+                to={'/admin/validators/' + identity.validatorId}
+              >
+                {validatorKeyLabel(identity.validatorNodeKey)}
+              </Link>
+            ) : identity ? (
+              'Not established'
+            ) : (
+              'Not evaluated'
+            )}
+          </DetailItem>
+          <DetailItem label="Automatic Link">
+            {identity?.validatorId
+              ? identity.associationEffective
+                ? 'Open, and shown in the Public projection'
+                : 'Open, but the Node is not Active so Public shows no association'
+              : 'No automatic Link to project'}
+          </DetailItem>
+          <DetailItem label="Evaluated at">
+            {identity?.evaluatedAt ? formatObservedAt(identity.evaluatedAt) : 'Never evaluated'}
+          </DetailItem>
+          <DetailItem label="Lifecycle">
+            {identity ? lifecycleLabel(identity.lifecycle).label : 'Unknown'}
+          </DetailItem>
+        </DetailList>
+      </div>
     </CardX>
   )
 }

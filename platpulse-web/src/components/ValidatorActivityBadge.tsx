@@ -80,6 +80,19 @@ function capitalize(value: string): string {
 }
 
 /**
+ * The canonical Activity token's label, shared with the Owner Validator
+ * surfaces (#218) so both name the same Provider value the same way. An
+ * unlisted token keeps its own name, and unavailable evidence keeps the
+ * neutral Observing state rather than inventing a status.
+ */
+export function validatorActivityLabel(activity: string | null | undefined): string {
+  const raw = typeof activity === 'string' ? activity.trim().toLowerCase() : ''
+  if (raw && PRESENTATION[raw]) return PRESENTATION[raw].label
+  if (raw === 'unknown' || !raw) return NEUTRAL.label
+  return capitalize(raw)
+}
+
+/**
  * Resolve the canonical Activity token to its presentation. An unlisted token
  * keeps its own name with the neutral treatment rather than being forced into
  * one of the named states; the full value stays reachable in the
