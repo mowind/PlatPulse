@@ -84,6 +84,9 @@ impl Modify for AgentBearerScheme {
         crate::http::admin::trigger_geo_refresh,
         crate::http::admin::admin_node_history,
         crate::http::admin::admin_node_metric_history,
+        // The recorded sync and consensus state changes of one Node (#217),
+        // which are state evidence and not a numeric series (design §11.4).
+        crate::http::admin::admin_node_state_history,
         // The one Host answer, reached from the Agent page and from any Node
         // page on that Agent (design §11.6).
         crate::http::admin::admin_node_host_metric_history,
@@ -229,6 +232,10 @@ impl Modify for AgentBearerScheme {
         crate::http::admin::AdminAgentStorageMountsResponse,
         crate::http::admin::AdminStorageMount,
         crate::http::admin::AdminStorageSeries,
+        crate::http::admin::AdminStateHistoryResponse,
+        crate::http::admin::AdminStateEntry,
+        crate::http::admin::AdminStateGap,
+        crate::http::admin::AdminStateSeries,
         crate::http::admin::AdminPeerHistory,
         crate::http::admin::AdminPeerAggregate,
         crate::http::admin::AdminPeerCountryCount,

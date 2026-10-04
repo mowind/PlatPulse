@@ -946,6 +946,19 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                 crate::redaction::redact_sensitive(&error.to_string())
             );
         }
+        // Issue #217: the recorded synchronization and consensus states expire
+        // by the same fixed, bounded startup task.
+        if let Err(error) = crate::retention::cleanup_expired_observation_state(
+            database.pool(),
+            crate::auth::now_utc(),
+        )
+        .await
+        {
+            eprintln!(
+                "state retention cleanup deferred: {}",
+                crate::redaction::redact_sensitive(&error.to_string())
+            );
+        }
         // Issue #214: each aggregate tier expires by its own window, so the
         // 1-minute buckets a widened read can no longer be served leave while
         // the 5-minute buckets covering the same stretch stay.

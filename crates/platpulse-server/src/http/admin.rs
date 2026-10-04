@@ -453,6 +453,10 @@ pub struct AdminNodePurgeCounts {
     pub metric_samples: i64,
     pub metric_series_state: i64,
     pub metric_aggregates: i64,
+    /// Recorded sync/consensus state entries (issue #217).
+    pub state_observations: i64,
+    /// The recorded-state series ledger.
+    pub state_series_state: i64,
     pub capacity_skipped_series: i64,
     pub validator_links: i64,
     pub validator_identity_status: i64,
@@ -527,6 +531,8 @@ fn node_purge_counts(counts: crate::node_purge::NodePurgeCounts) -> AdminNodePur
         metric_samples: counts.metric_samples,
         metric_series_state: counts.metric_series_state,
         metric_aggregates: counts.metric_aggregates,
+        state_observations: counts.state_observations,
+        state_series_state: counts.state_series_state,
         capacity_skipped_series: counts.capacity_skipped_series,
         validator_links: counts.validator_links,
         validator_identity_status: counts.validator_identity_status,
@@ -4726,6 +4732,455 @@ async fn admin_node_metric_history(
     .await
 }
 
+/// Query for the Owner-side recorded state history of one Node component
+/// (issue #217, design §11.7). `component` is optional at the type
+/// level so a missing or unknown name answers with the same error body as every
+/// other rejected query.
+#[derive(Debug, Deserialize)]
+struct AdminStateHistoryQuery {
+    component: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+    /// Exclusive upper bound of a paging request: the continuation coordinate a
+    /// previous truncated answer returned.
+    before: Option<String>,
+    limit: Option<i64>,
+}
+
+/// One recorded state of a Node component, with the timing evidence that
+/// belongs to it.
+///
+/// The evidence of a state is a state vector, never a number: the collection
+/// state, where the value came from, which failure was reported and the sync
+/// flag as it was observed. A failure is therefore recorded as a failure, and a
+/// value the Agent could not refresh keeps the instant it was really observed
+/// at, so no surface has to invent a transition or read Unknown as zero
+/// (design §11.7, §5.1; issue #217).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminStateEntry {
+    /// The instant the Node was heard from: the entry coordinate.
+    pub observed_at: String,
+    /// The instant the Server received the Report that carried it.
+    pub received_at: String,
+    /// `change` for a delivery whose state differs from the state before it,
+    /// `anchor` for one that re-recorded an unchanged state.
+    pub entry_kind: String,
+    /// `starting`, `ok`, `error`, `disabled` or `unsupported`.
+    pub collection_state: String,
+    /// `current`, `last_good` or `none`.
+    pub value_source: String,
+    /// The instant of the value this state refers to. It is older than
+    /// observed_at for a last-good state, so the age of the value can be read
+    /// instead of a fresh-looking timestamp.
+    pub value_observed_at: Option<String>,
+    /// The failure the Agent reported, when the collection failed.
+    pub error_code: Option<String>,
+    /// The sync flag, present only where the collection succeeded: a failed
+    /// probe is unknown, never false.
+    pub syncing: Option<bool>,
+    /// The Agent-to-Server delay of this delivery.
+    pub delay_seconds: Option<i64>,
+    /// The observation is stamped after the receipt: the Agent clock is ahead.
+    pub clock_suspect: bool,
+    pub clock_note: Option<String>,
+}
+
+/// A stretch of the window in which the record shows nothing, because either
+/// nobody reported or protection paused recording.
+///
+/// Reported as a gap with its kind, so no surface bridges silence with a
+/// constant state, calls a missing report a normal period, or reads a pause as
+/// a change (design §11.7, §11.5; issue #217).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminStateGap {
+    pub from: String,
+    pub to: String,
+    pub seconds: i64,
+    /// `collection_gap` (nobody observed) or `protection_pause` (the operator
+    /// chose to pause collection).
+    pub kind: String,
+    pub reason: String,
+    /// Counted losses behind a `protection_pause`.
+    pub skipped_count: Option<i64>,
+}
+
+/// What the Server knows about the recorded-state series itself, independent of
+/// the requested window.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminStateSeries {
+    /// False when this Node never had a state recorded: shown as absent, not as
+    /// a state.
+    pub observed: bool,
+    /// The oldest instant the series ever counted, even when its row was
+    /// released.
+    pub first_observed_at: Option<String>,
+    /// The newest instant the series ever counted.
+    pub last_observed_at: Option<String>,
+    /// The instant the newest counted Report arrived.
+    pub last_received_at: Option<String>,
+    /// Counted deliveries, including the ones that wrote no row because the
+    /// state had not changed.
+    pub entry_count: i64,
+    /// Counted deliveries that recorded a state change.
+    pub change_count: i64,
+    /// Counted deliveries that re-recorded an unchanged state.
+    pub anchor_count: i64,
+    /// Deliveries of an instant the log had already counted.
+    pub replayed_count: i64,
+    /// Deliveries that disagreed with the row already held for their instant.
+    pub corrected_count: i64,
+    /// The state of the newest counted delivery, which is the Server latest
+    /// word on this component even when its row was released.
+    pub latest_collection_state: Option<String>,
+    pub latest_value_source: Option<String>,
+    pub latest_value_observed_at: Option<String>,
+    pub latest_error_code: Option<String>,
+    pub latest_syncing: Option<bool>,
+    /// How many entries this answer carries.
+    pub entries_returned: i64,
+    /// The seconds the returned entries account for: only the stretch between
+    /// two recorded states counts, never the stretch after the newest one.
+    pub coverage_seconds: i64,
+    pub window_seconds: i64,
+    /// The floor this series last stamped for evidence its window released, so
+    /// a missing early entry is a boundary and not a quiet start.
+    pub released_before: Option<String>,
+}
+
+/// Owner-only recorded state history for one Node component (issue #217,
+/// design §11.7): the recorded state changes and hourly anchors, the
+/// silences between them, and the state of the series behind them.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminStateHistoryResponse {
+    pub node_id: String,
+    /// `sync` or `consensus`.
+    pub component: String,
+    /// The answered range, after clamping to the retention horizon.
+    pub from: String,
+    /// The answered range end: the requested `to`, or the exclusive paging
+    /// cursor when the caller paged with `before`.
+    pub to: String,
+    /// The range the caller asked for, so a clamped or paged answer says what it
+    /// clamped or narrowed.
+    pub requested_from: String,
+    /// `None` while the whole requested range is answerable, `partial` when it
+    /// was clamped to the retention horizon, `unavailable` when it is older than
+    /// any retained history.
+    pub availability: Option<String>,
+    /// The configured window of this family, which is also its whole horizon:
+    /// recorded states have no aggregate tiers.
+    pub retention_days: i64,
+    /// How long an unchanged state may go unrecorded before an anchor is
+    /// written, so a reader can tell an unchanged state from a missing report.
+    pub anchor_seconds: i64,
+    /// The reporting cadence of the Node, or zero when it is unknown: the
+    /// cadence the silences were judged against.
+    pub cadence_seconds: i64,
+    pub coverage_seconds: i64,
+    pub window_seconds: i64,
+    pub entries: Vec<AdminStateEntry>,
+    pub gaps: Vec<AdminStateGap>,
+    pub series: AdminStateSeries,
+    /// True when the window held more entries than the caller limit: the newest
+    /// are returned and the rest is reported, never dropped silently.
+    pub truncated: bool,
+    /// When the answer is truncated, the coordinate to pass back as `before` for
+    /// the next, older page.
+    pub continuation: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/nodes/{node_id}/state-history",
+    tag = "admin",
+    params(
+        ("node_id" = String, Path, description = "Node ID"),
+        ("component" = String, Query, description = "Recorded state component: sync or consensus"),
+        ("from" = Option<String>, Query, description = "Canonical RFC 3339 UTC start of the range, second precision (default: 24 hours before to)"),
+        ("to" = Option<String>, Query, description = "Canonical RFC 3339 UTC end of the range, second precision (default: now)"),
+        ("before" = Option<String>, Query, description = "Canonical RFC 3339 UTC exclusive upper bound for paging: the continuation coordinate a truncated answer returned"),
+        ("limit" = Option<i64>, Query, minimum = 1, maximum = 20000, description = "Maximum recorded states across the answer")
+    ),
+    responses(
+        (status = 200, body = AdminStateHistoryResponse),
+        (status = 400, body = crate::http::ApiErrorBody),
+        (status = 401, body = crate::http::ApiErrorBody),
+        (status = 403, body = crate::http::ApiErrorBody),
+        (status = 404, body = crate::http::ApiErrorBody),
+        (status = 503, body = crate::http::ApiErrorBody)
+    )
+)]
+async fn admin_node_state_history(
+    State(state): State<AppState>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+    query: Result<
+        axum::extract::Query<AdminStateHistoryQuery>,
+        axum::extract::rejection::QueryRejection,
+    >,
+    Path(node_id): Path<String>,
+) -> Response {
+    let params = match query {
+        Ok(axum::extract::Query(params)) => params,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_query",
+                "query is not valid for state history",
+            );
+        }
+    };
+    // A component outside the recorded pair answers like an unknown metric: the
+    // caller gets the same error body and no empty series that would look like a
+    // component nobody ever reported.
+    let component = match params.component.as_deref() {
+        Some(value) if crate::state_history::is_state_component(value) => value.to_owned(),
+        _ => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::BAD_REQUEST,
+                "invalid_component",
+                "component is not a recorded state series",
+            );
+        }
+    };
+    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id=?")
+        .bind(&node_id)
+        .fetch_optional(state.db().pool())
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => return not_found_response(&request_id.0),
+        Err(_) => return unavailable_response(&request_id.0),
+    }
+    // Recorded states describe the Node itself, so the answer says so: they are
+    // never the Agent or Host history of the Agent that reported them
+    // (design §11.6).
+    state_history_response(&state, &request_id.0, params, &node_id, &component).await
+}
+
+/// One Owner recorded-state answer (design §11.7; issue #217).
+async fn state_history_response(
+    state: &AppState,
+    request_id: &str,
+    params: AdminStateHistoryQuery,
+    node_id: &str,
+    component: &str,
+) -> Response {
+    let unavailable = || unavailable_response(request_id);
+    let invalid_range = || {
+        mutation_error(
+            request_id,
+            StatusCode::BAD_REQUEST,
+            "invalid_history_range",
+            "history range is invalid",
+        )
+    };
+    let retention_days =
+        match crate::retention::observation_state_retention_days(state.db().pool()).await {
+            Ok(days) => days,
+            Err(_) => return unavailable(),
+        };
+    let now = crate::auth::now_utc();
+    let to = match params.to.as_deref() {
+        Some(value) => match crate::metric_history::canonical_instant(value) {
+            Some(value) => value,
+            None => return invalid_range(),
+        },
+        None => now,
+    };
+    let from = match params.from.as_deref() {
+        Some(value) => match crate::metric_history::canonical_instant(value) {
+            Some(value) => value,
+            None => return invalid_range(),
+        },
+        None => to - time::Duration::hours(crate::metric_history::DEFAULT_WINDOW_HOURS),
+    };
+    if from > to {
+        return invalid_range();
+    }
+    // A paging cursor narrows the answer to the evidence older than a
+    // coordinate the caller has already seen, so it must sit strictly inside the
+    // requested range: a cursor outside it would answer a stretch nobody asked
+    // about.
+    let before = match params.before.as_deref() {
+        Some(value) => match crate::metric_history::canonical_instant(value) {
+            Some(value) => Some(value),
+            None => return invalid_range(),
+        },
+        None => None,
+    };
+    if let Some(before) = before
+        && (before <= from || before > to)
+    {
+        return invalid_range();
+    }
+    // A recorded state has no aggregate tier: the retention policy is its whole
+    // horizon, so the range is clamped to it and the clamping is reported rather
+    // than served as a silence the Node never had.
+    let horizon_cutoff = now - time::Duration::days(retention_days);
+    let availability = if from >= horizon_cutoff {
+        None
+    } else if to <= horizon_cutoff {
+        Some("unavailable".to_owned())
+    } else {
+        Some("partial".to_owned())
+    };
+    let effective_from = from.max(horizon_cutoff);
+    let effective_to = before.unwrap_or(to);
+    let limit = params
+        .limit
+        .unwrap_or(crate::state_history::DEFAULT_STATE_LIMIT)
+        .clamp(1, crate::state_history::MAX_STATE_LIMIT);
+    let cutoff = crate::auth::format_rfc3339(crate::retention::family_cutoff(now, retention_days));
+    let from_text = crate::auth::format_rfc3339(effective_from);
+    // The advertised end of the page, not the end of the whole range: an older
+    // page must not report a gap that runs past where it says it stops. The row
+    // query already excludes the cursor instant, so loading against the effective
+    // end narrows only what the answer claims about the stretch it covers.
+    let to_text = crate::auth::format_rfc3339(effective_to);
+    let before_text = before.map(crate::auth::format_rfc3339);
+    let range = match crate::state_history::load_range(
+        state.db().pool(),
+        &crate::state_history::StateRangeQuery {
+            node_id,
+            component,
+            from: &from_text,
+            to: &to_text,
+            before: before_text.as_deref(),
+            limit,
+            cutoff: &cutoff,
+        },
+    )
+    .await
+    {
+        Ok(range) => range,
+        Err(_) => return unavailable(),
+    };
+    let window_seconds = (effective_to - effective_from).whole_seconds().max(0);
+    let entries = range
+        .entries
+        .iter()
+        .map(|entry| {
+            let (delay_seconds, clock_note) = match crate::metric_history::sample_timing(
+                &entry.observed_at,
+                &entry.received_at,
+            ) {
+                Some(timing) => (Some(timing.delay_seconds), timing.clock_note),
+                None => (None, None),
+            };
+            AdminStateEntry {
+                observed_at: entry.observed_at.clone(),
+                received_at: entry.received_at.clone(),
+                entry_kind: entry.entry_kind.clone(),
+                collection_state: entry.collection_state.clone(),
+                value_source: entry.value_source.clone(),
+                value_observed_at: entry.value_observed_at.clone(),
+                error_code: entry.error_code.clone(),
+                syncing: entry.syncing,
+                delay_seconds,
+                clock_suspect: clock_note.is_some(),
+                clock_note,
+            }
+        })
+        .collect::<Vec<_>>();
+    let gaps = range
+        .gaps
+        .iter()
+        .map(|gap| AdminStateGap {
+            from: gap.from.clone(),
+            to: gap.to.clone(),
+            seconds: gap.seconds,
+            kind: gap.kind.as_str().to_owned(),
+            reason: match gap.kind {
+                crate::metric_history::GapKind::ProtectionPause => {
+                    "low-space protection paused state recording".to_owned()
+                }
+                crate::metric_history::GapKind::Collection => {
+                    "no state was recorded in this stretch".to_owned()
+                }
+            },
+            skipped_count: gap.skipped_count,
+        })
+        .collect::<Vec<_>>();
+    let series = match &range.ledger {
+        Some(ledger) => {
+            // The ledger states the state of the newest counted delivery, which
+            // is the Server latest word on this component even when the row that
+            // recorded it has been released.
+            let latest = ledger.latest();
+            AdminStateSeries {
+                observed: true,
+                first_observed_at: Some(ledger.first_observed_at.clone()),
+                last_observed_at: Some(ledger.last_observed_at.clone()),
+                last_received_at: Some(ledger.last_received_at.clone()),
+                entry_count: ledger.entry_count,
+                change_count: ledger.change_count,
+                anchor_count: ledger.anchor_count,
+                replayed_count: ledger.replayed_count,
+                corrected_count: ledger.corrected_count,
+                latest_collection_state: Some(latest.collection_state.clone()),
+                latest_value_source: Some(latest.value_source.clone()),
+                latest_value_observed_at: ledger.last_value_observed_at.clone(),
+                latest_error_code: latest.error_code.clone(),
+                latest_syncing: latest.syncing,
+                entries_returned: range.entries.len() as i64,
+                coverage_seconds: range.coverage_seconds,
+                window_seconds,
+                released_before: Some(ledger.released_before.clone()),
+            }
+        }
+        None => AdminStateSeries {
+            observed: false,
+            first_observed_at: None,
+            last_observed_at: None,
+            last_received_at: None,
+            entry_count: 0,
+            change_count: 0,
+            anchor_count: 0,
+            replayed_count: 0,
+            corrected_count: 0,
+            latest_collection_state: None,
+            latest_value_source: None,
+            latest_value_observed_at: None,
+            latest_error_code: None,
+            latest_syncing: None,
+            entries_returned: 0,
+            coverage_seconds: 0,
+            window_seconds,
+            released_before: None,
+        },
+    };
+    // Owner-only Node history is per-session data: it must never be stored by
+    // an intermediary or a browser cache and replayed to another session
+    // (design §12.4, webui.md §6.4).
+    no_store(
+        Json(AdminStateHistoryResponse {
+            node_id: node_id.to_owned(),
+            component: component.to_owned(),
+            from: crate::auth::format_rfc3339(effective_from),
+            to: crate::auth::format_rfc3339(effective_to),
+            requested_from: crate::auth::format_rfc3339(from),
+            availability,
+            retention_days,
+            anchor_seconds: crate::state_history::STATE_ANCHOR_SECONDS,
+            cadence_seconds: range.cadence_seconds,
+            coverage_seconds: range.coverage_seconds,
+            window_seconds,
+            entries,
+            gaps,
+            series,
+            truncated: range.truncated,
+            continuation: range.continuation.clone(),
+        })
+        .into_response(),
+    )
+}
 #[utoipa::path(
     get,
     path = "/api/admin/v1/agents/{agent_id}/metric-history",
@@ -7377,6 +7832,13 @@ pub fn router() -> Router<AppState> {
         .route(
             "/nodes/{node_id}/metric-history",
             get(admin_node_metric_history),
+        )
+        // The recorded sync and consensus state changes of that Node (#217):
+        // state evidence, not a number, so it is a family of its own and it is
+        // never inferred from the Block history next to it (design §11.4).
+        .route(
+            "/nodes/{node_id}/state-history",
+            get(admin_node_state_history),
         )
         // The Agent's shared Host series: the same evidence every Node on that
         // Host reads, answered from the Agent page and from any Node page

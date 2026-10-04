@@ -41,6 +41,7 @@ import {
   adminNodePeerChurn,
   adminNodePeerHistory,
   adminNodePurgePreview,
+  adminNodeStateHistory as adminNodeStateHistoryApi,
   adminNodeTransfers,
   adminNodes,
   adminRecoveryToken,
@@ -172,6 +173,10 @@ import {
   type AdminAgentStorageMountsResponse,
   type AdminStorageMount,
   type AdminStorageSeries,
+  type AdminStateEntry,
+  type AdminStateGap,
+  type AdminStateHistoryResponse,
+  type AdminStateSeries,
   type AgentAttentionAcknowledgmentResponse,
   type AttentionAcknowledgment,
   type PeerChurnDiagnostic,
@@ -257,6 +262,14 @@ const adminKeys = {
     to: string,
   ) =>
     [...adminKeys.nodeHostMetricHistoryRoot(nodeId), metric, dimension, from, to] as const,
+  nodeStateHistoryRoot: (nodeId: string) =>
+    ['admin', 'nodes', nodeId, 'state-history'] as const,
+  nodeStateHistory: (
+    nodeId: string,
+    component: string,
+    from: string,
+    to: string,
+  ) => [...adminKeys.nodeStateHistoryRoot(nodeId), component, from, to] as const,
   agentHostMetricHistoryRoot: (agentId: string) =>
     ['admin', 'agents', agentId, 'host-metric-history'] as const,
   agentHostMetricHistory: (
@@ -690,6 +703,44 @@ export async function fetchAdminNodeHostMetricHistory(
   )
 }
 
+/** One recorded sync or consensus state of one Node, with the timing evidence the
+ * Server kept beside it (issue #217). */
+export type AdminStateEntryDto = AdminStateEntry
+/** A stretch of the answered window with no recorded state, and why it is silent. */
+export type AdminStateGapDto = AdminStateGap
+/** What the Server recorded about the component itself, independent of the window. */
+export type AdminStateSeriesDto = AdminStateSeries
+/** One recorded state history answer, for one Node and one component. */
+export type AdminStateHistory = AdminStateHistoryResponse
+
+/** The recorded sync/consensus states of one Node, read as evidence rather than as
+ * a reconstructed series: an unchanged state is re-recorded as an anchor, and the
+ * answer never infers a state the Server did not record. */
+export async function fetchAdminNodeStateHistory(
+  nodeId: string,
+  component: string,
+  from: string,
+  to: string,
+  before?: string,
+  signal?: AbortSignal,
+): Promise<AdminStateHistory> {
+  return requestAdmin(
+    () =>
+      adminNodeStateHistoryApi({
+        path: { node_id: nodeId },
+        query: {
+          component,
+          from,
+          to,
+          limit: METRIC_HISTORY_SAMPLE_LIMIT,
+          ...(before ? { before } : {}),
+        },
+        signal,
+      }),
+    'Unable to load the Node state history',
+  )
+}
+
 export function useAdminAgentHostMetricHistory(
   generation: number,
   agentId: string,
@@ -779,6 +830,28 @@ export function useAdminNodeHostMetricHistory(
       (!hostMetricNeedsMount(metric) || dimension.length > 0) &&
       from.length > 0 &&
       to.length > 0,
+  })
+}
+
+export function useAdminNodeStateHistory(
+  generation: number,
+  nodeId: string,
+  component: string,
+  from: string,
+  to: string,
+  before?: string,
+) {
+  return useQuery({
+    queryKey: [
+      ...adminKeys.nodeStateHistory(nodeId, component, from, to),
+      before ?? 'newest',
+      generation,
+    ],
+    queryFn: ({ signal }) =>
+      fetchAdminNodeStateHistory(nodeId, component, from, to, before, signal),
+    // No recorded state before both the Node and the component have an identity:
+    // an unanswered switch would render evidence the Server never recorded.
+    enabled: nodeId.length > 0 && component.length > 0 && from.length > 0 && to.length > 0,
   })
 }
 
@@ -1721,6 +1794,9 @@ function applyAdminInvalidation(resource: string, resourceId: string | undefined
       adminKeys.nodeMetricHistoryRoot(resourceId),
       // The Host series a Node page reads are the Agent's, so a Node signal
       // refreshes that page's view of them too (issue #215).
+      // The recorded sync/consensus states are the Node's own evidence, so a
+      // signal that changes what it reports changes them as well (issue #217).
+      adminKeys.nodeStateHistoryRoot(resourceId),
       adminKeys.nodeHostMetricHistoryRoot(resourceId),
     )
   }

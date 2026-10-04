@@ -664,7 +664,7 @@ describe('PAGE-ADMIN-OPERATIONS (task ledger)', () => {
     expect(gap.textContent).toContain('disk_used_bytes · /')
     expect(gap.textContent).toContain('disk_used_bytes · /data')
     // The worst-N bound is named instead of pretending the list is complete.
-    expect(text).toContain('5 series lost samples in total')
+    expect(text).toContain('5 series lost readings in total')
     // Optional history only: the Operation ledger is unaffected.
     expect(screen.getByRole('table', { name: /Recorded Operations/ })).toBeTruthy()
   })

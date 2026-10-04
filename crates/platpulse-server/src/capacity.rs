@@ -239,8 +239,9 @@ pub fn protection_required(
 pub enum HistoryGate {
     /// Optional history is recorded normally.
     Record,
-    /// Protection is active: optional samples are not written, and the gap is
-    /// recorded against this interval instead.
+    /// Protection is active: no optional history is written - neither metric
+    /// samples nor recorded synchronization and consensus states - and the gap
+    /// is recorded against this interval instead.
     Paused { interval_id: String },
 }
 
@@ -300,15 +301,19 @@ pub struct CapacityIntervalRecord {
     pub resumed_total_bytes: Option<u64>,
     pub resumed_available_bytes: Option<u64>,
     pub updated_at: String,
-    /// Total optional samples skipped during this interval.
+    /// Total optional deliveries skipped during this interval, every series
+    /// together. A skipped delivery is usually a metric sample, but the same
+    /// ledger also counts the recorded synchronization and consensus states a
+    /// pause dropped, so the count is what the interval cost rather than a
+    /// sample tally alone.
     pub skipped_sample_count: i64,
-    /// Number of distinct series with skipped samples.
+    /// Number of distinct series with skipped deliveries.
     pub skipped_series_total: i64,
-    /// Bounded per-series detail, ordered by skipped samples.
+    /// Bounded per-series detail, ordered by skipped deliveries.
     pub skipped_series: Vec<CapacitySkippedSeries>,
 }
 
-/// One series that lost optional samples while protection was active.
+/// One series that lost optional history while protection was active.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapacitySkippedSeries {

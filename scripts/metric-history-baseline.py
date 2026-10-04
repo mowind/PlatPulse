@@ -533,14 +533,15 @@ def check(name: str, expected, observed, ok=None) -> dict:
 # -- the multi-Node arrival and the per-Report cleanup budget -------------
 #
 # Facts under test, read from the tree when this run was written:
-#   * crates/platpulse-server/src/retention.rs:175 carries
-#     "const NODE_METRIC_CLEANUP_BATCH: i64 = 2048;" and the raw Node sample
-#     statement at crates/platpulse-server/src/retention.rs:196-209 deletes at
-#     most that many expired rows per call. The bound it replaced was 128.
+#   * crates/platpulse-server/src/retention.rs:185 carries
+#     "const NODE_METRIC_CLEANUP_BATCH: i64 = 4096;" and the raw Node sample
+#     statement at crates/platpulse-server/src/retention.rs:214 deletes at
+#     most that many expired rows per call. The bound it replaced was 128, and
+#     issue #217 raised it from 2048 so it still covers one maximal Report.
 #   * crates/platpulse-core/src/protocol.rs:33 allows MAX_NODE_OBSERVATIONS =
-#     256 Nodes in one Report, and the Server stores at most five series per
-#     Node (crates/platpulse-server/src/metric_history.rs:47-53), so one
-#     accepted Report can add up to 1280 rows at once.
+#     256 Nodes in one Report, and the Server stores at most ten series per
+#     Node (crates/platpulse-server/src/metric_history.rs:98), so one
+#     accepted Report can add up to 2560 rows at once.
 #   * cleanup runs opportunistically after every accepted Report
 #     (crates/platpulse-server/src/http/report_ingestion.rs:3075) and
 #     there is no periodic scheduler, so the per-Report bound has to cover a
@@ -552,7 +553,14 @@ MULTI_NODE_REPORTS = 48
 MULTI_NODE_CADENCE_SECONDS = 2400
 MULTI_NODE_NEWEST_AGE_SECONDS = 300
 MULTI_NODE_CLONE_BLOCK = 0x1000
-MULTI_NODE_SERIES_PER_NODE = 5
+# How many Node series one Report stores for a Node that carries the fixture's
+# observations. The fixture states five (rpc, sync, consensus, network_identity,
+# static_metadata); issue #217 stores two more from the sync observation's chain
+# heights, sync_current_block and sync_highest_block, so a clone registers seven
+# (crates/platpulse-server/src/metric_history.rs NODE_METRIC_SERIES, migration
+# 0070). The consensus observation is "unsupported" with no attempted_at in the
+# fixture, so it stores no consensus height.
+MULTI_NODE_SERIES_PER_NODE = 7
 DRAIN_CLONE_COUNT = 128
 DRAIN_CLONE_BLOCK = 0x1100
 DRAIN_REPORTS = 12
@@ -565,7 +573,7 @@ DRAIN_ANCHOR_AGE_SECONDS = 3600
 # moves strictly up from the fixture revision 1 the single-Node path uses.
 MULTI_NODE_INVENTORY_REVISION = 1001
 DRAIN_INVENTORY_REVISION = 1002
-NODE_METRIC_CLEANUP_BATCH = 2048
+NODE_METRIC_CLEANUP_BATCH = 4096
 PREVIOUS_NODE_METRIC_CLEANUP_BATCH = 128
 # The declared window is the same 24 hours the raw retention floor keeps, so a
 # plan that reached exactly base - window would already be outside the cliff
@@ -608,10 +616,10 @@ SERVER_HISTORY_HORIZON_DAYS = 30
 #     stored it: the 1 minute tier answers day 7 up to the raw cutoff and the 5
 #     minute tier day 30 up to day 7 (:1064-1066), and nothing is re-derived at
 #     read time, so zooming an old stretch can never recover a raw sample.
-#   * crates/platpulse-server/src/retention.rs:224 bounds one tier cleanup at
-#     AGGREGATE_CLEANUP_BATCH = 2048 rows; :237 deletes grain_seconds = 60 buckets
-#     below the 7 day window and :247 grain_seconds = 300 buckets below the 30 day
-#     one, and the pass runs after every accepted Report
+#   * crates/platpulse-server/src/retention.rs:248 bounds one tier cleanup at
+#     AGGREGATE_CLEANUP_BATCH = 4096 rows (asserted at :253-264 to cover a maximal
+#     Report): the 1 minute tier is deleted below the 7 day window, the 5 minute
+#     tier below the 30 day one, and the pass runs after every accepted Report
 #     (crates/platpulse-server/src/http/report_ingestion.rs:3116).
 TIER_REPORTS = 720
 TIER_CADENCE_SECONDS = 3600
@@ -634,7 +642,12 @@ TIER_READ_LIMIT = 20000
 # reach past the raw cutoff and be answered by 1 minute buckets for its older
 # half, which is exactly what the mixed read below measures instead.
 TIER_RAW_READ_HOURS = 20
-TIER_SERIES = 2
+# How many series one tier Report stores samples for: the fixture's
+# process_cpu_percent and process_memory_percent, plus the two chain height
+# series issue #217 stores from the sync observation (sync_current_block,
+# sync_highest_block). The tier plan multiplies every bucket estimate by this,
+# so it is the series count per Report that the sample and aggregate counts see.
+TIER_SERIES = 4
 # The value of an hourly instant is a function of its index alone - a ladder
 # from 10 to 28 and back - so a tier's floor and ceiling are known before it is
 # read, and one index carries a planted spike no bucket may round away.
@@ -699,13 +712,13 @@ DECLARED_HOST_FAMILY = (
 HOST_FAMILY = tuple(sorted(HOST_SHARED_SERIES + HOST_MOUNT_SERIES))
 # The per-Host mount contract limit, and the batches the Server cleans the
 # family with (crates/platpulse-server/src/metric_history.rs:83 MAX_HOST_MOUNTS;
-# crates/platpulse-server/src/retention.rs:210-213 and :218
-# HOST_METRIC_CLEANUP_BATCH = 512; :241 and :252 AGGREGATE_CLEANUP_BATCH = 2048,
+# crates/platpulse-server/src/retention.rs:216-222
+# HOST_METRIC_CLEANUP_BATCH = 512 (asserted at :231-236); AGGREGATE_CLEANUP_BATCH = 4096
 # both guarded by compile-time assertions that they cover one maximal Host
 # Report: HOST_METRIC_SERIES.len() + 2 * MAX_HOST_MOUNTS = 266 rows).
 MAX_HOST_MOUNTS = 128
 HOST_METRIC_CLEANUP_BATCH = 512
-AGGREGATE_CLEANUP_BATCH = 2048
+AGGREGATE_CLEANUP_BATCH = 4096
 # What one Report really carries: eight shared rows, plus two per mount.
 MAX_HOST_ROWS_PER_REPORT = len(HOST_SHARED_SERIES) + 2 * MAX_HOST_MOUNTS
 SERVER_MAX_HOST_ROWS_PER_REPORT = len(HOST_FAMILY) + 2 * MAX_HOST_MOUNTS
@@ -792,6 +805,93 @@ MOUNT_COVERAGE_SQL = (
     " AND s.observed_at = l.last_observed_at WHERE l.agent_id = ? AND l.metric = ?"
     " ORDER BY l.last_observed_at DESC, l.dimension ASC LIMIT ?"
 )
+
+# ---------------------------------------------------------------------------
+# Issue #217: the recorded sync and consensus state log, and the five chain
+# height series the same Report states.
+# ---------------------------------------------------------------------------
+
+# The five Node series issue #217 added to the metric engine, in the order
+# crates/platpulse-server/src/metric_history.rs NODE_METRIC_SERIES declares them.
+STATE_NODE_SERIES = (
+    "sync_current_block",
+    "sync_highest_block",
+    "consensus_highest_qc_block",
+    "consensus_highest_lock_block",
+    "consensus_highest_commit_block",
+)
+# The two components whose state the Server records, and the names a paused
+# delivery is filed under in capacity_skipped_series (the component name, with
+# an empty dimension).
+STATE_COMPONENTS = ("sync", "consensus")
+STATE_CHANGE_KIND = "change"
+STATE_ANCHOR_KIND = "anchor"
+# The anchor window in crates/platpulse-server/src/state_history.rs
+# (STATE_ANCHOR_SECONDS): an unchanged state is restated at most once per hour.
+STATE_ANCHOR_SECONDS = 3600
+# The read limits the Server declares (DEFAULT_STATE_LIMIT / MAX_STATE_LIMIT).
+STATE_DEFAULT_LIMIT = 2000
+STATE_MAX_LIMIT = 20000
+# Rows one recorded-state cleanup batch may release
+# (crates/platpulse-server/src/retention.rs STATE_CLEANUP_BATCH), which the
+# compile-time assert holds at one maximal Report: MAX_NODE_OBSERVATIONS
+# (platpulse-core/src/protocol.rs:33) x STATE_COMPONENTS.
+STATE_CLEANUP_BATCH = 2048
+MAX_NODE_OBSERVATIONS = 256
+MAX_STATE_ROWS_PER_REPORT = MAX_NODE_OBSERVATIONS * len(STATE_COMPONENTS)
+# The window every state answer declares, in days
+# (retention.rs MIN_INVESTIGATION_AGGREGATE_DAYS).
+STATE_RETENTION_DAYS = 30
+# This phase's own Node block, rhythm and read limits.
+STATE_NODE_BLOCK = 0x2170
+STATE_INVENTORY_REVISION = 3002
+STATE_RHYTHM_SECONDS = 600
+STATE_LEAD_SECONDS = 28800
+STATE_PAGE_LIMIT = 5
+STATE_PAUSE_REPORTS = 3
+STATE_READS = 12
+STATE_HISTORY_PATH = "/api/admin/v1/nodes/{node_id}/state-history"
+# The index the read path must seek, and the plans that would mean it walked
+# the whole table or sorted instead (measured against migration 0070's DDL).
+STATE_READ_INDEX = "sqlite_autoindex_node_state_observations_1"
+STATE_LEDGER_INDEX = "node_state_series_state_series_idx"
+STATE_READ_FORBIDDEN_PLANS = (
+    "TEMP B-TREE",
+    "SCAN node_state_observations",
+    "SCAN node_state_series_state",
+)
+# The Server's own read statements
+# (crates/platpulse-server/src/state_history.rs load_range and fetch_ledger),
+# binds and all. The paged variant adds one predicate to the same statement.
+STATE_READ_SQL = (
+    "SELECT observed_at, received_at, entry_kind, collection_state, value_source,"
+    " value_observed_at, error_code, syncing FROM node_state_observations"
+    " WHERE node_id = ? AND component = ? AND observed_at > ? AND observed_at <= ?"
+    " ORDER BY observed_at DESC LIMIT ?"
+)
+STATE_READ_PAGED_SQL = (
+    "SELECT observed_at, received_at, entry_kind, collection_state, value_source,"
+    " value_observed_at, error_code, syncing FROM node_state_observations"
+    " WHERE node_id = ? AND component = ? AND observed_at > ? AND observed_at <= ?"
+    " AND observed_at < ? ORDER BY observed_at DESC LIMIT ?"
+)
+STATE_LEDGER_SQL = (
+    "SELECT first_observed_at, last_observed_at, last_received_at,"
+    " last_collection_state, last_value_source, last_value_observed_at,"
+    " last_error_code, last_syncing, last_entry_at, entry_count, change_count,"
+    " anchor_count, replayed_count, corrected_count, released_before, updated_at"
+    " FROM node_state_series_state WHERE node_id = ? AND component = ?"
+)
+# A chain height is read back exactly like every other Node metric: the same
+# range statement the metric engine runs for a Node series
+# (crates/platpulse-server/src/metric_history.rs RANGE_SAMPLE_SQL, which the
+# issue #217 series widened with the same five names).
+STATE_HEIGHT_SQL = (
+    "SELECT observed_at, received_at, value FROM node_metric_samples"
+    " WHERE node_id = ? AND metric = ? AND observed_at >= ? AND observed_at <= ?"
+    " ORDER BY observed_at DESC LIMIT ?"
+)
+STATE_HEIGHT_FORBIDDEN_PLANS = ("TEMP B-TREE", "SCAN node_metric_samples")
 
 
 def gap_threshold_seconds(cadence_seconds: int) -> int:
@@ -1006,6 +1106,298 @@ def clone_node_id(block: int, ordinal: int) -> str:
         0x8000 | (value & 0xFFF),
         value,
     )
+
+
+def state_node_id(ordinal: int) -> str:
+    """This phase's own Node block, so no earlier phase count moves."""
+    return clone_node_id(STATE_NODE_BLOCK, ordinal)
+
+
+def state_sync_block(
+    observed_at: str, syncing: bool, current_block: int, highest_block: int, revision: int
+) -> dict:
+    """chain.sync as a probe that answered, for one instant.
+
+    The two heights move on every Report while the recorded state vector holds
+    only collection_state, value_source, error_code and syncing
+    (crates/platpulse-server/src/state_history.rs StateVector), so a Report
+    whose heights moved but whose vector did not is still a counted delivery
+    that stores no second entry.
+    """
+    return {
+        "status": "ok",
+        "attempted_at": observed_at,
+        "latest_observed_at": observed_at,
+        "state_revision": revision,
+        "value_revision": revision,
+        "latest": {
+            "syncing": syncing,
+            "current_block": current_block,
+            "highest_block": highest_block,
+            "pulled_states": 0,
+            "known_states": 0,
+        },
+    }
+
+
+def state_consensus_block(
+    observed_at: str,
+    highest_qc_block: int,
+    highest_lock_block: int,
+    highest_commit_block: int,
+    revision: int,
+) -> dict:
+    """chain.consensus as a probe that answered, for one instant."""
+    return {
+        "status": "ok",
+        "attempted_at": observed_at,
+        "latest_observed_at": observed_at,
+        "state_revision": revision,
+        "value_revision": revision,
+        "latest": {
+            "epoch": 1,
+            "view_number": 1,
+            "validator": False,
+            "highest_qc_block": highest_qc_block,
+            "highest_lock_block": highest_lock_block,
+            "highest_commit_block": highest_commit_block,
+        },
+    }
+
+
+def state_error_block(observed_at: str, revision: int, code: str, message: str) -> dict:
+    """A chain component whose probe failed: status error, a message, and no
+    latest reading at all (crates/platpulse-core/src/component.rs:204-215
+    forbids a latest reading without a latest_observed_at, and an error without
+    one). The metric writer then stores no height for the series that component
+    owns (crates/platpulse-server/src/http/report_ingestion.rs metric_observed_at
+    returns None), while the state log still records the transition.
+    """
+    return {
+        "status": "error",
+        "attempted_at": observed_at,
+        "state_revision": revision,
+        "value_revision": revision,
+        "error": {"code": code, "message": message},
+    }
+
+
+def state_report(
+    fixture: dict,
+    agent: dict,
+    sequence: int,
+    observed_at: str,
+    sync_blocks: list,
+    consensus_blocks: list,
+    inventory_revision: int,
+) -> dict:
+    """A Report stating exactly this phase's Nodes, one chain block each.
+
+    The inventory carries exactly the Nodes the Report observes
+    (crates/platpulse-core/src/envelope.rs requires one observation per
+    inventory Node and none outside it), so the revision moves up and names one
+    Node per ordinal: the probe Node (ordinal 0) keeps its rows for the SQLite
+    and plan reads, and the ledger Node (ordinal 1) is the one that is purged.
+    Every Node keeps the fixture's disabled process observation, so the only
+    Node series these Nodes ever state are the five chain heights issue #217
+    added (crates/platpulse-server/src/metric_history.rs NODE_METRIC_SERIES).
+    """
+    if len(sync_blocks) != len(consensus_blocks):
+        raise BaselineError("a state Report needs one chain block pair per Node")
+    report = copy.deepcopy(fixture)
+    report["agent_id"] = agent["agent_id"]
+    report["agent_epoch"] = agent["agent_epoch"]
+    report["boot_id"] = agent["boot_id"]
+    report["boot_transition"] = "continuing"
+    report["report_sequence"] = sequence
+    report["report_id"] = report_id_for(sequence)
+    report["generated_at"] = observed_at
+    restamp(report, observed_at)
+    template = report["nodes"][0]
+    inventory = list(report["inventory"]["nodes"])
+    nodes = []
+    inventory_nodes = []
+    for ordinal, (sync_block, consensus_block) in enumerate(zip(sync_blocks, consensus_blocks)):
+        node = copy.deepcopy(template)
+        node_id = state_node_id(ordinal)
+        node["node_id"] = node_id
+        node["chain"]["sync"] = sync_block
+        node["chain"]["consensus"] = consensus_block
+        nodes.append(node)
+        entry = copy.deepcopy(inventory[0])
+        entry["node_id"] = node_id
+        inventory_nodes.append(entry)
+    report["nodes"] = nodes
+    report["inventory"]["nodes"] = inventory_nodes
+    report["inventory"]["revision"] = inventory_revision
+    return report
+
+
+def state_history_url(
+    node_id: str,
+    component: str,
+    from_instant: str,
+    to_instant: str,
+    limit: int | None = None,
+    before: str | None = None,
+) -> str:
+    """The Owner-only recorded-state route (crates/platpulse-server/src/http/admin.rs
+    admin_node_state_history), query and all."""
+    path = STATE_HISTORY_PATH.format(node_id=node_id)
+    path += "?component=" + component + "&from=" + from_instant + "&to=" + to_instant
+    if limit is not None:
+        path += "&limit=" + str(limit)
+    if before is not None:
+        path += "&before=" + before
+    return path
+
+
+def node_height_history_url(node_id: str, metric: str, from_instant: str, to_instant: str, limit: int) -> str:
+    """One of the five chain height series, read back through the metric route
+    that already existed (crates/platpulse-server/src/http/admin.rs
+    admin_node_metric_history)."""
+    return history_url(
+        node_id,
+        metric,
+        "&from=" + from_instant + "&to=" + to_instant + "&limit=" + str(limit),
+    )
+
+
+def read_surface(client: Client, cookie: str, path: str) -> dict:
+    """One admin GET, answered or refused, with its parsed body and latency."""
+    status, headers, body, elapsed_ms = admin_get(client, cookie, path)
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        payload = {}
+    return {
+        "path": path,
+        "status": status,
+        "payload": payload,
+        "error": (payload.get("error") or {}) if isinstance(payload.get("error"), dict) else {},
+        "headers": headers,
+        "bytes": len(body),
+        "latency_ms": elapsed_ms,
+    }
+
+
+def state_rows(db_path: Path, node_id: str) -> dict:
+    """What the two recorded-state tables and the metric table hold for one
+    Node, read while the Server is stopped (the development-mode WAL holds one
+    writer at a time)."""
+    by_component = {}
+    kind_rows = {}
+    for row in sqlite_rows(
+        db_path,
+        "SELECT component, entry_kind, COUNT(*) AS rows FROM node_state_observations"
+        " WHERE node_id = '" + node_id + "' GROUP BY component, entry_kind",
+    ):
+        by_component[row["component"]] = by_component.get(row["component"], 0) + int(row["rows"])
+        kind_rows[str(row["entry_kind"])] = kind_rows.get(str(row["entry_kind"]), 0) + int(row["rows"])
+    ledger = {}
+    for row in sqlite_rows(
+        db_path,
+        "SELECT component, entry_count, change_count, anchor_count, replayed_count,"
+        " corrected_count, last_entry_at, last_observed_at FROM node_state_series_state"
+        " WHERE node_id = '" + node_id + "'",
+    ):
+        ledger[str(row["component"])] = {
+            "entry_count": int(row["entry_count"]),
+            "change_count": int(row["change_count"]),
+            "anchor_count": int(row["anchor_count"]),
+            "replayed_count": int(row["replayed_count"]),
+            "corrected_count": int(row["corrected_count"]),
+            "last_entry_at": row["last_entry_at"],
+            "last_observed_at": row["last_observed_at"],
+        }
+    heights = {}
+    for row in sqlite_rows(
+        db_path,
+        "SELECT metric, COUNT(*) AS rows, MIN(value) AS low, MAX(value) AS high"
+        " FROM node_metric_samples WHERE node_id = '" + node_id + "' GROUP BY metric",
+    ):
+        heights[str(row["metric"])] = {
+            "rows": int(row["rows"]),
+            "low": row["low"],
+            "high": row["high"],
+        }
+    return {
+        "node_id": node_id,
+        "observations": sqlite_scalar(
+            db_path, "SELECT COUNT(*) FROM node_state_observations WHERE node_id = '" + node_id + "'"
+        ),
+        "series_rows": sqlite_scalar(
+            db_path, "SELECT COUNT(*) FROM node_state_series_state WHERE node_id = '" + node_id + "'"
+        ),
+        "by_component": by_component,
+        "kinds": kind_rows,
+        "ledger": ledger,
+        "heights": heights,
+    }
+
+
+def state_plan(db_path: Path, sql: str, binds: tuple) -> list:
+    """The query plan the Server's own recorded-state statement produces with
+    its own binds, read from a read-only connection."""
+    connection = sqlite3.connect("file:" + str(db_path) + "?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = connection.execute("EXPLAIN QUERY PLAN " + sql, binds).fetchall()
+        return [dict(row)["detail"] for row in rows]
+    finally:
+        connection.close()
+
+
+def entry_instants(entries: list) -> list:
+    return [str(entry["observedAt"]) for entry in entries]
+
+
+def covered_windows(entries: list, anchor_seconds: int) -> list:
+    """The stretch each stored state speaks for: its own instant plus the
+    anchor window the Server declares
+    (crates/platpulse-server/src/state_history.rs STATE_ANCHOR_SECONDS)."""
+    return [
+        (str(entry["observedAt"]), shift_instant(str(entry["observedAt"]), anchor_seconds))
+        for entry in entries
+    ]
+
+
+def covered_seconds(windows: list, from_instant: str, to_instant: str) -> int:
+    """The union of entry windows, clipped to the answered range, in seconds."""
+    from_time = parse_instant(from_instant)
+    to_time = parse_instant(to_instant)
+    intervals = []
+    for start, end in windows:
+        low = max(parse_instant(start), from_time)
+        high = min(parse_instant(end), to_time)
+        if high > low:
+            intervals.append((low, high))
+    intervals.sort()
+    total = 0.0
+    current_low = None
+    current_high = None
+    for low, high in intervals:
+        if current_low is None:
+            current_low, current_high = low, high
+        elif low <= current_high:
+            current_high = max(current_high, high)
+        else:
+            total += (current_high - current_low).total_seconds()
+            current_low, current_high = low, high
+    if current_low is not None:
+        total += (current_high - current_low).total_seconds()
+    return int(total)
+
+
+def state_gap_kinds(entries_payload: dict) -> dict:
+    """The gaps an answer carries, counted by kind, with their skipped counts."""
+    counts = {}
+    skipped = {}
+    for gap in entries_payload.get("gaps") or []:
+        kind = str(gap.get("kind"))
+        counts[kind] = counts.get(kind, 0) + 1
+        skipped.setdefault(kind, []).append(gap.get("skippedCount"))
+    return {"counts": counts, "skipped": skipped}
 
 
 def node_with_all_series(template: dict, node_id: str, ordinal: int, cpu: float, observed_at: str) -> dict:
@@ -3102,6 +3494,513 @@ class BaselineRun:
             "wall_seconds": round(time.monotonic() - started, 3),
         }
 
+    def phase_state_history(self) -> dict:
+        """Issue #217: the recorded sync/consensus state log, the five chain
+        height series that ride the Node metric engine, and the Owner-only read
+        surface that answers them.
+
+        One fresh Agent owns two cloned Nodes and every Report of this phase
+        states both of them. The probe Node (ordinal 0) keeps the rows the
+        SQLite counts, the query plans and the paged walk are read from, and the
+        ledger Node (ordinal 1) is the one purged at the end. Both keep the
+        fixture's disabled process observation, so the only Node series they
+        ever state are the five heights issue #217 added
+        (crates/platpulse-server/src/metric_history.rs NODE_METRIC_SERIES).
+
+        The recorded vector holds only collection_state, value_source,
+        error_code and syncing (crates/platpulse-server/src/state_history.rs
+        StateVector), so a Report whose heights moved but whose vector did not
+        is a counted delivery that stores no second entry: sync changes when its
+        flag flips (units 0, 1 and 2) and then anchors once per 3600 s of
+        unchanged silence (units 8, 14 and 26), while the constant consensus
+        vector anchors at units 6, 12 and 26. One failure, repeated once, is one
+        change and one counted delivery that stores nothing.
+        """
+        started = time.perf_counter()
+        self.stop_server()
+        storage_before = self.sample_storage("state-before")
+        token = create_enrollment_token(self.binary, self.config)
+        self.start_server(CLEARED_FLOOR)
+        agent = enroll_agent(token, self.client)
+        self.agent = agent
+
+        probe = state_node_id(0)
+        ledger_node = state_node_id(1)
+        base = instant(-STATE_LEAD_SECONDS)
+        head = STATE_NODE_BLOCK * 1000
+
+        def at(unit: int) -> str:
+            """One instant of this phase's own rhythm."""
+            return shift_instant(base, unit * STATE_RHYTHM_SECONDS)
+
+        def height(unit: int, ordinal: int, index: int) -> int:
+            """One distinct value per stored series, so each of the five heights
+            is judged against its own list and the two Nodes cannot be taken for
+            one another."""
+            return head + unit * 5 + ordinal * 1000 + index
+
+        def chain_blocks(unit: int, syncing: bool, failed: bool) -> list:
+            blocks = []
+            for ordinal in range(2):
+                if failed:
+                    # An error carries no latest reading at all, which is what
+                    # makes the metric writer store no height for the two series
+                    # this component owns while the state log still records the
+                    # transition (crates/platpulse-server/src/http/
+                    # report_ingestion.rs metric_observed_at).
+                    blocks.append(
+                        (
+                            state_error_block(at(unit), unit, "probe_failed", "the chain probe failed"),
+                            state_error_block(at(unit), unit, "probe_failed", "the chain probe failed"),
+                        )
+                    )
+                else:
+                    blocks.append(
+                        (
+                            state_sync_block(
+                                at(unit), syncing, height(unit, ordinal, 0), height(unit, ordinal, 1), unit
+                            ),
+                            state_consensus_block(
+                                at(unit),
+                                height(unit, ordinal, 2),
+                                height(unit, ordinal, 3),
+                                height(unit, ordinal, 4),
+                                unit,
+                            ),
+                        )
+                    )
+            return blocks
+
+        deliveries = []
+
+        def deliver(unit: int, syncing: bool = False, failed: bool = False, kind: str = "state") -> dict:
+            blocks = chain_blocks(unit, syncing, failed)
+            report = state_report(
+                self.fixture,
+                agent,
+                0,
+                at(unit),
+                [pair[0] for pair in blocks],
+                [pair[1] for pair in blocks],
+                STATE_INVENTORY_REVISION,
+            )
+            receipt = self.submit(kind, at(unit), 1.0, 1, report=report, nodes=2)
+            entry = {
+                "unit": unit,
+                "instant": at(unit),
+                "kind": kind,
+                "failed": failed,
+                "syncing": None if failed else syncing,
+                "disposition": receipt["disposition"],
+                "reason": receipt["reason"],
+                "elapsed_ms": receipt["elapsed_ms"],
+            }
+            deliveries.append(entry)
+            return entry
+
+        # Fifteen Reports keep the rhythm, and the sync flag flips once: the
+        # vector it belongs to changes three times while the heights move on
+        # every single Report.
+        for unit in range(15):
+            deliver(unit, syncing=(unit == 1))
+        # Units 15 to 25 are silence: no Report arrives at all.
+        deliver(26)
+        # A failed chain probe: the transition is recorded, the heights are not.
+        deliver(27, failed=True)
+        # The very same failure again: counted, and no second entry.
+        deliver(28, failed=True)
+
+        # -- the low-space pause ----------------------------------------------
+        # The protection floor is raised and the paused Reports follow at once:
+        # the pause is in force without waiting for a sampler tick (the
+        # phase_load precedent), and a paused Report is still accepted.
+        self.restart_with_floor(MAX_PERSISTED_BYTES)
+        for unit in (29, 30, 31):
+            deliver(unit, kind="state paused")
+        # Stopping here is what makes the frozen ledger a plain SQLite read: the
+        # pause has closed nothing yet, and the three paused deliveries were
+        # counted as skipped instead of recorded.
+        self.stop_server()
+        frozen = {
+            "probe": state_rows(self.db_path, probe),
+            "ledger": state_rows(self.db_path, ledger_node),
+        }
+        self.start_server(CLEARED_FLOOR)
+        # Resuming closes the protection interval, and the recovered delivery
+        # records a state again.
+        recovery = deliver(32, kind="state resumed")
+
+        read_from = shift_instant(base, -STATE_RHYTHM_SECONDS)
+        read_to = instant(0)
+
+        def read_state(node_id: str, component: str, before=None, limit=None) -> dict:
+            return read_surface(
+                self.client,
+                self.cookie,
+                state_history_url(node_id, component, read_from, read_to, limit=limit, before=before),
+            )
+
+        sync_read = read_state(probe, "sync")
+        consensus_read = read_state(probe, "consensus")
+        ledger_sync_read = read_state(ledger_node, "sync")
+
+        latency = []
+        for _ in range(STATE_READS):
+            attempt = read_state(probe, "sync")
+            if attempt["status"] != 200:
+                raise BaselineError(
+                    "GET " + attempt["path"] + " answered " + str(attempt["status"]) + " instead of 200"
+                )
+            latency.append(attempt["latency_ms"])
+
+        page_one = read_state(probe, "sync", limit=STATE_PAGE_LIMIT)
+        continuation = page_one["payload"].get("continuation")
+        page_two = None
+        if isinstance(continuation, str):
+            page_two = read_state(probe, "sync", limit=STATE_PAGE_LIMIT, before=continuation)
+
+        unknown_node = clone_node_id(STATE_NODE_BLOCK, 9)
+        refusals = {
+            "unknown component": read_state(probe, "pouet"),
+            "unknown node": read_surface(
+                self.client, self.cookie, state_history_url(unknown_node, "sync", read_from, read_to)
+            ),
+            "before at from": read_state(probe, "sync", before=read_from),
+            "before past to": read_state(probe, "sync", before=shift_instant(read_to, 60)),
+            "clamped limit": read_state(probe, "sync", limit=STATE_MAX_LIMIT + 1),
+            "horizon straddled": read_surface(
+                self.client,
+                self.cookie,
+                state_history_url(probe, "sync", instant(-(STATE_RETENTION_DAYS * 86400 + 3600)), read_to),
+            ),
+            "horizon released": read_surface(
+                self.client,
+                self.cookie,
+                state_history_url(
+                    probe,
+                    "sync",
+                    instant(-(STATE_RETENTION_DAYS * 86400 + 7200)),
+                    instant(-(STATE_RETENTION_DAYS * 86400 + 3600)),
+                ),
+            ),
+        }
+
+        heights = {}
+        for label, node_id in (("probe", probe), ("ledger", ledger_node)):
+            series = {}
+            for metric in STATE_NODE_SERIES:
+                reading = read_surface(
+                    self.client,
+                    self.cookie,
+                    node_height_history_url(node_id, metric, read_from, read_to, STATE_DEFAULT_LIMIT),
+                )
+                payload = reading["payload"]
+                series[metric] = {
+                    "status": reading["status"],
+                    "latency_ms": reading["latency_ms"],
+                    "items": [
+                        {"observedAt": item.get("observedAt"), "value": item.get("value")}
+                        for item in payload.get("items") or []
+                    ],
+                    "gaps": payload.get("gaps"),
+                    # The Node metric answer states the series' own coverage and
+                    # counts (AdminMetricSeries,
+                    # crates/platpulse-server/src/http/admin.rs:4421-4458) and
+                    # states no cadence at all: AdminMetricHistoryResponse
+                    # (admin.rs:4489-4539) has no cadenceSeconds field, unlike the
+                    # state answer, whose cadenceSeconds is the state ledger's.
+                    "cadence_seconds": payload.get("cadenceSeconds"),
+                    "coverage_seconds": (payload.get("series") or {}).get("coverageSeconds"),
+                    "observation_count": (payload.get("series") or {}).get("observationCount"),
+                    "sampled_count": (payload.get("series") or {}).get("sampledCount"),
+                    "window_seconds": payload.get("windowSeconds"),
+                    "scope_kind": payload.get("scopeKind"),
+                    "scope_key": payload.get("scopeKey"),
+                }
+            heights[label] = series
+
+        # -- the purge ---------------------------------------------------------
+        def admin_post(path: str, payload: dict, session: str = "guarded") -> dict:
+            # A mutation needs the session cookie, the JSON content type, a
+            # matching Origin and the session's CSRF token
+            # (crates/platpulse-server/src/http/admin.rs:59-75 mutation_guard_ok,
+            # which answers 403 csrf_validation_failed). The two weaker requests
+            # below drop one of those on purpose: "no_token" keeps the session and
+            # the browser-shaped headers but omits x-csrf-token, and "anonymous"
+            # carries no session at all, which the auth middleware refuses with
+            # 401 before the guard is consulted.
+            headers = {"Content-Type": "application/json", "Origin": "http://127.0.0.1:" + str(self.port)}
+            if session != "anonymous":
+                headers["Cookie"] = self.cookie
+            if session == "guarded":
+                headers["x-csrf-token"] = self.csrf
+            status, _, body, elapsed_ms = self.client.request(
+                "POST", path, body=json_bytes(payload), headers=headers
+            )
+            try:
+                parsed = json.loads(body)
+            except ValueError:
+                parsed = {}
+            error = parsed.get("error") if isinstance(parsed.get("error"), dict) else {}
+            return {
+                "path": path,
+                "status": status,
+                "code": error.get("code"),
+                "message": error.get("message"),
+                "removed": parsed.get("removed"),
+                "latency_ms": elapsed_ms,
+                "bytes": len(body),
+            }
+
+        # The echoed Node ID is camelCase on the wire: NodePurgeRequest is
+        # #[serde(rename_all = "camelCase")] (admin.rs:422-426), so a snake_case
+        # body is refused as invalid_json before the confirmation is compared.
+        purge_path = "/api/admin/v1/nodes/" + ledger_node + "/purge"
+        mismatched = admin_post(purge_path, {"confirmNodeId": probe})
+        still_there = read_state(ledger_node, "sync")
+        anonymous = admin_post(purge_path, {"confirmNodeId": ledger_node}, session="anonymous")
+        unguarded = admin_post(purge_path, {"confirmNodeId": ledger_node}, session="no_token")
+        purged = admin_post(purge_path, {"confirmNodeId": ledger_node})
+        after_purge = {
+            "ledger": read_state(ledger_node, "sync"),
+            "probe": read_state(probe, "sync"),
+        }
+
+        self.stop_server()
+        storage_after = self.sample_storage("state-after")
+        rows_after = {
+            "probe": state_rows(self.db_path, probe),
+            "ledger": state_rows(self.db_path, ledger_node),
+        }
+        sql = {
+            "sync entries": sqlite_rows(
+                self.db_path,
+                "SELECT observed_at, entry_kind FROM node_state_observations WHERE node_id = '"
+                + probe
+                + "' AND component = 'sync' ORDER BY observed_at",
+            ),
+            "consensus entries": sqlite_rows(
+                self.db_path,
+                "SELECT observed_at, entry_kind FROM node_state_observations WHERE node_id = '"
+                + probe
+                + "' AND component = 'consensus' ORDER BY observed_at",
+            ),
+            "entries in the pause": sqlite_scalar(
+                self.db_path,
+                "SELECT COUNT(*) FROM node_state_observations WHERE node_id = '"
+                + probe
+                + "' AND observed_at >= '"
+                + at(29)
+                + "' AND observed_at <= '"
+                + at(31)
+                + "'",
+            ),
+            "heights at the failed and paused instants": sqlite_scalar(
+                self.db_path,
+                "SELECT COUNT(*) FROM node_metric_samples WHERE node_id = '"
+                + probe
+                + "' AND observed_at IN ('"
+                + "', '".join([at(27), at(28), at(29), at(30), at(31)])
+                + "')",
+            ),
+            "entries after the recovery": sqlite_scalar(
+                self.db_path,
+                "SELECT COUNT(*) FROM node_state_observations WHERE node_id IN ('"
+                + probe
+                + "', '"
+                + ledger_node
+                + "') AND observed_at > '"
+                + at(32)
+                + "'",
+            ),
+            "heights after the recovery": sqlite_scalar(
+                self.db_path,
+                "SELECT COUNT(*) FROM node_metric_samples WHERE node_id IN ('"
+                + probe
+                + "', '"
+                + ledger_node
+                + "') AND observed_at > '"
+                + at(32)
+                + "'",
+            ),
+            "state rows": sqlite_scalar(self.db_path, "SELECT COUNT(*) FROM node_state_observations"),
+            "state series": sqlite_scalar(self.db_path, "SELECT COUNT(*) FROM node_state_series_state"),
+            "skipped series": sqlite_rows(
+                self.db_path,
+                "SELECT metric, dimension, skipped_count, first_skipped_at, last_skipped_at"
+                " FROM capacity_skipped_series WHERE scope_kind = 'node' AND scope_key = '"
+                + probe
+                + "' ORDER BY metric",
+            ),
+        }
+        plans = {
+            "read": state_plan(
+                self.db_path, STATE_READ_SQL, (probe, "sync", read_from, read_to, STATE_DEFAULT_LIMIT)
+            ),
+            "paged": state_plan(
+                self.db_path,
+                STATE_READ_PAGED_SQL,
+                (probe, "sync", read_from, read_to, at(8), STATE_PAGE_LIMIT),
+            ),
+            "ledger": state_plan(self.db_path, STATE_LEDGER_SQL, (probe, "sync")),
+            "heights": state_plan(
+                self.db_path,
+                STATE_HEIGHT_SQL,
+                (probe, STATE_NODE_SERIES[0], read_from, read_to, STATE_DEFAULT_LIMIT),
+            ),
+        }
+
+        # -- what the arithmetic above must produce ---------------------------
+        stored_units = list(range(15)) + [26, 32]
+        sync_changes = [at(unit) for unit in (0, 1, 2, 27, 32)]
+        sync_anchors = [at(unit) for unit in (8, 14, 26)]
+        consensus_changes = [at(unit) for unit in (0, 27, 32)]
+        consensus_anchors = [at(unit) for unit in (6, 12, 26)]
+        sync_entries = sorted(sync_changes + sync_anchors)
+        consensus_entries = sorted(consensus_changes + consensus_anchors)
+        entry_count = len([entry for entry in deliveries if entry["kind"] != "state paused"])
+        frozen_count = len([entry for entry in deliveries if entry["unit"] <= 28])
+        span_seconds = stored_units[-1] * STATE_RHYTHM_SECONDS
+        sync_gaps = [
+            {"from": at(14), "to": at(26), "kind": "collection_gap", "skipped": None},
+            {"from": at(27), "to": at(32), "kind": "protection_pause", "skipped": STATE_PAUSE_REPORTS},
+        ]
+        consensus_gaps = [
+            {"from": at(12), "to": at(26), "kind": "collection_gap", "skipped": None},
+            {"from": at(27), "to": at(32), "kind": "protection_pause", "skipped": STATE_PAUSE_REPORTS},
+        ]
+        height_gaps = [
+            {"from": at(14), "to": at(26), "kind": "collection_gap", "skipped": None},
+            {"from": at(26), "to": at(32), "kind": "protection_pause", "skipped": STATE_PAUSE_REPORTS},
+        ]
+
+        def coverage(instants: list, gaps: list) -> int:
+            """What the answer counts as covered: the stretches between
+            consecutive entries, less the ones the answer itself calls a gap."""
+            total = 0
+            for left, right in zip(instants, instants[1:]):
+                if any(gap["from"] == left and gap["to"] == right for gap in gaps):
+                    continue
+                total += int((parse_instant(right) - parse_instant(left)).total_seconds())
+            return total
+
+        expect = {
+            "sync_changes": sync_changes,
+            "sync_anchors": sync_anchors,
+            "sync_entries": sync_entries,
+            "consensus_changes": consensus_changes,
+            "consensus_anchors": consensus_anchors,
+            "consensus_entries": consensus_entries,
+            "entry_count": entry_count,
+            "frozen_count": frozen_count,
+            "height_units": stored_units,
+            "heights": {
+                metric: {
+                    "probe": [height(unit, 0, index) for unit in stored_units],
+                    "ledger": [height(unit, 1, index) for unit in stored_units],
+                }
+                for index, metric in enumerate(STATE_NODE_SERIES)
+            },
+            # The product states one cadence per answered component, and it
+            # divides the span by the LEDGER's counted deliveries for BOTH
+            # components (crates/platpulse-server/src/state_history.rs:689
+            # delivery_cadence_seconds), not by the entries the component happens
+            # to have stored: consensus answers the same 1066 s cadence as sync
+            # even though it holds three changes and three anchors, not eight.
+            "sync_cadence_seconds": span_seconds // (entry_count - 1),
+            "consensus_cadence_seconds": span_seconds // (entry_count - 1),
+            # The rhythm between stored height samples. The Node metric answer
+            # states no cadence at all, so this is only the spacing its items have.
+            "height_rhythm_seconds": span_seconds // (len(stored_units) - 1),
+            "sync_gaps": sync_gaps,
+            "consensus_gaps": consensus_gaps,
+            "height_gaps": height_gaps,
+            "sync_coverage_seconds": coverage(sync_entries, sync_gaps),
+            "consensus_coverage_seconds": coverage(consensus_entries, consensus_gaps),
+            "height_coverage_seconds": coverage([at(unit) for unit in stored_units], height_gaps),
+            "frozen": {
+                "entry_count": frozen_count,
+                "last_entry_at": at(27),
+                "last_observed_at": at(28),
+            },
+            "pause": {"from": at(29), "to": at(31), "reports": STATE_PAUSE_REPORTS},
+            "skipped_series": sorted(list(STATE_COMPONENTS) + list(STATE_NODE_SERIES)),
+            "purge": {
+                "state_observations": len(sync_entries) + len(consensus_entries),
+                "state_series_state": len(STATE_COMPONENTS),
+            },
+            "read_window": {
+                "from": read_from,
+                "to": read_to,
+                # Both endpoints are wall-clock instants truncated to the second
+                # (instant() at scripts/metric-history-baseline.py:106), so the
+                # span the Server derives from them — its windowSeconds — can
+                # differ from the requested span by the truncation jitter at each
+                # end, which is why the check allows a few seconds.
+                "seconds": int((parse_instant(read_to) - parse_instant(read_from)).total_seconds()),
+                "tolerance_seconds": 3,
+            },
+        }
+
+        return {
+            "issue": 217,
+            "title": "Recorded synchronization and consensus state history",
+            "instrument": {
+                "agent_id": agent["agent_id"],
+                "agents": 1,
+                "nodes": 2,
+                "probe_node_id": probe,
+                "ledger_node_id": ledger_node,
+                "components": list(STATE_COMPONENTS),
+                "node_series": list(STATE_NODE_SERIES),
+                "reports": len(deliveries),
+                "rhythm_seconds": STATE_RHYTHM_SECONDS,
+                "lead_seconds": STATE_LEAD_SECONDS,
+                "anchor_seconds": STATE_ANCHOR_SECONDS,
+                "page_limit": STATE_PAGE_LIMIT,
+                "pause_reports": STATE_PAUSE_REPORTS,
+                "reads": STATE_READS,
+                "retention_days": STATE_RETENTION_DAYS,
+                "cleanup_batch": STATE_CLEANUP_BATCH,
+                "max_state_rows_per_report": MAX_STATE_ROWS_PER_REPORT,
+                "read_index": STATE_READ_INDEX,
+                "ledger_index": STATE_LEDGER_INDEX,
+                "forbidden_plans": list(STATE_READ_FORBIDDEN_PLANS),
+                "height_forbidden_plans": list(STATE_HEIGHT_FORBIDDEN_PLANS),
+                "mount": mount_conditions(self.state_dir),
+                "hardware": hardware_conditions(),
+                "database_bytes": storage_after["database_bytes"],
+                "sampled_at": storage_after["at"],
+            },
+            "deliveries": deliveries,
+            "expect": expect,
+            "reads": {
+                "sync": sync_read,
+                "consensus": consensus_read,
+                "ledger node sync": ledger_sync_read,
+                "before purge": still_there,
+                "after purge": after_purge,
+                "page one": page_one,
+                "page two": page_two,
+                "refusals": refusals,
+                "latency_ms": latency,
+                "heights": heights,
+            },
+            "frozen": frozen,
+            "recovery": recovery,
+            "purge": {
+                "mismatched": mismatched,
+                "anonymous": anonymous,
+                "unguarded": unguarded,
+                "purged": purged,
+            },
+            "sql": sql,
+            "plans": plans,
+            "rows_after": rows_after,
+            "storage": {"before": storage_before, "after": storage_after},
+            "wall_seconds": round(time.perf_counter() - started, 3),
+        }
+
     def phase_storage(self) -> dict:
         self.stop_server()
         tables = (
@@ -3150,6 +4049,7 @@ class BaselineRun:
         storage: dict,
         host: dict,
         mount: dict,
+        state: dict,
     ) -> list:
         full = reads["24h"]
         planned = self.planned_coverage()
@@ -3986,7 +4886,7 @@ class BaselineRun:
                 and host_bounds["max_host_rows_per_report"] == 264
                 and host_bounds["server_max_host_rows_per_report"] == 266
                 and host_bounds["host_metric_cleanup_batch"] == 512
-                and host_bounds["aggregate_cleanup_batch"] == 2048
+                and host_bounds["aggregate_cleanup_batch"] == 4096
                 and host_bounds["host_metric_cleanup_batch"] >= host_bounds["server_max_host_rows_per_report"]
                 and host_bounds["aggregate_cleanup_batch"] >= host_bounds["server_max_host_rows_per_report"],
             ),
@@ -4494,6 +5394,735 @@ class BaselineRun:
                 and mount_read["latency_ms"]["p50"] > 0,
             ),
         ])
+        # -- the recorded sync/consensus state and chain height surface (issue #217)
+        st_probe = state["instrument"]["probe_node_id"]
+        st_ledger_node = state["instrument"]["ledger_node_id"]
+        st_expect = state["expect"]
+        def st_payload(answer: dict) -> dict:
+            """read_surface answers wrap the parsed body; these checks compare the
+            body itself, the way the phase's own paging walk does."""
+            st_body = answer.get("payload")
+            return st_body if isinstance(st_body, dict) else answer
+
+        st_sync = st_payload(state["reads"]["sync"])
+        st_consensus = st_payload(state["reads"]["consensus"])
+        st_ledger_answer = st_payload(state["reads"]["ledger node sync"])
+        st_refusals = state["reads"]["refusals"]
+        st_page_one = st_payload(state["reads"]["page one"])
+        st_page_two_answer = state["reads"]["page two"]
+        st_page_two = None if st_page_two_answer is None else st_payload(st_page_two_answer)
+        st_heights = state["reads"]["heights"]
+        st_sql = state["sql"]
+        st_plans = state["plans"]
+        st_rows_after = state["rows_after"]
+        st_deliveries = state["deliveries"]
+        st_frozen = state["frozen"]
+
+        def st_entries(answer: dict) -> list:
+            return [item.get("observedAt") for item in answer.get("entries") or []]
+
+        def st_last(values: list):
+            """A missing answer must fail a check, never crash the instrument."""
+            return values[-1] if values else None
+
+        def st_kind(answer: dict, kind: str) -> list:
+            return [
+                item.get("observedAt")
+                for item in answer.get("entries") or []
+                if item.get("entryKind") == kind
+            ]
+
+        def st_gaps(answer: dict) -> list:
+            return [
+                {
+                    "from": item.get("from"),
+                    "to": item.get("to"),
+                    "kind": item.get("kind"),
+                    "skipped": item.get("skippedCount"),
+                }
+                for item in answer.get("gaps") or []
+            ]
+
+        def st_series(component: str) -> dict:
+            return (st_sync if component == "sync" else st_consensus).get("series") or {}
+
+        def st_accepted() -> int:
+            return len(
+                [
+                    entry
+                    for entry in st_deliveries
+                    if entry["disposition"] in ("accepted", "partially_accepted")
+                ]
+            )
+
+        st_spacings = {}
+        for st_component in STATE_COMPONENTS:
+            st_previous = None
+            st_walk = []
+            for st_row in st_sql[st_component + " entries"]:
+                if st_row["entry_kind"] == "anchor":
+                    st_walk.append(
+                        None
+                        if st_previous is None
+                        else int(
+                            (
+                                parse_instant(st_row["observed_at"]) - parse_instant(st_previous)
+                            ).total_seconds()
+                        )
+                    )
+                st_previous = st_row["observed_at"]
+            st_spacings[st_component] = st_walk
+
+        st_height_ok = {}
+        for st_label, st_node in (("probe", st_probe), ("ledger", st_ledger_node)):
+            st_matched = 0
+            st_ascending = 0
+            for st_metric, st_series_expect in st_expect["heights"].items():
+                st_reading = st_heights[st_label][st_metric]
+                st_items = sorted(
+                    st_reading["items"], key=lambda item: item["observedAt"] or ""
+                )
+                st_observed = [float(item["value"]) for item in st_items]
+                st_wanted = [float(value) for value in st_series_expect[st_label]]
+                if st_reading["status"] == 200 and st_observed == st_wanted:
+                    st_matched += 1
+                if [item["observedAt"] for item in st_items] == [
+                    item["observedAt"] for item in st_reading["items"]
+                ]:
+                    st_ascending += 1
+            st_height_ok[st_label] = {"matched": st_matched, "ascending": st_ascending}
+
+        st_height_gaps = 0
+        for st_metric in STATE_NODE_SERIES:
+            if st_gaps(st_heights["probe"][st_metric]) == st_expect["height_gaps"]:
+                st_height_gaps += 1
+        if st_gaps(st_heights["ledger"]["sync_current_block"]) == st_expect["height_gaps"]:
+            st_height_gaps += 1
+
+        st_read_plans = {
+            "read": st_plans["read"],
+            "paged": st_plans["paged"],
+            "ledger": st_plans["ledger"],
+            "heights": st_plans["heights"],
+        }
+
+        def st_seeks(plan: list, index: str) -> bool:
+            return any(index in detail and "SEARCH" in detail for detail in plan)
+
+        def st_forbidden(plan: list, tokens: list) -> list:
+            return [detail for detail in plan if any(token in detail for token in tokens)]
+
+        st_pages = [st_page_one]
+        if st_page_two is not None:
+            st_pages.append(st_page_two)
+        st_walked = []
+        for st_page in reversed(st_pages):
+            st_walked.extend(st_entries(st_page))
+
+        checks.extend([
+            check(
+                "every state Report was accepted, and the failed probes with it",
+                str(len(st_deliveries))
+                + " Reports accepted ("
+                + str(len([entry for entry in st_deliveries if entry["failed"]]))
+                + " of them failed chain probes)",
+                json.dumps(
+                    {
+                        "reports": state["instrument"]["reports"],
+                        "accepted": st_accepted(),
+                        "failed": len([entry for entry in st_deliveries if entry["failed"]]),
+                        "paused": len([entry for entry in st_deliveries if entry["kind"] != "state"]),
+                        "rejections": [entry["reason"] for entry in st_deliveries if entry["disposition"] not in ("accepted", "partially_accepted")],
+                    }
+                ),
+                st_accepted() == len(st_deliveries)
+                and len([entry for entry in st_deliveries if entry["failed"]]) == 2,
+            ),
+            check(
+                "the state surface is declared with its window, its anchor rule and its bound",
+                "components sync and consensus, "
+                + str(STATE_RETENTION_DAYS)
+                + " day retention, "
+                + str(STATE_ANCHOR_SECONDS)
+                + " s anchors, a "
+                + str(STATE_CLEANUP_BATCH)
+                + " row cleanup batch that covers one maximal state Report of "
+                + str(MAX_STATE_ROWS_PER_REPORT)
+                + " rows",
+                json.dumps(
+                    {
+                        "components": sorted(list(st_series("sync").get("components") or []) + list(st_series("consensus").get("components") or []))
+                        or state["instrument"]["components"],
+                        "retentionDays": st_sync.get("retentionDays"),
+                        "anchorSeconds": st_sync.get("anchorSeconds"),
+                        "windowSeconds": st_sync.get("windowSeconds"),
+                        "series_windowSeconds": st_series("sync").get("windowSeconds"),
+                        "requested_window_seconds": st_expect["read_window"]["seconds"],
+                        "cleanup_batch": state["instrument"]["cleanup_batch"],
+                        "max_state_rows_per_report": state["instrument"]["max_state_rows_per_report"],
+                        "node_series": state["instrument"]["node_series"],
+                    }
+                ),
+                state["instrument"]["components"] == list(STATE_COMPONENTS)
+                and st_sync.get("retentionDays") == STATE_RETENTION_DAYS
+                and st_sync.get("anchorSeconds") == STATE_ANCHOR_SECONDS
+                # The answered window is the requested range, not the anchor
+                # window: anchorSeconds declares the 3600 s silence rule, while
+                # windowSeconds is the span of what was asked for, and the series
+                # states the same span.
+                and st_series("sync").get("windowSeconds") == st_sync.get("windowSeconds")
+                and abs(
+                    (st_sync.get("windowSeconds") if isinstance(st_sync.get("windowSeconds"), int) else -10**9)
+                    - st_expect["read_window"]["seconds"]
+                )
+                <= st_expect["read_window"]["tolerance_seconds"]
+                and state["instrument"]["cleanup_batch"] >= state["instrument"]["max_state_rows_per_report"],
+            ),
+            check(
+                "the two Nodes state the five chain heights as their own series",
+                "5 stored height series per Node, each answering "
+                + str(len(st_expect["height_units"]))
+                + " own values",
+                json.dumps(
+                    {
+                        "stored_series": sorted((st_rows_after["probe"]["heights"] or {}).keys()),
+                        "probe": st_height_ok["probe"],
+                        "ledger": st_height_ok["ledger"],
+                        "expected_series": sorted(STATE_NODE_SERIES),
+                    }
+                ),
+                sorted((st_rows_after["probe"]["heights"] or {}).keys()) == sorted(STATE_NODE_SERIES)
+                and st_height_ok["probe"]["matched"] == len(STATE_NODE_SERIES)
+                and st_height_ok["ledger"]["matched"] == len(STATE_NODE_SERIES)
+                and st_height_ok["probe"]["ascending"] == len(STATE_NODE_SERIES),
+            ),
+            check(
+                "a chain height is stored once per passing Report and read back by height",
+                "each of the five series holds "
+                + str(len(st_expect["height_units"]))
+                + " samples for the probe Node",
+                json.dumps(
+                    {
+                        st_metric: (st_rows_after["probe"]["heights"] or {}).get(st_metric)
+                        for st_metric in STATE_NODE_SERIES
+                    }
+                ),
+                all(
+                    ((st_rows_after["probe"]["heights"] or {}).get(st_metric) or {}).get("rows") == len(st_expect["height_units"])
+                    for st_metric in STATE_NODE_SERIES
+                ),
+            ),
+            check(
+                "a failed chain probe stores no height, and a paused delivery none either",
+                "0 height rows at the failed instants and the paused instants",
+                json.dumps(
+                    {
+                        "heights_at_failed_and_paused": st_sql["heights at the failed and paused instants"],
+                        "expected": 0,
+                    }
+                ),
+                st_sql["heights at the failed and paused instants"] == 0,
+            ),
+            check(
+                "a failed chain probe is still a counted delivery",
+                "the two failed Reports are counted in the ledger while only one entry records the transition",
+                json.dumps(
+                    {
+                        "failed_deliveries": len([entry for entry in st_deliveries if entry["failed"]]),
+                        "counted_before_the_pause": (st_frozen["probe"]["ledger"] or {}).get("sync", {}).get("entry_count"),
+                        "frozen_count": st_expect["frozen_count"],
+                    }
+                ),
+                len([entry for entry in st_deliveries if entry["failed"]]) == 2
+                and (st_frozen["probe"]["ledger"] or {}).get("sync", {}).get("entry_count") == st_expect["frozen_count"],
+            ),
+            check(
+                "one change entry per state transition, and nothing at all while no Report arrives",
+                "sync changes at "
+                + json.dumps(st_expect["sync_changes"])
+                + " and no entry between "
+                + st_expect["sync_anchors"][1]
+                + " and "
+                + st_expect["sync_anchors"][2]
+                + " where eleven Reports were skipped",
+                json.dumps(
+                    {
+                        "changes": st_kind(st_sync, "change"),
+                        "silent_stretch_entries": [
+                            instant_value
+                            for instant_value in st_entries(st_sync)
+                            if st_expect["sync_anchors"][1] < instant_value < st_expect["sync_anchors"][2]
+                        ],
+                        "consensus_changes": st_kind(st_consensus, "change"),
+                    }
+                ),
+                st_kind(st_sync, "change") == st_expect["sync_changes"]
+                and st_kind(st_consensus, "change") == st_expect["consensus_changes"]
+                and [
+                    instant_value
+                    for instant_value in st_entries(st_sync)
+                    if st_expect["sync_anchors"][1] < instant_value < st_expect["sync_anchors"][2]
+                ]
+                == [],
+            ),
+            check(
+                "the heights moving is not a state change: the unchanged vector anchors instead",
+                "sync anchors at "
+                + json.dumps(st_expect["sync_anchors"])
+                + " and consensus anchors at "
+                + json.dumps(st_expect["consensus_anchors"]),
+                json.dumps(
+                    {
+                        "sync_anchors": st_kind(st_sync, "anchor"),
+                        "consensus_anchors": st_kind(st_consensus, "anchor"),
+                        "sync_entries": st_entries(st_sync),
+                        "consensus_entries": st_entries(st_consensus),
+                    }
+                ),
+                st_kind(st_sync, "anchor") == st_expect["sync_anchors"]
+                and st_kind(st_consensus, "anchor") == st_expect["consensus_anchors"]
+                and st_entries(st_sync) == st_expect["sync_entries"]
+                and st_entries(st_consensus) == st_expect["consensus_entries"],
+            ),
+            check(
+                "an anchor is written only after an hour of unchanged silence",
+                "every anchor at least "
+                + str(STATE_ANCHOR_SECONDS)
+                + " s after the entry before it, for both components",
+                json.dumps(st_spacings),
+                all(
+                    spacing is not None and spacing >= STATE_ANCHOR_SECONDS
+                    for walk in st_spacings.values()
+                    for spacing in walk
+                )
+                and st_spacings == {"sync": [3600, 3600, 7200], "consensus": [3600, 3600, 8400]},
+            ),
+            check(
+                "the per-component ledger counts the deliveries, the changes and the anchors",
+                "sync entry_count "
+                + str(st_expect["entry_count"])
+                + " / change_count 5 / anchor_count 3, consensus entry_count "
+                + str(st_expect["entry_count"])
+                + " / change_count 3 / anchor_count 3, no replay and no correction",
+                json.dumps(
+                    {
+                        "sync": (st_rows_after["probe"]["ledger"] or {}).get("sync"),
+                        "consensus": (st_rows_after["probe"]["ledger"] or {}).get("consensus"),
+                    }
+                ),
+                all(
+                    (st_rows_after["probe"]["ledger"] or {}).get(st_component, {}).get("entry_count") == st_expect["entry_count"]
+                    and (st_rows_after["probe"]["ledger"] or {}).get(st_component, {}).get("change_count")
+                    == len(st_expect[st_component + "_changes"])
+                    and (st_rows_after["probe"]["ledger"] or {}).get(st_component, {}).get("anchor_count")
+                    == len(st_expect[st_component + "_anchors"])
+                    and (st_rows_after["probe"]["ledger"] or {}).get(st_component, {}).get("replayed_count") == 0
+                    and (st_rows_after["probe"]["ledger"] or {}).get(st_component, {}).get("corrected_count") == 0
+                    and (st_rows_after["probe"]["ledger"] or {}).get(st_component, {}).get("last_entry_at")
+                    == st_expect[st_component + "_entries"][-1]
+                    for st_component in STATE_COMPONENTS
+                ),
+            ),
+            check(
+                "the read surface answers the entries oldest first, with their ledger and their window",
+                "sync answers its "
+                + str(len(st_expect["sync_entries"]))
+                + " entries oldest first with entry_count "
+                + str(st_expect["entry_count"])
+                + " and cadence "
+                + str(st_expect["sync_cadence_seconds"])
+                + " s",
+                json.dumps(
+                    {
+                        "entries": st_entries(st_sync),
+                        "entry_count": st_series("sync").get("entryCount"),
+                        "change_count": st_series("sync").get("changeCount"),
+                        "anchor_count": st_series("sync").get("anchorCount"),
+                        "cadence_seconds": st_sync.get("cadenceSeconds"),
+                        "window_seconds": st_sync.get("windowSeconds"),
+                        "anchor_seconds": st_sync.get("anchorSeconds"),
+                        "node_id": st_sync.get("nodeId"),
+                        "component": st_sync.get("component"),
+                        "coverage_seconds": st_sync.get("coverageSeconds"),
+                        "consensus_cadence_seconds": st_consensus.get("cadenceSeconds"),
+                    }
+                ),
+                st_entries(st_sync) == st_expect["sync_entries"]
+                and st_entries(st_consensus) == st_expect["consensus_entries"]
+                and st_series("sync").get("entryCount") == st_expect["entry_count"]
+                and st_series("sync").get("changeCount") == len(st_expect["sync_changes"])
+                and st_series("sync").get("anchorCount") == len(st_expect["sync_anchors"])
+                and st_sync.get("cadenceSeconds") == st_expect["sync_cadence_seconds"]
+                and st_consensus.get("cadenceSeconds") == st_expect["consensus_cadence_seconds"]
+                and st_sync.get("nodeId") == st_probe
+                and st_sync.get("component") == "sync"
+                and st_sync.get("from") == st_expect["read_window"]["from"]
+                and st_sync.get("to") == st_expect["read_window"]["to"],
+            ),
+            check(
+                "the read surface accounts for its coverage and its gaps",
+                "sync coverage "
+                + str(st_expect["sync_coverage_seconds"])
+                + " s with two gaps, consensus coverage "
+                + str(st_expect["consensus_coverage_seconds"])
+                + " s with two gaps",
+                json.dumps(
+                    {
+                        "sync": {"coverage": st_sync.get("coverageSeconds"), "gaps": st_gaps(st_sync)},
+                        "consensus": {
+                            "coverage": st_consensus.get("coverageSeconds"),
+                            "gaps": st_gaps(st_consensus),
+                        },
+                    }
+                ),
+                st_sync.get("coverageSeconds") == st_expect["sync_coverage_seconds"]
+                and st_consensus.get("coverageSeconds") == st_expect["consensus_coverage_seconds"]
+                and st_gaps(st_sync) == st_expect["sync_gaps"]
+                and st_gaps(st_consensus) == st_expect["consensus_gaps"],
+            ),
+            check(
+                "a stretch with no recorded entry is a collection gap, and it carries no loss count",
+                "neither surface claims a skipped count for the silent stretch",
+                json.dumps(
+                    {
+                        "sync": [gap for gap in st_gaps(st_sync) if gap["kind"] == "collection_gap"],
+                        "consensus": [gap for gap in st_gaps(st_consensus) if gap["kind"] == "collection_gap"],
+                    }
+                ),
+                all(
+                    gap["skipped"] is None
+                    for answer in (st_sync, st_consensus)
+                    for gap in st_gaps(answer)
+                    if gap["kind"] == "collection_gap"
+                ),
+            ),
+            check(
+                "the two Nodes read their own heights, and the height series reports the pause",
+                "5 series on the probe Node answer the expected gaps, and the ledger Node's sync_current_block does too",
+                json.dumps(
+                    {
+                        "matching_probe_series": [
+                            st_metric
+                            for st_metric in STATE_NODE_SERIES
+                            if st_gaps(st_heights["probe"][st_metric]) == st_expect["height_gaps"]
+                        ],
+                        "sync_current_block_height_coverage": st_heights["probe"]["sync_current_block"].get("coverage_seconds"),
+                        "sync_current_block_sampled": st_heights["probe"]["sync_current_block"].get("sampled_count"),
+                        "sync_current_block_items": len(st_heights["probe"]["sync_current_block"].get("items") or []),
+                        "sync_current_block_cadence": st_heights["probe"]["sync_current_block"].get("cadence_seconds"),
+                        "measured_height_rhythm_seconds": st_expect["height_rhythm_seconds"],
+                        "ledger_node_sync_current_block": st_gaps(st_heights["ledger"]["sync_current_block"]),
+                        "ledger_node_scope_key": st_heights["ledger"]["sync_current_block"].get("scope_key"),
+                    }
+                ),
+                st_height_gaps == len(STATE_NODE_SERIES) + 1
+                and st_heights["probe"]["sync_current_block"].get("coverage_seconds") == st_expect["height_coverage_seconds"]
+                and len(st_heights["probe"]["sync_current_block"].get("items") or []) == len(st_expect["height_units"])
+                # The metric route states no cadence for a Node series
+                # (AdminMetricHistoryResponse has no cadenceSeconds field), so the
+                # answer must leave it unstated rather than invent one.
+                and st_heights["probe"]["sync_current_block"].get("cadence_seconds") is None
+                and st_heights["ledger"]["sync_current_block"].get("scope_key") == st_ledger_node,
+            ),
+            check(
+                "the same low-space pause appears on both surfaces, carrying its loss count",
+                "the sync state read and the sync height series both report one protection pause over "
+                + st_expect["pause"]["from"]
+                + " to "
+                + st_expect["pause"]["to"]
+                + " skipping "
+                + str(st_expect["pause"]["reports"])
+                + " deliveries",
+                json.dumps(
+                    {
+                        "state_pauses": [gap for gap in st_gaps(st_sync) if gap["kind"] == "protection_pause"],
+                        "height_pauses": [
+                            gap
+                            for gap in st_gaps(st_heights["probe"]["sync_current_block"])
+                            if gap["kind"] == "protection_pause"
+                        ],
+                    }
+                ),
+                [gap for gap in st_gaps(st_sync) if gap["kind"] == "protection_pause"]
+                == [gap for gap in st_expect["sync_gaps"] if gap["kind"] == "protection_pause"]
+                and [
+                    gap
+                    for gap in st_gaps(st_heights["probe"]["sync_current_block"])
+                    if gap["kind"] == "protection_pause"
+                ] == [gap for gap in st_expect["height_gaps"] if gap["kind"] == "protection_pause"],
+            ),
+            check(
+                "a paused Report records no state entry and does not move the ledger",
+                "0 state rows inside the paused stretch, and both components still led by "
+                + st_expect["frozen"]["last_entry_at"],
+                json.dumps(
+                    {
+                        "entries_in_the_pause": st_sql["entries in the pause"],
+                        "frozen": {
+                            st_component: (st_frozen["probe"]["ledger"] or {}).get(st_component)
+                            for st_component in STATE_COMPONENTS
+                        },
+                    }
+                ),
+                st_sql["entries in the pause"] == 0
+                and all(
+                    (st_frozen["probe"]["ledger"] or {}).get(st_component, {}).get("entry_count") == st_expect["frozen"]["entry_count"]
+                    and (st_frozen["probe"]["ledger"] or {}).get(st_component, {}).get("last_entry_at") == st_expect["frozen"]["last_entry_at"]
+                    and (st_frozen["probe"]["ledger"] or {}).get(st_component, {}).get("last_observed_at") == st_expect["frozen"]["last_observed_at"]
+                    for st_component in STATE_COMPONENTS
+                ),
+            ),
+            check(
+                "the paused deliveries are counted as skipped series, keyed by component and by height",
+                str(len(st_expect["skipped_series"]))
+                + " series each carrying a skipped count of "
+                + str(st_expect["pause"]["reports"])
+                + " for the probe Node",
+                json.dumps(st_sql["skipped series"]),
+                sorted([row["metric"] for row in st_sql["skipped series"]]) == st_expect["skipped_series"]
+                and all(
+                    row["skipped_count"] == st_expect["pause"]["reports"]
+                    and row["dimension"] == ""
+                    and row["first_skipped_at"] == st_expect["pause"]["from"]
+                    and row["last_skipped_at"] == st_expect["pause"]["to"]
+                    for row in st_sql["skipped series"]
+                ),
+            ),
+            check(
+                "a resumed Report records a state again",
+                "the recovery delivery at "
+                + st_expect["sync_entries"][-1]
+                + " is a change row for both components",
+                json.dumps(
+                    {
+                        "sync_last_entry": st_last(st_entries(st_sync)),
+                        "consensus_last_entry": st_last(st_entries(st_consensus)),
+                        "recovery": state["recovery"],
+                    }
+                ),
+                st_last(st_entries(st_sync)) == st_expect["sync_changes"][-1]
+                and st_last(st_entries(st_consensus)) == st_expect["consensus_changes"][-1]
+                and state["recovery"]["disposition"] in ("accepted", "partially_accepted"),
+            ),
+            check(
+                "the read window is what was asked for, and an out-of-window cursor is refused",
+                "availability is unclaimed inside the retained window, the page cursor must satisfy from < before <= to",
+                json.dumps(
+                    {
+                        "in_window_availability": st_sync.get("availability"),
+                        "straddling_availability": st_refusals["horizon straddled"]["payload"].get("availability"),
+                        "released_availability": st_refusals["horizon released"]["payload"].get("availability"),
+                        "before_at_from": {
+                            "status": st_refusals["before at from"]["status"],
+                            "code": (st_refusals["before at from"]["payload"].get("error") or {}).get("code"),
+                        },
+                        "before_past_to": {
+                            "status": st_refusals["before past to"]["status"],
+                            "code": (st_refusals["before past to"]["payload"].get("error") or {}).get("code"),
+                        },
+                    }
+                ),
+                st_sync.get("availability") is None
+                and st_refusals["horizon straddled"]["payload"].get("availability") == "partial"
+                and st_refusals["horizon released"]["payload"].get("availability") == "unavailable"
+                and st_refusals["before at from"]["status"] == 400
+                and (st_refusals["before at from"]["payload"].get("error") or {}).get("code") == "invalid_history_range"
+                and st_refusals["before past to"]["status"] == 400
+                and (st_refusals["before past to"]["payload"].get("error") or {}).get("code") == "invalid_history_range",
+            ),
+            check(
+                "an unknown component and an unknown Node are refused",
+                "400 invalid_component and 404",
+                json.dumps(
+                    {
+                        "unknown_component": {
+                            "status": st_refusals["unknown component"]["status"],
+                            "code": (st_refusals["unknown component"]["payload"].get("error") or {}).get("code"),
+                        },
+                        "unknown_node": {"status": st_refusals["unknown node"]["status"]},
+                        "clamped_limit": {
+                            "status": st_refusals["clamped limit"]["status"],
+                            "entries": len(st_entries(st_payload(st_refusals["clamped limit"]))),
+                        },
+                    }
+                ),
+                st_refusals["unknown component"]["status"] == 400
+                and (st_refusals["unknown component"]["payload"].get("error") or {}).get("code") == "invalid_component"
+                and st_refusals["unknown node"]["status"] == 404
+                and st_refusals["clamped limit"]["status"] == 200
+                and len(st_entries(st_payload(st_refusals["clamped limit"]))) == len(st_expect["sync_entries"]),
+            ),
+            check(
+                "the before cursor pages older without a hole",
+                "page one answers the newest "
+                + str(STATE_PAGE_LIMIT)
+                + " entries and hands back the oldest of them as the cursor; the older page ends the walk",
+                json.dumps(
+                    {
+                        "page_one": {
+                            "entries": st_entries(st_page_one),
+                            "truncated": st_page_one.get("truncated"),
+                            "continuation": st_page_one.get("continuation"),
+                        },
+                        "page_two": None
+                        if st_page_two is None
+                        else {
+                            "entries": st_entries(st_page_two),
+                            "truncated": st_page_two.get("truncated"),
+                            "continuation": st_page_two.get("continuation"),
+                        },
+                        "walked": st_walked,
+                    }
+                ),
+                st_page_two is not None
+                and len(st_entries(st_page_one)) == STATE_PAGE_LIMIT
+                and st_page_one.get("truncated") is True
+                and st_page_one.get("continuation") == st_expect["sync_entries"][-STATE_PAGE_LIMIT]
+                and st_page_two.get("truncated") is False
+                and st_page_two.get("continuation") is None
+                and st_entries(st_page_two) == st_expect["sync_entries"][: -STATE_PAGE_LIMIT]
+                and st_walked == st_expect["sync_entries"],
+            ),
+            check(
+                "the recorded state is read with a bounded query, not with a scan",
+                "SEARCH "
+                + STATE_READ_INDEX
+                + " on the read and the paged plan, SEARCH "
+                + STATE_LEDGER_INDEX
+                + " on the ledger, and no "
+                + json.dumps(list(STATE_READ_FORBIDDEN_PLANS))
+                + " anywhere",
+                json.dumps(st_read_plans),
+                st_seeks(st_plans["read"], STATE_READ_INDEX)
+                and st_seeks(st_plans["paged"], STATE_READ_INDEX)
+                and st_seeks(st_plans["ledger"], STATE_LEDGER_INDEX)
+                and not st_forbidden(st_plans["read"], list(STATE_READ_FORBIDDEN_PLANS))
+                and not st_forbidden(st_plans["paged"], list(STATE_READ_FORBIDDEN_PLANS))
+                and not st_forbidden(st_plans["ledger"], list(STATE_READ_FORBIDDEN_PLANS)),
+            ),
+            check(
+                "a chain height is read back by the metric engine's own bounded statement",
+                "SEARCH node_metric_samples with no "
+                + json.dumps(list(STATE_HEIGHT_FORBIDDEN_PLANS)),
+                json.dumps(st_plans["heights"]),
+                st_seeks(st_plans["heights"], "node_metric_samples")
+                and not st_forbidden(st_plans["heights"], list(STATE_HEIGHT_FORBIDDEN_PLANS)),
+            ),
+            check(
+                "the state read surface answers under measured latency",
+                str(STATE_READS) + " real reads with a positive p50",
+                json.dumps({"latency_ms": state["reads"]["latency_ms"]}),
+                len(state["reads"]["latency_ms"]) == STATE_READS
+                and percentile(state["reads"]["latency_ms"], 0.5) > 0,
+            ),
+            check(
+                "a purge without the mutation guard and a purge with a mismatched confirmation both change nothing",
+                "401 auth_required without a session, 403 csrf_validation_failed with a session but no CSRF token, 400 confirmation_mismatch for a mismatched confirmation, with the rows still there afterwards",
+                json.dumps(
+                    {
+                        "anonymous": state["purge"]["anonymous"],
+                        "unguarded": state["purge"]["unguarded"],
+                        "mismatched": state["purge"]["mismatched"],
+                        "still_there": {
+                            "status": state["reads"]["before purge"]["status"],
+                            # read_surface wraps the parsed body, so the body has to
+                            # be unwrapped before its entries are read.
+                            "entries": len(st_entries(st_payload(state["reads"]["before purge"]))),
+                        },
+                    }
+                ),
+                # A mutation with no session is refused by the auth middleware
+                # before the mutation guard is consulted, and a session without the
+                # token is refused by the guard itself
+                # (crates/platpulse-server/src/http/admin.rs:59-75).
+                state["purge"]["anonymous"]["status"] == 401
+                and state["purge"]["anonymous"]["code"] == "auth_required"
+                and state["purge"]["anonymous"]["removed"] is None
+                and state["purge"]["unguarded"]["status"] == 403
+                and state["purge"]["unguarded"]["code"] == "csrf_validation_failed"
+                and state["purge"]["unguarded"]["removed"] is None
+                and state["purge"]["mismatched"]["status"] == 400
+                and state["purge"]["mismatched"]["code"] == "confirmation_mismatch"
+                and state["purge"]["mismatched"]["removed"] is None
+                and state["reads"]["before purge"]["status"] == 200
+                and len(st_entries(st_payload(state["reads"]["before purge"]))) == len(st_expect["sync_entries"]),
+            ),
+            check(
+                "a purge removes the Node's recorded state and its ledger rows",
+                "the answer counts "
+                + str(st_expect["purge"]["state_observations"])
+                + " state entries and "
+                + str(st_expect["purge"]["state_series_state"])
+                + " ledger rows removed",
+                json.dumps(
+                    {
+                        "status": state["purge"]["purged"]["status"],
+                        "removed": state["purge"]["purged"]["removed"],
+                    }
+                ),
+                state["purge"]["purged"]["status"] == 200
+                and isinstance(state["purge"]["purged"]["removed"], dict)
+                and state["purge"]["purged"]["removed"].get("state_observations") == st_expect["purge"]["state_observations"]
+                and state["purge"]["purged"]["removed"].get("state_series_state") == st_expect["purge"]["state_series_state"],
+            ),
+            check(
+                "the purged Node is gone from the surface and from the tables, and the other Node is untouched",
+                "the purged Node answers 404 with 0 rows, the probe Node still answers "
+                + str(len(st_expect["sync_entries"]))
+                + " entries and keeps its "
+                + str(st_expect["purge"]["state_observations"])
+                + " rows and its "
+                + str(st_expect["purge"]["state_series_state"])
+                + " ledger rows",
+                json.dumps(
+                    {
+                        "ledger_read": state["reads"]["after purge"]["ledger"]["status"],
+                        "probe_read": {
+                            "status": state["reads"]["after purge"]["probe"]["status"],
+                            "entries": len(st_entries(st_payload(state["reads"]["after purge"]["probe"]))),
+                        },
+                        "ledger_rows": st_rows_after["ledger"],
+                        "probe_rows": {
+                            "observations": st_rows_after["probe"]["observations"],
+                            "series_rows": st_rows_after["probe"]["series_rows"],
+                            "by_component": st_rows_after["probe"]["by_component"],
+                        },
+                    }
+                ),
+                state["reads"]["after purge"]["ledger"]["status"] == 404
+                and st_rows_after["ledger"]["observations"] == 0
+                and st_rows_after["ledger"]["series_rows"] == 0
+                and state["reads"]["after purge"]["probe"]["status"] == 200
+                and len(st_entries(st_payload(state["reads"]["after purge"]["probe"]))) == len(st_expect["sync_entries"])
+                and st_rows_after["probe"]["observations"] == st_expect["purge"]["state_observations"]
+                and st_rows_after["probe"]["series_rows"] == st_expect["purge"]["state_series_state"],
+            ),
+            check(
+                "the state phase measured its own sampling conditions",
+                "one Agent, two Nodes, "
+                + str(len(st_deliveries))
+                + " Reports at a "
+                + str(STATE_RHYTHM_SECONDS)
+                + " s rhythm on a "
+                + str(state["instrument"]["rhythm_seconds"])
+                + " s cadence",
+                json.dumps(
+                    {
+                        "instrument": state["instrument"],
+                        "storage": state["storage"],
+                        "wall_seconds": state["wall_seconds"],
+                        "global_state_rows": st_sql["state rows"],
+                        "global_state_series": st_sql["state series"],
+                    }
+                ),
+                state["instrument"]["agents"] == 1
+                and state["instrument"]["nodes"] == 2
+                and state["instrument"]["reports"] == len(st_deliveries)
+                and state["instrument"]["database_bytes"] > 0
+                and st_sql["state rows"] >= st_expect["purge"]["state_observations"]
+                and st_sql["state series"] >= st_expect["purge"]["state_series_state"],
+            ),
+        ])
         return checks
 
     # -- orchestration -----------------------------------------------------
@@ -4545,8 +6174,13 @@ class BaselineRun:
         # family audit above and keeps its own rows outside the exact counts every
         # earlier phase asserts.
         mount = self.phase_mount_coverage()
+        # The recorded state phase (issue #217) runs last: it enrolls its own Agent
+        # with two cloned Nodes, plants a low-space pause of its own and purges one
+        # of those Nodes, so every count it asserts is scoped to the Nodes it
+        # created and no earlier exact count can see its rows.
+        state = self.phase_state_history()
         checks = self.evaluate(
-            load, restatements, release, reads, multi_node, tiers, storage, host, mount
+            load, restatements, release, reads, multi_node, tiers, storage, host, mount, state
         )
         return {
             "issue": 213,
@@ -4561,6 +6195,7 @@ class BaselineRun:
                 "tiers": tiers,
                 "host": host,
                 "mounts": mount,
+                "state": state,
                 "storage": storage,
             },
             "checks": checks,
@@ -4589,9 +6224,19 @@ class BaselineRun:
                 " Node of that Agent, and not split per Node, is measured here, but the separation between two"
                 " Agents is measured by scripts/capacity-baseline.py and by"
                 " crates/platpulse-server/tests/host_metric_history.rs:1115 instead.",
-                "No low-space pause was produced in this run, so the per-mount accounting of a paused series"
-                " (two mounts, two counted losses) is registered by scripts/capacity-baseline.py and by"
+                "No low-space pause was produced by the load phases above: the pause this report measures is"
+                " the issue #217 phase's own, and it covers the recorded state surface and the sync height"
+                " series on both sides of it. The per-mount accounting of a paused series (two mounts, two"
+                " counted losses) is still registered by scripts/capacity-baseline.py and by"
                 " crates/platpulse-server/tests/host_metric_history.rs:1295 rather than measured here.",
+                "The recorded state phase compresses its own clock: every state instant it plants is real, but"
+                " the eleven silent Reports and the"
+                " " + str(STATE_ANCHOR_SECONDS) + "s anchor rule were produced without waiting that long in"
+                " wall time, and the three paused Reports were submitted back to back inside one protection"
+                " interval.",
+                "The recorded state surface was measured on one Agent with two cloned Nodes: that the ledger is"
+                " per Node is measured here, while the separation across Agents is registered by"
+                " scripts/capacity-baseline.py.",
                 "The load fixture states no mount, so a maximal Host Report of 264 rows is registered as a"
                 " bound (MAX_HOST_ROWS_PER_REPORT) rather than produced: the largest Host Report the load path"
                 " submitted carried two mounts. The mount family itself is measured by the issue #216 phase,"
@@ -4617,6 +6262,7 @@ def write_markdown_report(report: dict, path: Path) -> None:
     storage = report["phases"]["storage"]
     host = report["phases"]["host"]
     mount = report["phases"]["mounts"]
+    state = report["phases"]["state"]
     lines = []
     lines.append("# Issue #213 Story 47 baseline — raw 24 hour Node metric history")
     lines.append("")
@@ -5197,6 +6843,172 @@ def write_markdown_report(report: dict, path: Path) -> None:
         + str(mount["wall_seconds"])
         + " seconds"
     )
+    lines.append("## Recorded synchronization state history (issue #217)")
+    lines.append("")
+    lines.append(
+        "- Conditions: one Agent ("
+        + state["instrument"]["agent_id"]
+        + ") enrolled for this phase alone, "
+        + str(state["instrument"]["nodes"])
+        + " cloned Nodes (probe "
+        + state["instrument"]["probe_node_id"]
+        + ", ledger "
+        + state["instrument"]["ledger_node_id"]
+        + ") stated by every Report, "
+        + str(state["instrument"]["reports"])
+        + " Reports at a "
+        + str(state["instrument"]["rhythm_seconds"])
+        + "s rhythm over a "
+        + str(state["instrument"]["lead_seconds"])
+        + "s lead, components "
+        + json.dumps(state["instrument"]["components"])
+        + ", retained "
+        + str(state["instrument"]["retention_days"])
+        + " days, anchored after "
+        + str(state["instrument"]["anchor_seconds"])
+        + "s of unchanged silence, a cleanup batch of "
+        + str(state["instrument"]["cleanup_batch"])
+        + " rows against a maximal state Report of "
+        + str(state["instrument"]["max_state_rows_per_report"])
+        + " rows, read "
+        + str(state["instrument"]["reads"])
+        + " times through "
+        + state["instrument"]["read_index"]
+        + " and led by "
+        + state["instrument"]["ledger_index"]
+    )
+    lines.append(
+        "- Sampling: "
+        + str(state["instrument"]["hardware"]["cpu_count"])
+        + " CPUs, "
+        + human_bytes(state["instrument"]["hardware"]["memory_total_bytes"])
+        + " memory, "
+        + str(state["instrument"]["mount"]["filesystem_type"])
+        + " with "
+        + human_bytes(state["instrument"]["mount"]["available_bytes"])
+        + " available, "
+        + human_bytes(state["instrument"]["database_bytes"])
+        + " of database at "
+        + state["instrument"]["sampled_at"]
+        + "; the phase took "
+        + str(state["wall_seconds"])
+        + " seconds over "
+        + str(len(state["deliveries"]))
+        + " Reports"
+    )
+    lines.append(
+        "- Recorded: sync "
+        + str(len(state["expect"]["sync_changes"]))
+        + " changes + "
+        + str(len(state["expect"]["sync_anchors"]))
+        + " anchors, consensus "
+        + str(len(state["expect"]["consensus_changes"]))
+        + " changes + "
+        + str(len(state["expect"]["consensus_anchors"]))
+        + " anchors, "
+        + str(state["expect"]["entry_count"])
+        + " counted deliveries per component; cadence sync "
+        + str(state["reads"]["sync"]["payload"]["cadenceSeconds"])
+        + "s and consensus "
+        + str(state["reads"]["consensus"]["payload"]["cadenceSeconds"])
+        + "s, coverage sync "
+        + str(state["reads"]["sync"]["payload"]["coverageSeconds"])
+        + "s and consensus "
+        + str(state["reads"]["consensus"]["payload"]["coverageSeconds"])
+        + "s, gaps "
+        + json.dumps(state["reads"]["sync"]["payload"]["gaps"])
+        + " and "
+        + json.dumps(state["reads"]["consensus"]["payload"]["gaps"])
+    )
+    lines.append(
+        "- Chain heights: "
+        + str(len(state["instrument"]["node_series"]))
+        + " series per Node, "
+        + str(len(state["expect"]["height_units"]))
+        + " samples each, returned as "
+        + str(len(state["reads"]["heights"]["probe"]["sync_current_block"]["items"]))
+        + " items spaced "
+        + str(state["expect"]["height_rhythm_seconds"])
+        + "s apart (this route states no cadence) over "
+        + str(state["reads"]["heights"]["probe"]["sync_current_block"]["coverage_seconds"])
+        + "s of coverage, "
+        + json.dumps(state["reads"]["heights"]["probe"]["sync_current_block"]["gaps"])
+        + "; stored rows per series "
+        + json.dumps(state["rows_after"]["probe"]["heights"])
+        + "; the probe Node keeps "
+        + str(state["rows_after"]["probe"]["observations"])
+        + " state rows over "
+        + str(state["rows_after"]["probe"]["series_rows"])
+        + " ledger rows "
+        + json.dumps(state["rows_after"]["probe"]["by_component"])
+    )
+    lines.append(
+        "- Frozen across the pause: both components held at entry_count "
+        + str(state["expect"]["frozen"]["entry_count"])
+        + ", last entry "
+        + state["expect"]["frozen"]["last_entry_at"]
+        + " and last observed "
+        + state["expect"]["frozen"]["last_observed_at"]
+        + " while "
+        + str(len(state["sql"]["skipped series"]))
+        + " series counted "
+        + str(state["expect"]["pause"]["reports"])
+        + " deliveries each as skipped between "
+        + state["expect"]["pause"]["from"]
+        + " and "
+        + state["expect"]["pause"]["to"]
+    )
+    lines.append(
+        "- Read surface: "
+        + str(len(state["reads"]["latency_ms"]))
+        + " reads at p50 "
+        + str(percentile(state["reads"]["latency_ms"], 0.5))
+        + "ms and p95 "
+        + str(percentile(state["reads"]["latency_ms"], 0.95))
+        + "ms; page one carried "
+        + str(len(state["reads"]["page one"]["payload"]["entries"]))
+        + " entries truncated with the cursor "
+        + str(state["reads"]["page one"]["payload"]["continuation"])
+        + " and page two carried "
+        + str(
+            len(state["reads"]["page two"]["payload"]["entries"]) if state["reads"]["page two"] is not None else 0
+        )
+        + " older entries ending the walk; refusals "
+        + json.dumps(
+            {
+                name: [entry["status"], (entry["payload"].get("error") or {}).get("code")]
+                for name, entry in state["reads"]["refusals"].items()
+            }
+        )
+    )
+    lines.append(
+        "- Plans: "
+        + json.dumps(state["plans"])
+    )
+    lines.append(
+        "- Purge: an anonymous purge answered "
+        + str(state["purge"]["anonymous"]["status"])
+        + " "
+        + str(state["purge"]["anonymous"]["code"])
+        + ", a session without the CSRF token answered "
+        + str(state["purge"]["unguarded"]["status"])
+        + " "
+        + str(state["purge"]["unguarded"]["code"])
+        + ", a mismatched confirmation answered "
+        + str(state["purge"]["mismatched"]["status"])
+        + " "
+        + str(state["purge"]["mismatched"]["code"])
+        + ", and the real purge removed "
+        + json.dumps(state["purge"]["purged"]["removed"])
+        + "; the purged Node then answered "
+        + str(state["reads"]["after purge"]["ledger"]["status"])
+        + " while the probe Node answered "
+        + str(state["reads"]["after purge"]["probe"]["status"])
+        + " with "
+        + str(len(state["reads"]["after purge"]["probe"]["payload"]["entries"]))
+        + " entries"
+    )
+    lines.append("")
     lines.append("")
     lines.append("## Checks")
     lines.append("")

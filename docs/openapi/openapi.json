@@ -3584,6 +3584,135 @@
         }
       }
     },
+    "/api/admin/v1/nodes/{node_id}/state-history": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_node_state_history",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "description": "Node ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "component",
+            "in": "query",
+            "description": "Recorded state component: sync or consensus",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Canonical RFC 3339 UTC start of the range, second precision (default: 24 hours before to)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Canonical RFC 3339 UTC end of the range, second precision (default: now)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Canonical RFC 3339 UTC exclusive upper bound for paging: the continuation coordinate a truncated answer returned",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum recorded states across the answer",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "maximum": 20000,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminStateHistoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/nodes/{node_id}/transfers": {
       "get": {
         "tags": [
@@ -8370,6 +8499,8 @@
           "metric_samples",
           "metric_series_state",
           "metric_aggregates",
+          "state_observations",
+          "state_series_state",
           "capacity_skipped_series",
           "validator_links",
           "validator_identity_status",
@@ -8472,6 +8603,16 @@
           "rpc_namespaces": {
             "type": "integer",
             "format": "int64"
+          },
+          "state_observations": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Recorded sync/consensus state entries (issue #217)."
+          },
+          "state_series_state": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The recorded-state series ledger."
           },
           "total_owned_rows": {
             "type": "integer",
@@ -8771,6 +8912,333 @@
             "format": "int64"
           },
           "sample_count": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AdminStateEntry": {
+        "type": "object",
+        "description": "One recorded state of a Node component, with the timing evidence that\nbelongs to it.\n\nThe evidence of a state is a state vector, never a number: the collection\nstate, where the value came from, which failure was reported and the sync\nflag as it was observed. A failure is therefore recorded as a failure, and a\nvalue the Agent could not refresh keeps the instant it was really observed\nat, so no surface has to invent a transition or read Unknown as zero\n(design §11.7, §5.1; issue #217).",
+        "required": [
+          "observedAt",
+          "receivedAt",
+          "entryKind",
+          "collectionState",
+          "valueSource",
+          "clockSuspect"
+        ],
+        "properties": {
+          "clockNote": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "clockSuspect": {
+            "type": "boolean",
+            "description": "The observation is stamped after the receipt: the Agent clock is ahead."
+          },
+          "collectionState": {
+            "type": "string",
+            "description": "`starting`, `ok`, `error`, `disabled` or `unsupported`."
+          },
+          "delaySeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The Agent-to-Server delay of this delivery."
+          },
+          "entryKind": {
+            "type": "string",
+            "description": "`change` for a delivery whose state differs from the state before it,\n`anchor` for one that re-recorded an unchanged state."
+          },
+          "errorCode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The failure the Agent reported, when the collection failed."
+          },
+          "observedAt": {
+            "type": "string",
+            "description": "The instant the Node was heard from: the entry coordinate."
+          },
+          "receivedAt": {
+            "type": "string",
+            "description": "The instant the Server received the Report that carried it."
+          },
+          "syncing": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The sync flag, present only where the collection succeeded: a failed\nprobe is unknown, never false."
+          },
+          "valueObservedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The instant of the value this state refers to. It is older than\nobserved_at for a last-good state, so the age of the value can be read\ninstead of a fresh-looking timestamp."
+          },
+          "valueSource": {
+            "type": "string",
+            "description": "`current`, `last_good` or `none`."
+          }
+        }
+      },
+      "AdminStateGap": {
+        "type": "object",
+        "description": "A stretch of the window in which the record shows nothing, because either\nnobody reported or protection paused recording.\n\nReported as a gap with its kind, so no surface bridges silence with a\nconstant state, calls a missing report a normal period, or reads a pause as\na change (design §11.7, §11.5; issue #217).",
+        "required": [
+          "from",
+          "to",
+          "seconds",
+          "kind",
+          "reason"
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`collection_gap` (nobody observed) or `protection_pause` (the operator\nchose to pause collection)."
+          },
+          "reason": {
+            "type": "string"
+          },
+          "seconds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "skippedCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Counted losses behind a `protection_pause`."
+          },
+          "to": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminStateHistoryResponse": {
+        "type": "object",
+        "description": "Owner-only recorded state history for one Node component (issue #217,\ndesign §11.7): the recorded state changes and hourly anchors, the\nsilences between them, and the state of the series behind them.",
+        "required": [
+          "nodeId",
+          "component",
+          "from",
+          "to",
+          "requestedFrom",
+          "retentionDays",
+          "anchorSeconds",
+          "cadenceSeconds",
+          "coverageSeconds",
+          "windowSeconds",
+          "entries",
+          "gaps",
+          "series",
+          "truncated"
+        ],
+        "properties": {
+          "anchorSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long an unchanged state may go unrecorded before an anchor is\nwritten, so a reader can tell an unchanged state from a missing report."
+          },
+          "availability": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`None` while the whole requested range is answerable, `partial` when it\nwas clamped to the retention horizon, `unavailable` when it is older than\nany retained history."
+          },
+          "cadenceSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The reporting cadence of the Node, or zero when it is unknown: the\ncadence the silences were judged against."
+          },
+          "component": {
+            "type": "string",
+            "description": "`sync` or `consensus`."
+          },
+          "continuation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the answer is truncated, the coordinate to pass back as `before` for\nthe next, older page."
+          },
+          "coverageSeconds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminStateEntry"
+            }
+          },
+          "from": {
+            "type": "string",
+            "description": "The answered range, after clamping to the retention horizon."
+          },
+          "gaps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminStateGap"
+            }
+          },
+          "nodeId": {
+            "type": "string"
+          },
+          "requestedFrom": {
+            "type": "string",
+            "description": "The range the caller asked for, so a clamped or paged answer says what it\nclamped or narrowed."
+          },
+          "retentionDays": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The configured window of this family, which is also its whole horizon:\nrecorded states have no aggregate tiers."
+          },
+          "series": {
+            "$ref": "#/components/schemas/AdminStateSeries"
+          },
+          "to": {
+            "type": "string",
+            "description": "The answered range end: the requested `to`, or the exclusive paging\ncursor when the caller paged with `before`."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the window held more entries than the caller limit: the newest\nare returned and the rest is reported, never dropped silently."
+          },
+          "windowSeconds": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AdminStateSeries": {
+        "type": "object",
+        "description": "What the Server knows about the recorded-state series itself, independent of\nthe requested window.",
+        "required": [
+          "observed",
+          "entryCount",
+          "changeCount",
+          "anchorCount",
+          "replayedCount",
+          "correctedCount",
+          "entriesReturned",
+          "coverageSeconds",
+          "windowSeconds"
+        ],
+        "properties": {
+          "anchorCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Counted deliveries that re-recorded an unchanged state."
+          },
+          "changeCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Counted deliveries that recorded a state change."
+          },
+          "correctedCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Deliveries that disagreed with the row already held for their instant."
+          },
+          "coverageSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The seconds the returned entries account for: only the stretch between\ntwo recorded states counts, never the stretch after the newest one."
+          },
+          "entriesReturned": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many entries this answer carries."
+          },
+          "entryCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Counted deliveries, including the ones that wrote no row because the\nstate had not changed."
+          },
+          "firstObservedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The oldest instant the series ever counted, even when its row was\nreleased."
+          },
+          "lastObservedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The newest instant the series ever counted."
+          },
+          "lastReceivedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The instant the newest counted Report arrived."
+          },
+          "latestCollectionState": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The state of the newest counted delivery, which is the Server latest\nword on this component even when its row was released."
+          },
+          "latestErrorCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "latestSyncing": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "latestValueObservedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "latestValueSource": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed": {
+            "type": "boolean",
+            "description": "False when this Node never had a state recorded: shown as absent, not as\na state."
+          },
+          "releasedBefore": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The floor this series last stamped for evidence its window released, so\na missing early entry is a boundary and not a quiet start."
+          },
+          "replayedCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Deliveries of an instant the log had already counted."
+          },
+          "windowSeconds": {
             "type": "integer",
             "format": "int64"
           }
@@ -10500,7 +10968,7 @@
           "skippedSampleCount": {
             "type": "integer",
             "format": "int64",
-            "description": "Optional readings counted as skipped during this interval, every series\ntogether."
+            "description": "Optional readings counted as skipped during this interval, every series\ntogether. Recorded synchronization and consensus states are optional\nreadings too, so they are counted here beside the metric samples."
           },
           "skippedSeries": {
             "type": "array",
@@ -10655,7 +11123,7 @@
       },
       "CapacitySkippedSeriesDto": {
         "type": "object",
-        "description": "One series whose optional history lost samples while protection was active.",
+        "description": "One series whose optional history lost readings while protection was active.",
         "required": [
           "scopeKind",
           "scopeKey",

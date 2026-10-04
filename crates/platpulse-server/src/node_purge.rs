@@ -68,6 +68,15 @@ pub struct NodePurgeCounts {
     /// They are Node-owned history in the same sense as the samples they
     /// summarize, and a Purge removes them with the Node.
     pub metric_aggregates: i64,
+    /// Recorded sync/consensus state entries (issue #217): what the Node
+    /// reported about its own synchronization state, at each instant it
+    /// changed or re-asserted it. They are evidence about this Node alone.
+    pub state_observations: i64,
+    /// The recorded-state series ledger: which components this Node ever
+    /// reported state for, and how much of it the Server counted. It carries no
+    /// state value and is Node-owned history in the same sense as the metric
+    /// series ledger.
+    pub state_series_state: i64,
     /// Node-scoped gap evidence recorded while optional history was paused.
     pub capacity_skipped_series: i64,
     pub validator_links: i64,
@@ -102,6 +111,8 @@ impl NodePurgeCounts {
         self.metric_samples += other.metric_samples;
         self.metric_series_state += other.metric_series_state;
         self.metric_aggregates += other.metric_aggregates;
+        self.state_observations += other.state_observations;
+        self.state_series_state += other.state_series_state;
         self.capacity_skipped_series += other.capacity_skipped_series;
         self.validator_links += other.validator_links;
         self.validator_identity_status += other.validator_identity_status;
@@ -133,6 +144,8 @@ impl NodePurgeCounts {
             + self.metric_samples
             + self.metric_series_state
             + self.metric_aggregates
+            + self.state_observations
+            + self.state_series_state
             + self.capacity_skipped_series
             + self.validator_links
             + self.validator_identity_status
@@ -223,6 +236,8 @@ pub async fn measure(
         metric_samples: count(connection, "node_metric_samples", &node_id).await?,
         metric_series_state: count(connection, "node_metric_series_state", &node_id).await?,
         metric_aggregates: count(connection, "node_metric_aggregates", &node_id).await?,
+        state_observations: count(connection, "node_state_observations", &node_id).await?,
+        state_series_state: count(connection, "node_state_series_state", &node_id).await?,
         capacity_skipped_series: count_where(
             connection,
             "capacity_skipped_series",
@@ -345,6 +360,11 @@ pub async fn remove(connection: &mut SqliteConnection, node_id: &str) -> Result<
         "node_metric_samples",
         "node_metric_series_state",
         "node_metric_aggregates",
+        // Recorded sync/consensus state and the series ledger behind it: the
+        // state is Node-scoped monitoring history, so a Purge takes it with the
+        // Node (issue #217).
+        "node_state_observations",
+        "node_state_series_state",
         // Node Validator Links, automatic-identity status, and management history.
         "node_validator_identity_status",
         "node_validator_links",

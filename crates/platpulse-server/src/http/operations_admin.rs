@@ -2296,7 +2296,7 @@ pub struct CapacitySampleDto {
     pub available_bytes: u64,
 }
 
-/// One series whose optional history lost samples while protection was active.
+/// One series whose optional history lost readings while protection was active.
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CapacitySkippedSeriesDto {
@@ -2342,7 +2342,8 @@ pub struct CapacityIntervalDto {
     pub resumed_available_bytes: Option<u64>,
     pub updated_at: String,
     /// Optional readings counted as skipped during this interval, every series
-    /// together.
+    /// together. Recorded synchronization and consensus states are optional
+    /// readings too, so they are counted here beside the metric samples.
     pub skipped_sample_count: i64,
     /// How many series counted at least one skipped reading.
     pub skipped_series_total: i64,

@@ -437,11 +437,12 @@ async fn optional_history_pauses_under_pressure_and_recovers_with_a_visible_gap(
         "the interval stays open while the pressure lasts"
     );
     assert_eq!(
-        open.skipped_sample_count, 10,
-        "the eight Host series one Report carries and the two Node process series \
-         produced ten samples"
+        open.skipped_sample_count, 14,
+        "the eight Host series, the two Node process series, the two Node key \
+         heights and the two recorded-state components one Report carries \
+         produced fourteen skipped deliveries"
     );
-    assert_eq!(open.skipped_series_total, 10);
+    assert_eq!(open.skipped_series_total, 14);
     let metrics = skipped_series_keys(open);
     for expected in [
         "cpu_percent",
@@ -454,6 +455,13 @@ async fn optional_history_pauses_under_pressure_and_recovers_with_a_visible_gap(
         "network_tx_bytes_per_sec",
         "process_cpu_percent",
         "process_memory_percent",
+        // Issue #217: a paused Node also loses its key consensus heights,
+        // which are numeric series, and its recorded sync/consensus state
+        // deliveries, which are named by the component rather than the metric.
+        "sync_current_block",
+        "sync_highest_block",
+        "sync",
+        "consensus",
     ] {
         assert!(
             metrics.contains(&expected),
@@ -484,7 +492,10 @@ async fn optional_history_pauses_under_pressure_and_recovers_with_a_visible_gap(
         overview["activeIntervalId"],
         Value::String(open.interval_id.clone())
     );
-    assert_eq!(overview["recentIntervals"][0]["skippedSampleCount"], 10);
+    // Issue #217: a paused Node also loses its five key heights and its two
+    // recorded sync/consensus state deliveries, so the Owner sees the whole
+    // cost of the pause through the same surface.
+    assert_eq!(overview["recentIntervals"][0]["skippedSampleCount"], 14);
     assert!(
         overview["recentIntervals"][0]["skippedSeries"][0]["metric"]
             .as_str()
@@ -531,7 +542,13 @@ async fn optional_history_pauses_under_pressure_and_recovers_with_a_visible_gap(
         8,
         "one Report states its Host's cpu, memory, load and network once each"
     );
-    assert_eq!(harness.count("node_metric_samples").await, 2);
+    assert_eq!(
+        harness.count("node_metric_samples").await,
+        4,
+        "the resumed Report stores its two process series and the two key heights\
+         it states; the fixture's consensus component is unsupported, so it\
+         states no height at all"
+    );
 
     let intervals = recent_intervals(harness.pool(), ADMIN_RECENT_INTERVAL_LIMIT)
         .await
@@ -549,11 +566,12 @@ async fn optional_history_pauses_under_pressure_and_recovers_with_a_visible_gap(
     );
     assert!(closed.resumed_total_bytes.unwrap() > 0);
     assert_eq!(
-        closed.skipped_sample_count, 10,
-        "ending the interval keeps the record of what was lost"
+        closed.skipped_sample_count, 14,
+        "ending the interval keeps the record of what was lost, key heights and\
+         recorded states included"
     );
     assert_eq!(
-        closed.skipped_series_total, 10,
+        closed.skipped_series_total, 14,
         "the visible gap survives the recovery"
     );
 }
@@ -613,7 +631,7 @@ async fn a_tick_adopts_an_open_interval_the_startup_read_missed() {
         .await
         .unwrap();
     assert_eq!(intervals[0].interval_id, ORPHAN_INTERVAL);
-    assert_eq!(intervals[0].skipped_sample_count, 10);
+    assert_eq!(intervals[0].skipped_sample_count, 14);
 
     // And when the pressure is gone, a tick closes the adopted interval instead
     // of leaving it open forever.
@@ -738,7 +756,7 @@ async fn a_replayed_reading_is_not_counted_as_a_second_lost_sample() {
         .await
         .unwrap();
     assert_eq!(intervals.len(), 1);
-    assert_eq!(intervals[0].skipped_sample_count, 10);
+    assert_eq!(intervals[0].skipped_sample_count, 14);
 
     // The second Report is a new Report (new id, later generation time) that
     // replays the same readings at the same observation times.
@@ -774,12 +792,17 @@ async fn a_replayed_reading_is_not_counted_as_a_second_lost_sample() {
         .await
         .unwrap();
     assert_eq!(intervals.len(), 1, "the replay opens no second interval");
+    // The ten metric series and the two sync heights keep the observation times
+    // they already lost, so replaying them counts nothing new. The consensus
+    // component never attempted, so its state delivery is stamped with the
+    // Report's own generation time: the replay states a later instant, and that
+    // one delivery is lost again rather than counted twice over the same one.
     assert_eq!(
-        intervals[0].skipped_sample_count, 10,
-        "a replayed Report is still ten lost samples, not twenty"
+        intervals[0].skipped_sample_count, 15,
+        "a replayed reading is not counted twice at one instant"
     );
-    assert_eq!(intervals[0].skipped_series_total, 10);
-    assert_eq!(harness.count("capacity_skipped_series").await, 10);
+    assert_eq!(intervals[0].skipped_series_total, 14);
+    assert_eq!(harness.count("capacity_skipped_series").await, 14);
     assert_eq!(harness.count("host_metric_samples").await, 0);
     assert_eq!(harness.count("node_metric_samples").await, 0);
 }

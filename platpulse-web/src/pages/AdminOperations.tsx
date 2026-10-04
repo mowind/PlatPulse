@@ -200,7 +200,7 @@ function CapacityPanel() {
                         Pause floor
                       </th>
                       <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
-                        Skipped samples
+                        Skipped readings
                       </th>
                       <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
                         Series affected
@@ -232,7 +232,7 @@ function CapacityPanel() {
                         <td data-label="Pause floor" className="min-w-0 px-3 py-3">
                           {formatBytesUnknown(interval.pauseBelowBytes)}
                         </td>
-                        <td data-label="Skipped samples" className="min-w-0 px-3 py-3">
+                        <td data-label="Skipped readings" className="min-w-0 px-3 py-3">
                           {String(interval.skippedSampleCount)}
                         </td>
                         <td data-label="Series affected" className="min-w-0 px-3 py-3">
@@ -299,7 +299,7 @@ function CapacityPanel() {
                     {interval.skippedSeriesTotal > interval.skippedSeries.length && (
                       <p className="text-xs text-muted-foreground">
                         The Server lists the worst {String(interval.skippedSeries.length)} series;{' '}
-                        {String(interval.skippedSeriesTotal)} series lost samples in total.
+                        {String(interval.skippedSeriesTotal)} series lost readings in total.
                       </p>
                     )}
                   </div>

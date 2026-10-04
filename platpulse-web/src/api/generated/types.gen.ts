@@ -620,6 +620,14 @@ export type AdminNodePurgeCounts = {
     process_observations: number;
     rpc_methods: number;
     rpc_namespaces: number;
+    /**
+     * Recorded sync/consensus state entries (issue #217).
+     */
+    state_observations: number;
+    /**
+     * The recorded-state series ledger.
+     */
+    state_series_state: number;
     total_owned_rows: number;
     transfers: number;
     validator_identity_status: number;
@@ -715,6 +723,222 @@ export type AdminPeerLagSummary = {
     maximum?: number | null;
     minimum?: number | null;
     sample_count: number;
+};
+
+/**
+ * One recorded state of a Node component, with the timing evidence that
+ * belongs to it.
+ *
+ * The evidence of a state is a state vector, never a number: the collection
+ * state, where the value came from, which failure was reported and the sync
+ * flag as it was observed. A failure is therefore recorded as a failure, and a
+ * value the Agent could not refresh keeps the instant it was really observed
+ * at, so no surface has to invent a transition or read Unknown as zero
+ * (design §11.7, §5.1; issue #217).
+ */
+export type AdminStateEntry = {
+    clockNote?: string | null;
+    /**
+     * The observation is stamped after the receipt: the Agent clock is ahead.
+     */
+    clockSuspect: boolean;
+    /**
+     * `starting`, `ok`, `error`, `disabled` or `unsupported`.
+     */
+    collectionState: string;
+    /**
+     * The Agent-to-Server delay of this delivery.
+     */
+    delaySeconds?: number | null;
+    /**
+     * `change` for a delivery whose state differs from the state before it,
+     * `anchor` for one that re-recorded an unchanged state.
+     */
+    entryKind: string;
+    /**
+     * The failure the Agent reported, when the collection failed.
+     */
+    errorCode?: string | null;
+    /**
+     * The instant the Node was heard from: the entry coordinate.
+     */
+    observedAt: string;
+    /**
+     * The instant the Server received the Report that carried it.
+     */
+    receivedAt: string;
+    /**
+     * The sync flag, present only where the collection succeeded: a failed
+     * probe is unknown, never false.
+     */
+    syncing?: boolean | null;
+    /**
+     * The instant of the value this state refers to. It is older than
+     * observed_at for a last-good state, so the age of the value can be read
+     * instead of a fresh-looking timestamp.
+     */
+    valueObservedAt?: string | null;
+    /**
+     * `current`, `last_good` or `none`.
+     */
+    valueSource: string;
+};
+
+/**
+ * A stretch of the window in which the record shows nothing, because either
+ * nobody reported or protection paused recording.
+ *
+ * Reported as a gap with its kind, so no surface bridges silence with a
+ * constant state, calls a missing report a normal period, or reads a pause as
+ * a change (design §11.7, §11.5; issue #217).
+ */
+export type AdminStateGap = {
+    from: string;
+    /**
+     * `collection_gap` (nobody observed) or `protection_pause` (the operator
+     * chose to pause collection).
+     */
+    kind: string;
+    reason: string;
+    seconds: number;
+    /**
+     * Counted losses behind a `protection_pause`.
+     */
+    skippedCount?: number | null;
+    to: string;
+};
+
+/**
+ * Owner-only recorded state history for one Node component (issue #217,
+ * design §11.7): the recorded state changes and hourly anchors, the
+ * silences between them, and the state of the series behind them.
+ */
+export type AdminStateHistoryResponse = {
+    /**
+     * How long an unchanged state may go unrecorded before an anchor is
+     * written, so a reader can tell an unchanged state from a missing report.
+     */
+    anchorSeconds: number;
+    /**
+     * `None` while the whole requested range is answerable, `partial` when it
+     * was clamped to the retention horizon, `unavailable` when it is older than
+     * any retained history.
+     */
+    availability?: string | null;
+    /**
+     * The reporting cadence of the Node, or zero when it is unknown: the
+     * cadence the silences were judged against.
+     */
+    cadenceSeconds: number;
+    /**
+     * `sync` or `consensus`.
+     */
+    component: string;
+    /**
+     * When the answer is truncated, the coordinate to pass back as `before` for
+     * the next, older page.
+     */
+    continuation?: string | null;
+    coverageSeconds: number;
+    entries: Array<AdminStateEntry>;
+    /**
+     * The answered range, after clamping to the retention horizon.
+     */
+    from: string;
+    gaps: Array<AdminStateGap>;
+    nodeId: string;
+    /**
+     * The range the caller asked for, so a clamped or paged answer says what it
+     * clamped or narrowed.
+     */
+    requestedFrom: string;
+    /**
+     * The configured window of this family, which is also its whole horizon:
+     * recorded states have no aggregate tiers.
+     */
+    retentionDays: number;
+    series: AdminStateSeries;
+    /**
+     * The answered range end: the requested `to`, or the exclusive paging
+     * cursor when the caller paged with `before`.
+     */
+    to: string;
+    /**
+     * True when the window held more entries than the caller limit: the newest
+     * are returned and the rest is reported, never dropped silently.
+     */
+    truncated: boolean;
+    windowSeconds: number;
+};
+
+/**
+ * What the Server knows about the recorded-state series itself, independent of
+ * the requested window.
+ */
+export type AdminStateSeries = {
+    /**
+     * Counted deliveries that re-recorded an unchanged state.
+     */
+    anchorCount: number;
+    /**
+     * Counted deliveries that recorded a state change.
+     */
+    changeCount: number;
+    /**
+     * Deliveries that disagreed with the row already held for their instant.
+     */
+    correctedCount: number;
+    /**
+     * The seconds the returned entries account for: only the stretch between
+     * two recorded states counts, never the stretch after the newest one.
+     */
+    coverageSeconds: number;
+    /**
+     * How many entries this answer carries.
+     */
+    entriesReturned: number;
+    /**
+     * Counted deliveries, including the ones that wrote no row because the
+     * state had not changed.
+     */
+    entryCount: number;
+    /**
+     * The oldest instant the series ever counted, even when its row was
+     * released.
+     */
+    firstObservedAt?: string | null;
+    /**
+     * The newest instant the series ever counted.
+     */
+    lastObservedAt?: string | null;
+    /**
+     * The instant the newest counted Report arrived.
+     */
+    lastReceivedAt?: string | null;
+    /**
+     * The state of the newest counted delivery, which is the Server latest
+     * word on this component even when its row was released.
+     */
+    latestCollectionState?: string | null;
+    latestErrorCode?: string | null;
+    latestSyncing?: boolean | null;
+    latestValueObservedAt?: string | null;
+    latestValueSource?: string | null;
+    /**
+     * False when this Node never had a state recorded: shown as absent, not as
+     * a state.
+     */
+    observed: boolean;
+    /**
+     * The floor this series last stamped for evidence its window released, so
+     * a missing early entry is a boundary and not a quiet start.
+     */
+    releasedBefore?: string | null;
+    /**
+     * Deliveries of an instant the log had already counted.
+     */
+    replayedCount: number;
+    windowSeconds: number;
 };
 
 /**
@@ -1352,7 +1576,8 @@ export type CapacityIntervalDto = {
     resumedTotalBytes?: number | null;
     /**
      * Optional readings counted as skipped during this interval, every series
-     * together.
+     * together. Recorded synchronization and consensus states are optional
+     * readings too, so they are counted here beside the metric samples.
      */
     skippedSampleCount: number;
     /**
@@ -1426,7 +1651,7 @@ export type CapacitySampleDto = {
 };
 
 /**
- * One series whose optional history lost samples while protection was active.
+ * One series whose optional history lost readings while protection was active.
  */
 export type CapacitySkippedSeriesDto = {
     /**
@@ -5010,6 +5235,55 @@ export type PurgeNodeResponses = {
 };
 
 export type PurgeNodeResponse = PurgeNodeResponses[keyof PurgeNodeResponses];
+
+export type AdminNodeStateHistoryData = {
+    body?: never;
+    path: {
+        /**
+         * Node ID
+         */
+        node_id: string;
+    };
+    query: {
+        /**
+         * Recorded state component: sync or consensus
+         */
+        component: string;
+        /**
+         * Canonical RFC 3339 UTC start of the range, second precision (default: 24 hours before to)
+         */
+        from?: string;
+        /**
+         * Canonical RFC 3339 UTC end of the range, second precision (default: now)
+         */
+        to?: string;
+        /**
+         * Canonical RFC 3339 UTC exclusive upper bound for paging: the continuation coordinate a truncated answer returned
+         */
+        before?: string;
+        /**
+         * Maximum recorded states across the answer
+         */
+        limit?: number;
+    };
+    url: '/api/admin/v1/nodes/{node_id}/state-history';
+};
+
+export type AdminNodeStateHistoryErrors = {
+    400: ApiErrorBody;
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AdminNodeStateHistoryError = AdminNodeStateHistoryErrors[keyof AdminNodeStateHistoryErrors];
+
+export type AdminNodeStateHistoryResponses = {
+    200: AdminStateHistoryResponse;
+};
+
+export type AdminNodeStateHistoryResponse = AdminNodeStateHistoryResponses[keyof AdminNodeStateHistoryResponses];
 
 export type AdminNodeTransfersData = {
     body?: never;

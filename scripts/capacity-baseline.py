@@ -86,12 +86,12 @@ DECLARED_HOST_FAMILY = (
 HOST_FAMILY_METRICS = tuple(sorted(HOST_METRICS + HOST_MOUNT_METRICS))
 # The mount contract of one Host observation (crates/platpulse-core/src/observation.rs:73)
 # and the cleanup batches the Server asserts at compile time over one maximal
-# Report (crates/platpulse-server/src/retention.rs:218-255: HOST_METRIC_CLEANUP_BATCH
-# = 512 raw rows, AGGREGATE_CLEANUP_BATCH = 2048 aggregate rows, both proven >=
+# Report (crates/platpulse-server/src/retention.rs:224-264: HOST_METRIC_CLEANUP_BATCH
+# = 512 raw rows, AGGREGATE_CLEANUP_BATCH = 4096 aggregate rows, both proven >=
 # HOST_METRIC_SERIES.len() + 2 * MAX_HOST_MOUNTS).
 MAX_HOST_MOUNTS = 128
 HOST_METRIC_CLEANUP_BATCH = 512
-AGGREGATE_CLEANUP_BATCH = 2048
+AGGREGATE_CLEANUP_BATCH = 4096
 # One maximal Host Report carries the eight shared series plus two rows per
 # mount: 8 + 2 * 128 = 264 rows. The Server's own bound counts the mount-named
 # pair twice (10 + 2 * 128 = 266), which is the conservative number the cleanup
@@ -169,6 +169,109 @@ def gap_threshold_seconds(cadence_seconds: int) -> int:
 STEADY_NODE_METRICS = ("process_cpu_percent", "process_memory_percent")
 SLOW_SCAN_NODE_METRICS = ("data_directory_percent", "peer_inbound_count", "peer_outbound_count")
 
+# Issue #217. The capacity fixture declares two Nodes and build_report reuses
+# them by index, so the even-indexed Nodes of an Agent state a chain whose
+# consensus component is `ok` while its odd-indexed Node reports that component
+# as `unsupported` with no latest value. The metric writer stores a height only
+# when the component's latest value exists
+# (crates/platpulse-server/src/http/report_ingestion.rs:1529-1569), so every Node
+# states its two sync heights and only two of the three state their three
+# consensus heights; node_optional_samples_per_report below reads that rule off
+# the template instead of hard-coding the total. The lists stay separate from
+# STEADY_NODE_METRICS: a paused Report loses its process samples, its heights and
+# its recorded states as three different things, and the instrument checks each
+# loss on its own.
+NODE_HEIGHT_METRICS = ("sync_current_block", "sync_highest_block")
+NODE_CONSENSUS_HEIGHT_METRICS = (
+    "consensus_highest_qc_block",
+    "consensus_highest_lock_block",
+    "consensus_highest_commit_block",
+)
+STATE_COMPONENTS = ("sync", "consensus")
+
+# The recorded-state family exactly as the Server declares it (issue #217):
+# crates/platpulse-server/src/retention.rs FAMILY_OBSERVATION_STATE declares
+# default_days == min_days == max_days == MIN_INVESTIGATION_AGGREGATE_DAYS (30)
+# for label "Synchronization State History" in the Investigation class, and
+# asserts STATE_CLEANUP_BATCH (2048) >= MAX_NODE_OBSERVATIONS *
+# state_history::STATE_COMPONENTS.len(); crates/platpulse-server/src/state_history.rs
+# declares STATE_ANCHOR_SECONDS = 3600, DEFAULT_STATE_LIMIT = 2000 and
+# MAX_STATE_LIMIT = 20000. They are mirrored here so a live answer is compared
+# against the declaration instead of against itself.
+DECLARED_STATE_FAMILY = {
+    "family": "observation_state",
+    "label": "Synchronization State History",
+    "policy_class": "investigation",
+    "components": ("sync", "consensus"),
+}
+STATE_RETENTION_DAYS = 30
+STATE_ANCHOR_SECONDS = 3600
+STATE_DEFAULT_LIMIT = 2000
+STATE_MAX_LIMIT = 20000
+STATE_CLEANUP_BATCH = 2048
+SERVER_MAX_NODE_OBSERVATIONS = 256
+MAX_STATE_ROWS_PER_REPORT = SERVER_MAX_NODE_OBSERVATIONS * len(STATE_COMPONENTS)
+STATE_HISTORY_PATH = "/api/admin/v1/nodes/{node_id}/state-history"
+NODE_METRIC_HISTORY_PATH = "/api/admin/v1/nodes/{node_id}/metric-history"
+
+# The recorded-state DTOs declare no skip_serializing_if, so an answer carries
+# every key they declare, null or not. The names are mirrored from the Server so
+# a live answer is compared against the declaration instead of against itself:
+# AdminStateHistoryResponse, AdminStateSeries, AdminStateEntry and AdminStateGap
+# in crates/platpulse-server/src/http/admin.rs:4761-4894.
+STATE_BODY_KEYS = (
+    "nodeId",
+    "component",
+    "from",
+    "to",
+    "requestedFrom",
+    "availability",
+    "retentionDays",
+    "anchorSeconds",
+    "cadenceSeconds",
+    "coverageSeconds",
+    "windowSeconds",
+    "entries",
+    "gaps",
+    "series",
+    "truncated",
+    "continuation",
+)
+STATE_SERIES_KEYS = (
+    "observed",
+    "firstObservedAt",
+    "lastObservedAt",
+    "lastReceivedAt",
+    "entryCount",
+    "changeCount",
+    "anchorCount",
+    "replayedCount",
+    "correctedCount",
+    "latestCollectionState",
+    "latestValueSource",
+    "latestValueObservedAt",
+    "latestErrorCode",
+    "latestSyncing",
+    "entriesReturned",
+    "coverageSeconds",
+    "windowSeconds",
+    "releasedBefore",
+)
+STATE_ENTRY_KEYS = (
+    "observedAt",
+    "receivedAt",
+    "entryKind",
+    "collectionState",
+    "valueSource",
+    "valueObservedAt",
+    "errorCode",
+    "syncing",
+    "delaySeconds",
+    "clockSuspect",
+    "clockNote",
+)
+STATE_GAP_KEYS = ("from", "to", "seconds", "kind", "reason", "skippedCount")
+
 NETWORK = {
     "networkKey": "platon-mainnet",
     "displayName": "PlatON Mainnet",
@@ -218,6 +321,26 @@ class Check:
 
     def as_json(self) -> dict:
         return {"name": self.name, "expected": self.expected, "observed": self.observed, "ok": self.ok}
+
+
+def json_safe(value):
+    """Render a measured payload as the JSON it is published as.
+
+    A check may hold a set of tuples, or a dict keyed by a tuple, to compare a
+    measurement the way the database groups it. That compares fine in memory but
+    JSON cannot carry it, so the published report states such a payload as the
+    list of its items and the printed form of its keys instead of failing to
+    serialise the whole report."""
+    if isinstance(value, dict):
+        return {
+            key if isinstance(key, str) else str(key): json_safe(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (set, frozenset)):
+        return sorted((json_safe(item) for item in value), key=repr)
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    return value
 
 
 def utc_now() -> str:
@@ -712,6 +835,31 @@ def baseline_node_ids() -> list[list[str]]:
     ]
 
 
+def node_optional_samples_per_report(template: dict, *, slow_scan: bool) -> int:
+    """The optional Node samples one Report states, read off the fixture it replays.
+
+    build_report reuses the fixture's Nodes with an index-modulo rule, so a Node
+    whose chain component carries no latest value states no height for it: the
+    fixture's second Node reports its consensus as `unsupported`, and the Server's
+    metric writer only stores a height when the component's latest value exists
+    (crates/platpulse-server/src/http/report_ingestion.rs:1529-1569). Counting the
+    heights from the template keeps the expectation derived from the Reports this
+    phase really sends, instead of from a total that a fixture edit would silently
+    invalidate.
+    """
+    samples = NODES_PER_AGENT * len(STEADY_NODE_METRICS)
+    if slow_scan:
+        samples += NODES_PER_AGENT * len(SLOW_SCAN_NODE_METRICS)
+    fixture_nodes = template["nodes"]
+    for index in range(NODES_PER_AGENT):
+        chain = fixture_nodes[index % len(fixture_nodes)].get("chain") or {}
+        if isinstance((chain.get("sync") or {}).get("latest"), dict):
+            samples += len(NODE_HEIGHT_METRICS)
+        if isinstance((chain.get("consensus") or {}).get("latest"), dict):
+            samples += len(NODE_CONSENSUS_HEIGHT_METRICS)
+    return samples
+
+
 def build_report(
     template: dict,
     minimal: dict,
@@ -724,6 +872,7 @@ def build_report(
     head_base: int,
     slow_scan: bool,
     rng: random.Random,
+    syncing: bool | None = None,
 ) -> dict:
     report = copy.deepcopy(template)
     report["agent_id"] = identity["agent_id"]
@@ -762,6 +911,11 @@ def build_report(
         if isinstance(sync, dict):
             sync["current_block"] = head_base + index
             sync["highest_block"] = max(int(sync.get("highest_block", 0)), head_base + index)
+            # Issue #217: the recorded state vector is what the Server stores, and
+            # the heights above are deliberately not part of it. The flag is the
+            # one field the capacity phases can move to force a real state change.
+            if syncing is not None:
+                sync["syncing"] = syncing
         if slow_scan:
             node["data_directory_size_bytes"] = observation(int(6.5e11 + rng.uniform(0.0, 5.0e8)), observed_at)
             node["data_directory_capacity_bytes"] = observation(1099511627776, observed_at)
@@ -967,6 +1121,85 @@ def interval_rows(db_path: Path) -> list[dict]:
     )
 
 
+def shift_instant(instant_value: str, seconds: int) -> str:
+    "A canonical instant moved by whole seconds."
+    moment = datetime.fromisoformat(instant_value.replace("Z", "+00:00"))
+    return (moment + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def state_history_url(
+    node_id: str, component: str, from_instant: str, to_instant: str, limit: int | None = None
+) -> str:
+    "The Owner-only recorded-state surface for one Node and one component."
+    query = "?component=" + component + "&from=" + from_instant + "&to=" + to_instant
+    if limit is not None:
+        query = query + "&limit=" + str(limit)
+    return STATE_HISTORY_PATH.replace("{node_id}", node_id) + query
+
+
+def metric_history_url(node_id: str, metric: str, from_instant: str, to_instant: str, limit: int = 500) -> str:
+    "The Owner-only numeric history surface for one Node series."
+    return (
+        NODE_METRIC_HISTORY_PATH.replace("{node_id}", node_id)
+        + "?metric="
+        + metric
+        + "&from="
+        + from_instant
+        + "&to="
+        + to_instant
+        + "&limit="
+        + str(limit)
+    )
+
+
+def read_surface(client: Client, cookie: str, path: str) -> dict:
+    "One Owner read of a history surface, with the status, body and latency it took."
+    status, _, payload, elapsed = client.request("GET", path, headers={"Cookie": cookie})
+    body = json.loads(payload) if payload else {}
+    return {"path": path, "status": status, "body": body, "latency_ms": round(elapsed, 2)}
+
+
+def state_rows(db_path: Path, node_id: str) -> dict:
+    """The recorded-state rows and ledger rows one Node holds, read straight from
+    SQLite inside a stopped-Server window (the Server is the only writer, so a
+    count taken next to live writes would not be an observation)."""
+    return {
+        "observations": sqlite_scalar(
+            db_path, "SELECT COUNT(*) FROM node_state_observations WHERE node_id = '" + node_id + "'"
+        ),
+        "series_rows": sqlite_scalar(
+            db_path, "SELECT COUNT(*) FROM node_state_series_state WHERE node_id = '" + node_id + "'"
+        ),
+        "observations_by_component": {
+            row["component"]: row["entries"]
+            for row in sqlite_rows(
+                db_path,
+                "SELECT component, COUNT(*) AS entries FROM node_state_observations WHERE node_id = '"
+                + node_id
+                + "' GROUP BY component ORDER BY component",
+            )
+        },
+        "entry_kinds": {
+            row["component"] + ":" + row["entry_kind"]: row["entries"]
+            for row in sqlite_rows(
+                db_path,
+                "SELECT component, entry_kind, COUNT(*) AS entries FROM node_state_observations WHERE node_id = '"
+                + node_id
+                + "' GROUP BY component, entry_kind ORDER BY component, entry_kind",
+            )
+        },
+        "observed_at_range": (
+            sqlite_rows(
+                db_path,
+                "SELECT MIN(observed_at) AS first, MAX(observed_at) AS last FROM node_state_observations WHERE node_id = '"
+                + node_id
+                + "'",
+            )
+            or [{"first": None, "last": None}]
+        )[0],
+    }
+
+
 def storage_mounts_path(agent_id: str) -> str:
     return STORAGE_MOUNTS_PATH.replace("{agent_id}", agent_id)
 
@@ -1088,7 +1321,7 @@ class BaselineRun:
         self.observed_at = advance_timestamp(self.observed_at)
         return self.observed_at
 
-    def submit_round(self, *, slow_scan: bool, label: str) -> dict:
+    def submit_round(self, *, slow_scan: bool, label: str, syncing: bool | None = None) -> dict:
         observed_at = self.next_timestamp()
         head_base = 1_000_000 + self.sequences[0] * 5
         outcomes = []
@@ -1105,6 +1338,7 @@ class BaselineRun:
                 head_base=head_base,
                 slow_scan=slow_scan,
                 rng=self.rng,
+                syncing=syncing,
             )
             status, payload, elapsed = send_report(self.client, agent["credential"], json_bytes(report))
             body = json.loads(payload) if payload else {}
@@ -1173,6 +1407,104 @@ class BaselineRun:
             "absent rather than measured.",
         }
 
+    def read_state(
+        self, component: str, from_instant: str, to_instant: str, *, limit: int | None = None
+    ) -> dict:
+        "One Owner read of the probe Node's recorded-state surface."
+        answer = read_surface(
+            self.client,
+            self.cookie,
+            state_history_url(self.probe_node_id, component, from_instant, to_instant, limit),
+        )
+        if answer["status"] != 200:
+            raise BaselineError(
+                "recorded-state read of "
+                + component
+                + " failed with status "
+                + str(answer["status"])
+                + ": "
+                + json.dumps(answer["body"])[:400]
+            )
+        return answer
+
+    def read_metric_history(
+        self, metric: str, from_instant: str, to_instant: str, *, limit: int = 500
+    ) -> dict:
+        "One Owner read of the probe Node's numeric history for one series."
+        answer = read_surface(
+            self.client,
+            self.cookie,
+            metric_history_url(self.probe_node_id, metric, from_instant, to_instant, limit),
+        )
+        if answer["status"] != 200:
+            raise BaselineError(
+                "metric history read of "
+                + metric
+                + " failed with status "
+                + str(answer["status"])
+                + ": "
+                + json.dumps(answer["body"])[:400]
+            )
+        return answer
+
+    def state_family_declaration(self) -> dict:
+        """Declare the recorded-state family this baseline expects the Server to
+        store (issue #217), and fix the probe Node every state measurement below
+        reads. The family is declared here in the same way the Host family is
+        declared for issue #215: the numbers are the Server's own, mirrored, so a
+        live answer can be compared against them rather than against itself."""
+        self.probe_node_id = self.node_ids[0][0]
+        self.checks.append(Check("declared state components", DECLARED_STATE_FAMILY["components"], STATE_COMPONENTS))
+        self.checks.append(
+            Check(
+                "state cleanup batch covers one maximal state Report",
+                True,
+                STATE_CLEANUP_BATCH >= MAX_STATE_ROWS_PER_REPORT,
+            )
+        )
+        self.checks.append(
+            Check(
+                "the recorded state window is its whole horizon",
+                True,
+                DECLARED_STATE_FAMILY["family"] == "observation_state" and STATE_RETENTION_DAYS > 0,
+            )
+        )
+        self.checks.append(
+            Check(
+                "a maximal state Report states one state per component per Node",
+                SERVER_MAX_NODE_OBSERVATIONS * len(STATE_COMPONENTS),
+                MAX_STATE_ROWS_PER_REPORT,
+            )
+        )
+        return {
+            "issue": 217,
+            "title": "Recorded synchronization and consensus state history",
+            "family": DECLARED_STATE_FAMILY["family"],
+            "label": DECLARED_STATE_FAMILY["label"],
+            "policy_class": DECLARED_STATE_FAMILY["policy_class"],
+            "components": list(STATE_COMPONENTS),
+            "probe_node_id": self.probe_node_id,
+            "storage": {
+                "raw_table": "node_state_observations",
+                "ledger_table": "node_state_series_state",
+                "owner": "node_id",
+                "series_key": "the component name, with no dimension",
+                "entry_kinds": ["change", "anchor"],
+            },
+            "window": {
+                "retention_days": STATE_RETENTION_DAYS,
+                "anchor_seconds": STATE_ANCHOR_SECONDS,
+                "default_read_limit": STATE_DEFAULT_LIMIT,
+                "max_read_limit": STATE_MAX_LIMIT,
+            },
+            "bounds": {
+                "max_nodes_per_report": SERVER_MAX_NODE_OBSERVATIONS,
+                "rows_per_maximal_report": MAX_STATE_ROWS_PER_REPORT,
+                "state_cleanup_batch": STATE_CLEANUP_BATCH,
+            },
+            "read_path": STATE_HISTORY_PATH,
+        }
+
     def steady_phase(self, baseline: dict) -> dict:
         "Measure the write path, then read the database with the Server stopped."
         # baseline carries the stopped-Server measurement taken just before the
@@ -1196,12 +1528,28 @@ class BaselineRun:
         latencies = [item["elapsed_ms"] for submission in submissions for item in submission["outcomes"]]
         expected_samples = 0
         for index in range(1, rounds + 1):
-            per_round = AGENT_COUNT * (len(HOST_METRICS) + NODES_PER_AGENT * len(STEADY_NODE_METRICS))
-            if index in slow_rounds:
-                per_round += AGENT_COUNT * NODES_PER_AGENT * len(SLOW_SCAN_NODE_METRICS)
-            expected_samples += per_round
+            # Issue #217: the Node half of a Report is read off the fixture it
+            # replays, because it carries the two sync heights and, for two of the
+            # three Nodes, the three consensus heights as well.
+            expected_samples += AGENT_COUNT * (
+                len(HOST_METRICS)
+                + node_optional_samples_per_report(self.template, slow_scan=index in slow_rounds)
+            )
         capacity = capacity_state(self.client, self.cookie)
         reads = measure_reads(self.client, self.cookie, self.args.query_samples, self.metrics_client)
+        # Issue #217: read the probe Node's recorded state and its sync height
+        # series from the live Server before it stops, over the steady stretch the
+        # rounds above wrote. The state surface is only answerable while the
+        # process that guards it runs, and the row counts further down need the
+        # Server stopped, so this phase takes both halves of one measurement.
+        # The stretch these rounds wrote, one second wide at each end. The same
+        # window bounds the evidence below and, later, the window the pressure
+        # phase reads the pause through: a stretch has to begin before the last
+        # delivery it wants to bracket.
+        steady_from = shift_instant(submissions[0]["observed_at"], -1)
+        steady_to = shift_instant(submissions[-1]["observed_at"], 1)
+        steady_state = self.read_state("sync", steady_from, steady_to)
+        steady_metric = self.read_metric_history("sync_current_block", steady_from, steady_to)
         # Read the loaded database and its WAL before stopping: this is the only
         # honest "after load" number. Stopping the Server and opening the database
         # with an external SQLite connection checkpoints the WAL away, which is how
@@ -1244,8 +1592,8 @@ class BaselineRun:
         # Node count and the slower scan the phase runs every SLOW_SCAN_EVERY
         # rounds, which is exactly why the Host side above must not.
         expected_node_rows_per_report = (
-            (rounds - len(slow_rounds)) * NODES_PER_AGENT * len(STEADY_NODE_METRICS)
-            + len(slow_rounds) * NODES_PER_AGENT * (len(STEADY_NODE_METRICS) + len(SLOW_SCAN_NODE_METRICS))
+            (rounds - len(slow_rounds)) * node_optional_samples_per_report(self.template, slow_scan=False)
+            + len(slow_rounds) * node_optional_samples_per_report(self.template, slow_scan=True)
         ) / rounds
         self.checks.append(
             Check(
@@ -1274,6 +1622,90 @@ class BaselineRun:
         columns = table_columns(self.db_path, "host_metric_samples")
         self.checks.append(Check("host sample rows carry no Node identity", False, "node_id" in columns))
         self.checks.append(Check("host sample rows are dimensioned by mount path", True, "dimension" in columns))
+        # Issue #217: the recorded-state family, measured the same way. The state
+        # rows are read from SQLite inside this stopped-Server window, and the
+        # series counts come from the live answer taken above.
+        state_body = steady_state["body"]
+        state_series = state_body["series"]
+        state_rows_here = state_rows(self.db_path, self.probe_node_id)
+        self.checks.append(
+            Check("the probe Node has a recorded state series", True, state_series["observed"])
+        )
+        self.checks.append(
+            Check(
+                "steady sync state deliveries counted once per Report",
+                rounds,
+                state_series["entryCount"],
+            )
+        )
+        # The fixture states one unchanged sync state per round (the heights it
+        # states are deliberately not part of the state vector), so the log holds
+        # one change entry while every later round is counted and writes no row.
+        self.checks.append(
+            Check(
+                "steady sync state writes one change entry, not one per Report",
+                1,
+                state_rows_here["observations_by_component"].get("sync", 0),
+            )
+        )
+        self.checks.append(
+            Check(
+                "steady consensus state writes one change entry",
+                1,
+                state_rows_here["observations_by_component"].get("consensus", 0),
+            )
+        )
+        self.checks.append(
+            Check("steady state entries are all changes", 1, state_series["changeCount"])
+        )
+        self.checks.append(
+            Check(
+                "the recorded state window is the declared horizon",
+                STATE_RETENTION_DAYS,
+                state_body["retentionDays"],
+            )
+        )
+        self.checks.append(
+            Check(
+                "the recorded state anchor window is the declared one",
+                STATE_ANCHOR_SECONDS,
+                state_body["anchorSeconds"],
+            )
+        )
+        entry_instants = [entry["observedAt"] for entry in state_body["entries"]]
+        self.checks.append(
+            Check("steady state entries are answered oldest first", sorted(entry_instants), entry_instants)
+        )
+        # The recorded-state DTO declares no skip_serializing_if, so every key it
+        # declares is present in an answer, null or not. The response, the series,
+        # the entries and the gaps are four different objects with four different
+        # key sets, so each is checked against its own declaration: the response
+        # keys are not fields of the series, and asking the series for them was the
+        # earlier revision's mistake.
+        missing_state_keys = tuple(
+            ["body." + key for key in STATE_BODY_KEYS if key not in state_body]
+            + ["series." + key for key in STATE_SERIES_KEYS if key not in state_series]
+            + [
+                "entry." + key
+                for key in STATE_ENTRY_KEYS
+                if state_body["entries"] and key not in state_body["entries"][0]
+            ]
+        )
+        self.checks.append(Check("every recorded state key is always present", (), missing_state_keys))
+        state_evidence = {
+            "probe_node_id": self.probe_node_id,
+            "window": {"from": steady_from, "to": steady_to},
+            "answer": state_body,
+            "latency_ms": steady_state["latency_ms"],
+            "rows": state_rows_here,
+            "height_series": {
+                "metric": "sync_current_block",
+                "status": steady_metric["status"],
+                "entryCount": steady_metric["body"].get("series", {}).get("entryCount"),
+                "latest": (steady_metric["body"].get("series") or {}).get("latestValue"),
+                "latency_ms": steady_metric["latency_ms"],
+            },
+        }
         return {
             "rounds": rounds,
             "interval_seconds": self.args.interval,
@@ -1308,9 +1740,10 @@ class BaselineRun:
             "core_counts": core,
             "capacity": capacity,
             "read_path": reads,
+            "state": state_evidence,
         }
 
-    def pressure_phase(self, steady_available_bytes: int) -> dict:
+    def pressure_phase(self, steady_available_bytes: int, steady_state: dict) -> dict:
         self.stop()
         self.write_policy(enabled=True, pause=MAX_PERSISTED_BYTES, resume=MAX_PERSISTED_BYTES)
         core_before = core_counts(self.db_path)
@@ -1327,6 +1760,14 @@ class BaselineRun:
                 time.sleep(1.0)
         capacity_after = capacity_state(self.client, self.cookie)
         gauges = capacity_gauges(self.metrics_client)
+        # Issue #217: read the paused stretch from the live Server before it stops.
+        # The window starts one second before the first paused instant and ends one
+        # second after the last, so every round above falls inside it and no round
+        # outside it does.
+        paused_from = shift_instant(submissions[0]["observed_at"], -1)
+        paused_to = shift_instant(submissions[-1]["observed_at"], 1)
+        paused_state = self.read_state("sync", paused_from, paused_to)
+        paused_metric = self.read_metric_history("sync_current_block", paused_from, paused_to)
         self.stop()
         core_after = core_counts(self.db_path)
         optional_after = optional_counts(self.db_path)
@@ -1334,25 +1775,89 @@ class BaselineRun:
         skipped_samples = sum(int(row["skipped_count"]) for row in series_rows)
         host_series_rows = [row for row in series_rows if row["scope_kind"] == "host"]
         node_series_rows = [row for row in series_rows if row["scope_kind"] == "node"]
+        # Issue #217: one paused Report loses two different things under the Node
+        # scope — the numeric series it would have stated (the two process series,
+        # the two sync heights and, for two of the three Nodes, the three
+        # consensus heights) and the recorded states of the chain components
+        # themselves, whose losses are keyed by the component name rather than by a
+        # series name.
+        state_series_rows = [row for row in node_series_rows if row["metric"] in STATE_COMPONENTS]
+        metric_series_rows = [row for row in node_series_rows if row["metric"] not in STATE_COMPONENTS]
         host_skipped = sum(int(row["skipped_count"]) for row in host_series_rows)
         node_skipped = sum(int(row["skipped_count"]) for row in node_series_rows)
+        state_skipped = sum(int(row["skipped_count"]) for row in state_series_rows)
+        metric_skipped = sum(int(row["skipped_count"]) for row in metric_series_rows)
         intervals = interval_rows(self.db_path)
-        expected_samples = rounds * AGENT_COUNT * (len(HOST_METRICS) + NODES_PER_AGENT * len(STEADY_NODE_METRICS))
+        state_rows_after = state_rows(self.db_path, self.probe_node_id)
+        expected_host_samples = rounds * AGENT_COUNT * len(HOST_METRICS)
+        expected_metric_samples = (
+            rounds * AGENT_COUNT * node_optional_samples_per_report(self.template, slow_scan=False)
+        )
+        expected_state_samples = rounds * AGENT_COUNT * NODES_PER_AGENT * len(STATE_COMPONENTS)
+        expected_samples = expected_host_samples + expected_metric_samples + expected_state_samples
+        # The name is the one this baseline always used; the number it is compared
+        # against is now the whole cost of the pause, so a reader cannot read it as
+        # a sample tally alone.
         self.checks.append(Check("pressure skipped samples", expected_samples, skipped_samples))
         # Issue #215: a paused Host series is recorded against the Agent, so the
         # losses of one Agent are one row per Host series, independent of Nodes.
         self.checks.append(
             Check(
                 "pressure Host samples skipped once per Agent",
-                rounds * AGENT_COUNT * len(HOST_METRICS),
+                expected_host_samples,
                 host_skipped,
             )
         )
         self.checks.append(
             Check(
                 "pressure Node samples skipped once per Node",
-                rounds * AGENT_COUNT * NODES_PER_AGENT * len(STEADY_NODE_METRICS),
+                expected_metric_samples,
+                metric_skipped,
+            )
+        )
+        # Issue #217: the recorded states the pause dropped, counted against the
+        # component whose delivery was lost.
+        self.checks.append(
+            Check(
+                "pressure state deliveries skipped once per Node and component",
+                expected_state_samples,
+                state_skipped,
+            )
+        )
+        self.checks.append(
+            Check(
+                "pressure state losses are keyed by the component",
+                tuple(sorted(STATE_COMPONENTS)),
+                tuple(sorted({str(row["metric"]) for row in state_series_rows})),
+            )
+        )
+        self.checks.append(
+            Check(
+                "pressure state losses carry no dimension",
+                ("",),
+                tuple(sorted({str(row["dimension"]) for row in state_series_rows})),
+            )
+        )
+        self.checks.append(
+            Check(
+                "pressure every skipped series belongs to a declared family",
+                tuple(
+                    sorted(
+                        set(HOST_METRICS)
+                        | set(STEADY_NODE_METRICS)
+                        | set(NODE_HEIGHT_METRICS)
+                        | set(NODE_CONSENSUS_HEIGHT_METRICS)
+                        | set(STATE_COMPONENTS)
+                    )
+                ),
+                tuple(sorted({str(row["metric"]) for row in series_rows})),
+            )
+        )
+        self.checks.append(
+            Check(
+                "pressure Node skipped samples are the samples plus the recorded states",
                 node_skipped,
+                metric_skipped + state_skipped,
             )
         )
         self.checks.append(
@@ -1383,6 +1888,65 @@ class BaselineRun:
                 core_after["agent_report_receipts"] - core_before["agent_report_receipts"],
             )
         )
+        # Issue #217: a skipped state delivery is never presented as a state, and
+        # the pause that skipped it is evidence in its own right. The live answer
+        # over exactly the paused stretch carries no entry at all and reports the
+        # one silence the window covers as a protection pause carrying the
+        # deliveries the interval dropped, because a window that lies inside a
+        # pause is answered with the pause itself rather than with invented
+        # coverage (crates/platpulse-server/src/metric_history.rs:1040-1084). The
+        # same pause is read again by the recovery phase, over a window wide enough
+        # to bracket it with the entries stored either side.
+        state_body = paused_state["body"]
+        pause_gaps = [gap for gap in state_body["gaps"] if gap["kind"] == "protection_pause"]
+        metric_gaps = [
+            gap for gap in paused_metric["body"]["gaps"] if gap["kind"] == "protection_pause"
+        ]
+        self.checks.append(
+            Check(
+                "a paused stretch presents no recorded state",
+                [],
+                [entry["observedAt"] for entry in state_body["entries"]],
+            )
+        )
+        self.checks.append(
+            Check("the paused stretch is reported as one protection pause", 1, len(pause_gaps))
+        )
+        self.checks.append(
+            Check(
+                "the paused stretch carries the deliveries it dropped",
+                rounds,
+                pause_gaps[0]["skippedCount"] if pause_gaps else None,
+            )
+        )
+        self.checks.append(
+            Check(
+                "the paused sync height series is reported as a protection pause",
+                1,
+                len(metric_gaps),
+            )
+        )
+        self.checks.append(
+            Check(
+                "the paused sync height series carries the samples it dropped",
+                rounds,
+                metric_gaps[0]["skippedCount"] if metric_gaps else None,
+            )
+        )
+        self.checks.append(
+            Check(
+                "the recorded state ledger did not move across the pause",
+                steady_state["answer"]["series"]["entryCount"],
+                state_body["series"]["entryCount"],
+            )
+        )
+        self.checks.append(
+            Check(
+                "a paused state delivery stores no state row",
+                steady_state["rows"]["observations"],
+                state_rows_after["observations"],
+            )
+        )
         return {
             "rounds": rounds,
             "mount_available_bytes": steady_available_bytes,
@@ -1397,10 +1961,31 @@ class BaselineRun:
             "skipped_samples": skipped_samples,
             "host_skipped_samples": host_skipped,
             "node_skipped_samples": node_skipped,
+            "node_metric_skipped_samples": metric_skipped,
+            "state_skipped_samples": state_skipped,
+            "expected_host_samples": expected_host_samples,
+            "expected_metric_samples": expected_metric_samples,
+            "expected_state_samples": expected_state_samples,
             "host_skipped_series": len(host_series_rows),
             "node_skipped_series": len(node_series_rows),
+            "state_skipped_series": len(state_series_rows),
+            "skipped_metric_names": sorted({str(row["metric"]) for row in series_rows}),
             "skipped_series": series_rows,
             "intervals": intervals,
+            "state": {
+                "window": {"from": paused_from, "to": paused_to},
+                "answer": state_body,
+                "rows": state_rows_after,
+                "ledger_entry_count_before_pause": steady_state["answer"]["series"]["entryCount"],
+                "metric_items": len(paused_metric["body"]["items"]),
+                "metric_gaps": paused_metric["body"]["gaps"],
+                "metric_gap": metric_gaps[0] if metric_gaps else None,
+                "pause_cover_from": steady_state["window"]["from"],
+                "pause_instants": [item["observed_at"] for item in submissions],
+                "latency_ms": paused_state["latency_ms"],
+                "counts_note": "a capacity interval's skipped count is the cost of the pause across "
+                "numeric samples and recorded states, not a sample tally alone",
+            },
             "submissions": submissions,
             "submission_latency_ms": {
                 "p50_ms": round(percentile([item["elapsed_ms"] for s in submissions for item in s["outcomes"]], 0.5), 2),
@@ -1408,13 +1993,14 @@ class BaselineRun:
             },
         }
 
-    def recovery_phase(self) -> dict:
+    def recovery_phase(self, paused: dict) -> dict:
         self.stop()
         released_sample = filesystem_sample(self.state_dir)
         release_floor = max(1, released_sample["available_bytes"] // 2)
         self.write_policy(enabled=True, pause=release_floor, resume=release_floor)
         optional_before = optional_counts(self.db_path)
         core_before = core_counts(self.db_path)
+        state_before = state_rows(self.db_path, self.probe_node_id)
         self.start()
         observed = capacity_state(self.client, self.cookie)
         if observed["protected"]:
@@ -1422,21 +2008,50 @@ class BaselineRun:
         rounds = self.args.recovery_rounds
         submissions = []
         for index in range(1, rounds + 1):
-            submissions.append(self.submit_round(slow_scan=False, label="recovery round " + str(index)))
+            # Issue #217: an alternating sync flag makes every resumed round a
+            # real state change, so this phase can tell "recorded again" apart
+            # from "counted again": a resumed round must store a new state row.
+            submissions.append(
+                self.submit_round(
+                    slow_scan=False, label="recovery round " + str(index), syncing=(index % 2 == 1)
+                )
+            )
             if index < rounds:
                 time.sleep(1.0)
         capacity_after = capacity_state(self.client, self.cookie)
         gauges = capacity_gauges(self.metrics_client)
+        recovered_from = shift_instant(submissions[0]["observed_at"], -1)
+        recovered_to = shift_instant(submissions[-1]["observed_at"], 1)
+        recovered_state = self.read_state("sync", recovered_from, recovered_to)
+        recovered_metric = self.read_metric_history("sync_current_block", recovered_from, recovered_to)
+        # Issue #217: the pause is read over a window that BRACKETS it. A recorded
+        # pause is evidence in its own right (issue #213), but the Server judges a
+        # silence between two stored points, so the window has to begin before the
+        # last delivery the steady phase stored and end after the first one this
+        # phase stored again. Then the one silence inside it is the whole
+        # protection interval: the first and last instants the ledger counted are
+        # both inside the window, which is what lets the answer claim the count
+        # the interval carries instead of answering a null bare stretch.
+        cover_from = paused["state"]["pause_cover_from"]
+        cover_to = shift_instant(submissions[-1]["observed_at"], 1)
+        cover_state = self.read_state("sync", cover_from, cover_to)
+        cover_metric = self.read_metric_history("sync_current_block", cover_from, cover_to)
         self.stop()
         optional_after = optional_counts(self.db_path)
         core_after = core_counts(self.db_path)
         intervals = interval_rows(self.db_path)
-        expected_samples = rounds * AGENT_COUNT * (len(HOST_METRICS) + NODES_PER_AGENT * len(STEADY_NODE_METRICS))
+        expected_host_samples = rounds * AGENT_COUNT * len(HOST_METRICS)
+        expected_node_samples = (
+            rounds * AGENT_COUNT * node_optional_samples_per_report(self.template, slow_scan=False)
+        )
+        expected_samples = expected_host_samples + expected_node_samples
         observed_samples = (optional_after["host_samples"] - optional_before["host_samples"]) + (
             optional_after["node_samples"] - optional_before["node_samples"]
         )
         host_resumed = optional_after["host_samples"] - optional_before["host_samples"]
         node_resumed = optional_after["node_samples"] - optional_before["node_samples"]
+        state_after = state_rows(self.db_path, self.probe_node_id)
+        recovery_skipped = skipped_series_rows(self.db_path)
         self.checks.append(Check("recovery optional samples resumed", expected_samples, observed_samples))
         self.checks.append(
             Check(
@@ -1448,9 +2063,97 @@ class BaselineRun:
         self.checks.append(
             Check(
                 "recovery Node samples resumed once per Node",
-                rounds * AGENT_COUNT * NODES_PER_AGENT * len(STEADY_NODE_METRICS),
+                expected_node_samples,
                 node_resumed,
             )
+        )
+        # Issue #217: the resumed rounds record real states again. Every round
+        # states a different sync flag, so every round is a change with a row of
+        # its own, and the pause ledger gains nothing while they run.
+        recovered_body = recovered_state["body"]
+        sync_rows_before = state_before["observations_by_component"].get("sync", 0)
+        sync_rows_after = state_after["observations_by_component"].get("sync", 0)
+        self.checks.append(
+            Check("a resumed round records a new state row", rounds, sync_rows_after - sync_rows_before)
+        )
+        self.checks.append(
+            Check(
+                "a resumed round counts a recorded delivery again",
+                rounds,
+                recovered_body["series"]["entryCount"] - paused["state"]["answer"]["series"]["entryCount"],
+            )
+        )
+        self.checks.append(
+            Check(
+                "every resumed state row is a change",
+                rounds,
+                recovered_body["series"]["changeCount"] - paused["state"]["answer"]["series"]["changeCount"],
+            )
+        )
+        self.checks.append(
+            Check(
+                "the resumed stretch answers the rows it recorded",
+                rounds,
+                recovered_body["series"]["entriesReturned"],
+            )
+        )
+        self.checks.append(
+            Check(
+                "a resumed stretch presents no protection pause",
+                0,
+                len([gap for gap in recovered_body["gaps"] if gap["kind"] == "protection_pause"]),
+            )
+        )
+        self.checks.append(
+            Check(
+                "the resumed sync height series presents no protection pause",
+                0,
+                len(
+                    [
+                        gap
+                        for gap in recovered_metric["body"]["gaps"]
+                        if gap["kind"] == "protection_pause"
+                    ]
+                ),
+            )
+        )
+        cover_body = cover_state["body"]
+        cover_pauses = [gap for gap in cover_body["gaps"] if gap["kind"] == "protection_pause"]
+        self.checks.append(
+            Check(
+                "a window that brackets the pause reports it, carrying the deliveries it dropped",
+                {"pauses": 1, "skippedCount": paused["rounds"]},
+                {
+                    "pauses": len(cover_pauses),
+                    "skippedCount": cover_pauses[0]["skippedCount"] if cover_pauses else None,
+                },
+            )
+        )
+        cover_metric_pauses = [
+            gap for gap in cover_metric["body"]["gaps"] if gap["kind"] == "protection_pause"
+        ]
+        self.checks.append(
+            Check(
+                "the bracketed sync height series reports the same pause and the samples it dropped",
+                {"pauses": 1, "skippedCount": paused["rounds"]},
+                {
+                    "pauses": len(cover_metric_pauses),
+                    "skippedCount": (
+                        cover_metric_pauses[0]["skippedCount"] if cover_metric_pauses else None
+                    ),
+                },
+            )
+        )
+        skipped_before = {
+            (row["scope_kind"], row["scope_key"], row["metric"], row["dimension"]): row["skipped_count"]
+            for row in paused["skipped_series"]
+        }
+        skipped_now = {
+            (row["scope_kind"], row["scope_key"], row["metric"], row["dimension"]): row["skipped_count"]
+            for row in recovery_skipped
+        }
+        self.checks.append(
+            Check("a resumed round adds no skipped state delivery", skipped_before, skipped_now)
         )
         closed = [row for row in intervals if row["ended_at"] is not None]
         self.checks.append(Check("protection interval closed once", 1, len(closed)))
@@ -1468,8 +2171,23 @@ class BaselineRun:
             "optional_counts_after": optional_after,
             "host_samples_resumed": host_resumed,
             "node_samples_resumed": node_resumed,
+            "expected_host_samples": expected_host_samples,
+            "expected_node_samples": expected_node_samples,
             "intervals": intervals,
-            "skipped_series": skipped_series_rows(self.db_path),
+            "skipped_series": recovery_skipped,
+            "pause_cover": {
+                "window": {"from": cover_from, "to": cover_to},
+                "answer": cover_body,
+                "metric_items": len(cover_metric["body"]["items"]),
+                "latency_ms": cover_state["latency_ms"],
+            },
+            "state": {
+                "window": {"from": recovered_from, "to": recovered_to},
+                "answer": recovered_body,
+                "rows_before": state_before,
+                "rows_after": state_after,
+                "latency_ms": recovered_state["latency_ms"],
+            },
             "submissions": submissions,
         }
 
@@ -1812,6 +2530,10 @@ class BaselineRun:
         # declared series, the family's exclusions, and the cleanup batches the
         # Server proves at compile time over one maximal Host Report.
         host_family = self.host_family_declaration()
+        # Issue #217 declares its own family the same way: the recorded sync and
+        # consensus state log, its horizon, its cleanup bound, and the one Probe
+        # Node every state measurement below reads.
+        state_family = self.state_family_declaration()
 
         steady_sample = filesystem_sample(self.state_dir)
         if steady_sample["available_bytes"] <= STEADY_RESUME_BYTES * 2:
@@ -1856,8 +2578,8 @@ class BaselineRun:
         reads = steady["read_path"]
         mounted = mount_conditions(self.state_dir)
         sample_after = filesystem_sample(self.state_dir)
-        pressure = self.pressure_phase(sample_after["available_bytes"])
-        recovery = self.recovery_phase()
+        pressure = self.pressure_phase(sample_after["available_bytes"], steady["state"])
+        recovery = self.recovery_phase(pressure)
         # The mount phase (issue #216) runs last: it plants the only Reports this
         # baseline submits that state a mount, so their rows must stay outside
         # the exact Host row counts the phases above assert, and it needs the
@@ -1884,6 +2606,23 @@ class BaselineRun:
             "truncated_answers": [entry["truncated"] for entry in mounts["mount_list_reads"]],
         }
 
+        # Issue #217: the declaration made before the load is now backed by a
+        # pause that really dropped recorded states, by the rounds that recorded
+        # them again, and by the steady answers that show one change entry per
+        # stretch of silence rather than one row per Report.
+        state_family["steady"] = steady["state"]
+        state_family["pressure"] = pressure["state"]
+        state_family["recovery"] = recovery["state"]
+        state_family["skipped_metric_names"] = pressure["skipped_metric_names"]
+        state_family["counts_note"] = (
+            "A capacity interval's skipped count is the cost of the pause across numeric samples and recorded "
+            "states: one paused round across both Agents drops "
+            + str(pressure["expected_host_samples"] // max(1, pressure["rounds"])) + " host samples, "
+            + str(pressure["expected_metric_samples"] // max(1, pressure["rounds"])) + " Node samples and "
+            + str(pressure["expected_state_samples"] // max(1, pressure["rounds"]))
+            + " recorded states, before the slow-scan round overhead."
+        )
+
         storage = storage_bytes(self.db_path)
         self.runtime_seconds = time.monotonic() - started_wall
         self.report = {
@@ -1895,8 +2634,10 @@ class BaselineRun:
             "seed": self.args.seed,
             "disclaimer": [
                 "This is a measured baseline on one developer machine, not a production capacity guarantee.",
-                "The optional history measured here is the existing generic optional metric writer "
-                "(node_metric_samples, host_metric_samples). No other history family was implemented or measured.",
+                "Two optional history families are measured here: the generic optional metric writer "
+                "(node_metric_samples, host_metric_samples) and the issue #217 recorded state log "
+                "(node_state_observations, node_state_series_state). No other history family was implemented "
+                "or measured.",
                 "The 30 day precision-tier retention window described by the parent specification was not exercised: "
                 "the baseline covers minutes of wall clock time, not a 30 day projection.",
             ],
@@ -1947,6 +2688,7 @@ class BaselineRun:
             },
             "phases": {"steady": steady, "pressure": pressure, "recovery": recovery, "mounts": mounts},
             "host_family": host_family,
+            "state_family": state_family,
             "read_path": reads,
             "storage": storage,
             "storage_per_report_bytes": {
@@ -1984,7 +2726,17 @@ class BaselineRun:
                 ],
             },
             "not_delivered": [
-                "No history family beyond the generic optional metric writer was built or measured.",
+                "No history family beyond the generic optional metric writer and the issue #217 recorded state "
+                "log was built or measured.",
+                "The capacity fixture clones two canonical Nodes: the Node with a healthy consensus component "
+                "states its three consensus heights, so two of each Agent's three Nodes carry "
+                "consensus_highest_qc_block, consensus_highest_lock_block and consensus_highest_commit_block while "
+                "the Node whose consensus component is 'unsupported' states none; every Node states the two sync "
+                "heights. The five height series are therefore measured by both instruments, the recorded "
+                "consensus state only by this one.",
+                "A capacity interval's skipped count is the cost of the pause across numeric samples and recorded "
+                "states, so it is no longer a sample tally alone; the per-family split is recorded in "
+                "phases.pressure and state_family.counts_note.",
                 "No 30 day retention or precision-tier downsampling was exercised; the visible gap evidence covers "
                 "minutes, and upscaled old buckets were never produced.",
                 "Agent-side collection was not measured: Reports were generated by the loader, not by a live "
@@ -2010,14 +2762,23 @@ class BaselineRun:
 
 
 def write_json_report(report: dict, path: Path) -> None:
-    path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(json_safe(report), indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def write_markdown_report(report: dict, path: Path) -> None:
+    # The same coercion the JSON writer applies: the Markdown states several
+    # measured payloads through json.dumps, and a set of tuples cannot be
+    # serialised either.
+    report = json_safe(report)
     conditions = report["conditions"]
     steady = report["phases"]["steady"]
     pressure = report["phases"]["pressure"]
     recovery = report["phases"]["recovery"]
+    state = report["state_family"]
+    steady_state = state["steady"]
+    pressure_state = state["pressure"]
+    recovery_state = state["recovery"]
+    recovery_cover = recovery["pause_cover"]
     lines = [
         "# Issue #212 Story 46: capacity and performance baseline",
         "",
@@ -2130,6 +2891,65 @@ def write_markdown_report(report: dict, path: Path) -> None:
     lines += [
         "```",
         "",
+        "## Recorded synchronization state history (issue #217)",
+        "",
+        "- Declared family: " + state["family"] + " (" + state["label"] + ", class " + state["policy_class"]
+        + ") recording " + ", ".join(state["components"]) + " per Node under " + state["storage"]["owner"]
+        + " in " + state["storage"]["raw_table"] + " / " + state["storage"]["ledger_table"] + ", keyed by "
+        + state["storage"]["series_key"],
+        "- Read surface: GET " + state["read_path"] + " over a " + str(state["window"]["retention_days"])
+        + " day window with a " + str(state["window"]["anchor_seconds"]) + "s anchor window; one maximal Report "
+        + "states at most " + str(state["bounds"]["rows_per_maximal_report"]) + " rows, inside the cleanup batch of "
+        + str(state["bounds"]["state_cleanup_batch"]),
+        "- Probe Node " + state["probe_node_id"] + ": " + str(steady_state["answer"]["series"]["entryCount"])
+        + " deliveries counted, " + str(steady_state["answer"]["series"]["changeCount"]) + " of them change entries and "
+        + str(steady_state["rows"]["observations"]) + " stored state rows across " + str(steady["submissions"])
+        + " steady Reports, so unchanged silence costs deliveries, not rows",
+        "- Steady state read: " + str(steady_state["answer"]["availability"]) + " availability, "
+        + str(steady_state["answer"]["coverageSeconds"]) + "s of " + str(steady_state["answer"]["windowSeconds"])
+        + "s covered, " + str(steady_state["answer"]["series"]["entriesReturned"]) + " entries answered in "
+        + str(steady_state["latency_ms"]) + "ms; sync heights stored for the same rounds: "
+        + str(steady_state["height_series"]["entryCount"]),
+        "- Pause: " + str(pressure["host_skipped_samples"]) + " Host samples + "
+        + str(pressure["node_metric_skipped_samples"]) + " Node samples + " + str(pressure["state_skipped_samples"])
+        + " recorded states = " + str(pressure["skipped_samples"]) + " skipped deliveries across "
+        + str(len(pressure["skipped_metric_names"])) + " series names",
+        "- The paused stretch answers " + str(len(pressure_state["answer"]["entries"])) + " recorded states and "
+        + str(len(pressure_state["answer"]["gaps"])) + " gap(s), a protection pause carrying "
+        + json.dumps(
+            [
+                gap["skippedCount"]
+                for gap in pressure_state["answer"]["gaps"]
+                if gap["kind"] == "protection_pause"
+            ]
+        )
+        + " skipped deliveries (a window that lies inside a pause is answered as the pause that dropped them, "
+        "never as a state and never as invented coverage); its ledger stayed at "
+        + str(pressure_state["ledger_entry_count_before_pause"]) + " deliveries and "
+        + str(pressure_state["rows"]["observations"]) + " stored state rows",
+        "- The paused height series answers " + str(pressure_state["metric_items"]) + " items and "
+        + str(len(pressure_state["metric_gaps"])) + " gaps for sync_current_block, its protection pause carrying "
+        + json.dumps(
+            pressure_state["metric_gap"]["skippedCount"] if pressure_state["metric_gap"] else None
+        )
+        + " dropped samples",
+        "- A window that brackets the pause (" + str(recovery_cover["window"]["from"]) + " to "
+        + str(recovery_cover["window"]["to"]) + ") answers "
+        + str(len([gap for gap in recovery_cover["answer"]["gaps"] if gap["kind"] == "protection_pause"]))
+        + " protection pause carrying " + json.dumps(
+            [
+                gap["skippedCount"]
+                for gap in recovery_cover["answer"]["gaps"]
+                if gap["kind"] == "protection_pause"
+            ]
+        ) + " skipped deliveries, which is the count the interval itself carries",
+        "- Resumed: " + str(recovery_state["answer"]["series"]["entryCount"] - pressure_state["answer"]["series"]["entryCount"])
+        + " new deliveries and " + str(recovery_state["rows_after"]["observations"] - recovery_state["rows_before"]["observations"])
+        + " new stored state rows across " + str(recovery["rounds"]) + " rounds, "
+        + str(len([gap for gap in recovery_state["answer"]["gaps"] if gap["kind"] == "protection_pause"]))
+        + " protection pauses",
+        "- " + state["counts_note"],
+        "",
         "## Read path (p50 / p95)",
         "",
         "| Endpoint | Latency |",
@@ -2210,6 +3030,16 @@ def main(argv: list[str]) -> int:
     print("  pressure: " + str(report["phases"]["pressure"]["skipped_samples"]) + " skipped samples across "
           + str(len(report["phases"]["pressure"]["skipped_series"])) + " series")
     print("  recovery: protected=" + str(report["phases"]["recovery"]["capacity_after"]["protected"]))
+    cover = report["phases"]["recovery"]["pause_cover"]
+    print("  bracketed pause: " + str(
+        len([gap for gap in cover["answer"]["gaps"] if gap["kind"] == "protection_pause"])
+    ) + " protection pause carrying " + str(
+        [
+            gap["skippedCount"]
+            for gap in cover["answer"]["gaps"]
+            if gap["kind"] == "protection_pause"
+        ]
+    ) + " skipped deliveries")
     return 1 if failed else 0
 
 

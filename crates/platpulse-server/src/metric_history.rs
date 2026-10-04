@@ -83,12 +83,29 @@ use crate::capacity::SkippedScope;
 pub const MAX_HOST_MOUNTS: usize = 128;
 
 /// The Node metric series the Server stores raw and serves to Admin.
-pub const NODE_METRIC_SERIES: [&str; 5] = [
+///
+/// The five consensus-key series were added by issue #217 (parent #202 story
+/// 53): a Node's sync current/highest block and the epoch's highest QC, lock and
+/// commit block are quantities, so they ride this engine with its raw window,
+/// its 1-minute and 5-minute tiers, its gaps and its replay ledger. They are
+/// separate series rather than one "height" series because a highest QC block
+/// and a commit block are different facts about the same epoch and a reader
+/// must be able to see one advance without the other.
+///
+/// What a Report could not collect has no sample: a failed chain probe writes
+/// no row for these series, and the state log (crate::state_history) records
+/// the failure itself, so a numerical aggregate never erases it.
+pub const NODE_METRIC_SERIES: [&str; 10] = [
     "process_cpu_percent",
     "process_memory_percent",
     "data_directory_percent",
     "peer_inbound_count",
     "peer_outbound_count",
+    "sync_current_block",
+    "sync_highest_block",
+    "consensus_highest_qc_block",
+    "consensus_highest_lock_block",
+    "consensus_highest_commit_block",
 ];
 
 /// Whether a metric name is one of the stored Node series.
@@ -775,6 +792,54 @@ pub fn continuity(
         })
         .collect();
     continuity_from(&points, pauses, window_start, window_end)
+}
+
+/// A point of a series whose spacing is not the cadence of a raw sample.
+///
+/// A raw metric sample testifies to one instant and answers for no window. A
+/// recorded state is different: the Server recorded one row BECAUSE that state
+/// was the newest thing it knew, and the state stays that way until something
+/// changes it, so a row also answers for the stretch that follows it - as far as
+/// the point where the next report was due. window_seconds carries that width,
+/// and the silence rule then measures a stretch against the cadence plus the
+/// width instead of against the cadence alone, so a state that simply did not
+/// change is never reported as a silence (issue #217, migration 0070).
+pub struct ObservablePoint<'a> {
+    /// The oldest instant the point testifies to.
+    pub from: &'a str,
+    /// The newest instant the point testifies to.
+    pub until: &'a str,
+    /// The width of the window the point answers for, in seconds.
+    pub window_seconds: i64,
+}
+
+/// Derive the silences and the proved coverage of a point sequence whose points
+/// carry their own window width.
+///
+/// The same rule as the raw-sample entry point above, with the two instants and
+/// the window width of every point supplied by the caller instead of being fixed
+/// at one instant and no window. Only the state history needs it, and it exists
+/// so that both kinds of series are judged by one implementation rather than by
+/// two that have to be kept in agreement.
+pub fn continuity_with_windows(
+    points: &[ObservablePoint<'_>],
+    pauses: &[ProtectionPause],
+    cadence_seconds: i64,
+    window_start: &str,
+    window_end: &str,
+) -> Continuity {
+    let judged: Vec<JudgedPoint<'_>> = points
+        .iter()
+        .map(|point| JudgedPoint {
+            from: point.from,
+            until: point.until,
+            cadence_seconds,
+            window_seconds: point.window_seconds,
+            max_gap_seconds: 0,
+            bucket_start: None,
+        })
+        .collect();
+    continuity_from(&judged, pauses, window_start, window_end)
 }
 
 /// One point the gap and coverage rule judges, with the two instants it can
@@ -2213,7 +2278,7 @@ const PAUSE_LOOKUP_SQL: &str = "SELECT first_skipped_at, last_skipped_at, skippe
 ///
 /// These rows are the positive evidence that a silence was chosen rather than
 /// suffered, so a protected stretch is never reported as an unexplained gap.
-async fn load_pauses(
+pub(crate) async fn load_pauses(
     pool: &SqlitePool,
     scope: &SeriesScope<'_>,
     from: &str,

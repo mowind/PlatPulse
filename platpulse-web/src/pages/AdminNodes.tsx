@@ -17,6 +17,7 @@ import {
   useAdminNodeHostMetricHistory,
   useAdminNodeMetricHistory,
   useAdminNodePurgeImpact,
+  useAdminNodeStateHistory,
   useAdminNodes,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
@@ -39,6 +40,7 @@ import { CardX } from '../components/ui/card-x'
 import { Empty } from '../components/ui/empty'
 import { Input, Select } from '../components/ui/input'
 import { cn } from '../lib/utils'
+import { stateHistoryComponent, type StateHistoryComponent } from '../stateHistory'
 import { SURFACE_CARD_STATIC, SURFACE_TOOLBAR } from '../lib/surface'
 import {
   HOST_METRIC_SERIES,
@@ -52,6 +54,7 @@ import {
   useHostMetricSelection,
   useMetricHistoryWindow,
 } from './metricHistoryPanel'
+import { StateHistoryBody } from './stateHistoryPanel'
 import type {
   AdminNodeDetail as AdminNodeDetailDto,
   AdminNodeListItem,
@@ -646,6 +649,7 @@ export function AdminNodeDetail() {
           <LifecyclePanel node={query.data} />
           <HealthPanel node={query.data} />
           <MetricHistoryPanel node={query.data} />
+          <SyncConsensusHistoryPanel node={query.data} />
           <HostMetricHistoryPanel node={query.data} />
           <IdentityPanel node={query.data} />
           <RpcDiagnosticsPanel node={query.data} />
@@ -934,6 +938,46 @@ function MetricHistoryPanel({ node }: { node: AdminNodeDetailDto }) {
           history.setOlderThan(null)
           setMetric(next as NodeMetricKey)
         },
+      }}
+      view={history}
+      answer={query}
+    />
+  )
+}
+
+/**
+ * The recorded sync and consensus states of this Node (issue #217, design §11.4, §11.7): what the
+ * Server actually recorded, when it recorded it, and what it could not record. A state is evidence
+ * rather than a value: an unchanged state is re-recorded as an anchor at most once per anchor
+ * interval, a failed probe is recorded as a failure instead of a false flag, a retained value keeps
+ * the instant it was really observed at, and a stretch nobody observed is a silence with its own
+ * kind and reason rather than a constant state carried across it.
+ */
+const NODE_STATE_INTRO =
+  'Recorded sync and consensus states of this Node, as the Server recorded them: one row per recorded state, the age of the value each row refers to, the failure where a probe did not succeed instead of a flag it could not read, an anchor row where an unchanged state was re-recorded, and every silence with its kind, its reason and the observations it swallowed. Nothing here is inferred: a state the Server never recorded is shown as absent rather than as a value, and the silence after the newest state is not reported as a gap.'
+
+function SyncConsensusHistoryPanel({ node }: { node: AdminNodeDetailDto }) {
+  const { generation } = useAuth()
+  const [component, setComponent] = useState<StateHistoryComponent>('sync')
+  const history = useMetricHistoryWindow(24)
+  const query = useAdminNodeStateHistory(
+    generation,
+    node.node_id,
+    component,
+    history.range.from,
+    history.range.to,
+    history.olderThan ?? undefined,
+  )
+  return (
+    <StateHistoryBody
+      title="Sync and consensus history"
+      subject="Node"
+      surface="node-state"
+      intro={NODE_STATE_INTRO}
+      component={component}
+      onComponent={(next) => {
+        history.setOlderThan(null)
+        setComponent(stateHistoryComponent(next))
       }}
       view={history}
       answer={query}

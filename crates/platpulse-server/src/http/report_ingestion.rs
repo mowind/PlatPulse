@@ -151,6 +151,16 @@ fn now() -> Rfc3339 {
         .expect("formatted timestamp is valid")
 }
 
+/// The instant a Report reached the Server, as the recorded state log stamps it.
+///
+/// The ingestion stamps its own receipt instant in the canonical shape, so
+/// parsing it back is exact. The Report's generation instant is the fallback,
+/// which keeps the write path total instead of panicking on a caller that
+/// passes something else.
+fn received_instant(received_at: &str, generated_at: Rfc3339) -> Rfc3339 {
+    received_at.parse().unwrap_or(generated_at)
+}
+
 /// A polled Chain Head can trail the subscribed Block History by the blocks
 /// that arrived between polls, so one below-high-water sample is observational
 /// skew rather than a resync. A below-high-water episode must persist for this
@@ -886,6 +896,18 @@ async fn metric_window_cutoff(tx: &mut Transaction<'_, Sqlite>) -> Result<String
     ))
 }
 
+/// The recorded-state window a delivery in this Report is judged against.
+///
+/// The state log is its own retention family (issue #217), so its floor comes
+/// from its own policy and is read through the open ingestion transaction for
+/// the same reason the raw window is (issue #213).
+async fn state_window_cutoff(tx: &mut Transaction<'_, Sqlite>) -> Result<String, sqlx::Error> {
+    let days = crate::retention::state_retention_days_tx(tx).await?;
+    Ok(crate::auth::format_rfc3339(
+        crate::retention::family_cutoff(crate::auth::now_utc(), days),
+    ))
+}
+
 /// Record one metric sample for a scope's series, unless optional history is
 /// paused.
 ///
@@ -1243,6 +1265,64 @@ async fn save_current<I: ReportInventory>(
             received_at,
         )
         .await?;
+        // Issue #217: the sync and consensus states are recorded as evidence of
+        // their own. A numeric aggregate cannot hold an Error or Unknown stretch
+        // without erasing it, and it cannot say a state stayed the same without
+        // inventing a transition, so the state log is an append-only family
+        // written beside the projection it describes.
+        //
+        // It runs after the component saves because the projection is what the
+        // Owner actually sees: the instant of a value the Server still holds for
+        // a component is read back from its own row, so a failure that carries
+        // no value reports the age of the last-good value instead of a fresh
+        // instant.
+        let state_cutoff = state_window_cutoff(tx).await?;
+        let sync_state = crate::state_history::StateObservation::of_component(
+            &node.chain.sync,
+            node.chain.sync.latest.map(|value| value.syncing),
+            crate::state_history::retained_value_at(
+                tx,
+                &agent_id,
+                &node_id,
+                crate::state_history::COMPONENT_SYNC,
+            )
+            .await?,
+            crate::state_history::component_instant(&node.chain.sync, report.generated_at),
+            received_instant(received_at, report.generated_at),
+        );
+        crate::state_history::record_state(
+            tx,
+            history,
+            &node_id,
+            crate::state_history::COMPONENT_SYNC,
+            &sync_state,
+            &state_cutoff,
+        )
+        .await?;
+        // Consensus carries no syncing flag of its own: the flag belongs to the
+        // sync value, so the consensus state vector never claims one.
+        let consensus_state = crate::state_history::StateObservation::of_component(
+            &node.chain.consensus,
+            None,
+            crate::state_history::retained_value_at(
+                tx,
+                &agent_id,
+                &node_id,
+                crate::state_history::COMPONENT_CONSENSUS,
+            )
+            .await?,
+            crate::state_history::component_instant(&node.chain.consensus, report.generated_at),
+            received_instant(received_at, report.generated_at),
+        );
+        crate::state_history::record_state(
+            tx,
+            history,
+            &node_id,
+            crate::state_history::COMPONENT_CONSENSUS,
+            &consensus_state,
+            &state_cutoff,
+        )
+        .await?;
         save_component(
             tx,
             &agent_id,
@@ -1434,6 +1514,60 @@ async fn save_current<I: ReportInventory>(
                 outbound as f64,
             )
             .await?;
+        }
+        // Issue #217: the key sync and consensus heights are numeric history, so
+        // they ride the metric engine with the other Node series: the same raw
+        // window, the same one-minute and five-minute tiers, the same gaps and
+        // the same replay/correction ledger. A probe that failed writes no row
+        // here at all, because an absent observation is Unknown rather than a
+        // restatement of the last reading; the failure itself is recorded by the
+        // state log above.
+        //
+        // A block height is an integer and a metric sample is a real. Every
+        // height a chain can reach is far below 2^53, so the stored value is the
+        // height exactly and the history keeps the precision it was measured at.
+        // A height beyond that bound would be rounded by the sample: the canonical
+        // fixture carries 2^53 + 1 to prove the JSON layer itself loses nothing.
+        if let (Some(sync), Some(observed_at)) =
+            (node.chain.sync.latest, metric_observed_at(&node.chain.sync))
+        {
+            for (metric, height) in [
+                ("sync_current_block", sync.current_block),
+                ("sync_highest_block", sync.highest_block),
+            ] {
+                save_metric_sample(
+                    tx,
+                    history,
+                    &crate::metric_history::SeriesScope::node(&node_id, metric),
+                    observed_at,
+                    received_at,
+                    height as f64,
+                )
+                .await?;
+            }
+        }
+        if let (Some(consensus), Some(observed_at)) = (
+            node.chain.consensus.latest,
+            metric_observed_at(&node.chain.consensus),
+        ) {
+            for (metric, height) in [
+                ("consensus_highest_qc_block", consensus.highest_qc_block),
+                ("consensus_highest_lock_block", consensus.highest_lock_block),
+                (
+                    "consensus_highest_commit_block",
+                    consensus.highest_commit_block,
+                ),
+            ] {
+                save_metric_sample(
+                    tx,
+                    history,
+                    &crate::metric_history::SeriesScope::node(&node_id, metric),
+                    observed_at,
+                    received_at,
+                    height as f64,
+                )
+                .await?;
+            }
         }
         if node.chain.rpc.latest.is_some()
             || node.chain.sync.latest.is_some()
@@ -3094,6 +3228,20 @@ async fn ingest_report<I: ReportInventory>(
     {
         eprintln!(
             "raw metric retention cleanup deferred after ingestion: {}",
+            crate::redaction::redact_sensitive(&error.to_string())
+        );
+    }
+    // Issue #217: the recorded sync/consensus states are bounded the same way
+    // and by the same guard, so the state log cannot grow without limit on a
+    // server that never restarts either.
+    if let Err(error) = crate::retention::cleanup_expired_observation_state(
+        state.db().pool(),
+        crate::auth::now_utc(),
+    )
+    .await
+    {
+        eprintln!(
+            "state retention cleanup deferred after ingestion: {}",
             crate::redaction::redact_sensitive(&error.to_string())
         );
     }
