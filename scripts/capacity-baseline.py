@@ -110,6 +110,62 @@ HOST_FORBIDDEN_TOKENS = (
     "write_bytes_per_sec",
 )
 
+# Issue #216 turns the mount contract above from a bound into a fixture: the
+# mount phase below submits one Report per Agent that states exactly
+# MAX_HOST_MOUNTS distinct mount paths (crates/platpulse-core/src/observation.rs:73
+# DiskCurrent::mounts caps one Report at 128 entries), so MAX_HOST_ROWS_PER_REPORT
+# is measured on a real Report instead of assumed from the contract.
+MOUNT_PATHS_PER_AGENT = MAX_HOST_MOUNTS
+# Two series per mount path, the used and the capacity side. They are keyed by
+# Agent and path only (host_metric_series_state.agent_id + .dimension), so the
+# Node count of the Agent never multiplies these rows.
+MOUNT_SERIES_PER_AGENT = len(HOST_MOUNT_METRICS) * MOUNT_PATHS_PER_AGENT
+# The Admin mount list answers at most MOUNT_COVERAGE_LIMIT paths, newest first
+# (crates/platpulse-server/src/metric_history.rs:2212 MOUNT_COVERAGE_LIMIT,
+# answered by admin_agent_storage_mounts). One maximal Report names 128 paths,
+# which is inside that limit, so the answer is complete here and truncation is
+# asserted false; crossing the limit itself is measured by
+# scripts/metric-history-baseline.py, which plants Reports that together name
+# more paths than the limit.
+MOUNT_COVERAGE_LIMIT = 2 * MAX_HOST_MOUNTS
+# The two sides of one mount, named the way the Server names them
+# (crates/platpulse-server/src/metric_history.rs:2202). A declaration check
+# below fails the run if either name stops matching HOST_MOUNT_METRICS.
+MOUNT_USED_METRIC = "disk_used_bytes"
+MOUNT_CAPACITY_METRIC = "disk_total_bytes"
+# The one Agent route that answers the mount list.
+STORAGE_MOUNTS_PATH = "/api/admin/v1/agents/{agent_id}/storage-mounts"
+# The index migration 0069 adds, and the query the coverage read runs
+# (crates/platpulse-server/src/metric_history.rs:2286 HOST_COVERAGE_SQL,
+# transcribed here so EXPLAIN QUERY PLAN can be asked about the real read).
+MOUNT_COVERAGE_INDEX = "host_metric_series_state_mount_idx"
+MOUNT_COVERAGE_SQL = (
+    "SELECT l.dimension, l.first_observed_at, l.last_observed_at, l.last_received_at,"
+    " l.observation_count, l.replayed_count, l.corrected_count, l.released_before,"
+    " s.value, s.received_at FROM host_metric_series_state l"
+    " LEFT JOIN host_metric_samples s ON s.agent_id = l.agent_id AND s.metric = l.metric"
+    " AND s.dimension = l.dimension AND s.observed_at = l.last_observed_at"
+    " WHERE l.agent_id = ? AND l.metric = ?"
+    " ORDER BY l.last_observed_at DESC, l.dimension ASC LIMIT ?"
+)
+# Plan shapes that would mean the read fell back to a scan or a sort.
+MOUNT_COVERAGE_FORBIDDEN_PLANS = ("TEMP B-TREE", "SCAN l ", "SCAN host_metric_series_state")
+
+# How many observed cadences the Server averages into the Agent's sampling
+# cadence (crates/platpulse-server/src/metric_history.rs:2216) and how it turns
+# that cadence into the silence bound (gap_threshold_seconds: three cadences,
+# never below two minutes, clamped at a five minute cadence). The mount phase
+# checks the answer against this law instead of restating it.
+COVERAGE_CADENCE_SAMPLES = 16
+MAX_OBSERVED_CADENCE_SECONDS = 300
+GAP_CADENCE_FACTOR = 3
+MIN_GAP_SECONDS = 120
+
+
+def gap_threshold_seconds(cadence_seconds: int) -> int:
+    "The Server's silence bound for a measured cadence (gap_threshold_seconds)."
+    return max(min(cadence_seconds, MAX_OBSERVED_CADENCE_SECONDS) * GAP_CADENCE_FACTOR, MIN_GAP_SECONDS)
+
 STEADY_NODE_METRICS = ("process_cpu_percent", "process_memory_percent")
 SLOW_SCAN_NODE_METRICS = ("data_directory_percent", "peer_inbound_count", "peer_outbound_count")
 
@@ -911,6 +967,68 @@ def interval_rows(db_path: Path) -> list[dict]:
     )
 
 
+def storage_mounts_path(agent_id: str) -> str:
+    return STORAGE_MOUNTS_PATH.replace("{agent_id}", agent_id)
+
+
+def mount_paths(agent_index: int) -> list[str]:
+    """The mount paths one Agent's maximal Report states, in the order the Agent
+    reports them. The paths carry the Agent index so the two Agents share no
+    path: a path is compared literally and never normalized, so two Agents
+    naming one string would be indistinguishable in the stored evidence."""
+    return ["/agent-" + str(agent_index + 1) + "/volume-" + str(index).zfill(3) for index in range(MOUNT_PATHS_PER_AGENT)]
+
+
+def mount_payload(paths: list[str]) -> list[dict]:
+    """One mount entry per path, shaped like the Report contract (MountUsage)."""
+    return [
+        {
+            "mount_path": path,
+            "total_bytes": 1099511627776 + index,
+            "used_bytes": 549755813888 + index * 4096,
+        }
+        for index, path in enumerate(paths)
+    ]
+
+
+def host_family_footprint(db_path: Path) -> dict:
+    """The page footprint of the raw Host family, measured with dbstat the same
+    way scripts/metric-history-baseline.py measures it (issue #215's method, so
+    the bytes per row here are a measured number rather than a projection).
+    dbstat reports one row per table and per index, which is why the mount index
+    appears in the objects below."""
+    page_size = sqlite_scalar(db_path, "PRAGMA page_size")
+    try:
+        rows = sqlite_rows(
+            db_path,
+            "SELECT name, SUM(pgsize) AS bytes FROM dbstat WHERE name LIKE 'host_metric%'"
+            " GROUP BY name ORDER BY name",
+        )
+    except sqlite3.Error as error:
+        return {"available": False, "reason": str(error)}
+    objects = {row["name"]: row["bytes"] for row in rows}
+    return {
+        "available": True,
+        "objects": objects,
+        "family_bytes": sum(objects.values()),
+        "raw_bytes": objects.get("host_metric_samples", 0),
+        "ledger_bytes": objects.get("host_metric_series_state", 0),
+        "page_size": page_size,
+    }
+
+
+def mount_coverage_plan(db_path: Path, agent_id: str, metric: str, limit: int) -> list:
+    """EXPLAIN QUERY PLAN on the coverage read, with the same binds the Server
+    uses: the plan is what shows the read seeks the mount index instead of
+    sorting every path the Agent ever reported."""
+    connection = sqlite_connection(db_path)
+    try:
+        rows = connection.execute("EXPLAIN QUERY PLAN " + MOUNT_COVERAGE_SQL, (agent_id, metric, limit)).fetchall()
+        return [str(row[3]) for row in rows]
+    finally:
+        connection.close()
+
+
 class BaselineRun:
     def __init__(self, args) -> None:
         self.args = args
@@ -1355,6 +1473,322 @@ class BaselineRun:
             "submissions": submissions,
         }
 
+    def mount_phase(self) -> dict:
+        """Submit one maximal mount Report per Agent and measure the mount family
+        (issue #216). Every Report the earlier phases submitted states an empty
+        disk.mounts, so each row this phase adds is a mount row and every count
+        below is a delta this phase caused. The phase runs with the Server
+        stopped at both ends, because an external SQLite connection next to live
+        Server writes is not allowed."""
+        self.stop()
+        # Protection stays off: a 1 GiB pause floor and a 2 GiB resume floor sit
+        # far below the measured free space, so the Server skips no mount sample.
+        self.write_policy(enabled=True, pause=STEADY_PAUSE_BYTES, resume=STEADY_RESUME_BYTES)
+        footprint_before = host_family_footprint(self.db_path)
+        optional_before = optional_counts(self.db_path)
+        self.start()
+
+        # The mount contract this phase plants, declared before it is measured.
+        self.checks.append(
+            Check(
+                "mount side metrics are the declared storage series",
+                tuple(sorted((MOUNT_USED_METRIC, MOUNT_CAPACITY_METRIC))),
+                tuple(sorted(HOST_MOUNT_METRICS)),
+            )
+        )
+
+        observed_at = self.next_timestamp()
+        head_base = 1_000_000 + self.sequences[0] * 5
+        planted: list[list[str]] = []
+        submissions: list[dict] = []
+        for index, agent in enumerate(self.agents):
+            self.sequences[index] += 1
+            report = build_report(
+                self.template,
+                self.minimal,
+                identity=agent,
+                sequence=self.sequences[index],
+                observed_at=observed_at,
+                node_ids=self.node_ids[index],
+                agent_index=index,
+                head_base=head_base,
+                slow_scan=False,
+                rng=self.rng,
+            )
+            paths = mount_paths(index)
+            report["host"]["disk"] = observation({"mounts": mount_payload(paths)}, observed_at)
+            planted.append(paths)
+            body = json_bytes(report)
+            status, payload, elapsed = send_report(self.client, agent["credential"], body)
+            submissions.append(
+                {
+                    "agent_index": index,
+                    "agent_id": agent["agent_id"],
+                    "mount_paths": len(paths),
+                    "report_bytes": len(body),
+                    "status": status,
+                    "response_bytes": len(payload),
+                    "elapsed_ms": round(elapsed, 2),
+                    "response": payload.decode("utf-8", errors="replace")[:400],
+                }
+            )
+        rejected = [item for item in submissions if item["status"] != 200]
+        if rejected:
+            raise BaselineError("mount Report submission failed: " + json.dumps(rejected))
+
+        protected = bool(capacity_state(self.client, self.cookie).get("protected"))
+        mount_list_reads: list[dict] = []
+        for index, agent in enumerate(self.agents):
+            # The first Agent is read as many times as the other Admin reads of
+            # this baseline, the second once: the latency distribution is what
+            # the report publishes, and the second Agent only has to agree on
+            # the answer's shape.
+            samples = self.args.query_samples if index == 0 else 1
+            path = storage_mounts_path(agent["agent_id"])
+            latencies: list[float] = []
+            sizes: list[int] = []
+            headers_seen: dict = {}
+            payload: dict = {}
+            for _ in range(samples):
+                status, headers, body, elapsed = admin_get(self.client, self.cookie, path)
+                if status != 200:
+                    raise BaselineError(
+                        "GET " + path + " failed with status " + str(status) + ": "
+                        + body.decode("utf-8", errors="replace")[:400]
+                    )
+                headers_seen = headers
+                latencies.append(elapsed)
+                sizes.append(len(body))
+                payload = json.loads(body)
+            mounts = payload.get("mounts") or []
+            mount_list_reads.append(
+                {
+                    "agent_index": index,
+                    "agent_id": agent["agent_id"],
+                    "path": path,
+                    "reads": samples,
+                    "answered_at": payload.get("answeredAt"),
+                    "payload_bytes": {"min": min(sizes), "max": max(sizes)},
+                    "latency_ms": {
+                        "p50_ms": round(percentile(latencies, 0.5), 2),
+                        "p95_ms": round(percentile(latencies, 0.95), 2),
+                        "min_ms": round(min(latencies), 2),
+                        "max_ms": round(max(latencies), 2),
+                    },
+                    "cache_control": headers_seen.get("cache-control"),
+                    "cadence_seconds": payload.get("cadenceSeconds"),
+                    "silence_threshold_seconds": payload.get("silenceThresholdSeconds"),
+                    "used_metric": payload.get("usedMetric"),
+                    "capacity_metric": payload.get("capacityMetric"),
+                    "mount_limit": payload.get("mountLimit"),
+                    "truncated": payload.get("truncated"),
+                    "answered_paths": [item.get("mountPath") for item in mounts],
+                    "observation_states": sorted({str(item.get("observationState")) for item in mounts}),
+                    "silent_seconds": sorted({item.get("silentSeconds") for item in mounts}),
+                    "used_values": [(item.get("used") or {}).get("latestValue") for item in mounts],
+                    "capacity_values": [(item.get("capacity") or {}).get("latestValue") for item in mounts],
+                    "used_observed": all(bool((item.get("used") or {}).get("observed")) for item in mounts),
+                    "capacity_observed": all(bool((item.get("capacity") or {}).get("observed")) for item in mounts),
+                }
+            )
+        self.stop()
+
+        footprint_after = host_family_footprint(self.db_path)
+        optional_after = optional_counts(self.db_path)
+        samples_added = optional_after["host_samples"] - optional_before["host_samples"]
+        metric_list = "(" + ", ".join("'" + name + "'" for name in HOST_MOUNT_METRICS) + ")"
+        ledger_rows = sqlite_rows(
+            self.db_path,
+            "SELECT agent_id, metric, COUNT(*) AS series FROM host_metric_series_state"
+            " WHERE metric IN " + metric_list + " GROUP BY agent_id, metric ORDER BY agent_id, metric",
+        )
+        sample_rows = sqlite_rows(
+            self.db_path,
+            "SELECT agent_id, metric, COUNT(*) AS samples, COUNT(DISTINCT dimension) AS dimensions,"
+            " MIN(dimension) AS first_path, MAX(dimension) AS last_path FROM host_metric_samples"
+            " WHERE metric IN " + metric_list + " GROUP BY agent_id, metric ORDER BY agent_id, metric",
+        )
+        node_rows = sqlite_rows(
+            self.db_path, "SELECT agent_id, COUNT(*) AS nodes FROM nodes GROUP BY agent_id ORDER BY agent_id"
+        )
+        per_agent_ledger = {row["agent_id"]: 0 for row in node_rows}
+        for row in ledger_rows:
+            per_agent_ledger[row["agent_id"]] = per_agent_ledger.get(row["agent_id"], 0) + int(row["series"])
+        plan = mount_coverage_plan(self.db_path, self.agents[0]["agent_id"], MOUNT_USED_METRIC, MOUNT_COVERAGE_LIMIT)
+        index_used = any(MOUNT_COVERAGE_INDEX in line for line in plan)
+        forbidden = [line for line in plan if any(token in line for token in MOUNT_COVERAGE_FORBIDDEN_PLANS)]
+        footprint_delta = None
+        if footprint_before.get("available") and footprint_after.get("available"):
+            footprint_delta = int(footprint_after["family_bytes"]) - int(footprint_before["family_bytes"])
+
+        # The answer one maximal Report earns: 128 paths inside a 256 path
+        # limit, so the list is complete and states no truncation.
+        for entry in mount_list_reads:
+            position = "agent " + str(entry["agent_index"] + 1)
+            self.checks.append(
+                Check(
+                    "mount list answers every path of one maximal Report (" + position + ")",
+                    {"paths": MOUNT_PATHS_PER_AGENT, "truncated": False, "mount_limit": MOUNT_COVERAGE_LIMIT},
+                    {
+                        "paths": len(entry["answered_paths"]),
+                        "truncated": entry["truncated"],
+                        "mount_limit": entry["mount_limit"],
+                    },
+                )
+            )
+            # One Report means one instant for every path of that Agent, so the
+            # newest-first order is a tie the path settles: sorted is the answer.
+            self.checks.append(
+                Check(
+                    "mount list names the reported paths in path order (" + position + ")",
+                    sorted(planted[entry["agent_index"]]),
+                    entry["answered_paths"],
+                )
+            )
+        self.checks.append(
+            Check(
+                "mount list uses the declared storage series",
+                (MOUNT_USED_METRIC, MOUNT_CAPACITY_METRIC),
+                tuple(dict.fromkeys(
+                    (entry["used_metric"], entry["capacity_metric"]) for entry in mount_list_reads
+                ))[0] if mount_list_reads else (),
+            )
+        )
+        self.checks.append(
+            Check(
+                "mount list is answered without caching",
+                True,
+                all("no-store" in str(entry["cache_control"]) for entry in mount_list_reads),
+            )
+        )
+        self.checks.append(
+            Check(
+                "mount list states a measured cadence and the silence bound of that cadence",
+                True,
+                all(
+                    isinstance(entry["cadence_seconds"], int)
+                    and entry["cadence_seconds"] > 0
+                    and entry["silence_threshold_seconds"] == gap_threshold_seconds(entry["cadence_seconds"])
+                    for entry in mount_list_reads
+                ),
+            )
+        )
+        self.checks.append(
+            Check(
+                "a path reported seconds ago is stated reported, never silent",
+                ["reported"],
+                sorted({state for entry in mount_list_reads for state in entry["observation_states"]}),
+            )
+        )
+        self.checks.append(
+            Check(
+                "mount list answers a stored reading for every path",
+                True,
+                all(entry["used_observed"] and entry["capacity_observed"] for entry in mount_list_reads)
+                and all(all(value is not None for value in entry["used_values"]) for entry in mount_list_reads)
+                and all(all(value is not None for value in entry["capacity_values"]) for entry in mount_list_reads),
+            )
+        )
+
+        # The rows behind the answer.
+        self.checks.append(
+            Check(
+                "one maximal Report per Agent stores the declared Host row bound",
+                AGENT_COUNT * MAX_HOST_ROWS_PER_REPORT,
+                samples_added,
+            )
+        )
+        self.checks.append(
+            Check(
+                "mount rows per Agent do not follow its " + str(NODES_PER_AGENT) + " Nodes",
+                {agent["agent_id"]: MOUNT_SERIES_PER_AGENT for agent in self.agents},
+                per_agent_ledger,
+            )
+        )
+        self.checks.append(
+            Check(
+                "each Agent really holds " + str(NODES_PER_AGENT) + " Nodes",
+                {agent["agent_id"]: NODES_PER_AGENT for agent in self.agents},
+                {row["agent_id"]: int(row["nodes"]) for row in node_rows},
+            )
+        )
+        self.checks.append(
+            Check(
+                "mount samples are one per path per metric, dimensioned by the path",
+                sorted(
+                    # One sample per path per metric: as many rows as dimensions.
+                    (agent["agent_id"], metric, MOUNT_PATHS_PER_AGENT, MOUNT_PATHS_PER_AGENT)
+                    for agent in self.agents
+                    for metric in HOST_MOUNT_METRICS
+                ),
+                sorted(
+                    (row["agent_id"], row["metric"], int(row["samples"]), int(row["dimensions"]))
+                    for row in sample_rows
+                ),
+            )
+        )
+        self.checks.append(
+            Check(
+                "the mount coverage read is index backed and sorts nothing",
+                True,
+                index_used and not forbidden,
+            )
+        )
+        self.checks.append(
+            Check(
+                "migration 0069's mount index exists in the database",
+                True,
+                MOUNT_COVERAGE_INDEX in (footprint_after.get("objects") or {}),
+            )
+        )
+        self.checks.append(
+            Check(
+                "the mount samples of one maximal Report cost real pages",
+                True,
+                footprint_delta is not None and footprint_delta > 0,
+            )
+        )
+        self.checks.append(
+            Check("no mount sample was paused by protection", False, protected)
+        )
+        return {
+            "issue": 216,
+            "title": "Storage history per mount path",
+            "observed_at": observed_at,
+            "paths_per_report": MOUNT_PATHS_PER_AGENT,
+            "series_per_path": len(HOST_MOUNT_METRICS),
+            "coverage_limit": MOUNT_COVERAGE_LIMIT,
+            "mount_index": MOUNT_COVERAGE_INDEX,
+            "submissions": submissions,
+            "submission_latency_ms": {
+                "p50_ms": round(percentile([item["elapsed_ms"] for item in submissions], 0.5), 2),
+                "p95_ms": round(percentile([item["elapsed_ms"] for item in submissions], 0.95), 2),
+            },
+            "mount_list_reads": mount_list_reads,
+            "host_samples_added": samples_added,
+            "host_samples_expected": AGENT_COUNT * MAX_HOST_ROWS_PER_REPORT,
+            "mount_ledger_rows": ledger_rows,
+            "mount_sample_rows": sample_rows,
+            "nodes_per_agent": {row["agent_id"]: int(row["nodes"]) for row in node_rows},
+            "query_plan": plan,
+            "query_plan_uses_index": index_used,
+            "query_plan_forbidden": forbidden,
+            "protected_during_phase": protected,
+            "footprint": {
+                "before": footprint_before,
+                "after": footprint_after,
+                "delta_bytes": footprint_delta,
+                "delta_bytes_per_mount_sample": round(footprint_delta / samples_added, 2)
+                if footprint_delta is not None and samples_added
+                else None,
+                "raw_bytes_per_host_sample": round(
+                    footprint_after.get("raw_bytes", 0) / max(1, optional_after["host_samples"]), 3
+                )
+                if footprint_after.get("available")
+                else None,
+            },
+        }
+
     def run(self) -> dict:
         started_wall = time.monotonic()
         self.run_root.mkdir(parents=True, exist_ok=True)
@@ -1424,7 +1858,31 @@ class BaselineRun:
         sample_after = filesystem_sample(self.state_dir)
         pressure = self.pressure_phase(sample_after["available_bytes"])
         recovery = self.recovery_phase()
+        # The mount phase (issue #216) runs last: it plants the only Reports this
+        # baseline submits that state a mount, so their rows must stay outside
+        # the exact Host row counts the phases above assert, and it needs the
+        # stopped-Server window phase_recovery already opened.
+        mounts = self.mount_phase()
         self.stop()
+
+        # Issue #216 turns the mount dimension from a note into a measurement:
+        # the phase above stored one maximal mount Report per Agent, so the
+        # declaration made before the load is now backed by real rows.
+        host_family["mount_dimension_measured"] = True
+        host_family["mount_dimension_note"] = (
+            "The mount phase submitted one Report per Agent carrying " + str(MOUNT_PATHS_PER_AGENT)
+            + " distinct mount paths, so the two mount-named storage series are measured: they are keyed by "
+            "Agent and path, they do not follow the Node count, and the per-Report bound of "
+            + str(MAX_HOST_ROWS_PER_REPORT) + " rows was stored by a real Report rather than assumed."
+        )
+        host_family["coverage"] = {
+            "list_path": STORAGE_MOUNTS_PATH,
+            "coverage_limit": MOUNT_COVERAGE_LIMIT,
+            "index": MOUNT_COVERAGE_INDEX,
+            "order": "newest observation first, ties settled by the mount path",
+            "paths_measured_per_agent": MOUNT_PATHS_PER_AGENT,
+            "truncated_answers": [entry["truncated"] for entry in mounts["mount_list_reads"]],
+        }
 
         storage = storage_bytes(self.db_path)
         self.runtime_seconds = time.monotonic() - started_wall
@@ -1487,7 +1945,7 @@ class BaselineRun:
                 "nodes": [{"agent_index": index, "node_ids": ids} for index, ids in enumerate(self.node_ids)],
                 "network": NETWORK,
             },
-            "phases": {"steady": steady, "pressure": pressure, "recovery": recovery},
+            "phases": {"steady": steady, "pressure": pressure, "recovery": recovery, "mounts": mounts},
             "host_family": host_family,
             "read_path": reads,
             "storage": storage,
@@ -1535,9 +1993,10 @@ class BaselineRun:
                 "filesystem deployment was exercised.",
                 "The Server ran in development mode without TLS and without a reverse proxy.",
                 "A release-profile build was not measured.",
-                "The Host family carries no mount in this baseline: every submitted Report states the eight shared "
-                "Host series only, so the two mount-named storage series are registered and checked as absent "
-                "rather than measured, and no mount was ever removed or renamed between Reports.",
+                "The mount phase states one maximal Report per Agent: a mount path that stops being reported "
+                "between Reports, the silence judgement and the retention release boundary of a mount series are "
+                "measured by scripts/metric-history-baseline.py instead, and no mount path was ever renamed or "
+                "moved between two Reports here.",
                 "No Node is shared between the two Agents: the sharing measured here is one Agent's Host stored "
                 "once for the three Nodes it collects for, and the two Agents keeping separate Host series.",
                 "Swap and disk-throughput series are not part of the Host family (issue #215) and were neither "
@@ -1612,7 +2071,64 @@ def write_markdown_report(report: dict, path: Path) -> None:
         + " Node samples paused in the same window",
         "- Resumed Host samples: " + str(recovery["host_samples_resumed"]) + " Host / "
         + str(recovery["node_samples_resumed"]) + " Node",
-        "- Mount-covered series: not measured - " + report["host_family"]["mount_dimension_note"],
+        "- Mount-covered series: " + ("measured" if report["host_family"]["mount_dimension_measured"] else "not measured")
+        + " - " + report["host_family"]["mount_dimension_note"],
+        "",
+    ]
+    mounts = report["phases"]["mounts"]
+    mount_reads = mounts["mount_list_reads"]
+    coverage = report["host_family"]["coverage"]
+    footprint = mounts["footprint"]["after"]
+    if footprint.get("available"):
+        family_storage = human_bytes(footprint["family_bytes"]) + " across its tables, " + human_bytes(footprint["raw_bytes"]) + " of it the raw rows"
+    else:
+        # Report a missing measurement truthfully instead of inventing a size.
+        family_storage = "not measured (" + str(footprint.get("reason")) + ")"
+    lines += [
+        "## Storage history per mount path (issue #216)",
+        "",
+        "- The mount list is served by GET " + coverage["list_path"] + " in the order "
+        + coverage["order"] + ", capped at " + str(coverage["coverage_limit"]) + " paths by the "
+        + coverage["index"] + " index",
+        "- Per-Report bound: " + str(AGENT_COUNT * MAX_HOST_ROWS_PER_REPORT) + " Host rows were stored by "
+        + str(len(mounts["submissions"])) + " maximal Reports ("
+        + str(mounts["paths_per_report"]) + " paths each), measured against the declared bound of "
+        + str(MAX_HOST_ROWS_PER_REPORT) + " rows per Report",
+        "",
+        "| Measurement | Value |",
+        "| --- | --- |",
+        "| Mount paths per maximal Report | " + str(mounts["paths_per_report"]) + " |",
+        "| Host rows the mount phase stored | " + str(mounts["host_samples_added"]) + " (expected "
+        + str(mounts["host_samples_expected"]) + ") |",
+        "| Mount series per Agent | " + json.dumps({row["agent_id"]: int(row["series"]) for row in mounts["mount_ledger_rows"]})
+        + " against " + json.dumps({key: int(value) for key, value in mounts["nodes_per_agent"].items()})
+        + " Nodes, so mount rows do not follow the Node count |",
+        "| Coverage limit / truncated | " + str(mounts["coverage_limit"]) + " / "
+        + str(mount_reads[0]["truncated"]) + " |",
+        "| Paths answered | " + str(len(mount_reads[0]["answered_paths"])) + " in path order |",
+        "| Cadence / silence threshold | " + str(mount_reads[0]["cadence_seconds"]) + "s / "
+        + str(mount_reads[0]["silence_threshold_seconds"]) + "s |",
+        "| Observation states | " + json.dumps(mount_reads[0]["observation_states"]) + " |",
+        "| Response body | " + str(mount_reads[0]["payload_bytes"]["min"]) + "-"
+        + str(mount_reads[0]["payload_bytes"]["max"]) + " bytes |",
+        "| Read latency p50 / p95 | " + str(mount_reads[0]["latency_ms"]["p50_ms"]) + "ms / "
+        + str(mount_reads[0]["latency_ms"]["p95_ms"]) + "ms |",
+        "| Response cache header | " + str(mount_reads[0]["cache_control"]) + " |",
+        "| Report latency p50 / p95 | " + str(mounts["submission_latency_ms"]["p50_ms"]) + "ms / "
+        + str(mounts["submission_latency_ms"]["p95_ms"]) + "ms |",
+        "| Mount samples storage | " + human_bytes(mounts["footprint"]["delta_bytes"] or 0) + " of new pages for "
+        + str(mounts["host_samples_added"]) + " mount samples ("
+        + str(mounts["footprint"]["delta_bytes_per_mount_sample"]) + " bytes each); the family holds "
+        + family_storage + " |",
+        "| Coverage read plan | " + mounts["mount_index"] + " "
+        + ("used, with no temp B-tree and no table scan" if mounts["query_plan_uses_index"] else "NOT used") + " |",
+        "",
+        "```",
+    ]
+    for line in mounts["query_plan"]:
+        lines.append(line)
+    lines += [
+        "```",
         "",
         "## Read path (p50 / p95)",
         "",

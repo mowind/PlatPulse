@@ -112,6 +112,10 @@ def parse_instant(value: str) -> datetime:
     return datetime.strptime(value, CANONICAL).replace(tzinfo=timezone.utc)
 
 
+def shift_instant(value: str, seconds: float) -> str:
+    return (parse_instant(value) + timedelta(seconds=seconds)).strftime(CANONICAL)
+
+
 def command(args, *, input_text: str | None = None, timeout: float = 900, cwd: Path = ROOT):
     completed = subprocess.run(
         [str(item) for item in args],
@@ -722,6 +726,264 @@ HOST_FORBIDDEN_TOKENS = (
 # (TIER_INVENTORY_REVISIONS[-1]) accepted. It declares the next block instead,
 # the way MULTI_NODE_INVENTORY_REVISION (1001) followed DRAIN_INVENTORY_REVISION
 # (1002) and the tier revisions followed that.
+# Issue #216 keeps the same family: the storage pair is answered per mount
+# path, and the Owner's list of those paths is a bounded walk of the ledger, so
+# one Report still carries at most MAX_HOST_ROWS_PER_REPORT rows however many
+# paths the Agent holds. The bound below is the read side of that declaration:
+# the list answers the newest MOUNT_COVERAGE_LIMIT paths of one Agent.
+MOUNT_USED_METRIC = "disk_used_bytes"
+MOUNT_CAPACITY_METRIC = "disk_total_bytes"
+MOUNT_CADENCE_METRIC = "cpu_percent"
+MOUNT_COVERAGE_LIMIT = 2 * MAX_HOST_MOUNTS
+COVERAGE_CADENCE_SAMPLES = 16
+MAX_OBSERVED_CADENCE_SECONDS = 300
+GAP_CADENCE_FACTOR = 3
+MIN_GAP_SECONDS = 120
+# The mount list is read MOUNT_COVERAGE_READS times so its latency is published
+# as a distribution over real reads rather than as one sample.
+MOUNT_COVERAGE_READS = 12
+# One Report is at most MAX_HOST_MOUNTS mounts, so more paths than the list can
+# answer takes three Reports of disjoint paths, planted at three ages so the
+# order the list promises can be read off the answer itself.
+MOUNT_BULK_PATHS_PER_REPORT = 100
+MOUNT_RETIRED_AGE_SECONDS = 7200
+# The newest instant is the next second on the Agent clock rather than the instant
+# the ledger already holds: a reading the Server sees ahead of its own clock is
+# stated as reported however long this run has been going, instead of an age the
+# script would have to guess at.
+MOUNT_NEWEST_OFFSET_SECONDS = 1
+# The rhythm the mount phase leaves as the Agent's newest observations, and the
+# reason it is planted at all: the Server states the cadence the Agent is keeping
+# now, trusting the newest interval only when the interval before it agrees within
+# CADENCE_AGREEMENT_FACTOR (crates/platpulse-server/src/metric_history.rs
+# `current_cadence_seconds`). Three Reports state that rhythm, because the newest
+# interval is trusted only when the interval before it agrees, and the third is
+# what puts the interval before the newest rhythm Report on the rhythm instead of
+# on the pair of observations one second apart the phases above end with. Two
+# Reports would leave the list answering cadence 0 - unknown - and no state below
+# could be judged at all; and because that pair stays the fastest interval the
+# ledger holds, the cadence the list answers is evidence that the newest rhythm
+# decided it rather than the fastest interval still stored.
+#
+# The interval is computed from the ledger rather than fixed: all three Reports
+# have to sit above the newest observation the ledger already holds, so a fixed
+# interval wide enough to read as a rhythm could reach below that pair on a slower
+# or faster machine, leaving every state below it judged against an unmeasurable
+# cadence. The three Reports take MOUNT_RHYTHM_DIVISOR-th of the room between the
+# newest instant and that observation, which leaves a quarter of it as clearance.
+MOUNT_RHYTHM_FLOOR_SECONDS = 5
+MOUNT_RHYTHM_DIVISOR = 4
+MOUNT_SOLO_NODE_BLOCK = 0x2160
+MOUNT_SOLO_PATH = "/solo-data"
+MOUNT_SOLO_CACHE_PATH = "/solo-cache"
+MOUNT_RETIRED_PATH = "/archive-data"
+MOUNT_LIVE_PATH = "/live-data"
+MOUNT_RELEASED_PATH = "/released-data"
+# Migration 0069's index, and the plans that would mean the walk sorted instead
+# of seeking it. The statement below is the Server's own coverage read
+# (crates/platpulse-server/src/metric_history.rs:2286), binds and all.
+MOUNT_COVERAGE_INDEX = "host_metric_series_state_mount_idx"
+MOUNT_COVERAGE_FORBIDDEN_PLANS = ("TEMP B-TREE", "SCAN l ", "SCAN host_metric_series_state")
+MOUNT_COVERAGE_SQL = (
+    "SELECT l.dimension, l.first_observed_at, l.last_observed_at, l.last_received_at,"
+    " l.observation_count, l.replayed_count, l.corrected_count, l.released_before, s.value,"
+    " s.received_at FROM host_metric_series_state l LEFT JOIN host_metric_samples s"
+    " ON s.agent_id = l.agent_id AND s.metric = l.metric AND s.dimension = l.dimension"
+    " AND s.observed_at = l.last_observed_at WHERE l.agent_id = ? AND l.metric = ?"
+    " ORDER BY l.last_observed_at DESC, l.dimension ASC LIMIT ?"
+)
+
+
+def gap_threshold_seconds(cadence_seconds: int) -> int:
+    """The silence bound of a measured cadence: three cadences, clamped to the
+    Server's own ceiling and never below two minutes
+    (crates/platpulse-server/src/metric_history.rs:734)."""
+    clamped = min(max(cadence_seconds, 1), MAX_OBSERVED_CADENCE_SECONDS)
+    return max(clamped * GAP_CADENCE_FACTOR, MIN_GAP_SECONDS)
+
+
+def storage_mounts_url(agent_id: str) -> str:
+    """Issue #216's Owner-only route: the storage family of one Agent, one entry
+    per mount path it has reported, newest first."""
+    return "/api/admin/v1/agents/" + agent_id + "/storage-mounts"
+
+
+def bulk_mount_path(index: int) -> str:
+    """One disjoint block of mount paths per planted Report, so which Report a
+    path belongs to reads off the path itself."""
+    return "/bulk-" + str(index).zfill(3)
+
+
+def mount_used_bytes(path: str) -> int:
+    """A used reading that is a function of the path alone, so the value the
+    Server answers for one path is checkable without planting a second Report."""
+    return (1 << 30) + sum(ord(character) for character in path) * 4096
+
+
+def mount_payload(paths: list) -> list:
+    """One entry per path in the Report's own mount shape: both readings are
+    functions of the path alone, and used stays below total."""
+    return [
+        {
+            "mount_path": path,
+            "total_bytes": mount_used_bytes(path) + (1 << 33),
+            "used_bytes": mount_used_bytes(path),
+        }
+        for path in paths
+    ]
+
+
+def mount_entry(read: dict, path: str) -> dict:
+    """The one entry a list answered for one path, flattened to the fields the
+    checks read. A path the list does not answer is an absent entry rather than a
+    crash, so a broken promise fails a check instead of the run."""
+    for entry in read["mounts"]:
+        if entry.get("mountPath") == path:
+            used = entry.get("used") or {}
+            capacity = entry.get("capacity") or {}
+            return {
+                "answered": True,
+                "mount_path": path,
+                "observation_state": entry.get("observationState"),
+                "silent_seconds": entry.get("silentSeconds"),
+                "used_observed": used.get("observed"),
+                "used_latest_value": used.get("latestValue"),
+                "used_released_before": used.get("releasedBefore"),
+                "used_first_observed_at": used.get("firstObservedAt"),
+                "used_last_observed_at": used.get("lastObservedAt"),
+                "used_observation_count": used.get("observationCount"),
+                "capacity_observed": capacity.get("observed"),
+                "capacity_latest_value": capacity.get("latestValue"),
+                "capacity_released_before": capacity.get("releasedBefore"),
+                "capacity_last_observed_at": capacity.get("lastObservedAt"),
+            }
+    return {"answered": False, "mount_path": path}
+
+
+def mount_read_summary(read: dict) -> dict:
+    """One mount list read without its per-path rows: the bound it answered
+    under, the cadence it judged against, and what the read cost."""
+    silent = sorted(
+        {entry.get("silentSeconds") for entry in read["mounts"]},
+        key=lambda value: (value is None, value if value is not None else 0),
+    )
+    return {
+        "path": read["path"],
+        "reads": read["reads"],
+        "answered_at": read["answered_at"],
+        "cadence_seconds": read["cadence_seconds"],
+        "silence_threshold_seconds": read["silence_threshold_seconds"],
+        "used_metric": read["used_metric"],
+        "capacity_metric": read["capacity_metric"],
+        "mount_limit": read["mount_limit"],
+        "truncated": read["truncated"],
+        "cache_control": read["cache_control"],
+        "mounts": len(read["mounts"]),
+        "first_path": read["mounts"][0]["mountPath"] if read["mounts"] else None,
+        "last_path": read["mounts"][-1]["mountPath"] if read["mounts"] else None,
+        "states": sorted({entry.get("observationState") for entry in read["mounts"]}),
+        "silent_seconds": silent[:8],
+        "payload_bytes": read["payload_bytes"],
+        "latency_ms": read["latency_ms"],
+    }
+
+
+def mount_ledger_order(db_path: Path, agent_id: str) -> list:
+    """The order the list promises, recomputed from the ledger itself: newest
+    observation first with ties settled by the path, which is the Server's own
+    ORDER BY over host_metric_series_state."""
+    rows = sqlite_rows(
+        db_path,
+        "SELECT dimension, last_observed_at FROM host_metric_series_state WHERE agent_id = '"
+        + agent_id
+        + "' AND metric IN ('"
+        + MOUNT_USED_METRIC
+        + "', '"
+        + MOUNT_CAPACITY_METRIC
+        + "')",
+    )
+    newest = {}
+    for row in rows:
+        path = row["dimension"]
+        if path not in newest or row["last_observed_at"] > newest[path]:
+            newest[path] = row["last_observed_at"]
+    ordered = sorted(newest)
+    ordered.sort(key=lambda path: newest[path], reverse=True)
+    return [[path, newest[path]] for path in ordered]
+
+
+def host_cadence_instant(db_path: Path, agent_id: str) -> str | None:
+    """The newest observation the ledger already holds for the Agent's cadence
+    series. The rhythm below is planted above it, so the newest intervals the list
+    measures are the planted rhythm and not what the phases above left there."""
+    rows = sqlite_rows(
+        db_path,
+        "SELECT last_observed_at FROM host_metric_series_state WHERE agent_id = '"
+        + agent_id
+        + "' AND metric = '"
+        + MOUNT_CADENCE_METRIC
+        + "' AND dimension = ''",
+    )
+    return rows[0]["last_observed_at"] if rows else None
+
+
+def mount_rhythm_seconds(newest_at: str, held_at: str | None) -> int:
+    """The interval three planted Reports state as the Agent's rhythm: the newest
+    instant, the newest observation the ledger already holds below it, and the three
+    Reports that have to fit between the two."""
+    if held_at is None:
+        return MOUNT_RHYTHM_FLOOR_SECONDS
+    room = (parse_instant(newest_at) - parse_instant(held_at)).total_seconds()
+    return max(MOUNT_RHYTHM_FLOOR_SECONDS, int(room // MOUNT_RHYTHM_DIVISOR))
+
+
+def mount_rows(db_path: Path, agent_id: str) -> dict:
+    """The mount rows one Agent really holds next to the Nodes it has: the counts
+    that show the mount family is keyed by Agent and path, so neither its series
+    nor its samples follow the Node count."""
+    metric_filter = " AND metric IN ('" + MOUNT_USED_METRIC + "', '" + MOUNT_CAPACITY_METRIC + "')"
+    return {
+        "mount_series": sqlite_scalar(
+            db_path,
+            "SELECT COUNT(*) FROM host_metric_series_state WHERE agent_id = '" + agent_id + "'" + metric_filter,
+        ),
+        "mount_samples": sqlite_scalar(
+            db_path, "SELECT COUNT(*) FROM host_metric_samples WHERE agent_id = '" + agent_id + "'" + metric_filter
+        ),
+        "distinct_paths": sqlite_scalar(
+            db_path,
+            "SELECT COUNT(DISTINCT dimension) FROM host_metric_series_state WHERE agent_id = '"
+            + agent_id
+            + "'"
+            + metric_filter,
+        ),
+        "nodes": sqlite_scalar(db_path, "SELECT COUNT(*) FROM nodes WHERE agent_id = '" + agent_id + "'"),
+        # The Node ledger is keyed by (node_id, metric) - it has no agent_id at
+        # all (migrations/0066_node_metric_history.sql:42) - so its rows follow the
+        # Node count, which is exactly what the mount ledger does not do.
+        "node_series": sqlite_scalar(
+            db_path,
+            "SELECT COUNT(*) FROM node_metric_series_state s JOIN nodes n ON n.node_id = s.node_id"
+            " WHERE n.agent_id = '"
+            + agent_id
+            + "'",
+        ),
+    }
+
+
+def mount_coverage_plan(db_path: Path, agent_id: str, metric: str, limit: int) -> list:
+    """EXPLAIN QUERY PLAN of the coverage read under the binds the Server itself
+    uses: the plan is what shows the read seeks the mount index instead of
+    sorting every path the Agent ever reported."""
+    connection = sqlite3.connect("file:" + str(db_path) + "?mode=ro", uri=True)
+    try:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute("EXPLAIN QUERY PLAN " + MOUNT_COVERAGE_SQL, (agent_id, metric, limit)).fetchall()
+        return [dict(row)["detail"] for row in rows]
+    finally:
+        connection.close()
+
+
 HOST_INVENTORY_REVISION = 3001
 
 
@@ -2492,6 +2754,354 @@ class BaselineRun:
             "wall_seconds": round(time.monotonic() - started, 3),
         }
 
+    def post_report(self, agent: dict, report: dict) -> dict:
+        """One Report under an explicit credential: the phases above all report as
+        self.agent, and the second Agent this phase enrolls must not."""
+        status, _, body, elapsed_ms = self.client.request(
+            "POST",
+            "/api/agent/v1/reports",
+            body=json_bytes(report),
+            headers={"Authorization": "Bearer " + agent["credential"], "Content-Type": "application/json"},
+        )
+        payload = json.loads(body)
+        receipt = payload.get("receipt") if isinstance(payload.get("receipt"), dict) else {}
+        return {
+            "status": status,
+            "elapsed_ms": round(elapsed_ms, 3),
+            "disposition": payload.get("disposition") or receipt.get("disposition"),
+            "reason": receipt.get("reason") or receipt.get("detail") or payload.get("reason"),
+        }
+
+    def read_mounts(self, agent_id: str, reads: int = 1) -> dict:
+        """The Owner's mount list of one Agent, read `reads` times so the latency
+        below is a distribution over real reads rather than one sample."""
+        path = storage_mounts_url(agent_id)
+        latencies = []
+        sizes = []
+        headers = {}
+        payload = {}
+        for _ in range(reads):
+            status, headers, body, elapsed_ms = admin_get(self.client, self.cookie, path)
+            if status != 200:
+                raise BaselineError(
+                    "GET " + path + " failed with status " + str(status) + ": " + body.decode("utf-8")[:400]
+                )
+            latencies.append(elapsed_ms)
+            sizes.append(len(body))
+            payload = json.loads(body)
+        return {
+            "path": path,
+            "reads": reads,
+            "answered_at": payload.get("answeredAt"),
+            "cadence_seconds": payload.get("cadenceSeconds"),
+            "silence_threshold_seconds": payload.get("silenceThresholdSeconds"),
+            "used_metric": payload.get("usedMetric"),
+            "capacity_metric": payload.get("capacityMetric"),
+            "mount_limit": payload.get("mountLimit"),
+            "truncated": payload.get("truncated"),
+            "cache_control": headers.get("cache-control"),
+            "payload_bytes": {"min": min(sizes), "max": max(sizes)},
+            "latency_ms": {
+                "p50": round(percentile(latencies, 0.5), 3),
+                "p95": round(percentile(latencies, 0.95), 3),
+                "min": round(min(latencies), 3),
+                "max": round(max(latencies), 3),
+            },
+            "mounts": payload.get("mounts") or [],
+        }
+
+    def phase_mount_coverage(self) -> dict:
+        """Issue #216: the storage family is answered per mount path, and the list
+        the Owner reads is a bounded, newest-first walk of the mount ledger.
+
+        Four measurements share one phase because that list is one bounded answer
+        per Agent: a second Agent whose only Report cannot measure a cadence, a
+        path whose newest reading Retention already released, more distinct paths
+        than the list can answer, and the rhythm the Agent is keeping now - the
+        cadence, and with it the silence bound every state below is judged
+        against, planted as the Agent's newest observations. Every Report above
+        stated no mount - the fixture's disk block carries an empty mount list -
+        so every mount row read here belongs to a path this phase planted.
+        """
+        started = time.perf_counter()
+        agent_id = self.agent["agent_id"]
+
+        # The footprint is measured while the Server is stopped and before any
+        # path of this phase exists, so the delta below belongs to this phase.
+        self.stop_server()
+        footprint_before = self.host_footprint()
+        # The ledger is not empty here: the Host family phase above (issue #215)
+        # plants a Report of its own. Those paths belong in the arithmetic below,
+        # because the bound cuts the whole ledger, not only what this phase plants.
+        preexisting = mount_ledger_order(self.db_path, agent_id)
+        cadence_held_at = host_cadence_instant(self.db_path, agent_id)
+        token = create_enrollment_token(self.binary, self.config)
+        self.start_server(CLEARED_FLOOR)
+
+        # -- an Agent whose only Report cannot measure a cadence -------------
+        solo_agent = enroll_agent(token, self.client)
+        solo_paths = [MOUNT_SOLO_PATH, MOUNT_SOLO_CACHE_PATH]
+        solo_at = instant(-300)
+        solo_sequence = self.next_sequence()
+        solo_report = build_report(
+            self.fixture, solo_agent, solo_sequence, solo_at, 7.5, 22000, report_id_for(solo_sequence)
+        )
+        solo_node_id = clone_node_id(MOUNT_SOLO_NODE_BLOCK, 0)
+        solo_report["nodes"][0]["node_id"] = solo_node_id
+        solo_report["inventory"]["nodes"][0]["node_id"] = solo_node_id
+        solo_report["host"]["disk"]["latest"] = {"mounts": mount_payload(solo_paths)}
+        solo_post = self.post_report(solo_agent, solo_report)
+        solo_read = self.read_mounts(solo_agent["agent_id"])
+
+        # -- the rhythm the list's cadence is measured from -------------------
+        # Planted first, and planted above the newest observation the phases above
+        # left behind, so every state read below is judged against a rhythm the
+        # Agent is really keeping rather than against a cadence nobody could
+        # measure. The rhythm is three Reports because the newest interval is
+        # trusted only when the one before it agrees, and the pair of observations
+        # one second apart the phases above end with stays the fastest interval the
+        # ledger holds, so the cadence the list answers is evidence of which rule
+        # decided it. The released read below happens before the bulk Reports, so
+        # with two Reports it would still answer cadence 0 and call that path
+        # unknown.
+        newest_at = instant(MOUNT_NEWEST_OFFSET_SECONDS)
+        rhythm_seconds = mount_rhythm_seconds(newest_at, cadence_held_at)
+        planted = {}
+
+        def plant(name, kind, observed_at, paths, cpu, pid):
+            sequence = self.next_sequence()
+            report = build_report(self.fixture, self.agent, sequence, observed_at, cpu, pid, report_id_for(sequence))
+            report["inventory"]["revision"] = HOST_INVENTORY_REVISION
+            report["host"]["disk"]["latest"] = {"mounts": mount_payload(paths)}
+            submission = self.submit(kind, observed_at, cpu, pid, report=report)
+            planted[name] = {
+                "kind": kind,
+                "observed_at": observed_at,
+                "paths": len(paths),
+                "first_path": paths[0] if paths else None,
+                "last_path": paths[-1] if paths else None,
+                "disposition": submission["disposition"],
+                "reason": submission["reason"],
+            }
+
+        # The three Reports below carry no mount: they are the rhythm alone.
+        for step in (3, 2, 1):
+            plant(
+                "rhythm-" + str(step),
+                "mount rhythm",
+                shift_instant(newest_at, -step * rhythm_seconds),
+                [],
+                10.5,
+                27000,
+            )
+
+        # -- a path whose newest reading Retention already released ----------
+        released_at = instant(-(self.window_seconds + 2 * 3600))
+        released_sequence = self.next_sequence()
+        released_report = build_report(
+            self.fixture, self.agent, released_sequence, released_at, 6.5, 23000, report_id_for(released_sequence)
+        )
+        released_report["inventory"]["revision"] = HOST_INVENTORY_REVISION
+        released_report["host"]["disk"]["latest"] = {"mounts": mount_payload([MOUNT_RELEASED_PATH])}
+        released_post = self.submit("released mount", released_at, 6.5, 23000, report=released_report)
+        # Retention releases the readings at or before the raw floor on the way
+        # up, the same restart that released the raw rows of the phases above.
+        self.restart_with_floor(CLEARED_FLOOR)
+        # Read while the list still answers every path it holds: the released
+        # path is the oldest series this Agent has, so the bounded read below
+        # leaves it out, and the state it is given is judged against the rhythm
+        # planted above rather than against an unmeasurable cadence.
+        released_read = self.read_mounts(agent_id)
+
+        # -- more distinct paths than the list can answer --------------------
+        retired_at = instant(-MOUNT_RETIRED_AGE_SECONDS)
+        middle_at = instant(-MOUNT_RETIRED_AGE_SECONDS // 2)
+        retired_paths = [MOUNT_RETIRED_PATH] + [
+            bulk_mount_path(index) for index in range(MOUNT_BULK_PATHS_PER_REPORT)
+        ]
+        middle_paths = [
+            bulk_mount_path(index)
+            for index in range(MOUNT_BULK_PATHS_PER_REPORT, 2 * MOUNT_BULK_PATHS_PER_REPORT)
+        ]
+        newest_paths = [
+            bulk_mount_path(index)
+            for index in range(2 * MOUNT_BULK_PATHS_PER_REPORT, 3 * MOUNT_BULK_PATHS_PER_REPORT)
+        ]
+        newest_paths.append(MOUNT_LIVE_PATH)
+        for name, kind, observed_at, paths, cpu, pid in (
+            ("retired", "retired mount", retired_at, retired_paths, 8.5, 24000),
+            ("middle", "middle mount", middle_at, middle_paths, 9.5, 25000),
+            ("newest", "newest mount", newest_at, newest_paths, 10.5, 26000),
+        ):
+            plant(name, kind, observed_at, paths, cpu, pid)
+        coverage_read = self.read_mounts(agent_id, MOUNT_COVERAGE_READS)
+        # The silent path is still judged on the reading it stored, so that
+        # reading is read back over the window that contains it.
+        retired_history, retired_latency, retired_bytes = read_shared_history(
+            self.client,
+            self.cookie,
+            agent_history_url(
+                agent_id,
+                MOUNT_USED_METRIC,
+                "&dimension="
+                + MOUNT_RETIRED_PATH
+                + "&from="
+                + retired_at
+                + "&to="
+                + self.window_to()
+                + "&limit=5000",
+            ),
+        )
+
+        # -- the ledger the list walks, and the plan it walks it with --------
+        self.stop_server()
+        footprint_after = self.host_footprint()
+        order = mount_ledger_order(self.db_path, agent_id)
+        plan = mount_coverage_plan(self.db_path, agent_id, MOUNT_USED_METRIC, MOUNT_COVERAGE_LIMIT)
+        agent_rows = mount_rows(self.db_path, agent_id)
+        solo_rows = mount_rows(self.db_path, solo_agent["agent_id"])
+
+        answered = [entry["mountPath"] for entry in coverage_read["mounts"]]
+        # Every path this Agent's mount ledger can hold: what the phases above
+        # already planted, what this phase planted, and the released path.
+        ledger_at = {path: observed_at for path, observed_at in preexisting}
+        for paths, observed_at in (
+            (retired_paths, retired_at),
+            (middle_paths, middle_at),
+            (newest_paths, newest_at),
+            ([MOUNT_RELEASED_PATH], released_at),
+        ):
+            for path in paths:
+                ledger_at[path] = observed_at
+        # What the declaration promises, computed from those known instants alone:
+        # newest observation first with ties settled by the path, and only the first
+        # MOUNT_COVERAGE_LIMIT paths of that order answered. The paths the Host
+        # phase above planted are newer than the middle instant, so they are kept
+        # whole and the retired instant is cut that much shorter.
+        declared_order = sorted(ledger_at)
+        declared_order.sort(key=lambda path: ledger_at[path], reverse=True)
+        expected_answer = declared_order[:MOUNT_COVERAGE_LIMIT]
+        kept_by_instant = {}
+        dropped_by_instant = {}
+        for path in answered:
+            key = ledger_at.get(path)
+            kept_by_instant[key] = kept_by_instant.get(key, 0) + 1
+        dropped = sorted(set(ledger_at) - set(answered))
+        for path in dropped:
+            key = ledger_at[path]
+            dropped_by_instant[key] = dropped_by_instant.get(key, 0) + 1
+        expected_kept = {}
+        for path in expected_answer:
+            key = ledger_at[path]
+            expected_kept[key] = expected_kept.get(key, 0) + 1
+        expected_dropped = {}
+        for path in declared_order[MOUNT_COVERAGE_LIMIT:]:
+            key = ledger_at[path]
+            expected_dropped[key] = expected_dropped.get(key, 0) + 1
+        # The paths the bound leaves out are the oldest ones: nothing answered is
+        # older than anything dropped.
+        newest_dropped = max((ledger_at[path] for path in dropped), default=None)
+        oldest_kept = min((ledger_at[path] for path in answered), default=None)
+
+        return {
+            "issue": 216,
+            "agent_id": agent_id,
+            "solo_agent_id": solo_agent["agent_id"],
+            "preexisting": preexisting,
+            "bounds": {
+                "mount_series": list(HOST_MOUNT_SERIES),
+                "used_metric": MOUNT_USED_METRIC,
+                "capacity_metric": MOUNT_CAPACITY_METRIC,
+                "max_host_mounts": MAX_HOST_MOUNTS,
+                "coverage_limit": MOUNT_COVERAGE_LIMIT,
+                "coverage_reads": MOUNT_COVERAGE_READS,
+                "bulk_paths_per_report": MOUNT_BULK_PATHS_PER_REPORT,
+                "retired_age_seconds": MOUNT_RETIRED_AGE_SECONDS,
+                "newest_offset_seconds": MOUNT_NEWEST_OFFSET_SECONDS,
+                "rhythm_seconds": rhythm_seconds,
+                "rhythm_held_at": cadence_held_at,
+                "cadence_samples": COVERAGE_CADENCE_SAMPLES,
+                "max_observed_cadence_seconds": MAX_OBSERVED_CADENCE_SECONDS,
+                "gap_cadence_factor": GAP_CADENCE_FACTOR,
+                "min_gap_seconds": MIN_GAP_SECONDS,
+                "coverage_index": MOUNT_COVERAGE_INDEX,
+                "forbidden_plans": list(MOUNT_COVERAGE_FORBIDDEN_PLANS),
+            },
+            "solo": {
+                "node_id": solo_node_id,
+                "observed_at": solo_at,
+                "paths": solo_paths,
+                "expected": {path: mount_used_bytes(path) for path in solo_paths},
+                "post": solo_post,
+                "read": mount_read_summary(solo_read),
+                "entries": [mount_entry(solo_read, path) for path in solo_paths],
+            },
+            "released": {
+                "observed_at": released_at,
+                "post": released_post,
+                "read": mount_read_summary(released_read),
+                "entry": mount_entry(released_read, MOUNT_RELEASED_PATH),
+            },
+            "planted": planted,
+            "coverage": {
+                "read": mount_read_summary(coverage_read),
+                "answered": answered,
+                "dropped": dropped,
+                "order": order,
+                "order_size": len(order),
+                "kept_by_instant": kept_by_instant,
+                "dropped_by_instant": dropped_by_instant,
+                "expected_kept": expected_kept,
+                "expected_dropped": expected_dropped,
+                "declared_order_size": len(declared_order),
+                "expected_answer_size": len(expected_answer),
+                "newest_dropped": newest_dropped,
+                "oldest_kept": oldest_kept,
+                "instants": {
+                    "released_at": released_at,
+                    "retired_at": retired_at,
+                    "middle_at": middle_at,
+                    "newest_at": newest_at,
+                },
+                "retired_entry": mount_entry(coverage_read, MOUNT_RETIRED_PATH),
+                "live_entry": mount_entry(coverage_read, MOUNT_LIVE_PATH),
+                "live_path": MOUNT_LIVE_PATH,
+                "retired_path": MOUNT_RETIRED_PATH,
+            },
+            "history": {
+                "dimension": retired_history.get("dimension"),
+                "scope_kind": retired_history.get("scopeKind"),
+                "items": len(retired_history["items"]),
+                "points": [[item["observedAt"], item["value"]] for item in retired_history["items"]],
+                "expected_value": mount_used_bytes(MOUNT_RETIRED_PATH),
+                "latency_ms": round(retired_latency, 3),
+                "payload_bytes": retired_bytes,
+            },
+            "rows": {
+                "agent": agent_rows,
+                "solo": solo_rows,
+                "columns": list(table_columns(self.db_path, "host_metric_samples")),
+            },
+            "plan": {
+                "sql": MOUNT_COVERAGE_SQL,
+                "binds": [agent_id, MOUNT_USED_METRIC, MOUNT_COVERAGE_LIMIT],
+                "lines": plan,
+                "forbidden": [
+                    token for token in MOUNT_COVERAGE_FORBIDDEN_PLANS if any(token in line for line in plan)
+                ],
+            },
+            "footprint": {
+                "before": footprint_before,
+                "after": footprint_after,
+                "family_delta_bytes": footprint_after["family_bytes"] - footprint_before["family_bytes"],
+                "mount_index_bytes": footprint_after["objects"].get(MOUNT_COVERAGE_INDEX, 0),
+                "bytes_per_mount_series": (
+                    round(footprint_after["objects"].get(MOUNT_COVERAGE_INDEX, 0) / (agent_rows["mount_series"] or 1), 3)
+                ),
+            },
+            "wall_seconds": round(time.monotonic() - started, 3),
+        }
+
     def phase_storage(self) -> dict:
         self.stop_server()
         tables = (
@@ -2539,6 +3149,7 @@ class BaselineRun:
         tiers: dict,
         storage: dict,
         host: dict,
+        mount: dict,
     ) -> list:
         full = reads["24h"]
         planned = self.planned_coverage()
@@ -3541,6 +4152,348 @@ class BaselineRun:
                 and host["footprint"]["bytes_per_sample"] is not None,
             ),
         ])
+        # -- issue #216: the storage family answered per mount path ---------
+        mount_bounds = mount["bounds"]
+        coverage = mount["coverage"]
+        mount_read = coverage["read"]
+        order_paths = [row[0] for row in coverage["order"]]
+        answered = coverage["answered"]
+        dropped = coverage["dropped"]
+        retired_entry = coverage["retired_entry"]
+        live_entry = coverage["live_entry"]
+        threshold = coverage["read"]["silence_threshold_seconds"]
+        released = mount["released"]
+        released_entry = released["entry"]
+        solo = mount["solo"]
+        solo_read = solo["read"]
+        agent_rows = mount["rows"]["agent"]
+        solo_rows = mount["rows"]["solo"]
+        checks.extend([
+            check(
+                "the mount list declares the bound and the two storage series",
+                "mountLimit "
+                + str(MOUNT_COVERAGE_LIMIT)
+                + " with usedMetric "
+                + MOUNT_USED_METRIC
+                + " and capacityMetric "
+                + MOUNT_CAPACITY_METRIC
+                + ", the two series of the declared mount family",
+                json.dumps(
+                    {
+                        "mount_limit": mount_read["mount_limit"],
+                        "used_metric": mount_read["used_metric"],
+                        "capacity_metric": mount_read["capacity_metric"],
+                        "declared_mount_series": list(HOST_MOUNT_SERIES),
+                    }
+                ),
+                mount_read["mount_limit"] == MOUNT_COVERAGE_LIMIT
+                and (mount_read["used_metric"], mount_read["capacity_metric"])
+                == (MOUNT_USED_METRIC, MOUNT_CAPACITY_METRIC)
+                and sorted([mount_read["used_metric"], mount_read["capacity_metric"]])
+                == sorted(HOST_MOUNT_SERIES),
+            ),
+            check(
+                "the mount list states the silence bound of the cadence it measured",
+                "silenceThresholdSeconds is gap_threshold_seconds(cadenceSeconds): the clamp of "
+                + str(MAX_OBSERVED_CADENCE_SECONDS)
+                + " seconds times "
+                + str(GAP_CADENCE_FACTOR)
+                + " floored at "
+                + str(MIN_GAP_SECONDS)
+                + ", measured over "
+                + str(COVERAGE_CADENCE_SAMPLES)
+                + " of the Agent's newest Host observations",
+                json.dumps(
+                    {
+                        "cadence_seconds": mount_read["cadence_seconds"],
+                        "silence_threshold_seconds": mount_read["silence_threshold_seconds"],
+                        "gap_threshold_seconds": gap_threshold_seconds(mount_read["cadence_seconds"])
+                        if isinstance(mount_read["cadence_seconds"], int)
+                        else None,
+                    }
+                ),
+                isinstance(mount_read["cadence_seconds"], int)
+                and mount_read["cadence_seconds"] >= 1
+                and mount_read["silence_threshold_seconds"]
+                == gap_threshold_seconds(mount_read["cadence_seconds"]),
+            ),
+            check(
+                "the cadence the mount list states is the rhythm the Agent is keeping now",
+                "cadenceSeconds is the newest interval ("
+                + str(mount["bounds"]["rhythm_seconds"])
+                + "s, the rhythm planted above the newest observation the phases above left) rather"
+                " than the fastest interval the ledger still holds (those phases left a pair of"
+                " observations one second apart), so the silence bound follows the rhythm the Agent is"
+                " keeping and not the fastest interval still stored",
+                json.dumps(
+                    {
+                        "cadence_seconds": mount_read["cadence_seconds"],
+                        "planted_rhythm_seconds": mount["bounds"]["rhythm_seconds"],
+                    }
+                ),
+                mount_read["cadence_seconds"] == mount["bounds"]["rhythm_seconds"],
+            ),
+            check(
+                "an Agent whose only Report cannot measure a cadence is never called silent",
+                "cadenceSeconds 0 with silenceThresholdSeconds 0, every state unknown, every silentSeconds"
+                " null, and both readings of both of its paths still answered",
+                json.dumps({"read": solo_read, "entries": solo["entries"]}),
+                solo_read["cadence_seconds"] == 0
+                and solo_read["silence_threshold_seconds"] == 0
+                and solo_read["states"] == ["unknown"]
+                and solo_read["mounts"] == len(solo["paths"])
+                and solo_read["truncated"] is False
+                and all(entry["silent_seconds"] is None for entry in solo["entries"])
+                and all(
+                    entry["answered"]
+                    and entry["used_observed"] is True
+                    and entry["used_latest_value"] == solo["expected"][entry["mount_path"]]
+                    and entry["capacity_observed"] is True
+                    and entry["capacity_latest_value"]
+                    == solo["expected"][entry["mount_path"]] + (1 << 33)
+                    for entry in solo["entries"]
+                ),
+            ),
+            check(
+                "the mount list is answered per Agent",
+                "the second Agent's list answers its own "
+                + str(len(solo["paths"]))
+                + " paths and none of the "
+                + str(coverage["order_size"]),
+                json.dumps(
+                    {
+                        "solo_agent_id": mount["solo_agent_id"],
+                        "agent_id": mount["agent_id"],
+                        "solo_paths": [entry["mount_path"] for entry in solo["entries"]],
+                        "first_agent_first_path": answered[0] if answered else None,
+                    }
+                ),
+                sorted(entry["mount_path"] for entry in solo["entries"]) == sorted(solo["paths"])
+                and not set(solo["paths"]) & set(order_paths)
+                and mount["solo_agent_id"] != mount["agent_id"],
+            ),
+            check(
+                "a released newest reading is answered as unknown with its release boundary",
+                "the path is answered and observed, hands out no value rather than a zero, and states"
+                " releasedBefore at or after "
+                + released["observed_at"]
+                + " with its last observation at that instant",
+                json.dumps(released_entry),
+                released_entry["answered"] is True
+                and released_entry["used_observed"] is True
+                and released_entry["used_latest_value"] is None
+                and isinstance(released_entry["used_released_before"], str)
+                and released_entry["used_released_before"] >= released["observed_at"]
+                and released_entry["used_first_observed_at"] == released["observed_at"]
+                and released_entry["used_last_observed_at"] == released["observed_at"]
+                and released_entry["used_observation_count"] == 1
+                and released_entry["capacity_observed"] is True
+                and released_entry["capacity_latest_value"] is None
+                and released_entry["capacity_released_before"]
+                == released_entry["used_released_before"],
+            ),
+            check(
+                "a released path is judged on the silence axis, not called unknown",
+                "state silent with the real seconds since its newest reading, which is a path that"
+                " stopped reporting rather than a series that never reported",
+                json.dumps(
+                    {
+                        "state": released_entry["observation_state"],
+                        "silent_seconds": released_entry["silent_seconds"],
+                        "silence_threshold_seconds": released["read"]["silence_threshold_seconds"],
+                        "released_at": released["observed_at"],
+                    }
+                ),
+                released_entry["observation_state"] == "silent"
+                and isinstance(released_entry["silent_seconds"], (int, float))
+                and released_entry["silent_seconds"]
+                > (released["read"]["silence_threshold_seconds"] or 0),
+            ),
+            check(
+                "the mount list answers at most the declared number of paths",
+                "mounts "
+                + str(MOUNT_COVERAGE_LIMIT)
+                + " and truncated true for an Agent holding "
+                + str(coverage["order_size"])
+                + " mount paths",
+                json.dumps(
+                    {
+                        "mounts": mount_read["mounts"],
+                        "mount_limit": mount_read["mount_limit"],
+                        "truncated": mount_read["truncated"],
+                        "order_size": coverage["order_size"],
+                        "planted": mount["planted"],
+                    }
+                ),
+                len(answered) == MOUNT_COVERAGE_LIMIT
+                and coverage["read"]["truncated"] is True
+                and coverage["read"]["mount_limit"] == MOUNT_COVERAGE_LIMIT
+                and coverage["order_size"] > MOUNT_COVERAGE_LIMIT,
+            ),
+            check(
+                "the list answers the newest paths first",
+                "the answered paths are the first "
+                + str(MOUNT_COVERAGE_LIMIT)
+                + " of the order recomputed from host_metric_series_state by the Server's own ORDER BY",
+                json.dumps(
+                    {
+                        "answered": len(answered),
+                        "order": len(order_paths),
+                        "first_answered": answered[0] if answered else None,
+                        "first_in_order": order_paths[0] if order_paths else None,
+                        "last_answered": answered[-1] if answered else None,
+                        "expected_last": order_paths[MOUNT_COVERAGE_LIMIT - 1]
+                        if len(order_paths) >= MOUNT_COVERAGE_LIMIT
+                        else None,
+                    }
+                ),
+                answered == order_paths[:MOUNT_COVERAGE_LIMIT],
+            ),
+            check(
+                "the paths the list drops are the oldest, not a random subset",
+                "the dropped paths are exactly the ledger order beyond the bound: the retired instant cut"
+                " short at "
+                + str(coverage["expected_kept"][coverage["instants"]["retired_at"]])
+                + " paths and the released one, with the newest instant answered whole",
+                json.dumps(
+                    {
+                        "dropped": len(dropped),
+                        "dropped_by_instant": coverage["dropped_by_instant"],
+                        "expected_dropped": coverage["expected_dropped"],
+                        "kept_by_instant": coverage["kept_by_instant"],
+                        "expected_kept": coverage["expected_kept"],
+                        "first_dropped": dropped[0] if dropped else None,
+                        "last_dropped": dropped[-1] if dropped else None,
+                        "newest_dropped": coverage["newest_dropped"],
+                        "oldest_kept": coverage["oldest_kept"],
+                        "preexisting_paths": [path for path, _ in mount["preexisting"]],
+                    }
+                ),
+                set(dropped) == set(order_paths[MOUNT_COVERAGE_LIMIT:])
+                and coverage["dropped_by_instant"] == coverage["expected_dropped"]
+                and coverage["kept_by_instant"] == coverage["expected_kept"]
+                and coverage["newest_dropped"] <= coverage["oldest_kept"],
+            ),
+            check(
+                "the order is the newest observation first, not the path order",
+                "the path "
+                + coverage["live_path"]
+                + " is answered although it sorts after every bulk path, while bulk paths of the older"
+                " instants are dropped",
+                json.dumps(
+                    {
+                        "live_entry": live_entry,
+                        "bulk_dropped": [path for path in dropped if path.startswith("/bulk-")][:3],
+                        "bulk_answered": [path for path in answered if path.startswith("/bulk-")][:3],
+                        "instants": coverage["instants"],
+                    }
+                ),
+                live_entry["answered"] is True
+                and live_entry["used_latest_value"] == mount_used_bytes(coverage["live_path"])
+                and any(path.startswith("/bulk-") for path in dropped)
+                and any(path.startswith("/bulk-") for path in answered),
+            ),
+            check(
+                "a path that stopped reporting is silent with its seconds, not unknown",
+                "state silent with silentSeconds near the "
+                + str(MOUNT_RETIRED_AGE_SECONDS)
+                + " seconds since its newest reading and above the threshold, while the reading it was"
+                " judged on is still stored and still answered by the history route",
+                json.dumps({"entry": retired_entry, "history": mount["history"]}),
+                retired_entry["observation_state"] == "silent"
+                and isinstance(retired_entry["silent_seconds"], (int, float))
+                and retired_entry["silent_seconds"] > (threshold or 0)
+                and abs(retired_entry["silent_seconds"] - MOUNT_RETIRED_AGE_SECONDS) < 3600
+                and retired_entry["used_latest_value"] == mount["history"]["expected_value"]
+                and retired_entry["used_observation_count"] == 1
+                and mount["history"]["items"] == 1
+                and mount["history"]["dimension"] == coverage["retired_path"]
+                and mount["history"]["points"][0][1] == mount["history"]["expected_value"],
+            ),
+            check(
+                "a path whose reading is the newest is stated reported",
+                "state reported with silentSeconds within the measured silence threshold",
+                json.dumps({"entry": live_entry, "silence_threshold_seconds": threshold}),
+                live_entry["observation_state"] == "reported"
+                and (
+                    live_entry["silent_seconds"] is None
+                    or live_entry["silent_seconds"] <= (threshold or 0)
+                )
+                and live_entry["used_latest_value"] == mount_used_bytes(coverage["live_path"]),
+            ),
+            check(
+                "mount rows are keyed by Agent and path, so they do not follow the Node count",
+                "two series per path for the Agent with "
+                + str(agent_rows["nodes"])
+                + " Nodes and for the Agent with "
+                + str(solo_rows["nodes"])
+                + " Node, with no node_id column on host_metric_samples, so mount rows cannot multiply"
+                " with Nodes",
+                json.dumps(
+                    {
+                        "agent": agent_rows,
+                        "solo": solo_rows,
+                        "columns": mount["rows"]["columns"],
+                        "mount_series_per_path": len(HOST_MOUNT_SERIES),
+                    }
+                ),
+                agent_rows["mount_series"] == len(HOST_MOUNT_SERIES) * agent_rows["distinct_paths"]
+                and agent_rows["mount_samples"]
+                == len(HOST_MOUNT_SERIES) * (agent_rows["distinct_paths"] - 1)
+                and agent_rows["nodes"] > 1
+                and solo_rows["mount_series"] == len(HOST_MOUNT_SERIES) * solo_rows["distinct_paths"]
+                and solo_rows["mount_samples"] == len(HOST_MOUNT_SERIES) * solo_rows["distinct_paths"]
+                and solo_rows["nodes"] == 1
+                and "node_id" not in mount["rows"]["columns"],
+            ),
+            check(
+                "the mount coverage read is index backed and sorts nothing",
+                "EXPLAIN QUERY PLAN seeks "
+                + MOUNT_COVERAGE_INDEX
+                + " under the Server's own binds, with no temp B-TREE and no scan of the ledger",
+                json.dumps(mount["plan"]),
+                bool(mount["plan"]["lines"])
+                and any(MOUNT_COVERAGE_INDEX in line for line in mount["plan"]["lines"])
+                and mount["plan"]["forbidden"] == [],
+            ),
+            check(
+                "migration 0069's mount index is a measured object of the family",
+                "dbstat reports "
+                + MOUNT_COVERAGE_INDEX
+                + " holding bytes after this phase planted "
+                + str(coverage["order_size"])
+                + " paths, at "
+                + str(mount["footprint"]["bytes_per_mount_series"])
+                + " bytes per mount series",
+                json.dumps(mount["footprint"]),
+                mount["footprint"]["mount_index_bytes"] > 0
+                and mount["footprint"]["family_delta_bytes"] > 0
+                and mount["footprint"]["bytes_per_mount_series"] is not None,
+            ),
+            check(
+                "the mount list is answered uncached, and its body and latency are measured",
+                str(MOUNT_COVERAGE_READS)
+                + " real reads, each answering "
+                + str(mount_read["mounts"])
+                + " paths in a body of at most "
+                + str(mount_read["payload_bytes"]["max"])
+                + " bytes with Cache-Control no-store",
+                json.dumps(
+                    {
+                        "reads": mount_read["reads"],
+                        "payload_bytes": mount_read["payload_bytes"],
+                        "latency_ms": mount_read["latency_ms"],
+                        "cache_control": mount_read["cache_control"],
+                        "answered_at": mount_read["answered_at"],
+                        "bounds": mount_bounds,
+                    }
+                ),
+                mount_read["reads"] == MOUNT_COVERAGE_READS
+                and mount_read["cache_control"] == "no-store"
+                and mount_read["payload_bytes"]["max"] > 0
+                and mount_read["latency_ms"]["p50"] > 0,
+            ),
+        ])
         return checks
 
     # -- orchestration -----------------------------------------------------
@@ -3587,7 +4540,14 @@ class BaselineRun:
         # Report above already wrote, and the one Report it plants must stay
         # outside the exact counts those earlier phases assert.
         host = self.phase_host(release)
-        checks = self.evaluate(load, restatements, release, reads, multi_node, tiers, storage, host)
+        # The mount coverage phase (issue #216) runs last: it plants Reports of
+        # disjoint mount paths and reads the mount list, so it runs after the Host
+        # family audit above and keeps its own rows outside the exact counts every
+        # earlier phase asserts.
+        mount = self.phase_mount_coverage()
+        checks = self.evaluate(
+            load, restatements, release, reads, multi_node, tiers, storage, host, mount
+        )
         return {
             "issue": 213,
             "title": "Story 47 baseline: a measured 24 hour raw Node metric history",
@@ -3600,6 +4560,7 @@ class BaselineRun:
                 "multi_node": multi_node,
                 "tiers": tiers,
                 "host": host,
+                "mounts": mount,
                 "storage": storage,
             },
             "checks": checks,
@@ -3608,7 +4569,10 @@ class BaselineRun:
                 " were submitted as fast as the Server accepted them instead of one per declared cadence.",
                 "Agent-side collection was not measured: Reports came from the fixture through the real ingestion"
                 " path, not from a running platpulse-agent process.",
-                "One Agent, one Node and one mount were measured; no multi-disk or network filesystem deployment.",
+                "One Agent, one Node and one mount were measured on the load path; the mount family is"
+                " measured separately by the issue #216 phase, which plants two Agents and hundreds of mount"
+                " paths, but always with a single device behind each path: no multi-disk or network filesystem"
+                " deployment was produced.",
                 "The fixture reports only process_cpu_percent and process_memory_percent for the one measured"
                 " Node: data_directory_percent, peer_inbound_count and peer_outbound_count are carried by the"
                 " multi-Node clones below but their one-Node path has integration-test coverage only, not a"
@@ -3628,9 +4592,14 @@ class BaselineRun:
                 "No low-space pause was produced in this run, so the per-mount accounting of a paused series"
                 " (two mounts, two counted losses) is registered by scripts/capacity-baseline.py and by"
                 " crates/platpulse-server/tests/host_metric_history.rs:1295 rather than measured here.",
-                "The load fixture states no mount, so a maximal Host Report of 264 rows is registered as a bound"
-                " (MAX_HOST_ROWS_PER_REPORT) rather than produced: the largest Host Report this run submitted"
-                " carried two mounts.",
+                "The load fixture states no mount, so a maximal Host Report of 264 rows is registered as a"
+                " bound (MAX_HOST_ROWS_PER_REPORT) rather than produced: the largest Host Report the load path"
+                " submitted carried two mounts. The mount family itself is measured by the issue #216 phase,"
+                " whose largest Report carried "
+                + str(MOUNT_BULK_PATHS_PER_REPORT + 1)
+                + " mounts of the declared "
+                + str(MAX_HOST_MOUNTS)
+                + " mount bound.",
                 "These items must be appended to this same report by a follow-up ticket; nothing here is a"
                 " production guarantee.",
             ],
@@ -3647,6 +4616,7 @@ def write_markdown_report(report: dict, path: Path) -> None:
     reads = report["phases"]["reads"]
     storage = report["phases"]["storage"]
     host = report["phases"]["host"]
+    mount = report["phases"]["mounts"]
     lines = []
     lines.append("# Issue #213 Story 47 baseline — raw 24 hour Node metric history")
     lines.append("")
@@ -4064,6 +5034,168 @@ def write_markdown_report(report: dict, path: Path) -> None:
         + host["released_instant"]
         + "; route refusals "
         + json.dumps({name: row["code"] for name, row in sorted(host["refusals"].items())})
+    )
+    lines.append("")
+    lines.append("## Storage history per mount path (issue #216)")
+    lines.append("")
+    lines.append(
+        "- Declared: two series per mount path "
+        + json.dumps(mount["bounds"]["mount_series"])
+        + " on the shared Host family, at most "
+        + str(mount["bounds"]["max_host_mounts"])
+        + " mounts in one Report, a list bound of "
+        + str(mount["bounds"]["coverage_limit"])
+        + " paths answered newest first and read "
+        + str(mount["bounds"]["coverage_reads"])
+        + " times, a silence bound of clamp(cadence, 1, "
+        + str(mount["bounds"]["max_observed_cadence_seconds"])
+        + ") * "
+        + str(mount["bounds"]["gap_cadence_factor"])
+        + " floored at "
+        + str(mount["bounds"]["min_gap_seconds"])
+        + " seconds from the newest "
+        + str(mount["bounds"]["cadence_samples"])
+        + " Host observations, and the read planned through "
+        + mount["bounds"]["coverage_index"]
+    )
+    lines.append(
+        "- Planted: "
+        + str(mount["coverage"]["order_size"])
+        + " mount paths on the first Agent ("
+        + str(mount["planted"]["retired"]["paths"])
+        + " retired at "
+        + mount["planted"]["retired"]["observed_at"]
+        + ", "
+        + str(mount["planted"]["middle"]["paths"])
+        + " at "
+        + mount["planted"]["middle"]["observed_at"]
+        + ", "
+        + str(mount["planted"]["newest"]["paths"])
+        + " at "
+        + mount["planted"]["newest"]["observed_at"]
+        + ") and "
+        + str(len(mount["solo"]["paths"]))
+        + " on a second Agent whose one Report cannot measure a cadence, on top of the "
+        + str(len(mount["preexisting"]))
+        + " mount paths the Host phase above already held"
+    )
+    lines.append(
+        "- Rhythm: three Reports at "
+        + str(mount["bounds"]["rhythm_seconds"])
+        + "s below the newest instant state the cadence the Agent is keeping now, so the list answers"
+        " cadenceSeconds "
+        + str(mount["coverage"]["read"]["cadence_seconds"])
+        + " with a silence bound of "
+        + str(mount["coverage"]["read"]["silence_threshold_seconds"])
+        + "s"
+    )
+    lines.append(
+        "- Answer: "
+        + str(mount["coverage"]["read"]["mounts"])
+        + " mounts of "
+        + str(mount["coverage"]["read"]["mount_limit"])
+        + ", truncated "
+        + str(mount["coverage"]["read"]["truncated"]).lower()
+        + ", from "
+        + str(mount["coverage"]["order_size"])
+        + " ledger paths: first "
+        + str(mount["coverage"]["answered"][0] if mount["coverage"]["answered"] else None)
+        + ", last "
+        + str(mount["coverage"]["answered"][-1] if mount["coverage"]["answered"] else None)
+        + ", dropped "
+        + str(len(mount["coverage"]["dropped"]))
+        + " of a declared ledger of "
+        + str(mount["coverage"]["declared_order_size"])
+    )
+    lines.append(
+        "- Dropped by instant: "
+        + json.dumps(mount["coverage"]["dropped_by_instant"])
+        + " against the declared "
+        + json.dumps(mount["coverage"]["expected_dropped"])
+        + "; kept by instant "
+        + json.dumps(mount["coverage"]["kept_by_instant"])
+        + " against "
+        + json.dumps(mount["coverage"]["expected_kept"])
+    )
+    lines.append(
+        "- Silence: cadenceSeconds "
+        + str(mount["coverage"]["read"]["cadence_seconds"])
+        + " with silenceThresholdSeconds "
+        + str(mount["coverage"]["read"]["silence_threshold_seconds"])
+        + "; the retired path "
+        + mount["coverage"]["retired_path"]
+        + " is "
+        + mount["coverage"]["retired_entry"]["observation_state"]
+        + " for "
+        + str(mount["coverage"]["retired_entry"]["silent_seconds"])
+        + " seconds, the newest path "
+        + mount["coverage"]["live_path"]
+        + " is "
+        + mount["coverage"]["live_entry"]["observation_state"]
+        + ", and the second Agent states "
+        + json.dumps(mount["solo"]["read"]["states"])
+        + " at cadence "
+        + str(mount["solo"]["read"]["cadence_seconds"])
+    )
+    lines.append(
+        "- Released boundary: "
+        + mount["released"]["entry"]["mount_path"]
+        + " at "
+        + mount["released"]["observed_at"]
+        + " is "
+        + mount["released"]["entry"]["observation_state"]
+        + " with usedValue "
+        + str(mount["released"]["entry"]["used_latest_value"])
+        + ", releasedBefore "
+        + str(mount["released"]["entry"]["used_released_before"])
+        + ", observationCount "
+        + str(mount["released"]["entry"]["used_observation_count"])
+    )
+    lines.append(
+        "- A retired path keeps its reading: "
+        + str(mount["history"]["items"])
+        + " point on "
+        + str(mount["history"]["dimension"])
+        + " at "
+        + json.dumps(mount["history"]["points"])
+        + ", the value the mount list still answers"
+    )
+    lines.append(
+        "- Rows: "
+        + json.dumps(mount["rows"]["agent"])
+        + " for the Agent with several Nodes against "
+        + json.dumps(mount["rows"]["solo"])
+        + " for the Agent with one Node, on columns "
+        + json.dumps(mount["rows"]["columns"])
+        + " (no node_id, so mount rows cannot follow the Node count)"
+    )
+    lines.append(
+        "- dbstat: "
+        + json.dumps(mount["footprint"]["after"]["objects"])
+        + ", "
+        + str(mount["footprint"]["mount_index_bytes"])
+        + " bytes of it the mount index at "
+        + str(mount["footprint"]["bytes_per_mount_series"])
+        + " bytes per mount series"
+    )
+    lines.append(
+        "- Query plan: "
+        + json.dumps(mount["plan"]["lines"])
+        + " under the Server's own binds, forbidden plans "
+        + json.dumps(mount["plan"]["forbidden"])
+    )
+    lines.append(
+        "- Read cost: body "
+        + json.dumps(mount["coverage"]["read"]["payload_bytes"])
+        + " bytes, latency "
+        + json.dumps(mount["coverage"]["read"]["latency_ms"])
+        + " ms, Cache-Control "
+        + str(mount["coverage"]["read"]["cache_control"])
+        + ", answered at "
+        + str(mount["coverage"]["read"]["answered_at"])
+        + "; the phase took "
+        + str(mount["wall_seconds"])
+        + " seconds"
     )
     lines.append("")
     lines.append("## Checks")

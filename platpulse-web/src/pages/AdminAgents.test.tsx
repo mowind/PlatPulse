@@ -1129,6 +1129,77 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     )
   })
 
+/**
+ * The mount paths the Agent's stored storage evidence holds (issue #216), in the
+ * shape the Server can actually answer: the cadence belongs to the whole answer,
+ * so a measured cadence makes every path of it either reported or silent, and the
+ * two series behind a path are written by the one Report that observed it, so a
+ * path never carries a series nothing was ever observed for. One path's newest
+ * reading was released by retention, which is a different statement from a path
+ * that is simply still observed.
+ */
+function storageMountsAnswer(overrides: Record<string, unknown> = {}) {
+  const series = (
+    metric: string,
+    fields: Record<string, unknown> = {},
+  ) => ({
+    metric,
+    observed: true,
+    firstObservedAt: '2026-08-12T00:00:00Z',
+    lastObservedAt: '2026-08-12T08:00:00Z',
+    lastReceivedAt: '2026-08-12T08:00:01Z',
+    observationCount: 12,
+    replayedCount: 0,
+    correctedCount: 0,
+    releasedBefore: null,
+    latestValue: 0,
+    latestObservedAt: '2026-08-12T08:00:00Z',
+    latestReceivedAt: '2026-08-12T08:00:01Z',
+    latestDelaySeconds: 1,
+    latestClockSuspect: false,
+    ...fields,
+  })
+  return {
+    agentId: AGENT_ID,
+    answeredAt: '2026-08-12T08:00:05Z',
+    cadenceSeconds: 900,
+    silenceThresholdSeconds: 900,
+    usedMetric: 'disk_used_bytes',
+    capacityMetric: 'disk_total_bytes',
+    mountLimit: 256,
+    truncated: true,
+    collectionPaused: false,
+    mounts: [
+      {
+        mountPath: '/data',
+        observationState: 'reported',
+        silentSeconds: 60,
+        used: series('disk_used_bytes', { latestValue: 512 }),
+        capacity: series('disk_total_bytes', { latestValue: 1024 }),
+      },
+      {
+        mountPath: '/bulk-299',
+        observationState: 'silent',
+        silentSeconds: 1200,
+        used: series('disk_used_bytes', {
+          observationCount: 4,
+          latestValue: null,
+          releasedBefore: '2026-08-12T06:00:00Z',
+        }),
+        capacity: series('disk_total_bytes', { observationCount: 4, latestValue: 1024 * 1024 }),
+      },
+      {
+        mountPath: '/logs',
+        observationState: 'silent',
+        silentSeconds: 3000,
+        used: series('disk_used_bytes', { observationCount: 2, latestValue: 4096 }),
+        capacity: series('disk_total_bytes', { observationCount: 2, latestValue: 8192 }),
+      },
+    ],
+    ...overrides,
+  }
+}
+
   it('reads the Host resource history from the Agent that observed it once, apart from its Nodes', async () => {
     const hostCalls: string[] = []
     const instant = (offsetMs: number) =>
@@ -1202,6 +1273,8 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
         jsonResponse(AGENT_DIAGNOSTIC, 200),
       [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () =>
         jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/storage-mounts`]: () =>
+        jsonResponse(storageMountsAnswer(), 200),
       [`/api/admin/v1/agents/${AGENT_ID}/metric-history*`]: (ctx) => {
         hostCalls.push(ctx.request.url)
         const dimension =
@@ -1312,5 +1385,257 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     ).map((option) => (option as HTMLOptionElement).value)
     expect(options).toContain('disk_total_bytes')
     expect(options).not.toContain('process_cpu_percent')
+  })
+
+  it('names the mount paths the stored storage evidence holds and reads one on demand', async () => {
+    const instant = (offsetMs: number) =>
+      new Date(Date.now() + offsetMs).toISOString().replace(/\.\d{3}Z$/, 'Z')
+    const hourAgo = instant(-60 * 60 * 1000)
+    const historyCalls: string[] = []
+    const historyResponse = (metric: string, dimension: string, value: number) => ({
+      scopeKind: 'host',
+      scopeKey: AGENT_ID,
+      nodeId: null,
+      metric,
+      dimension,
+      from: instant(-24 * 60 * 60 * 1000),
+      to: instant(0),
+      requestedFrom: instant(-24 * 60 * 60 * 1000),
+      availability: null,
+      rawRetentionDays: 1,
+      grain: 'raw',
+      aggregateSupported: true,
+      historyHorizonDays: 30,
+      windowSeconds: 86400,
+      truncated: false,
+      continuation: null,
+      segments: [
+        {
+          from: instant(-24 * 60 * 60 * 1000),
+          to: instant(0),
+          grain: 'raw',
+          source: 'raw',
+          pointCount: 1,
+          truncated: false,
+        },
+      ],
+      series: {
+        observed: true,
+        firstObservedAt: hourAgo,
+        lastObservedAt: hourAgo,
+        lastReceivedAt: instant(-60 * 60 * 1000 + 1000),
+        observationCount: 1,
+        replayedCount: 0,
+        correctedCount: 0,
+        sampledCount: 1,
+        coverageSeconds: 60,
+        windowSeconds: 86400,
+        latestDelaySeconds: 1,
+        latestClockSuspect: false,
+      },
+      items: [
+        {
+          observedAt: hourAgo,
+          receivedAt: instant(-60 * 60 * 1000 + 1000),
+          value,
+          grain: 'raw',
+          source: 'raw',
+          minValue: value,
+          maxValue: value,
+          sampleCount: 1,
+          lastObservedAt: hourAgo,
+          delaySeconds: 1,
+          clockSuspect: false,
+        },
+      ],
+      gaps: [],
+    })
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () => jsonResponse(AGENT_DIAGNOSTIC, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () =>
+        jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/storage-mounts`]: () =>
+        jsonResponse(storageMountsAnswer(), 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/metric-history*`]: (ctx) => {
+        historyCalls.push(ctx.request.url)
+        const asked = new URL(ctx.request.url).searchParams
+        return jsonResponse(
+          historyResponse(
+            asked.get('metric') ?? '',
+            asked.get('dimension') ?? '',
+            4242,
+          ),
+          200,
+        )
+      },
+    })
+    renderAt(`/admin/agents/${AGENT_ID}`)
+
+    const section = await screen.findByRole('heading', {
+      level: 2,
+      name: 'Storage by mount path',
+    })
+    expect(agentHostSection().contains(section)).toBe(true)
+    const list = await within(agentHostSection()).findByRole('region', {
+      name: 'Storage mount paths',
+    })
+
+    // The list is the Server's own order, and each row carries the path exactly
+    // as the Agent reported it: nothing here normalizes or renames a path.
+    const rows = Array.from(
+      list.querySelectorAll('[data-slot="storage-mount-row"]'),
+    ) as HTMLElement[]
+    expect(rows.map((row) => row.dataset.mountPath)).toEqual([
+      '/data',
+      '/bulk-299',
+      '/logs',
+    ])
+    expect(rows.map((row) => row.dataset.mountState)).toEqual([
+      'reported',
+      'silent',
+      'silent',
+    ])
+
+    // A path still observed shows its newest reading as a share of capacity.
+    expect(rows[0].textContent).toContain('512 B of 1.00 KiB · 50%')
+    expect(within(rows[0]).getByText('Current')).toBeTruthy()
+
+    // A path that stopped being reported is silent against the measured cadence
+    // only, and the readings already stored are stated to stay.
+    expect(within(rows[1]).getByText('Stale')).toBeTruthy()
+    expect(rows[1].textContent).toContain(
+      'longer than the 15 minutes a silence is judged against on this Host',
+    )
+    expect(rows[1].textContent).toContain('The readings already stored stay on the series.')
+    // Retention released its newest reading: that is not the same statement as a
+    // series nothing was ever observed for.
+    expect(rows[1].textContent).toContain(
+      'retention released this series before 2026-08-12T06:00:00Z',
+    )
+
+    // The measured cadence judges the whole answer: a path that stopped being
+    // reported is silent, and no path of a measured answer is answered unknown.
+    expect(within(rows[2]).getByText('Stale')).toBeTruthy()
+    expect(rows[2].textContent).toContain('Silent for 50 minutes')
+    expect(rows[2].textContent).toContain('2 observations recorded')
+    expect(rows.every((row) => !row.textContent?.includes('No cadence could be measured'))).toBe(
+      true,
+    )
+
+    // Every path in the list is readable, and the Server's answer states what the
+    // list left out instead of hiding older paths silently.
+    expect(within(list).getAllByRole('button', { name: /^Read the storage series of/ })).toHaveLength(3)
+    const panel = agentHostSection().querySelector('[data-slot="storage-mounts-panel"]')!
+    expect(panel.textContent).toContain('at most 256 mount paths')
+    expect(panel.textContent).toContain('The oldest of them are not in this answer')
+    expect(panel.textContent).toContain('every 15 minutes')
+    expect(panel.textContent).not.toContain('No cadence could be measured from the stored Host')
+    expect(panel.querySelector('[data-slot="storage-mounts-pause"]')).toBeNull()
+
+    // Reading a path chooses the storage series that path names, so the Operator
+    // never types the path from memory.
+    fireEvent.click(within(rows[0]).getByRole('button', { name: 'Read the storage series of /data' }))
+    await waitFor(() =>
+      expect(historyCalls.some((url) => {
+        const params = new URL(url).searchParams
+        return params.get('metric') === 'disk_used_bytes' && params.get('dimension') === '/data'
+      })).toBe(true),
+    )
+    await waitFor(() =>
+      expect(
+        agentHostSection().querySelector('[data-slot="metric-history-samples"]')?.textContent,
+      ).toContain('4.14 KiB'),
+    )
+  })
+
+  it('states the pause the Server is holding instead of calling a path silent', async () => {
+    const stored = storageMountsAnswer({ collectionPaused: true })
+    const paused = {
+      ...stored,
+      mounts: stored.mounts.map((mount) => ({
+        ...mount,
+        observationState: 'unknown',
+        silentSeconds: null,
+      })),
+    }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () => jsonResponse(AGENT_DIAGNOSTIC, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () =>
+        jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/storage-mounts`]: () => jsonResponse(paused, 200),
+    })
+    renderAt(`/admin/agents/${AGENT_ID}`)
+    await screen.findByRole('heading', { level: 2, name: 'Storage by mount path' })
+
+    const list = await within(agentHostSection()).findByRole('region', {
+      name: 'Storage mount paths',
+    })
+    const panel = agentHostSection().querySelector('[data-slot="storage-mounts-panel"]')!
+    const rows = Array.from(
+      list.querySelectorAll('[data-slot="storage-mount-row"]'),
+    ) as HTMLElement[]
+
+    // Every path of the answer is unknown, and the card says the Server is the one
+    // holding the readings back: a path that keeps being reported is never called
+    // stale for a pause it did not cause.
+    expect(rows.map((row) => row.dataset.mountState)).toEqual(['unknown', 'unknown', 'unknown'])
+    expect(
+      rows.every((row) =>
+        row.textContent?.includes('not called stale for a pause it did not cause'),
+      ),
+    ).toBe(true)
+    expect(panel.textContent).not.toContain('Silent for')
+    const pause = panel.querySelector('[data-slot="storage-mounts-pause"]')!
+    expect(pause.textContent).toContain('Low-space protection is holding optional history back')
+    expect(pause.textContent).toContain('no path is judged silent')
+    // The readings already stored are still answered, with their own instants.
+    expect(rows[0].textContent).toContain('512 B of 1.00 KiB · 50%')
+    expect(rows[0].textContent).toContain('12 observations recorded')
+  })
+
+  it('keeps the last successful mount paths and says the refresh failed', async () => {
+    let failed = false
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () => jsonResponse(AGENT_DIAGNOSTIC, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () =>
+        jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/storage-mounts`]: () =>
+        failed ? errorBody('unavailable', 503) : jsonResponse(storageMountsAnswer(), 200),
+    })
+    renderAt(`/admin/agents/${AGENT_ID}`)
+    await screen.findByRole('heading', { level: 2, name: 'Storage by mount path' })
+
+    const list = await within(agentHostSection()).findByRole('region', {
+      name: 'Storage mount paths',
+    })
+    const panel = agentHostSection().querySelector('[data-slot="storage-mounts-panel"]')!
+    expect(list.querySelectorAll('[data-slot="storage-mount-row"]')).toHaveLength(3)
+    expect(panel.querySelector('[data-slot="storage-mounts-refresh-error"]')).toBeNull()
+
+    failed = true
+    await act(async () => {
+      await adminQueryClient.invalidateQueries({
+        queryKey: ['admin', 'agents', AGENT_ID, 'storage-mounts'],
+      })
+    })
+
+    // The stored answer stays on the card, and the card states that it is the last
+    // good one instead of showing it as if the refresh had succeeded.
+    const alert = await within(panel as HTMLElement).findByRole('alert')
+    expect(alert.getAttribute('data-slot')).toBe('storage-mounts-refresh-error')
+    expect(alert.textContent).toContain('Failed to refresh the mount paths')
+    expect(alert.textContent).toContain('2026-08-12T08:00:05Z')
+    expect(list.querySelectorAll('[data-slot="storage-mount-row"]')).toHaveLength(3)
+
+    // And the retry it offers reads the answer again.
+    failed = false
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }))
+    await waitFor(() =>
+      expect(panel.querySelector('[data-slot="storage-mounts-refresh-error"]')).toBeNull(),
+    )
+    expect(list.querySelectorAll('[data-slot="storage-mount-row"]')).toHaveLength(3)
   })
 })

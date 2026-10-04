@@ -23,7 +23,10 @@ import {
   MetricHistoryBody,
   useHostMetricSelection,
   useMetricHistoryWindow,
+  type HostMetricSelection,
+  type MetricHistoryWindow,
 } from './metricHistoryPanel'
+import { StorageMountsPanel } from './StorageMountsPanel'
 import {
   formatBytesUnknown,
   formatBytesPerSecond,
@@ -747,7 +750,7 @@ export function AdminAgentDetail() {
             <span className="text-[11px] font-medium text-muted-foreground">
               06
             </span>
-            <HostMetricHistoryPanel agent={agent.data} />
+            <AgentHostHistorySection agent={agent.data} />
           </section>
           <section className="space-y-3" aria-labelledby="agent-audit-heading">
             <div className="space-y-1">
@@ -1603,10 +1606,44 @@ function AgentRemovalPanel({
 const AGENT_HOST_INTRO =
   "Stored observations of the machine this Agent observes once for every Node it serves. The series belongs to the Agent, not to a Node: the same evidence is read here and on the page of each Node the Agent reports, and no single Node's Purge removes it."
 
-function HostMetricHistoryPanel({ agent }: { agent: AgentDiagnostic }) {
-  const { generation } = useAuth()
+/**
+ * The Agent's Host history and the mount paths it is read by (issues #215 and
+ * #216, design §11.6). The selection lives here rather than inside one
+ * card, so choosing a mount path from the list reads that exact path's series on
+ * the chart instead of asking the Operator to type a path that the list already
+ * knows. A storage series is named by the mount path and nothing else: the list
+ * is evidence, never a device claim, and the chart never continues a series
+ * across a path change.
+ */
+function AgentHostHistorySection({ agent }: { agent: AgentDiagnostic }) {
   const history = useMetricHistoryWindow(24)
   const selection = useHostMetricSelection(history)
+  const readSeries = (mountPath: string) => {
+    selection.onMountPath(mountPath)
+    // A mount path names a storage series and nothing else, so picking one from
+    // the list also selects the series it names: the chart switches to that
+    // path's used bytes, and the capacity side of the same path is one metric
+    // choice away. A storage metric already selected keeps its side.
+    if (!selection.needsMount) selection.onMetric('disk_used_bytes')
+  }
+  return (
+    <>
+      <StorageMountsPanel agentId={agent.agent_id} onReadSeries={readSeries} />
+      <HostMetricHistoryPanel agent={agent} history={history} selection={selection} />
+    </>
+  )
+}
+
+function HostMetricHistoryPanel({
+  agent,
+  history,
+  selection,
+}: {
+  agent: AgentDiagnostic
+  history: MetricHistoryWindow
+  selection: HostMetricSelection
+}) {
+  const { generation } = useAuth()
   const query = useAdminAgentHostMetricHistory(
     generation,
     agent.agent_id,
@@ -1644,7 +1681,7 @@ function HostMetricHistoryPanel({ agent }: { agent: AgentDiagnostic }) {
           reports; a Node's own Process series stays separate.
         </p>
       }
-      promptWhenUnasked="Enter the mount path the Agent reported to read one storage series."
+      promptWhenUnasked="Enter the mount path the Agent reported, or choose one from the list above, to read one storage series."
       view={history}
       answer={query}
       unasked={!selection.asked}

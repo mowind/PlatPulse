@@ -748,7 +748,10 @@ export function MetricHistoryBody({
 }
 
 /** The one control a mount-identified series needs: the path the Agent
- * reported, typed by the Operator because no Admin DTO exposes a mount list. */
+ * reported. It stays a text field because a path is compared literally and the
+ * Agent page's mount list (issue #216) only offers the paths that already hold
+ * stored evidence; a path the Server has not stored yet is still asked for by
+ * its exact spelling. */
 export function HostMountPathControl({
   value,
   onChange,

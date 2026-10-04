@@ -88,6 +88,9 @@ impl Modify for AgentBearerScheme {
         // page on that Agent (design §11.6).
         crate::http::admin::admin_node_host_metric_history,
         crate::http::admin::admin_agent_metric_history,
+        // The mount paths that Agent's Host storage evidence is stored under,
+        // because the path is the identity of the series (design §11.6).
+        crate::http::admin::admin_agent_storage_mounts,
         crate::http::admin::admin_node_transfers,
         crate::http::admin::create_node_transfer,
         crate::http::admin::admin_transfer_detail,
@@ -223,6 +226,9 @@ impl Modify for AgentBearerScheme {
         crate::http::admin::AdminMetricSample,
         crate::http::admin::AdminMetricGap,
         crate::http::admin::AdminMetricSeries,
+        crate::http::admin::AdminAgentStorageMountsResponse,
+        crate::http::admin::AdminStorageMount,
+        crate::http::admin::AdminStorageSeries,
         crate::http::admin::AdminPeerHistory,
         crate::http::admin::AdminPeerAggregate,
         crate::http::admin::AdminPeerCountryCount,

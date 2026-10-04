@@ -72,6 +72,74 @@ export type AdminAgentRemovalTransfer = {
     transfer_id: string;
 };
 
+/**
+ * The mount paths one Agent reported, and the coverage of the storage series
+ * behind each of them (issue #216, design §11.6).
+ *
+ * The mount path is the identity of a Host storage series: it is stored as the
+ * series' dimension and compared literally. Without this list an operator has to
+ * guess the exact string, and a path the Agent stopped reporting becomes
+ * unreachable exactly when it matters. The list comes from the stored evidence,
+ * never from a device identifier: same path under a new device is
+ * indistinguishable by contract, and no such identity is invented here.
+ */
+export type AdminAgentStorageMountsResponse = {
+    agentId: string;
+    /**
+     * The instant this answer was assembled from.
+     */
+    answeredAt: string;
+    /**
+     * The rhythm the Agent is observing its Host at now, measured from the
+     * newest stored observations of the Host series that stands for the whole
+     * Host observation, and 0 when that evidence does not show one yet: an Agent
+     * that has just changed its collection interval states no cadence until its
+     * newest interval agrees with the one before it.
+     */
+    cadenceSeconds: number;
+    /**
+     * The series the `capacity` side of every mount answers with.
+     */
+    capacityMetric: string;
+    /**
+     * True while low-space protection has optional history paused (design
+     * §11.4). The Agent is still reporting and the Server is choosing not to
+     * store the readings, so no path is answered as silent: what was already
+     * stored stays, and the age of it is not the Agent going quiet.
+     */
+    collectionPaused: boolean;
+    /**
+     * The number of mount paths this answer can carry, and the bound it keeps:
+     * each storage side is read with this bound, the two are merged by the path
+     * from one snapshot of the ledger, and the merged list is cut at the same
+     * bound in the same order.
+     */
+    mountLimit: number;
+    /**
+     * The mount paths, most recently observed first, ties settled by the path.
+     */
+    mounts: Array<AdminStorageMount>;
+    /**
+     * The silence that means "this path is no longer being reported": three
+     * cadences of the Agent's measured cadence, with the cadence a silence is
+     * judged against capped at five minutes, and never less than two minutes;
+     * 0 when the cadence is unknown. No silence is ever excused by a cadence
+     * nobody could configure, and no silence is declared while the Server itself
+     * is pausing optional history.
+     */
+    silenceThresholdSeconds: number;
+    /**
+     * True when the Agent holds more mount paths than this answer carries: the
+     * newest paths are answered and the oldest ones are left out, stated here
+     * rather than dropped silently.
+     */
+    truncated: boolean;
+    /**
+     * The series the `used` side of every mount answers with.
+     */
+    usedMetric: string;
+};
+
 export type AdminBlockHistoryItem = {
     attributionReason?: string | null;
     blockTimeMs?: number | null;
@@ -647,6 +715,94 @@ export type AdminPeerLagSummary = {
     maximum?: number | null;
     minimum?: number | null;
     sample_count: number;
+};
+
+/**
+ * One mount path the Agent reported, with both storage series behind it.
+ */
+export type AdminStorageMount = {
+    /**
+     * Bytes this path can hold (`disk_total_bytes`).
+     */
+    capacity: AdminStorageSeries;
+    /**
+     * The path exactly as the Agent reported it. It is the whole identity of
+     * the series: the Server compares it literally and never normalizes it, so
+     * two spellings of one filesystem are two series, and two filesystems that
+     * swap places behind one path are not claimed to be distinguishable.
+     */
+    mountPath: string;
+    /**
+     * `reported` while the Agent is still observing this path at its measured
+     * cadence, `silent` when it has said nothing for longer than that cadence
+     * allows, `unknown` when the Agent's cadence cannot be measured from the
+     * stored evidence. A slow cadence is never mistaken for silence.
+     */
+    observationState: string;
+    /**
+     * Seconds since the newest observation of this path, null when the Server
+     * has no cadence to judge a silence against or is holding the readings back
+     * itself. An age with no measured cadence is an age, not a verdict.
+     */
+    silentSeconds?: number | null;
+    /**
+     * Bytes in use on this path (`disk_used_bytes`).
+     */
+    used: AdminStorageSeries;
+};
+
+/**
+ * One storage series of one mount path, in the shape the Agent page reads
+ * (issue #216, design §11.6).
+ *
+ * The counts and the boundary come from the series' ledger, which outlives the
+ * samples: the evidence an operator investigates with is the range reader's, and
+ * this answer only says which series hold evidence and how much of it. A series
+ * that was never observed is stated as such rather than as an empty series, and a
+ * series whose readings have been released says so through `releasedBefore`
+ * instead of presenting its boundary as an empty stretch.
+ */
+export type AdminStorageSeries = {
+    correctedCount: number;
+    /**
+     * The oldest instant ever observed for this series.
+     */
+    firstObservedAt?: string | null;
+    /**
+     * The newest instant the Server stores for this series. It stays set after
+     * the readings themselves are released, because the ledger keeps the fact.
+     */
+    lastObservedAt?: string | null;
+    lastReceivedAt?: string | null;
+    /**
+     * The newest reading is stamped after its receipt: the Agent clock is ahead.
+     */
+    latestClockSuspect: boolean;
+    /**
+     * `latestReceivedAt - latestObservedAt` for the newest reading, null when
+     * either timestamp is unusable.
+     */
+    latestDelaySeconds?: number | null;
+    latestObservedAt?: string | null;
+    latestReceivedAt?: string | null;
+    /**
+     * The newest stored reading, null when the raw window no longer holds one.
+     * Unknown is never reported as zero.
+     */
+    latestValue?: number | null;
+    metric: string;
+    observationCount: number;
+    /**
+     * True when this mount path was observed for this metric at all.
+     */
+    observed: boolean;
+    /**
+     * The instant before which this series' readings were released by retention,
+     * null while none has been. It is how a missing newest reading is explained:
+     * released on purpose, never "no data was ever collected".
+     */
+    releasedBefore?: string | null;
+    replayedCount: number;
 };
 
 export type AdminValidatorAnalyticsResponse = {
@@ -3691,6 +3847,33 @@ export type RemoveAgentResponses = {
 };
 
 export type RemoveAgentResponse = RemoveAgentResponses[keyof RemoveAgentResponses];
+
+export type AdminAgentStorageMountsData = {
+    body?: never;
+    path: {
+        /**
+         * Agent ID
+         */
+        agent_id: string;
+    };
+    query?: never;
+    url: '/api/admin/v1/agents/{agent_id}/storage-mounts';
+};
+
+export type AdminAgentStorageMountsErrors = {
+    401: ApiErrorBody;
+    403: ApiErrorBody;
+    404: ApiErrorBody;
+    503: ApiErrorBody;
+};
+
+export type AdminAgentStorageMountsError = AdminAgentStorageMountsErrors[keyof AdminAgentStorageMountsErrors];
+
+export type AdminAgentStorageMountsResponses = {
+    200: AdminAgentStorageMountsResponse;
+};
+
+export type AdminAgentStorageMountsResponse2 = AdminAgentStorageMountsResponses[keyof AdminAgentStorageMountsResponses];
 
 export type AlertIncidentsData = {
     body?: never;

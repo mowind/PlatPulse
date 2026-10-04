@@ -4532,6 +4532,120 @@ pub struct AdminMetricHistoryResponse {
     pub continuation: Option<String>,
 }
 
+/// One storage series of one mount path, in the shape the Agent page reads
+/// (issue #216, design §11.6).
+///
+/// The counts and the boundary come from the series' ledger, which outlives the
+/// samples: the evidence an operator investigates with is the range reader's, and
+/// this answer only says which series hold evidence and how much of it. A series
+/// that was never observed is stated as such rather than as an empty series, and a
+/// series whose readings have been released says so through `releasedBefore`
+/// instead of presenting its boundary as an empty stretch.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminStorageSeries {
+    pub metric: String,
+    /// True when this mount path was observed for this metric at all.
+    pub observed: bool,
+    /// The oldest instant ever observed for this series.
+    pub first_observed_at: Option<String>,
+    /// The newest instant the Server stores for this series. It stays set after
+    /// the readings themselves are released, because the ledger keeps the fact.
+    pub last_observed_at: Option<String>,
+    pub last_received_at: Option<String>,
+    pub observation_count: i64,
+    pub replayed_count: i64,
+    pub corrected_count: i64,
+    /// The instant before which this series' readings were released by retention,
+    /// null while none has been. It is how a missing newest reading is explained:
+    /// released on purpose, never "no data was ever collected".
+    pub released_before: Option<String>,
+    /// The newest stored reading, null when the raw window no longer holds one.
+    /// Unknown is never reported as zero.
+    pub latest_value: Option<f64>,
+    pub latest_observed_at: Option<String>,
+    pub latest_received_at: Option<String>,
+    /// `latestReceivedAt - latestObservedAt` for the newest reading, null when
+    /// either timestamp is unusable.
+    pub latest_delay_seconds: Option<i64>,
+    /// The newest reading is stamped after its receipt: the Agent clock is ahead.
+    pub latest_clock_suspect: bool,
+}
+
+/// One mount path the Agent reported, with both storage series behind it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminStorageMount {
+    /// The path exactly as the Agent reported it. It is the whole identity of
+    /// the series: the Server compares it literally and never normalizes it, so
+    /// two spellings of one filesystem are two series, and two filesystems that
+    /// swap places behind one path are not claimed to be distinguishable.
+    pub mount_path: String,
+    /// `reported` while the Agent is still observing this path at its measured
+    /// cadence, `silent` when it has said nothing for longer than that cadence
+    /// allows, `unknown` when the Agent's cadence cannot be measured from the
+    /// stored evidence. A slow cadence is never mistaken for silence.
+    pub observation_state: String,
+    /// Seconds since the newest observation of this path, null when the Server
+    /// has no cadence to judge a silence against or is holding the readings back
+    /// itself. An age with no measured cadence is an age, not a verdict.
+    pub silent_seconds: Option<i64>,
+    /// Bytes in use on this path (`disk_used_bytes`).
+    pub used: AdminStorageSeries,
+    /// Bytes this path can hold (`disk_total_bytes`).
+    pub capacity: AdminStorageSeries,
+}
+
+/// The mount paths one Agent reported, and the coverage of the storage series
+/// behind each of them (issue #216, design §11.6).
+///
+/// The mount path is the identity of a Host storage series: it is stored as the
+/// series' dimension and compared literally. Without this list an operator has to
+/// guess the exact string, and a path the Agent stopped reporting becomes
+/// unreachable exactly when it matters. The list comes from the stored evidence,
+/// never from a device identifier: same path under a new device is
+/// indistinguishable by contract, and no such identity is invented here.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminAgentStorageMountsResponse {
+    pub agent_id: String,
+    /// The instant this answer was assembled from.
+    pub answered_at: String,
+    /// The rhythm the Agent is observing its Host at now, measured from the
+    /// newest stored observations of the Host series that stands for the whole
+    /// Host observation, and 0 when that evidence does not show one yet: an Agent
+    /// that has just changed its collection interval states no cadence until its
+    /// newest interval agrees with the one before it.
+    pub cadence_seconds: i64,
+    /// The silence that means "this path is no longer being reported": three
+    /// cadences of the Agent's measured cadence, with the cadence a silence is
+    /// judged against capped at five minutes, and never less than two minutes;
+    /// 0 when the cadence is unknown. No silence is ever excused by a cadence
+    /// nobody could configure, and no silence is declared while the Server itself
+    /// is pausing optional history.
+    pub silence_threshold_seconds: i64,
+    /// The series the `used` side of every mount answers with.
+    pub used_metric: String,
+    /// The series the `capacity` side of every mount answers with.
+    pub capacity_metric: String,
+    /// The number of mount paths this answer can carry, and the bound it keeps:
+    /// each storage side is read with this bound, the two are merged by the path
+    /// from one snapshot of the ledger, and the merged list is cut at the same
+    /// bound in the same order.
+    pub mount_limit: i64,
+    /// True when the Agent holds more mount paths than this answer carries: the
+    /// newest paths are answered and the oldest ones are left out, stated here
+    /// rather than dropped silently.
+    pub truncated: bool,
+    /// True while low-space protection has optional history paused (design
+    /// §11.4). The Agent is still reporting and the Server is choosing not to
+    /// store the readings, so no path is answered as silent: what was already
+    /// stored stays, and the age of it is not the Agent going quiet.
+    pub collection_paused: bool,
+    /// The mount paths, most recently observed first, ties settled by the path.
+    pub mounts: Vec<AdminStorageMount>,
+}
+
 #[utoipa::path(
     get,
     path = "/api/admin/v1/nodes/{node_id}/metric-history",
@@ -4680,6 +4794,198 @@ async fn admin_agent_metric_history(
         },
     )
     .await
+}
+
+/// The mount paths one Agent reported for its Host storage, with the coverage of
+/// the series behind each path (issue #216, design §11.6).
+///
+/// The persisted evidence of one Host is one series per metric and mount path, so
+/// the list of paths is what makes that evidence reachable at all. This route
+/// answers that list from the ledger, which outlives the readings: a mount the
+/// Agent stopped reporting, or one whose readings retention released, is still
+/// answered with its boundary and its counts instead of disappearing from the
+/// surface that is supposed to investigate it.
+///
+/// It reads one Agent's own evidence and nothing shared from it. The route states
+/// which series holds how much, and leaves the readings themselves, their gaps and
+/// their low-space pauses to the metric-history routes and the capacity route,
+/// which already answer them per mount path: a second copy of the sampling
+/// evidence is not what a coverage answer is for.
+///
+/// One answer is one snapshot of the ledger. The two storage series and the
+/// cadence a silence is judged against are read inside one transaction, the paths
+/// they hold are merged by path and cut at the stated limit after the merge, and
+/// no path is answered as silent while low-space protection has optional history
+/// paused: then the Server, not the Agent, is the one holding the readings back,
+/// and the answer says so instead of calling a reporting Agent quiet.
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/agents/{agent_id}/storage-mounts",
+    tag = "admin",
+    params(
+        ("agent_id" = String, Path, description = "Agent ID")
+    ),
+    responses(
+        (status = 200, body = AdminAgentStorageMountsResponse),
+        (status = 401, body = crate::http::ApiErrorBody),
+        (status = 403, body = crate::http::ApiErrorBody),
+        (status = 404, body = crate::http::ApiErrorBody),
+        (status = 503, body = crate::http::ApiErrorBody)
+    )
+)]
+async fn admin_agent_storage_mounts(
+    State(state): State<AppState>,
+    Extension(_session): Extension<super::AuthenticatedSession>,
+    Extension(request_id): Extension<super::RequestId>,
+    Path(agent_id): Path<String>,
+) -> Response {
+    if let Err(response) = host_owner_exists(&state, &request_id.0, &agent_id).await {
+        return response;
+    }
+    // Both sides of a mount path, and the cadence a silence is judged against,
+    // come from one snapshot of the ledger: the answer opens one read
+    // transaction and asks all three questions inside it, because an Agent that
+    // reports a whole new mount contract between two independent reads would
+    // otherwise be answered from two different ledgers, with paths present on
+    // one side only and a merged list longer than the limit the answer states.
+    // They are merged by the path the Agent reported, never by an identity the
+    // Server would have to invent.
+    let mut snapshot = match state.db().pool().begin().await {
+        Ok(snapshot) => snapshot,
+        Err(_) => return unavailable_response(&request_id.0),
+    };
+    let coverage = match crate::metric_history::load_mount_coverage(&mut snapshot, &agent_id).await
+    {
+        Ok(coverage) => coverage,
+        Err(_) => return unavailable_response(&request_id.0),
+    };
+    if snapshot.commit().await.is_err() {
+        return unavailable_response(&request_id.0);
+    }
+    // Every Host series is written from the one observation the Agent collected
+    // for its Host, so the Agent has one cadence and it is measured once instead
+    // of once per mount.
+    let cadence_seconds = coverage.cadence_seconds;
+    // The merge, the order and the bound are the ledger's own rules, so the
+    // engine answers the paths of one snapshot merged by path and already cut at
+    // the bound this answer states.
+    let (paths, truncated) = crate::metric_history::merge_mount_coverage(coverage);
+    let now = crate::auth::now_utc();
+    // Zero when the cadence is unknown: an unmeasurable cadence cannot excuse a
+    // silence, so the mounts answer `unknown` rather than `reported`.
+    let silence_threshold_seconds = if cadence_seconds > 0 {
+        crate::metric_history::gap_threshold_seconds(cadence_seconds)
+    } else {
+        0
+    };
+    // While low-space protection has optional history paused, the Agent is still
+    // reporting and the Server is the one holding the readings back: nothing
+    // already stored is deleted, and a stretch of paused collection is not the
+    // Agent going quiet. The pause is stated on the answer instead of turning
+    // every path into a silence the Agent never caused.
+    let collection_paused = state.capacity().status().protected;
+    let mut answer = Vec::with_capacity(paths.len());
+    for path in paths {
+        let newest = path.newest_observation().map(str::to_owned);
+        // The age of the newest reading is a silence only where the Server has a
+        // measured cadence to compare it with and is not holding the readings
+        // back itself. With no cadence the mount answers unknown, and the age of
+        // what was stored stays on the series itself (latestObservedAt) instead
+        // of arriving as a silence the Server cannot support.
+        let silent_seconds = if cadence_seconds > 0 && !collection_paused {
+            newest
+                .as_deref()
+                .and_then(crate::auth::parse_rfc3339)
+                .map(|observed| (now - observed).whole_seconds())
+        } else {
+            None
+        };
+        let observation_state = crate::metric_history::mount_observation_state(
+            cadence_seconds,
+            silent_seconds,
+            silence_threshold_seconds,
+        );
+        answer.push(AdminStorageMount {
+            mount_path: path.mount_path,
+            observation_state: observation_state.to_owned(),
+            silent_seconds,
+            used: storage_series(
+                crate::metric_history::HOST_MOUNT_USED_METRIC,
+                path.used.as_ref(),
+            ),
+            capacity: storage_series(
+                crate::metric_history::HOST_MOUNT_CAPACITY_METRIC,
+                path.capacity.as_ref(),
+            ),
+        });
+    }
+    no_store(
+        Json(AdminAgentStorageMountsResponse {
+            agent_id,
+            answered_at: crate::auth::format_rfc3339(now),
+            cadence_seconds,
+            silence_threshold_seconds,
+            used_metric: crate::metric_history::HOST_MOUNT_USED_METRIC.to_owned(),
+            capacity_metric: crate::metric_history::HOST_MOUNT_CAPACITY_METRIC.to_owned(),
+            mount_limit: crate::metric_history::MOUNT_COVERAGE_LIMIT,
+            truncated,
+            collection_paused,
+            mounts: answer,
+        })
+        .into_response(),
+    )
+}
+
+/// One side of a mount path, in the shape the Agent page reads.
+fn storage_series(
+    metric: &str,
+    coverage: Option<&crate::metric_history::SeriesCoverage>,
+) -> AdminStorageSeries {
+    let Some(coverage) = coverage else {
+        return AdminStorageSeries {
+            metric: metric.to_owned(),
+            observed: false,
+            first_observed_at: None,
+            last_observed_at: None,
+            last_received_at: None,
+            observation_count: 0,
+            replayed_count: 0,
+            corrected_count: 0,
+            released_before: None,
+            latest_value: None,
+            latest_observed_at: None,
+            latest_received_at: None,
+            latest_delay_seconds: None,
+            latest_clock_suspect: false,
+        };
+    };
+    let timing = coverage.latest.as_ref().and_then(|latest| {
+        crate::metric_history::sample_timing(&latest.observed_at, &latest.received_at)
+    });
+    AdminStorageSeries {
+        metric: metric.to_owned(),
+        observed: true,
+        first_observed_at: Some(coverage.first_observed_at.clone()),
+        last_observed_at: Some(coverage.last_observed_at.clone()),
+        last_received_at: Some(coverage.last_received_at.clone()),
+        observation_count: coverage.observation_count,
+        replayed_count: coverage.replayed_count,
+        corrected_count: coverage.corrected_count,
+        released_before: coverage.released_before.clone(),
+        latest_value: coverage.latest.as_ref().map(|latest| latest.value),
+        latest_observed_at: coverage
+            .latest
+            .as_ref()
+            .map(|latest| latest.observed_at.clone()),
+        latest_received_at: coverage
+            .latest
+            .as_ref()
+            .map(|latest| latest.received_at.clone()),
+        latest_delay_seconds: timing.as_ref().map(|timing| timing.delay_seconds),
+        latest_clock_suspect: timing
+            .as_ref()
+            .is_some_and(|timing| timing.clock_note.is_some()),
+    }
 }
 
 #[utoipa::path(
@@ -7082,6 +7388,12 @@ pub fn router() -> Router<AppState> {
         .route(
             "/agents/{agent_id}/metric-history",
             get(admin_agent_metric_history),
+        )
+        // The mount paths that Agent's Host evidence is stored under (#216),
+        // because the path is the identity of a storage series (design §11.6).
+        .route(
+            "/agents/{agent_id}/storage-mounts",
+            get(admin_agent_storage_mounts),
         )
         .route("/networks", get(admin_networks))
         .route("/networks/{network_key}", get(admin_network_detail))

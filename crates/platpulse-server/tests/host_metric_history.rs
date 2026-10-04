@@ -267,6 +267,7 @@ struct HostReport {
     cpu_percent: Option<f64>,
     second_node: bool,
     node_id: Option<String>,
+    node_count: usize,
 }
 
 impl HostReport {
@@ -283,6 +284,14 @@ impl HostReport {
 
     fn with_second_node(mut self) -> Self {
         self.second_node = true;
+        self
+    }
+
+    /// Declare [count] Nodes for the one Agent: the Host observation they all
+    /// share is collected once for the Agent, not once per Node (Stories 46
+    /// and 51), so the Agent's Host evidence must not multiply by Node count.
+    fn nodes(mut self, count: usize) -> Self {
+        self.node_count = count;
         self
     }
 
@@ -322,6 +331,22 @@ fn fixture_report(agent_id: &str, sequence: u64, host: &HostReport, observed_at:
             .as_array_mut()
             .unwrap()
             .push(declaration);
+    }
+
+    if host.node_count > 1 {
+        let mut observations = Vec::with_capacity(host.node_count);
+        let mut declarations = Vec::with_capacity(host.node_count);
+        for index in 0..host.node_count {
+            let node_id = declared_node_id(index);
+            let mut observation = value["nodes"][0].clone();
+            observation["node_id"] = Value::String(node_id.clone());
+            let mut declaration = value["inventory"]["nodes"][0].clone();
+            declaration["node_id"] = Value::String(node_id);
+            observations.push(observation);
+            declarations.push(declaration);
+        }
+        value["nodes"] = Value::Array(observations);
+        value["inventory"]["nodes"] = Value::Array(declarations);
     }
 
     if let Some(node_id) = &host.node_id {
@@ -370,6 +395,12 @@ fn fixture_report(agent_id: &str, sequence: u64, host: &HostReport, observed_at:
     ));
     value["generated_at"] = Value::String(observed_at.to_owned());
     serde_json::to_vec(&value).unwrap()
+}
+
+/// The Node identity the multi-Node fixture declares for the [index]-th Node,
+/// so a test can address a Node it asked for by number.
+fn declared_node_id(index: usize) -> String {
+    format!("0195f2a1-00{index:02x}-4015-8015-0000000000{index:02x}")
 }
 
 /// The percent-encoding a query value carrying a mount path needs, so a path
@@ -1435,5 +1466,737 @@ async fn a_low_space_pause_counts_the_losses_of_each_mount_apart() {
         gaps[0]["seconds"],
         Value::from(1200),
         "the twenty minutes from that observation to the last counted loss"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #216: the storage use history of an Agent, by mount path.
+// ---------------------------------------------------------------------------
+
+/// The Agent page's storage-mount route: the mount paths the Agent's stored
+/// Host evidence is identified by (design §11.5, Stories 46, 51 and 52).
+fn storage_mounts_uri(agent_id: &str) -> String {
+    format!("/api/admin/v1/agents/{agent_id}/storage-mounts")
+}
+
+async fn read_mounts(
+    harness: &Harness,
+    cookie: Option<&str>,
+    agent_id: &str,
+) -> (StatusCode, Value) {
+    read_history(harness, cookie, &storage_mounts_uri(agent_id)).await
+}
+
+/// The mount paths an answer names, in the order it names them.
+fn answered_paths(body: &Value) -> Vec<String> {
+    body["mounts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("mounts: {body}"))
+        .iter()
+        .map(|mount| {
+            mount["mountPath"]
+                .as_str()
+                .unwrap_or_else(|| panic!("mountPath: {mount}"))
+                .to_owned()
+        })
+        .collect()
+}
+
+/// The one mount entry an answer states for a path, so an assertion names the
+/// path it is about.
+fn mount_entry<'a>(body: &'a Value, mount_path: &str) -> &'a Value {
+    body["mounts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("mounts: {body}"))
+        .iter()
+        .find(|mount| mount["mountPath"] == Value::String(mount_path.to_owned()))
+        .unwrap_or_else(|| panic!("no mount {mount_path}: {body}"))
+}
+
+/// Stories 46, 51 and 52: two Agents of three Nodes each report their own mount
+/// paths, the Host observation is stored once per Agent instead of once per
+/// Node, and each answer lists the paths that Agent reported with the usage and
+/// the capacity of every one of them.
+#[tokio::test]
+async fn each_agent_answers_the_mount_paths_it_reported_once_for_all_its_nodes() {
+    let harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (first_agent, first_credential) = enroll_agent(&harness, &session).await;
+    let (second_agent, second_credential) = enroll_agent(&harness, &session).await;
+    let instant = auth::now_utc() - time::Duration::minutes(5);
+    let observed_at = auth::format_rfc3339(instant);
+
+    let agents = [
+        (
+            &first_agent,
+            &first_credential,
+            HostReport::default()
+                .nodes(3)
+                .cpu(11.0)
+                .mount("/data", 1000, 100)
+                .mount("/logs", 2000, 200)
+                .mount("/mnt/spare", 3000, 300),
+        ),
+        (
+            &second_agent,
+            &second_credential,
+            HostReport::default()
+                .nodes(3)
+                .cpu(22.0)
+                .mount("/var/lib", 4000, 400)
+                .mount("/data2", 5000, 500),
+        ),
+    ];
+    // The Report identity is unique across the Network, so each Agent's Report
+    // carries its own sequence.
+    for (index, (agent_id, credential, host)) in agents.into_iter().enumerate() {
+        let (status, body) = submit(
+            &harness,
+            credential,
+            fixture_report(agent_id, index as u64 + 1, &host, &observed_at),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    // Six Nodes, but eight collected quantities and two series per reported
+    // mount path: the Host observation is the Agent's, not a Node's.
+    assert_eq!(
+        harness
+            .count_where(
+                "host_metric_samples",
+                &format!("agent_id = '{first_agent}'")
+            )
+            .await,
+        8 + 2 * 3,
+        "the Host evidence of three Nodes is collected once for their Agent"
+    );
+    assert_eq!(
+        harness
+            .count_where(
+                "host_metric_samples",
+                &format!("agent_id = '{second_agent}'")
+            )
+            .await,
+        8 + 2 * 2
+    );
+    assert!(
+        harness.count_where("node_metric_samples", "1 = 1").await > 0,
+        "the Node Process series are a different kind, stored per Node"
+    );
+
+    let (status, body) = read_mounts(&harness, Some(&session.cookie), &first_agent).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["agentId"].as_str(),
+        Some(first_agent.as_str()),
+        "{body}"
+    );
+    assert_eq!(body["usedMetric"], "disk_used_bytes", "{body}");
+    assert_eq!(body["capacityMetric"], "disk_total_bytes", "{body}");
+    assert_eq!(body["mountLimit"], Value::from(256), "{body}");
+    assert_eq!(body["truncated"], Value::Bool(false), "{body}");
+    // One instant, so the paths are ordered by their path: the answer is stable.
+    assert_eq!(
+        answered_paths(&body),
+        ["/data", "/logs", "/mnt/spare"],
+        "{body}"
+    );
+    for (mount_path, total, used) in [
+        ("/data", 1000.0, 100.0),
+        ("/logs", 2000.0, 200.0),
+        ("/mnt/spare", 3000.0, 300.0),
+    ] {
+        let mount = mount_entry(&body, mount_path);
+        assert_eq!(mount["used"]["metric"], "disk_used_bytes", "{mount}");
+        assert_eq!(mount["capacity"]["metric"], "disk_total_bytes", "{mount}");
+        assert_eq!(mount["used"]["observed"], Value::Bool(true), "{mount}");
+        assert_eq!(mount["used"]["latestValue"], Value::from(used), "{mount}");
+        assert_eq!(mount["used"]["latestObservedAt"], observed_at, "{mount}");
+        assert_eq!(mount["used"]["observationCount"], Value::from(1), "{mount}");
+        assert_eq!(mount["used"]["replayedCount"], Value::from(0), "{mount}");
+        assert_eq!(
+            mount["capacity"]["latestValue"],
+            Value::from(total),
+            "{mount}"
+        );
+        assert_eq!(
+            mount["capacity"]["observationCount"],
+            Value::from(1),
+            "{mount}"
+        );
+        assert!(
+            mount["used"]["latestDelaySeconds"].is_number()
+                || mount["used"]["latestDelaySeconds"].is_null(),
+            "{mount}"
+        );
+    }
+    // One Report is one observation, not a cadence: the Server states that it
+    // does not know how often this Agent samples instead of inventing a rhythm
+    // and calling the path silent against it.
+    assert_eq!(body["cadenceSeconds"], Value::from(0), "{body}");
+    assert_eq!(body["silenceThresholdSeconds"], Value::from(0), "{body}");
+    for mount in body["mounts"].as_array().unwrap() {
+        assert_eq!(mount["observationState"], "unknown", "{body}");
+        assert_eq!(mount["silentSeconds"], Value::Null, "{body}");
+    }
+
+    // The second Agent's answer is its own evidence, never the first one's paths.
+    let (status, second_body) = read_mounts(&harness, Some(&session.cookie), &second_agent).await;
+    assert_eq!(status, StatusCode::OK, "{second_body}");
+    assert_eq!(
+        answered_paths(&second_body),
+        ["/data2", "/var/lib"],
+        "{second_body}"
+    );
+    assert_eq!(
+        mount_entry(&second_body, "/var/lib")["used"]["latestValue"],
+        Value::from(400.0),
+        "{second_body}"
+    );
+}
+
+/// Story 59 and the risk it names: a cadence slower than the Server's habit is
+/// still a measured cadence, and a path that stopped being reported is answered
+/// as silent against that cadence — not as deleted, and not as zero.
+#[tokio::test]
+async fn a_slow_cadence_is_measured_and_a_path_that_stopped_is_answered_as_silent() {
+    let harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (agent_id, credential) = enroll_agent(&harness, &session).await;
+    let base = auth::now_utc() - time::Duration::minutes(20);
+    let instant = |minutes: i64| auth::format_rfc3339(base + time::Duration::minutes(minutes));
+
+    // A fifteen-minute cadence, and the second Report stops carrying /logs.
+    for (sequence, at, host) in [
+        (
+            1,
+            0,
+            HostReport::default()
+                .cpu(11.0)
+                .mount("/data", 1000, 100)
+                .mount("/logs", 2000, 200),
+        ),
+        (
+            2,
+            15,
+            HostReport::default().cpu(12.0).mount("/data", 1000, 150),
+        ),
+    ] {
+        let (status, body) = submit(
+            &harness,
+            &credential,
+            fixture_report(&agent_id, sequence, &host, &instant(at)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    let (status, body) = read_mounts(&harness, Some(&session.cookie), &agent_id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["cadenceSeconds"],
+        Value::from(900),
+        "the fifteen minutes this Agent actually samples at: {body}"
+    );
+    assert_eq!(
+        body["silenceThresholdSeconds"],
+        Value::from(900),
+        "three times that measured rhythm, capped: {body}"
+    );
+    assert_eq!(answered_paths(&body), ["/data", "/logs"], "{body}");
+
+    let alive = mount_entry(&body, "/data");
+    assert_eq!(alive["observationState"], "reported", "{alive}");
+    assert_eq!(alive["silentSeconds"], Value::from(300), "{alive}");
+    assert_eq!(alive["used"]["latestValue"], Value::from(150.0), "{alive}");
+    assert_eq!(alive["used"]["observationCount"], Value::from(2), "{alive}");
+    assert_eq!(
+        alive["used"]["firstObservedAt"],
+        instant(0),
+        "the first observation of the series stays stated: {alive}"
+    );
+
+    let stopped = mount_entry(&body, "/logs");
+    assert_eq!(stopped["observationState"], "silent", "{stopped}");
+    assert_eq!(stopped["silentSeconds"], Value::from(1200), "{stopped}");
+    // Stopping is not deletion: the path and everything counted on it stay, and
+    // the answer states the age of the newest reading it does hold.
+    assert_eq!(
+        stopped["used"]["latestValue"],
+        Value::from(200.0),
+        "{stopped}"
+    );
+    assert_eq!(
+        stopped["used"]["observationCount"],
+        Value::from(1),
+        "{stopped}"
+    );
+    assert_eq!(stopped["used"]["latestObservedAt"], instant(0), "{stopped}");
+}
+
+/// Story 52 and the risk it names: the series is the Agent's mount path, so a
+/// path the Agent switched to is its own series, and nothing in the answer
+/// claims two paths are one device — or that one path is still the same device.
+#[tokio::test]
+async fn a_path_the_agent_switched_to_is_its_own_series_and_no_device_is_named() {
+    let harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (agent_id, credential) = enroll_agent(&harness, &session).await;
+    let base = auth::now_utc() - time::Duration::minutes(30);
+    let instant = |minutes: i64| auth::format_rfc3339(base + time::Duration::minutes(minutes));
+
+    for (sequence, at, host) in [
+        (
+            1,
+            0,
+            HostReport::default().cpu(11.0).mount("/data", 1000, 100),
+        ),
+        // The same disk is now mounted elsewhere, and the Agent says nothing
+        // about the device: the Server stores what it was told and nothing more.
+        (
+            2,
+            20,
+            HostReport::default()
+                .cpu(11.0)
+                .mount("/data", 1000, 0)
+                .mount("/mnt/data", 1000, 400),
+        ),
+    ] {
+        let (status, body) = submit(
+            &harness,
+            &credential,
+            fixture_report(&agent_id, sequence, &host, &instant(at)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    let (status, body) = read_mounts(&harness, Some(&session.cookie), &agent_id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // Both paths were reported at the last instant, so the path orders them.
+    assert_eq!(answered_paths(&body), ["/data", "/mnt/data"], "{body}");
+    assert_eq!(
+        mount_entry(&body, "/data")["used"]["observationCount"],
+        Value::from(2),
+        "the old path kept its own two observations: {body}"
+    );
+    assert_eq!(
+        mount_entry(&body, "/data")["used"]["latestValue"],
+        Value::from(0.0),
+        "{body}"
+    );
+    assert_eq!(
+        mount_entry(&body, "/mnt/data")["used"]["observationCount"],
+        Value::from(1),
+        "the new path starts its own series: {body}"
+    );
+    assert_eq!(
+        mount_entry(&body, "/mnt/data")["used"]["latestValue"],
+        Value::from(400.0),
+        "{body}"
+    );
+    // The answer carries the path and the series about it: no device, no
+    // filesystem type, no identity the Agent never made verifiable.
+    for mount in body["mounts"].as_array().unwrap() {
+        let mut keys: Vec<&str> = mount
+            .as_object()
+            .unwrap_or_else(|| panic!("mount object: {mount}"))
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "capacity",
+                "mountPath",
+                "observationState",
+                "silentSeconds",
+                "used"
+            ],
+            "{mount}"
+        );
+    }
+}
+
+/// Stories 51 and 59: purging one Node of an Agent takes that Node's own
+/// Process series and keeps the Host history the Agent collected once for all of
+/// its Nodes, together with every mount path in it.
+#[tokio::test]
+async fn purging_one_node_keeps_the_mount_paths_every_node_shared() {
+    let harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (agent_id, credential) = enroll_agent(&harness, &session).await;
+    let observed_at = auth::format_rfc3339(auth::now_utc() - time::Duration::minutes(5));
+    let (status, body) = submit(
+        &harness,
+        &credential,
+        fixture_report(
+            &agent_id,
+            1,
+            &HostReport::default()
+                .nodes(2)
+                .cpu(11.0)
+                .mount("/data", 1000, 100)
+                .mount("/logs", 2000, 200),
+            &observed_at,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let purged_node = declared_node_id(1);
+    assert!(
+        harness
+            .count_where("node_metric_samples", &format!("node_id = '{purged_node}'"))
+            .await
+            > 0,
+        "the second Node stored its own Process series"
+    );
+
+    purge_node(&harness, &session, &purged_node).await;
+    assert_eq!(
+        harness
+            .count_where("node_metric_samples", &format!("node_id = '{purged_node}'"))
+            .await,
+        0,
+        "the purged Node kept nothing"
+    );
+
+    let (status, body) = read_mounts(&harness, Some(&session.cookie), &agent_id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        answered_paths(&body),
+        ["/data", "/logs"],
+        "the Agent's mount paths are not the purged Node's: {body}"
+    );
+    for mount_path in ["/data", "/logs"] {
+        assert_eq!(
+            mount_entry(&body, mount_path)["used"]["observationCount"],
+            Value::from(1),
+            "{body}"
+        );
+    }
+}
+
+/// Story 59: a low-space pause takes the optional history of the Reports that
+/// arrive while it holds, and the mount paths already observed stay exactly as
+/// observed. A path only a paused Report carried is not silently missing
+/// either: the pause counts the loss of that mount path.
+#[tokio::test]
+async fn a_pause_keeps_the_mounts_already_observed_and_counts_what_it_dropped() {
+    let mut harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (agent_id, credential) = enroll_agent(&harness, &session).await;
+    let base = auth::now_utc() - time::Duration::minutes(40);
+    let instant = |minutes: i64| auth::format_rfc3339(base + time::Duration::minutes(minutes));
+
+    let (status, body) = submit(
+        &harness,
+        &credential,
+        fixture_report(
+            &agent_id,
+            1,
+            &HostReport::default().cpu(11.0).mount("/data", 1000, 100),
+            &instant(0),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The operator's low-space policy then pauses collection, and the Reports
+    // that arrive while it holds are accepted and store nothing.
+    let pressure = forced_policy(&harness);
+    pressure.reconcile(harness.pool()).await.unwrap();
+    assert!(pressure.status().protected);
+    harness.install_capacity(Arc::clone(&pressure));
+    let (status, body) = submit(
+        &harness,
+        &credential,
+        fixture_report(
+            &agent_id,
+            2,
+            &HostReport::default()
+                .cpu(12.0)
+                .mount("/data", 1000, 300)
+                .mount("/new", 5000, 10),
+            &instant(30),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = read_mounts(&harness, Some(&session.cookie), &agent_id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        answered_paths(&body),
+        ["/data"],
+        "the list is the paths this Agent has stored evidence for: {body}"
+    );
+    let kept = mount_entry(&body, "/data");
+    assert_eq!(kept["used"]["observationCount"], Value::from(1), "{kept}");
+    assert_eq!(kept["used"]["latestValue"], Value::from(100.0), "{kept}");
+    assert_eq!(kept["used"]["latestObservedAt"], instant(0), "{kept}");
+    assert_eq!(
+        kept["observationState"], "unknown",
+        "the pause stored nothing, so the Server has no cadence to judge silence by: {body}"
+    );
+    assert_eq!(
+        kept["silentSeconds"],
+        Value::Null,
+        "and it states no silence it cannot support: {body}"
+    );
+    // The readings the pause dropped are counted against the mount path they
+    // belong to, including on the path that was already known.
+    for (metric, mount_path) in [
+        ("disk_used_bytes", "/new"),
+        ("disk_total_bytes", "/new"),
+        ("disk_used_bytes", "/data"),
+    ] {
+        assert_eq!(
+            harness
+                .count_where(
+                    "capacity_skipped_series",
+                    &format!(
+                        "scope_kind = 'host' AND scope_key = '{agent_id}' AND metric = '{metric}' AND dimension = '{mount_path}'"
+                    )
+                )
+                .await,
+            1,
+            "{metric} of {mount_path} is one counted loss"
+        );
+    }
+}
+
+/// Story 59 and the promise the design makes about it: while the Server itself
+/// is holding optional history back, a path that keeps being reported is not
+/// silent. The pause is stated on the answer instead, and the verdict comes back
+/// as soon as the pause ends.
+#[tokio::test]
+async fn a_pause_is_not_a_silence_while_the_agent_keeps_its_rhythm() {
+    let mut harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (agent_id, credential) = enroll_agent(&harness, &session).await;
+    let base = auth::now_utc() - time::Duration::minutes(60);
+    let instant = |minutes: i64| auth::format_rfc3339(base + time::Duration::minutes(minutes));
+
+    // A measured ten-minute rhythm: two observations, so the Server holds a
+    // cadence to judge a silence against.
+    for (sequence, at, used) in [(1u64, 0i64, 100u64), (2, 10, 150)] {
+        let (status, body) = submit(
+            &harness,
+            &credential,
+            fixture_report(
+                &agent_id,
+                sequence,
+                &HostReport::default().cpu(11.0).mount("/data", 1000, used),
+                &instant(at),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    let (status, body) = read_mounts(&harness, Some(&session.cookie), &agent_id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["cadenceSeconds"], Value::from(600), "{body}");
+    assert_eq!(body["silenceThresholdSeconds"], Value::from(900), "{body}");
+    assert_eq!(body["collectionPaused"], Value::Bool(false), "{body}");
+    assert_eq!(
+        mount_entry(&body, "/data")["observationState"],
+        "silent",
+        "the path has really gone quiet against its own rhythm: {body}"
+    );
+
+    // The operator's low-space policy then pauses optional history, and the
+    // Reports that arrive while it holds are accepted and store nothing.
+    let pressure = forced_policy(&harness);
+    pressure.reconcile(harness.pool()).await.unwrap();
+    assert!(pressure.status().protected);
+    harness.install_capacity(Arc::clone(&pressure));
+    let (status, body) = submit(
+        &harness,
+        &credential,
+        fixture_report(
+            &agent_id,
+            3,
+            &HostReport::default()
+                .cpu(12.0)
+                .mount("/data", 1000, 999)
+                .mount("/new", 5000, 10),
+            &instant(40),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The rhythm is still measured and the newest stored reading is older than
+    // the threshold — but the Server is the one holding the readings back, so
+    // the age is not the Agent going quiet.
+    let (status, body) = read_mounts(&harness, Some(&session.cookie), &agent_id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["collectionPaused"],
+        Value::Bool(true),
+        "the answer states that the Server is holding collection back: {body}"
+    );
+    assert_eq!(body["cadenceSeconds"], Value::from(600), "{body}");
+    assert_eq!(body["silenceThresholdSeconds"], Value::from(900), "{body}");
+    let kept = mount_entry(&body, "/data");
+    assert_eq!(
+        kept["observationState"], "unknown",
+        "a pause is not a silence the Agent caused: {body}"
+    );
+    assert_eq!(kept["silentSeconds"], Value::Null, "{kept}");
+    assert_eq!(kept["used"]["latestValue"], Value::from(150.0), "{kept}");
+    assert_eq!(kept["used"]["latestObservedAt"], instant(10), "{kept}");
+
+    // Once the pause ends the same evidence is judged again, and now it is a
+    // silence: the verdict was withheld for the pause, never lost.
+    let database_path = harness.state.db().path().to_path_buf();
+    harness.install_capacity(Arc::new(CapacityProtection::new(
+        CapacityConfig::disabled(),
+        Some(database_path.as_path()),
+    )));
+    let (status, body) = read_mounts(&harness, Some(&session.cookie), &agent_id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["collectionPaused"], Value::Bool(false), "{body}");
+    let kept = mount_entry(&body, "/data");
+    assert_eq!(
+        kept["observationState"], "silent",
+        "the verdict comes back with the pause lifted: {body}"
+    );
+    assert!(
+        kept["silentSeconds"].as_i64().unwrap() >= 3000,
+        "the age of the newest reading it does hold: {kept}"
+    );
+}
+
+/// An Agent nobody has heard from is an Agent with no mount evidence rather than
+/// a missing Agent: the route answers the empty list its ledger holds.
+#[tokio::test]
+async fn an_agent_that_has_reported_nothing_is_an_empty_list_not_a_missing_agent() {
+    let harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (agent_id, _credential) = enroll_agent(&harness, &session).await;
+
+    let (status, body) = read_mounts(&harness, Some(&session.cookie), &agent_id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["agentId"].as_str(), Some(agent_id.as_str()), "{body}");
+    assert!(answered_paths(&body).is_empty(), "{body}");
+    assert_eq!(body["mountLimit"], Value::from(256), "{body}");
+    assert_eq!(body["truncated"], Value::Bool(false), "{body}");
+    assert_eq!(body["cadenceSeconds"], Value::from(0), "{body}");
+    assert_eq!(body["silenceThresholdSeconds"], Value::from(0), "{body}");
+    assert_eq!(body["collectionPaused"], Value::Bool(false), "{body}");
+}
+
+/// The mount list states its own limit: an Agent with more paths than one answer
+/// carries loses the oldest ones, keeps the newest, and says it truncated.
+#[tokio::test]
+async fn the_mount_list_states_its_truncation_instead_of_hiding_paths() {
+    let harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (agent_id, credential) = enroll_agent(&harness, &session).await;
+    let base = auth::now_utc() - time::Duration::minutes(60);
+    let instant = |minutes: i64| auth::format_rfc3339(base + time::Duration::minutes(minutes));
+
+    // Three hundred distinct paths over three Reports, so the answer has to drop
+    // the coldest ones instead of growing with the Agent's mount churn.
+    for sequence in 1..=3u64 {
+        let mut host = HostReport::default().cpu(11.0);
+        for index in 0..100 {
+            let mount_path = format!("/bulk-{:03}", (sequence as i64 - 1) * 100 + index);
+            host = host.mount(&mount_path, 1000 + index as u64, 10 + index as u64);
+        }
+        let (status, body) = submit(
+            &harness,
+            &credential,
+            fixture_report(
+                &agent_id,
+                sequence,
+                &host,
+                &instant(10 * (sequence as i64 - 1)),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    let (status, body) = read_mounts(&harness, Some(&session.cookie), &agent_id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["truncated"], Value::Bool(true), "{body}");
+    assert_eq!(body["mountLimit"], Value::from(256), "{body}");
+    let paths = answered_paths(&body);
+    assert_eq!(paths.len(), 256, "{body}");
+    // The newest Report's paths come first, in path order, and the whole Report
+    // fits inside the limit before any older path is named.
+    assert_eq!(paths[0], "/bulk-200", "{body}");
+    assert_eq!(paths[99], "/bulk-299", "{body}");
+    assert_eq!(paths[100], "/bulk-100", "{body}");
+    // The limit then cuts through the oldest Report's paths in that same order:
+    // its first paths survive and its last ones are the ones dropped.
+    assert_eq!(paths[200], "/bulk-000", "{body}");
+    assert_eq!(paths[255], "/bulk-055", "{body}");
+    assert!(
+        !paths.contains(&"/bulk-056".to_owned()),
+        "the oldest paths are the ones the stated limit drops: {body}"
+    );
+}
+
+/// Constraints 5 and 8: the mount list is the trusted Admin surface, so it is
+/// Owner-only, states a stranger as missing, and is never cached.
+#[tokio::test]
+async fn the_mount_list_is_owner_only_and_an_unknown_agent_is_missing() {
+    let harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (agent_id, credential) = enroll_agent(&harness, &session).await;
+    let observed_at = auth::format_rfc3339(auth::now_utc() - time::Duration::minutes(5));
+    let (status, body) = submit(
+        &harness,
+        &credential,
+        fixture_report(
+            &agent_id,
+            1,
+            &HostReport::default().cpu(11.0).mount("/data", 1000, 100),
+            &observed_at,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Anonymous readers get nothing at all.
+    let (status, body) = read_mounts(&harness, None, &agent_id).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"]["code"], "auth_required", "{body}");
+
+    // A Viewer reads the Node and Agent views of the Admin surface, but the
+    // Agent's collected evidence stays Owner-only.
+    let hash = auth::hash_password(b"correct horse battery").unwrap();
+    auth::create_viewer(harness.state.db(), "viewer1", &hash)
+        .await
+        .unwrap();
+    let viewer = login(&harness, VIEWER_LOGIN_BODY).await;
+    let (status, body) = read_mounts(&harness, Some(&viewer.cookie), &agent_id).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["code"], "owner_required", "{body}");
+
+    // An Agent nobody enrolled is not an Agent with no mounts.
+    let unknown = "0195f2a1-00ff-40ff-80ff-0000000000ff";
+    let (status, body) = read_mounts(&harness, Some(&session.cookie), unknown).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"]["code"], "not_found", "{body}");
+
+    // The answer is a live statement about evidence, so it is never cached.
+    let response = harness
+        .send(admin_get(
+            &storage_mounts_uri(&agent_id),
+            Some(&session.cookie),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[axum::http::header::CACHE_CONTROL],
+        "no-store"
     );
 }

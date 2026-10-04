@@ -71,7 +71,7 @@
 
 use sqlx::query::{Query, QueryAs, QueryScalar};
 use sqlx::sqlite::SqliteArguments;
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Sqlite, SqliteConnection, SqlitePool, Transaction};
 use time::OffsetDateTime;
 
 use crate::auth::{format_rfc3339, parse_rfc3339};
@@ -1059,17 +1059,60 @@ fn pause_intersects(pauses: &[ProtectionPause], from: &str, to: &str) -> bool {
 
 /// The fastest cadence the window showed, or 0 when it holds fewer than two
 /// observations.
+///
+/// This answers the range reader's question — the fastest interval the stored
+/// evidence ever showed, so a chart can say what the window is capable of
+/// resolving. It is deliberately not the question a silence verdict asks; that
+/// one belongs to [`current_cadence_seconds`].
 pub fn observed_cadence_seconds(samples: &[MetricSample]) -> i64 {
     samples
         .windows(2)
-        .filter_map(|pair| {
-            let previous = parse_rfc3339(&pair[0].observed_at)?;
-            let next = parse_rfc3339(&pair[1].observed_at)?;
-            let seconds = (next - previous).whole_seconds();
-            (seconds > 0).then_some(seconds)
-        })
+        .filter_map(gap_seconds)
         .min()
         .unwrap_or(0)
+}
+
+/// How far two consecutive intervals may differ and still be one rhythm.
+const CADENCE_AGREEMENT_FACTOR: i64 = 2;
+
+/// The rhythm the series is being observed at now, or 0 when its newest evidence
+/// does not show one yet.
+///
+/// A silence verdict asks whether the Agent is still keeping the rhythm it has
+/// been keeping, so this reads the newest interval and trusts it only once the
+/// interval before it agrees within a factor of two. The fastest gap the window
+/// ever showed is the wrong answer to that question: an Agent whose collection
+/// interval was legally changed from five seconds to five minutes still holds its
+/// fast pairs for another fifteen observations, and every path that keeps
+/// reporting at the slow rhythm would be called silent before its next
+/// observation was due.
+///
+/// A rhythm that has just changed is not a rhythm. Two intervals that disagree
+/// answer 0, and 0 is "unknown cadence", never "zero cadence": the caller answers
+/// unknown evidence as unknown rather than as silence, and the next observation
+/// that agrees with its predecessor settles the question.
+pub fn current_cadence_seconds(samples: &[MetricSample]) -> i64 {
+    let gaps: Vec<i64> = samples.windows(2).filter_map(gap_seconds).collect();
+    let Some((&newest, earlier)) = gaps.split_last() else {
+        return 0;
+    };
+    if let Some(&previous) = earlier.last() {
+        let disagree = newest > previous.saturating_mul(CADENCE_AGREEMENT_FACTOR)
+            || previous > newest.saturating_mul(CADENCE_AGREEMENT_FACTOR);
+        if disagree {
+            return 0;
+        }
+    }
+    newest
+}
+
+/// The positive seconds between two consecutive observations, if they are
+/// ordered and distinct.
+fn gap_seconds(pair: &[MetricSample]) -> Option<i64> {
+    let previous = parse_rfc3339(&pair[0].observed_at)?;
+    let next = parse_rfc3339(&pair[1].observed_at)?;
+    let seconds = (next - previous).whole_seconds();
+    (seconds > 0).then_some(seconds)
 }
 
 /// What one delivery turned out to be, judged against the series ledger.
@@ -2195,6 +2238,362 @@ async fn load_pauses(
             },
         )
         .collect())
+}
+
+/// The Host storage series that names the mount path it was read from: the
+/// bytes in use.
+pub const HOST_MOUNT_USED_METRIC: &str = "disk_used_bytes";
+
+/// The Host storage series that states how much that same mount path can hold.
+pub const HOST_MOUNT_CAPACITY_METRIC: &str = "disk_total_bytes";
+
+/// The Host series whose cadence stands for the whole Host observation.
+///
+/// Every Host series is written from the one observation the Agent collected for
+/// its Host, so the Agent has one sampling cadence and the storage series are
+/// not a second one: the mount list measures it once instead of asking the same
+/// question for every mount path.
+pub const HOST_CADENCE_METRIC: &str = "cpu_percent";
+
+/// The mount paths one Agent's coverage answer carries.
+///
+/// Twice the per-Report mount contract, so an Agent reporting its whole contract
+/// is answered in one read while a Host whose paths churned wholesale is
+/// answered with its newest paths and a stated truncation instead of with an
+/// unbounded read.
+pub const MOUNT_COVERAGE_LIMIT: i64 = 2 * MAX_HOST_MOUNTS as i64;
+
+/// The newest readings the coverage answer measures a Host's cadence from.
+const COVERAGE_CADENCE_SAMPLES: i64 = 16;
+
+/// The ledger's untouched release boundary: nothing has been released.
+const NO_RELEASE_BOUNDARY: &str = "1970-01-01T00:00:00Z";
+
+/// The newest stored reading of one series.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoverageReading {
+    pub value: f64,
+    /// The instant the reading was observed at, which is the ledger's newest
+    /// observation: the row is joined at exactly that coordinate.
+    pub observed_at: String,
+    /// The receipt that carried it.
+    pub received_at: String,
+}
+
+/// What one series holds, independent of any requested window: the ledger, which
+/// outlives the samples, plus the newest reading the raw window still stores.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeriesCoverage {
+    /// The series' enablement boundary: the oldest observation ever recorded.
+    pub first_observed_at: String,
+    /// The newest observation the Server stores.
+    pub last_observed_at: String,
+    /// The receipt that carried that newest observation.
+    pub last_received_at: String,
+    pub observation_count: i64,
+    pub replayed_count: i64,
+    pub corrected_count: i64,
+    /// The instant before which this series' samples were released, `None` while
+    /// nothing has been released. It is what explains a series whose newest
+    /// observation is no longer stored: the ledger kept the observation, and the
+    /// release boundary says the row is gone on purpose rather than never having
+    /// existed.
+    pub released_before: Option<String>,
+    /// The newest stored reading, `None` when the raw window no longer holds one.
+    /// A missing reading is reported as unknown, never as a zero.
+    pub latest: Option<CoverageReading>,
+}
+
+/// One mount path of one Agent and one storage metric.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostSeriesCoverage {
+    pub mount_path: String,
+    pub coverage: SeriesCoverage,
+}
+
+/// The mount coverage read: one Agent's storage series, newest mount path first.
+///
+/// The ledger is the source of the list, because "this mount path was observed"
+/// outlives the samples themselves: a mount the Agent stopped reporting is still
+/// answered, with its boundary and its counts, after retention released every
+/// reading. The raw table is joined on the ledger's own key to add the newest
+/// stored reading when it is still there, which is one exact seek per path.
+///
+/// The order is `(last_observed_at DESC, dimension ASC)` and the limit drops the
+/// oldest paths, so what a truncated answer leaves out is the mounts the Agent
+/// stopped reporting first, and a tie between two paths reported by the same
+/// observation is settled by the path itself rather than by the storage engine.
+/// Migration 0069's `host_metric_series_state_mount_idx` is what makes that order
+/// and that limit an index walk instead of a sort of every mount path the Agent
+/// has ever reported.
+const HOST_COVERAGE_SQL: &str = "SELECT l.dimension, l.first_observed_at, l.last_observed_at, l.last_received_at, l.observation_count, l.replayed_count, l.corrected_count, l.released_before, s.value, s.received_at FROM host_metric_series_state l LEFT JOIN host_metric_samples s ON s.agent_id = l.agent_id AND s.metric = l.metric AND s.dimension = l.dimension AND s.observed_at = l.last_observed_at WHERE l.agent_id = ? AND l.metric = ? ORDER BY l.last_observed_at DESC, l.dimension ASC LIMIT ?";
+
+/// One Agent's mount paths for one storage series, newest first.
+///
+/// The second value is `true` when the Agent holds more mount paths than the
+/// limit answers with, so the caller states the truncation instead of presenting
+/// a shortened list as the complete set of mounts.
+pub async fn load_host_metric_coverage<'e, E>(
+    executor: E,
+    agent_id: &str,
+    metric: &str,
+    limit: i64,
+) -> Result<(Vec<HostSeriesCoverage>, bool), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let limit = limit.max(1);
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            i64,
+            String,
+            Option<f64>,
+            Option<String>,
+        ),
+    >(HOST_COVERAGE_SQL)
+    .bind(agent_id)
+    .bind(metric)
+    .bind(limit + 1)
+    .fetch_all(executor)
+    .await?;
+    let truncated = rows.len() as i64 > limit;
+    let covered = rows
+        .into_iter()
+        .take(limit as usize)
+        .map(
+            |(
+                mount_path,
+                first_observed_at,
+                last_observed_at,
+                last_received_at,
+                observation_count,
+                replayed_count,
+                corrected_count,
+                released_before,
+                value,
+                received_at,
+            )| {
+                let newest = last_observed_at.clone();
+                HostSeriesCoverage {
+                    mount_path,
+                    coverage: SeriesCoverage {
+                        first_observed_at,
+                        last_observed_at,
+                        last_received_at,
+                        observation_count,
+                        replayed_count,
+                        corrected_count,
+                        released_before: (released_before != NO_RELEASE_BOUNDARY)
+                            .then_some(released_before),
+                        // The join is at the ledger's own coordinate, so a row
+                        // that is still stored and a value always arrive
+                        // together; a released row arrives as no reading at all.
+                        latest: value.zip(received_at).map(|(value, received_at)| {
+                            CoverageReading {
+                                value,
+                                observed_at: newest,
+                                received_at,
+                            }
+                        }),
+                    },
+                }
+            },
+        )
+        .collect();
+    Ok((covered, truncated))
+}
+
+/// One Agent's mount evidence, read once.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MountCoverage {
+    /// The bytes-in-use series, newest mount path first.
+    pub used: Vec<HostSeriesCoverage>,
+    /// The capacity series, newest mount path first.
+    pub capacity: Vec<HostSeriesCoverage>,
+    /// The Agent's current Host cadence, or 0 when its newest evidence does not
+    /// show one.
+    pub cadence_seconds: i64,
+    /// Whether either storage series holds more mount paths than one read
+    /// carries.
+    pub truncated: bool,
+}
+
+/// The mount evidence one Admin answer is built from, read from one snapshot.
+///
+/// The three questions an answer asks — the bytes in use, the capacity and the
+/// Agent's cadence — have to describe the same ledger, so they are asked through
+/// the executor the caller hands in and never from a connection of this
+/// function's own: SQLite gives a read transaction a single consistent view,
+/// while an Agent that reports a whole new mount contract between two
+/// independent reads would otherwise be answered with evidence from two
+/// different ledgers, some paths present on one side only and a merged list
+/// longer than the limit the answer states. The caller owns the transaction, so
+/// the one-snapshot property is visible at the call site and testable there.
+pub async fn load_mount_coverage(
+    executor: &mut SqliteConnection,
+    agent_id: &str,
+) -> Result<MountCoverage, sqlx::Error> {
+    let mut used = Vec::new();
+    let mut capacity = Vec::new();
+    let mut truncated = false;
+    for (metric, sink) in [
+        (HOST_MOUNT_USED_METRIC, &mut used),
+        (HOST_MOUNT_CAPACITY_METRIC, &mut capacity),
+    ] {
+        let (covered, cut) =
+            load_host_metric_coverage(&mut *executor, agent_id, metric, MOUNT_COVERAGE_LIMIT)
+                .await?;
+        *sink = covered;
+        truncated |= cut;
+    }
+    let cadence_seconds = load_observed_cadence(
+        &mut *executor,
+        &SeriesScope::host(agent_id, HOST_CADENCE_METRIC, ""),
+    )
+    .await?;
+    Ok(MountCoverage {
+        used,
+        capacity,
+        cadence_seconds,
+        truncated,
+    })
+}
+
+/// The verdict one mount path is answered with.
+///
+/// A silence is a claim about the Agent's rhythm, so it is only made where the
+/// Server holds a measured cadence to judge the age against and a reading old
+/// enough to be late against it. With no cadence the answer is `unknown`, and a
+/// reading stamped after the answer was built is `reported`: a clock that runs
+/// a little fast is not a silence, and the age of a reading the Server cannot
+/// compare with anything is an age, not a verdict.
+pub fn mount_observation_state(
+    cadence_seconds: i64,
+    silent_seconds: Option<i64>,
+    silence_threshold_seconds: i64,
+) -> &'static str {
+    match (cadence_seconds, silent_seconds) {
+        (0, _) | (_, None) => "unknown",
+        (_, Some(silent_seconds)) if silent_seconds > silence_threshold_seconds => "silent",
+        _ => "reported",
+    }
+}
+
+/// One mount path with whichever of the two storage series the ledger holds for
+/// it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MountPathCoverage {
+    /// The path exactly as the Agent reported it.
+    pub mount_path: String,
+    /// The bytes-in-use series, when the ledger holds one for this path.
+    pub used: Option<SeriesCoverage>,
+    /// The capacity series, when the ledger holds one for this path.
+    pub capacity: Option<SeriesCoverage>,
+}
+
+impl MountPathCoverage {
+    /// The newest instant either storage series of this path was observed at.
+    pub fn newest_observation(&self) -> Option<&str> {
+        [self.used.as_ref(), self.capacity.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(|coverage| coverage.last_observed_at.as_str())
+            .max()
+    }
+}
+
+/// The mount paths of one coverage read, merged by path, newest first, and cut
+/// at the bound the answer states.
+///
+/// The bound is applied after the merge and not only to each side: the two
+/// storage series are read with one limit each, so two sides that disagree on
+/// which paths they hold could otherwise answer with twice the limit while still
+/// stating one. The second value is `true` when the merge was cut, so the answer
+/// states its truncation instead of presenting a shortened list as the whole set.
+pub fn merge_mount_coverage(coverage: MountCoverage) -> (Vec<MountPathCoverage>, bool) {
+    let mut merged: std::collections::HashMap<String, MountPathCoverage> =
+        std::collections::HashMap::new();
+    for (is_used, side) in [(true, coverage.used), (false, coverage.capacity)] {
+        for HostSeriesCoverage {
+            mount_path,
+            coverage,
+        } in side
+        {
+            let entry = merged
+                .entry(mount_path.clone())
+                .or_insert_with(|| MountPathCoverage {
+                    mount_path: mount_path.clone(),
+                    used: None,
+                    capacity: None,
+                });
+            if is_used {
+                entry.used = Some(coverage);
+            } else {
+                entry.capacity = Some(coverage);
+            }
+        }
+    }
+    let mut paths: Vec<MountPathCoverage> = merged.into_values().collect();
+    paths.sort_by(|left, right| {
+        right
+            .newest_observation()
+            .cmp(&left.newest_observation())
+            .then_with(|| left.mount_path.cmp(&right.mount_path))
+    });
+    let limit = MOUNT_COVERAGE_LIMIT as usize;
+    let truncated = coverage.truncated || paths.len() > limit;
+    paths.truncate(limit);
+    (paths, truncated)
+}
+
+/// The newest stored observations of one series, newest first.
+const SERIES_CADENCE_SQL: &str = "SELECT observed_at, received_at, value FROM {raw} WHERE {scope} = ? AND metric = ?{dim_predicate} ORDER BY observed_at DESC LIMIT ?";
+
+/// The cadence one series is being observed at, measured from its newest stored
+/// observations, or 0 when its newest evidence does not show one.
+///
+/// The mount list states whether a mount path is still being reported, and that
+/// judgement has to be made against the cadence the Agent really runs at instead
+/// of a constant: a Host collecting every five minutes is not silent for being
+/// four minutes late. The rhythm is read with [`current_cadence_seconds`], which
+/// answers 0 while the newest intervals disagree — an Agent that has just changed
+/// its collection interval, or one whose readings are not being stored at all,
+/// states no cadence to judge a silence by.
+///
+/// A return of 0 is "unknown cadence", never "zero cadence": every caller must
+/// answer unknown evidence as unknown rather than as silence.
+pub async fn load_observed_cadence<'e, E>(
+    executor: E,
+    scope: &SeriesScope<'_>,
+) -> Result<i64, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let sql = scope.sql(SERIES_CADENCE_SQL);
+    let rows = scope
+        .bind_series(sqlx::query_as::<_, (String, String, f64)>(&sql))
+        .bind(COVERAGE_CADENCE_SAMPLES)
+        .fetch_all(executor)
+        .await?;
+    // The statement answers newest first so the limit is spent on the newest
+    // evidence; the cadence rule reads a window in the order it happened.
+    let mut samples: Vec<MetricSample> = rows
+        .into_iter()
+        .map(|(observed_at, received_at, value)| MetricSample {
+            observed_at,
+            received_at,
+            value,
+        })
+        .collect();
+    samples.reverse();
+    Ok(current_cadence_seconds(&samples))
 }
 
 #[cfg(test)]
@@ -3879,5 +4278,524 @@ mod tests {
         assert_eq!(logs.1, 900.0);
         assert_eq!(logs.2, 900.0, "the other mount's extreme stands");
         assert_eq!(logs.3, 900.0);
+    }
+
+    // ---- Issue #216: the mount coverage read ----
+
+    const COVERAGE_AGENT: &str = "coverage-agent";
+
+    /// A real temp SQLite database with one Agent: the mount read answers the
+    /// evidence one Agent's own Host series hold.
+    async fn coverage_store() -> (tempfile::TempDir, sqlx::SqlitePool) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pool = database.pool().clone();
+        let stamp = "2026-04-01T00:00:00Z";
+        sqlx::query(
+            "INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES (?, 1, ?, ?)",
+        )
+        .bind(COVERAGE_AGENT)
+        .bind(stamp)
+        .bind(stamp)
+        .execute(&pool)
+        .await
+        .unwrap();
+        (dir, pool)
+    }
+
+    /// One stored reading of one series, with the ledger entry that keeps it
+    /// reachable after the reading itself is released.
+    async fn store_mount_reading(
+        pool: &sqlx::SqlitePool,
+        metric: &str,
+        mount_path: &str,
+        observed_at: &str,
+        received_at: &str,
+        value: f64,
+    ) {
+        let scope = SeriesScope::host(COVERAGE_AGENT, metric, mount_path);
+        let mut tx = pool.begin().await.unwrap();
+        record_delivery(
+            &mut tx,
+            &scope,
+            observed_at,
+            received_at,
+            Delivery::Observed,
+        )
+        .await
+        .unwrap();
+        store_sample(&mut tx, &scope, observed_at, received_at, value)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    /// The newest paths are answered, the oldest paths are the ones a limit
+    /// leaves out, and the answer says that it did.
+    #[tokio::test]
+    async fn the_mount_list_answers_the_newest_path_first_and_states_its_truncation() {
+        let (_dir, pool) = coverage_store().await;
+        for (mount_path, observed_at, value) in [
+            ("/old", "2026-04-01T00:00:00Z", 1.0),
+            ("/middle", "2026-04-01T00:05:00Z", 2.0),
+            ("/new", "2026-04-01T00:10:00Z", 3.0),
+        ] {
+            store_mount_reading(
+                &pool,
+                HOST_MOUNT_USED_METRIC,
+                mount_path,
+                observed_at,
+                observed_at,
+                value,
+            )
+            .await;
+        }
+
+        let (covered, truncated) =
+            load_host_metric_coverage(&pool, COVERAGE_AGENT, HOST_MOUNT_USED_METRIC, 2)
+                .await
+                .unwrap();
+        assert!(
+            truncated,
+            "three mount paths with a limit of two must state the truncation"
+        );
+        assert_eq!(covered.len(), 2);
+        assert_eq!(
+            covered
+                .iter()
+                .map(|mount| mount.mount_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/new", "/middle"],
+            "the limit must leave out the paths the Agent stopped reporting first"
+        );
+        let newest = &covered[0].coverage;
+        assert_eq!(newest.first_observed_at, "2026-04-01T00:10:00Z");
+        assert_eq!(newest.last_observed_at, "2026-04-01T00:10:00Z");
+        assert_eq!(newest.observation_count, 1);
+        assert_eq!(newest.released_before, None);
+        let latest = newest.latest.as_ref().expect("the reading is still stored");
+        assert_eq!(latest.value, 3.0);
+        assert_eq!(latest.observed_at, "2026-04-01T00:10:00Z");
+
+        let (covered, truncated) =
+            load_host_metric_coverage(&pool, COVERAGE_AGENT, HOST_MOUNT_USED_METRIC, 3)
+                .await
+                .unwrap();
+        assert!(!truncated, "the whole list fits the limit");
+        assert_eq!(covered.len(), 3);
+    }
+
+    /// Two mount paths reported by the one observation are ordered by the path
+    /// itself, so a limit that falls between them is decided by the Server and
+    /// not by the storage engine.
+    #[tokio::test]
+    async fn two_paths_observed_at_one_instant_are_ordered_by_the_path() {
+        let (_dir, pool) = coverage_store().await;
+        for mount_path in ["/b", "/a"] {
+            store_mount_reading(
+                &pool,
+                HOST_MOUNT_USED_METRIC,
+                mount_path,
+                "2026-04-01T00:00:00Z",
+                "2026-04-01T00:00:01Z",
+                1.0,
+            )
+            .await;
+        }
+        let (covered, truncated) =
+            load_host_metric_coverage(&pool, COVERAGE_AGENT, HOST_MOUNT_USED_METRIC, 1)
+                .await
+                .unwrap();
+        assert!(truncated);
+        assert_eq!(covered[0].mount_path, "/a");
+    }
+
+    /// A mount path whose readings were released is still a mount path the Agent
+    /// reported, and its missing newest reading is unknown rather than zero.
+    #[tokio::test]
+    async fn a_released_newest_reading_is_unknown_with_its_release_boundary() {
+        let (_dir, pool) = coverage_store().await;
+        store_mount_reading(
+            &pool,
+            HOST_MOUNT_USED_METRIC,
+            "/data",
+            "2026-04-01T00:00:00Z",
+            "2026-04-01T00:00:01Z",
+            42.0,
+        )
+        .await;
+        sqlx::query("DELETE FROM host_metric_samples WHERE agent_id = ?")
+            .bind(COVERAGE_AGENT)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE host_metric_series_state SET released_before = ? WHERE agent_id = ?")
+            .bind("2026-04-02T00:00:00Z")
+            .bind(COVERAGE_AGENT)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (covered, truncated) = load_host_metric_coverage(
+            &pool,
+            COVERAGE_AGENT,
+            HOST_MOUNT_USED_METRIC,
+            MOUNT_COVERAGE_LIMIT,
+        )
+        .await
+        .unwrap();
+        assert!(!truncated);
+        assert_eq!(covered.len(), 1);
+        let coverage = &covered[0].coverage;
+        assert_eq!(coverage.last_observed_at, "2026-04-01T00:00:00Z");
+        assert_eq!(
+            coverage.released_before.as_deref(),
+            Some("2026-04-02T00:00:00Z"),
+            "the release boundary explains the missing reading"
+        );
+        assert!(
+            coverage.latest.is_none(),
+            "a released reading is unknown, never a zero"
+        );
+    }
+
+    /// The cadence the mount list judges silence by is the Agent's own, measured
+    /// from its newest stored observations: a Host that slowed down is judged by
+    /// what it does now, and one that cannot be measured answers unknown.
+    #[tokio::test]
+    async fn the_agent_cadence_is_measured_from_its_newest_host_observations() {
+        let (_dir, pool) = coverage_store().await;
+        let cadence_scope = SeriesScope::host(COVERAGE_AGENT, HOST_CADENCE_METRIC, "");
+        assert_eq!(
+            load_observed_cadence(&pool, &cadence_scope).await.unwrap(),
+            0,
+            "nothing stored is an unknown cadence, not a zero cadence"
+        );
+        store_mount_reading(
+            &pool,
+            HOST_CADENCE_METRIC,
+            "",
+            "2026-04-01T00:00:00Z",
+            "2026-04-01T00:00:01Z",
+            1.0,
+        )
+        .await;
+        assert_eq!(
+            load_observed_cadence(&pool, &cadence_scope).await.unwrap(),
+            0,
+            "one observation proves no cadence"
+        );
+
+        let minute = |offset: i64| {
+            let base = parse_rfc3339("2026-04-01T00:00:00Z").unwrap();
+            format_rfc3339(base + time::Duration::seconds(offset))
+        };
+        // A Host that collected every minute, then every five: the newest
+        // observations are the ones that say what it does now.
+        for step in 0..20 {
+            let observed_at = minute(step * ONE_MINUTE_SECONDS);
+            store_mount_reading(
+                &pool,
+                HOST_CADENCE_METRIC,
+                "",
+                &observed_at,
+                &observed_at,
+                1.0,
+            )
+            .await;
+        }
+        for step in 0..COVERAGE_CADENCE_SAMPLES {
+            let observed_at = minute(20 * ONE_MINUTE_SECONDS + step * FIVE_MINUTE_SECONDS);
+            store_mount_reading(
+                &pool,
+                HOST_CADENCE_METRIC,
+                "",
+                &observed_at,
+                &observed_at,
+                1.0,
+            )
+            .await;
+        }
+        assert_eq!(
+            load_observed_cadence(&pool, &cadence_scope).await.unwrap(),
+            FIVE_MINUTE_SECONDS
+        );
+    }
+
+    /// A Host whose collection interval was just changed states no cadence yet.
+    ///
+    /// The rhythm a silence is judged by has to be the one the Agent is keeping
+    /// now. A window that still holds the fast pairs from before the change would
+    /// answer the old cadence and call every path that keeps reporting at the new
+    /// rhythm silent before its next observation was even due.
+    #[tokio::test]
+    async fn a_collection_interval_that_just_changed_states_no_cadence() {
+        let (_dir, pool) = coverage_store().await;
+        let scope = SeriesScope::host(COVERAGE_AGENT, HOST_CADENCE_METRIC, "");
+        let second = |offset: i64| {
+            let base = parse_rfc3339("2026-04-01T00:00:00Z").unwrap();
+            format_rfc3339(base + time::Duration::seconds(offset))
+        };
+        let fast = 5;
+        for step in 0..3 {
+            let observed_at = second(step * fast);
+            store_mount_reading(
+                &pool,
+                HOST_CADENCE_METRIC,
+                "",
+                &observed_at,
+                &observed_at,
+                1.0,
+            )
+            .await;
+        }
+        assert_eq!(
+            load_observed_cadence(&pool, &scope).await.unwrap(),
+            fast,
+            "two agreeing intervals are a rhythm"
+        );
+
+        // The interval is legally changed from five seconds to five minutes. The
+        // window still holds the fast pairs, so the fastest gap in it is five
+        // seconds, but the newest interval is the only one that says what the
+        // Agent is doing now, and one interval alone is not yet a rhythm.
+        let slow = FIVE_MINUTE_SECONDS;
+        let changed = second(2 * fast + slow);
+        store_mount_reading(&pool, HOST_CADENCE_METRIC, "", &changed, &changed, 1.0).await;
+        assert_eq!(
+            load_observed_cadence(&pool, &scope).await.unwrap(),
+            0,
+            "a rhythm that has just changed is not a rhythm, and 0 is unknown"
+        );
+
+        // The next observation keeps the slow rhythm, so that is the rhythm.
+        let settled = second(2 * fast + 2 * slow);
+        store_mount_reading(&pool, HOST_CADENCE_METRIC, "", &settled, &settled, 1.0).await;
+        assert_eq!(
+            load_observed_cadence(&pool, &scope).await.unwrap(),
+            slow,
+            "the cadence is judged by what the Agent does now"
+        );
+    }
+
+    /// The bound an answer states is a bound it keeps.
+    ///
+    /// The two storage sides are read with one limit each, so sides that disagree
+    /// on which paths they hold would merge into more paths than the answer
+    /// states. The cut happens after the merge, in the answer's own order.
+    #[test]
+    fn the_merged_mount_list_is_cut_at_the_bound_it_states() {
+        let stored = |mount_path: &str, observed_at: &str| HostSeriesCoverage {
+            mount_path: mount_path.to_owned(),
+            coverage: SeriesCoverage {
+                first_observed_at: observed_at.to_owned(),
+                last_observed_at: observed_at.to_owned(),
+                last_received_at: observed_at.to_owned(),
+                observation_count: 1,
+                replayed_count: 0,
+                corrected_count: 0,
+                released_before: None,
+                latest: None,
+            },
+        };
+        let limit = MOUNT_COVERAGE_LIMIT as usize;
+        let used: Vec<HostSeriesCoverage> = (0..limit)
+            .map(|index| stored(&format!("/use-{index:03}"), "2026-04-01T00:00:00Z"))
+            .collect();
+        let capacity: Vec<HostSeriesCoverage> = (0..100)
+            .map(|index| stored(&format!("/cap-{index:03}"), "2026-04-01T00:00:00Z"))
+            .collect();
+        let (paths, truncated) = merge_mount_coverage(MountCoverage {
+            used,
+            capacity,
+            cadence_seconds: FIVE_MINUTE_SECONDS,
+            truncated: false,
+        });
+        assert_eq!(
+            paths.len(),
+            limit,
+            "a merged answer carries no more paths than the limit it states"
+        );
+        assert!(truncated, "a cut merge states its truncation");
+        assert_eq!(paths[0].mount_path, "/cap-000");
+        assert_eq!(paths[100].mount_path, "/use-000");
+        assert_eq!(paths[limit - 1].mount_path, "/use-155");
+
+        // Both sides of one path are one entry, and a merge that fits is not cut.
+        let (paths, truncated) = merge_mount_coverage(MountCoverage {
+            used: vec![stored("/data", "2026-04-01T00:00:00Z")],
+            capacity: vec![stored("/data", "2026-04-01T00:00:00Z")],
+            cadence_seconds: FIVE_MINUTE_SECONDS,
+            truncated: false,
+        });
+        assert_eq!(paths.len(), 1, "one path is answered once, not twice");
+        assert!(paths[0].used.is_some() && paths[0].capacity.is_some());
+        assert!(!truncated);
+
+        // A side that was itself cut keeps the answer truncated.
+        let (paths, truncated) = merge_mount_coverage(MountCoverage {
+            used: Vec::new(),
+            capacity: Vec::new(),
+            cadence_seconds: 0,
+            truncated: true,
+        });
+        assert!(paths.is_empty());
+        assert!(truncated, "a truncated side is stated by the answer");
+    }
+
+    /// One answer is one snapshot of the ledger.
+    ///
+    /// The two storage sides and the cadence are three questions about one
+    /// ledger, so the answer asks them through the one transaction it opened: a
+    /// mount contract another writer is in the middle of storing can never arrive
+    /// half-applied inside an answer, and no answer mixes two ledgers.
+    #[tokio::test]
+    async fn one_answer_reads_one_snapshot_of_the_mount_ledger() {
+        let (_dir, pool) = coverage_store().await;
+        for (metric, value) in [
+            (HOST_MOUNT_USED_METRIC, 100.0),
+            (HOST_MOUNT_CAPACITY_METRIC, 200.0),
+        ] {
+            store_mount_reading(
+                &pool,
+                metric,
+                "/data",
+                "2026-04-01T00:00:00Z",
+                "2026-04-01T00:00:01Z",
+                value,
+            )
+            .await;
+        }
+        for offset in [0, FIVE_MINUTE_SECONDS] {
+            let observed_at = format_rfc3339(
+                parse_rfc3339("2026-04-01T00:00:00Z").unwrap() + time::Duration::seconds(offset),
+            );
+            store_mount_reading(
+                &pool,
+                HOST_CADENCE_METRIC,
+                "",
+                &observed_at,
+                &observed_at,
+                1.0,
+            )
+            .await;
+        }
+
+        // A whole new mount contract is in flight inside one transaction: it is
+        // not the ledger yet, and an answer that opened a snapshot of its own
+        // would not see a single row of it.
+        let mut snapshot = pool.begin().await.unwrap();
+        for metric in [HOST_MOUNT_USED_METRIC, HOST_MOUNT_CAPACITY_METRIC] {
+            for index in 0..=MOUNT_COVERAGE_LIMIT {
+                let mount_path = format!("/bulk-{index:03}");
+                let scope = SeriesScope::host(COVERAGE_AGENT, metric, &mount_path);
+                record_delivery(
+                    &mut snapshot,
+                    &scope,
+                    "2026-04-01T00:10:00Z",
+                    "2026-04-01T00:10:00Z",
+                    Delivery::Observed,
+                )
+                .await
+                .unwrap();
+            }
+        }
+        let coverage = load_mount_coverage(&mut snapshot, COVERAGE_AGENT)
+            .await
+            .unwrap();
+        assert_eq!(
+            coverage.used.len(),
+            MOUNT_COVERAGE_LIMIT as usize,
+            "the answer reads the ledger its own transaction holds, batch in flight and all"
+        );
+        assert_eq!(coverage.capacity.len(), MOUNT_COVERAGE_LIMIT as usize);
+        assert!(coverage.truncated, "a cut merge states its truncation");
+        assert_eq!(
+            coverage.cadence_seconds, FIVE_MINUTE_SECONDS,
+            "the cadence is asked of the same snapshot"
+        );
+        snapshot.rollback().await.unwrap();
+
+        // The batch never landed, so it is not half of a later answer either.
+        let mut snapshot = pool.begin().await.unwrap();
+        let coverage = load_mount_coverage(&mut snapshot, COVERAGE_AGENT)
+            .await
+            .unwrap();
+        snapshot.commit().await.unwrap();
+        assert_eq!(
+            coverage.used.len(),
+            1,
+            "a rolled back batch is not an answer"
+        );
+        assert_eq!(coverage.capacity.len(), 1);
+        assert!(!coverage.truncated);
+        assert_eq!(coverage.cadence_seconds, FIVE_MINUTE_SECONDS);
+    }
+
+    /// A silence is only claimed where the Server can support it.
+    ///
+    /// The verdict belongs to the engine rather than to the handler, so the
+    /// three ways an age can fail to be a silence are stated once: no measured
+    /// cadence, no stored instant, and an instant that has not passed yet.
+    #[test]
+    fn a_mount_is_only_called_silent_against_a_rhythm_it_has() {
+        assert_eq!(mount_observation_state(0, None, 0), "unknown");
+        assert_eq!(
+            mount_observation_state(0, Some(90_000), 0),
+            "unknown",
+            "an unmeasurable cadence cannot call a path silent"
+        );
+        assert_eq!(mount_observation_state(300, None, 900), "unknown");
+        assert_eq!(
+            mount_observation_state(300, Some(-1), 900),
+            "reported",
+            "a reading stamped after the answer was built is not a silence"
+        );
+        assert_eq!(
+            mount_observation_state(300, Some(0), 900),
+            "reported",
+            "a reading from this very instant is current, not silent"
+        );
+        assert_eq!(
+            mount_observation_state(300, Some(900), 900),
+            "reported",
+            "the threshold is the age a silence starts after, not the age it starts at"
+        );
+        assert_eq!(mount_observation_state(300, Some(901), 900), "silent");
+    }
+
+    /// The mount list runs on every Agent page open, against a ledger that grows
+    /// with every mount path the fleet has ever reported, so it must be served by
+    /// an index: a scan or a sort here would make the route cost grow with the
+    /// fleet instead of with the answer.
+    #[tokio::test]
+    async fn the_mount_coverage_read_is_index_backed_and_never_sorts_the_ledger() {
+        let (_dir, pool) = coverage_store().await;
+        let rows: Vec<(i64, i64, i64, String)> =
+            sqlx::query_as(&format!("EXPLAIN QUERY PLAN {HOST_COVERAGE_SQL}"))
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        let plan = rows
+            .into_iter()
+            .map(|(_, _, _, detail)| detail)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            !plan.contains("SCAN host_metric_series_state"),
+            "the mount read must not scan the ledger: {plan}"
+        );
+        assert!(
+            plan.contains("host_metric_series_state_mount_idx"),
+            "the mount read must be served by the mount index: {plan}"
+        );
+        assert!(
+            !plan.contains("TEMP B-TREE"),
+            "the mount read must not sort the paths it bounds: {plan}"
+        );
     }
 }

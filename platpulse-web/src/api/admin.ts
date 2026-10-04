@@ -29,6 +29,7 @@ import {
   adminAgentDetail,
   adminAgentMetricHistory as adminAgentMetricHistoryApi,
   adminAgentRemovalPreview,
+  adminAgentStorageMounts as adminAgentStorageMountsApi,
   adminEnrollmentToken,
   adminGeoStatus,
   updateGeoProvider as updateGeoProviderApi,
@@ -168,6 +169,9 @@ import {
   type AdminMetricHistoryResponse,
   type AdminMetricSample,
   type AdminMetricSeries,
+  type AdminAgentStorageMountsResponse,
+  type AdminStorageMount,
+  type AdminStorageSeries,
   type AgentAttentionAcknowledgmentResponse,
   type AttentionAcknowledgment,
   type PeerChurnDiagnostic,
@@ -263,6 +267,10 @@ const adminKeys = {
     to: string,
   ) =>
     [...adminKeys.agentHostMetricHistoryRoot(agentId), metric, dimension, from, to] as const,
+  /** The mount paths one Agent reported, and the coverage of the storage
+   * series behind each of them (issue #216). */
+  agentStorageMounts: (agentId: string) =>
+    ['admin', 'agents', agentId, 'storage-mounts'] as const,
   nodeValidatorLinks: (nodeId: string) => ['admin', 'nodes', nodeId, 'validator-links'] as const,
   validators: ['admin', 'validators'] as const,
   validatorDetail: (validatorId: string) => ['admin', 'validators', validatorId] as const,
@@ -589,6 +597,13 @@ export type AdminMetricSeriesDto = AdminMetricSeries
 /** One metric history answer: a Node Process series, or the Host series the
  * Agent collected once for every Node on it (issue #215). */
 export type AdminMetricHistory = AdminMetricHistoryResponse
+/** One storage series behind one mount path: how much evidence the ledger holds,
+ * and the newest reading it still has (issue #216). */
+export type AdminStorageSeriesDto = AdminStorageSeries
+/** One mount path the Agent reported, with its two storage series. */
+export type AdminStorageMountDto = AdminStorageMount
+/** The mount paths one Agent reported, with the coverage of each path's series. */
+export type AdminStorageMounts = AdminAgentStorageMountsResponse
 
 export function useAdminNodeMetricHistory(
   generation: number,
@@ -703,6 +718,39 @@ export function useAdminAgentHostMetricHistory(
       (!hostMetricNeedsMount(metric) || dimension.length > 0) &&
       from.length > 0 &&
       to.length > 0,
+  })
+}
+
+/** Owner-only list of the mount paths one Agent reported, with the coverage of
+ * the two storage series behind each of them (issue #216, design §11.6).
+ * The list comes from the stored evidence: it is what makes a storage series
+ * reachable at all, including a path the Agent stopped reporting, and it never
+ * claims which device a path belongs to. */
+export async function fetchAdminAgentStorageMounts(
+  agentId: string,
+  signal?: AbortSignal,
+): Promise<AdminStorageMounts> {
+  return requestAdmin(
+    () => adminAgentStorageMountsApi({ path: { agent_id: agentId }, signal }),
+    'Unable to load the storage mount paths',
+  )
+}
+
+/** How often an open page re-reads the mount list. Every state it answers is an
+ * age, so a page that never re-read it would keep calling a path still observed
+ * long after the Agent stopped reporting: an accepted Report arrives as an SSE
+ * invalidation, but nothing is published when a path simply ages past the
+ * silence bound the Server judges it against. */
+export const MOUNT_STATE_POLL_MS = 30_000
+
+export function useAdminAgentStorageMounts(generation: number, agentId: string) {
+  return useQuery({
+    queryKey: [...adminKeys.agentStorageMounts(agentId), generation],
+    queryFn: ({ signal }) => fetchAdminAgentStorageMounts(agentId, signal),
+    refetchInterval: MOUNT_STATE_POLL_MS,
+    // No placeholder: another Agent's mount paths must never render under this
+    // Agent, and a path list is never inherited from a previous generation.
+    enabled: agentId.length > 0,
   })
 }
 
@@ -1644,7 +1692,16 @@ function applyAdminInvalidation(resource: string, resourceId: string | undefined
       case 'operations':
         return [adminKeys.overview, adminKeys.operationsRoot]
       case 'retention':
-        return [adminKeys.retention, adminKeys.historyWindow]
+        // A completed cleanup releases stored samples, and the pages that read
+        // them as evidence must refetch: the history window, and the Agent and
+        // Node pages, whose stored-series keys carry their id in the middle of
+        // the key and are therefore only reachable by their namespace prefix.
+        return [
+          adminKeys.retention,
+          adminKeys.historyWindow,
+          adminKeys.agents,
+          adminKeys.nodes,
+        ]
       case 'history-window':
         return [adminKeys.historyWindow, adminKeys.retention]
       case 'backups':
@@ -1668,7 +1725,12 @@ function applyAdminInvalidation(resource: string, resourceId: string | undefined
     )
   }
   if (resourceId && resource === 'agent') {
-    keys.push(adminKeys.agentHostMetricHistoryRoot(resourceId))
+    keys.push(
+      adminKeys.agentHostMetricHistoryRoot(resourceId),
+      // The mount list is the Agent's own stored evidence, so a signal that
+      // changes what the Agent reports changes it as well (issue #216).
+      adminKeys.agentStorageMounts(resourceId),
+    )
   }
   if (resourceId && resource === 'network') keys.push(adminKeys.networkDetail(resourceId))
   if (resourceId && resource === 'validator') keys.push(adminKeys.validatorDetail(resourceId))
