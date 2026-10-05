@@ -952,7 +952,7 @@ desktop-1280
 | `SCN-HISTORY-WINDOW-SHORTEN` | from `/admin/settings`, require confirmation, show old/new and impact, remove expired history asynchronously, and record an Audit Event |
 | `SCN-HISTORY-WINDOW-BOUNDS` | out-of-bounds values rejected with field errors, bounds shown |
 
-For each core scenario, test semantic content rather than screenshot alone, and verify no horizontal overflow at all four viewports. Test keyboard navigation, focus return, Escape, mobile drawer behavior, 200% zoom, reduced motion, accessible names, and preservation of URL/filter/scroll/expanded/draft state after refetch.
+For each core scenario, test semantic content rather than screenshot alone, and verify no horizontal overflow at all four viewports. Test keyboard navigation, focus return, Escape, mobile drawer behavior, 200% zoom, reduced motion, accessible names, and preservation of URL/filter/scroll/expanded/draft state after refetch. Scope each assertion to the region or panel that owns the evidence — `within(section)` in unit tests, a role-based region locator such as `page.getByRole('region', { name: 'Diagnostics' })` in Playwright — and pin the exact label inside it (`getByText(label, { exact: true })`, or `dt:text-is(label) + dd` for a definition pair), because a label a second panel legitimately repeats (for example the shared Host metric history panel) must never resolve page-wide (#229); Chromium exposes no accessible name for `role=term`, so `getByRole('term', { name })` matches nothing.
 
 ## 13. Implementation handoff checklist
 

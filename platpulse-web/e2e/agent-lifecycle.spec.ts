@@ -271,10 +271,21 @@ test.describe('Agent detail (PAGE-ADMIN-AGENT-DETAIL)', () => {
     await expect(page.getByText('Dropped sequence range')).toBeVisible()
     await expect(page.getByText('Last delivery error', { exact: true })).toBeVisible()
     await expect(page.getByText('delivery timeout retained after bounded retry', { exact: true })).toBeVisible()
-    await expect(page.getByText(/Recorded evidence from the latest Host observation/)).toBeVisible()
-    await expect(page.getByText('Host CPU')).toBeVisible()
-    await expect(page.getByText('Host memory used / total')).toBeVisible()
-    await expect(page.getByText('Host network RX / TX')).toBeVisible()
+    // Host evidence lives in the Diagnostics region. The page also carries the shared Host
+    // metric history panel, whose selector, unit description and empty state repeat the same
+    // series names, so a page-wide text match resolved to four elements (#229). Scope every
+    // locator to the region and pin the exact definition term instead of page-wide bare text.
+    const diagnostics = page.getByRole('region', { name: 'Diagnostics' })
+    await expect(
+      diagnostics.getByText(/Recorded evidence from the latest Host observation/),
+    ).toBeVisible()
+    for (const label of ['Host CPU', 'Host memory used / total', 'Host network RX / TX']) {
+      // Chromium exposes no accessible name for role=term, so the evidence is matched as the
+      // exact <dt> text plus its own <dd>, and that value cell must render a recorded value.
+      const evidence = diagnostics.locator('dt:text-is(' + JSON.stringify(label) + ') + dd')
+      await expect(evidence).toBeVisible()
+      await expect(evidence).toHaveText(/\S/)
+    }
     await expect(page.getByRole('heading', { level: 3, name: 'Audit trail' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })
