@@ -3684,6 +3684,18 @@ export type PublicMetricSeriesCoverage = {
      */
     metric: string;
     /**
+     * Whether `observed` of `false` here is a proof that nothing was ever
+     * recorded. The Server keeps a value-less observation ledger for every
+     * series it stores under a metric name, so a ledger with no row for this
+     * series is positive evidence of never-observed; the two block series have
+     * no ledger - `block_summaries` is their only record, and retention removes
+     * it - so once their rows expire the Server cannot tell a series that went
+     * quiet long ago from one nobody ever reported. It answers `false` in that
+     * case and this flag says so, rather than either claiming an observation it
+     * cannot prove or hiding one that may have happened.
+     */
+    neverObservedProven: boolean;
+    /**
      * How many observations fall inside the window itself. A series that is
      * observed but counted zero here has not been observed recently - a sample
      * that expired counts as much as a window that simply held none - which
@@ -3694,7 +3706,11 @@ export type PublicMetricSeriesCoverage = {
      * Whether the Server can vouch for any observation of this series: this
      * answer carries one (the last-good point that precedes the window counts)
      * or the series ledger remembers observations whose samples have since
-     * expired. Only a series nothing ever recorded is answered `false`.
+     * expired. `false` means the Server holds no evidence of this series, which
+     * is a proof that nothing was ever recorded only where
+     * `neverObservedProven` says it is one: where evidence may have expired
+     * without leaving a ledger, `false` is an unknown rather than a verdict
+     * (issue #225, Story 49).
      */
     observed: boolean;
     /**

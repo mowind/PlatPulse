@@ -72,17 +72,24 @@ async function installScenario(page: Page, scenario: Scenario) {
     // Issue #225: the observation/coverage contract. The gap scenario rewrites
     // one series with a real silence inside the window and the coverage verdict
     // that measures it; the never-observed scenario keeps the node row real
-    // while every metric series reports that nobody ever observed it; the
-    // expired scenario keeps every array empty as well, but the series the
-    // Server keeps a ledger for are dated from it, which is how the Server
+    // while the series the Server keeps a ledger for report that nobody ever
+    // observed them; the expired scenario keeps every array empty as well, but
+    // those same ledgered series are dated from it, which is how the Server
     // answers a series whose raw samples retention removed instead of claiming
     // nobody observed it (crates/platpulse-server/src/http/public.rs,
-    // public_node_metrics_dates_a_series_whose_samples_expired); the two block
-    // series have no ledger, so their expiry stays "nobody observed it".
+    // public_node_metrics_dates_a_series_whose_samples_expired). The two block
+    // series have no ledger to speak for them, so both scenarios leave them
+    // `observed: false` with `neverObservedProven: false`: an expiry the Server
+    // cannot date is an unknown, never a claim that nobody reported them.
     await page.route(metricsRoute, async (route) => {
       const response = await route.fetch()
       const body = (await response.json()) as Record<string, unknown>
       const entries = Array.isArray(body.series) ? (body.series as Record<string, unknown>[]) : []
+      // Only a series stored under a metric name has a ledger behind it
+      // (crates/platpulse-server/src/http/public.rs, public_metric_name and
+      // metric_series_has_ledger), so only those can be proved never observed.
+      // The two block series live in block_summaries, which has no ledger.
+      const ledgered = (metric: string) => metric !== 'blockIntervalMs' && metric !== 'transactionCount'
       if (scenario === 'never-observed') {
         for (const key of Object.keys(body)) {
           if (Array.isArray(body[key]) && key !== 'series') body[key] = []
@@ -90,6 +97,7 @@ async function installScenario(page: Page, scenario: Scenario) {
         body.series = entries.map((entry) => ({
           ...entry,
           observed: false,
+          neverObservedProven: ledgered(String(entry.metric)),
           observationCount: 0,
           firstObservedAt: null,
           lastObservedAt: null,
@@ -105,17 +113,11 @@ async function installScenario(page: Page, scenario: Scenario) {
           if (Array.isArray(body[key]) && key !== 'series') body[key] = []
         }
         const aged = (days: number) => new Date(to - days * 86_400_000).toISOString()
-        // The Server keeps a series ledger only for the metrics
-        // public_metric_name knows (crates/platpulse-server/src/http/public.rs),
-        // so a series whose raw samples retention removed is dated from that
-        // ledger, while the two block series - they live in block_summaries,
-        // which has no ledger - are answered as never observed. The rewritten
-        // response keeps that difference instead of dating all nine.
-        const ledgered = (metric: string) => metric !== 'blockIntervalMs' && metric !== 'transactionCount'
         body.series = entries.map((entry) => ledgered(String(entry.metric))
           ? {
               ...entry,
               observed: true,
+              neverObservedProven: true,
               observationCount: 0,
               firstObservedAt: aged(41),
               lastObservedAt: aged(40),
@@ -128,6 +130,7 @@ async function installScenario(page: Page, scenario: Scenario) {
           : {
               ...entry,
               observed: false,
+              neverObservedProven: false,
               observationCount: 0,
               firstObservedAt: null,
               lastObservedAt: null,
@@ -346,7 +349,12 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             await expect(metrics.locator('[data-slot="node-metric-chart-bar"]')).toHaveCount(0)
             const notices = metrics.locator('[data-slot="node-metric-coverage"]')
             await expect(notices).toHaveCount(6)
-            expect(await notices.allTextContents()).toEqual(Array.from({ length: 6 }, () => 'No samples reported yet'))
+            const emptyTexts = await notices.allTextContents()
+            // Four cards hold ledgered series, where an absence is proof that
+            // nobody ever reported them. The two block cards have no ledger, so
+            // their absence is an unknown the Server states as such.
+            expect(emptyTexts.filter((text) => text === 'No samples reported yet'), JSON.stringify(emptyTexts)).toHaveLength(4)
+            expect(emptyTexts.filter((text) => text === 'No retained observations'), JSON.stringify(emptyTexts)).toHaveLength(2)
           }
           if (scenario === 'expired') {
             // Samples retention removed are not evidence that nobody ever
@@ -360,9 +368,10 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             const texts = await notices.allTextContents()
             // Four cards hold ledgered series: their last observation is dated
             // 40 days back and the window holds none of them. The two block
-            // cards have no ledger, so their expiry is never observed.
+            // cards have no ledger, so their expiry is not dated at all and is
+            // answered as an unknown rather than as never observed.
             expect(texts.filter((text) => text === 'Last observation 40 days ago'), JSON.stringify(texts)).toHaveLength(4)
-            expect(texts.filter((text) => text === 'No samples reported yet'), JSON.stringify(texts)).toHaveLength(2)
+            expect(texts.filter((text) => text === 'No retained observations'), JSON.stringify(texts)).toHaveLength(2)
           }
 
           // The remaining disclosure is keyboard-operable in both directions, and

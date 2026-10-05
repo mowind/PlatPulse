@@ -1252,8 +1252,22 @@ pub(crate) struct PublicMetricSeriesCoverage {
     /// Whether the Server can vouch for any observation of this series: this
     /// answer carries one (the last-good point that precedes the window counts)
     /// or the series ledger remembers observations whose samples have since
-    /// expired. Only a series nothing ever recorded is answered `false`.
+    /// expired. `false` means the Server holds no evidence of this series, which
+    /// is a proof that nothing was ever recorded only where
+    /// `neverObservedProven` says it is one: where evidence may have expired
+    /// without leaving a ledger, `false` is an unknown rather than a verdict
+    /// (issue #225, Story 49).
     pub observed: bool,
+    /// Whether `observed` of `false` here is a proof that nothing was ever
+    /// recorded. The Server keeps a value-less observation ledger for every
+    /// series it stores under a metric name, so a ledger with no row for this
+    /// series is positive evidence of never-observed; the two block series have
+    /// no ledger - `block_summaries` is their only record, and retention removes
+    /// it - so once their rows expire the Server cannot tell a series that went
+    /// quiet long ago from one nobody ever reported. It answers `false` in that
+    /// case and this flag says so, rather than either claiming an observation it
+    /// cannot prove or hiding one that may have happened.
+    pub never_observed_proven: bool,
     /// How many observations fall inside the window itself. A series that is
     /// observed but counted zero here has not been observed recently - a sample
     /// that expired counts as much as a window that simply held none - which
@@ -1467,20 +1481,43 @@ fn push_metric_point(history: &mut PublicNodeMetricHistory, row: MetricHistoryRo
     }
 }
 
+/// The stored metric names this answer reads, and the response field each one
+/// belongs to.
+///
+/// One table, because its two readers must not drift: the series are named by
+/// the stored name their samples and their ledger row are written under, and the
+/// value-less observation ledger answers for exactly those series. The two block
+/// series are deliberately absent - they live in `block_summaries`, which
+/// retention removes and which has no ledger beside it - which is what
+/// `metric_series_has_ledger` reports (issue #225, Story 49).
+const METRIC_STORED_NAMES: [(&str, &str); 7] = [
+    ("process_cpu_percent", "processCpuPercent"),
+    ("process_memory_percent", "processMemoryPercent"),
+    ("data_directory_percent", "dataDirectoryPercent"),
+    ("network_rx_bytes_per_sec", "networkRxBytesPerSec"),
+    ("network_tx_bytes_per_sec", "networkTxBytesPerSec"),
+    ("peer_inbound_count", "peerInboundCount"),
+    ("peer_outbound_count", "peerOutboundCount"),
+];
+
 /// The response field a stored metric name belongs to, when this answer carries
 /// it. Samples and the series ledger are both written under the stored name,
 /// while the response and its coverage speak in field names.
 fn public_metric_name(metric: &str) -> Option<&'static str> {
-    Some(match metric {
-        "process_cpu_percent" => "processCpuPercent",
-        "process_memory_percent" => "processMemoryPercent",
-        "data_directory_percent" => "dataDirectoryPercent",
-        "network_rx_bytes_per_sec" => "networkRxBytesPerSec",
-        "network_tx_bytes_per_sec" => "networkTxBytesPerSec",
-        "peer_inbound_count" => "peerInboundCount",
-        "peer_outbound_count" => "peerOutboundCount",
-        _ => return None,
-    })
+    METRIC_STORED_NAMES
+        .iter()
+        .find(|(stored, _)| *stored == metric)
+        .map(|(_, name)| *name)
+}
+
+/// Whether the Server keeps a value-less observation ledger for a response
+/// field: it does for every series stored under a metric name, whose ledger row
+/// outlives the samples retention removes, and it does not for the two block
+/// series. A series without a ledger keeps no evidence of its own absence, so
+/// its coverage reports `neverObservedProven` false instead of claiming that
+/// nobody ever observed it (issue #225, Story 49).
+fn metric_series_has_ledger(metric: &str) -> bool {
+    METRIC_STORED_NAMES.iter().any(|(_, name)| *name == metric)
 }
 
 /// The nine series this answer carries, named the way the response names them.
@@ -1632,6 +1669,7 @@ fn public_metric_coverage(
     PublicMetricSeriesCoverage {
         metric: metric.to_owned(),
         observed: last_observed_at.is_some(),
+        never_observed_proven: metric_series_has_ledger(metric),
         observation_count: inside.len() as i64,
         first_observed_at,
         last_observed_at: last_observed_at.clone(),
@@ -3998,6 +4036,10 @@ mod tests {
         let coverage =
             public_metric_coverage("processCpuPercent", &[], COVERAGE_FROM, COVERAGE_TO, None);
         assert!(!coverage.observed);
+        // This series has a ledger, so its absence is proved and the answer may
+        // say that nobody ever observed it rather than only that the Server
+        // holds no evidence (issue #225, Story 49).
+        assert!(coverage.never_observed_proven);
         assert_eq!(coverage.observation_count, 0);
         assert_eq!(coverage.first_observed_at, None);
         assert_eq!(coverage.last_observed_at, None);
@@ -4009,6 +4051,23 @@ mod tests {
         // case this is.
         assert_eq!(coverage.unobserved_tail_seconds, 0);
         assert!(coverage.gaps.is_empty());
+    }
+
+    /// The two block series have no ledger to speak for them, so the same
+    /// `observed` of `false` cannot be a proof that nobody ever reported them:
+    /// it is an unknown, and this flag says which of the two it is (issue #225,
+    /// Story 49).
+    #[test]
+    fn public_metric_coverage_calls_a_block_series_absence_unknown() {
+        for metric in ["blockIntervalMs", "transactionCount"] {
+            let coverage = public_metric_coverage(metric, &[], COVERAGE_FROM, COVERAGE_TO, None);
+            assert!(!coverage.observed);
+            assert!(
+                !coverage.never_observed_proven,
+                "{metric} has no ledger, so its absence is unknown rather than proven"
+            );
+            assert_eq!(coverage.unobserved_tail_seconds, 0);
+        }
     }
 
     #[test]
@@ -4374,6 +4433,11 @@ mod tests {
             "the rows themselves are what makes a block series observed"
         );
         assert!(!with_rows["blockIntervalMs"].as_array().unwrap().is_empty());
+        assert_eq!(
+            series(&with_rows, "processMemoryPercent")["neverObservedProven"],
+            true,
+            "a series stored under a metric name has a ledger that can prove nobody ever reported it"
+        );
 
         sqlx::query("DELETE FROM block_summaries WHERE node_id='node-public'")
             .execute(state.db().pool())
@@ -4385,6 +4449,10 @@ mod tests {
             assert_eq!(
                 entry["observed"], false,
                 "{metric} has no ledger to be dated from"
+            );
+            assert_eq!(
+                entry["neverObservedProven"], false,
+                "{metric} has no ledger, so its absence is unknown rather than proven"
             );
             assert_eq!(entry["observationCount"], 0);
             assert_eq!(entry["firstObservedAt"], serde_json::Value::Null);

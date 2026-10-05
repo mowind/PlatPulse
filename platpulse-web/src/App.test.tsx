@@ -802,7 +802,7 @@ describe('App shell with private Home', () => {
     expect(screen.queryByText('Identifiers and technical details')).toBeNull()
   })
 
-  it('reports a measured gap and a never-observed series instead of inventing evidence', async () => {
+  it('reports a measured gap, a never-observed series and an absence nobody can prove instead of inventing evidence', async () => {
     const at = (seconds: number) => new Date(Date.parse('2026-08-19T23:59:00Z') + seconds * 1000).toISOString()
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
@@ -824,13 +824,23 @@ describe('App shell with private Home', () => {
         blockIntervalMs: [], transactionCount: [],
         series: [
           {
-            metric: 'processCpuPercent', observed: true, observationCount: 6,
+            metric: 'processCpuPercent', observed: true, neverObservedProven: true, observationCount: 6,
             firstObservedAt: at(5), lastObservedAt: at(55),
             cadenceSeconds: 5, gapThresholdSeconds: 15, coveredSeconds: 20, unobservedTailSeconds: 5,
             gaps: [{ from: at(15), to: at(45), seconds: 30, kind: 'collection_gap' }],
           },
           {
-            metric: 'transactionCount', observed: false, observationCount: 0,
+            // A series stored under a metric name has a ledger, so its absence
+            // is proof that nobody ever reported it
+            // (crates/platpulse-server/src/http/public.rs, metric_series_has_ledger).
+            metric: 'processMemoryPercent', observed: false, neverObservedProven: true, observationCount: 0,
+            firstObservedAt: null, lastObservedAt: null,
+            cadenceSeconds: 0, gapThresholdSeconds: 0, coveredSeconds: 0, unobservedTailSeconds: 0, gaps: [],
+          },
+          {
+            // The block series have no ledger, so once their rows expire the
+            // Server can prove nothing about them and says so.
+            metric: 'transactionCount', observed: false, neverObservedProven: false, observationCount: 0,
             firstObservedAt: null, lastObservedAt: null,
             cadenceSeconds: 0, gapThresholdSeconds: 0, coveredSeconds: 0, unobservedTailSeconds: 0, gaps: [],
           },
@@ -866,10 +876,16 @@ describe('App shell with private Home', () => {
     expect(cpuCard.querySelector('[data-slot="node-metric-coverage"]')?.textContent).toBe('1 gap in this window')
     expect(cpuCard.querySelector('svg[role="img"] desc')?.textContent).toContain('1 gap in this window')
 
+    const memoryCard = within(metricsSection).getByRole('heading', { level: 3, name: 'Process memory' }).closest('[data-slot="node-metric-card"]')
+    if (!memoryCard) throw new Error('Process memory card is missing')
+    // A series the Server never observed says so instead of holding a flat line.
+    expect(memoryCard.querySelector('[data-slot="node-metric-coverage"]')?.textContent).toBe('No samples reported yet')
+
     const transactionCard = within(metricsSection).getByRole('heading', { level: 3, name: 'Transactions / block' }).closest('[data-slot="node-metric-card"]')
     if (!transactionCard) throw new Error('Transactions / block card is missing')
-    // A series the Server never observed says so instead of holding a flat bar.
-    expect(transactionCard.querySelector('[data-slot="node-metric-coverage"]')?.textContent).toBe('No samples reported yet')
+    // An absence the Server cannot prove is an unknown, not a claim that nobody
+    // ever reported the series: the card says what the evidence supports.
+    expect(transactionCard.querySelector('[data-slot="node-metric-coverage"]')?.textContent).toBe('No retained observations')
     expect(transactionCard.querySelector('[data-slot="node-metric-chart-empty"]')?.textContent).toBe('No samples in the last minute')
     expect(transactionCard.querySelectorAll('[data-slot="node-metric-chart-bar"]')).toHaveLength(0)
   })

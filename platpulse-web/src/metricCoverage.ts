@@ -62,11 +62,20 @@ export function coverageRuns(
  * What the curve cannot show, in the evidence's own words. A series nobody
  * observed says so instead of reading as a flat line; a stale series names the
  * age of its last observation; a decided cadence that measured silence inside
- * the window counts it. An unknown cadence (threshold 0) never claims silence.
+ * the window counts it. An unknown cadence (threshold 0) never claims silence,
+ * and neither does an absence the Server cannot prove: a series whose evidence
+ * may have expired unrecorded is answered as unknown, in the evidence's own
+ * words, rather than as a series nobody observed (issue #225, Story 49).
  */
 export function coverageNote(coverage: PublicMetricSeriesCoverage | undefined): string | undefined {
   if (!coverage) return undefined
-  if (!coverage.observed) return 'No samples reported yet'
+  if (!coverage.observed) {
+    // Absence is only a proof that nobody ever reported the series where the
+    // Server keeps a ledger for it: the two block series have none, so once
+    // retention removes their rows the Server holds no evidence at all and this
+    // says what is true instead of claiming the series was never observed.
+    return coverage.neverObservedProven ? 'No samples reported yet' : 'No retained observations'
+  }
   if (coverage.observationCount === 0) {
     return coverage.unobservedTailSeconds > 0
       ? 'Last observation ' + formatHistoryDuration(coverage.unobservedTailSeconds) + ' ago'

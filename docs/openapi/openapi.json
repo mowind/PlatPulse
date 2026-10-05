@@ -16230,6 +16230,7 @@
         "required": [
           "metric",
           "observed",
+          "neverObservedProven",
           "observationCount",
           "cadenceSeconds",
           "gapThresholdSeconds",
@@ -16278,6 +16279,10 @@
             "type": "string",
             "description": "The response field this coverage belongs to (`processCpuPercent`,\n`blockIntervalMs`, ...), because the nine arrays carry no name of their\nown."
           },
+          "neverObservedProven": {
+            "type": "boolean",
+            "description": "Whether `observed` of `false` here is a proof that nothing was ever\nrecorded. The Server keeps a value-less observation ledger for every\nseries it stores under a metric name, so a ledger with no row for this\nseries is positive evidence of never-observed; the two block series have\nno ledger - `block_summaries` is their only record, and retention removes\nit - so once their rows expire the Server cannot tell a series that went\nquiet long ago from one nobody ever reported. It answers `false` in that\ncase and this flag says so, rather than either claiming an observation it\ncannot prove or hiding one that may have happened."
+          },
           "observationCount": {
             "type": "integer",
             "format": "int64",
@@ -16285,7 +16290,7 @@
           },
           "observed": {
             "type": "boolean",
-            "description": "Whether the Server can vouch for any observation of this series: this\nanswer carries one (the last-good point that precedes the window counts)\nor the series ledger remembers observations whose samples have since\nexpired. Only a series nothing ever recorded is answered `false`."
+            "description": "Whether the Server can vouch for any observation of this series: this\nanswer carries one (the last-good point that precedes the window counts)\nor the series ledger remembers observations whose samples have since\nexpired. `false` means the Server holds no evidence of this series, which\nis a proof that nothing was ever recorded only where\n`neverObservedProven` says it is one: where evidence may have expired\nwithout leaving a ledger, `false` is an unknown rather than a verdict\n(issue #225, Story 49)."
           },
           "unobservedTailSeconds": {
             "type": "integer",

@@ -13,6 +13,7 @@ function coverage(overrides: Partial<PublicMetricSeriesCoverage> = {}): PublicMe
   return {
     metric: 'processCpuPercent',
     observed: true,
+    neverObservedProven: true,
     observationCount: 0,
     firstObservedAt: null,
     lastObservedAt: null,
@@ -77,6 +78,22 @@ describe('coverageNote', () => {
     expect(coverageNote(coverage({ observed: false }))).toBe('No samples reported yet')
   })
 
+  it('calls an absence the Server cannot prove an unknown instead of a never-observed series', () => {
+    // The two block series have no ledger, so once retention removes their rows
+    // the Server cannot tell a series that went quiet long ago from one nobody
+    // ever reported: it must not claim the second (issue #225, Story 49).
+    expect(coverageNote(coverage({ observed: false, neverObservedProven: false })))
+      .toBe('No retained observations')
+    expect(coverageNote(coverage({ observed: false, observationCount: 0, neverObservedProven: false })))
+      .toBe('No retained observations')
+  })
+
+  it('leaves a series that is observed with nothing silent to report', () => {
+    // The provenance flag qualifies an absence; it never turns an observed
+    // series into an unnoticed one.
+    expect(coverageNote(coverage({ neverObservedProven: false }))).toBeUndefined()
+  })
+
   it('names the age of the last observation when the window holds none', () => {
     // The shared duration formatter names the unit it reached, so 90 seconds reads as a minute.
     expect(coverageNote(coverage({ observationCount: 0, unobservedTailSeconds: 90 })))
@@ -115,6 +132,13 @@ describe('coverageNotes', () => {
       { label: 'Download', coverage: coverage({ observationCount: 0, unobservedTailSeconds: 30 }) },
     ])).toBe('Upload: No samples reported yet · Download: Last observation 30 seconds ago')
     expect(coverageNotes([{ label: 'Upload' }, { label: 'Download' }])).toBeUndefined()
+
+    const unknown = [
+      coverage({ metric: 'networkTxBytesPerSec', observed: false, neverObservedProven: false }),
+      coverage({ metric: 'networkRxBytesPerSec', observed: false, neverObservedProven: false }),
+    ]
+    expect(coverageNotes([{ label: 'Upload', coverage: unknown[0] }, { label: 'Download', coverage: unknown[1] }]))
+      .toBe('No retained observations')
   })
 
   it('keeps the label of the one direction that has something to report', () => {
