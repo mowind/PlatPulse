@@ -78,7 +78,11 @@ now = "2026-08-12T08:00:00Z"
 # Observation timestamps are relative to the real clock so the Server's
 # freshness window (120s) and liveness window behave deterministically.
 fresh = (datetime.now(timezone.utc) - timedelta(seconds=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
-metric_old = (datetime.now(timezone.utc) - timedelta(seconds=55)).strftime("%Y-%m-%dT%H:%M:%SZ")
+# The one-minute chart fixtures (issue #225) start at the same ages the
+# refresher below rewrites them to, so the Node Detail line charts keep real
+# samples inside their window instead of aging past its left edge mid-run.
+chart_old = (datetime.now(timezone.utc) - timedelta(seconds=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+chart_new = (datetime.now(timezone.utc) - timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
 process_started = (datetime.now(timezone.utc) - timedelta(days=4, hours=3, minutes=12)).strftime("%Y-%m-%dT%H:%M:%SZ")
 # Node B's observations are older than the 120s freshness window so its
 # Server-owned freshness dimension is deterministically `stale`.
@@ -252,8 +256,8 @@ with sqlite3.connect(path) as db:
     # their one-minute window; the fixture does not fabricate samples in the
     # browser or route layer.
     for sampled_at, cpu, memory, disk, inbound, outbound in (
-        (metric_old, 16.8, 11.9, 49.7, 2, 2),
-        (fresh, 18.4, 12.5, 50.0, 1, 2),
+        (chart_old, 16.8, 11.9, 49.7, 2, 2),
+        (chart_new, 18.4, 12.5, 50.0, 1, 2),
     ):
         db.executemany(
             "INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?)",
@@ -266,8 +270,8 @@ with sqlite3.connect(path) as db:
             ],
         )
     for sampled_at, rx, tx in (
-        (metric_old, 768000, 184320),
-        (fresh, 892416, 245760),
+        (chart_old, 768000, 184320),
+        (chart_new, 892416, 245760),
     ):
         db.executemany(
             "INSERT INTO host_metric_samples (agent_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?)",
@@ -737,12 +741,13 @@ timeout 3600 python3 - "$STATE_DIR/platpulse.db" > /dev/null 2>&1 <<'REFRESH' &
 import sqlite3
 import sys
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 
 path = sys.argv[1]
 node_a = "0195f2a1-0014-4014-8014-000000000014"
+agent_a = "0195f2a1-0011-4011-8011-000000000011"
 while True:
-    time.sleep(25)
     fresh = (datetime.now(timezone.utc) - timedelta(seconds=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         with sqlite3.connect(path, timeout=5) as db:
@@ -759,21 +764,89 @@ while True:
             )
             # Keep the discrete Block Summary fixture inside the one-minute
             # chart window during the complete multi-viewport run. The stamps
-            # (5..23s old) plus the 25s cadence guarantee at least one sample
+            # (6..24s old) plus the 25s cadence guarantee at least one sample
             # is always inside the window: with the old 45s cadence the
-            # samples all aged past 60s just before each refresh.
+            # samples all aged past 60s just before each refresh. The newest
+            # stamp is 6s old rather than 5s on purpose: 2s cadence gives a 6s
+            # silence threshold (issue #225), so the newest sample is already
+            # a reported tail the moment a refresh lands, and a page that
+            # loads in the same second cannot race below the threshold.
             for index, height in enumerate(range(12842010, 12842020)):
-                observed_at = (datetime.now(timezone.utc) - timedelta(seconds=23 - index * 2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                observed_at = (datetime.now(timezone.utc) - timedelta(seconds=24 - index * 2)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 db.execute(
                     "UPDATE block_summaries SET observed_at = ?, accepted_at = ? WHERE node_id = ? AND block_number = ?",
                     (observed_at, observed_at, node_a, height),
                 )
+
+            # Issue #225: the line charts stopped extending a last-good sample
+            # into the unobserved tail, so a sample outside the one-minute
+            # window is honestly invisible. Restamp the chart fixtures at this
+            # same cadence: two samples 15s apart, 5s and 20s old, stay inside
+            # the window (<=45s), below the 45s silence threshold, and well
+            # inside the 120s freshness window, so the healthy line cards never
+            # claim a silence and never run out of samples.
+            # observed_at is part of the primary key, so rewriting the stamps
+            # in place can collide with a stamp that has not been moved yet
+            # (seed T-20/T-5, first refresh at T+15: the oldest row's new instant
+            # is the newest row's old one) and the refuser would then stop
+            # refreshing for the rest of the run. Park every row in a private
+            # 1970 namespace first, so the second phase can only ever write where
+            # nothing holds an instant. Both phases share this connection's
+            # transaction, so a failure rolls the parking back.
+            def restamp(table, key_column, key_value, metrics):
+                epoch = datetime(1970, 1, 2, tzinfo=timezone.utc)
+                for metric in metrics:
+                    stamps = [
+                        row[0]
+                        for row in db.execute(
+                            f"SELECT observed_at FROM {table} WHERE {key_column} = ? AND metric = ? ORDER BY observed_at",
+                            (key_value, metric),
+                        ).fetchall()
+                    ]
+                    for rank, previous in enumerate(stamps):
+                        parked = (epoch + timedelta(seconds=rank)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                        db.execute(
+                            f"UPDATE {table} SET observed_at = ?, received_at = ? WHERE {key_column} = ? AND metric = ? AND observed_at = ?",
+                            (parked, parked, key_value, metric, previous),
+                        )
+                    for rank in range(len(stamps)):
+                        age = 5 + (len(stamps) - 1 - rank) * 15
+                        stamp = (datetime.now(timezone.utc) - timedelta(seconds=age)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                        parked = (epoch + timedelta(seconds=rank)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                        db.execute(
+                            f"UPDATE {table} SET observed_at = ?, received_at = ? WHERE {key_column} = ? AND metric = ? AND observed_at = ?",
+                            (stamp, stamp, key_value, metric, parked),
+                        )
+
+            restamp(
+                "node_metric_samples",
+                "node_id",
+                node_a,
+                (
+                    "process_cpu_percent",
+                    "process_memory_percent",
+                    "data_directory_percent",
+                    "peer_inbound_count",
+                    "peer_outbound_count",
+                ),
+            )
+            restamp(
+                "host_metric_samples",
+                "agent_id",
+                agent_a,
+                ("network_rx_bytes_per_sec", "network_tx_bytes_per_sec"),
+            )
     except sqlite3.OperationalError:
         # A transient SQLITE_BUSY must not kill the long-run fixture refresher;
         # otherwise the one-minute chart samples age out during the CI matrix.
-        continue
+        pass
     except Exception:
-        break
+        # Never stop refreshing silently: a fixture that quietly freezes ages
+        # the one-minute chart samples out and fails the long scenarios for a
+        # reason nobody can see. Report it and keep the loop alive (a persistent
+        # failure is then visibly repeated in the log instead of hidden once).
+        traceback.print_exc()
+    time.sleep(25)
 REFRESH
 
 # Seed two Restore artifacts (issue #51) so every viewport can exercise

@@ -7,7 +7,7 @@ import {
   usePublicNodeHistory,
   usePublicNodeMetrics,
 } from '../api/public'
-import type { PublicMetricPoint, PublicNode, PublicNodeMetricHistory } from '../api/generated'
+import type { PublicMetricPoint, PublicMetricSeriesCoverage, PublicNode, PublicNodeMetricHistory } from '../api/generated'
 import { useHomeRealtimeContext } from '../layouts/HomeLayout'
 import { homeReturnHref, homeReturnTab, readHomeReturn } from '../homeReturn'
 import { peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from '../components/PeerInsight'
@@ -19,6 +19,8 @@ import { RealtimeNotice } from '../components/RealtimeNotice'
 import { formatNodeDataBytes } from '../formatBytes'
 import { formatDuration } from '../formatDuration'
 import { nodeDataProgress } from '../nodeData'
+import { coverageNotes, coverageRuns, metricCoverage } from '../metricCoverage'
+import type { ChartCoordinate } from '../metricCoverage'
 import { MetricRow } from '../components/MetricRow'
 import { ValidatorActivityBadge } from '../components/ValidatorActivityBadge'
 import { LastReportAge, networkHeadComparison, validHeight } from '../components/NodeDetailObservations'
@@ -136,7 +138,7 @@ export function NodePage() {
           detail={processStatusDetail(node.processState)}
           tone="blue"
           fixedMax={percentChartMax(metricHistory?.processCpuPercent ?? [])}
-          series={[{ label: 'Process CPU', points: metricHistory?.processCpuPercent ?? [] }]}
+          series={[{ label: 'Process CPU', points: metricHistory?.processCpuPercent ?? [], coverage: metricCoverage(metricHistory, 'processCpuPercent') }]}
           from={metricHistory?.from}
           to={metricHistory?.to}
           windowSeconds={metricHistory?.windowSeconds}
@@ -150,7 +152,7 @@ export function NodePage() {
           detail={processStatusDetail(node.processState)}
           tone="cyan"
           fixedMax={percentChartMax(metricHistory?.processMemoryPercent ?? [])}
-          series={[{ label: 'Process memory', points: metricHistory?.processMemoryPercent ?? [] }]}
+          series={[{ label: 'Process memory', points: metricHistory?.processMemoryPercent ?? [], coverage: metricCoverage(metricHistory, 'processMemoryPercent') }]}
           from={metricHistory?.from}
           to={metricHistory?.to}
           windowSeconds={metricHistory?.windowSeconds}
@@ -163,8 +165,8 @@ export function NodePage() {
           valueLabel="Upload"
           tone="blue"
           series={[
-            { label: 'Upload', points: metricHistory?.networkTxBytesPerSec ?? [] },
-            { label: 'Download', points: metricHistory?.networkRxBytesPerSec ?? [], secondary: true },
+            { label: 'Upload', points: metricHistory?.networkTxBytesPerSec ?? [], coverage: metricCoverage(metricHistory, 'networkTxBytesPerSec') },
+            { label: 'Download', points: metricHistory?.networkRxBytesPerSec ?? [], secondary: true, coverage: metricCoverage(metricHistory, 'networkRxBytesPerSec') },
           ]}
           showLegend
           from={metricHistory?.from}
@@ -179,8 +181,8 @@ export function NodePage() {
           detail={peerBreakdown(node.peers)}
           tone="blue"
           series={[
-            { label: 'Inbound', points: metricHistory?.peerInboundCount ?? [] },
-            { label: 'Outbound', points: metricHistory?.peerOutboundCount ?? [], secondary: true },
+            { label: 'Inbound', points: metricHistory?.peerInboundCount ?? [], coverage: metricCoverage(metricHistory, 'peerInboundCount') },
+            { label: 'Outbound', points: metricHistory?.peerOutboundCount ?? [], secondary: true, coverage: metricCoverage(metricHistory, 'peerOutboundCount') },
           ]}
           showLegend
           from={metricHistory?.from}
@@ -194,7 +196,7 @@ export function NodePage() {
           value={blockInterval.value}
           detail={historyQuery.error ? 'History unavailable' : blockInterval.detail}
           tone="amber"
-          series={[{ label: 'Block interval', points: metricHistory?.blockIntervalMs ?? [] }]}
+          series={[{ label: 'Block interval', points: metricHistory?.blockIntervalMs ?? [], coverage: metricCoverage(metricHistory, 'blockIntervalMs') }]}
           from={metricHistory?.from}
           to={metricHistory?.to}
           windowSeconds={metricHistory?.windowSeconds}
@@ -206,7 +208,7 @@ export function NodePage() {
           label="Transactions / block"
           value={formatNumber(node.latestBlockTransactionCount)}
           tone="violet"
-          series={[{ label: 'Transactions / block', points: metricHistory?.transactionCount ?? [] }]}
+          series={[{ label: 'Transactions / block', points: metricHistory?.transactionCount ?? [], coverage: metricCoverage(metricHistory, 'transactionCount') }]}
           from={metricHistory?.from}
           to={metricHistory?.to}
           windowSeconds={metricHistory?.windowSeconds}
@@ -420,6 +422,8 @@ type MetricSeries = {
   label: string
   points: PublicMetricPoint[]
   secondary?: boolean
+  /** Server-answered observation/coverage evidence for this direction. */
+  coverage?: PublicMetricSeriesCoverage
 }
 
 type MetricChartKind = 'line' | 'bar'
@@ -470,6 +474,9 @@ function NodeMetricCard({ label, unit, value, valueLabel, detail, tone, series, 
   const missingDirections = series.length > 1 && series.some((item) => item.points.length > 0)
     ? series.filter((item) => item.points.length === 0).map((item) => item.label)
     : []
+  // Gaps, an unobserved tail and a never-observed direction are stated beside
+  // the value: the reader must not have to infer absence from a straight line.
+  const coverageText = coverageNotes(series)
   const toneClass = TONE_TEXT[tone]
   // Multi-direction cards explain their curves under the plot, never under the
   // title, so the header stays title-left / current-value-right on every card.
@@ -489,6 +496,7 @@ function NodeMetricCard({ label, unit, value, valueLabel, detail, tone, series, 
       <div className="min-h-8 flex-1">
         {detail && <p className="m-0 break-words text-[11px] leading-4 text-muted-foreground">{detail}</p>}
         {missingDirections.length > 0 && <p className="m-0 text-[11px] italic text-muted-foreground">{missingDirections.join(' and ')} unavailable in this window</p>}
+        {coverageText && <p data-slot="node-metric-coverage" className="m-0 text-[11px] leading-4 text-muted-foreground">{coverageText}</p>}
       </div>
       <MetricChart label={label} series={series} from={from} to={to} fixedMax={fixedMax} axisFormat={axisFormat} message={historyMessage} kind={chartKind} windowSeconds={windowSeconds} toneClass={toneClass} legend={legend} />
     </CardX>
@@ -519,13 +527,14 @@ function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, k
   const plots = validWindow
     ? series.map((item) => ({
         ...item,
-        coordinates: kind === 'bar'
-          ? chartBarCoordinates(item.points, fromMs, toMs, max)
-          : chartCoordinates(item.points, fromMs, toMs, max),
+        runs: kind === 'bar'
+          ? [chartBarCoordinates(item.points, fromMs, toMs, max)]
+          : coverageRuns(item.points, fromMs, toMs, max, item.coverage?.gaps),
       }))
     : []
-  const hasPoints = plots.some((item) => item.coordinates.length > 0)
+  const hasPoints = plots.some((item) => item.runs.some((run) => run.length > 0))
   const chartMessage = message ?? (hasPoints ? undefined : 'No samples in the last minute')
+  const coverageText = coverageNotes(series)
   const windowLabel = 'over the last ' + seconds + ' seconds'
 
   return <div className="mt-auto grid min-w-0 grid-cols-[3rem_minmax(0,1fr)] grid-rows-[7.25rem_auto_auto] lg:grid-rows-[6.25rem_auto_auto] gap-x-2">
@@ -536,7 +545,7 @@ function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, k
     </div>
     <svg viewBox="0 0 600 150" preserveAspectRatio="none" role="img" aria-label={label + ' ' + kind + ' chart ' + windowLabel} className={cn('col-start-2 row-start-1 h-[7.25rem] lg:h-[6.25rem] w-full overflow-visible', toneClass)}>
       <title>{label} {kind} chart {windowLabel}</title>
-      <desc>{chartMessage ? label + ': ' + chartMessage : series.map((item) => item.label).join(' and ') + ' values from ' + seconds + ' seconds ago to now'}</desc>
+      <desc>{(chartMessage ? label + ': ' + chartMessage : series.map((item) => item.label).join(' and ') + ' values from ' + seconds + ' seconds ago to now') + (coverageText ? '. ' + coverageText : '')}</desc>
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="currentColor" stopOpacity="0.34" />
@@ -548,18 +557,26 @@ function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, k
         <line x1="0" y1="75" x2="600" y2="75" className="stroke-border [vector-effect:non-scaling-stroke]" />
         <line x1="0" y1="142" x2="600" y2="142" className="stroke-border [vector-effect:non-scaling-stroke]" />
       </g>
-      {!chartMessage && kind === 'line' && plots.map((item, index) => {
-        const line = chartLinePath(item.coordinates)
-        const area = plots.length === 1 ? chartAreaPath(item.coordinates) : ''
-        return <g key={item.label}>
-          {area && <path d={area} fill={'url(#' + gradientId + ')'} />}
-          {line && <path data-slot="node-metric-chart-line" className={cn('[vector-effect:non-scaling-stroke]', item.secondary ? 'fill-none stroke-cyan-500' : 'fill-none stroke-current')} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" d={line} />}
-          {item.coordinates.length === 1 && <circle className={cn('[vector-effect:non-scaling-stroke]', item.secondary ? 'fill-cyan-500 stroke-background' : 'fill-current stroke-background')} strokeWidth={1.5} cx={item.coordinates[0].x} cy={item.coordinates[0].y} r={index === 0 ? 4 : 3.5} />}
+      {!chartMessage && kind === 'line' && plots.map((item, index) => (
+        <g key={item.label}>
+          {item.runs.map((run, runIndex) => {
+            const first = run[0]
+            // Each uninterrupted stretch is its own path: the curve stops where
+            // the observations stop instead of inventing the missing evidence.
+            const line = run.length > 1 ? chartLinePath(run) : ''
+            const area = plots.length === 1 && run.length > 1 ? chartAreaPath(run) : ''
+            return <g key={item.label + '-' + runIndex}>
+              {area && <path d={area} fill={'url(#' + gradientId + ')'} />}
+              {line && <path data-slot="node-metric-chart-line" className={cn('[vector-effect:non-scaling-stroke]', item.secondary ? 'fill-none stroke-cyan-500' : 'fill-none stroke-current')} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" d={line} />}
+              {run.length === 1 && first && <circle className={cn('[vector-effect:non-scaling-stroke]', item.secondary ? 'fill-cyan-500 stroke-background' : 'fill-current stroke-background')} strokeWidth={1.5} cx={first.x} cy={first.y} r={index === 0 ? 4 : 3.5} />}
+            </g>
+          })}
         </g>
-      })}
+      ))}
       {!chartMessage && kind === 'bar' && plots.flatMap((item) => {
-        const width = chartBarWidth(item.coordinates.length)
-        return item.coordinates.map((point, index) => {
+        const bars = item.runs[0] ?? []
+        const width = chartBarWidth(bars.length)
+        return bars.map((point, index) => {
           const height = Math.max(1, 142 - point.y)
           const x = Math.max(0, Math.min(600 - width, point.x - width / 2))
           return <rect key={item.label + '-' + index} data-slot="node-metric-chart-bar" className={cn('opacity-75', item.secondary ? 'fill-cyan-500' : 'fill-current')} x={x} y={142 - height} width={width} height={height} rx={Math.min(2.5, width / 3)} />
@@ -570,22 +587,6 @@ function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, k
     <div className="col-start-2 row-start-2 flex justify-between pt-1 text-[11px] tabular-nums text-muted-foreground" aria-hidden="true"><span>{seconds}s</span><span>0s</span></div>
     <div data-slot="node-metric-legend" className="col-start-2 row-start-3 min-h-6 pt-1">{legend}</div>
   </div>
-}
-
-type ChartCoordinate = { x: number; y: number }
-
-function chartCoordinates(points: PublicMetricPoint[], from: number, to: number, max: number): ChartCoordinate[] {
-  const coordinates = points
-    .map((point) => ({ sampledAt: Date.parse(point.sampledAt), value: point.value }))
-    .filter((point) => Number.isFinite(point.sampledAt) && Number.isFinite(point.value))
-    .sort((left, right) => left.sampledAt - right.sampledAt)
-    .map((point) => ({
-      x: Math.max(0, Math.min(600, ((point.sampledAt - from) / (to - from)) * 600)),
-      y: 142 - (Math.max(0, Math.min(max, point.value)) / max) * 134,
-    }))
-  const last = coordinates.at(-1)
-  if (last && last.x < 600) coordinates.push({ x: 600, y: last.y })
-  return coordinates
 }
 
 function chartBarCoordinates(points: PublicMetricPoint[], from: number, to: number, max: number): ChartCoordinate[] {

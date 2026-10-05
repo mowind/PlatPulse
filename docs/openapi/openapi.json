@@ -16180,6 +16180,34 @@
           }
         }
       },
+      "PublicMetricGap": {
+        "type": "object",
+        "description": "One stretch of the window with no observation in it.\n\nOnly a collection gap can be named here: the latest-60-second answer holds no\nprotection pause, so what it reports is always a silence the series itself\nproved (the Server names a pause only where it recorded one).",
+        "required": [
+          "from",
+          "to",
+          "seconds",
+          "kind"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "The newest instant before the silence."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`collection_gap` today, from the shared gap vocabulary the Server uses\neverywhere else (`GapKind::as_str`)."
+          },
+          "seconds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "to": {
+            "type": "string",
+            "description": "The oldest instant after it: the first observation the answer carries,\nwhich is exactly where a chart may start drawing again."
+          }
+        }
+      },
       "PublicMetricPoint": {
         "type": "object",
         "required": [
@@ -16193,6 +16221,76 @@
           "value": {
             "type": "number",
             "format": "double"
+          }
+        }
+      },
+      "PublicMetricSeriesCoverage": {
+        "type": "object",
+        "description": "What one series of the latest-60-second answer can vouch for.\n\nThe six charts are drawn from the observations above, and those observations\nalone cannot say whether a straight line between two of them crosses a\nstretch nobody observed. This is that answer, per series, so the chart draws\na break where the Server proved a silence, stops where the observations stop\ninstead of running to the right edge, and never fills a hole with a zero\n(issue #225, Story 49). The figures are computed by the same rule the metric\nhistory uses ([crate::metric_history]), with the silence floor of a 60-second\nwindow rather than the two-minute floor of a window measured in hours.",
+        "required": [
+          "metric",
+          "observed",
+          "observationCount",
+          "cadenceSeconds",
+          "gapThresholdSeconds",
+          "coveredSeconds",
+          "unobservedTailSeconds",
+          "gaps"
+        ],
+        "properties": {
+          "cadenceSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The cadence currently in force: the newest interval between two\nconsecutive observations, trusted only while the interval before it\nagrees with it. 0 means the Server has no cadence verdict for this\nseries, and an unknown cadence is answered as unknown rather than as\nsilence.\n\nA series that went quiet inside the window and came back once lands\nhere: the single interval after the silence disagrees with the cadence\nbefore it, and sixty seconds cannot tell an Agent that stopped reporting\nfrom an Agent whose collection interval was changed - inside one window\nthose look alike - so no silence is named until the next observation\nsettles it. Neither reading is invented in the meantime."
+          },
+          "coveredSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The seconds of the window the observations between them prove were\nobserved. The stretch after the newest observation is never part of it:\nnobody observed how long it is. 0 with `cadenceSeconds` 0, because\nwithout a rhythm the answer cannot tell a covered stretch from a silence\nand so claims neither."
+          },
+          "firstObservedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The oldest observation of this series the answer can point at, from the\nobservations it carries or from the ledger that outlives them."
+          },
+          "gapThresholdSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The silence a cadence makes a gap: three times the cadence, capped at\nfive minutes of cadence. 0 with `cadenceSeconds` 0, because a series\nwith no known rhythm is never called silent."
+          },
+          "gaps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicMetricGap"
+            },
+            "description": "The silences inside the window, oldest first. Each one is a stretch a\nchart must break at rather than connect across."
+          },
+          "lastObservedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The newest one, from either source. It is the `observedAt` a later\nanswer would report as the last-good value, so `unobservedTailSeconds`\nmeasures from here. An instant the window has not reached is never one of\nthem: a clock running ahead dates nothing, and may not hide the\nlast-good point that really arrived (issue #225)."
+          },
+          "metric": {
+            "type": "string",
+            "description": "The response field this coverage belongs to (`processCpuPercent`,\n`blockIntervalMs`, ...), because the nine arrays carry no name of their\nown."
+          },
+          "observationCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many observations fall inside the window itself. A series that is\nobserved but counted zero here has not been observed recently - a sample\nthat expired counts as much as a window that simply held none - which\nthe tail and `lastObservedAt` date rather than a zero."
+          },
+          "observed": {
+            "type": "boolean",
+            "description": "Whether the Server can vouch for any observation of this series: this\nanswer carries one (the last-good point that precedes the window counts)\nor the series ledger remembers observations whose samples have since\nexpired. Only a series nothing ever recorded is answered `false`."
+          },
+          "unobservedTailSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The seconds between the newest observation and the end of the window, so\nthe chart knows the line must not be extended through them. It can exceed\nthe window when the newest observation is the older last-good point: the\nseries really has been quiet that long."
           }
         }
       },
@@ -16485,7 +16583,8 @@
           "peerInboundCount",
           "peerOutboundCount",
           "blockIntervalMs",
-          "transactionCount"
+          "transactionCount",
+          "series"
         ],
         "properties": {
           "blockIntervalMs": {
@@ -16538,6 +16637,13 @@
             "items": {
               "$ref": "#/components/schemas/PublicMetricPoint"
             }
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicMetricSeriesCoverage"
+            },
+            "description": "The same nine series, judged: which of them were observed, where the\nsilences are, and how much of the window is covered. One entry per\nseries, in the order above, so `series` is the contract a chart reads\nbefore it draws a line (issue #225)."
           },
           "to": {
             "type": "string"

@@ -4,9 +4,10 @@ import { expectNoHorizontalOverflow, expectVisibleInteractiveTargets, loginAs } 
 /**
  * Issue #150 final Node Detail acceptance: the fixed four Playwright projects
  * multiplied by both themes and the normal / unknown / stale / single-CPU
- * failure scenarios exercise the six-chart continuous reading page. The
- * metrics response is fetched from the real Server and only the targeted
- * dimension is rewritten, so retained samples stay real.
+ * failure / real-gap / never-observed scenarios exercise the six-chart
+ * continuous reading page. The metrics response is fetched from the real
+ * Server and only the targeted dimension is rewritten, so retained samples
+ * stay real.
  */
 
 const PUBLIC_NODE_NAME = 'Node A'
@@ -19,7 +20,7 @@ const CHART_HEADINGS = [
   'Block interval',
   'Transactions / block',
 ] as const
-const SCENARIOS = ['normal', 'unknown', 'stale', 'single-cpu-failure'] as const
+const SCENARIOS = ['normal', 'unknown', 'stale', 'single-cpu-failure', 'gap', 'never-observed', 'expired'] as const
 const THEMES = ['light', 'dark'] as const
 
 type Scenario = (typeof SCENARIOS)[number]
@@ -67,6 +68,106 @@ async function setTheme(page: Page, theme: Theme) {
 /** Rewrite only the failing dimension on top of the real Server responses. */
 async function installScenario(page: Page, scenario: Scenario) {
   if (scenario === 'normal') return
+  if (scenario === 'gap' || scenario === 'never-observed' || scenario === 'expired') {
+    // Issue #225: the observation/coverage contract. The gap scenario rewrites
+    // one series with a real silence inside the window and the coverage verdict
+    // that measures it; the never-observed scenario keeps the node row real
+    // while every metric series reports that nobody ever observed it; the
+    // expired scenario keeps every array empty as well, but the series the
+    // Server keeps a ledger for are dated from it, which is how the Server
+    // answers a series whose raw samples retention removed instead of claiming
+    // nobody observed it (crates/platpulse-server/src/http/public.rs,
+    // public_node_metrics_dates_a_series_whose_samples_expired); the two block
+    // series have no ledger, so their expiry stays "nobody observed it".
+    await page.route(metricsRoute, async (route) => {
+      const response = await route.fetch()
+      const body = (await response.json()) as Record<string, unknown>
+      const entries = Array.isArray(body.series) ? (body.series as Record<string, unknown>[]) : []
+      if (scenario === 'never-observed') {
+        for (const key of Object.keys(body)) {
+          if (Array.isArray(body[key]) && key !== 'series') body[key] = []
+        }
+        body.series = entries.map((entry) => ({
+          ...entry,
+          observed: false,
+          observationCount: 0,
+          firstObservedAt: null,
+          lastObservedAt: null,
+          cadenceSeconds: 0,
+          gapThresholdSeconds: 0,
+          coveredSeconds: 0,
+          unobservedTailSeconds: 0,
+          gaps: [],
+        }))
+      } else if (scenario === 'expired') {
+        const to = Date.parse(String(body.to))
+        for (const key of Object.keys(body)) {
+          if (Array.isArray(body[key]) && key !== 'series') body[key] = []
+        }
+        const aged = (days: number) => new Date(to - days * 86_400_000).toISOString()
+        // The Server keeps a series ledger only for the metrics
+        // public_metric_name knows (crates/platpulse-server/src/http/public.rs),
+        // so a series whose raw samples retention removed is dated from that
+        // ledger, while the two block series - they live in block_summaries,
+        // which has no ledger - are answered as never observed. The rewritten
+        // response keeps that difference instead of dating all nine.
+        const ledgered = (metric: string) => metric !== 'blockIntervalMs' && metric !== 'transactionCount'
+        body.series = entries.map((entry) => ledgered(String(entry.metric))
+          ? {
+              ...entry,
+              observed: true,
+              observationCount: 0,
+              firstObservedAt: aged(41),
+              lastObservedAt: aged(40),
+              cadenceSeconds: 0,
+              gapThresholdSeconds: 0,
+              coveredSeconds: 0,
+              unobservedTailSeconds: 40 * 86_400,
+              gaps: [],
+            }
+          : {
+              ...entry,
+              observed: false,
+              observationCount: 0,
+              firstObservedAt: null,
+              lastObservedAt: null,
+              cadenceSeconds: 0,
+              gapThresholdSeconds: 0,
+              coveredSeconds: 0,
+              unobservedTailSeconds: 0,
+              gaps: [],
+            })
+      } else {
+        const from = Date.parse(String(body.from))
+        const to = Date.parse(String(body.to))
+        const at = (seconds: number) => new Date(from + seconds * 1000).toISOString()
+        // Two stretches of 5s observations 30s apart, then two more that settle
+        // the rhythm again: the cadence is 5s, the threshold 15s, so the silence
+        // is a gap the chart must break at, and the newest observation is 5s
+        // before the window ends. These are the observations and the verdict the
+        // Server really derives from them (crates/platpulse-server/src/http/public.rs,
+        // public_metric_coverage_names_the_silence_of_a_recovered_series), not a
+        // shape the Server could never answer.
+        body.processCpuPercent = [5, 10, 15, 45, 50, 55].map((seconds) => ({ sampledAt: at(seconds), value: 20 }))
+        body.series = entries.map((entry) => entry.metric === 'processCpuPercent'
+          ? {
+              ...entry,
+              observed: true,
+              observationCount: 6,
+              firstObservedAt: at(5),
+              lastObservedAt: at(55),
+              cadenceSeconds: 5,
+              gapThresholdSeconds: 15,
+              coveredSeconds: 20,
+              unobservedTailSeconds: (to - (from + 55_000)) / 1000,
+              gaps: [{ from: at(15), to: at(45), seconds: 30, kind: 'collection_gap' }],
+            }
+          : entry)
+      }
+      await route.fulfill({ response, json: body })
+    })
+    return
+  }
   await page.route(nodeRoute, async (route) => {
     const response = await route.fetch()
     const body = (await response.json()) as Record<string, unknown>
@@ -187,6 +288,18 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
               await expect(card.locator('[data-slot="node-metric-header"] [data-slot="node-metric-legend"]')).toHaveCount(0)
               await expect(card.locator('[data-slot="node-metric-legend"] [aria-label="' + legend + '"]')).toHaveCount(1)
             }
+            // The seeded Node's newest block observation is 20s old against a
+            // 2s cadence, so the two bar cards name the unobserved tail instead
+            // of drawing bars up to now. The line cards measure the same tail
+            // against their own 35s cadence, so their verdict depends on how
+            // long this run has been going and is asserted as a shape only.
+            const blockCard = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: 'Block interval' }) })
+            await expect(blockCard.locator('[data-slot="node-metric-coverage"]')).toHaveText(/^No samples for the last /)
+            await expect(blockCard.locator('svg[role="img"] desc')).toHaveText(/No samples for the last /)
+            for (const heading of ['Process CPU', 'Process memory', 'Peer connections']) {
+              const card = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: heading }) })
+              await expect(card.locator('[data-slot="node-metric-coverage"]')).toHaveCount(0)
+            }
           }
           if (scenario === 'unknown') {
             await expect(page.getByLabel('Node key summary').getByText('Unknown').first()).toBeVisible()
@@ -206,6 +319,50 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             const hostCard = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: 'Host network' }) })
             await expect(hostCard.locator('[data-slot="node-metric-chart-line"]')).toHaveCount(2)
             await expect(hostCard.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(0)
+          }
+          if (scenario === 'gap') {
+            // A silence is not a line: the curve breaks between the two
+            // stretches and neither side is extended into the unobserved tail,
+            // so the right edge of the window stays blank.
+            const cpuCard = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: 'Process CPU' }) })
+            await expect(cpuCard.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(0)
+            await expect(cpuCard.locator('[data-slot="node-metric-chart-line"]')).toHaveCount(2)
+            expect(
+              await cpuCard.locator('[data-slot="node-metric-chart-line"]').evaluateAll((paths) => paths.map((path) => path.getAttribute('d'))),
+              'each uninterrupted stretch is drawn where its own observations are',
+            ).toEqual([
+              'M 50.00 34.80 L 100.00 34.80 L 150.00 34.80',
+              'M 450.00 34.80 L 500.00 34.80 L 550.00 34.80',
+            ])
+            await expect(cpuCard.locator('[data-slot="node-metric-coverage"]')).toHaveText('1 gap in this window')
+            await expect(cpuCard.locator('svg[role="img"] desc')).toHaveText(/1 gap in this window/)
+            const drawn = await metrics.locator('[data-slot="node-metric-chart-line"], [data-slot="node-metric-chart-bar"]').evaluateAll((marks) => marks.map((mark) => mark.getAttribute('d') ?? mark.getAttribute('x') ?? ''))
+            expect(drawn.some((mark) => mark.includes(' 600.00 ')), JSON.stringify(drawn)).toBe(false)
+          }
+          if (scenario === 'never-observed') {
+            // Never observed is its own statement, never a flat line at zero.
+            await expect(metrics.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(6)
+            await expect(metrics.locator('[data-slot="node-metric-chart-line"]')).toHaveCount(0)
+            await expect(metrics.locator('[data-slot="node-metric-chart-bar"]')).toHaveCount(0)
+            const notices = metrics.locator('[data-slot="node-metric-coverage"]')
+            await expect(notices).toHaveCount(6)
+            expect(await notices.allTextContents()).toEqual(Array.from({ length: 6 }, () => 'No samples reported yet'))
+          }
+          if (scenario === 'expired') {
+            // Samples retention removed are not evidence that nobody ever
+            // observed the series: the ledger still dates it, so the card names
+            // the age of the last observation and the chart stays empty.
+            await expect(metrics.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(6)
+            await expect(metrics.locator('[data-slot="node-metric-chart-line"]')).toHaveCount(0)
+            await expect(metrics.locator('[data-slot="node-metric-chart-bar"]')).toHaveCount(0)
+            const notices = metrics.locator('[data-slot="node-metric-coverage"]')
+            await expect(notices).toHaveCount(6)
+            const texts = await notices.allTextContents()
+            // Four cards hold ledgered series: their last observation is dated
+            // 40 days back and the window holds none of them. The two block
+            // cards have no ledger, so their expiry is never observed.
+            expect(texts.filter((text) => text === 'Last observation 40 days ago'), JSON.stringify(texts)).toHaveLength(4)
+            expect(texts.filter((text) => text === 'No samples reported yet'), JSON.stringify(texts)).toHaveLength(2)
           }
 
           // The remaining disclosure is keyboard-operable in both directions, and

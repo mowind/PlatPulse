@@ -7,6 +7,7 @@
 //! route except `POST /login` requires a valid human Session; the session
 //! guard itself lives in `super` and is attached in `build_app`.
 
+use std::collections::HashMap;
 use std::pin::Pin;
 
 use axum::body::Bytes;
@@ -1206,6 +1207,98 @@ pub(crate) struct PublicNodeMetricHistory {
     pub peer_outbound_count: Vec<PublicMetricPoint>,
     pub block_interval_ms: Vec<PublicMetricPoint>,
     pub transaction_count: Vec<PublicMetricPoint>,
+    /// The same nine series, judged: which of them were observed, where the
+    /// silences are, and how much of the window is covered. One entry per
+    /// series, in the order above, so `series` is the contract a chart reads
+    /// before it draws a line (issue #225).
+    pub series: Vec<PublicMetricSeriesCoverage>,
+}
+/// One stretch of the window with no observation in it.
+///
+/// Only a collection gap can be named here: the latest-60-second answer holds no
+/// protection pause, so what it reports is always a silence the series itself
+/// proved (the Server names a pause only where it recorded one).
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PublicMetricGap {
+    /// The newest instant before the silence.
+    pub from: String,
+    /// The oldest instant after it: the first observation the answer carries,
+    /// which is exactly where a chart may start drawing again.
+    pub to: String,
+    pub seconds: i64,
+    /// `collection_gap` today, from the shared gap vocabulary the Server uses
+    /// everywhere else (`GapKind::as_str`).
+    pub kind: String,
+}
+
+/// What one series of the latest-60-second answer can vouch for.
+///
+/// The six charts are drawn from the observations above, and those observations
+/// alone cannot say whether a straight line between two of them crosses a
+/// stretch nobody observed. This is that answer, per series, so the chart draws
+/// a break where the Server proved a silence, stops where the observations stop
+/// instead of running to the right edge, and never fills a hole with a zero
+/// (issue #225, Story 49). The figures are computed by the same rule the metric
+/// history uses ([crate::metric_history]), with the silence floor of a 60-second
+/// window rather than the two-minute floor of a window measured in hours.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PublicMetricSeriesCoverage {
+    /// The response field this coverage belongs to (`processCpuPercent`,
+    /// `blockIntervalMs`, ...), because the nine arrays carry no name of their
+    /// own.
+    pub metric: String,
+    /// Whether the Server can vouch for any observation of this series: this
+    /// answer carries one (the last-good point that precedes the window counts)
+    /// or the series ledger remembers observations whose samples have since
+    /// expired. Only a series nothing ever recorded is answered `false`.
+    pub observed: bool,
+    /// How many observations fall inside the window itself. A series that is
+    /// observed but counted zero here has not been observed recently - a sample
+    /// that expired counts as much as a window that simply held none - which
+    /// the tail and `lastObservedAt` date rather than a zero.
+    pub observation_count: i64,
+    /// The oldest observation of this series the answer can point at, from the
+    /// observations it carries or from the ledger that outlives them.
+    pub first_observed_at: Option<String>,
+    /// The newest one, from either source. It is the `observedAt` a later
+    /// answer would report as the last-good value, so `unobservedTailSeconds`
+    /// measures from here. An instant the window has not reached is never one of
+    /// them: a clock running ahead dates nothing, and may not hide the
+    /// last-good point that really arrived (issue #225).
+    pub last_observed_at: Option<String>,
+    /// The cadence currently in force: the newest interval between two
+    /// consecutive observations, trusted only while the interval before it
+    /// agrees with it. 0 means the Server has no cadence verdict for this
+    /// series, and an unknown cadence is answered as unknown rather than as
+    /// silence.
+    ///
+    /// A series that went quiet inside the window and came back once lands
+    /// here: the single interval after the silence disagrees with the cadence
+    /// before it, and sixty seconds cannot tell an Agent that stopped reporting
+    /// from an Agent whose collection interval was changed - inside one window
+    /// those look alike - so no silence is named until the next observation
+    /// settles it. Neither reading is invented in the meantime.
+    pub cadence_seconds: i64,
+    /// The silence a cadence makes a gap: three times the cadence, capped at
+    /// five minutes of cadence. 0 with `cadenceSeconds` 0, because a series
+    /// with no known rhythm is never called silent.
+    pub gap_threshold_seconds: i64,
+    /// The seconds of the window the observations between them prove were
+    /// observed. The stretch after the newest observation is never part of it:
+    /// nobody observed how long it is. 0 with `cadenceSeconds` 0, because
+    /// without a rhythm the answer cannot tell a covered stretch from a silence
+    /// and so claims neither.
+    pub covered_seconds: i64,
+    /// The seconds between the newest observation and the end of the window, so
+    /// the chart knows the line must not be extended through them. It can exceed
+    /// the window when the newest observation is the older last-good point: the
+    /// series really has been quiet that long.
+    pub unobserved_tail_seconds: i64,
+    /// The silences inside the window, oldest first. Each one is a stretch a
+    /// chart must break at rather than connect across.
+    pub gaps: Vec<PublicMetricGap>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -1220,6 +1313,21 @@ struct BlockMetricHistoryRow {
     sampled_at: String,
     block_interval_ms: Option<i64>,
     transaction_count: i64,
+}
+
+/// The series ledger's answer for one metric: when the series was first and
+/// last observed, and no metric value at all.
+///
+/// Raw samples expire and the ledger does not ([crate::retention]), which is
+/// what lets a Public answer keep telling a series that was observed and then
+/// went quiet apart from one nobody ever observed (issue #225, Story 49). It is
+/// Public-safe precisely because it holds instants instead of evidence: the
+/// chart of an expired series still has nothing to draw.
+#[derive(Debug, sqlx::FromRow)]
+struct MetricSeriesLedgerRow {
+    metric: String,
+    first_observed_at: String,
+    last_observed_at: String,
 }
 
 #[utoipa::path(
@@ -1359,6 +1467,194 @@ fn push_metric_point(history: &mut PublicNodeMetricHistory, row: MetricHistoryRo
     }
 }
 
+/// The response field a stored metric name belongs to, when this answer carries
+/// it. Samples and the series ledger are both written under the stored name,
+/// while the response and its coverage speak in field names.
+fn public_metric_name(metric: &str) -> Option<&'static str> {
+    Some(match metric {
+        "process_cpu_percent" => "processCpuPercent",
+        "process_memory_percent" => "processMemoryPercent",
+        "data_directory_percent" => "dataDirectoryPercent",
+        "network_rx_bytes_per_sec" => "networkRxBytesPerSec",
+        "network_tx_bytes_per_sec" => "networkTxBytesPerSec",
+        "peer_inbound_count" => "peerInboundCount",
+        "peer_outbound_count" => "peerOutboundCount",
+        _ => return None,
+    })
+}
+
+/// The nine series this answer carries, named the way the response names them.
+const PUBLIC_METRIC_SERIES: [&str; 9] = [
+    "processCpuPercent",
+    "processMemoryPercent",
+    "dataDirectoryPercent",
+    "networkRxBytesPerSec",
+    "networkTxBytesPerSec",
+    "peerInboundCount",
+    "peerOutboundCount",
+    "blockIntervalMs",
+    "transactionCount",
+];
+
+/// The observations a series of the response carries, by response field name.
+fn public_metric_points<'a>(
+    history: &'a PublicNodeMetricHistory,
+    metric: &str,
+) -> Option<&'a [PublicMetricPoint]> {
+    Some(match metric {
+        "processCpuPercent" => &history.process_cpu_percent,
+        "processMemoryPercent" => &history.process_memory_percent,
+        "dataDirectoryPercent" => &history.data_directory_percent,
+        "networkRxBytesPerSec" => &history.network_rx_bytes_per_sec,
+        "networkTxBytesPerSec" => &history.network_tx_bytes_per_sec,
+        "peerInboundCount" => &history.peer_inbound_count,
+        "peerOutboundCount" => &history.peer_outbound_count,
+        "blockIntervalMs" => &history.block_interval_ms,
+        "transactionCount" => &history.transaction_count,
+        _ => return None,
+    })
+}
+
+/// A sample for the cadence rule alone.
+///
+/// The cadence reads the observation instants and nothing else, and the public
+/// payload carries no reception time, so the instant stands in for both.
+fn cadence_sample(point: &PublicMetricPoint) -> crate::metric_history::MetricSample {
+    crate::metric_history::MetricSample {
+        observed_at: point.sampled_at.clone(),
+        received_at: point.sampled_at.clone(),
+        value: point.value,
+    }
+}
+
+/// The seconds between the newest observation and the end of the window.
+///
+/// A series with no observation at all reports 0: it has no last-good point to
+/// be quiet after, and `observed` says which case this is. A series whose newest
+/// observation is the older last-good point reports the real distance, which can
+/// be longer than the window - that is how long it has really been quiet.
+fn unobserved_tail_seconds(last_observed_at: Option<&str>, to: &str) -> i64 {
+    let (Some(last), Some(end)) = (
+        last_observed_at.and_then(crate::auth::parse_rfc3339),
+        crate::auth::parse_rfc3339(to),
+    ) else {
+        return 0;
+    };
+    (end - last).whole_seconds().max(0)
+}
+
+/// Judge one series of the latest-60-second answer.
+///
+/// The response carries one observation older than the window on purpose - the
+/// last-good value the chart already draws - so the count, the silences and the
+/// coverage are about the window itself, while the older point still dates the
+/// series and still speaks about its rhythm: a series that went quiet before the
+/// window and came back inside it has changed cadence, and the newest interval
+/// alone would call that recovered series comfortable. The older point is never
+/// fed to the continuity rule, though, because the answer may only report
+/// silences of the window it was asked about, and a silence that began before
+/// the window starts is not one of them.
+///
+/// Raw samples expire and the ledger does not, so the series is dated from the
+/// answer's own observations while it carries any and from the ledger when it
+/// carries none: `observed` is about what the Server recorded, not about what
+/// it still retains (issue #225, Story 49).
+fn public_metric_coverage(
+    metric: &str,
+    points: &[PublicMetricPoint],
+    from: &str,
+    to: &str,
+    ledger: Option<&MetricSeriesLedgerRow>,
+) -> PublicMetricSeriesCoverage {
+    let inside: Vec<&PublicMetricPoint> = points
+        .iter()
+        .filter(|point| point.sampled_at.as_str() >= from && point.sampled_at.as_str() <= to)
+        .collect();
+    // Only an instant the window has already reached may date this series. An
+    // Agent whose clock runs ahead can stamp an observation the window cannot
+    // hold yet, and such an instant may neither end the series nor end its
+    // tail: the answer would then report a silence nobody has been through and
+    // hide the last-good point it really has (issue #225).
+    let last_observed_at = points
+        .iter()
+        .filter(|point| point.sampled_at.as_str() <= to)
+        .max_by(|left, right| left.sampled_at.cmp(&right.sampled_at))
+        .map(|point| point.sampled_at.clone());
+    let first_observed_at = points
+        .iter()
+        .filter(|point| point.sampled_at.as_str() <= to)
+        .min_by(|left, right| left.sampled_at.cmp(&right.sampled_at))
+        .map(|point| point.sampled_at.clone());
+    // The ledger speaks only when the samples cannot: a series whose raw
+    // samples have all expired is still a series that was observed, and
+    // answering it as one nobody ever observed would be a different and untrue
+    // statement. An instant the window has not reached is not a date either,
+    // ledger or not.
+    let (first_observed_at, last_observed_at) = match (first_observed_at, last_observed_at) {
+        (Some(first), Some(last)) => (Some(first), Some(last)),
+        _ => match ledger.filter(|row| row.last_observed_at.as_str() <= to) {
+            Some(row) => (
+                Some(row.first_observed_at.clone()),
+                Some(row.last_observed_at.clone()),
+            ),
+            None => (None, None),
+        },
+    };
+    let mut cadence_samples: Vec<crate::metric_history::MetricSample> =
+        Vec::with_capacity(inside.len() + 1);
+    if let Some(previous) = points
+        .iter()
+        .filter(|point| point.sampled_at.as_str() < from)
+        .max_by(|left, right| left.sampled_at.cmp(&right.sampled_at))
+    {
+        cadence_samples.push(cadence_sample(previous));
+    }
+    cadence_samples.extend(inside.iter().map(|point| cadence_sample(point)));
+    let cadence_seconds = crate::metric_history::current_cadence_seconds(&cadence_samples);
+    let (gaps, covered_seconds) = if cadence_seconds > 0 {
+        let inside_samples: Vec<crate::metric_history::MetricSample> =
+            inside.iter().map(|point| cadence_sample(point)).collect();
+        let continuity = crate::metric_history::continuity_with_floor(
+            &inside_samples,
+            &[],
+            cadence_seconds,
+            from,
+            to,
+            0,
+        );
+        (continuity.gaps, continuity.coverage_seconds)
+    } else {
+        // No rhythm, no silence, and no coverage either: the stretch between the
+        // outermost observations is not observed just because both ends were,
+        // and claiming it would call the middle of a silence covered.
+        (Vec::new(), 0)
+    };
+    PublicMetricSeriesCoverage {
+        metric: metric.to_owned(),
+        observed: last_observed_at.is_some(),
+        observation_count: inside.len() as i64,
+        first_observed_at,
+        last_observed_at: last_observed_at.clone(),
+        cadence_seconds,
+        gap_threshold_seconds: if cadence_seconds > 0 {
+            crate::metric_history::gap_threshold_seconds_with_floor(cadence_seconds, 0)
+        } else {
+            0
+        },
+        covered_seconds,
+        unobserved_tail_seconds: unobserved_tail_seconds(last_observed_at.as_deref(), to),
+        gaps: gaps
+            .into_iter()
+            .map(|gap| PublicMetricGap {
+                from: gap.from,
+                to: gap.to,
+                seconds: gap.seconds,
+                kind: gap.kind.as_str().to_owned(),
+            })
+            .collect(),
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/api/public/v1/nodes/{node_id}/metrics",
@@ -1406,24 +1702,41 @@ pub(crate) async fn public_node_metrics(
     let from = format_rfc3339(from);
     let to = format_rfc3339(to);
     let metric_rows = sqlx::query_as::<_, MetricHistoryRow>(
-        "SELECT metric, observed_at AS sampled_at, value FROM node_metric_samples AS current WHERE node_id=? AND (received_at>=? OR received_at=(SELECT MAX(received_at) FROM node_metric_samples AS previous WHERE previous.node_id=current.node_id AND previous.metric=current.metric AND previous.received_at<?)) UNION ALL SELECT metric, observed_at AS sampled_at, value FROM host_metric_samples AS current WHERE agent_id=? AND metric IN ('network_rx_bytes_per_sec', 'network_tx_bytes_per_sec') AND (received_at>=? OR received_at=(SELECT MAX(received_at) FROM host_metric_samples AS previous WHERE previous.agent_id=current.agent_id AND previous.metric=current.metric AND previous.received_at<?)) ORDER BY sampled_at, metric",
+        "SELECT metric, observed_at AS sampled_at, value FROM node_metric_samples AS current WHERE node_id=? AND observed_at<=? AND (received_at>=? OR received_at=(SELECT MAX(received_at) FROM node_metric_samples AS previous WHERE previous.node_id=current.node_id AND previous.metric=current.metric AND previous.observed_at<=? AND previous.received_at<?)) UNION ALL SELECT metric, observed_at AS sampled_at, value FROM host_metric_samples AS current WHERE agent_id=? AND observed_at<=? AND metric IN ('network_rx_bytes_per_sec', 'network_tx_bytes_per_sec') AND (received_at>=? OR received_at=(SELECT MAX(received_at) FROM host_metric_samples AS previous WHERE previous.agent_id=current.agent_id AND previous.metric=current.metric AND previous.observed_at<=? AND previous.received_at<?)) ORDER BY sampled_at, metric",
     )
     .bind(&node_id)
+    .bind(&to)
     .bind(&from)
+    .bind(&to)
     .bind(&from)
     .bind(&agent_id)
+    .bind(&to)
     .bind(&from)
+    .bind(&to)
     .bind(&from)
     .fetch_all(state.db().pool())
     .await;
     let block_rows = sqlx::query_as::<_, BlockMetricHistoryRow>(
-        "SELECT current.observed_at AS sampled_at, CASE WHEN previous.block_timestamp_ms IS NOT NULL AND current.block_timestamp_ms > previous.block_timestamp_ms THEN current.block_timestamp_ms - previous.block_timestamp_ms ELSE NULL END AS block_interval_ms, current.transaction_count FROM block_summaries AS current LEFT JOIN block_summaries AS previous ON previous.node_id=current.node_id AND previous.block_number=current.block_number-1 WHERE current.node_id=? ORDER BY current.block_number DESC LIMIT 200",
+        "SELECT current.observed_at AS sampled_at, CASE WHEN previous.block_timestamp_ms IS NOT NULL AND current.block_timestamp_ms > previous.block_timestamp_ms THEN current.block_timestamp_ms - previous.block_timestamp_ms ELSE NULL END AS block_interval_ms, current.transaction_count FROM block_summaries AS current LEFT JOIN block_summaries AS previous ON previous.node_id=current.node_id AND previous.block_number=current.block_number-1 WHERE current.node_id=? AND current.observed_at<=? ORDER BY current.block_number DESC LIMIT 200",
     )
     .bind(&node_id)
+    .bind(&to)
     .fetch_all(state.db().pool())
     .await;
-    let (metric_rows, block_rows) = match (metric_rows, block_rows) {
-        (Ok(metric_rows), Ok(block_rows)) => (metric_rows, block_rows),
+    // What the samples can no longer say. The ledger holds one row per series
+    // and no value, and retention never prunes it, so an expired series is still
+    // dated here instead of being answered as one nobody observed (#225).
+    let ledger_rows = sqlx::query_as::<_, MetricSeriesLedgerRow>(
+        "SELECT metric, MIN(first_observed_at) AS first_observed_at, MAX(last_observed_at) AS last_observed_at FROM node_metric_series_state WHERE node_id=? GROUP BY metric UNION ALL SELECT metric, MIN(first_observed_at) AS first_observed_at, MAX(last_observed_at) AS last_observed_at FROM host_metric_series_state WHERE agent_id=? AND metric IN ('network_rx_bytes_per_sec', 'network_tx_bytes_per_sec') GROUP BY metric",
+    )
+    .bind(&node_id)
+    .bind(&agent_id)
+    .fetch_all(state.db().pool())
+    .await;
+    let (metric_rows, mut block_rows, ledger_rows) = match (metric_rows, block_rows, ledger_rows) {
+        (Ok(metric_rows), Ok(block_rows), Ok(ledger_rows)) => {
+            (metric_rows, block_rows, ledger_rows)
+        }
         _ => {
             return error_response(
                 &request_id.0,
@@ -1436,7 +1749,7 @@ pub(crate) async fn public_node_metrics(
 
     let mut history = PublicNodeMetricHistory {
         from: from.clone(),
-        to,
+        to: to.clone(),
         window_seconds: PUBLIC_NODE_METRIC_WINDOW_SECONDS,
         process_cpu_percent: Vec::new(),
         process_memory_percent: Vec::new(),
@@ -1447,14 +1760,20 @@ pub(crate) async fn public_node_metrics(
         peer_outbound_count: Vec::new(),
         block_interval_ms: Vec::new(),
         transaction_count: Vec::new(),
+        series: Vec::new(),
     };
     for row in metric_rows {
         push_metric_point(&mut history, row);
     }
 
+    // Height is not time here. A block accepted late keeps its own height but
+    // carries the instant it was really observed, so ordering by height can end
+    // the series at an instant that is not the newest one, and with it date the
+    // whole series - first, last and tail - wrongly (issue #225).
+    block_rows.sort_by(|left, right| left.sampled_at.cmp(&right.sampled_at));
     let mut prior_interval = None;
     let mut prior_transactions = None;
-    for row in block_rows.into_iter().rev() {
+    for row in block_rows {
         let interval = row.block_interval_ms.map(|value| PublicMetricPoint {
             sampled_at: row.sampled_at.clone(),
             value: value as f64,
@@ -1481,6 +1800,22 @@ pub(crate) async fn public_node_metrics(
     if let Some(point) = prior_transactions {
         history.transaction_count.insert(0, point);
     }
+    // The coverage is judged after the payload is whole: the rule answers about
+    // the observations this answer really carries, and the last-good point that
+    // precedes the window is one of them.
+    let ledger: HashMap<&str, &MetricSeriesLedgerRow> = ledger_rows
+        .iter()
+        .filter_map(|row| public_metric_name(&row.metric).map(|name| (name, row)))
+        .collect();
+    let series = PUBLIC_METRIC_SERIES
+        .iter()
+        .filter_map(|metric| {
+            public_metric_points(&history, metric).map(|points| {
+                public_metric_coverage(metric, points, &from, &to, ledger.get(*metric).copied())
+            })
+        })
+        .collect();
+    history.series = series;
 
     Json(history).into_response()
 }
@@ -3587,6 +3922,576 @@ mod tests {
         )
         .await;
         assert_eq!(legacy_private.status(), StatusCode::OK);
+    }
+
+    fn public_metric_point(sampled_at: &str, value: f64) -> PublicMetricPoint {
+        PublicMetricPoint {
+            sampled_at: sampled_at.to_owned(),
+            value,
+        }
+    }
+
+    const COVERAGE_FROM: &str = "2026-01-01T00:00:00Z";
+    const COVERAGE_TO: &str = "2026-01-01T00:01:00Z";
+
+    /// The ledger is the only reason an expired series is not answered as a
+    /// series nobody ever observed: raw samples are pruned, what a series
+    /// observed is not (issue #225, Story 49).
+    #[test]
+    fn public_metric_coverage_dates_an_expired_series_from_the_ledger() {
+        let ledger = MetricSeriesLedgerRow {
+            metric: "processCpuPercent".to_owned(),
+            first_observed_at: "2025-12-01T00:00:00Z".to_owned(),
+            last_observed_at: "2025-12-01T00:10:00Z".to_owned(),
+        };
+        // No raw sample survives, so the answer carries none of them.
+        let coverage = public_metric_coverage(
+            "processCpuPercent",
+            &[],
+            COVERAGE_FROM,
+            COVERAGE_TO,
+            Some(&ledger),
+        );
+        assert!(coverage.observed, "the ledger remembers the observations");
+        assert_eq!(coverage.observation_count, 0);
+        assert_eq!(
+            coverage.first_observed_at.as_deref(),
+            Some("2025-12-01T00:00:00Z")
+        );
+        assert_eq!(
+            coverage.last_observed_at.as_deref(),
+            Some("2025-12-01T00:10:00Z")
+        );
+        // 2025-12-01T00:10:00Z to 2026-01-01T00:01:00Z: 31 days, 9 minutes short.
+        assert_eq!(coverage.unobserved_tail_seconds, 31 * 86_400 - 9 * 60);
+        // Dated, and still nothing to draw or to claim: an expired series has no
+        // samples to measure a rhythm from, so no cadence, no gap, no coverage.
+        assert_eq!(coverage.cadence_seconds, 0);
+        assert_eq!(coverage.gap_threshold_seconds, 0);
+        assert_eq!(coverage.covered_seconds, 0);
+        assert!(coverage.gaps.is_empty());
+    }
+
+    /// A clock running ahead of the window dates nothing, ledger included.
+    #[test]
+    fn public_metric_coverage_never_lets_a_future_instant_date_a_series() {
+        let ledger = MetricSeriesLedgerRow {
+            metric: "processCpuPercent".to_owned(),
+            first_observed_at: "2026-01-01T00:00:30Z".to_owned(),
+            last_observed_at: "2026-01-01T00:02:00Z".to_owned(),
+        };
+        let coverage = public_metric_coverage(
+            "processCpuPercent",
+            &[],
+            COVERAGE_FROM,
+            COVERAGE_TO,
+            Some(&ledger),
+        );
+        assert!(!coverage.observed);
+        assert_eq!(coverage.first_observed_at, None);
+        assert_eq!(coverage.last_observed_at, None);
+        assert_eq!(coverage.unobserved_tail_seconds, 0);
+    }
+
+    #[test]
+    fn public_metric_coverage_reports_a_series_nobody_observed() {
+        let coverage =
+            public_metric_coverage("processCpuPercent", &[], COVERAGE_FROM, COVERAGE_TO, None);
+        assert!(!coverage.observed);
+        assert_eq!(coverage.observation_count, 0);
+        assert_eq!(coverage.first_observed_at, None);
+        assert_eq!(coverage.last_observed_at, None);
+        assert_eq!(coverage.cadence_seconds, 0);
+        assert_eq!(coverage.gap_threshold_seconds, 0);
+        assert_eq!(coverage.covered_seconds, 0);
+        // Nothing was ever observed, so nothing is quiet either: the tail is a
+        // silence after evidence, and `observed` is how the answer says which
+        // case this is.
+        assert_eq!(coverage.unobserved_tail_seconds, 0);
+        assert!(coverage.gaps.is_empty());
+    }
+
+    #[test]
+    fn public_metric_coverage_breaks_the_line_at_a_silence_of_a_short_window() {
+        let points: Vec<PublicMetricPoint> = [
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:05Z",
+            "2026-01-01T00:00:10Z",
+            "2026-01-01T00:00:15Z",
+            "2026-01-01T00:00:41Z",
+            "2026-01-01T00:00:46Z",
+            "2026-01-01T00:00:51Z",
+        ]
+        .iter()
+        .map(|sampled_at| public_metric_point(sampled_at, 10.0))
+        .collect();
+        let coverage = public_metric_coverage(
+            "processCpuPercent",
+            &points,
+            COVERAGE_FROM,
+            COVERAGE_TO,
+            None,
+        );
+        assert!(coverage.observed);
+        assert_eq!(coverage.observation_count, 7);
+        assert_eq!(coverage.cadence_seconds, 5);
+        assert_eq!(coverage.gap_threshold_seconds, 15);
+        assert_eq!(coverage.first_observed_at.as_deref(), Some(COVERAGE_FROM));
+        assert_eq!(
+            coverage.last_observed_at.as_deref(),
+            Some("2026-01-01T00:00:51Z")
+        );
+        assert_eq!(coverage.gaps.len(), 1);
+        assert_eq!(coverage.gaps[0].from, "2026-01-01T00:00:15Z");
+        // The gap ends where the chart may draw again: the first observation
+        // after the silence, not the window end.
+        assert_eq!(coverage.gaps[0].to, "2026-01-01T00:00:41Z");
+        assert_eq!(coverage.gaps[0].seconds, 26);
+        assert_eq!(coverage.gaps[0].kind, "collection_gap");
+        // The six proven stretches, and nothing after the newest observation.
+        assert_eq!(coverage.covered_seconds, 25);
+        assert_eq!(coverage.unobserved_tail_seconds, 9);
+    }
+
+    #[test]
+    fn public_metric_coverage_answers_a_changed_cadence_as_unknown_rather_than_silence() {
+        let points: Vec<PublicMetricPoint> = [
+            "2025-12-31T23:50:00Z",
+            "2026-01-01T00:00:30Z",
+            "2026-01-01T00:00:55Z",
+        ]
+        .iter()
+        .map(|sampled_at| public_metric_point(sampled_at, 10.0))
+        .collect();
+        let coverage = public_metric_coverage(
+            "processCpuPercent",
+            &points,
+            COVERAGE_FROM,
+            COVERAGE_TO,
+            None,
+        );
+        // The first point is the last-good value carried into the answer, and it
+        // is what dates the series: 630 seconds then 25 means the series is not
+        // being observed at one rhythm, so the window states no silence at all.
+        assert!(coverage.observed);
+        assert_eq!(coverage.observation_count, 2);
+        assert_eq!(coverage.cadence_seconds, 0);
+        assert_eq!(coverage.gap_threshold_seconds, 0);
+        assert!(coverage.gaps.is_empty());
+        // And where no rhythm is settled there is no coverage to claim either:
+        // the stretch between the two in-window observations is not observed
+        // just because both of its ends were.
+        assert_eq!(coverage.covered_seconds, 0);
+        assert_eq!(
+            coverage.first_observed_at.as_deref(),
+            Some("2025-12-31T23:50:00Z")
+        );
+        assert_eq!(
+            coverage.last_observed_at.as_deref(),
+            Some("2026-01-01T00:00:55Z")
+        );
+        assert_eq!(coverage.unobserved_tail_seconds, 5);
+    }
+
+    #[test]
+    fn public_metric_coverage_counts_an_observed_zero_as_evidence() {
+        let points = vec![
+            public_metric_point("2026-01-01T00:00:10Z", 0.0),
+            public_metric_point("2026-01-01T00:00:20Z", 0.0),
+        ];
+        let coverage = public_metric_coverage(
+            "processCpuPercent",
+            &points,
+            COVERAGE_FROM,
+            COVERAGE_TO,
+            None,
+        );
+        assert!(coverage.observed);
+        assert_eq!(coverage.observation_count, 2);
+        assert_eq!(coverage.cadence_seconds, 10);
+        assert_eq!(coverage.gap_threshold_seconds, 30);
+        assert_eq!(coverage.covered_seconds, 10);
+        assert_eq!(coverage.unobserved_tail_seconds, 40);
+        assert!(coverage.gaps.is_empty());
+    }
+
+    #[test]
+    fn public_metric_coverage_dates_the_series_by_the_window_alone() {
+        let points = vec![
+            public_metric_point("2025-12-31T23:00:00Z", 10.0),
+            public_metric_point("2026-01-01T01:00:00Z", 10.0),
+        ];
+        let coverage = public_metric_coverage(
+            "processCpuPercent",
+            &points,
+            COVERAGE_FROM,
+            COVERAGE_TO,
+            None,
+        );
+        // The window holds neither instant: one belongs to the carried last-good
+        // stretch, the other to a clock ahead of the Server. Neither is counted
+        // and neither is drawn, but only the older one may date the series - an
+        // instant the window cannot hold yet may not replace the last-good point
+        // the answer really has and report a comfortable zero-second tail.
+        assert!(coverage.observed);
+        assert_eq!(coverage.observation_count, 0);
+        assert_eq!(coverage.cadence_seconds, 0);
+        assert_eq!(coverage.gap_threshold_seconds, 0);
+        assert_eq!(coverage.covered_seconds, 0);
+        assert_eq!(
+            coverage.first_observed_at.as_deref(),
+            Some("2025-12-31T23:00:00Z")
+        );
+        assert_eq!(
+            coverage.last_observed_at.as_deref(),
+            Some("2025-12-31T23:00:00Z")
+        );
+        // An hour before the window, and the window's own minute after it.
+        assert_eq!(coverage.unobserved_tail_seconds, 3660);
+        assert!(coverage.gaps.is_empty());
+    }
+
+    /// The shape the Home fixtures replay, pinned at the Server seam: a series
+    /// observed every five seconds, silent for thirty, then observed twice more.
+    /// The two intervals after the silence agree, so the rhythm is settled again
+    /// and the silence inside the window is named as the gap it is (issue #225).
+    #[test]
+    fn public_metric_coverage_names_the_silence_of_a_recovered_series() {
+        let points: Vec<PublicMetricPoint> = [
+            "2026-01-01T00:00:05Z",
+            "2026-01-01T00:00:10Z",
+            "2026-01-01T00:00:15Z",
+            "2026-01-01T00:00:45Z",
+            "2026-01-01T00:00:50Z",
+            "2026-01-01T00:00:55Z",
+        ]
+        .iter()
+        .map(|sampled_at| public_metric_point(sampled_at, 20.0))
+        .collect();
+        let coverage = public_metric_coverage(
+            "processCpuPercent",
+            &points,
+            COVERAGE_FROM,
+            COVERAGE_TO,
+            None,
+        );
+        assert!(coverage.observed);
+        assert_eq!(coverage.observation_count, 6);
+        assert_eq!(coverage.cadence_seconds, 5);
+        assert_eq!(coverage.gap_threshold_seconds, 15);
+        assert_eq!(coverage.gaps.len(), 1);
+        assert_eq!(coverage.gaps[0].from, "2026-01-01T00:00:15Z");
+        assert_eq!(coverage.gaps[0].to, "2026-01-01T00:00:45Z");
+        assert_eq!(coverage.gaps[0].seconds, 30);
+        assert_eq!(coverage.gaps[0].kind, "collection_gap");
+        // Four proven five-second stretches, and nothing after the newest
+        // observation but the five seconds the window still had to run.
+        assert_eq!(coverage.covered_seconds, 20);
+        assert_eq!(coverage.unobserved_tail_seconds, 5);
+    }
+
+    /// A backfilled block keeps an old height but carries the instant it was
+    /// really observed, so the series is dated by that instant and never by the
+    /// order of heights (issue #225).
+    #[tokio::test]
+    async fn public_node_metrics_dates_a_backfilled_block_by_its_observation() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::now_utc();
+        let stamp = |offset: i64| format_rfc3339(now - time::Duration::seconds(offset));
+        // Height and time disagree here: the oldest height arrived last, as the
+        // GapBackfill of a block the Agent had missed, and the newest height is
+        // the one observed twenty-five seconds ago.
+        for (height, offset, block_timestamp_ms) in [
+            (99_i64, 90_i64, 1_000_i64),
+            (100, 5, 2_000),
+            (101, 15, 3_000),
+            (102, 25, 4_000),
+        ] {
+            sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES ('node-public', ?, ?, '0xparent', '0xgenesis', 1, 1, 'lat', ?, ?, 1, 'subscription', '0x0000000000000000000000000000000000000000', 'unknown', 'unknown', 'test', ?)")
+                .bind(height)
+                .bind(format!("0xpublic-backfilled-{height}"))
+                .bind(block_timestamp_ms)
+                .bind(stamp(offset))
+                .bind(stamp(offset))
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+
+        let response = public_node_metrics(
+            State(state.clone()),
+            Path("node-public".to_owned()),
+            Extension(RequestId(std::sync::Arc::from("metric-block-order-test"))),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let sampled: Vec<String> = history["blockIntervalMs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|point| point["sampledAt"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            sampled,
+            vec![stamp(25), stamp(15), stamp(5)],
+            "the chart draws them in observation order"
+        );
+        let coverage = history["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["metric"] == "blockIntervalMs")
+            .cloned()
+            .expect("the answer carries the block interval series");
+        assert_eq!(coverage["observationCount"], 3);
+        assert_eq!(coverage["cadenceSeconds"], 10);
+        assert_eq!(coverage["gapThresholdSeconds"], 30);
+        assert_eq!(coverage["coveredSeconds"], 20);
+        assert_eq!(coverage["firstObservedAt"], stamp(25).as_str());
+        assert_eq!(coverage["lastObservedAt"], stamp(5).as_str());
+        let tail = coverage["unobservedTailSeconds"].as_i64().unwrap();
+        assert!((5..=7).contains(&tail), "block interval tail was {tail}");
+    }
+
+    /// Retention expires the sample; the ledger is what keeps the series a
+    /// series that was observed, dated by when it was really observed, with an
+    /// empty chart and no invented point (issue #225, Story 49).
+    #[tokio::test]
+    async fn public_node_metrics_dates_a_series_whose_samples_expired() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::now_utc();
+        let stamp = |offset: i64| format_rfc3339(now - time::Duration::seconds(offset));
+        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ('node-public', 'process_cpu_percent', ?, ?, 12.5)")
+            .bind(stamp(4000))
+            .bind(stamp(4000))
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        // The ledger row report ingestion writes beside the sample.
+        sqlx::query("INSERT INTO node_metric_series_state (node_id, metric, first_observed_at, last_observed_at, last_received_at, observation_count, updated_at) VALUES ('node-public', 'process_cpu_percent', ?, ?, ?, 1, ?)")
+            .bind(stamp(4000))
+            .bind(stamp(4000))
+            .bind(stamp(4000))
+            .bind(stamp(4000))
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM node_metric_samples WHERE node_id='node-public' AND metric='process_cpu_percent'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let response = public_node_metrics(
+            State(state.clone()),
+            Path("node-public".to_owned()),
+            Extension(RequestId(std::sync::Arc::from("metric-ledger-test"))),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let series = |metric: &str| {
+            history["series"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["metric"] == metric)
+                .cloned()
+                .unwrap_or_else(|| panic!("the answer carries the {metric} series"))
+        };
+
+        let cpu = series("processCpuPercent");
+        assert_eq!(cpu["observed"], true, "the series was observed");
+        assert_eq!(cpu["observationCount"], 0, "but not in this window");
+        assert_eq!(cpu["firstObservedAt"], stamp(4000).as_str());
+        assert_eq!(cpu["lastObservedAt"], stamp(4000).as_str());
+        let tail = cpu["unobservedTailSeconds"].as_i64().unwrap();
+        assert!(
+            (4000..=4002).contains(&tail),
+            "the ledger dates the tail instead of zeroing it, got {tail}"
+        );
+        assert_eq!(cpu["cadenceSeconds"], 0);
+        assert_eq!(cpu["gaps"].as_array().unwrap().len(), 0);
+        assert_eq!(history["processCpuPercent"].as_array().unwrap().len(), 0);
+        // Only the series the ledger remembers is dated that way.
+        assert_eq!(series("processMemoryPercent")["observed"], false);
+    }
+
+    /// The two block series have no ledger: `block_summaries` is the only
+    /// place they live and retention removes those rows, so a block series whose
+    /// rows are gone is a series nobody can date - it must not borrow an age
+    /// from anywhere else (issue #225, Story 49).
+    #[tokio::test]
+    async fn public_node_metrics_never_dates_a_block_series_whose_rows_expired() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::now_utc();
+        let stamp = |offset: i64| format_rfc3339(now - time::Duration::seconds(offset));
+        for (height, offset) in [(99_i64, 25_i64), (100, 20), (101, 15)] {
+            sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES ('node-public', ?, ?, '0xparent', '0xgenesis', 1, 1, 'lat', ?, ?, 1, 'subscription', '0x0000000000000000000000000000000000000000', 'unknown', 'unknown', 'test', ?)")
+                .bind(height)
+                .bind(format!("0xpublic-expired-block-{height}"))
+                .bind(2_000_i64 + height)
+                .bind(stamp(offset))
+                .bind(stamp(offset))
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+
+        let history = || {
+            let state = state.clone();
+            async move {
+                let response = public_node_metrics(
+                    State(state),
+                    Path("node-public".to_owned()),
+                    Extension(RequestId(std::sync::Arc::from("metric-block-expired-test"))),
+                )
+                .await;
+                assert_eq!(response.status(), StatusCode::OK);
+                let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+            }
+        };
+        let series = |history: &serde_json::Value, metric: &str| -> serde_json::Value {
+            history["series"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["metric"] == metric)
+                .cloned()
+                .unwrap_or_else(|| panic!("the answer carries the {metric} series"))
+        };
+
+        let with_rows = history().await;
+        assert_eq!(
+            series(&with_rows, "blockIntervalMs")["observed"],
+            true,
+            "the rows themselves are what makes a block series observed"
+        );
+        assert!(!with_rows["blockIntervalMs"].as_array().unwrap().is_empty());
+
+        sqlx::query("DELETE FROM block_summaries WHERE node_id='node-public'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let expired = history().await;
+        for metric in ["blockIntervalMs", "transactionCount"] {
+            let entry = series(&expired, metric);
+            assert_eq!(
+                entry["observed"], false,
+                "{metric} has no ledger to be dated from"
+            );
+            assert_eq!(entry["observationCount"], 0);
+            assert_eq!(entry["firstObservedAt"], serde_json::Value::Null);
+            assert_eq!(entry["lastObservedAt"], serde_json::Value::Null);
+            assert_eq!(
+                entry["unobservedTailSeconds"], 0,
+                "nothing observed means no age to name"
+            );
+            assert_eq!(entry["gaps"].as_array().unwrap().len(), 0);
+        }
+        assert_eq!(expired["blockIntervalMs"].as_array().unwrap().len(), 0);
+        assert_eq!(expired["transactionCount"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn public_node_metrics_answers_the_gap_and_the_tail_of_every_series() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::now_utc();
+        let stamp = |offset: i64| format_rfc3339(now - time::Duration::seconds(offset));
+        // A six second cadence whose newest intervals prove it, with a hole the
+        // two-minute floor of every longer answer would excuse.
+        for offset in [56, 50, 44, 18, 12, 6] {
+            sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ('node-public', 'process_cpu_percent', ?, ?, 12.5)")
+                .bind(stamp(offset))
+                .bind(stamp(offset))
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+        // A series whose newest observation arrived before the window: the
+        // last-good value the chart draws, which has to be dated.
+        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ('node-public', 'process_memory_percent', ?, ?, 25.0)")
+            .bind(stamp(90))
+            .bind(stamp(90))
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let response = public_node_metrics(
+            State(state.clone()),
+            Path("node-public".to_owned()),
+            Extension(RequestId(std::sync::Arc::from("metric-coverage-test"))),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let series = |metric: &str| {
+            history["series"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["metric"] == metric)
+                .cloned()
+                .unwrap_or_else(|| panic!("the answer carries the {metric} series"))
+        };
+
+        let cpu = series("processCpuPercent");
+        assert_eq!(cpu["observed"], true);
+        assert_eq!(cpu["observationCount"], 6);
+        assert_eq!(cpu["cadenceSeconds"], 6);
+        assert_eq!(cpu["gapThresholdSeconds"], 18);
+        assert_eq!(cpu["coveredSeconds"], 24);
+        assert_eq!(cpu["gaps"].as_array().unwrap().len(), 1);
+        assert_eq!(cpu["gaps"][0]["from"], stamp(44).as_str());
+        assert_eq!(cpu["gaps"][0]["to"], stamp(18).as_str());
+        assert_eq!(cpu["gaps"][0]["seconds"], 26);
+        assert_eq!(cpu["gaps"][0]["kind"], "collection_gap");
+        assert_eq!(cpu["firstObservedAt"], stamp(56).as_str());
+        assert_eq!(cpu["lastObservedAt"], stamp(6).as_str());
+        // The handler reads its own clock, one whole second past this test's at
+        // the latest, so the tail is asserted as the small range it can be.
+        let cpu_tail = cpu["unobservedTailSeconds"].as_i64().unwrap();
+        assert!((6..=8).contains(&cpu_tail), "cpu tail was {cpu_tail}");
+
+        let memory = series("processMemoryPercent");
+        assert_eq!(memory["observed"], true);
+        assert_eq!(memory["observationCount"], 0);
+        assert_eq!(memory["firstObservedAt"], stamp(90).as_str());
+        assert_eq!(memory["lastObservedAt"], stamp(90).as_str());
+        assert_eq!(memory["cadenceSeconds"], 0);
+        assert_eq!(memory["gapThresholdSeconds"], 0);
+        assert_eq!(memory["coveredSeconds"], 0);
+        assert!(memory["gaps"].as_array().unwrap().is_empty());
+        let memory_tail = memory["unobservedTailSeconds"].as_i64().unwrap();
+        assert!(
+            (90..=92).contains(&memory_tail),
+            "memory tail was {memory_tail}"
+        );
+
+        let peers = series("peerInboundCount");
+        assert_eq!(peers["observed"], false);
+        assert_eq!(peers["observationCount"], 0);
+        assert!(peers["firstObservedAt"].is_null());
+        assert!(peers["lastObservedAt"].is_null());
+        assert_eq!(peers["gapThresholdSeconds"], 0);
+        assert_eq!(peers["unobservedTailSeconds"], 0);
+        assert!(peers["gaps"].as_array().unwrap().is_empty());
+
+        let names: Vec<&str> = history["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["metric"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, PUBLIC_METRIC_SERIES);
     }
 
     async fn seed_exact_head_transaction_fixtures(state: &AppState) {

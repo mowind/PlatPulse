@@ -802,6 +802,78 @@ describe('App shell with private Home', () => {
     expect(screen.queryByText('Identifiers and technical details')).toBeNull()
   })
 
+  it('reports a measured gap and a never-observed series instead of inventing evidence', async () => {
+    const at = (seconds: number) => new Date(Date.parse('2026-08-19T23:59:00Z') + seconds * 1000).toISOString()
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1': () => jsonResponse({
+        nodeId: 'node-1', displayName: 'Validator A', networkKey: 'mainnet',
+        health: 'healthy', healthReason: 'rpc reachable', freshness: 'current',
+        rpcState: 'ok', syncState: 'synced', consensusState: 'current', processState: 'running',
+        currentHead: 123, historicalHighWatermark: 120, networkReferenceHead: 123,
+        networkReferenceConfidence: 'high', resyncState: 'idle', resyncProgress: null,
+        hostCpuPercent: 42.5, peers: { peerCount: 5, freshness: 'fresh', state: 'fresh' },
+      }, 200),
+      '/api/public/v1/nodes/node-1/history?limit=2': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1/metrics': () => jsonResponse({
+        from: '2026-08-19T23:59:00Z', to: '2026-08-20T00:00:00Z', windowSeconds: 60,
+        processCpuPercent: [5, 10, 15, 45, 50, 55].map((seconds) => ({ sampledAt: at(seconds), value: 20 })),
+        processMemoryPercent: [], dataDirectoryPercent: [],
+        networkRxBytesPerSec: [], networkTxBytesPerSec: [], peerInboundCount: [], peerOutboundCount: [],
+        blockIntervalMs: [], transactionCount: [],
+        series: [
+          {
+            metric: 'processCpuPercent', observed: true, observationCount: 6,
+            firstObservedAt: at(5), lastObservedAt: at(55),
+            cadenceSeconds: 5, gapThresholdSeconds: 15, coveredSeconds: 20, unobservedTailSeconds: 5,
+            gaps: [{ from: at(15), to: at(45), seconds: 30, kind: 'collection_gap' }],
+          },
+          {
+            metric: 'transactionCount', observed: false, observationCount: 0,
+            firstObservedAt: null, lastObservedAt: null,
+            cadenceSeconds: 0, gapThresholdSeconds: 0, coveredSeconds: 0, unobservedTailSeconds: 0, gaps: [],
+          },
+        ],
+      }, 200),
+    })
+    vi.stubGlobal('EventSource', FakeEventSource)
+    window.history.replaceState({}, '', '/nodes/node-1')
+
+    render(<App />)
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
+    const metricsSection = screen.getByRole('heading', { level: 2, name: 'Latest 60 seconds' }).closest('section')
+    if (!metricsSection) throw new Error('Latest 60 seconds section is missing')
+
+    const cpuCard = within(metricsSection).getByRole('heading', { level: 3, name: 'Process CPU' }).closest('[data-slot="node-metric-card"]')
+    if (!cpuCard) throw new Error('Process CPU card is missing')
+    // One measured silence splits the window in two stretches: the curve ends
+    // at the last observation before the gap and resumes at the first one after
+    // it, and nothing is drawn across the thirty seconds nobody observed. The
+    // observations and the verdict are the ones the Server really derives from
+    // them (crates/platpulse-server/src/http/public.rs,
+    // public_metric_coverage_names_the_silence_of_a_recovered_series): five
+    // second cadence, fifteen second threshold, and two more observations after
+    // the gap that settle the rhythm again.
+    expect(Array.from(cpuCard.querySelectorAll('[data-slot="node-metric-chart-line"]')).map((line) => line.getAttribute('d'))).toEqual([
+      'M 50.00 34.80 L 100.00 34.80 L 150.00 34.80',
+      'M 450.00 34.80 L 500.00 34.80 L 550.00 34.80',
+    ])
+    expect(cpuCard.querySelector('[data-slot="node-metric-coverage"]')?.textContent).toBe('1 gap in this window')
+    expect(cpuCard.querySelector('svg[role="img"] desc')?.textContent).toContain('1 gap in this window')
+
+    const transactionCard = within(metricsSection).getByRole('heading', { level: 3, name: 'Transactions / block' }).closest('[data-slot="node-metric-card"]')
+    if (!transactionCard) throw new Error('Transactions / block card is missing')
+    // A series the Server never observed says so instead of holding a flat bar.
+    expect(transactionCard.querySelector('[data-slot="node-metric-coverage"]')?.textContent).toBe('No samples reported yet')
+    expect(transactionCard.querySelector('[data-slot="node-metric-chart-empty"]')?.textContent).toBe('No samples in the last minute')
+    expect(transactionCard.querySelectorAll('[data-slot="node-metric-chart-bar"]')).toHaveLength(0)
+  })
+
   it('guides an unauthenticated visitor to the login page', async () => {
     mockFetch({ '/api/public/v1/session': () => errorBody('auth_required') })
 

@@ -3587,9 +3587,123 @@ export type PublicGeoInsight = {
     unknownWithoutRemoteIpCount?: number | null;
 };
 
+/**
+ * One stretch of the window with no observation in it.
+ *
+ * Only a collection gap can be named here: the latest-60-second answer holds no
+ * protection pause, so what it reports is always a silence the series itself
+ * proved (the Server names a pause only where it recorded one).
+ */
+export type PublicMetricGap = {
+    /**
+     * The newest instant before the silence.
+     */
+    from: string;
+    /**
+     * `collection_gap` today, from the shared gap vocabulary the Server uses
+     * everywhere else (`GapKind::as_str`).
+     */
+    kind: string;
+    seconds: number;
+    /**
+     * The oldest instant after it: the first observation the answer carries,
+     * which is exactly where a chart may start drawing again.
+     */
+    to: string;
+};
+
 export type PublicMetricPoint = {
     sampledAt: string;
     value: number;
+};
+
+/**
+ * What one series of the latest-60-second answer can vouch for.
+ *
+ * The six charts are drawn from the observations above, and those observations
+ * alone cannot say whether a straight line between two of them crosses a
+ * stretch nobody observed. This is that answer, per series, so the chart draws
+ * a break where the Server proved a silence, stops where the observations stop
+ * instead of running to the right edge, and never fills a hole with a zero
+ * (issue #225, Story 49). The figures are computed by the same rule the metric
+ * history uses ([crate::metric_history]), with the silence floor of a 60-second
+ * window rather than the two-minute floor of a window measured in hours.
+ */
+export type PublicMetricSeriesCoverage = {
+    /**
+     * The cadence currently in force: the newest interval between two
+     * consecutive observations, trusted only while the interval before it
+     * agrees with it. 0 means the Server has no cadence verdict for this
+     * series, and an unknown cadence is answered as unknown rather than as
+     * silence.
+     *
+     * A series that went quiet inside the window and came back once lands
+     * here: the single interval after the silence disagrees with the cadence
+     * before it, and sixty seconds cannot tell an Agent that stopped reporting
+     * from an Agent whose collection interval was changed - inside one window
+     * those look alike - so no silence is named until the next observation
+     * settles it. Neither reading is invented in the meantime.
+     */
+    cadenceSeconds: number;
+    /**
+     * The seconds of the window the observations between them prove were
+     * observed. The stretch after the newest observation is never part of it:
+     * nobody observed how long it is. 0 with `cadenceSeconds` 0, because
+     * without a rhythm the answer cannot tell a covered stretch from a silence
+     * and so claims neither.
+     */
+    coveredSeconds: number;
+    /**
+     * The oldest observation of this series the answer can point at, from the
+     * observations it carries or from the ledger that outlives them.
+     */
+    firstObservedAt?: string | null;
+    /**
+     * The silence a cadence makes a gap: three times the cadence, capped at
+     * five minutes of cadence. 0 with `cadenceSeconds` 0, because a series
+     * with no known rhythm is never called silent.
+     */
+    gapThresholdSeconds: number;
+    /**
+     * The silences inside the window, oldest first. Each one is a stretch a
+     * chart must break at rather than connect across.
+     */
+    gaps: Array<PublicMetricGap>;
+    /**
+     * The newest one, from either source. It is the `observedAt` a later
+     * answer would report as the last-good value, so `unobservedTailSeconds`
+     * measures from here. An instant the window has not reached is never one of
+     * them: a clock running ahead dates nothing, and may not hide the
+     * last-good point that really arrived (issue #225).
+     */
+    lastObservedAt?: string | null;
+    /**
+     * The response field this coverage belongs to (`processCpuPercent`,
+     * `blockIntervalMs`, ...), because the nine arrays carry no name of their
+     * own.
+     */
+    metric: string;
+    /**
+     * How many observations fall inside the window itself. A series that is
+     * observed but counted zero here has not been observed recently - a sample
+     * that expired counts as much as a window that simply held none - which
+     * the tail and `lastObservedAt` date rather than a zero.
+     */
+    observationCount: number;
+    /**
+     * Whether the Server can vouch for any observation of this series: this
+     * answer carries one (the last-good point that precedes the window counts)
+     * or the series ledger remembers observations whose samples have since
+     * expired. Only a series nothing ever recorded is answered `false`.
+     */
+    observed: boolean;
+    /**
+     * The seconds between the newest observation and the end of the window, so
+     * the chart knows the line must not be extended through them. It can exceed
+     * the window when the newest observation is the older last-good point: the
+     * series really has been quiet that long.
+     */
+    unobservedTailSeconds: number;
 };
 
 export type PublicNetwork = {
@@ -3681,6 +3795,13 @@ export type PublicNodeMetricHistory = {
     peerOutboundCount: Array<PublicMetricPoint>;
     processCpuPercent: Array<PublicMetricPoint>;
     processMemoryPercent: Array<PublicMetricPoint>;
+    /**
+     * The same nine series, judged: which of them were observed, where the
+     * silences are, and how much of the window is covered. One entry per
+     * series, in the order above, so `series` is the contract a chart reads
+     * before it draws a line (issue #225).
+     */
+    series: Array<PublicMetricSeriesCoverage>;
     to: string;
     transactionCount: Array<PublicMetricPoint>;
     windowSeconds: number;

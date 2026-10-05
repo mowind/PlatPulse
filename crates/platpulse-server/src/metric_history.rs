@@ -749,8 +749,22 @@ pub fn sample_timing(observed_at: &str, received_at: &str) -> Option<SampleTimin
 /// The cadence is clamped to the range an Agent can actually be configured
 /// with, so no silence is ever excused by a cadence nobody could have chosen.
 pub fn gap_threshold_seconds(cadence_seconds: i64) -> i64 {
-    (cadence_seconds.clamp(1, MAX_OBSERVED_CADENCE_SECONDS) * GAP_CADENCE_FACTOR)
-        .max(MIN_GAP_SECONDS)
+    gap_threshold_seconds_with_floor(cadence_seconds, MIN_GAP_SECONDS)
+}
+
+/// The same threshold with the floor supplied by the caller.
+///
+/// MIN_GAP_SECONDS is the floor the metric history surfaces need: a series
+/// watched over hours is allowed to stay quiet for two minutes without the
+/// Server calling that quiet a gap. A window that is only 60 seconds long cannot
+/// be judged by that floor at all - the floor sits beyond the whole window, so no
+/// silence inside it could ever be reported and a coverage answer computed for
+/// the latest-60-second charts would be dead code (issue #225). Such a window is
+/// measured against its own cadence alone, which is why the floor is a parameter
+/// of the rule: the rule stays one rule, and the caller that judges a window
+/// shorter than the floor states the floor it wants.
+pub fn gap_threshold_seconds_with_floor(cadence_seconds: i64, floor_seconds: i64) -> i64 {
+    (cadence_seconds.clamp(1, MAX_OBSERVED_CADENCE_SECONDS) * GAP_CADENCE_FACTOR).max(floor_seconds)
 }
 
 /// Gaps and proved coverage for one series window.
@@ -780,6 +794,33 @@ pub fn continuity(
     window_start: &str,
     window_end: &str,
 ) -> Continuity {
+    // One conversion, two floors: the rule below is the same one and only the
+    // window's own floor differs, so there is nothing here to keep in step.
+    continuity_with_floor(
+        samples,
+        pauses,
+        cadence_seconds,
+        window_start,
+        window_end,
+        MIN_GAP_SECONDS,
+    )
+}
+
+/// The raw-sample entry point with the silence floor supplied by the caller.
+///
+/// The same rule as [`continuity`], for a window shorter than
+/// [`MIN_GAP_SECONDS`]: the caller passes the floor its window can support, and
+/// 0 means "judge this window against its own cadence alone". Only the
+/// latest-60-second answer needs it (issue #225); every window measured in hours
+/// keeps the floor [`continuity`] states, so no long-range answer changes.
+pub fn continuity_with_floor(
+    samples: &[MetricSample],
+    pauses: &[ProtectionPause],
+    cadence_seconds: i64,
+    window_start: &str,
+    window_end: &str,
+    floor_seconds: i64,
+) -> Continuity {
     let points: Vec<JudgedPoint<'_>> = samples
         .iter()
         .map(|sample| JudgedPoint {
@@ -791,7 +832,7 @@ pub fn continuity(
             bucket_start: None,
         })
         .collect();
-    continuity_from(&points, pauses, window_start, window_end)
+    continuity_from(&points, pauses, window_start, window_end, floor_seconds)
 }
 
 /// A point of a series whose spacing is not the cadence of a raw sample.
@@ -839,7 +880,7 @@ pub fn continuity_with_windows(
             bucket_start: None,
         })
         .collect();
-    continuity_from(&judged, pauses, window_start, window_end)
+    continuity_from(&judged, pauses, window_start, window_end, MIN_GAP_SECONDS)
 }
 
 /// One point the gap and coverage rule judges, with the two instants it can
@@ -874,9 +915,9 @@ struct JudgedPoint<'a> {
 /// between the observations that bracket them without anything having been lost,
 /// so the threshold is never shorter than that. `window_seconds` is the narrowest
 /// window of the pair, and 0 for two raw samples.
-fn silence_threshold_seconds(cadence_seconds: i64, window_seconds: i64) -> i64 {
+fn silence_threshold_seconds(cadence_seconds: i64, window_seconds: i64, floor_seconds: i64) -> i64 {
     let cadence = cadence_seconds.clamp(1, MAX_OBSERVED_CADENCE_SECONDS);
-    gap_threshold_seconds(cadence).max(window_seconds + cadence)
+    gap_threshold_seconds_with_floor(cadence, floor_seconds).max(window_seconds + cadence)
 }
 
 /// Whether the windows of two consecutive points are neighbours.
@@ -926,6 +967,7 @@ fn continuity_from(
     pauses: &[ProtectionPause],
     window_start: &str,
     window_end: &str,
+    floor_seconds: i64,
 ) -> Continuity {
     let mut gaps = Vec::new();
     let mut coverage_seconds = 0;
@@ -972,7 +1014,9 @@ fn continuity_from(
                 skipped_count: pause_overlapping(pauses, point.from, point.until)
                     .and_then(|pause| pause_count_within(pause, point.from, point.until)),
             });
-        } else if point.max_gap_seconds < silence_threshold_seconds(point.cadence_seconds, 0) {
+        } else if point.max_gap_seconds
+            < silence_threshold_seconds(point.cadence_seconds, 0, floor_seconds)
+        {
             coverage_seconds += inside_window(from, until);
         }
     }
@@ -991,8 +1035,11 @@ fn continuity_from(
             continue;
         }
         let cadence = pair[0].cadence_seconds.max(pair[1].cadence_seconds);
-        let threshold =
-            silence_threshold_seconds(cadence, pair[0].window_seconds.min(pair[1].window_seconds));
+        let threshold = silence_threshold_seconds(
+            cadence,
+            pair[0].window_seconds.min(pair[1].window_seconds),
+            floor_seconds,
+        );
         // An unwritten window between two buckets is a silence whatever the
         // cadence allowance says: the allowance covers the stretch between two
         // windows that were counted, not a window that never was.
@@ -2055,7 +2102,7 @@ pub async fn load_range(
     } else {
         to_text.as_str()
     };
-    let continuity = continuity_from(&judged, &pauses, &from_text, window_end);
+    let continuity = continuity_from(&judged, &pauses, &from_text, window_end, MIN_GAP_SECONDS);
     let ledger = load_ledger(pool, &query.scope).await?;
     Ok(MetricRange {
         points,
@@ -2963,6 +3010,84 @@ mod tests {
         // day off as one proved cadence.
         assert_eq!(gap_threshold_seconds(MAX_OBSERVED_CADENCE_SECONDS), 900);
         assert_eq!(gap_threshold_seconds(86_400), 900);
+    }
+
+    #[test]
+    fn a_window_shorter_than_the_floor_is_judged_by_its_cadence_alone() {
+        // The 60-second answer cannot be judged by a two-minute floor: the floor
+        // is longer than the whole window, so no silence inside it could ever be
+        // reported, and the coverage contract the latest-60-second charts read
+        // would be dead code (issue #225). The caller states the floor instead of
+        // the rule hardcoding one, and every long-range caller keeps the floor
+        // `gap_threshold_seconds` states.
+        assert_eq!(gap_threshold_seconds_with_floor(5, 0), 15);
+        assert_eq!(gap_threshold_seconds_with_floor(60, 0), 180);
+        assert_eq!(gap_threshold_seconds_with_floor(0, 0), 3);
+        assert_eq!(gap_threshold_seconds_with_floor(300, 0), 900);
+        assert_eq!(gap_threshold_seconds_with_floor(86_400, 0), 900);
+        assert_eq!(
+            gap_threshold_seconds_with_floor(5, MIN_GAP_SECONDS),
+            gap_threshold_seconds(5)
+        );
+    }
+
+    #[test]
+    fn a_silence_inside_a_short_window_is_a_gap_once_the_floor_is_the_cadence() {
+        // Five second cadence, a 26 second hole, one minute of window: the
+        // two-minute floor the long-range answers use can never name this hole,
+        // so the shortest chart the Owner has would draw straight across it.
+        let samples = vec![
+            sample("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 1.0),
+            sample("2026-01-01T00:00:05Z", "2026-01-01T00:00:05Z", 2.0),
+            sample("2026-01-01T00:00:10Z", "2026-01-01T00:00:10Z", 3.0),
+            sample("2026-01-01T00:00:36Z", "2026-01-01T00:00:36Z", 4.0),
+            sample("2026-01-01T00:00:41Z", "2026-01-01T00:00:41Z", 5.0),
+            sample("2026-01-01T00:00:46Z", "2026-01-01T00:00:46Z", 6.0),
+        ];
+        let cadence = current_cadence_seconds(&samples);
+        assert_eq!(cadence, 5);
+        let from = "2026-01-01T00:00:00Z";
+        let to = "2026-01-01T00:01:00Z";
+        let long_range = continuity(&samples, &[], cadence, from, to);
+        assert!(long_range.gaps.is_empty());
+        assert_eq!(long_range.coverage_seconds, 46);
+        let short_window = continuity_with_floor(&samples, &[], cadence, from, to, 0);
+        assert_eq!(short_window.gaps.len(), 1);
+        assert_eq!(short_window.gaps[0].from, "2026-01-01T00:00:10Z");
+        assert_eq!(short_window.gaps[0].to, "2026-01-01T00:00:36Z");
+        assert_eq!(short_window.gaps[0].seconds, 26);
+        assert_eq!(short_window.gaps[0].kind, GapKind::Collection);
+        // Only the proven stretches are coverage: the hole is not, and neither
+        // is the stretch after the newest observation.
+        assert_eq!(short_window.coverage_seconds, 20);
+    }
+
+    #[test]
+    fn an_unknown_cadence_names_no_silence_and_must_never_be_judged_with() {
+        // A series that resumed once after a hole: the newest interval says six
+        // seconds and the one before it says 26, so the series has not proved it
+        // is being observed at one rhythm yet and states no cadence at all.
+        let resumed_once = vec![
+            sample("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 1.0),
+            sample("2026-01-01T00:00:05Z", "2026-01-01T00:00:05Z", 2.0),
+            sample("2026-01-01T00:00:10Z", "2026-01-01T00:00:10Z", 3.0),
+            sample("2026-01-01T00:00:36Z", "2026-01-01T00:00:36Z", 4.0),
+        ];
+        assert_eq!(current_cadence_seconds(&resumed_once), 0);
+        // Zero is "unknown cadence", never "zero cadence": fed the rule anyway,
+        // a threshold of zero would name every interval of the window a silence.
+        let unjudged = continuity_with_floor(
+            &resumed_once,
+            &[],
+            0,
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:01:00Z",
+            0,
+        );
+        assert_eq!(unjudged.gaps.len(), 3);
+        // Which is why every caller answers an unknown cadence as unknown: the
+        // latest-60-second answer names no silence for such a series and claims
+        // no coverage either, and the observation after next settles the rhythm.
     }
 
     /// Issue #213: the pause lookup runs on every Owner metric-history request
