@@ -67,7 +67,7 @@ test('Radix selected paint, focus, keyboard and shared network scope', async ({ 
     if (await page.evaluate(() => navigator.maxTouchPoints > 0)) await page.touchscreen.tap(rect.x + rect.width / 2, rect.y - 7)
     else await page.mouse.click(rect.x + rect.width / 2, rect.y - 7)
     await expect(main).toHaveAttribute('data-state', 'active')
-    for (const tab of await page.getByRole('tab').all()) {
+    for (const tab of await page.getByRole('tablist', { name: 'Network filter' }).getByRole('tab').all()) {
       await tab.scrollIntoViewIfNeeded()
       const hit = await tab.evaluate(el => { const r = el.getBoundingClientRect(); return [r.top - 8, r.bottom + 8].every(y => el.contains(document.elementFromPoint(r.left + r.width / 2, y))) })
       expect(hit, 'both edges of the 44px target hit this trigger').toBe(true)
@@ -91,7 +91,7 @@ test('refinement scenarios and measured evidence', async ({ page }, info) => {
       return canvas && context && context.getImageData(0, 0, canvas.width, canvas.height).data.some((value, index) => index % 4 === 3 && value > 0)
     })
     await page.evaluate(() => document.fonts.ready)
-    const geometry = await page.locator('[data-slot="tabs-list"], [data-slot="tabs-trigger"], select, header button, header a').evaluateAll(els => els.map(el => ({ slot: el.getAttribute('data-slot'), text: el.textContent, width: el.getBoundingClientRect().width, height: el.getBoundingClientRect().height, paintedHeight: el.getBoundingClientRect().height - parseFloat(getComputedStyle(el).borderTopWidth) - parseFloat(getComputedStyle(el).borderBottomWidth), fontSize: getComputedStyle(el).fontSize })))
+    const geometry = await page.locator('[data-slot="tabs-list"], [data-slot="tabs-trigger"], select, header button, header a').evaluateAll(els => els.map(el => ({ slot: el.getAttribute('data-slot'), ariaLabel: el.getAttribute('aria-label'), inNetworkTablist: el.closest('[aria-label="Network filter"]') !== null, text: el.textContent, width: el.getBoundingClientRect().width, height: el.getBoundingClientRect().height, paintedHeight: el.getBoundingClientRect().height - parseFloat(getComputedStyle(el).borderTopWidth) - parseFloat(getComputedStyle(el).borderBottomWidth), fontSize: getComputedStyle(el).fontSize })))
     measurements[scenario] = geometry
     if (process.env.REFINEMENT_EVIDENCE) {
       const dir = `../docs/visual-migration/emerald/refinement/${process.env.REFINEMENT_EVIDENCE}/${info.project.name}`
@@ -108,7 +108,10 @@ test('refinement scenarios and measured evidence', async ({ page }, info) => {
       await expectNoHorizontalOverflow(page)
       if (['stale', 'error', 'disabled', 'partial', 'unknown'].includes(scenario)) await expect(page.locator('[data-slot="map-status"]'), scenario).toBeVisible()
       else await expect(page.locator('[data-slot="map-status"]')).toHaveCount(0)
-      const list = geometry.find(item => item.slot === 'tabs-list')!
+      // Home carries two tablists: the Network pills and the card/list View
+      // control (#223). The pills are the compact 32px list with 26px triggers,
+      // so the pill assertions name that tablist instead of sweeping the page.
+      const list = geometry.find(item => item.slot === 'tabs-list' && item.ariaLabel === 'Network filter')!
       expect(list.height).toBe(32)
       expect(geometry.find(item => item.slot === 'select')?.height).toBe(44)
       expect(geometry.find(item => item.slot === 'select')?.paintedHeight).toBe(32)
@@ -116,7 +119,7 @@ test('refinement scenarios and measured evidence', async ({ page }, info) => {
       expect(geometry.find(item => item.slot === 'theme-toggle')?.paintedHeight).toBe(32)
       expect(geometry.find(item => item.slot === 'admin-action')?.height).toBe(44)
       expect(geometry.find(item => item.slot === 'admin-action')?.paintedHeight).toBe(32)
-      for (const item of geometry.filter(item => item.slot === 'tabs-trigger')) expect(item.height).toBe(26)
+      for (const item of geometry.filter(item => item.slot === 'tabs-trigger' && item.inNetworkTablist)) expect(item.height).toBe(26)
       const card = page.locator('[data-slot="node-card"]').first()
       // The compact Node card moves the Emerald header padding onto its inner
       // identity region, so the header shell itself is unpadded.

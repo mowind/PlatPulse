@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest'
 import type { PublicNode, PublicValidatorInsight } from './api/generated'
 import {
   DEFAULT_HOME_FILTERS,
+  HOME_SORTS,
+  HOME_VIEWS,
   healthCategory,
-  healthRank,
   healthTone,
   homeNetworkScope,
   homeNodeLabel,
@@ -15,6 +16,7 @@ import {
   writeHomeFilters,
   type HomeFilters,
   type HomeNodeRecord,
+  type HomeSort,
 } from './homeFilters'
 
 function node(overrides: Partial<PublicNode> = {}): PublicNode {
@@ -74,14 +76,14 @@ const filters = (overrides: Partial<HomeFilters> = {}) => ({
 describe('Home filter vocabulary in a navigation URL', () => {
   it('reads the documented defaults from an empty URL', () => {
     expect(readHomeFilters(new URLSearchParams())).toEqual({
-      filters: { network: 'all', query: '', health: 'all', validator: 'all', sort: 'health' },
+      filters: { network: 'all', query: '', health: 'all', validator: 'all', sort: 'health', view: 'card' },
       rejected: [],
     })
   })
 
   it('restores every supported filter and sort value', () => {
     const search = new URLSearchParams(
-      'network=home-convergence&q=Node+H&health=unknown&validator=not_validator&sort=head',
+      'network=home-convergence&q=Node+H&health=unknown&validator=not_validator&sort=head&view=list',
     )
     expect(readHomeFilters(search)).toEqual({
       filters: {
@@ -90,6 +92,7 @@ describe('Home filter vocabulary in a navigation URL', () => {
         health: 'unknown',
         validator: 'not_validator',
         sort: 'head',
+        view: 'list',
       },
       rejected: [],
     })
@@ -97,7 +100,7 @@ describe('Home filter vocabulary in a navigation URL', () => {
 
   it('falls back on an unsupported value, keeps the supported ones, and names what it could not honour', () => {
     const search = new URLSearchParams(
-      'network=home-convergence&q=Node+H&health=degraded&validator=owning&sort=peers',
+      'network=home-convergence&q=Node+H&health=degraded&validator=owning&sort=size&view=grid',
     )
     const state = readHomeFilters(search)
     expect(state.filters).toEqual({
@@ -106,38 +109,51 @@ describe('Home filter vocabulary in a navigation URL', () => {
       health: 'all',
       validator: 'all',
       sort: 'health',
+      view: 'card',
     })
     expect(state.rejected).toEqual([
       { parameter: 'health', value: 'degraded' },
       { parameter: 'validator', value: 'owning' },
-      { parameter: 'sort', value: 'peers' },
+      { parameter: 'sort', value: 'size' },
+      { parameter: 'view', value: 'grid' },
     ])
   })
 
   it('treats an empty parameter as absent rather than invalid', () => {
-    expect(readHomeFilters(new URLSearchParams('network=&health=&validator=&sort=&q=')).rejected).toEqual([])
-    expect(readHomeFilters(new URLSearchParams('network=&health=&validator=&sort=&q=')).filters).toEqual(
-      DEFAULT_HOME_FILTERS,
-    )
+    const empty = new URLSearchParams('network=&health=&validator=&sort=&view=&q=')
+    expect(readHomeFilters(empty).rejected).toEqual([])
+    expect(readHomeFilters(empty).filters).toEqual(DEFAULT_HOME_FILTERS)
   })
 
-  it('ignores parameters Home does not own, so another surface can own them', () => {
-    // `view` belongs to the card/list ticket (#223); Home neither reads nor rejects it.
-    const state = readHomeFilters(new URLSearchParams('view=card&to=7'))
+  it('leaves a parameter Home does not own alone, so another surface can own it', () => {
+    // `to` belongs to the same-tab return ticket (#224); Home neither reads nor
+    // rejects it, and a Home write keeps it where its owner put it.
+    const state = readHomeFilters(new URLSearchParams('to=7'))
     expect(state).toEqual({ filters: DEFAULT_HOME_FILTERS, rejected: [] })
+  })
+
+  it('owns the view parameter: card and list are the only views Home reads', () => {
+    expect(readHomeFilters(new URLSearchParams('view=list')).filters.view).toBe('list')
+    expect(readHomeFilters(new URLSearchParams('view=card')).filters.view).toBe('card')
+    expect(readHomeFilters(new URLSearchParams('view=grid'))).toEqual({
+      filters: DEFAULT_HOME_FILTERS,
+      rejected: [{ parameter: 'view', value: 'grid' }],
+    })
   })
 
   it('writes an ordinary Home URL: defaults omitted, unrelated parameters kept, canonical order', () => {
     const written = writeHomeFilters(
-      filters({ network: 'home-convergence', query: 'Node H', health: 'healthy', sort: 'name' }),
-      new URLSearchParams('view=card'),
+      filters({ network: 'home-convergence', query: 'Node H', health: 'healthy', sort: 'name', view: 'list' }),
+      new URLSearchParams('view=card&to=7'),
     )
-    expect(written.toString()).toBe('view=card&network=home-convergence&q=Node+H&health=healthy&sort=name')
+    expect(written.toString()).toBe(
+      'to=7&network=home-convergence&q=Node+H&health=healthy&sort=name&view=list',
+    )
     expect(writeHomeFilters(filters()).toString()).toBe('')
   })
 
   it('round-trips: what Home writes is what Home reads back', () => {
-    const chosen = filters({ network: 'home-convergence', query: 'Node H', validator: 'unknown', sort: 'head' })
+    const chosen = filters({ network: 'home-convergence', query: 'Node H', validator: 'unknown', sort: 'head', view: 'list' })
     expect(readHomeFilters(writeHomeFilters(chosen)).filters).toEqual(chosen)
   })
 })
@@ -219,14 +235,14 @@ describe('Home health and Validator vocabulary', () => {
     expect(validatorCategory(node())).toBe('unknown')
   })
 
-  it('keeps the existing Home health interpretation and ordering', () => {
+  it('keeps the existing Home health interpretation', () => {
     expect(healthTone('healthy')).toBe('good')
     expect(healthTone('unhealthy')).toBe('bad')
     expect(healthTone('unknown')).toBe('warn')
-    // The three-value economy the overview already reads: attention first,
-    // unknown between it and healthy. #223 owns Unknown-last across six sorts.
-    expect(healthRank('unhealthy')).toBeLessThan(healthRank('unknown'))
-    expect(healthRank('unknown')).toBeLessThan(healthRank('healthy'))
+    // The Health sort is graded in the filter's own three words
+    // (healthCategory), not in this tone: a health the Server reported as
+    // Unknown sorts last like any other unattested value. The six orders are
+    // asserted under "Home list selection".
   })
 })
 
@@ -257,19 +273,98 @@ describe('Home list selection', () => {
     expect(selected.matching).toHaveLength(0)
   })
 
-  it('sorts by name, by Current Head with Unknown last, and by health', () => {
+  it('sorts by name, by Current Head, and by health with Unknown last', () => {
     const names = selectHomeRecords(records, filters({ sort: 'name' }))
     expect(names.matching.map((entry) => homeNodeLabel(entry.node))).toEqual(['Alpha', 'Beta', 'Gamma'])
     const heads = selectHomeRecords(records, filters({ sort: 'head' }))
     expect(heads.matching.map((entry) => entry.node.currentHead ?? null)).toEqual([900, 120, null])
+    // Unhealthy leads, Healthy follows, and the health the Server reports as
+    // Unknown sorts last: the same rule as the metric keys (#223, story 74).
     const health = selectHomeRecords(records, filters({ sort: 'health' }))
-    expect(health.matching.map((entry) => homeNodeLabel(entry.node))).toEqual(['Gamma', 'Beta', 'Alpha'])
+    expect(health.matching.map((entry) => homeNodeLabel(entry.node))).toEqual(['Gamma', 'Alpha', 'Beta'])
   })
 
-  it('keeps equal sort values in their incoming order', () => {
-    const first = record({ nodeId: 'first', displayName: 'First', health: 'healthy' })
-    const second = record({ nodeId: 'second', displayName: 'Second', health: 'healthy' })
-    const sorted = selectHomeRecords([first, second], filters()).matching
-    expect(sorted.map((entry) => homeNodeLabel(entry.node))).toEqual(['First', 'Second'])
+  it('sorts by Peers, Process CPU and Process memory with Unknown last and a real zero kept as a value', () => {
+    const busy = record({
+      nodeId: 'busy',
+      displayName: 'Busy',
+      peers: { freshness: 'current', peerCount: 4, state: 'ok' },
+      processCpuPercent: 62.5,
+      processMemoryPercent: 38.25,
+    })
+    // 0 is a measurement, not a missing value: it stays a value and sorts above a
+    // metric the Server has never attested.
+    const zero = record({
+      nodeId: 'zero',
+      displayName: 'Zero',
+      peers: { freshness: 'current', peerCount: 0, state: 'ok' },
+      processCpuPercent: 0,
+      processMemoryPercent: 0,
+    })
+    const never = record({
+      nodeId: 'never',
+      displayName: 'Never',
+      peers: { freshness: 'unknown', peerCount: null, state: 'unknown' },
+      processCpuPercent: null,
+      processMemoryPercent: null,
+    })
+    const order = (sort: HomeSort) =>
+      selectHomeRecords([never, busy, zero], filters({ sort })).matching.map((entry) => homeNodeLabel(entry.node))
+    expect(order('peers')).toEqual(['Busy', 'Zero', 'Never'])
+    expect(order('process_cpu')).toEqual(['Busy', 'Zero', 'Never'])
+    expect(order('process_memory')).toEqual(['Busy', 'Zero', 'Never'])
+  })
+
+  it('reads each metric sort from its own field, so two metrics never share one rank', () => {
+    // Every single-metric order above stays correct even if one metric sort read
+    // another column, so these fixtures disagree with each other: Crossed leads on
+    // Process CPU, Zero leads on Process memory, and Peers gives a third order
+    // again (#223, stories 73 and 74).
+    const busy = record({
+      nodeId: 'busy',
+      displayName: 'Busy',
+      peers: { freshness: 'current', peerCount: 4, state: 'ok' },
+      processCpuPercent: 62.5,
+      processMemoryPercent: 38.25,
+    })
+    const zero = record({
+      nodeId: 'zero',
+      displayName: 'Zero',
+      peers: { freshness: 'current', peerCount: 0, state: 'ok' },
+      processCpuPercent: 0,
+      processMemoryPercent: 74.5,
+    })
+    const crossed = record({
+      nodeId: 'crossed',
+      displayName: 'Crossed',
+      peers: { freshness: 'current', peerCount: 2, state: 'ok' },
+      processCpuPercent: 91,
+      processMemoryPercent: 5.5,
+    })
+    const order = (sort: HomeSort) =>
+      selectHomeRecords([crossed, zero, busy], filters({ sort })).matching.map((entry) => homeNodeLabel(entry.node))
+    expect(order('peers')).toEqual(['Busy', 'Crossed', 'Zero'])
+    expect(order('process_cpu')).toEqual(['Crossed', 'Busy', 'Zero'])
+    expect(order('process_memory')).toEqual(['Zero', 'Busy', 'Crossed'])
+  })
+
+  it('breaks a tie on the Node identity, so any incoming order sorts the same', () => {
+    const first = record({ nodeId: 'first', displayName: 'Same Name' })
+    const second = record({ nodeId: 'second', displayName: 'Same Name' })
+    const order = (records: HomeNodeRecord[]) =>
+      selectHomeRecords(records, filters({ sort: 'name' })).matching.map((entry) => entry.node.nodeId)
+    expect(order([first, second])).toEqual(['first', 'second'])
+    expect(order([second, first])).toEqual(['first', 'second'])
+  })
+})
+
+describe('Home list vocabulary', () => {
+  it('carries the six documented sort keys in their documented order', () => {
+    expect(HOME_SORTS).toEqual(['health', 'name', 'head', 'peers', 'process_cpu', 'process_memory'])
+  })
+
+  it('carries the two documented views, with the card view the default', () => {
+    expect(HOME_VIEWS).toEqual(['card', 'list'])
+    expect(DEFAULT_HOME_FILTERS.view).toBe('card')
   })
 })

@@ -68,6 +68,39 @@ const summaryValueOf = (label: string) => {
   return value
 }
 
+/** Home in its ordinary shell: the projection, the realtime status and the
+ *  session states a reader sees, against the URL the test set up beforehand. */
+function renderHome(networks: PublicNetwork[], options: { loading?: boolean } = {}) {
+  return render(
+    <BrowserRouter>
+      <HomeDashboard
+        networks={networks}
+        realtimeStatus="connected"
+        online
+        resetting={false}
+        error={null}
+        loading={options.loading ?? false}
+      />
+    </BrowserRouter>,
+  )
+}
+
+const selectNamed = (name: string) => screen.getByRole('combobox', { name }) as HTMLSelectElement
+
+/** The compact list read the way a reader reads it: the named table, its own
+ *  rows, and the column each public header names. Only the scroller container,
+ *  which carries no role, is addressed by its shell marker. */
+const listTable = () => screen.queryByRole('table', { name: 'Active Nodes' })
+const listRows = () => within(listTable()!).getAllByRole('row')
+  .filter((row) => within(row).queryAllByRole('cell').length > 0)
+const columnLabels = () => within(listTable()!).getAllByRole('columnheader').map((header) => header.textContent ?? '')
+const cellOf = (row: HTMLElement, column: string) => {
+  const index = columnLabels().indexOf(column)
+  return index < 0 ? undefined : within(row).getAllByRole('cell')[index].textContent
+}
+const rowOf = (name: string) => listRows().find((row) => cellOf(row, 'Node') === name)
+const listedNames = () => listRows().map((row) => cellOf(row, 'Node'))
+
 // Home owns its filter state in the URL, so a test that navigates must not
 // leak that query string into the next one.
 afterEach(() => {
@@ -799,27 +832,11 @@ describe('Public Home filter URLs', () => {
     nodes: [{ ...network.nodes[0], nodeId: 'node-c', displayName: 'Gamma', networkKey: 'testnet', currentHead: 900 }],
   }
 
-  function renderHome(networks: PublicNetwork[], options: { loading?: boolean } = {}) {
-    return render(
-      <BrowserRouter>
-        <HomeDashboard
-          networks={networks}
-          realtimeStatus="connected"
-          online
-          resetting={false}
-          error={null}
-          loading={options.loading ?? false}
-        />
-      </BrowserRouter>,
-    )
-  }
-
   // queryAll: an empty grid is a result this suite asserts, not an error.
   const nodeHrefs = () => screen.queryAllByRole('link')
     .map((link) => link.getAttribute('href'))
     .filter((href): href is string => href !== null && href.startsWith('/nodes/'))
   const searchbox = () => screen.getByRole('searchbox', { name: 'Search Active Nodes' }) as HTMLInputElement
-  const selectNamed = (name: string) => screen.getByRole('combobox', { name }) as HTMLSelectElement
   const resultCount = () => document.querySelector('[data-slot="home-result-count"]') as HTMLElement
   const filterNotice = () => document.querySelector('[data-slot="home-filter-notice"]')
 
@@ -968,3 +985,140 @@ describe('Public Home filter URLs', () => {
   })
 
 })
+
+/** Issue #223: the same Home list can be read as cards or as one compact table
+ *  with the seven public columns, and that choice travels in the ordinary Home
+ *  URL like every other filter on the surface. */
+describe('Public Home card and list views', () => {
+  const secondNetwork = {
+    ...network,
+    networkKey: 'testnet',
+    displayName: 'Testnet',
+    nodes: [{
+      ...network.nodes[0],
+      nodeId: 'node-c',
+      displayName: 'Gamma',
+      networkKey: 'testnet',
+      currentHead: 900,
+      processMemoryPercent: 90,
+    }],
+  }
+
+  // A Node whose Peer count was observed once and then retained: the collection
+  // failed and the snapshot went stale (story 6, design §11.1).
+  const retainedNetwork = {
+    ...network,
+    networkKey: 'retained',
+    displayName: 'Retained',
+    nodes: [{
+      ...network.nodes[0],
+      nodeId: 'node-d',
+      displayName: 'Delta',
+      networkKey: 'retained',
+      peers: { state: 'error', freshness: 'stale', peerCount: 2 },
+    }],
+  }
+
+  // Which view is mounted has no role of its own, so the two containers are
+  // told apart by their shell markers; everything inside the list is read
+  // through the table roles above.
+  const cardGrid = () => document.querySelector('[data-slot="node-grid"]')
+  const viewTab = (name: string) => screen.getByRole('tab', { name })
+
+  it('keeps cards by default and offers the seven public list columns instead', () => {
+    renderHome([network])
+    expect(cardGrid()).toBeTruthy()
+    expect(listTable()).toBeNull()
+
+    fireEvent.mouseDown(viewTab('List'))
+
+    expect(window.location.search).toBe('?view=list')
+    expect(cardGrid()).toBeNull()
+    expect(columnLabels()).toEqual([
+      'Node', 'Network', 'Health', 'Current Head', 'Peers', 'Process CPU', 'Process memory',
+    ])
+    // The default health sort puts the health the Server reports as Unknown
+    // last, exactly like the metric keys (#223, story 74).
+    expect(listedNames()).toEqual(['Alpha', 'Beta'])
+    // QC, Locked and Committed stay card-only columns.
+    expect(listTable()!.textContent).not.toContain('Locked')
+
+    fireEvent.mouseDown(viewTab('Cards'))
+
+    expect(cardGrid()).toBeTruthy()
+    expect(listTable()).toBeNull()
+    expect(window.location.search).toBe('')
+  })
+
+  it('keeps an authoritative zero and a never-observed metric apart in one column', () => {
+    renderHome([network])
+    fireEvent.mouseDown(viewTab('List'))
+    const alpha = rowOf('Alpha')!
+    const beta = rowOf('Beta')!
+
+    expect(cellOf(alpha, 'Peers')).toBe('0')
+    expect(cellOf(alpha, 'Process CPU')).toBe('12.5%')
+    expect(cellOf(alpha, 'Process memory')).toBe('45.3%')
+    expect(cellOf(beta, 'Peers')).toBe('Unknown')
+    expect(cellOf(beta, 'Process CPU')).toBe('Unknown')
+    expect(cellOf(beta, 'Process memory')).toBe('Unknown')
+    // The chain header and the health word are public Server values, not zeros.
+    expect(cellOf(alpha, 'Current Head')).toBe('120')
+    expect(cellOf(beta, 'Current Head')).toBe('Unknown')
+    expect(cellOf(alpha, 'Health')).toBe('Healthy')
+    expect(cellOf(beta, 'Health')).toBe('Unknown')
+    expect(cellOf(alpha, 'Network')).toBe('Mainnet')
+  })
+
+  it('qualifies a retained Peer count instead of letting the list read it as current', () => {
+    window.history.replaceState({}, '', '/?view=list&sort=name')
+    renderHome([network, retainedNetwork])
+
+    // Two peers is the last good snapshot rather than a fresh reading, so the
+    // cell keeps the value and says whose snapshot it is.
+    const delta = rowOf('Delta')!
+    expect(cellOf(delta, 'Peers')).toContain('2')
+    expect(cellOf(delta, 'Peers')).toContain('last good')
+    expect(cellOf(delta, 'Peers')).toContain('collection error')
+    expect(cellOf(delta, 'Peers')).toContain('freshness stale')
+    // A current authoritative zero and a never-observed snapshot carry no cue,
+    // and a retained count never turns into one.
+    expect(cellOf(rowOf('Alpha')!, 'Peers')).toBe('0')
+    expect(cellOf(rowOf('Beta')!, 'Peers')).toBe('Unknown')
+  })
+
+  it('restores the list from an ordinary Home URL and reports a view it cannot honour', () => {
+    window.history.replaceState({}, '', '/?view=list')
+    renderHome([network])
+    expect(listTable()).toBeTruthy()
+    expect(cardGrid()).toBeNull()
+
+    cleanup()
+    window.history.replaceState({}, '', '/?view=grid')
+    renderHome([network])
+
+    expect(cardGrid()).toBeTruthy()
+    expect(listTable()).toBeNull()
+    const notice = document.querySelector('[data-slot="home-filter-notice"]')!.textContent ?? ''
+    expect(notice).toContain('view "grid"')
+    expect(notice).toContain('fell back to its default')
+  })
+
+  it('sorts the list with the two metric keys, Unknown last and a stable Node tie', () => {
+    window.history.replaceState({}, '', '/?view=list&sort=peers')
+    renderHome([network, secondNetwork])
+    expect([...selectNamed('Sort').options].map((option) => option.value)).toEqual([
+      'health', 'name', 'head', 'peers', 'process_cpu', 'process_memory',
+    ])
+    // Alpha and Gamma both report an authoritative 0 against Beta's never
+    // observed Peer snapshot: the tie keeps the Node identity order and the
+    // Unknown value stays last.
+    expect(listedNames()).toEqual(['Alpha', 'Gamma', 'Beta'])
+
+    fireEvent.change(selectNamed('Sort'), { target: { value: 'process_memory' } })
+
+    expect(window.location.search).toBe('?sort=process_memory&view=list')
+    expect(listedNames()).toEqual(['Gamma', 'Alpha', 'Beta'])
+  })
+})
+

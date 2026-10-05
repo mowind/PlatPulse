@@ -446,3 +446,61 @@
     [data-node-region='validator'] { min-height: max(7.25rem, var(--node-validator-h, 0px)); }
   }
 }
+
+/* Home list view (#223, stories 72, 73, 79). One real table inside one local
+ * horizontal scroller. The Node name and its health word stay pinned at the
+ * left edge, so both remain readable while the other columns scroll under them;
+ * every pinned cell paints the same opaque surface the scroller paints, which
+ * is why this list uses that surface instead of the translucent CardX one.
+ * Column widths and the sticky offsets live together here, because the Health
+ * offset has to equal the name column's width at every breakpoint. */
+@layer components {
+  [data-slot='node-list'] {
+    width: 100%;
+    /* The phone widths below add up to this minimum, so the table is exactly as
+       wide as its columns and the two pinned offsets stay true. The phone column
+       set keeps Node, Network and Health inside a 360px viewport at rest: the
+       reader never has to scroll to find out whether a Node is healthy. */
+    min-width: 45.5rem;
+    table-layout: fixed;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+  [data-slot='node-list'] [data-column] { padding: 0.5rem 0.75rem; }
+  [data-slot='node-list'] thead [data-column] {
+    color: var(--muted-foreground);
+    font-weight: 500;
+  }
+  [data-slot='node-list'] tbody tr + tr [data-column] { border-top: 1px solid var(--border); }
+  [data-slot='node-list'] [data-column='name'],
+  [data-slot='node-list'] [data-column='health'] {
+    position: sticky;
+    z-index: 1;
+    background: var(--background);
+  }
+  [data-slot='node-list'] [data-column='name'] { left: 0; width: 7rem; }
+  [data-slot='node-list'] [data-column='health'] {
+    left: 7rem;
+    width: 6.5rem;
+    /* The pinned pair owns the boundary the other columns slide under. */
+    border-right: 1px solid var(--border);
+  }
+  [data-slot='node-list'] [data-column='network'] { width: 6rem; }
+  [data-slot='node-list'] [data-column='head'] { width: 7rem; }
+  [data-slot='node-list'] [data-column='peers'] { width: 5.5rem; }
+  [data-slot='node-list'] [data-column='process-cpu'] { width: 6.5rem; }
+  [data-slot='node-list'] [data-column='process-memory'] { width: 7rem; }
+
+  /* From the first tablet width up the list gets roomier columns instead of
+     squeezing the seven values into a phone-width table. */
+  @media (min-width: 40rem) {
+    [data-slot='node-list'] { min-width: 60.5rem; }
+    [data-slot='node-list'] [data-column='name'] { width: 13rem; }
+    [data-slot='node-list'] [data-column='health'] { left: 13rem; width: 7rem; }
+    [data-slot='node-list'] [data-column='network'] { width: 11rem; }
+    [data-slot='node-list'] [data-column='head'] { width: 7.5rem; }
+    [data-slot='node-list'] [data-column='peers'] { width: 6.5rem; }
+    [data-slot='node-list'] [data-column='process-cpu'] { width: 7.5rem; }
+    [data-slot='node-list'] [data-column='process-memory'] { width: 8rem; }
+  }
+}

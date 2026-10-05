@@ -1,9 +1,9 @@
 /**
- * Home list search, filters, sort, and their ordinary navigation URL (#222,
- * design §9). The Server already answers Home with the complete Public
- * projection of every Active Node, so Home searches, filters, and sorts that
- * collection locally: no pagination, no new Server query, and no field the
- * Public projection does not carry.
+ * Home list search, filters, sort, view, and their ordinary navigation URL
+ * (#222, #223, design §9). The Server already answers Home with the complete
+ * Public projection of every Active Node, so Home searches, filters, sorts and
+ * views that collection locally: no pagination, no new Server query, and no
+ * field the Public projection does not carry.
  *
  * Two scopes are deliberately kept apart here. The Network selection scopes the
  * whole Home reading — overview statistics, the Peer country map, and the
@@ -26,8 +26,18 @@ export type HomeNodeRecord = {
   node: PublicNode
 }
 
-export const HOME_SORTS = ['health', 'name', 'head'] as const
+/**
+ * The six list sorts. Health, Name and Current Head were the three the delivered
+ * toolbar already offered, kept in the same place so an existing Home link still
+ * means what it meant; Peers, Process CPU and Process memory are the metric
+ * columns #223 adds beside them.
+ */
+export const HOME_SORTS = ['health', 'name', 'head', 'peers', 'process_cpu', 'process_memory'] as const
 export type HomeSort = (typeof HOME_SORTS)[number]
+
+/** The two Node list views: the delivered card grid, and the compact list (#223). */
+export const HOME_VIEWS = ['card', 'list'] as const
+export type HomeView = (typeof HOME_VIEWS)[number]
 
 export const HOME_HEALTH_FILTERS = ['all', 'healthy', 'unhealthy', 'unknown'] as const
 export type HomeHealthFilter = (typeof HOME_HEALTH_FILTERS)[number]
@@ -43,6 +53,8 @@ export type HomeFilters = {
   health: HomeHealthFilter
   validator: HomeValidatorFilter
   sort: HomeSort
+  /** The list view the reader chose; the card grid is the default. */
+  view: HomeView
 }
 
 export const DEFAULT_HOME_FILTERS: HomeFilters = {
@@ -51,15 +63,16 @@ export const DEFAULT_HOME_FILTERS: HomeFilters = {
   health: 'all',
   validator: 'all',
   sort: 'health',
+  view: 'card',
 }
 
 /** The Home filter parameters, in the order Home writes them back. */
-const HOME_PARAMETERS = ['network', 'q', 'health', 'validator', 'sort'] as const
+const HOME_PARAMETERS = ['network', 'q', 'health', 'validator', 'sort', 'view'] as const
 
 /** A value the URL carried that Home could not honour. A search string is
  *  whatever the reader typed, so it is never rejected. */
 export type HomeFilterRejection = {
-  parameter: 'network' | 'health' | 'validator' | 'sort'
+  parameter: 'network' | 'health' | 'validator' | 'sort' | 'view'
   value: string
 }
 
@@ -104,8 +117,8 @@ function readChoice<P extends HomeFilterRejection['parameter'], T extends string
 /**
  * The filters an ordinary Home URL asks for. An unsupported value is reported
  * and replaced by the default; an empty value is absent, not invalid; a
- * parameter Home does not own (another surface's, such as `view`) is left
- * untouched for its owner.
+ * parameter Home does not own (another surface's, such as the same-tab return
+ * ticket's `to`) is left untouched for its owner.
  */
 export function readHomeFilters(search: URLSearchParams): {
   filters: HomeFilters
@@ -119,6 +132,7 @@ export function readHomeFilters(search: URLSearchParams): {
       health: readChoice(search, 'health', HOME_HEALTH_FILTERS, DEFAULT_HOME_FILTERS.health, rejected),
       validator: readChoice(search, 'validator', HOME_VALIDATOR_FILTERS, DEFAULT_HOME_FILTERS.validator, rejected),
       sort: readChoice(search, 'sort', HOME_SORTS, DEFAULT_HOME_FILTERS.sort, rejected),
+      view: readChoice(search, 'view', HOME_VIEWS, DEFAULT_HOME_FILTERS.view, rejected),
     },
     rejected,
   }
@@ -138,6 +152,7 @@ export function writeHomeFilters(filters: HomeFilters, base?: URLSearchParams): 
   if (filters.health !== DEFAULT_HOME_FILTERS.health) next.set('health', filters.health)
   if (filters.validator !== DEFAULT_HOME_FILTERS.validator) next.set('validator', filters.validator)
   if (filters.sort !== DEFAULT_HOME_FILTERS.sort) next.set('sort', filters.sort)
+  if (filters.view !== DEFAULT_HOME_FILTERS.view) next.set('view', filters.view)
   return next
 }
 
@@ -217,20 +232,62 @@ export function healthTone(value: string): 'good' | 'warn' | 'bad' | 'neutral' {
   return 'neutral'
 }
 
-/** Attention first, then Unknown, then healthy: the order Home already reads. */
-export function healthRank(value: string): number {
-  const tone = healthTone(value)
-  return tone === 'bad' ? 0 : tone === 'warn' ? 1 : tone === 'good' ? 2 : 3
+/**
+ * The Health sort rank. Every sort key shares one rule — a value the Server never
+ * attested sorts last — so Health is graded in the same three words the Health
+ * filter and the Health cell already read (#223, stories 73 and 74): an
+ * unhealthy Node leads, a healthy Node follows, and a health Home can only read
+ * as Unknown sorts after both. Attention still leads, and an unattested health
+ * never outranks an attested one.
+ */
+function healthSortRank(value: string): number {
+  const category = healthCategory(value)
+  if (category === 'unhealthy') return 0
+  return category === 'healthy' ? 1 : 2
 }
 
-/** The requested order. Equal values keep their incoming order, so a refresh
- *  that returns the same set does not reshuffle the list. */
+/**
+ * A metric column ordered largest first. A value the Server never attested is
+ * Unknown and sorts last; a measured zero is a real value and keeps its place in
+ * the order. The two are never conflated (#223, stories 73 and 74).
+ */
+function compareUnknownLast(left: number | null, right: number | null): number {
+  if (left === null) return right === null ? 0 : 1
+  if (right === null) return -1
+  return right - left
+}
+
+/**
+ * The requested order. Every key puts a value the Server never attested last and
+ * keeps a measured zero as a value: the four metric sorts compare the metric
+ * itself (Current Head, Peers, Process CPU, Process memory) and the Health sort
+ * compares the three-value health grade. Equal values fall back to the Node
+ * identity, so the order is deterministic: the same set sorts the same way
+ * whatever order the projection happened to arrive in, and a refetch cannot make
+ * the list jump.
+ */
 export function sortHomeRecords<T extends HomeNodeRecord>(records: readonly T[], sort: HomeSort): T[] {
   return [...records].sort((left, right) => {
-    if (sort === 'name') return homeNodeLabel(left.node).localeCompare(homeNodeLabel(right.node))
-    if (sort === 'head') return (right.node.currentHead ?? -1) - (left.node.currentHead ?? -1)
-    return healthRank(left.node.health) - healthRank(right.node.health)
+    const order = compareHomeNodes(left.node, right.node, sort)
+    return order !== 0 ? order : left.node.nodeId.localeCompare(right.node.nodeId)
   })
+}
+
+function compareHomeNodes(left: PublicNode, right: PublicNode, sort: HomeSort): number {
+  switch (sort) {
+    case 'name':
+      return homeNodeLabel(left).localeCompare(homeNodeLabel(right))
+    case 'head':
+      return compareUnknownLast(left.currentHead ?? null, right.currentHead ?? null)
+    case 'peers':
+      return compareUnknownLast(left.peers?.peerCount ?? null, right.peers?.peerCount ?? null)
+    case 'process_cpu':
+      return compareUnknownLast(left.processCpuPercent ?? null, right.processCpuPercent ?? null)
+    case 'process_memory':
+      return compareUnknownLast(left.processMemoryPercent ?? null, right.processMemoryPercent ?? null)
+    case 'health':
+      return healthSortRank(left.health) - healthSortRank(right.health)
+  }
 }
 
 /**

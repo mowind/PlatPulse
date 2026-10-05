@@ -27,7 +27,10 @@ const searchBox = (page: Page) => page.getByRole('searchbox', { name: 'Search Ac
 const healthFilter = (page: Page) => page.getByRole('combobox', { name: 'Health filter' })
 const validatorFilter = (page: Page) => page.getByRole('combobox', { name: 'Validator status filter' })
 const sortSelect = (page: Page) => page.getByRole('combobox', { name: 'Sort', exact: true })
-const networkTab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true })
+const networkControl = (page: Page) => page.locator('[aria-label="Network filter"]')
+/** One control tab by its accessible name. The Network pills and the card/list
+ *  View control share the `tab` role, so the name carries the choice. */
+const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true })
 
 /** The listed Node cards, by the public name each card links with. */
 async function listedNodes(page: Page): Promise<string[]> {
@@ -185,11 +188,11 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expectListedNodes(page, 1)
     await expectSummaryValue(page, 'Active Nodes', activeNodes)
 
-    await networkTab(page, CONVERGENCE_NETWORK_NAME).click()
+    await tab(page, CONVERGENCE_NETWORK_NAME).click()
 
     // The Network selection is what moves the overview, the map, and the
     // in-scope total; the search keeps narrowing only the list inside it.
-    await expect(networkTab(page, CONVERGENCE_NETWORK_NAME)).toHaveAttribute('aria-selected', 'true')
+    await expect(tab(page, CONVERGENCE_NETWORK_NAME)).toHaveAttribute('aria-selected', 'true')
     const scoped = CONVERGENCE_NODE_LETTERS.length
     expect(scoped).toBeLessThan(activeNodes)
     await expectSummaryValue(page, 'Active Nodes', scoped)
@@ -207,7 +210,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await page.goto(url)
 
     await expect(home(page)).toBeVisible()
-    await expect(networkTab(page, CONVERGENCE_NETWORK_NAME)).toHaveAttribute('aria-selected', 'true')
+    await expect(tab(page, CONVERGENCE_NETWORK_NAME)).toHaveAttribute('aria-selected', 'true')
     await expect(searchBox(page)).toHaveValue('Node H')
     await expect(sortSelect(page)).toHaveValue('name')
     await expect(nodeGrid(page).locator('a[href^="/nodes/"]')).toHaveCount(1)
@@ -224,7 +227,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
 
     await page.goto(url)
     await expect(sortSelect(page)).toHaveValue('name')
-    await expect(networkTab(page, CONVERGENCE_NETWORK_NAME)).toHaveAttribute('aria-selected', 'true')
+    await expect(tab(page, CONVERGENCE_NETWORK_NAME)).toHaveAttribute('aria-selected', 'true')
     await expect(page).toHaveURL(/[?]network=home-convergence&q=Node[+]H&sort=name$/)
   })
 
@@ -242,7 +245,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
 
     // The refused values fell back to their defaults in place, the link the
     // reader followed is untouched, and the rest of it still took effect.
-    await expect(networkTab(page, 'All Networks')).toHaveAttribute('aria-selected', 'true')
+    await expect(tab(page, 'All Networks')).toHaveAttribute('aria-selected', 'true')
     await expect(healthFilter(page)).toHaveValue('all')
     await expect(sortSelect(page)).toHaveValue('health')
     await expect(page).toHaveURL(/[?]network=gone&health=critical&sort=size$/)
@@ -266,7 +269,12 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     // between the pills, and the pill they select is the ordinary Network filter
     // (so the default selection leaves the address bar bare again).
     const selectedPill = () =>
-      page.evaluate(() => document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim() ?? '')
+      page.evaluate(
+        () =>
+          document
+            .querySelector('[aria-label="Network filter"] [role="tab"][aria-selected="true"]')
+            ?.textContent?.trim() ?? '',
+      )
     const plainHome = page.url()
     const initialPill = await selectedPill()
     expect(initialPill, 'a Network pill must be selected').not.toBe('')
@@ -275,15 +283,17 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
         // The whole Network filter is one tab stop: the control itself holds the
         // stop and its pills stay out of the Tab order (the trigger tabindex is
         // -1 in both states, and the arrow keys move between the pills).
+        // The card/list control is a second, independent tab stop; only the
+        // Network control and its own pills are counted here.
         const control = document.querySelector('[aria-label="Network filter"]')
-        const candidates = [control, ...Array.from(document.querySelectorAll('[role="tab"]'))].filter(
+        const candidates = [control, ...Array.from(control?.querySelectorAll('[role="tab"]') ?? [])].filter(
           (element): element is HTMLElement => element instanceof HTMLElement,
         )
         return candidates.filter((element) => element.tabIndex >= 0).length
       }),
       'the Network filter must be one tab stop',
     ).toBe(1)
-    await page.locator('[role="tab"][aria-selected="true"]').focus()
+    await networkControl(page).locator('[role="tab"][aria-selected="true"]').focus()
     await page.keyboard.press('ArrowRight')
     // The selected pill follows the address bar, which is painted a frame later,
     // so the new selection is awaited instead of read straight after the key.
@@ -338,14 +348,18 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await page.keyboard.press('Shift+Tab')
     await expect(searchBox(page)).toBeFocused()
     await page.keyboard.press('Shift+Tab')
+    await expect(tab(page, 'Cards')).toBeFocused()
+    await page.keyboard.press('Shift+Tab')
     await expect(sortSelect(page)).toBeFocused()
     await page.keyboard.press('Shift+Tab')
     expect(
-      await page.evaluate(() => document.activeElement?.getAttribute('role') ?? ''),
+      await page.evaluate(() => document.activeElement?.closest('[aria-label="Network filter"]') !== null),
       'the Network filter sits before the sort control in the reading order',
-    ).toBe('tab')
+    ).toBe(true)
     await page.keyboard.press('Tab')
     await expect(sortSelect(page)).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(tab(page, 'Cards')).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(searchBox(page)).toBeFocused()
 
@@ -361,7 +375,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     const allNodes = await listedNodes(page)
     const stepsBefore = await page.evaluate(() => history.length)
 
-    await networkTab(page, CONVERGENCE_NETWORK_NAME).click()
+    await tab(page, CONVERGENCE_NETWORK_NAME).click()
     await expectListAgreesWithSummary(page)
     // One reader action is one history step. A Radix pill reports its value on
     // focus and again on press, so a second write of the same URL would leave a
@@ -475,7 +489,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     // row, because a long Network name can be wider than the scroller.
     if (await page.evaluate(() => navigator.maxTouchPoints > 0)) {
       const tapPill = async (name: string) => {
-        const point = await networkTab(page, name).evaluate((pill) => {
+        const point = await tab(page, name).evaluate((pill) => {
           const rect = pill.getBoundingClientRect()
           const row = pill.closest('div.overflow-x-auto')?.getBoundingClientRect()
           if (!row) return null
@@ -488,7 +502,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
         await page.touchscreen.tap(point!.x, point!.y)
       }
 
-      const secondPill = await page
+      const secondPill = await networkControl(page)
         .locator('[role="tab"][aria-selected="false"]')
         .first()
         .textContent()
@@ -496,12 +510,12 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
 
       // The tap is the Network selection: the pills, the URL, the overview and
       // the Node list all follow it.
-      await expect(networkTab(page, secondPill!.trim())).toHaveAttribute('aria-selected', 'true')
+      await expect(tab(page, secondPill!.trim())).toHaveAttribute('aria-selected', 'true')
       await expect(page).toHaveURL(/[?&]network=/)
       await expect.poll(() => summaryValue(page, 'Active Nodes')).not.toBe(activeNodes)
 
       await tapPill('All Networks')
-      await expect(networkTab(page, 'All Networks')).toHaveAttribute('aria-selected', 'true')
+      await expect(tab(page, 'All Networks')).toHaveAttribute('aria-selected', 'true')
       await expectSummaryValue(page, 'Active Nodes', activeNodes)
       expect(page.url(), 'the default Network selection is omitted from the URL again').toBe(plainHome)
     }

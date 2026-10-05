@@ -34,6 +34,7 @@ import {
   type HomeHealthFilter,
   type HomeSort,
   type HomeValidatorFilter,
+  type HomeView,
 } from '../homeFilters'
 import { LinkedValidatorSection, validatorDataStatus, type ValidatorDataStatus } from './LinkedValidator'
 import { ValidatorTotalCard } from './ValidatorTotals'
@@ -60,6 +61,9 @@ const sortOptions: Array<{ value: HomeSort; label: string }> = [
   { value: 'health', label: 'Health' },
   { value: 'name', label: 'Name' },
   { value: 'head', label: 'Current Head' },
+  { value: 'peers', label: 'Peers' },
+  { value: 'process_cpu', label: 'Process CPU' },
+  { value: 'process_memory', label: 'Process memory' },
 ]
 
 /** Emerald Home: six equal overview cards beside a proportional Peer map.
@@ -148,7 +152,10 @@ export default function HomeDashboard({
     [networks, scope.network],
   )
   const geoStatus = geoMapStatus(geoOverview, { loading, hasProjection })
-  const nodeGridRef = useNodeRegionHeights(matching, hasProjection)
+  // The measured region minima belong to the card grid: leave the measurement
+  // off in the list view, and let the changed flag remeasure the grid when the
+  // reader switches back, because that grid element is mounted again.
+  const nodeGridRef = useNodeRegionHeights(matching, hasProjection && filters.view === 'card')
   const scopedNetworks = scope.network === 'all' ? networks : networks.filter(network => network.networkKey === scope.network)
   const healthyCount = hasProjection ? scoped.filter(({ node }) => healthCategory(node.health) === 'healthy').length : null
   const streamLabel = realtimeStreamLabel(realtimeStatus)
@@ -225,8 +232,8 @@ export default function HomeDashboard({
 
       <div className="relative p-4 pt-0 md:static">
         <div className="flex flex-col gap-2" aria-label="Node filters and sorting">
-          <div className="flex flex-nowrap items-start gap-2 md:items-center">
-          <div className="overflow-x-auto rounded-sm py-1.5 -my-1.5 md:relative md:z-10">
+          <div className="flex flex-wrap items-start gap-2 md:flex-nowrap md:items-center">
+          <div className="w-full overflow-x-auto rounded-sm py-1.5 -my-1.5 md:relative md:z-10 md:w-auto">
             <Tabs
               value={scope.network}
               onValueChange={(value) => updateFilters({ network: value })}
@@ -261,6 +268,22 @@ export default function HomeDashboard({
               ))}
             </Select>
           </label>
+          {/* The card/list choice is part of the same ordinary Home URL contract
+              as the filters and the sort (design §9). It sits after the Network
+              pills on purpose: the pill row stays the first tab stop on the
+              surface. On a phone the row wraps, so the pills keep the whole
+              width and this control drops to the next line without leaving the
+              reading order. */}
+          <Tabs
+            value={filters.view}
+            onValueChange={(value) => updateFilters({ view: value as HomeView })}
+            className="flex-none md:relative md:z-10"
+          >
+            <TabsList className={cn('flex-none rounded-md md:bg-background', SURFACE_TOOLBAR)} aria-label="View">
+              <TabsTrigger value="card" className="flex-none text-xs">Cards</TabsTrigger>
+              <TabsTrigger value="list" className="flex-none text-xs">List</TabsTrigger>
+            </TabsList>
+          </Tabs>
           </div>
 
           {/* Search, health, and Validator status narrow the list below. None of
@@ -352,6 +375,8 @@ export default function HomeDashboard({
                     Network selection.
                   </span>
                 </Empty>
+              ) : filters.view === 'list' ? (
+                <HomeNodeList records={matching} />
               ) : (
                 <div
                   className="grid auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(300px,1fr))]"
@@ -397,6 +422,69 @@ function SummaryCard({ label, value, tone, icon }: {
  * routine prose. Exceptional health keeps a short diagnostic line (issue #97);
  * resync progress is a separate, lightweight status area.
  */
+/** The compact list view (stories 72, 73, 79): one row per matching Node with
+ * the seven public columns this ticket names, inside one local horizontal
+ * scroller whose Node name and health word stay pinned (emerald.css owns those
+ * two columns and their offsets). Every value comes from the same public field
+ * and the same formatter the card uses, so a metric the Server never attested
+ * still reads Unknown here and a real zero still reads 0. QC, Locked and
+ * Committed stay card-only columns, exactly as the design says. */
+function HomeNodeList({ records }: { records: readonly NodeRecord[] }) {
+  return (
+    <div data-slot="node-list-scroll" className="overflow-x-auto rounded-md bg-background">
+      <table data-slot="node-list" aria-label="Active Nodes" className="w-full text-sm">
+        <thead>
+          <tr>
+            <th scope="col" data-column="name" className="text-left">Node</th>
+            <th scope="col" data-column="network" className="text-left">Network</th>
+            <th scope="col" data-column="health" className="text-left">Health</th>
+            <th scope="col" data-column="head" className="text-right">Current Head</th>
+            <th scope="col" data-column="peers" className="text-right">Peers</th>
+            <th scope="col" data-column="process-cpu" className="text-right">Process CPU</th>
+            <th scope="col" data-column="process-memory" className="text-right">Process memory</th>
+          </tr>
+        </thead>
+        <tbody>
+          {records.map(({ network, node }) => (
+            <tr key={node.nodeId} data-slot="node-list-row">
+              <td data-column="name">
+                <Link
+                  to={'/nodes/' + node.nodeId}
+                  aria-label={homeNodeLabel(node)}
+                  title={homeNodeLabel(node)}
+                  className="inline-flex min-h-11 min-w-11 max-w-full items-center rounded-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                >
+                  <span className="truncate">{homeNodeLabel(node)}</span>
+                </Link>
+              </td>
+              <td data-column="network" className="text-muted-foreground">
+                <span className="block truncate" title={network.displayName}>{network.displayName}</span>
+              </td>
+              <td data-column="health">
+                <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                  <NodeHealthMarker health={node.health} />
+                  {healthLabel(node.health)}
+                </span>
+              </td>
+              <td data-column="head" className="text-right tabular-nums">{formatNumber(node.currentHead)}</td>
+              <td data-column="peers" className="text-right tabular-nums">
+                {formatPeerCount(node)}
+                {peerRetentionCue(node) && (
+                  <small data-slot="node-list-peers-cue" className="block text-[11px] text-muted-foreground">
+                    {peerRetentionCue(node)}
+                  </small>
+                )}
+              </td>
+              <td data-column="process-cpu" className="text-right tabular-nums">{formatPercent(node.processCpuPercent)}</td>
+              <td data-column="process-memory" className="text-right tabular-nums">{formatPercent(node.processMemoryPercent)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function HomeNodeCard({ network, node }: NodeRecord) {
   const tone = healthTone(node.health)
   const diagnostic = exceptionalDiagnostic(node)
@@ -730,6 +818,30 @@ function formatPeerObservation(node: PublicNode): string | undefined {
   // remain visible below the value.
   return undefined
 }
+/**
+ * The list's half of `formatPeerObservation`. A retained Peer count keeps its
+ * value, so the cell has to say whose snapshot that value is: the card spells the
+ * case out in a sentence, and a table cell carries the two words that matter plus
+ * the dimensions that are not current. A count the Server never attested stays
+ * Unknown with no cue, and a fully current observation carries no cue either
+ * (#223, story 73; design §11.1).
+ */
+function peerRetentionCue(node: PublicNode): string | undefined {
+  const peer = node.peers
+  if (!peer || peerInsightValueStatus(peer) === 'Unknown') return undefined
+  const reasons: string[] = []
+  const collection = peerInsightCollectionStatus(peer)
+  const freshness = peerInsightFreshnessStatus(peer)
+  if (collection !== 'Current') {
+    reasons.push(collection === 'Unknown' ? 'collection unknown' : `collection ${collection.toLowerCase()}`)
+  }
+  if (freshness !== 'Current') {
+    reasons.push(freshness === 'Unknown' ? 'freshness unknown' : `freshness ${freshness.toLowerCase()}`)
+  }
+  if (reasons.length === 0) return undefined
+  return `last good (${reasons.join(', ')})`
+}
+
 function healthLabel(value: string): string {
   if (value === 'healthy') return 'Healthy'
   if (value === 'unhealthy') return 'Unhealthy'
@@ -745,6 +857,7 @@ const REJECTED_FILTER_LABELS: Record<HomeFilterRejection['parameter'], string> =
   health: 'health',
   validator: 'Validator status',
   sort: 'sort',
+  view: 'view',
 }
 
 function rejectedFilterNotice(rejections: HomeFilterRejection[]): string {
