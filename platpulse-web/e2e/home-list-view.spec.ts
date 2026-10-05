@@ -325,4 +325,43 @@ test.describe('Public Home card and list views (issue #223)', () => {
     await expectNoHorizontalOverflow(page)
     await expectVisibleInteractiveTargets(page)
   })
+
+  test('keeps the pinned columns on the dark surface instead of a light band', async ({ page }) => {
+    await loginAs(page)
+    await page.emulateMedia({ colorScheme: 'dark' })
+    await page.goto(LIST_URL)
+    await expect(page.locator('html')).toHaveClass(/dark/)
+    await expectList(page, NODE_LETTERS)
+
+    // The name and health columns paint their own background so the columns
+    // sliding underneath never show through. That background has to follow the
+    // theme: a fixed light surface would leave a bright band over a dark list.
+    const surfaces = await listTable(page).evaluate((table) => {
+      // The theme states its surfaces in oklch(), so the painted colour is read
+      // back through a real canvas instead of string-splitting the computed value.
+      const canvas = document.createElement('canvas')
+      canvas.width = 1
+      canvas.height = 1
+      const context = canvas.getContext('2d')!
+      const read = (element: Element | null) => {
+        const value = getComputedStyle(element!).backgroundColor
+        context.clearRect(0, 0, 1, 1)
+        context.fillStyle = value
+        context.fillRect(0, 0, 1, 1)
+        const [r, g, b, alpha] = context.getImageData(0, 0, 1, 1).data
+        return { value, r, g, b, alpha: alpha / 255 }
+      }
+      return {
+        header: read(table.querySelector('thead th[data-column="name"]')),
+        cell: read(table.querySelector('tbody td')),
+      }
+    })
+    for (const [part, surface] of Object.entries(surfaces)) {
+      expect(surface.alpha, `the pinned ${part} background is opaque (${surface.value})`).toBe(1)
+      expect(
+        Math.max(surface.r, surface.g, surface.b),
+        `the pinned ${part} background follows the dark theme (${surface.value})`,
+      ).toBeLessThan(90)
+    }
+  })
 })
