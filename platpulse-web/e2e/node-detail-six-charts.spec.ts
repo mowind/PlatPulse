@@ -427,9 +427,9 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
     await loginAs(page)
     await openNodeDetail(page)
     // The deleted Network overview route is not linked any more: the breadcrumb
-    // is named "All Networks" and returns Home.
+    // names its destination and returns Home.
     const breadcrumb = page.locator('[data-slot="node-detail-breadcrumb"] a')
-    await expect(breadcrumb).toHaveText(/All Networks/)
+    await expect(breadcrumb).toHaveText(/Back to Home/)
     await breadcrumb.click()
     await expect(page).toHaveURL(/\/$/)
     await expect(page.getByRole('region', { name: 'Home' })).toBeVisible({ timeout: 15_000 })

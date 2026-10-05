@@ -175,8 +175,8 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
     await expect(page.getByRole('heading', { name: 'Peer history' })).toHaveCount(0)
 
     // Node Detail → Home via the breadcrumb: the Network overview route is
-    // gone, so the "All Networks" link returns to the Home dashboard.
-    await page.getByRole('link', { name: 'All Networks', exact: true }).click()
+    // gone, so the "Back to Home" link returns to the Home dashboard.
+    await page.getByRole('link', { name: 'Back to Home', exact: true }).click()
     await expect(page).toHaveURL(/\/$/)
     await expect(page.getByRole('region', { name: 'Home' })).toBeVisible({
       timeout: 15_000,

@@ -117,8 +117,9 @@ function readChoice<P extends HomeFilterRejection['parameter'], T extends string
 /**
  * The filters an ordinary Home URL asks for. An unsupported value is reported
  * and replaced by the default; an empty value is absent, not invalid; a
- * parameter Home does not own (another surface's, such as the same-tab return
- * ticket's `to`) is left untouched for its owner.
+ * parameter Home does not own (another surface's) is left untouched for its
+ * owner: the same-tab return of issue #224 is a departure the tab remembers,
+ * not a Home parameter this reader would have to carry in the address bar.
  */
 export function readHomeFilters(search: URLSearchParams): {
   filters: HomeFilters

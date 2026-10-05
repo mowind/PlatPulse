@@ -12,6 +12,7 @@ import type { SessionProjection } from '../api/generated'
 import { fetchSession, login as apiLogin, logout as apiLogout } from '../api/auth'
 import { resetAdminCache } from '../api/admin'
 import { resetPublicCache } from '../api/public'
+import { syncHomeReturnReader } from '../homeReturn'
 
 /** Auth state machine: loading → guest, or authenticated with a session. */
 export type AuthStatus =
@@ -89,6 +90,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       sessionEpochRef.current += 1
     }
   }, [])
+
+  // A departure belongs to the reader who wrote it (design §15.25): the token
+  // that carries it is bound here, at the boundary that outlives every shell
+  // drawing a reading, because signing out and signing in as somebody else
+  // happens while no such shell is mounted — an old history entry would
+  // otherwise be read back in front of the reader who replaced them. The
+  // reader is the session's identity, not its generation: a successful access
+  // re-check republishes the same reader's data and owes them their own return.
+  const reader =
+    status.state === 'authenticated'
+      ? `${status.session.role}:${status.session.userId}`
+      : status.state === 'guest'
+        ? 'guest'
+        : null
+  useEffect(() => {
+    if (reader !== null) syncHomeReturnReader(reader)
+  }, [reader])
 
   const login = useCallback(async (username: string, password: string) => {
     sessionProbeRef.current?.abort()

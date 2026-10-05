@@ -241,6 +241,9 @@ export default function App() {
 
 function HomeIndex() {
   const { networks, realtime, resetting } = useHomeRealtimeContext()
+  // The projection on screen may be the one Home already held while the
+  // authoritative refetch is still in flight, so the arrival's landing is
+  // provisional until that reading settles (design §15.25).
   return (
     <HomeDashboard
       networks={networks.data ?? []}
@@ -254,6 +257,7 @@ function HomeIndex() {
         : null}
       hasLastGood={networks.data !== undefined}
       loading={networks.isPending}
+      refreshing={networks.isFetching}
     />
   )
 }

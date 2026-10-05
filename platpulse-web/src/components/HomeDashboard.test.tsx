@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { BrowserRouter } from 'react-router'
-import type { PublicNetwork } from '../api/generated'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { BrowserRouter, createMemoryRouter, RouterProvider } from 'react-router'
+import type { PublicNetwork, PublicNode } from '../api/generated'
+import { homeReturnState, homeReturnTab, type HomeReturnState } from '../homeReturn'
 import HomeDashboard from './HomeDashboard'
 
 const network = {
@@ -1119,6 +1121,246 @@ describe('Public Home card and list views', () => {
 
     expect(window.location.search).toBe('?sort=process_memory&view=list')
     expect(listedNames()).toEqual(['Gamma', 'Alpha', 'Beta'])
+  })
+})
+
+/** Home arriving from Node Detail: the departure a Node link recorded travels in
+ *  the history entry's own state, which is what react-router reads back. */
+function renderReturnArrival(networks: PublicNetwork[], search: string, departure: HomeReturnState | null) {
+  const router = createMemoryRouter(
+    [{
+      path: '/',
+      element: (
+        <HomeDashboard
+          networks={networks}
+          realtimeStatus="connected"
+          online
+          resetting={false}
+          error={null}
+          loading={false}
+        />
+      ),
+    }],
+    { initialEntries: [{ pathname: '/', search, state: departure }] },
+  )
+  const view = render(<RouterProvider router={router} />)
+  return { router, view }
+}
+
+const returnNotice = () => document.querySelector('[data-slot="home-return-notice"]')
+
+/** A departure as a Node link writes it. Only the document that wrote it reads
+ *  it back, so the token has to be this document's own. */
+function departureState(nodeId: string, search: string, index: number, count: number): HomeReturnState {
+  return homeReturnState(nodeId, new URLSearchParams(search), index, count, homeReturnTab())
+}
+
+/** The same arrival, in a Home whose projection a refetch replaces a moment
+ *  later: what the reader is owed has to survive that second reading. */
+function renderRefetchedArrival(
+  search: string,
+  departure: HomeReturnState | null,
+  options: { networks?: PublicNetwork[]; refreshing?: boolean } = {},
+) {
+  const router = createMemoryRouter(
+    [
+      {
+        path: '/',
+        element: (
+          <RefetchedHome
+            initialNetworks={options.networks ?? [network]}
+            initialRefreshing={options.refreshing ?? false}
+          />
+        ),
+      },
+    ],
+    { initialEntries: [{ pathname: '/', search, state: departure }] },
+  )
+  render(<RouterProvider router={router} />)
+}
+
+/** Two Nodes of the same Network, with the Peer counts that decide their order. */
+function peersNetwork(alphaPeers: number, betaPeers: number): PublicNetwork {
+  const withPeers = (nodeId: string, peerCount: number): PublicNode => ({
+    ...network.nodes.find((node) => node.nodeId === nodeId)!,
+    peers: { state: 'ok', freshness: 'current', peerCount },
+  })
+  return { ...network, nodes: [withPeers('node-a', alphaPeers), withPeers('node-b', betaPeers)] }
+}
+
+let refetch: ((networks: PublicNetwork[]) => void) | null = null
+let settleRefetch: ((refreshing: boolean) => void) | null = null
+
+/** The arrival in a Home that is still refetching: whatever it puts on screen
+ *  first is the reading the reader is owed a place in only provisionally. */
+function RefetchedHome({
+  initialNetworks,
+  initialRefreshing,
+}: {
+  initialNetworks: PublicNetwork[]
+  initialRefreshing: boolean
+}) {
+  const [networks, setNetworks] = useState<PublicNetwork[]>(initialNetworks)
+  const [refreshing, setRefreshing] = useState(initialRefreshing)
+  refetch = setNetworks
+  settleRefetch = setRefreshing
+  return (
+    <HomeDashboard
+      networks={networks}
+      realtimeStatus="connected"
+      online
+      resetting={false}
+      error={null}
+      loading={false}
+      refreshing={refreshing}
+    />
+  )
+}
+
+describe('Public Home same-tab return', () => {
+  const revealed = vi.fn()
+  beforeEach(() => {
+    revealed.mockClear()
+    // jsdom has no scrolling: the reveal is observed as the contract it makes.
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      writable: true,
+      value: revealed,
+    })
+  })
+
+  it('lands on the Node, in the reading it was left from, with no place in the URL', async () => {
+    const { router } = renderReturnArrival(
+      [network],
+      '?view=list&sort=name',
+      departureState('node-b', 'view=list&sort=name', 1, 2),
+    )
+
+    expect(listTable()).toBeTruthy()
+    const returned = rowOf('Beta')!.querySelector('[data-slot="node-link"]')
+    await waitFor(() => expect(document.activeElement).toBe(returned))
+    expect(revealed).toHaveBeenCalledWith({ block: 'center' })
+    expect(returnNotice()).toBeNull()
+    // A place is never a URL parameter, and the departure is consumed on
+    // arrival so this entry can never be inherited a second time.
+    expect(router.state.location.search).toBe('?view=list&sort=name')
+    await waitFor(() => expect(router.state.location.state).toBeNull())
+  })
+
+  it('follows the Node ID rather than a place the refreshed list has moved past', async () => {
+    // The reader left from place 1 of 2, which the refreshed order now gives to
+    // Alpha; the Node they left from still decides where the return lands.
+    renderReturnArrival(
+      [network],
+      '?view=list&sort=name',
+      departureState('node-b', 'view=list&sort=name', 0, 2),
+    )
+
+    const returned = rowOf('Beta')!.querySelector('[data-slot="node-link"]')
+    await waitFor(() => expect(document.activeElement).toBe(returned))
+  })
+
+  it('names the Node the restored filters hide and shows the nearest match instead', async () => {
+    renderReturnArrival(
+      [network],
+      '?view=list&q=Alpha',
+      departureState('node-b', 'view=list&q=Alpha', 1, 2),
+    )
+
+    await waitFor(() => expect(returnNotice()?.textContent).toContain('Beta is no longer shown by these filters'))
+    expect(returnNotice()?.textContent).toContain('Showing the nearest matching Active Node instead.')
+    // A return into a narrowed list never leaves the reader on blank space: the
+    // rows that are still listed are shown, and the nearest one is revealed.
+    expect(listedNames()).toEqual(['Alpha'])
+    expect(document.activeElement).toBe(rowOf('Alpha')!.querySelector('[data-slot="node-link"]'))
+  })
+
+  it('lands again, with its notice, when the refetch settles without the Node', async () => {
+    // Home paints the projection it already held, and the authoritative refetch
+    // can settle a moment later without the Node the reader left from: the
+    // reader is not left beside a row that is gone.
+    renderRefetchedArrival('?view=list&sort=name', departureState('node-b', 'view=list&sort=name', 1, 2))
+    await waitFor(() =>
+      expect(document.activeElement).toBe(rowOf('Beta')!.querySelector('[data-slot="node-link"]')),
+    )
+    expect(returnNotice()).toBeNull()
+
+    const without = network.nodes.filter((entry) => entry.nodeId !== 'node-b')
+    await act(async () => refetch!([{ ...network, nodes: without }]))
+
+    await waitFor(() => expect(returnNotice()?.textContent).toContain('node-b is no longer in this view'))
+    expect(returnNotice()?.textContent).toContain('Showing the nearest Active Node instead.')
+    expect(listedNames()).toEqual(['Alpha'])
+    expect(document.activeElement).toBe(rowOf('Alpha')!.querySelector('[data-slot="node-link"]'))
+  })
+
+  it('places the reader again when the reading that settles has moved their Node', async () => {
+    // Home paints the projection it already held while the authoritative
+    // refetch is still in flight, and that reading can settle with the same
+    // Nodes in another order. Beta leads on Peers to begin with, so the reader
+    // returns to the first of the two rows.
+    const cached = peersNetwork(1, 5)
+    const settled = peersNetwork(5, 1)
+    renderRefetchedArrival(
+      '?view=list&sort=peers',
+      departureState('node-b', 'view=list&sort=peers', 0, 2),
+      { networks: [cached], refreshing: true },
+    )
+    await waitFor(() => expect(listedNames()).toEqual(['Beta', 'Alpha']))
+    expect(document.activeElement).toBe(rowOf('Beta')!.querySelector('[data-slot="node-link"]'))
+    expect(revealed).toHaveBeenCalledTimes(1)
+    expect(returnNotice()).toBeNull()
+
+    await act(async () => {
+      refetch!([settled])
+      settleRefetch!(false)
+    })
+
+    // Beta is last now: the reader is placed on it again, with no notice to say
+    // so, because the place they were given is not where their Node is.
+    await waitFor(() => expect(listedNames()).toEqual(['Alpha', 'Beta']))
+    await waitFor(() => expect(revealed).toHaveBeenCalledTimes(2))
+    expect(returnNotice()).toBeNull()
+    expect(document.activeElement).toBe(rowOf('Beta')!.querySelector('[data-slot="node-link"]'))
+
+    // Once the reading has settled the arrival is done: a live reorder the
+    // reader is watching never moves them around.
+    await act(async () => refetch!([cached]))
+    await waitFor(() => expect(listedNames()).toEqual(['Beta', 'Alpha']))
+    expect(revealed).toHaveBeenCalledTimes(2)
+    expect(document.activeElement).toBe(rowOf('Beta')!.querySelector('[data-slot="node-link"]'))
+  })
+
+  it('reports a Node this Home cannot show by the ID it was left from', async () => {
+    renderReturnArrival(
+      [network],
+      '?view=list',
+      departureState('node-gone', 'view=list', 1, 2),
+    )
+
+    await waitFor(() => expect(returnNotice()?.textContent).toContain('node-gone is no longer in this view'))
+    expect(document.activeElement).toBe(rowOf('Beta')!.querySelector('[data-slot="node-link"]'))
+  })
+
+  it('drops the notice as soon as the reader asks for a different reading', async () => {
+    renderReturnArrival(
+      [network],
+      '?view=list&q=Alpha',
+      departureState('node-b', 'view=list&q=Alpha', 1, 2),
+    )
+    await waitFor(() => expect(returnNotice()).toBeTruthy())
+
+    fireEvent.change(selectNamed('Health filter'), { target: { value: 'healthy' } })
+
+    expect(returnNotice()).toBeNull()
+  })
+
+  it('inherits nothing on a fresh Home', () => {
+    renderReturnArrival([network], '?view=list', null)
+
+    expect(returnNotice()).toBeNull()
+    expect(revealed).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(document.body)
   })
 })
 

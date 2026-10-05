@@ -1,4 +1,4 @@
-import { Link, Outlet, useNavigate, useOutletContext } from 'react-router'
+import { Link, Outlet, useLocation, useNavigate, useNavigationType, useOutletContext } from 'react-router'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
@@ -11,6 +11,7 @@ import {
   usePublicNetworks,
   usePublicRealtime,
 } from '../api/public'
+import { homeReturnTab, readHomeReturn } from '../homeReturn'
 import { ServerStatusNotice } from '../components/ServerStatusNotice'
 import BackgroundDecoration from '../components/BackgroundDecoration'
 import AppFooter from '../components/AppFooter'
@@ -95,6 +96,32 @@ function HomeLayoutContent() {
       })
       .catch(() => {})
   }, [generation, navigate, recheckSession])
+
+  // The reading token is bound to the reader at the authentication boundary
+  // (AuthContext), which outlives this shell: a sign-out and sign-in happens
+  // while Home is unmounted, so a rotation kept here would never see it.
+
+  // A fresh arrival at Home carries no departure, and it inherits no reading
+  // position either: the header brand link leaves a scrolled Node detail for a
+  // bare Home, and that arrival starts where a new reading starts. Back and
+  // Forward are the browser's own history and keep their own position.
+  //
+  // The reader's own return is the one arrival this does not move: Home owes
+  // them the Node they left from, and lands on it, so the two would otherwise
+  // race over the same scroll - the child's reveal runs first and this reset
+  // then erases it. One owner per arrival: a bare Home starts at the top, a
+  // return to a known Node is placed on that Node (design §15.25).
+  const here = useLocation()
+  const navigationType = useNavigationType()
+  const previousPath = useRef(here.pathname)
+  useEffect(() => {
+    const arrivedFresh =
+      previousPath.current !== here.pathname && here.pathname === '/' && navigationType === 'PUSH'
+    previousPath.current = here.pathname
+    const returning = readHomeReturn(here.state, homeReturnTab()) !== null
+    // The scrolling box, not a window method jsdom only stubs out.
+    if (arrivedFresh && !returning) document.scrollingElement?.scrollTo({ top: 0 })
+  }, [here.pathname, here.state, navigationType])
 
   const realtime = usePublicRealtime(handleReset, !resetting, generation)
   return (

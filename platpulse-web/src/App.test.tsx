@@ -25,6 +25,30 @@ const VIEWER_SESSION = {
   session: { ...OWNER_SESSION.session, userId: 'u2', username: 'viewer1', role: 'viewer' },
 }
 
+/** One published Node, enough to read Home, open its detail, and come back. */
+const PUBLIC_NODE: PublicNode = {
+  nodeId: 'node-1',
+  displayName: 'Validator A',
+  networkKey: 'mainnet',
+  health: 'healthy',
+  healthReason: 'rpc reachable',
+  freshness: 'current',
+  rpcState: 'ok',
+  syncState: 'synced',
+  consensusState: 'current',
+  consensus: { state: 'ok', freshness: 'current' },
+  processState: 'running',
+  resyncState: 'idle',
+  currentHead: 123,
+  historicalHighWatermark: 120,
+  networkReferenceHead: 123,
+  networkReferenceConfidence: 'high',
+  hostCpuPercent: 42.5,
+  resyncProgress: null,
+  peers: { state: 'ok', freshness: 'current', peerCount: 3 },
+  validator: null,
+}
+
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -924,28 +948,7 @@ describe('App shell with private Home', () => {
   })
 
   it('renders published Network and Node data on Home', async () => {
-    const nodePayload: PublicNode = {
-      nodeId: 'node-1',
-      displayName: 'Validator A',
-      networkKey: 'mainnet',
-      health: 'healthy',
-      healthReason: 'rpc reachable',
-      freshness: 'current',
-      rpcState: 'ok',
-      syncState: 'synced',
-      consensusState: 'current',
-      consensus: { state: 'ok', freshness: 'current' },
-      processState: 'running',
-      resyncState: 'idle',
-      currentHead: 123,
-      historicalHighWatermark: 120,
-      networkReferenceHead: 123,
-      networkReferenceConfidence: 'high',
-      hostCpuPercent: 42.5,
-      resyncProgress: null,
-      peers: { state: 'ok', freshness: 'current', peerCount: 3 },
-      validator: null,
-    }
+    const nodePayload = PUBLIC_NODE
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/public/v1/networks': () => jsonResponse([{
@@ -971,8 +974,60 @@ describe('App shell with private Home', () => {
     expect(screen.getByRole('img', { name: 'Healthy' })).toBeTruthy()
     fireEvent.click(nodeCard)
     expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
-    fireEvent.click(screen.getByRole('link', { name: /All Networks/ }))
+    // The same-tab return restores the reader's own reading (#224): the crumb
+    // names its destination, the departure is rebuilt into an ordinary Home
+    // URL, and the row the reader left from has focus again.
+    const backHome = screen.getByRole('link', { name: /Back to Home/ })
+    expect(backHome.getAttribute('href')).toBe('/')
+    fireEvent.click(backHome)
     expect(await screen.findByRole('region', { name: 'Home' })).toBeTruthy()
+    expect(window.location.search).toBe('')
+    expect(document.activeElement).toBe(screen.getByRole('link', { name: /Validator A/ }))
+  })
+
+  it('gives a bare arrival at Home the top, and the reader their own Node back', async () => {
+    const scrollTo = vi.fn()
+    Object.defineProperty(document, 'scrollingElement', {
+      configurable: true,
+      writable: true,
+      value: { scrollTo },
+    })
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([{
+        networkKey: 'mainnet',
+        displayName: 'Mainnet',
+        nodes: [PUBLIC_NODE],
+      }], 200),
+      '/api/public/v1/nodes/node-1': () => jsonResponse(PUBLIC_NODE, 200),
+    })
+
+    render(<App />)
+    await act(async () => {
+      window.history.pushState({}, '', '/')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+
+    // A bare arrival: the brand link leaves a scrolled Node detail for a Home
+    // that inherits no reading, so it starts where a new reading starts.
+    fireEvent.click(await screen.findByRole('link', { name: /Validator A/ }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('link', { name: 'PlatPulse' }))
+    expect(await screen.findByRole('region', { name: 'Home' })).toBeTruthy()
+    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ top: 0 }))
+
+    // The same tab's own return is the one arrival that is not bare: Home owes
+    // the reader the Node they left from, lands on it, and must not drag the
+    // page back to the top underneath that landing (issue #224).
+    scrollTo.mockClear()
+    fireEvent.click(screen.getByRole('link', { name: /Validator A/ }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('link', { name: /Back to Home/ }))
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('link', { name: /Validator A/ })),
+    )
+    expect(scrollTo).not.toHaveBeenCalled()
   })
 
   it('redirects the removed public Network route to Home', async () => {

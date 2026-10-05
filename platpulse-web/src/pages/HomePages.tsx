@@ -1,7 +1,7 @@
 import { ArrowLeft, Check, Copy } from 'lucide-react'
 import { useId, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Link, useParams } from 'react-router'
+import { Link, useLocation, useParams } from 'react-router'
 import {
   usePublicNode,
   usePublicNodeHistory,
@@ -9,6 +9,7 @@ import {
 } from '../api/public'
 import type { PublicMetricPoint, PublicNode, PublicNodeMetricHistory } from '../api/generated'
 import { useHomeRealtimeContext } from '../layouts/HomeLayout'
+import { homeReturnHref, homeReturnTab, readHomeReturn } from '../homeReturn'
 import { peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from '../components/PeerInsight'
 import { formatUtcDateTime, NodeHealthMarker } from '../components/StatusBadge'
 import { LinkedValidatorSection } from '../components/LinkedValidator'
@@ -43,11 +44,18 @@ export function NodePage() {
   const nodeQuery = usePublicNode(nodeId, generation)
   const historyQuery = usePublicNodeHistory(nodeId, generation)
   const metricsQuery = usePublicNodeMetrics(nodeId, generation)
+  // The same-tab return (#224): Home's Node links record where the reader was
+  // reading, and every way back hands that departure on again — rebuilt into an
+  // ordinary Home URL through Home's own filter vocabulary, never navigated to
+  // verbatim, so nothing a Node detail page could carry becomes a redirect.
+  const location = useLocation()
+  const departure = readHomeReturn(location.state, homeReturnTab())
+  const returnState = departure === null ? undefined : { homeReturn: departure }
 
   if (resetting) return <section className={PAGE}><RealtimeNotice realtime={realtime} /><p role="status" className="mt-3 text-sm text-muted-foreground">Revalidating Node access…</p></section>
   if (nodeQuery.isPending) return <section className={cn(PAGE, 'relative min-h-32')}><RealtimeNotice realtime={realtime} /><Spinner label="Loading Node"><span className="text-sm text-muted-foreground">Loading Node…</span></Spinner></section>
-  if (nodeQuery.error && !nodeQuery.data) return <section className={PAGE}><RealtimeNotice realtime={realtime} /><Alert variant="destructive" className="mt-3 rounded-md border-none bg-red-400/10"><AlertDescription>{nodeQuery.error instanceof Error ? nodeQuery.error.message : 'Unable to load Node'}</AlertDescription></Alert><Link className="mt-3 inline-flex min-h-11 min-w-11 items-center text-sm font-medium text-emerald-600 hover:underline dark:text-emerald-400" to="/">Back to Home</Link></section>
-  if (!nodeQuery.data) return <section className={PAGE}><RealtimeNotice realtime={realtime} /><p role="status" className="mt-3 text-sm text-muted-foreground">Node unavailable.</p><Link className="mt-3 inline-flex min-h-11 min-w-11 items-center text-sm font-medium text-emerald-600 hover:underline dark:text-emerald-400" to="/">Back to Home</Link></section>
+  if (nodeQuery.error && !nodeQuery.data) return <section className={PAGE}><RealtimeNotice realtime={realtime} /><Alert variant="destructive" className="mt-3 rounded-md border-none bg-red-400/10"><AlertDescription>{nodeQuery.error instanceof Error ? nodeQuery.error.message : 'Unable to load Node'}</AlertDescription></Alert><Link className="mt-3 inline-flex min-h-11 min-w-11 items-center text-sm font-medium text-emerald-600 hover:underline dark:text-emerald-400" to={homeReturnHref(departure)} state={returnState}>Back to Home</Link></section>
+  if (!nodeQuery.data) return <section className={PAGE}><RealtimeNotice realtime={realtime} /><p role="status" className="mt-3 text-sm text-muted-foreground">Node unavailable.</p><Link className="mt-3 inline-flex min-h-11 min-w-11 items-center text-sm font-medium text-emerald-600 hover:underline dark:text-emerald-400" to={homeReturnHref(departure)} state={returnState}>Back to Home</Link></section>
 
   const node = nodeQuery.data
   // The Node Peer Country View is a projection of exactly this Node. The Node
@@ -73,7 +81,7 @@ export function NodePage() {
   return <section className={PAGE}>
     <div data-slot="node-detail-breadcrumb" className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-muted-foreground">
-        <Link className="inline-flex min-h-11 min-w-11 items-center hover:text-foreground" to="/"><ArrowLeft size={16} aria-hidden="true" />All Networks</Link>
+        <Link className="inline-flex min-h-11 min-w-11 items-center hover:text-foreground" to={homeReturnHref(departure)} state={returnState}><ArrowLeft size={16} aria-hidden="true" />Back to Home</Link>
         <span aria-hidden="true">/</span>
         <span>Node detail</span>
       </div>

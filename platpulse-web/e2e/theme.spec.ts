@@ -335,12 +335,12 @@ test('keeps Home and the public Node Detail readable in both themes', async ({ p
   await expect(page.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeVisible()
   await expectNoHorizontalOverflow(page)
 
-  // The Node Detail breadcrumb is now "All Networks" and returns Home; the
+  // The Node Detail breadcrumb names its destination, "Back to Home"; the
   // deleted Network overview route cannot render, and Home stays readable in
   // Dark.
-  const allNetworks = page.getByRole('link', { name: 'All Networks', exact: true })
-  await expect(allNetworks).toHaveAttribute('href', '/')
-  await allNetworks.click()
+  const backHome = page.getByRole('link', { name: 'Back to Home', exact: true })
+  await expect(backHome).toHaveAttribute('href', '/')
+  await backHome.click()
   await expect(page.getByRole('region', { name: 'Home' })).toBeVisible({ timeout: 15_000 })
   await expectReadable(page, page.getByRole('region', { name: 'Home' }))
   await expectNoHorizontalOverflow(page)

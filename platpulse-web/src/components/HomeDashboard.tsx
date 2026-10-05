@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNodeRegionHeights } from './useNodeRegionHeights'
-import { Link, useSearchParams } from 'react-router'
+import { Link, useLocation, useSearchParams } from 'react-router'
 import type { PublicConsensusInsight, PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
 import { peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from './PeerInsight'
@@ -36,6 +36,7 @@ import {
   type HomeValidatorFilter,
   type HomeView,
 } from '../homeFilters'
+import { homeReturnState, homeReturnTab, landHomeReturn, readHomeReturn, type HomeReturn, type HomeReturnState } from '../homeReturn'
 import { LinkedValidatorSection, validatorDataStatus, type ValidatorDataStatus } from './LinkedValidator'
 import { ValidatorTotalCard } from './ValidatorTotals'
 import { ValidatorActivityBadge } from './ValidatorActivityBadge'
@@ -53,9 +54,33 @@ type HomeDashboardProps = {
   error: string | null
   hasLastGood?: boolean
   loading: boolean
+  /** True while the projection on screen is being refetched: the reading the
+   *  arrival places the reader in is then still provisional (design §15.25). */
+  refreshing?: boolean
 }
 
 type NodeRecord = { network: PublicNetwork; node: PublicNode }
+
+/** Reveals the row a return landed on: the row this render registered for that
+ *  Node, brought to where it now is, with the keyboard reader continuing from
+ *  the returned Node rather than from the top of a list they never read. */
+function revealReturnRow(
+  matching: readonly NodeRecord[],
+  nodeRows: ReadonlyMap<string, HTMLElement>,
+  index: number | null,
+): void {
+  if (index === null) return
+  const nodeId = matching[index]?.node.nodeId
+  const row = nodeId === undefined ? undefined : nodeRows.get(nodeId)
+  row?.scrollIntoView?.({ block: 'center' })
+  row?.querySelector<HTMLElement>('[data-slot="node-link"]')?.focus({ preventScroll: true })
+}
+
+/** Every Node link on Home carries the departure the return journey rebuilds
+ *  from: the Node, the search it was read in, and the Node's place in the list
+ *  on screen. Rows are found again through refs keyed by Node ID. */
+type HomeReturnLinkState = (nodeId: string, index: number, count: number) => HomeReturnState
+type NodeRowRefs = (nodeId: string, element: HTMLElement | null) => void
 
 const sortOptions: Array<{ value: HomeSort; label: string }> = [
   { value: 'health', label: 'Health' },
@@ -75,6 +100,7 @@ export default function HomeDashboard({
   error,
   hasLastGood = true,
   loading,
+  refreshing = false,
 }: HomeDashboardProps) {
   const [search, setSearch] = useSearchParams()
   // An ordinary Home URL is the whole filter state (design §9, #222): the
@@ -98,6 +124,67 @@ export default function HomeDashboard({
     [filters, records, scope.network],
   )
   const rejectedFilters = scope.rejected ? [scope.rejected, ...rejected] : rejected
+  // The same-tab return (#224): the departure described by every Node link
+  // travels in this document's own history entry and never in a URL, and only
+  // this document reads it back, so a copied link, a second tab, a restored
+  // session, and a reload all inherit no reading position.
+  const location = useLocation()
+  const [departure, setDeparture] = useState(() => readHomeReturn(location.state, homeReturnTab()))
+  const [returnNotice, setReturnNotice] = useState<string | null>(null)
+  // The departure this arrival still owes the reader a landing for, and the
+  // reading it arrived in. Home holds the projection it fetched before the
+  // reader opened the Node, so the authoritative refetch can reorder or remove
+  // that Node a moment after the first paint: while the departure is pending,
+  // the Node is landed on again — with its notice when it left the reading, and
+  // at its new place when the settled order moved it. The reading is remembered
+  // with it so that nothing is owed once the reader has asked for a different
+  // one by any other route.
+  const pendingReturn = useRef<{ departure: HomeReturn; search: string } | null>(null)
+  // The landing this arrival has already been given: the row it placed and the
+  // notice it showed, with whether the projection it was read from was still
+  // being refetched. That reading is provisional, so the Node decides again
+  // when the authoritative one arrives — it may have moved the reader's Node
+  // without changing what the notice says. Once it has settled, the arrival is
+  // done: a live reading the reader is watching never moves them around.
+  const landedReturn = useRef<{ index: number | null; notice: string | null; provisional: boolean } | null>(
+    null,
+  )
+  // Rows are located through React's own refs, keyed by Node ID: the returned
+  // row is the one this render put on screen, never a private DOM lookup.
+  const nodeRows = useRef(new Map<string, HTMLElement>())
+  const registerNodeRow = (nodeId: string, element: HTMLElement | null) => {
+    if (element === null) nodeRows.current.delete(nodeId)
+    else nodeRows.current.set(nodeId, element)
+  }
+  const nodeLinkState: HomeReturnLinkState = (nodeId, index, count) =>
+    homeReturnState(nodeId, search, index, count, homeReturnTab())
+  // One arrival, and every landing it is still owed. The Node ID decides where
+  // the reader lands, even when the refreshed order has moved it; the departure
+  // is then consumed with the history state it travelled in, so this entry can
+  // never be inherited again. No offset is ever written down: the browser owns
+  // Back and Forward, and the row is revealed where it now is.
+  useEffect(() => {
+    const reading = search.toString()
+    const pending = departure === null ? pendingReturn.current : { departure, search: reading }
+    if (pending === null || pending.search !== reading || !hasProjection) return
+    const landing = landHomeReturn(scoped, matching, pending.departure)
+    if (departure !== null) {
+      pendingReturn.current = pending
+      setDeparture(null)
+      setSearch(search, { replace: true, state: null })
+    }
+    const owed = landedReturn.current
+    const moved = owed !== null && owed.provisional && owed.index !== landing.index
+    if (owed !== null && owed.notice === landing.notice && !moved) {
+      // The authoritative reading arrived without moving the Node: the landing
+      // stands, and this arrival is no longer provisional.
+      if (owed.provisional && !refreshing) landedReturn.current = { ...owed, provisional: false }
+      return
+    }
+    landedReturn.current = { index: landing.index, notice: landing.notice, provisional: refreshing }
+    setReturnNotice(landing.notice)
+    revealReturnRow(matching, nodeRows.current, landing.index)
+  }, [departure, hasProjection, matching, refreshing, scoped, search, setSearch])
   // The search box owns its own text while the reader types; the address bar
   // owns it again as soon as it says something the box did not write. A
   // keystroke commits the URL at once, but that commit is painted a frame
@@ -113,11 +200,22 @@ export default function HomeDashboard({
   // box wrote never raises that event, so fast typing stays whole. An in-app
   // link that drops the query, or a direct load, is covered by the empty query
   // and by mounting with the URL already read.
+  /** The arrival's notice has been answered and the departure behind it is no
+   *  longer owed a landing: the reader has arrived at a reading of their own. */
+  const finishReturn = useCallback(() => {
+    pendingReturn.current = null
+    landedReturn.current = null
+    setReturnNotice(null)
+  }, [])
   useEffect(() => {
-    const takeOver = () => setQueryDraft(null)
+    const takeOver = () => {
+      setQueryDraft(null)
+      // Another entry's reading, and the reader's own: nothing is owed here.
+      finishReturn()
+    }
     window.addEventListener('popstate', takeOver)
     return () => window.removeEventListener('popstate', takeOver)
-  }, [])
+  }, [finishReturn])
   useEffect(() => {
     if (filters.query === '') setQueryDraft(null)
   }, [filters.query])
@@ -139,6 +237,9 @@ export default function HomeDashboard({
     const nextSearch = next.toString()
     if (nextSearch === renderedSearch || nextSearch === issuedSearch.current) return
     issuedSearch.current = nextSearch
+    // A reader action is a new reading: the arrival's notice has been answered,
+    // and the departure behind it is not owed a landing any more.
+    finishReturn()
     setSearch(next, { replace })
   }
 
@@ -200,6 +301,20 @@ export default function HomeDashboard({
             className="rounded-md border-none bg-amber-400/10 px-4 py-3 text-xs [overflow-wrap:anywhere] text-amber-600 dark:text-amber-400"
           >
             {rejectedFilterNotice(rejectedFilters)}
+          </p>
+        </div>
+      )}
+
+      {/* A return whose Node the reader can no longer see says which Node is
+          gone and what Home showed instead, rather than leaving them nowhere. */}
+      {returnNotice && (
+        <div className="px-4 pt-4">
+          <p
+            data-slot="home-return-notice"
+            role="status"
+            className="rounded-md border-none bg-amber-400/10 px-4 py-3 text-xs [overflow-wrap:anywhere] text-amber-600 dark:text-amber-400"
+          >
+            {returnNotice}
           </p>
         </div>
       )}
@@ -376,7 +491,7 @@ export default function HomeDashboard({
                   </span>
                 </Empty>
               ) : filters.view === 'list' ? (
-                <HomeNodeList records={matching} />
+                <HomeNodeList records={matching} linkState={nodeLinkState} registerRow={registerNodeRow} />
               ) : (
                 <div
                   className="grid auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(300px,1fr))]"
@@ -384,9 +499,18 @@ export default function HomeDashboard({
                   data-slot="node-grid"
                   aria-label="Active Nodes"
                 >
-                  {matching.map(({ network, node }) => (
-                    <div data-slot="node-card-frame" className="min-w-0" key={node.nodeId}>
-                      <HomeNodeCard network={network} node={node} />
+                  {matching.map(({ network, node }, index) => (
+                    <div
+                      data-slot="node-card-frame"
+                      className="min-w-0"
+                      key={node.nodeId}
+                      ref={(element) => registerNodeRow(node.nodeId, element)}
+                    >
+                      <HomeNodeCard
+                        network={network}
+                        node={node}
+                        linkState={nodeLinkState(node.nodeId, index, matching.length)}
+                      />
                     </div>
                   ))}
                 </div>
@@ -429,7 +553,11 @@ function SummaryCard({ label, value, tone, icon }: {
  * and the same formatter the card uses, so a metric the Server never attested
  * still reads Unknown here and a real zero still reads 0. QC, Locked and
  * Committed stay card-only columns, exactly as the design says. */
-function HomeNodeList({ records }: { records: readonly NodeRecord[] }) {
+function HomeNodeList({ records, linkState, registerRow }: {
+  records: readonly NodeRecord[]
+  linkState: HomeReturnLinkState
+  registerRow: NodeRowRefs
+}) {
   return (
     <div data-slot="node-list-scroll" className="overflow-x-auto rounded-md bg-background">
       <table data-slot="node-list" aria-label="Active Nodes" className="w-full text-sm">
@@ -445,11 +573,17 @@ function HomeNodeList({ records }: { records: readonly NodeRecord[] }) {
           </tr>
         </thead>
         <tbody>
-          {records.map(({ network, node }) => (
-            <tr key={node.nodeId} data-slot="node-list-row">
+          {records.map(({ network, node }, index) => (
+            <tr
+              key={node.nodeId}
+              data-slot="node-list-row"
+              ref={(element) => registerRow(node.nodeId, element)}
+            >
               <td data-column="name">
                 <Link
                   to={'/nodes/' + node.nodeId}
+                  state={linkState(node.nodeId, index, records.length)}
+                  data-slot="node-link"
                   aria-label={homeNodeLabel(node)}
                   title={homeNodeLabel(node)}
                   className="inline-flex min-h-11 min-w-11 max-w-full items-center rounded-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
@@ -485,7 +619,7 @@ function HomeNodeList({ records }: { records: readonly NodeRecord[] }) {
   )
 }
 
-function HomeNodeCard({ network, node }: NodeRecord) {
+function HomeNodeCard({ network, node, linkState }: NodeRecord & { linkState: HomeReturnState }) {
   const tone = healthTone(node.health)
   const diagnostic = exceptionalDiagnostic(node)
   // Every displayed chain value is computed once: the grid borrows the same
@@ -527,7 +661,7 @@ function HomeNodeCard({ network, node }: NodeRecord) {
                 keeps it from inflating the identity row, so the name row and
                 the Network · Uptime row stay content-driven and can sit 6px
                 apart. */}
-            <h2 className="min-w-0 text-base font-semibold"><Link to={`/nodes/${node.nodeId}`} aria-label={homeNodeLabel(node)} title={homeNodeLabel(node)} className="flex -my-2.5 min-h-11 min-w-0 items-center after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-[3px] focus-visible:after:ring-ring/50"><span className="truncate">{homeNodeLabel(node)}</span></Link></h2>
+            <h2 className="min-w-0 text-base font-semibold"><Link to={`/nodes/${node.nodeId}`} state={linkState} data-slot="node-link" aria-label={homeNodeLabel(node)} title={homeNodeLabel(node)} className="flex -my-2.5 min-h-11 min-w-0 items-center after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-[3px] focus-visible:after:ring-ring/50"><span className="truncate">{homeNodeLabel(node)}</span></Link></h2>
           </div>
           <ValidatorActivityBadge validator={node.validator} identityReason={node.validatorIdentityReason} />
           <div data-slot="node-identity-meta" className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
