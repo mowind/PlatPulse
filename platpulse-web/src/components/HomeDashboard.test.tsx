@@ -68,7 +68,13 @@ const summaryValueOf = (label: string) => {
   return value
 }
 
-afterEach(() => { cleanup(); vi.useRealTimers() })
+// Home owns its filter state in the URL, so a test that navigates must not
+// leak that query string into the next one.
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+  window.history.replaceState({}, '', '/')
+})
 
 describe('Public Home dashboard', () => {
   it('scopes all six overview counters, map and cards to the selected network', () => {
@@ -725,7 +731,8 @@ describe('Public Home dashboard', () => {
 
   it('does not render loading as fabricated zero-valued summary data', () => {
     render(<BrowserRouter><HomeDashboard networks={[]} realtimeStatus="connecting" online loading resetting={false} error={null} /></BrowserRouter>)
-    expect(screen.getAllByText('Unknown')).toHaveLength(6)
+    const summary = screen.getByLabelText('Home summary')
+    expect(within(summary).getAllByText('Unknown')).toHaveLength(6)
     expect(screen.queryByText('No Active Nodes in this view.')).toBeNull()
   })
 
@@ -779,4 +786,185 @@ describe('Public Home dashboard', () => {
     expect(within(unlinkedCard).queryByText('Cumulative blocks')).toBeNull()
     expect(within(unlinkedCard).queryByText('Linked Validator')).toBeNull()
   })
+})
+
+/** Issue #222: Home keeps its filter state in an ordinary navigation URL. The
+ *  URL restores what it can, reports what it cannot honour, and is rewritten
+ *  only when the reader acts. */
+describe('Public Home filter URLs', () => {
+  const secondNetwork = {
+    ...network,
+    networkKey: 'testnet',
+    displayName: 'Testnet',
+    nodes: [{ ...network.nodes[0], nodeId: 'node-c', displayName: 'Gamma', networkKey: 'testnet', currentHead: 900 }],
+  }
+
+  function renderHome(networks: PublicNetwork[], options: { loading?: boolean } = {}) {
+    return render(
+      <BrowserRouter>
+        <HomeDashboard
+          networks={networks}
+          realtimeStatus="connected"
+          online
+          resetting={false}
+          error={null}
+          loading={options.loading ?? false}
+        />
+      </BrowserRouter>,
+    )
+  }
+
+  // queryAll: an empty grid is a result this suite asserts, not an error.
+  const nodeHrefs = () => screen.queryAllByRole('link')
+    .map((link) => link.getAttribute('href'))
+    .filter((href): href is string => href !== null && href.startsWith('/nodes/'))
+  const searchbox = () => screen.getByRole('searchbox', { name: 'Search Active Nodes' }) as HTMLInputElement
+  const selectNamed = (name: string) => screen.getByRole('combobox', { name }) as HTMLSelectElement
+  const resultCount = () => document.querySelector('[data-slot="home-result-count"]') as HTMLElement
+  const filterNotice = () => document.querySelector('[data-slot="home-filter-notice"]')
+
+  it('restores the Network, search, and sorting an ordinary Home URL carries', () => {
+    window.history.replaceState({}, '', '/?network=testnet&q=Gamma&sort=name')
+    renderHome([network, secondNetwork])
+
+    expect(screen.getByRole('tab', { name: 'Testnet' }).getAttribute('aria-selected')).toBe('true')
+    expect(nodeHrefs()).toEqual(['/nodes/node-c'])
+    expect(summaryValueOf('Active Nodes').textContent).toBe('1')
+    expect(searchbox().value).toBe('Gamma')
+    expect(selectNamed('Sort').value).toBe('name')
+    expect(filterNotice()).toBeNull()
+  })
+
+  it('narrows the list by search while the overview keeps covering the Network selection', () => {
+    renderHome([network, secondNetwork])
+    expect(resultCount().textContent).toContain('Showing 3 of 3 Active Nodes')
+
+    fireEvent.change(searchbox(), { target: { value: 'Alpha' } })
+
+    expect(nodeHrefs()).toEqual(['/nodes/node-a'])
+    expect(resultCount().textContent).toContain('Showing 1 of 3 Active Nodes')
+    // Only the Network selection moves the overview counters and the map.
+    expect(summaryValueOf('Active Nodes').textContent).toBe('3')
+    expect(window.location.search).toBe('?q=Alpha')
+  })
+
+  it('searches the public Node name, the Node ID, and the Network name', () => {
+    renderHome([network, secondNetwork])
+
+    fireEvent.change(searchbox(), { target: { value: 'alpha' } })
+    expect(nodeHrefs()).toEqual(['/nodes/node-a'])
+
+    fireEvent.change(searchbox(), { target: { value: 'node-b' } })
+    expect(nodeHrefs()).toEqual(['/nodes/node-b'])
+
+    fireEvent.change(searchbox(), { target: { value: 'Testnet' } })
+    expect(nodeHrefs()).toEqual(['/nodes/node-c'])
+  })
+
+  it('takes a search one character at a time and commits the whole text', async () => {
+    renderHome([network, secondNetwork])
+    const box = searchbox()
+
+    // A keyboard appends to whatever the box already holds, one character at a
+    // time, and every character commits its own URL. A value read straight back
+    // out of the address bar would drop the characters typed in the meantime.
+    for (const character of 'Gamma') {
+      fireEvent.change(box, { target: { value: `${box.value}${character}` } })
+    }
+
+    expect(box.value).toBe('Gamma')
+    await waitFor(() => expect(window.location.search).toBe('?q=Gamma'))
+    expect(nodeHrefs()).toEqual(['/nodes/node-c'])
+  })
+
+  it('combines the search with the health filter and explains an empty result', () => {
+    window.history.replaceState({}, '', '/?q=Alpha&health=unknown')
+    renderHome([network])
+
+    expect(nodeHrefs()).toEqual([])
+    expect(screen.getByText('No Active Nodes match these filters.')).toBeTruthy()
+    expect(document.body.textContent).toContain('widen the filters')
+    expect(resultCount().textContent).toContain('Showing 0 of 2 Active Nodes')
+    expect(summaryValueOf('Active Nodes').textContent).toBe('2')
+  })
+
+  it('reports the URL values this deployment cannot honour instead of obeying them', () => {
+    window.history.replaceState({}, '', '/?network=gone&health=critical&sort=size')
+    renderHome([network])
+
+    const notice = filterNotice()
+    expect(notice?.textContent).toContain('Network "gone"')
+    expect(notice?.textContent).toContain('health "critical"')
+    expect(notice?.textContent).toContain('sort "size"')
+    expect(notice?.textContent).toContain('fell back to their defaults')
+    // Everything the link could honour still applies, and the link reaches the
+    // reader exactly as it arrived.
+    expect(screen.getByRole('tab', { name: 'All Networks' }).getAttribute('aria-selected')).toBe('true')
+    expect(summaryValueOf('Active Nodes').textContent).toBe('2')
+    expect(window.location.search).toBe('?network=gone&health=critical&sort=size')
+
+    // Acting on a filter is what rewrites the link, without the refused values.
+    fireEvent.change(selectNamed('Sort'), { target: { value: 'name' } })
+    expect(window.location.search).toBe('?sort=name')
+    expect(filterNotice()).toBeNull()
+  })
+
+  it('keeps a Network selection provisional until the projection can judge it', () => {
+    window.history.replaceState({}, '', '/?network=testnet')
+    const view = renderHome([], { loading: true })
+
+    expect(filterNotice()).toBeNull()
+    expect(document.querySelector('[data-slot="home-result-count"]')).toBeNull()
+
+    view.rerender(
+      <BrowserRouter>
+        <HomeDashboard networks={[network, secondNetwork]} realtimeStatus="connected" online resetting={false} error={null} loading={false} />
+      </BrowserRouter>,
+    )
+
+    expect(screen.getByRole('tab', { name: 'Testnet' }).getAttribute('aria-selected')).toBe('true')
+    expect(nodeHrefs()).toEqual(['/nodes/node-c'])
+    expect(filterNotice()).toBeNull()
+  })
+
+  it('writes the reader choices back into an ordinary Home URL', () => {
+    renderHome([network, secondNetwork])
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Testnet' }))
+    expect(window.location.search).toBe('?network=testnet')
+
+    fireEvent.change(searchbox(), { target: { value: 'Gamma' } })
+    expect(window.location.search).toBe('?network=testnet&q=Gamma')
+
+    fireEvent.change(selectNamed('Health filter'), { target: { value: 'healthy' } })
+    expect(window.location.search).toBe('?network=testnet&q=Gamma&health=healthy')
+
+    fireEvent.change(selectNamed('Validator status filter'), { target: { value: 'unknown' } })
+    expect(window.location.search).toBe('?network=testnet&q=Gamma&health=healthy&validator=unknown')
+    expect(nodeHrefs()).toEqual(['/nodes/node-c'])
+  })
+
+  it('filters by the Server Validator status and keeps unknown separate from not a Validator', () => {
+    const linked = (status: string) => ({
+      validatorId: 'validator-filter', validatorNodeId: '0xfilter', displayName: 'Validator F',
+      nodeId: 'node-v', state: 'fresh', freshness: 'fresh', source: 'platscan',
+      receivedAt: '2026-08-25T00:00:00Z', rankState: 'unknown', rankFreshness: 'unknown',
+      blockRateState: 'unknown', counterState: 'normal', activity: 'active', activityState: 'current',
+      currentValidatorStatus: status, currentValidatorStatusState: 'current', currentValidatorStatusQualifier: null,
+    })
+    const validatorNode = { ...network.nodes[0], nodeId: 'node-is-validator', displayName: 'Ivan', validator: linked('validator') }
+    const notValidatorNode = { ...network.nodes[0], nodeId: 'node-not-validator', displayName: 'Nadia', validator: linked('not_validator') }
+    const unknownNode = { ...network.nodes[0], nodeId: 'node-unknown-validator', displayName: 'Uma', validator: null }
+    renderHome([{ ...network, nodes: [validatorNode, notValidatorNode, unknownNode] }])
+
+    fireEvent.change(selectNamed('Validator status filter'), { target: { value: 'validator' } })
+    expect(nodeHrefs()).toEqual(['/nodes/node-is-validator'])
+
+    fireEvent.change(selectNamed('Validator status filter'), { target: { value: 'not_validator' } })
+    expect(nodeHrefs()).toEqual(['/nodes/node-not-validator'])
+
+    fireEvent.change(selectNamed('Validator status filter'), { target: { value: 'unknown' } })
+    expect(nodeHrefs()).toEqual(['/nodes/node-unknown-validator'])
+  })
+
 })

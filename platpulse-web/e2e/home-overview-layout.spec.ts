@@ -162,7 +162,11 @@ test('short and long Node names retain identity actions and one shared card heig
     const dialog = page.getByRole('dialog', { name: longName, exact: true })
     await expect(dialog).toBeVisible()
     await expect(dialog.getByText(/Node role describes the Node’s consensus membership/)).toBeVisible()
-    await expect(page).toHaveURL(/\/$/)
+    // The identity dialog never leaves Home, and the sort the reader chose lives
+    // in that ordinary Home URL (issue #222), so Home is the path rather than
+    // the whole address.
+    expect(new URL(page.url()).pathname).toBe('/')
+    expect(new URL(page.url()).searchParams.get('sort')).toBe('name')
     await expectNoHorizontalOverflow(page)
     await dialog.getByRole('button', { name: 'Close', exact: true }).click()
     await evidence(page, testInfo, dark ? 'node-natural-dark' : 'node-natural-light')

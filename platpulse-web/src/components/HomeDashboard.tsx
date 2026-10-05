@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNodeRegionHeights } from './useNodeRegionHeights'
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import type { PublicConsensusInsight, PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
 import { peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from './PeerInsight'
@@ -16,11 +16,25 @@ import type { ProgressStatus } from './ui/progress-thin'
 import { CardX } from './ui/card-x'
 import { Alert, AlertDescription } from './ui/alert'
 import { Empty } from './ui/empty'
-import { Select } from './ui/input'
+import { Input, Select } from './ui/input'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
 import { Server, HeartPulse, TriangleAlert, Network, ChevronUp, ChevronDown, Info } from 'lucide-react'
 import { SURFACE_TOOLBAR } from '../lib/surface'
 import { cn } from '../lib/utils'
+import {
+  healthCategory,
+  healthTone,
+  homeNetworkScope,
+  homeNodeLabel,
+  readHomeFilters,
+  selectHomeRecords,
+  writeHomeFilters,
+  type HomeFilterRejection,
+  type HomeFilters,
+  type HomeHealthFilter,
+  type HomeSort,
+  type HomeValidatorFilter,
+} from '../homeFilters'
 import { LinkedValidatorSection, validatorDataStatus, type ValidatorDataStatus } from './LinkedValidator'
 import { ValidatorTotalCard } from './ValidatorTotals'
 import { ValidatorActivityBadge } from './ValidatorActivityBadge'
@@ -41,9 +55,8 @@ type HomeDashboardProps = {
 }
 
 type NodeRecord = { network: PublicNetwork; node: PublicNode }
-type SortKey = 'health' | 'name' | 'head'
 
-const sortOptions: Array<{ value: SortKey; label: string }> = [
+const sortOptions: Array<{ value: HomeSort; label: string }> = [
   { value: 'health', label: 'Health' },
   { value: 'name', label: 'Name' },
   { value: 'head', label: 'Current Head' },
@@ -59,34 +72,85 @@ export default function HomeDashboard({
   hasLastGood = true,
   loading,
 }: HomeDashboardProps) {
-  const [networkFilter, setNetworkFilter] = useState('all')
-  const [sortBy, setSortBy] = useState<SortKey>('health')
+  const [search, setSearch] = useSearchParams()
+  // An ordinary Home URL is the whole filter state (design §9, #222): the
+  // Network selection, search, and sorting survive a refresh or a direct link,
+  // and a value this deployment cannot honour falls back visibly instead of
+  // being obeyed or silently dropped.
+  const { filters, rejected } = useMemo(() => readHomeFilters(search), [search])
   const records = useMemo<NodeRecord[]>(
     () => networks.flatMap((network) => network.nodes.map((node) => ({ network, node }))),
     [networks],
   )
-  const visibleRecords = useMemo(() => {
-    const filtered = networkFilter === 'all'
-      ? records
-      : records.filter(({ network }) => network.networkKey === networkFilter)
-    return [...filtered].sort((left, right) => {
-      if (sortBy === 'name') return nodeLabel(left.node).localeCompare(nodeLabel(right.node))
-      if (sortBy === 'head') return (right.node.currentHead ?? -1) - (left.node.currentHead ?? -1)
-      return healthRank(left.node.health) - healthRank(right.node.health)
-    })
-  }, [networkFilter, records, sortBy])
-
   const hasProjection = !loading && (error === null || hasLastGood)
+  // Only the projection can say whether a Network selection still exists, so
+  // the selection stays provisional until a projection is available.
+  const networkKeys = useMemo(() => networks.map((network) => network.networkKey), [networks])
+  const scope = homeNetworkScope(filters.network, hasProjection ? networkKeys : null)
+  // Two scopes, read once: the Network selection covers the overview band and
+  // the map, while search, health, and Validator status narrow the list only.
+  const { scoped, matching } = useMemo(
+    () => selectHomeRecords(records, { ...filters, network: scope.network }),
+    [filters, records, scope.network],
+  )
+  const rejectedFilters = scope.rejected ? [scope.rejected, ...rejected] : rejected
+  // The search box owns its own text while the reader types; the address bar
+  // owns it again as soon as it says something the box did not write. A
+  // keystroke commits the URL at once, but that commit is painted a frame
+  // later, so a value read straight back from the address bar would erase every
+  // character typed in the meantime; the draft keeps fast typing whole while
+  // the URL ends up with the same text.
+  const [queryDraft, setQueryDraft] = useState<string | null>(null)
+  const queryText = queryDraft ?? filters.query
+  // The address bar owns the box again the moment the reader arrives at a URL
+  // the box did not type. Back and Forward are the browser's own history, so
+  // they are taken over directly, which is what makes Back work even when the
+  // keystroke that wrote the current URL is still in flight; a keystroke this
+  // box wrote never raises that event, so fast typing stays whole. An in-app
+  // link that drops the query, or a direct load, is covered by the empty query
+  // and by mounting with the URL already read.
+  useEffect(() => {
+    const takeOver = () => setQueryDraft(null)
+    window.addEventListener('popstate', takeOver)
+    return () => window.removeEventListener('popstate', takeOver)
+  }, [])
+  useEffect(() => {
+    if (filters.query === '') setQueryDraft(null)
+  }, [filters.query])
+  // One reader action can reach this toolbar twice: a Network pill reports its
+  // value on focus and again on press, and asking the address bar for the same
+  // URL twice would leave a Back step that appears to do nothing. The note also
+  // has to be dropped as soon as the address bar lands anywhere, or a value
+  // pasted after going Back would be mistaken for a write still in flight.
+  const issuedSearch = useRef<string | null>(null)
+  const renderedSearch = search.toString()
+  useEffect(() => {
+    issuedSearch.current = null
+  }, [renderedSearch])
+
+  /** A discrete choice is a step the reader can undo; typing in the search box
+   *  replaces the current entry so history does not grow per keystroke. */
+  const updateFilters = (patch: Partial<HomeFilters>, replace = false) => {
+    const next = writeHomeFilters({ ...filters, network: scope.network, ...patch }, search)
+    const nextSearch = next.toString()
+    if (nextSearch === renderedSearch || nextSearch === issuedSearch.current) return
+    issuedSearch.current = nextSearch
+    setSearch(next, { replace })
+  }
+
+  const scopeName = scope.network === 'all'
+    ? null
+    : networks.find((network) => network.networkKey === scope.network)?.displayName ?? scope.network
   // The map receives a projection, never raw Network input; the same overview
-  // also covers the selected Network filter.
+  // also covers the selected Network, and only that selection changes it.
   const geoOverview = useMemo(
-    () => homeGeoOverview(networks, networkFilter),
-    [networks, networkFilter],
+    () => homeGeoOverview(networks, scope.network),
+    [networks, scope.network],
   )
   const geoStatus = geoMapStatus(geoOverview, { loading, hasProjection })
-  const nodeGridRef = useNodeRegionHeights(visibleRecords, hasProjection)
-  const scopedNetworks = networkFilter === 'all' ? networks : networks.filter(network => network.networkKey === networkFilter)
-  const healthyCount = hasProjection ? visibleRecords.filter(({ node }) => isHealthy(node.health)).length : null
+  const nodeGridRef = useNodeRegionHeights(matching, hasProjection)
+  const scopedNetworks = scope.network === 'all' ? networks : networks.filter(network => network.networkKey === scope.network)
+  const healthyCount = hasProjection ? scoped.filter(({ node }) => healthCategory(node.health) === 'healthy').length : null
   const streamLabel = realtimeStreamLabel(realtimeStatus)
   return (
     <section aria-label="Home">
@@ -119,6 +183,20 @@ export default function HomeDashboard({
         </p>
       )}
 
+      {/* A value this deployment cannot honour is reported, not obeyed: the
+          fallback is what makes an ordinary Home link safe to refresh. */}
+      {rejectedFilters.length > 0 && (
+        <div className="px-4 pt-4">
+          <p
+            data-slot="home-filter-notice"
+            role="status"
+            className="rounded-md border-none bg-amber-400/10 px-4 py-3 text-xs [overflow-wrap:anywhere] text-amber-600 dark:text-amber-400"
+          >
+            {rejectedFilterNotice(rejectedFilters)}
+          </p>
+        </div>
+      )}
+
       {/* Home's overview band. The map track is deliberately wider than the
             statistics track (5:6), matching the Emerald reference where the map
             is the larger half. When the six tiles are shorter than the map band
@@ -132,11 +210,11 @@ export default function HomeDashboard({
         metricsLabel="Home summary"
         mapFirst
         metrics={<>
-          <SummaryCard label="Active Nodes" value={hasProjection ? visibleRecords.length : null} tone="green" icon="server" />
+          <SummaryCard label="Active Nodes" value={hasProjection ? scoped.length : null} tone="green" icon="server" />
           <SummaryCard label="Healthy Nodes" value={healthyCount} tone="green" icon="heart" />
           <ValidatorTotalCard networks={scopedNetworks} metric="blocks" availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
-          <SummaryCard label="Attention" value={healthyCount === null ? null : visibleRecords.length - healthyCount}
-            tone={healthyCount !== null && visibleRecords.length === healthyCount ? 'green' : 'red'} icon="alert" />
+          <SummaryCard label="Attention" value={healthyCount === null ? null : scoped.length - healthyCount}
+            tone={healthyCount !== null && scoped.length === healthyCount ? 'green' : 'red'} icon="alert" />
           <SummaryCard label="Networks" value={hasProjection ? scopedNetworks.length : null} tone="green" icon="network" />
           <ValidatorTotalCard networks={scopedNetworks} metric="rewards" availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
         </>}
@@ -146,11 +224,12 @@ export default function HomeDashboard({
       />
 
       <div className="relative p-4 pt-0 md:static">
-        <div className="flex flex-nowrap items-start gap-2 md:items-center" aria-label="Node filters and sorting">
+        <div className="flex flex-col gap-2" aria-label="Node filters and sorting">
+          <div className="flex flex-nowrap items-start gap-2 md:items-center">
           <div className="overflow-x-auto rounded-sm py-1.5 -my-1.5 md:relative md:z-10">
             <Tabs
-              value={networkFilter}
-              onValueChange={setNetworkFilter}
+              value={scope.network}
+              onValueChange={(value) => updateFilters({ network: value })}
               className="w-full flex-col gap-4"
             >
               <TabsList className={cn('compact-tabs min-h-0 group-data-[orientation=horizontal]/tabs:h-8 h-8 w-max rounded-md md:bg-background', SURFACE_TOOLBAR)} aria-label="Network filter">
@@ -174,14 +253,65 @@ export default function HomeDashboard({
             <Select
               aria-label="Sort"
               className={cn('compact-select h-8 w-auto rounded-md border-x-0 border-y-[6px] border-transparent bg-clip-padding -my-1.5 shadow-none md:bg-background md:text-foreground dark:md:bg-background', SURFACE_TOOLBAR)}
-              value={sortBy}
-              onChange={(event) => setSortBy(event.target.value as SortKey)}
+              value={filters.sort}
+              onChange={(event) => updateFilters({ sort: event.target.value as HomeSort })}
             >
               {sortOptions.map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>
               ))}
             </Select>
           </label>
+          </div>
+
+          {/* Search, health, and Validator status narrow the list below. None of
+              them changes the overview band or the map, which follow the Network
+              selection alone (design §9). Every value searched here is public:
+              the Node display name, the Node ID, and the Network display name. */}
+          <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
+            <label className="flex min-w-0 grow flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground sm:grow-0">
+              Search
+              <Input
+                type="search"
+                aria-label="Search Active Nodes"
+                className="w-full min-w-48 sm:w-64"
+                placeholder="Name, Node ID, or Network"
+                value={queryText}
+                onChange={(event) => {
+                  setQueryDraft(event.target.value)
+                  updateFilters({ query: event.target.value }, true)
+                }}
+                onBlur={() => setQueryDraft(null)}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
+              Health
+              <Select
+                aria-label="Health filter"
+                className="w-auto min-w-32"
+                value={filters.health}
+                onChange={(event) => updateFilters({ health: event.target.value as HomeHealthFilter })}
+              >
+                <option value="all">All health</option>
+                <option value="healthy">Healthy</option>
+                <option value="unhealthy">Unhealthy</option>
+                <option value="unknown">Unknown</option>
+              </Select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
+              Validator status
+              <Select
+                aria-label="Validator status filter"
+                className="w-auto min-w-36"
+                value={filters.validator}
+                onChange={(event) => updateFilters({ validator: event.target.value as HomeValidatorFilter })}
+              >
+                <option value="all">All Validator status</option>
+                <option value="validator">Validator</option>
+                <option value="not_validator">Not a Validator</option>
+                <option value="unknown">Unknown</option>
+              </Select>
+            </label>
+          </div>
         </div>
 
         <div className="mt-4">
@@ -193,23 +323,50 @@ export default function HomeDashboard({
               ordinary Validator parameter takes one full-width line (Txs/Peers
               and the two cumulative Validator cells stay paired), while a wider
               card uses its width. */}
-          {loading || (error && !hasLastGood) ? null : visibleRecords.length === 0 ? (
-            <Empty description="No Active Nodes in this view.">
-              <span className="text-xs">Retired Nodes are not listed on Home.</span>
-            </Empty>
-          ) : (
-            <div
-              className="grid auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(300px,1fr))]"
-              ref={nodeGridRef}
-              data-slot="node-grid"
-              aria-label="Active Nodes"
-            >
-              {visibleRecords.map(({ network, node }) => (
-                <div data-slot="node-card-frame" className="min-w-0" key={node.nodeId}>
-                  <HomeNodeCard network={network} node={node} />
+          {loading || (error && !hasLastGood) ? null : (
+            <>
+              {/* The list is one scope inside the Network scope: it says how many
+                  Active Nodes match, against how many the selection holds, so the
+                  overview counters and the cards can never look contradictory. */}
+              <p
+                data-slot="home-result-count"
+                role="status"
+                aria-live="polite"
+                className="mb-3 text-xs text-muted-foreground"
+              >
+                Showing <span className="tabular-nums">{matching.length.toLocaleString()}</span> of{' '}
+                <span className="tabular-nums">{scoped.length.toLocaleString()}</span> Active Nodes
+                {scopeName ? <> in <span className="[overflow-wrap:anywhere]">{scopeName}</span></> : null}. Search,
+                health, and Validator status narrow this list only; the Home summary and the Peer map cover the whole
+                Network selection.
+              </p>
+              {scoped.length === 0 ? (
+                <Empty description="No Active Nodes in this view.">
+                  <span className="text-xs">Retired Nodes are not listed on Home.</span>
+                </Empty>
+              ) : matching.length === 0 ? (
+                <Empty description="No Active Nodes match these filters.">
+                  <span className="text-xs">
+                    Clear the search or widen the filters to list all{' '}
+                    <span className="tabular-nums">{scoped.length.toLocaleString()}</span> Active Nodes in this
+                    Network selection.
+                  </span>
+                </Empty>
+              ) : (
+                <div
+                  className="grid auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(300px,1fr))]"
+                  ref={nodeGridRef}
+                  data-slot="node-grid"
+                  aria-label="Active Nodes"
+                >
+                  {matching.map(({ network, node }) => (
+                    <div data-slot="node-card-frame" className="min-w-0" key={node.nodeId}>
+                      <HomeNodeCard network={network} node={node} />
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -241,7 +398,7 @@ function SummaryCard({ label, value, tone, icon }: {
  * resync progress is a separate, lightweight status area.
  */
 function HomeNodeCard({ network, node }: NodeRecord) {
-  const tone = toneFor(node.health)
+  const tone = healthTone(node.health)
   const diagnostic = exceptionalDiagnostic(node)
   // Every displayed chain value is computed once: the grid borrows the same
   // strings to decide whether a compact two-column cell can hold them.
@@ -282,7 +439,7 @@ function HomeNodeCard({ network, node }: NodeRecord) {
                 keeps it from inflating the identity row, so the name row and
                 the Network · Uptime row stay content-driven and can sit 6px
                 apart. */}
-            <h2 className="min-w-0 text-base font-semibold"><Link to={`/nodes/${node.nodeId}`} aria-label={nodeLabel(node)} title={nodeLabel(node)} className="flex -my-2.5 min-h-11 min-w-0 items-center after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-[3px] focus-visible:after:ring-ring/50"><span className="truncate">{nodeLabel(node)}</span></Link></h2>
+            <h2 className="min-w-0 text-base font-semibold"><Link to={`/nodes/${node.nodeId}`} aria-label={homeNodeLabel(node)} title={homeNodeLabel(node)} className="flex -my-2.5 min-h-11 min-w-0 items-center after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-[3px] focus-visible:after:ring-ring/50"><span className="truncate">{homeNodeLabel(node)}</span></Link></h2>
           </div>
           <ValidatorActivityBadge validator={node.validator} identityReason={node.validatorIdentityReason} />
           <div data-slot="node-identity-meta" className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
@@ -302,9 +459,9 @@ function HomeNodeCard({ network, node }: NodeRecord) {
                 focus-visible ring — required keyboard feedback, so it is kept; the icon
                 matches the copy/Details controls at 14px. */}
             <Dialog><DialogTrigger asChild><Button variant="ghost" size="icon" className="relative z-10 -my-3.5 size-11 shrink-0" aria-label="Node identity details"><Info className="size-3.5" /></Button></DialogTrigger>
-              <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm"><DialogTitle className="pr-10 [overflow-wrap:anywhere]">{nodeLabel(node)}</DialogTitle><DialogDescription className="[overflow-wrap:anywhere]">Network: {network.displayName} · Uptime {formatDuration(node.processUptimeMs)}. Node role describes the Node’s consensus membership, not its linked Validator’s current staking validity or the freshness of Provider data.</DialogDescription>
+              <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm"><DialogTitle className="pr-10 [overflow-wrap:anywhere]">{homeNodeLabel(node)}</DialogTitle><DialogDescription className="[overflow-wrap:anywhere]">Network: {network.displayName} · Uptime {formatDuration(node.processUptimeMs)}. Node role describes the Node’s consensus membership, not its linked Validator’s current staking validity or the freshness of Provider data.</DialogDescription>
                 <p className="text-sm text-muted-foreground">Active Nodes are in the latest Agent Inventory, not necessarily online. Healthy reflects successful, fresh RPC, sync and consensus observations. Process errors, a stopped or Unknown process state, or Network Identity Mismatch prevent Healthy; disabled process monitoring does not. Healthy does not mean synchronization is complete; Resyncing is shown independently.</p>
-                <p className="text-sm text-muted-foreground">Home Attention counts Active Nodes that are not Healthy, including Unknown. Counts and Node cards use the same selected Node data.</p>
+                <p className="text-sm text-muted-foreground">Home Attention counts Active Nodes that are not Healthy, including Unknown. Overview counts and the Peer map follow the selected Network; the search, health, and Validator status filters narrow only the Node list.</p>
                 {diagnostic && <p className="text-sm text-muted-foreground">Current health diagnostic: {diagnostic.text}</p>}
                 {dataStatus && <p className="text-sm text-muted-foreground">Validator data: {dataStatus.label}. {dataStatus.description}</p>}
               </DialogContent>
@@ -579,14 +736,22 @@ function healthLabel(value: string): string {
   return 'Unknown'
 }
 
-function nodeLabel(node: PublicNode) { return node.displayName ?? node.nodeId }
 function formatNumber(value: number | null | undefined) { return value == null ? 'Unknown' : value.toLocaleString() }
-function isHealthy(value: string) { return value.toLowerCase() === 'healthy' }
-function healthRank(value: string) { const tone = toneFor(value); return tone === 'bad' ? 0 : tone === 'warn' ? 1 : tone === 'good' ? 2 : 3 }
-function toneFor(value: string): 'good' | 'warn' | 'bad' | 'neutral' {
-  const normalized = value.toLowerCase()
-  if (/(error|failed|unhealthy|offline|unavailable)/.test(normalized)) return 'bad'
-  if (normalized === 'live' || /(healthy|current|connected|ready|synced|active|running|ok|fresh)/.test(normalized)) return 'good'
-  if (/(starting|unknown|unsupported|disabled|empty|stale|resync|degraded|connecting)/.test(normalized)) return 'warn'
-  return 'neutral'
+
+/** How Home names a URL value it refused. It stays a plain, visible sentence:
+ *  the reader can see which filter changed and why (design §9, #222). */
+const REJECTED_FILTER_LABELS: Record<HomeFilterRejection['parameter'], string> = {
+  network: 'Network',
+  health: 'health',
+  validator: 'Validator status',
+  sort: 'sort',
+}
+
+function rejectedFilterNotice(rejections: HomeFilterRejection[]): string {
+  const items = rejections.map(({ parameter, value }) => `${REJECTED_FILTER_LABELS[parameter]} "${value}"`)
+  const list = items.length === 1
+    ? items[0]
+    : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
+  const outcome = rejections.length === 1 ? 'it fell back to its default' : 'they fell back to their defaults'
+  return `This Home link asked for ${list}, which this deployment does not offer, so ${outcome}. The rest of the link was applied unchanged.`
 }

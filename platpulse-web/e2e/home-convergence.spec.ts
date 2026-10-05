@@ -272,8 +272,11 @@ test.describe('Converged Public Home (issue #102)', () => {
     // Current Head sorting descends by the projected Head; never-observed
     // Nodes (Unknown) sort last instead of fabricating zero.
     await page.getByRole('combobox', { name: 'Sort' }).selectOption('head')
+    // The chosen sort travels through the ordinary Home URL (issue #222) and a
+    // router navigation is painted a frame later, so the ordered list is read
+    // through a retrying assertion instead of a synchronous snapshot.
+    await expect.poll(async () => (await nodeCardNames(page))[0] ?? '').toContain('Node H — Producing Card')
     let names = await nodeCardNames(page)
-    expect(names[0]).toContain('Node H — Producing Card')
     const observedNodeIndex = names.findIndex((name) => name.includes('Node A'))
     expect(observedNodeIndex).toBeGreaterThanOrEqual(0)
     // Multiple Active Nodes can have an Unknown Head. Their relative order
@@ -283,8 +286,8 @@ test.describe('Converged Public Home (issue #102)', () => {
 
     // Name sorting keeps the same whole-card navigation targets.
     await page.getByRole('combobox', { name: 'Sort' }).selectOption('name')
+    await expect.poll(async () => (await nodeCardNames(page))[0] ?? '').toContain('Node A')
     names = await nodeCardNames(page)
-    expect(names[0]).toContain('Node A')
     expect(names.at(-1)).toContain('Node P — Never Observed')
     await expectNoHorizontalOverflow(page)
   })

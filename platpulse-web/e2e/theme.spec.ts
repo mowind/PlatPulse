@@ -429,7 +429,11 @@ for (const theme of ['light', 'dark'] as const) {
     // A real keyboard traversal retains the whole-card link's visible focus ring.
     await page.mouse.move(2, 2)
     await themeButton(page).focus()
-    for (let step = 0; step < 40; step += 1) {
+    // The Home toolbar carries the Network filter, the sort control, and the
+    // search, Health, and Validator status filters (issue #222), and every card
+    // contributes its link, its identity action, and its PlatScan status, so
+    // the traversal needs a wider budget than the cards alone.
+    for (let step = 0; step < 80; step += 1) {
       if (await nodeLink.evaluate((element) => element === document.activeElement)) break
       await page.keyboard.press('Tab')
     }
