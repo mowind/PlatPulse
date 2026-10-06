@@ -289,10 +289,30 @@ export function validatorCounterStateLabel(
   return 'Not observed'
 }
 
-/** Live-staking rank: a rank is never rendered as zero, and no rank is
- *  Unknown rather than a fabricated position. */
+/** Only a complete successful Network list establishes an unranked result.
+ * Failed/never-observed absence stays Unknown, independently of detail. */
 export function validatorRank(insight: AdminValidatorInsight | null | undefined): string {
-  return insight?.rank == null ? 'Unknown' : `#${insight.rank}`
+  if (insight?.rank != null) return `#${insight.rank}`
+  return insight?.rankState === 'unranked' && insight.rankOutcome === 'success'
+    ? 'Unranked'
+    : 'Unknown'
+}
+
+/** Currency belongs to the ranking request, never to the detail request. */
+export function validatorRankEvidence(insight: AdminValidatorInsight | null | undefined): string {
+  if (insight?.rankFreshness === 'fresh') return 'Fresh rank'
+  if (insight?.rankFreshness === 'stale') return 'Retained rank (stale)'
+  return 'Rank not established'
+}
+
+export function validatorRankOutcome(insight: AdminValidatorInsight | null | undefined): string {
+  switch (insight?.rankOutcome) {
+    case 'success': return 'Rank refresh success'
+    case 'error': return 'Rank refresh error'
+    case 'not_configured': return 'Rank Provider not configured'
+    case 'unsupported': return 'Rank unsupported'
+    default: return 'Rank not observed'
+  }
 }
 
 /** Short form of a chain identity key for tables; the full value stays in the

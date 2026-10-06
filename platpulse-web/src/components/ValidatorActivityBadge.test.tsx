@@ -28,6 +28,7 @@ const linked = (
   currentValidatorStatusState: 'current',
   currentValidatorStatusQualifier: null,
   receivedAt: '2026-08-25T00:00:00Z',
+  activityReceivedAt: '2026-08-25T00:00:00Z',
   ...overrides,
 })
 
@@ -78,7 +79,7 @@ describe('ValidatorActivityBadge', () => {
     cleanup()
     expect(labelOf(renderBadge(undefined))).toBe('Observing')
     cleanup()
-    expect(labelOf(renderBadge(linked('unknown', 'unknown', { state: 'error', receivedAt: null })))).toBe('Observing')
+    expect(labelOf(renderBadge(linked('unknown', 'unknown', { state: 'error', receivedAt: null, activityReceivedAt: null })))).toBe('Observing')
   })
 
   it('keeps out-of-scheme canonical statuses as their real names with the neutral tone', () => {
@@ -97,6 +98,33 @@ describe('ValidatorActivityBadge', () => {
     expect(badge.getAttribute('aria-label')).toContain('PlatScan status: Slashing')
     fireEvent.focus(badge)
     expect(within(screen.getByRole('tooltip')).getByText('Status: Slashing')).toBeTruthy()
+  })
+
+  it.each([
+    ['error', 'Showing the last confirmed absence; the latest refresh failed.'],
+    ['empty', 'Showing the last confirmed absence; it is no longer current.'],
+  ])('discloses retained absence for %s without using the detail metrics time', (state, reason) => {
+    const badge = renderBadge(linked('observing', 'stale', {
+      state,
+      activityReceivedAt: '2026-08-26T00:00:00Z',
+      receivedAt: '2026-08-25T00:00:00Z',
+    }))
+    expect(labelOf(badge)).toBe('Observing')
+    expect(badge.getAttribute('data-stale')).toBe('true')
+    expect(badge.getAttribute('aria-label')).toContain(reason)
+    fireEvent.focus(badge)
+    const tooltip = screen.getByRole('tooltip')
+    expect(within(tooltip).getByText('Updated: 2026-08-26 00:00:00 UTC')).toBeTruthy()
+    expect(within(tooltip).getByText(reason)).toBeTruthy()
+    expect(within(tooltip).queryByText('Updated: 2026-08-25 00:00:00 UTC')).toBeNull()
+  })
+
+  it('does not borrow a detail timestamp when Activity has never been confirmed', () => {
+    const badge = renderBadge(linked('unknown', 'unknown', {
+      state: 'error', activityReceivedAt: null, receivedAt: '2026-08-25T00:00:00Z',
+    }))
+    expect(badge.getAttribute('aria-label')).toContain('never observed')
+    expect(badge.getAttribute('aria-label')).toContain('no successful value is available')
   })
 
   it('holds one width across every status by sizing against the same labels', () => {

@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page, type Route } from '@playwright/test'
+import type { OperationMutationResponse } from '../src/api/generated/types.gen'
 import {
   VIEWPORTS,
   expectLocalTableScroll,
@@ -155,14 +156,53 @@ test.describe('Backup artifact inspection and verification (issue #209)', () => 
         ).toBeVisible()
         await expect(page.getByRole('link', { name: 'Back to Backups' })).toBeVisible()
 
-        // Requesting verification is only an acceptance: the recorded state on
-        // the page stays the one the Server last wrote.
+        // Before acceptance the real ledger has no verification outcome.
         await gotoAuthenticated(page, server.baseUrl, '/admin/backups/' + artifact.artifactId)
-        await page.getByRole('button', { name: 'Request verification', exact: true }).click()
-        await expect(page.getByText(/Acceptance is not a result/, { exact: false })).toBeVisible()
-        await expect(page.getByText('Not verified').first()).toBeVisible()
-        const queued = (await readArtifacts(server))[0]
-        expect(queued?.verification).toBe('pending')
+        const verification = page.locator('[data-slot="backup-verification"]')
+        await expect(verification.getByText('Not verified', { exact: true })).toBeVisible()
+        const beforeAcceptance = await readArtifact(server, artifact.artifactId)
+        expect(beforeAcceptance.artifact.verification).toBe('pending')
+        expect(beforeAcceptance.artifact.verifyOperationId).toBeNull()
+
+        // The independent worker may finish immediately after the POST. Hold
+        // only this browser's artifact GETs until acceptance is inspected: the
+        // UI cannot invent a result without reading it, even if the Server has
+        // already recorded one. Released requests still reach the real Server.
+        const artifactUrl = server.baseUrl + '/api/admin/v1/backups/' + artifact.artifactId
+        let releaseArtifactReads = () => {}
+        const artifactReadGate = new Promise<void>((resolve) => {
+          releaseArtifactReads = resolve
+        })
+        const holdArtifactReads = async (route: Route) => {
+          if (route.request().method() === 'GET') await artifactReadGate
+          await route.continue()
+        }
+        await page.route(artifactUrl, holdArtifactReads)
+        let acceptedOperationId = ''
+        try {
+          const [acceptanceResponse] = await Promise.all([
+            page.waitForResponse((response) =>
+              response.url() === artifactUrl + '/verify' &&
+              response.request().method() === 'POST',
+            ),
+            page.getByRole('button', { name: 'Request verification', exact: true }).click(),
+          ])
+          expect(acceptanceResponse.status()).toBe(200)
+          const accepted = (await acceptanceResponse.json()) as OperationMutationResponse
+          expect(accepted.operation.operation.kind).toBe('backup_verify')
+          acceptedOperationId = accepted.operation.operation.operationId
+          expect(acceptedOperationId.length).toBeGreaterThan(0)
+          // The POST's task snapshot can already be terminal too; acceptance
+          // alone still must not replace the last artifact state the UI read.
+          await expect(page.getByText(/Acceptance is not a result/, { exact: false })).toBeVisible()
+          await expect(verification.getByText('Not verified', { exact: true })).toBeVisible()
+          await expect(verification.getByText('Verified', { exact: true })).toHaveCount(0)
+        } finally {
+          releaseArtifactReads()
+          // This is the page's only route: let real GET continuations finish
+          // before disabling interception, rather than racing their handlers.
+          await page.unrouteAll({ behavior: 'wait' })
+        }
 
         // The queued task is the Server's: the outcome the page later shows is
         // the one that task recorded, and the linkage is recorded too.
@@ -170,6 +210,7 @@ test.describe('Backup artifact inspection and verification (issue #209)', () => 
         expect(String(verified.artifact.verifiedAt ?? '').length).toBeGreaterThan(0)
         const verifyOperationId = String(verified.artifact.verifyOperationId ?? '')
         expect(verifyOperationId.length).toBeGreaterThan(0)
+        expect(verifyOperationId).toBe(acceptedOperationId)
 
         // The page left open has to reconcile by itself: it reads the task's
         // own recorded status, re-reads the artifact, and only then claims the

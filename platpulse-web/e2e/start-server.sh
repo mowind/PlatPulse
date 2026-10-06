@@ -509,19 +509,19 @@ with sqlite3.connect(path) as db:
     # manual role. A current success insight and two calendar snapshots plus
     # monthly aggregates let the Playwright suite exercise the Home and Admin
     # analytics views without touching the live Explorer provider.
-    validator_id = "0195f2a1-0030-4030-8030-000000000030"
+    account_validator_id = "0195f2a1-0030-4030-8030-000000000030"
     validator_link_id = "0195f2a1-0031-4031-8031-000000000031"
     db.execute(
         "INSERT OR IGNORE INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES (?, ?, ?, 'E2E Validator', ?, ?)",
-        (validator_id, network_key, validator_a_key, now, now),
+        (account_validator_id, network_key, validator_a_key, now, now),
     )
     db.execute(
         "INSERT OR IGNORE INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, NULL, 'automatic', '2026-01-01T00:00:00Z', NULL, ?, ?)",
-        (validator_link_id, node_a, validator_id, now, now),
+        (validator_link_id, node_a, account_validator_id, now, now),
     )
     db.execute(
         "INSERT OR IGNORE INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, 'explorer', 'success', NULL, ?, 'producing', ?, ?, ?, 2, '1000', '10', '0.05', '20', 8, 42, 100, 110, '75.5', 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, 'obs-1', ?)",
-        (validator_id, fresh, fresh, fresh, fresh, fresh),
+        (account_validator_id, fresh, fresh, fresh, fresh, fresh),
     )
     for day, month, sample_at in [
         ("2026-02-01", "2026-02", "2026-01-31T15:30:00Z"),
@@ -529,11 +529,11 @@ with sqlite3.connect(path) as db:
     ]:
         db.execute(
             "INSERT OR IGNORE INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES (?, ?, 'UTC', ?, ?, ?, ?, ?, 'explorer', 'obs-' || ?, 2, '1000', '10', '0.05', 8, 42, 100)",
-            (f"snap-{day}", validator_id, day, month, sample_at, fresh, sample_at, day),
+            (f"snap-{day}", account_validator_id, day, month, sample_at, fresh, sample_at, day),
         )
         db.execute(
             "INSERT OR IGNORE INTO validator_monthly_aggregates (aggregate_id, validator_id, timezone, month_key, snapshot_count, first_sample_at, last_sample_at, rank_min, rank_max, rank_last, stake_last, reward_last, reward_rate_last, delegator_count_last, epoch_last, block_count_last, updated_at) VALUES (?, ?, 'UTC', ?, 1, ?, ?, 2, 2, 2, '1000', '10', '0.05', 8, 42, 100, ?)",
-            (f"agg-{day}", validator_id, month, sample_at, sample_at, fresh),
+            (f"agg-{day}", account_validator_id, month, sample_at, sample_at, fresh),
         )
 
     # Home convergence fixture (issue #102): the production-like card states
@@ -710,13 +710,23 @@ with sqlite3.connect(path) as db:
         "INSERT OR IGNORE INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, 'explorer', 'error', 'platscan_http_502', ?, 'locked', ?, ?, ?, 2, '1100', '11', '0.05', 5, 43, 85, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, 'obs-n', ?)",
         (validator_n_id, fresh, fresh, fresh, fresh, fresh),
     )
+    # Explicit fixture provenance after schema 72. Failed rows never acquire a
+    # production fallback from raw Activity: Node N declares its prior success.
+    db.execute(
+        "UPDATE current_validator_insights SET last_good_verdict_outcome = 'success', last_good_verdict_received_at = last_good_received_at WHERE validator_id IN (?, ?, ?)",
+        (account_validator_id, validator_h_id, validator_n_id),
+    )
+    db.execute(
+        "UPDATE current_validator_insights SET last_good_verdict_outcome = 'empty', last_good_verdict_received_at = last_attempt_received_at WHERE validator_id = ?",
+        (validator_m_id,),
+    )
     # Ranking is stored independently from the detail observation (#158). The
     # account (0030) and Node H carry a fresh ranked result; Node M shows an
     # authoritative unranked list result; Node N retains a last-good rank after
     # the ranking list failed. Together they cover the three card states.
     db.execute(
         "UPDATE current_validator_insights SET rank_outcome = 'success', rank_last_good_received_at = ?, rank_cohort_size = 300 WHERE validator_id IN (?, ?)",
-        (fresh, validator_id, validator_h_id),
+        (fresh, account_validator_id, validator_h_id),
     )
     db.execute(
         "UPDATE current_validator_insights SET rank = NULL, rank_outcome = 'success', rank_last_good_received_at = ?, rank_cohort_size = 300 WHERE validator_id = ?",
@@ -980,12 +990,16 @@ while True:
                     "UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ? WHERE node_id = ? AND component_key = ?",
                     (receipt, receipt, receipt, node_h, component_key),
                 )
-            # Node H's current Provider Activity stays fresh: Provider
-            # failures (Node N) and authoritative empty (Node M) are
-            # deliberately static.
+            # Keep the fixtures intended to represent current positive AND
+            # negative evidence current; failure (Node N) remains stale. A
+            # negative confirmation never renews Node M's detail metrics.
             db.execute(
-                "UPDATE current_validator_insights SET last_attempt_received_at = ?, last_good_received_at = ?, last_good_provider_timestamp = ?, provider_timestamp = ?, updated_at = ? WHERE validator_id = ?",
-                (fresh, fresh, fresh, fresh, fresh, "0195f2a1-0070-4070-8070-000000000070"),
+                "UPDATE current_validator_insights SET last_attempt_received_at = ?, last_good_received_at = ?, last_good_verdict_received_at = ?, last_good_provider_timestamp = ?, provider_timestamp = ?, updated_at = ? WHERE validator_id = ?",
+                (fresh, fresh, fresh, fresh, fresh, fresh, "0195f2a1-0070-4070-8070-000000000070"),
+            )
+            db.execute(
+                "UPDATE current_validator_insights SET last_attempt_received_at = ?, last_good_verdict_received_at = ? WHERE validator_id = ?",
+                (fresh, fresh, "0195f2a1-0071-4071-8071-000000000071"),
             )
     except Exception:
         # The Server holds the only write connection; a transient SQLITE_BUSY

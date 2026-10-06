@@ -343,11 +343,11 @@ async function expectListSurface(page: Page, validatorId: string): Promise<void>
   await expect(registry.locator('[data-label="Current status"]')).toContainText(
     'Activity Observing · Not established',
   )
-  await expect(registry.locator('[data-label="Last-good age"]')).toContainText('Unknown')
-  await expect(registry.locator('[data-label="Last-good age"]')).toContainText(
-    'No last-good observation',
+  await expect(registry.locator('[data-label="Last confirmed at"]')).toHaveText(
+    'No confirmed verdict',
   )
-  await expect(registry.locator('[data-label="Rank"]')).toHaveText('Unknown')
+  await expect(registry.locator('[data-label="Rank"]')).toContainText('Unknown')
+  await expect(registry.locator('[data-label="Rank"]')).toContainText('Rank not established')
   await expect(registry.locator('[data-label="Stake"]')).toHaveText('Unknown')
   await expect(registry.locator('[data-label="Delegators"]')).toHaveText('Unknown')
   await expect(registry.locator('[data-label="Nodes"]')).toHaveText('1')
@@ -364,7 +364,7 @@ async function expectDetailSurface(page: Page): Promise<void> {
 
   await expect(page.getByRole('heading', { level: 2, name: 'Current Validator status' })).toBeVisible()
   await expect(detailValue(page, 'Evidence')).toHaveText('Not established')
-  await expect(detailValue(page, 'Last-good age')).toHaveText('Unknown')
+  await expect(detailValue(page, 'Last confirmed at')).toHaveText('No confirmed verdict')
   await expect(detailValue(page, 'Activity')).toHaveText('Observing · Not established')
   await expect(detailValue(page, 'Validator key')).toHaveText(OBSERVED_P2P_KEY)
   await expect(

@@ -44,7 +44,18 @@ pub struct AdminValidatorInsight {
     pub received_at: Option<String>,
     pub attempted_at: Option<String>,
     pub last_good_received_at: Option<String>,
+    /// Last-good Network-wide Provider rank, independent of detail refresh.
     pub rank: Option<i64>,
+    /// `ranked`, `unranked`, `error`, `not_configured`, `unsupported`, or `unknown`.
+    pub rank_state: String,
+    /// Currency of rank evidence, never inherited from detail freshness.
+    pub rank_freshness: String,
+    pub rank_outcome: String,
+    pub rank_attempted_at: Option<String>,
+    pub rank_last_good_received_at: Option<String>,
+    pub rank_last_good_age_seconds: Option<i64>,
+    /// Provider diagnostic sanitized at the refresh trust boundary.
+    pub rank_diagnostic: Option<String>,
     pub stake_amount: Option<String>,
     pub reward_amount: Option<String>,
     pub reward_rate: Option<String>,
@@ -57,6 +68,8 @@ pub struct AdminValidatorInsight {
     pub activity: Option<String>,
     /// Currency of `activity`: `current`, `stale`, or `unknown`.
     pub activity_state: String,
+    /// Server receipt of the last authoritative presence/absence verdict.
+    pub activity_received_at: Option<String>,
     /// Current Validator Status: `validator`, `not_validator`, or `unknown`.
     pub current_validator_status: String,
     /// Currency of the Current Validator Status verdict: `current`, `stale`,
@@ -416,15 +429,27 @@ async fn validator_dto(
                 state.validator_freshness_seconds(),
             );
             let outcome = row.outcome.as_str();
-            let (activity, activity_state) =
-                validator::project_activity(outcome, row.activity.as_deref(), freshness);
-            // Current Validator Status is projected from the same canonical
-            // outcome/Activity/freshness inputs as every other surface, so a
-            // Provider failure can neither invent an absence nor a fresh zero.
-            let status = validator::current_validator_status(
-                Some(outcome),
+            // Presence/absence has its own last-good verdict receipt. An empty
+            // authoritative response must not advance retained detail metrics.
+            let verdict_freshness = validator::freshness(
+                row.last_good_verdict_received_at.as_deref(),
+                now,
+                state.validator_freshness_seconds(),
+            );
+            let (activity, activity_state, status) = validator::project_verdict(
+                outcome,
+                row.last_good_verdict_outcome.as_deref(),
                 row.activity.as_deref(),
-                freshness,
+                verdict_freshness,
+            );
+            // Ranking is a separate Network-list request. A successful detail
+            // refresh must not make retained ranking evidence look current.
+            let (rank_state, rank_freshness) = admin_validator_rank(
+                row.rank_outcome.as_deref(),
+                row.rank,
+                row.rank_last_good_received_at.as_deref(),
+                now,
+                state.validator_freshness_seconds(),
             );
             AdminValidatorInsight {
                 validator_node_id: record.validator_node_id.clone(),
@@ -442,6 +467,16 @@ async fn validator_dto(
                 attempted_at: Some(row.last_attempt_received_at),
                 last_good_received_at: row.last_good_received_at.clone(),
                 rank: row.rank,
+                rank_state,
+                rank_freshness,
+                rank_outcome: row.rank_outcome.unwrap_or_else(|| "unknown".to_owned()),
+                rank_attempted_at: row.rank_last_attempt_received_at,
+                rank_last_good_age_seconds: validator::last_good_age_seconds(
+                    row.rank_last_good_received_at.as_deref(),
+                    now,
+                ),
+                rank_last_good_received_at: row.rank_last_good_received_at,
+                rank_diagnostic: row.rank_diagnostic,
                 stake_amount: row.stake_amount,
                 reward_amount: row.reward_amount,
                 reward_rate: row.reward_rate,
@@ -451,6 +486,7 @@ async fn validator_dto(
                 counter_state: row.counter_state,
                 activity: Some(activity),
                 activity_state,
+                activity_received_at: row.last_good_verdict_received_at,
                 current_validator_status: status.status.as_str().to_owned(),
                 current_validator_status_state: status.state.to_owned(),
                 current_validator_status_qualifier: status
@@ -476,6 +512,13 @@ async fn validator_dto(
                 attempted_at: None,
                 last_good_received_at: None,
                 rank: None,
+                rank_state: "unknown".to_owned(),
+                rank_freshness: "unknown".to_owned(),
+                rank_outcome: "unknown".to_owned(),
+                rank_attempted_at: None,
+                rank_last_good_received_at: None,
+                rank_last_good_age_seconds: None,
+                rank_diagnostic: None,
                 stake_amount: None,
                 reward_amount: None,
                 reward_rate: None,
@@ -487,6 +530,7 @@ async fn validator_dto(
                 // absent: no Validator, no Activity label, and no age.
                 activity: Some("unknown".to_owned()),
                 activity_state: "unknown".to_owned(),
+                activity_received_at: None,
                 current_validator_status: "unknown".to_owned(),
                 current_validator_status_state: "unknown".to_owned(),
                 current_validator_status_qualifier: None,
@@ -504,6 +548,28 @@ async fn validator_dto(
         link_count,
         insight,
     })
+}
+
+/// Same rank semantics as the Public projection: only a complete successful
+/// Network list establishes ranked/unranked; failures retain rank or Unknown.
+fn admin_validator_rank(
+    rank_outcome: Option<&str>,
+    rank: Option<i64>,
+    last_good_received_at: Option<&str>,
+    now: time::OffsetDateTime,
+    stale_after_seconds: i64,
+) -> (String, String) {
+    match rank_outcome {
+        Some("success") => (
+            if rank.is_some() { "ranked" } else { "unranked" }.to_owned(),
+            validator::freshness(last_good_received_at, now, stale_after_seconds).to_owned(),
+        ),
+        Some(outcome @ ("error" | "not_configured" | "unsupported")) => (
+            outcome.to_owned(),
+            if rank.is_some() { "stale" } else { "unknown" }.to_owned(),
+        ),
+        _ => ("unknown".to_owned(), "unknown".to_owned()),
+    }
 }
 
 async fn link_dto(

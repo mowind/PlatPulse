@@ -2,7 +2,9 @@
 
 **#218** ("feat: 自动 Validator 身份与当前状态", parent #202, stories 62, 63 and 68) asks for two things that the design keeps apart on purpose. The first is an **identification**: which chain identity a Node's own Agent evidence proves, resolved from the Node's Network plus the *full* P2P public key its Agent observed — "PlatPulse Node UUID、短 fingerprint、显示名、IP、当前共识成员标志都不是替代查找键" (docs/design/platpulse.md:806). The second is a **current staking verdict**: whether that identity is currently a valid, staking Validator, which is Provider evidence and therefore a different question with a different owner (docs/design/platpulse.md:809-817). The ticket's job was to make both visible on the Admin surfaces without ever turning missing evidence into a negative answer: "缺少可信公钥、Network Identity 不匹配或 Network 未配置可用 Provider 时，不能猜测关联" and "普通 HTTP 失败不是无质押的证据" (docs/design/platpulse.md:819).
 
-Everything below is the working tree as it stands, read at the line references given. It is not a plan, and it makes no claim about a run this pass did not perform (see VERIFICATION).
+The original implementation/review record below is historical: its line references, disclosed follow-ups and gate results describe the #218 pass, not the current tree. It makes no claim about a run that pass did not perform (see VERIFICATION).
+
+**2026-10-06 follow-up:** #202 repairs the disclosed F1 and F4 defects, including independent verdict confirmation/freshness, independent Admin rank evidence, honest migration of ambiguous failed histories, and actual refresh-path regressions. The original findings remain below as an audit trail; current semantics and actual repair verification are recorded in [Issue #202 — Validator evidence repair](issue-202-validator-evidence-fix.md).
 
 ## SERVER — what already existed, and the two real gaps
 

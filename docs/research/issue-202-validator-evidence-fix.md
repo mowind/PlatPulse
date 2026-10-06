@@ -1,0 +1,51 @@
+# Issue #202 — Validator evidence repair (2026-10-06)
+
+## Scope
+
+This follow-up fixes the two #202 closure blockers recorded as F1 and F4 in [the original #218 findings](issue-218-findings.md). It changes neither the automatic identity model nor the conditions under which the PlatScan adapter accepts an authoritative absence. No manual association, Node Health inference, remote control, or new Provider endpoint is introduced.
+
+## F1: preserve and age the latest confirmed verdict
+
+The previous projection always marked an authoritative empty answer current, and an error after that answer could revive an older positive Activity. The repair stores `last_good_verdict_outcome` (success/empty) and `last_good_verdict_received_at` independently from metric last-good values. Only a successful response carrying explicit Activity, or a strictly validated authoritative absence, replaces this pair. Metric-only success and collection failure retain the exact pair.
+
+Public and Admin derive Activity and Current Validator Status through the same `project_verdict` helper. An absence retains Observing/NotValidator on failure with stale evidence, and expires to stale when its confirmation ages without a refresh. Unsupported/unconfigured/not-found coverage remains Unknown; a missing or invalid confirmation never falls back to cached Activity. Public/Home and Admin expose `activityReceivedAt` so the Activity tooltip and the Admin status panel do not borrow the metric receipt time.
+
+An empty answer does **not** renew old stake/reward/counter freshness, erase those cached values, write a daily metrics snapshot, or fabricate zero metrics. Repeat absence confirmation and identical explicit-Activity replay must invalidate an already-open projection when the verdict confirmation or attempt state changes; receipt-only renewal does not count as an Activity-value change.
+
+Migration 72 backfills a current success only for `source = platscan`: the shipped PlatScan adapter always supplies explicit Activity on success, so that detail receipt has proven verdict provenance. A currently empty answer is backfilled from its own attempt receipt. Other-source successes may be metric-only with cached Activity, and failed legacy histories may have discarded an intermediate absence; both remain unconfirmed/Unknown until a genuine authoritative observation. Old metric receipts, cached Activity and exact decimal strings remain unchanged.
+
+## F4: disclose ranking independently on Admin
+
+The Admin DTO now exposes `rankState`, `rankFreshness`, `rankOutcome`, `rankAttemptedAt`, `rankLastGoodReceivedAt`, `rankLastGoodAgeSeconds`, and a sanitized `rankDiagnostic`. These derive from the ranking request alone, never the detail request. The registry labels retained rank freshness/outcome/time; the detail has a separate Rank evidence panel. The registry also has independent Metrics evidence beside stake/delegators, disclosing metric freshness, last-good age and receipt (or never-observed), never borrowing a fresh verdict or ranking timestamp. It separately labels the latest detail refresh outcome and sanitized reason: a recent last-good metric can honestly remain chronologically Fresh while a failed latest attempt is explicitly Error/retained; neither collection state nor freshness overwrites the other.
+
+A successful complete Network cohort can prove Unranked. Missing evidence or a failed first rank request is Unknown, not Unranked. A failed refresh after a good rank preserves the value but labels it stale even while detail metrics are fresh. OpenAPI and generated client types are regenerated from the Server.
+
+## Backup acceptance timing follow-up (test-only)
+
+The broad browser gate exposed an unrelated existing assumption: after acceptance and two browser assertions, a subsequent API read was required to still be `pending`. The independent verifier ticks every second and can legitimately finish before that read, producing `ok` only after real artifact checks. Migration 72 does not touch backup/Operation data, and no backup production logic was changed.
+
+The test now pins backend pending/no producing Operation before submission, temporarily delays only the browser’s artifact GETs (forwarding them to the real Server, not returning fabricated payloads), and checks that acceptance alone cannot replace its last-read unverified state. After releasing reads, it keeps every terminal/no-reload/reload/list/Operation assertion and additionally binds the verified artifact to the exact Operation accepted by the POST. The POST’s task snapshot itself may already be terminal; it is not forced to remain Queued.
+
+## Regression evidence and verification
+
+### Deterministic red → green
+
+- Actual HTTP PlatScan adapter → transactional refresh → Public projection: positive → authoritative absence → failure, and first absence → failure; absence ageing without a refresh. Both core regressions failed against the old behaviour and pass after the independent verdict pair. Error retains both metric receipt and `activityReceivedAt`; absence/failure do not create a metrics-history row.
+- Actual repeat-empty refresh with unchanged failed ranking: the aged negative verdict became current in SQLite but emitted no invalidation before the repair. The regression failed, then passed after confirmation renewal participates in invalidation.
+- Normalized Provider refresh with a fixed sample timestamp and identical observation key: stale/error recovery failed to invalidate before the repair. The regression failed, then passed; explicit Activity after an absence restores a positive verdict without duplicating historical samples. A separate duplicate metric-only replay proves the exact negative verdict/time are not renewed while metrics can become fresh.
+- Real schema 71 → 72 migration: proven PlatScan success/current empty confirmation can be backfilled; unproven other-source successes and error/not-found/unsupported/unconfigured histories remain unknown; metric times and a large exact stake string survive unchanged. The added legacy Active → empty → metric-only success upgrade regression failed first (a cached Active was incorrectly re-confirmed), then passed with conservative source-proven backfill. Both migration tests pass.
+- Real ranking refresh → authenticated Admin list/detail: the old DTO lacked `rankOutcome` despite a failed rank request beside fresh detail; this regression failed, then passed. The expanded Admin integration suite passed 6/6, including never-observed, successful Unranked, ageing and diagnostic sanitation.
+- Eight rank registry/detail disclosure cases and four independent verdict-receipt cases failed before their UI repairs. Audit follow-ups added four explicit rank-receipt cases and two contrasting metric-provenance cases (fresh verdict, stale rank, stale/unknown metrics); these also failed first. A final recent-LastGood/fresh-rank + latest-detail-error regression failed on the missing failure disclosure, then passed without falsifying chronological freshness; the expanded focused Admin/helper suite passed 50/50 with lint/typecheck. Three Home Activity badge regressions likewise failed first for hidden negative ageing/error or borrowing a metric timestamp.
+- Initial focused real-Server Playwright acceptance passed 5/5: the successful-rank → ranking-503 path leaves detail readable and verifies registry/detail across all five fixed viewports × Light/Dark, alongside existing automatic-identity flows. The final acceptance also recovers ranking and then fails only detail, checking preserved exact metric receipt/value, fresh independent rank, and explicit failed latest detail across the same viewport/theme matrix; this expanded acceptance passed in the final full suite (25.1 seconds).
+
+### Full validation
+
+- Final Web lint, strict typecheck, full unit/component tests (49 files, 915 tests), and production build: passed.
+- `cargo deny check` and `cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253`: passed (existing allowed unmaintained/yanked warnings remain).
+- Final Rust formatting, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --workspace`: passed (exit 0), including both real schema-71 upgrade regressions and the full real-Provider refresh cases.
+- Final five-project Playwright run on a coherent fresh UI/Server build: 826 passed, 298 skipped, 1 failed (31.8 minutes). The repaired Validator ranking/detail failure acceptance passed across all five fixed viewports × Light/Dark. The single failure was an existing backup acceptance test expecting backend `pending` after a worker had legitimately recorded `ok`; diagnosis confirms a timing assumption, not a schema-72 or backup runtime regression. The test-only deterministic browser-read barrier plus exact accepted/producing Operation-id linkage was then verified with the entire focused backup file: 3/3 passed without retries, including its five-viewport × Light/Dark/keyboard/touch matrix (38.4 seconds). Its first focused attempt exposed a routing teardown race; releasing the barrier and awaiting active route continuations before disabling interception corrected that without suppressing errors. The original full run is reported honestly above; the 31-minute full suite was not rerun after this test-only correction.
+- Earlier exploratory browser runs were stopped: one after two linked-Validator fixture failures (a loop shadowed the account Validator id, now replaced with an explicit account id), and one after a later audit changed UI source after that run had built its assets. No production cached-Activity fallback was added to make a fixture or obsolete bundle pass.
+- OpenAPI/schema plus generated browser client reproduced exactly with no drift.
+- Independent standards and spec audits: completed; the registry rank receipt, independent metric evidence, and conservative migration-provenance findings were addressed. One nonblocking duplicated rank-predicate refactoring suggestion remains; Public/Admin DTO boundaries stay separate.
+
+No new CI or release certification is implied by this uncommitted local repair. This pass does not rerun the synthetic capacity baselines or expand the separately scoped database/metrics integrations.

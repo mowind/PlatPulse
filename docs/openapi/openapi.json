@@ -10174,6 +10174,9 @@
           "state",
           "freshness",
           "outcome",
+          "rankState",
+          "rankFreshness",
+          "rankOutcome",
           "counterState",
           "activityState",
           "currentValidatorStatus",
@@ -10186,6 +10189,13 @@
               "null"
             ],
             "description": "Canonical last-good Validator Activity (#173): Observing stands for an\nauthoritative absence as well as for evidence that cannot be observed."
+          },
+          "activityReceivedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Server receipt of the last authoritative presence/absence verdict."
           },
           "activityState": {
             "type": "string",
@@ -10279,7 +10289,45 @@
               "integer",
               "null"
             ],
+            "format": "int64",
+            "description": "Last-good Network-wide Provider rank, independent of detail refresh."
+          },
+          "rankAttemptedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rankDiagnostic": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Provider diagnostic sanitized at the refresh trust boundary."
+          },
+          "rankFreshness": {
+            "type": "string",
+            "description": "Currency of rank evidence, never inherited from detail freshness."
+          },
+          "rankLastGoodAgeSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
+          },
+          "rankLastGoodReceivedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rankOutcome": {
+            "type": "string"
+          },
+          "rankState": {
+            "type": "string",
+            "description": "`ranked`, `unranked`, `error`, `not_configured`, `unsupported`, or `unknown`."
           },
           "receivedAt": {
             "type": [
@@ -16955,6 +17003,13 @@
           "activity": {
             "type": "string",
             "description": "Canonical last-good Validator Activity (`candidate`, `active`,\n`producing`, `exiting`, `exited`, `verifying`, `locked`) or\n`observing`/`unknown`.\nHome never infers this from names, endpoints, consensus membership,\nrank data, or Provider data: only an effective explicit Node Validator\nLink exposes it on a Public Node (#100)."
+          },
+          "activityReceivedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Receipt time of the last confirmed Activity/identity verdict, including\nauthoritative absence. Independent of detail metrics received_at."
           },
           "activityState": {
             "type": "string",

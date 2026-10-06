@@ -17,6 +17,8 @@ import {
   validatorMatchesQuery,
   validatorPublicAssociation,
   validatorRank,
+  validatorRankEvidence,
+  validatorRankOutcome,
   validatorSourceLabel,
   validatorStatusEvidence,
   validatorStatusLabel,
@@ -32,6 +34,9 @@ function insight(overrides: Partial<AdminValidatorInsight> = {}): AdminValidator
     currentValidatorStatusState: 'current',
     freshness: 'fresh',
     outcome: 'success',
+    rankState: 'unknown',
+    rankFreshness: 'unknown',
+    rankOutcome: 'unknown',
     state: 'fresh',
     validatorNodeId: '0xkey',
     ...overrides,
@@ -276,6 +281,16 @@ describe('provider evidence', () => {
 
   it('never renders a missing rank as zero', () => {
     expect(validatorRank(insight({ rank: 7 }))).toBe('#7')
+    expect(validatorRank(insight({ rank: null, rankState: 'unranked', rankOutcome: 'success' }))).toBe('Unranked')
+    expect(validatorRank(insight({ rank: null, rankState: 'error', rankOutcome: 'error' }))).toBe('Unknown')
+    expect(validatorRank(insight({ rank: null, rankState: 'unranked', rankOutcome: 'error' }))).toBe('Unknown')
+    expect(validatorRankEvidence(insight({ freshness: 'fresh', rankFreshness: 'stale' }))).toBe('Retained rank (stale)')
+    expect(validatorRankEvidence(insight({ freshness: 'stale', rankFreshness: 'fresh' }))).toBe('Fresh rank')
+    expect(validatorRankEvidence(null)).toBe('Rank not established')
+    expect(validatorRankOutcome(insight({ rankOutcome: 'error' }))).toBe('Rank refresh error')
+    expect(validatorRankOutcome(insight({ rankOutcome: 'not_configured' }))).toBe('Rank Provider not configured')
+    expect(validatorRankOutcome(insight({ rankOutcome: 'unsupported' }))).toBe('Rank unsupported')
+    expect(validatorRankOutcome(null)).toBe('Rank not observed')
     expect(validatorRank(insight({ rank: null }))).toBe('Unknown')
     expect(validatorRank(null)).toBe('Unknown')
   })

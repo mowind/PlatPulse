@@ -61,6 +61,10 @@ export interface PlatscanReplay {
   baseUrl: string
   /** Stop listening; safe to call in a `finally` block. */
   stop(): Promise<void>
+  /** Fail only the ranking endpoint while detail remains readable. */
+  setRankingFailure(failed: boolean): void
+  /** Fail only detail while ranking remains independently readable. */
+  setDetailFailure(failed: boolean): void
   /** How many stakingDetails requests the Server made (evidence of the real loop). */
   readonly detailRequests: number
   /** Every ranking `pageNo` the Server asked for, in request order. */
@@ -108,6 +112,8 @@ export async function startPlatscanReplay(): Promise<PlatscanReplay> {
     )
   }
 
+  let rankingFailure = false
+  let detailFailure = false
   const detailRequests = { count: 0 }
   const rankingPages: number[] = []
   const requestedNodeIds: string[] = []
@@ -149,7 +155,15 @@ export async function startPlatscanReplay(): Promise<PlatscanReplay> {
         respond(response, 404, JSON.stringify({ error: 'unknown node' }))
         return
       }
+      if (detailFailure) {
+        respond(response, 503, JSON.stringify({ error: 'detail temporarily unavailable' }))
+        return
+      }
       respond(response, 200, detailBody)
+      return
+    }
+    if (rankingFailure) {
+      respond(response, 503, JSON.stringify({ error: 'ranking temporarily unavailable' }))
       return
     }
     let pageNo: unknown
@@ -181,6 +195,8 @@ export async function startPlatscanReplay(): Promise<PlatscanReplay> {
 
   return {
     baseUrl: 'http://127.0.0.1:' + String(address.port),
+    setRankingFailure: (failed) => { rankingFailure = failed },
+    setDetailFailure: (failed) => { detailFailure = failed },
     stop: async () => {
       const closed = new Promise<void>((resolve, reject) => {
         server.close((error) => {

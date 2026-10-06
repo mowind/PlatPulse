@@ -528,7 +528,15 @@ pub fn project_activity(
     freshness: &str,
 ) -> (String, String) {
     match outcome {
-        "empty" => ("observing".to_owned(), "current".to_owned()),
+        "empty" => (
+            "observing".to_owned(),
+            match freshness {
+                "fresh" => "current",
+                "stale" => "stale",
+                _ => "unknown",
+            }
+            .to_owned(),
+        ),
         // The deployment answers an absent staking identity with a 200 empty
         // object; a 404 can only come from routing or a deployment anomaly, so
         // it is never presented as an observing Validator (#168).
@@ -649,7 +657,7 @@ fn classify_activity(
             CurrentValidatorStatus::Validator,
             Some(CurrentValidatorQualifier::Locked),
         ),
-        Some("exited") => (CurrentValidatorStatus::NotValidator, None),
+        Some("exited") | Some("observing") => (CurrentValidatorStatus::NotValidator, None),
         // The investigated source maps 6 to "candidate in a consensus round",
         // but CONTEXT.md, the metrics design and ADR 0005 define verification
         // in progress as Unknown; the implementation follows the domain
@@ -694,7 +702,11 @@ pub fn current_validator_status(
         // absence of current staking identity.
         "empty" => CurrentValidatorStatusView {
             status: CurrentValidatorStatus::NotValidator,
-            state: "current",
+            state: match freshness {
+                "fresh" => "current",
+                "stale" => "stale",
+                _ => "unknown",
+            },
             qualifier: None,
         },
         // A failed refresh with a retained last-good Activity is stale; the
@@ -712,6 +724,49 @@ pub fn current_validator_status(
         }
         _ => unknown(),
     }
+}
+
+/// Project only a confirmed verdict, independently of detail metrics and the
+/// latest attempt. A failed/partial refresh cannot revive activity superseded by
+/// authoritative absence, and ambiguous pre-migration failures remain Unknown.
+pub fn project_verdict(
+    outcome: &str,
+    last_good_outcome: Option<&str>,
+    activity: Option<&str>,
+    verdict_freshness: &str,
+) -> (String, String, CurrentValidatorStatusView) {
+    // These responses cannot classify an identity. Retain persisted evidence
+    // for a later recoverable refresh, but preserve their Unknown presentation.
+    let last_good_outcome = if matches!(outcome, "not_found" | "unsupported" | "not_configured") {
+        None
+    } else {
+        last_good_outcome
+    };
+    let (evidence_outcome, evidence_activity) = match last_good_outcome {
+        Some("empty") => ("empty", Some("observing")),
+        Some("success") => ("success", activity),
+        _ => ("unknown", None),
+    };
+    let freshness = if evidence_outcome == "unknown" || verdict_freshness == "unknown" {
+        "unknown"
+    } else if outcome == "error"
+        || outcome == "not_found"
+        || outcome == "unsupported"
+        || outcome == "not_configured"
+    {
+        "stale"
+    } else {
+        verdict_freshness
+    };
+    let projected_outcome = if freshness == "unknown" {
+        "unknown"
+    } else {
+        evidence_outcome
+    };
+    let (activity, activity_state) =
+        project_activity(projected_outcome, evidence_activity, freshness);
+    let status = current_validator_status(Some(projected_outcome), evidence_activity, freshness);
+    (activity, activity_state, status)
 }
 
 fn platscan_status_activity(status: i64) -> Option<ValidatorActivity> {
@@ -1873,6 +1928,8 @@ pub struct ValidatorInsightRecord {
     pub last_attempt_received_at: String,
     pub last_good_received_at: Option<String>,
     pub last_good_provider_timestamp: Option<String>,
+    pub last_good_verdict_outcome: Option<String>,
+    pub last_good_verdict_received_at: Option<String>,
     pub rank: Option<i64>,
     pub rank_outcome: Option<String>,
     pub rank_diagnostic: Option<String>,
@@ -1903,7 +1960,7 @@ pub struct ValidatorInsightRecord {
 /// The canonical column list for loading one current Validator insight. Kept in
 /// one place so the detail apply, the ranking apply, and direct loads cannot
 /// drift apart.
-const INSIGHT_SELECT: &str = "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, rank_outcome, rank_diagnostic, rank_last_attempt_received_at, rank_last_good_received_at, rank_cohort_size, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?";
+const INSIGHT_SELECT: &str = "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, last_good_verdict_outcome, last_good_verdict_received_at, rank, rank_outcome, rank_diagnostic, rank_last_attempt_received_at, rank_last_good_received_at, rank_cohort_size, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ValidatorRankingHistoryRecord {
@@ -2787,7 +2844,7 @@ pub async fn list_insights(
     network_key: Option<&str>,
 ) -> Result<Vec<ValidatorInsightRecord>, ValidatorError> {
     let mut sql = String::from(
-        "SELECT i.validator_id, i.source, i.outcome, i.diagnostic, i.provider_timestamp, i.activity, i.last_attempt_received_at, i.last_good_received_at, i.last_good_provider_timestamp, i.rank, i.rank_outcome, i.rank_diagnostic, i.rank_last_attempt_received_at, i.rank_last_good_received_at, i.rank_cohort_size, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state, i.change_state, i.candidate_previous_rank, i.candidate_rank, i.candidate_observations, i.candidate_observed_at, i.candidate_provider_timestamp, i.candidate_observation_key, i.last_observation_key, i.updated_at FROM current_validator_insights i JOIN validators v ON v.validator_id = i.validator_id",
+        "SELECT i.validator_id, i.source, i.outcome, i.diagnostic, i.provider_timestamp, i.activity, i.last_attempt_received_at, i.last_good_received_at, i.last_good_provider_timestamp, i.last_good_verdict_outcome, i.last_good_verdict_received_at, i.rank, i.rank_outcome, i.rank_diagnostic, i.rank_last_attempt_received_at, i.rank_last_good_received_at, i.rank_cohort_size, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state, i.change_state, i.candidate_previous_rank, i.candidate_rank, i.candidate_observations, i.candidate_observed_at, i.candidate_provider_timestamp, i.candidate_observation_key, i.last_observation_key, i.updated_at FROM current_validator_insights i JOIN validators v ON v.validator_id = i.validator_id",
     );
     if network_key.is_some() {
         sql.push_str(" WHERE v.network_key = ?");
@@ -3304,17 +3361,46 @@ async fn apply_provider_result(
                 Some(activity) => Some(activity.as_str()),
                 None => existing.as_ref().and_then(|row| row.activity.as_deref()),
             };
-            let activity_changed =
-                existing.as_ref().and_then(|row| row.activity.as_deref()) != stored_activity;
+            // A partial metrics success is not new Activity/identity evidence.
+            // Retain an absence until an explicit Activity supersedes it.
+            let verdict_outcome = if observation.activity.is_some() {
+                Some("success")
+            } else {
+                existing
+                    .as_ref()
+                    .and_then(|row| row.last_good_verdict_outcome.as_deref())
+            };
+            let verdict_received_at = if observation.activity.is_some() {
+                Some(now.as_str())
+            } else {
+                existing
+                    .as_ref()
+                    .and_then(|row| row.last_good_verdict_received_at.as_deref())
+            };
+            let activity_changed = existing.as_ref().and_then(|row| row.activity.as_deref())
+                != stored_activity
+                || existing
+                    .as_ref()
+                    .and_then(|row| row.last_good_verdict_outcome.as_deref())
+                    != verdict_outcome;
+            // Receipt/attempt recovery changes the displayed evidence even
+            // when the Activity value and historical sample are unchanged.
+            let verdict_refreshed = existing.as_ref().is_none_or(|row| {
+                row.outcome != "success"
+                    || row.diagnostic.is_some()
+                    || row.last_good_verdict_received_at.as_deref() != verdict_received_at
+            });
             if existing
                 .as_ref()
                 .and_then(|row| row.last_observation_key.as_deref())
                 == Some(key.as_str())
             {
                 sqlx::query(
-                    "UPDATE current_validator_insights SET outcome = 'success', diagnostic = NULL, activity = ?, last_attempt_received_at = ?, last_good_received_at = ?, counter_state = 'normal', updated_at = ? WHERE validator_id = ?",
+                    "UPDATE current_validator_insights SET outcome = 'success', diagnostic = NULL, activity = ?, last_good_verdict_outcome = ?, last_good_verdict_received_at = ?, last_attempt_received_at = ?, last_good_received_at = ?, counter_state = 'normal', updated_at = ? WHERE validator_id = ?",
                 )
                 .bind(stored_activity)
+                .bind(verdict_outcome)
+                .bind(verdict_received_at)
                 .bind(&now)
                 .bind(&now)
                 .bind(&now)
@@ -3336,7 +3422,7 @@ async fn apply_provider_result(
                 return Ok(AppliedDetail {
                     stored: true,
                     activity_changed,
-                    invalidated: analytics_changed || activity_changed,
+                    invalidated: analytics_changed || activity_changed || verdict_refreshed,
                     stored_day: Some(stored_day),
                 });
             }
@@ -3386,6 +3472,9 @@ async fn apply_provider_result(
                 .bind(&now)
                 .execute(&mut **tx)
                 .await?;
+            sqlx::query("UPDATE current_validator_insights SET last_good_verdict_outcome = ?, last_good_verdict_received_at = ? WHERE validator_id = ?")
+                .bind(verdict_outcome).bind(verdict_received_at).bind(validator_id)
+                .execute(&mut **tx).await?;
             let (analytics_changed, stored_day) = record_daily_snapshot(
                 tx,
                 validator_id,
@@ -3401,7 +3490,7 @@ async fn apply_provider_result(
             Ok(AppliedDetail {
                 stored: true,
                 activity_changed,
-                invalidated: analytics_changed || activity_changed,
+                invalidated: analytics_changed || activity_changed || verdict_refreshed,
                 stored_day: Some(stored_day),
             })
         }
@@ -3420,9 +3509,13 @@ async fn apply_provider_result(
                 }
                 ValidatorProviderResult::Success(_) => unreachable!(),
             };
-            let invalidated = existing
-                .as_ref()
-                .is_none_or(|row| row.outcome != name || row.diagnostic != diagnostic);
+            let invalidated = existing.as_ref().is_none_or(|row| {
+                row.outcome != name
+                    || row.diagnostic != diagnostic
+                    || (name == "empty"
+                        && (row.last_good_verdict_outcome.as_deref() != Some("empty")
+                            || row.last_good_verdict_received_at.as_deref() != Some(now.as_str())))
+            });
             let source = bounded_source(source);
             sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, last_attempt_received_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=excluded.diagnostic, last_attempt_received_at=excluded.last_attempt_received_at, updated_at=excluded.updated_at")
                 .bind(validator_id)
@@ -3433,6 +3526,10 @@ async fn apply_provider_result(
                 .bind(&now)
                 .execute(&mut **tx)
                 .await?;
+            if name == "empty" {
+                sqlx::query("UPDATE current_validator_insights SET last_good_verdict_outcome = 'empty', last_good_verdict_received_at = ? WHERE validator_id = ?")
+                    .bind(&now).bind(validator_id).execute(&mut **tx).await?;
+            }
             Ok(AppliedDetail {
                 stored: false,
                 activity_changed: false,
@@ -5064,6 +5161,311 @@ mod tests {
         handle.abort();
     }
 
+    async fn negative_verdict_test_state(
+        node_id: &str,
+    ) -> (tempfile::TempDir, crate::http::AppState) {
+        let (dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", node_id, None, &owner_id)
+            .await
+            .unwrap();
+        let (link, _) = create_link(
+            &db,
+            "node-1",
+            &validator.validator_id,
+            "observer",
+            "2025-01-01T00:00:00Z",
+            None,
+            &owner_id,
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE node_validator_links SET origin = 'automatic' WHERE link_id = ?")
+            .bind(&link.link_id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        (dir, crate::http::AppState::new(db, None, auth))
+    }
+
+    async fn negative_verdict_public_insight(state: &crate::http::AppState) -> Value {
+        let response =
+            crate::http::public::public_networks(axum::extract::State(state.clone())).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice::<Value>(&body).unwrap()[0]["nodes"][0]["validator"].clone()
+    }
+
+    #[tokio::test]
+    async fn platscan_negative_verdict_survives_failure_without_reviving_old_activity() {
+        // Both positive->absence->failure and first absence->failure use the
+        // actual HTTP adapter, transactional refresh and public projection.
+        for previously_active in [true, false] {
+            let node_id = provider_node_id();
+            let (_dir, state) = negative_verdict_test_state(&node_id).await;
+            let mut responses = Vec::new();
+            if previously_active {
+                responses.extend([
+                    (
+                        200,
+                        serde_json::to_vec(&platscan_success(&node_id, 2)).unwrap(),
+                    ),
+                    (503, Vec::new()),
+                ]);
+            }
+            responses.extend([
+                (
+                    200,
+                    serde_json::to_vec(&serde_json::json!({"code": 0,
+                    "data": {"nodeId": "", "status": 0}}))
+                    .unwrap(),
+                ),
+                (503, Vec::new()),
+                (503, Vec::new()),
+                (503, Vec::new()),
+            ]);
+            let (base_url, mock, handle) = start_mock_platscan(responses, 0).await;
+            let provider = PlatScanValidatorProvider::new(
+                deployments(&base_url, &["platon-mainnet"]),
+                std::time::Duration::from_secs(5),
+            )
+            .unwrap();
+            if previously_active {
+                refresh_all(state.db(), &provider).await.unwrap();
+                assert_eq!(
+                    negative_verdict_public_insight(&state).await["currentValidatorStatus"],
+                    "validator"
+                );
+                // Age only the old detail metrics. A subsequent absence must
+                // not turn these retained amounts/counters into fresh values.
+                sqlx::query("UPDATE current_validator_insights SET last_good_received_at = '2025-01-01T00:00:00Z'")
+                    .execute(state.db().pool()).await.unwrap();
+            }
+            refresh_all(state.db(), &provider).await.unwrap();
+            let absent = negative_verdict_public_insight(&state).await;
+            assert_eq!(absent["currentValidatorStatus"], "not_validator");
+            assert_eq!(absent["currentValidatorStatusState"], "current");
+            assert_eq!(absent["activity"], "observing");
+            assert_eq!(absent["activityState"], "current");
+            let metrics_received_at = absent["receivedAt"].clone();
+            assert_eq!(
+                absent["freshness"],
+                if previously_active {
+                    "stale"
+                } else {
+                    "unknown"
+                }
+            );
+            refresh_all(state.db(), &provider).await.unwrap();
+            let failed = negative_verdict_public_insight(&state).await;
+            assert_eq!(failed["state"], "error");
+            assert_eq!(
+                failed["currentValidatorStatus"], "not_validator",
+                "failed refresh must retain the latest authoritative absence, not resurrect older activity"
+            );
+            assert_eq!(failed["currentValidatorStatusState"], "stale");
+            assert_eq!(failed["activity"], "observing");
+            assert_eq!(failed["activityState"], "stale");
+            assert_eq!(failed["receivedAt"], metrics_received_at);
+            assert_eq!(failed["activityReceivedAt"], absent["activityReceivedAt"]);
+            let snapshot_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM validator_daily_snapshots")
+                    .fetch_one(state.db().pool())
+                    .await
+                    .unwrap();
+            assert_eq!(
+                snapshot_count,
+                i64::from(previously_active),
+                "absence and failure must not fabricate or rewrite metrics history"
+            );
+            assert_eq!(
+                mock.requests.lock().unwrap().len(),
+                if previously_active { 6 } else { 4 }
+            );
+            handle.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn platscan_negative_verdict_ages_without_a_new_refresh() {
+        let node_id = provider_node_id();
+        let (_dir, state) = negative_verdict_test_state(&node_id).await;
+        let (base_url, _mock, handle) = start_mock_platscan(
+            vec![
+                (
+                    200,
+                    serde_json::to_vec(&serde_json::json!({"code": 0,
+                "data": {"nodeId": "", "status": 0}}))
+                    .unwrap(),
+                ),
+                (503, Vec::new()),
+            ],
+            0,
+        )
+        .await;
+        let provider = PlatScanValidatorProvider::new(
+            deployments(&base_url, &["platon-mainnet"]),
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        refresh_all(state.db(), &provider).await.unwrap();
+        assert_eq!(
+            negative_verdict_public_insight(&state).await["currentValidatorStatusState"],
+            "current"
+        );
+        sqlx::query("UPDATE current_validator_insights SET last_attempt_received_at = '2025-01-01T00:00:00Z', last_good_verdict_received_at = '2025-01-01T00:00:00Z'")
+            .execute(state.db().pool()).await.unwrap();
+        let aged = negative_verdict_public_insight(&state).await;
+        assert_eq!(aged["currentValidatorStatus"], "not_validator");
+        assert_eq!(
+            aged["currentValidatorStatusState"], "stale",
+            "confirmed absence must expire just like positive evidence"
+        );
+        assert_eq!(aged["activity"], "observing");
+        assert_eq!(aged["activityState"], "stale");
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn platscan_negative_verdict_renewal_invalidates_even_with_unchanged_ranking() {
+        let node_id = provider_node_id();
+        let (_dir, state) = negative_verdict_test_state(&node_id).await;
+        let absent = serde_json::to_vec(&serde_json::json!({"code": 0,
+            "data": {"nodeId": "", "status": 0}}))
+        .unwrap();
+        let (base_url, _mock, handle) = start_mock_platscan(
+            vec![
+                (200, absent.clone()),
+                (503, Vec::new()),
+                (200, absent),
+                (503, Vec::new()),
+            ],
+            0,
+        )
+        .await;
+        let provider = PlatScanValidatorProvider::new(
+            deployments(&base_url, &["platon-mainnet"]),
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        refresh_all(state.db(), &provider).await.unwrap();
+        sqlx::query("UPDATE current_validator_insights SET last_good_verdict_received_at = '2025-01-01T00:00:00Z'")
+            .execute(state.db().pool()).await.unwrap();
+        assert_eq!(
+            negative_verdict_public_insight(&state).await["currentValidatorStatusState"],
+            "stale"
+        );
+        let renewed = refresh_all(state.db(), &provider).await.unwrap();
+        assert_eq!(
+            negative_verdict_public_insight(&state).await["currentValidatorStatusState"],
+            "current"
+        );
+        assert!(
+            !renewed.invalidated_validator_ids.is_empty(),
+            "a renewed negative verdict must refetch an already-open stale projection"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn confirmed_verdict_replay_recovers_and_invalidates_without_rewriting_history() {
+        for interruption in [
+            Some(ValidatorProviderResult::Error("failed".to_owned())),
+            Some(ValidatorProviderResult::AuthoritativeEmpty),
+            None,
+        ] {
+            let node_id = provider_node_id();
+            let (_dir, state) = negative_verdict_test_state(&node_id).await;
+            let observation = ValidatorObservation {
+                provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
+                activity: Some(ValidatorActivity::Active),
+                stake_amount: Some("123456789000000000000".to_owned()),
+                ..Default::default()
+            };
+            let mut results = vec![ValidatorProviderResult::Success(Box::new(
+                observation.clone(),
+            ))];
+            if let Some(result) = interruption {
+                results.push(result);
+            }
+            results.push(ValidatorProviderResult::Success(Box::new(observation)));
+            let provider = FakeProvider {
+                results: std::sync::Mutex::new(results),
+                ..Default::default()
+            };
+            refresh_all(state.db(), &provider).await.unwrap();
+            if provider.results.lock().unwrap().len() > 1 {
+                refresh_all(state.db(), &provider).await.unwrap();
+            }
+            sqlx::query("UPDATE current_validator_insights SET last_good_verdict_received_at = '2025-01-01T00:00:00Z'")
+                .execute(state.db().pool()).await.unwrap();
+            assert_eq!(
+                negative_verdict_public_insight(&state).await["activityState"],
+                "stale"
+            );
+            let recovered = refresh_all(state.db(), &provider).await.unwrap();
+            let insight = negative_verdict_public_insight(&state).await;
+            assert_eq!(insight["currentValidatorStatus"], "validator");
+            assert_eq!(insight["activity"], "active");
+            assert_eq!(insight["activityState"], "current");
+            assert!(
+                !recovered.invalidated_validator_ids.is_empty(),
+                "an identical confirmed recovery must refetch stale/error projections"
+            );
+            let snapshots: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM validator_daily_snapshots")
+                    .fetch_one(state.db().pool())
+                    .await
+                    .unwrap();
+            assert_eq!(
+                snapshots, 1,
+                "replay must not duplicate a historical sample"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn metric_only_replay_does_not_replace_or_renew_confirmed_absence() {
+        let (_dir, state) = negative_verdict_test_state(&provider_node_id()).await;
+        let observation = ValidatorObservation {
+            provider_timestamp: Some("2025-01-01T00:00:00Z".to_owned()),
+            stake_amount: Some("123456789000000000000".to_owned()),
+            ..Default::default()
+        };
+        let provider = FakeProvider {
+            results: std::sync::Mutex::new(vec![
+                ValidatorProviderResult::Success(Box::new(observation.clone())),
+                ValidatorProviderResult::AuthoritativeEmpty,
+                ValidatorProviderResult::Success(Box::new(observation)),
+            ]),
+            ..Default::default()
+        };
+        refresh_all(state.db(), &provider).await.unwrap();
+        refresh_all(state.db(), &provider).await.unwrap();
+        sqlx::query("UPDATE current_validator_insights SET last_good_verdict_received_at = '2025-01-01T00:00:00Z'")
+            .execute(state.db().pool()).await.unwrap();
+        refresh_all(state.db(), &provider).await.unwrap();
+        let insight = negative_verdict_public_insight(&state).await;
+        assert_eq!(insight["activityReceivedAt"], "2025-01-01T00:00:00Z");
+        assert_eq!(insight["currentValidatorStatus"], "not_validator");
+        assert_eq!(insight["activity"], "observing");
+        assert_eq!(insight["activityState"], "stale");
+        assert_eq!(insight["freshness"], "fresh");
+        assert_eq!(insight["stakeAmount"], "123456789000000000000");
+    }
+
     #[tokio::test]
     async fn platscan_rejects_mismatch_malformed_types_and_unsuccessful_responses() {
         let node_id = provider_node_id();
@@ -5559,8 +5961,11 @@ mod tests {
             .unwrap();
         assert_eq!(insight.outcome, "empty");
 
-        // A later successful snapshot without an Activity value keeps the
-        // last-good canonical Activity (no erase on partial evidence).
+        assert_eq!(insight.last_good_verdict_outcome.as_deref(), Some("empty"));
+        let absence_received_at = insight.last_good_verdict_received_at.clone();
+
+        // Metric-only success retains the raw cache, but cannot supersede or
+        // renew the last confirmed absence.
         refresh_all(&db, &provider).await.unwrap();
         let insight = load_insight(&db, &validator.validator_id)
             .await
@@ -5569,6 +5974,19 @@ mod tests {
         assert_eq!(insight.outcome, "success");
         assert_eq!(insight.rank, Some(2));
         assert_eq!(insight.activity.as_deref(), Some("producing"));
+        assert_eq!(insight.last_good_verdict_outcome.as_deref(), Some("empty"));
+        assert_eq!(insight.last_good_verdict_received_at, absence_received_at);
+        let (activity, currency, status) = project_verdict(
+            &insight.outcome,
+            insight.last_good_verdict_outcome.as_deref(),
+            insight.activity.as_deref(),
+            "fresh",
+        );
+        assert_eq!(
+            (activity.as_str(), currency.as_str()),
+            ("observing", "current")
+        );
+        assert_eq!(status.status, CurrentValidatorStatus::NotValidator);
 
         // A Validator that has never seen a successful Activity stays Unknown
         // even after an Error; Provider state never fabricates a value.
@@ -7339,16 +7757,15 @@ mod tests {
             .await
             .unwrap();
         migrator_through(47).run(&pool).await.unwrap();
-        let insight = sqlx::query_as::<_, ValidatorInsightRecord>(INSIGHT_SELECT)
-            .bind("validator-legacy-rank")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        // Inspect the pinned historical schema, not the current row shape.
+        let (rank, rank_outcome, block_count): (Option<i64>, Option<String>, Option<i64>) =
+            sqlx::query_as("SELECT rank, rank_outcome, block_count FROM current_validator_insights WHERE validator_id = ?")
+                .bind("validator-legacy-rank").fetch_one(&pool).await.unwrap();
         // The detail alias was never an authoritative ranking source, so the
         // upgrade drops it rather than exposing an untrusted position.
-        assert_eq!(insight.rank, None);
-        assert_eq!(insight.rank_outcome, None);
-        assert_eq!(insight.block_count, Some(100));
+        assert_eq!(rank, None);
+        assert_eq!(rank_outcome, None);
+        assert_eq!(block_count, Some(100));
         pool.close().await;
     }
 

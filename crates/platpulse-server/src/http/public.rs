@@ -767,6 +767,9 @@ pub struct PublicValidatorInsight {
     /// Provider failure with a last-good Activity is always `stale`, even
     /// when the last-good timestamp is still within the freshness window.
     pub activity_state: String,
+    /// Receipt time of the last confirmed Activity/identity verdict, including
+    /// authoritative absence. Independent of detail metrics received_at.
+    pub activity_received_at: Option<String>,
     /// Server-owned Current Validator Status of the automatically identified
     /// chain identity (#173): `validator`, `not_validator`, or `unknown`.
     /// This is currently valid staking identity, not current consensus
@@ -855,6 +858,8 @@ struct PublicValidatorRow {
     provider_timestamp: Option<String>,
     activity: Option<String>,
     last_good_received_at: Option<String>,
+    last_good_verdict_outcome: Option<String>,
+    last_good_verdict_received_at: Option<String>,
     rank: Option<i64>,
     rank_outcome: Option<String>,
     rank_last_good_received_at: Option<String>,
@@ -869,36 +874,6 @@ struct PublicValidatorRow {
     expected_block_count: Option<i64>,
     gen_blocks_rate: Option<String>,
     counter_state: Option<String>,
-}
-
-/// Map the linked Validator's canonical last-good Activity and its currency
-/// for the Public projection. The predicates live in
-/// [`validator::project_activity`] so every projection surface answers the same
-/// way (#100, #101, #168, #218).
-fn public_validator_activity(
-    outcome: &str,
-    activity: Option<&str>,
-    freshness: &str,
-) -> (String, String) {
-    validator::project_activity(outcome, activity, freshness)
-}
-
-/// Project the Server-owned Current Validator Status for an automatically
-/// identified identity (#173). The verdict and its currency come from the
-/// classification predicates established in #168; the Public API never
-/// re-derives validity from a display name, rank, consensus membership, or a
-/// transport error.
-fn public_current_validator_status(
-    outcome: &str,
-    activity: Option<&str>,
-    freshness: &str,
-) -> (String, String, Option<String>) {
-    let view = validator::current_validator_status(Some(outcome), activity, freshness);
-    (
-        view.status.as_str().to_owned(),
-        view.state.to_owned(),
-        view.qualifier.map(|value| value.as_str().to_owned()),
-    )
 }
 
 /// Map the linked Validator's independent Network ranking state. Only a
@@ -932,7 +907,7 @@ async fn public_validator_insights(
 ) -> Result<Vec<PublicValidatorInsight>, sqlx::Error> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let rows = sqlx::query_as::<_, PublicValidatorRow>(
-        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.origin = 'automatic' AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.rank, i.rank_outcome, i.rank_last_good_received_at, i.rank_cohort_size, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.origin = 'automatic' AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
+        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.origin = 'automatic' AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.last_good_verdict_outcome, i.last_good_verdict_received_at, i.rank, i.rank_outcome, i.rank_last_good_received_at, i.rank_cohort_size, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.origin = 'automatic' AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
     )
     .bind(&now)
     .bind(&now)
@@ -956,8 +931,17 @@ async fn public_validator_insights(
             } else {
                 outcome.as_str()
             };
-            let (activity, activity_state) =
-                public_validator_activity(&outcome, row.activity.as_deref(), freshness);
+            let verdict_freshness = validator::freshness(
+                row.last_good_verdict_received_at.as_deref(),
+                crate::auth::now_utc(),
+                stale_after_seconds,
+            );
+            let (activity, activity_state, status) = validator::project_verdict(
+                &outcome,
+                row.last_good_verdict_outcome.as_deref(),
+                row.activity.as_deref(),
+                verdict_freshness,
+            );
             let (rank_state, rank_freshness) = public_validator_rank(
                 row.rank_outcome.as_deref(),
                 row.rank,
@@ -967,11 +951,10 @@ async fn public_validator_insights(
             );
             let (block_rate, block_rate_state) =
                 validator::cumulative_block_rate(row.block_count, row.expected_block_count);
-            let (
-                current_validator_status,
-                current_validator_status_state,
-                current_validator_status_qualifier,
-            ) = public_current_validator_status(&outcome, row.activity.as_deref(), freshness);
+            let current_validator_status = status.status.as_str().to_owned();
+            let current_validator_status_state = status.state.to_owned();
+            let current_validator_status_qualifier =
+                status.qualifier.map(|value| value.as_str().to_owned());
             PublicValidatorInsight {
                 validator_id: row.validator_id,
                 validator_node_id: row.validator_node_id,
@@ -1001,6 +984,7 @@ async fn public_validator_insights(
                 counter_state: row.counter_state.unwrap_or_else(|| "normal".to_owned()),
                 activity,
                 activity_state,
+                activity_received_at: row.last_good_verdict_received_at,
                 current_validator_status,
                 current_validator_status_state,
                 current_validator_status_qualifier,
@@ -5785,6 +5769,17 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
+        // This fixture explicitly declares its prior confirmed evidence; an
+        // arbitrary failed row must not obtain a production cache fallback.
+        let (verdict, receipt) = if outcome == "empty" {
+            (Some("empty"), Some(now.as_str()))
+        } else if activity.is_some() && last_good_received_at.is_some() {
+            (Some("success"), last_good_received_at)
+        } else {
+            (None, None)
+        };
+        sqlx::query("UPDATE current_validator_insights SET last_good_verdict_outcome = ?, last_good_verdict_received_at = ? WHERE validator_id = ?")
+            .bind(verdict).bind(receipt).bind(validator_id).execute(state.db().pool()).await.unwrap();
     }
 
     #[tokio::test]

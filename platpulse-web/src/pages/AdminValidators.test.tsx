@@ -100,7 +100,15 @@ const VALIDATOR_A = {
     currentValidatorStatusQualifier: null,
     activity: 'producing',
     activityState: 'current',
+    activityReceivedAt: '2026-03-01T00:00:00Z',
     rank: 12,
+    rankState: 'ranked',
+    rankFreshness: 'fresh',
+    rankOutcome: 'success',
+    rankAttemptedAt: '2026-03-01T00:01:00Z',
+    rankLastGoodReceivedAt: '2026-03-01T00:00:00Z',
+    rankLastGoodAgeSeconds: 95,
+    rankDiagnostic: null,
     stakeAmount: STAKE_A,
     delegatorCount: 18,
     blockCount: 4321,
@@ -134,6 +142,11 @@ const VALIDATOR_B = {
     currentValidatorStatusState: 'stale',
     activityState: 'stale',
     rank: 88,
+    rankState: 'error',
+    rankFreshness: 'stale',
+    rankOutcome: 'error',
+    rankDiagnostic: 'ranking request timed out',
+    rankLastGoodAgeSeconds: 7200,
     stakeAmount: null,
     delegatorCount: null,
     rewardAmount: null,
@@ -314,7 +327,7 @@ describe('PAGE-ADMIN-VALIDATORS (automatic identity and registry)', () => {
     const gamma = screen.getByRole('row', { name: /Gamma Validator/ })
     expect(gamma.textContent).toContain('Validator status unknown')
     expect(gamma.textContent).toContain('Not established')
-    expect(gamma.textContent).toContain('No last-good observation')
+    expect(gamma.textContent).toContain('No confirmed verdict')
   })
 
   it('filters both tables from one search field and explains the empty result', async () => {
@@ -393,7 +406,7 @@ describe('PAGE-ADMIN-VALIDATOR-DETAIL (one chain identity)', () => {
     expect(screen.getByRole('heading', { name: 'Current Validator status' })).toBeTruthy()
     expect(screen.getAllByText('Validator').length).toBeGreaterThan(0)
     expect(screen.getByText('Current')).toBeTruthy()
-    expect(screen.getByText('1m')).toBeTruthy()
+    expect(screen.getByText('1m')).toBeTruthy() // Rank age is independent of verdict receipt.
 
     expect(screen.getByRole('heading', { name: 'Provider evidence' })).toBeTruthy()
     expect(screen.getByText('platsScan')).toBeTruthy()
@@ -447,6 +460,218 @@ describe('PAGE-ADMIN-VALIDATOR-DETAIL (one chain identity)', () => {
     expect(
       screen.getByRole('link', { name: 'Back to Validators' }).getAttribute('href'),
     ).toBe('/admin/validators')
+  })
+})
+
+
+describe('independent Admin verdict confirmation receipt', () => {
+  const cases = [
+    { activityReceivedAt: '2026-03-02T06:00:00Z', expected: '2026-03-02 06:00:00 UTC' },
+    { activityReceivedAt: null, expected: 'No confirmed verdict' },
+  ]
+
+  it.each(cases)('uses $activityReceivedAt in the registry, not detail receipt or age', async (receipt) => {
+    const validator = { ...VALIDATOR_A, insight: { ...VALIDATOR_A.insight, activityReceivedAt: receipt.activityReceivedAt } }
+    mockFetch(registryRoutes({ validators: [validator], identities: [] }))
+    renderAt('/admin/validators')
+    const row = await screen.findByRole('row', { name: /Alpha Validator/ })
+    const cell = row.querySelector('[data-label="Last confirmed at"]')
+    expect(cell?.textContent).toBe(receipt.expected)
+    expect(cell?.textContent).not.toContain('2026-03-01')
+    expect(cell?.textContent).not.toContain('1m')
+  })
+
+  it.each(cases)('uses $activityReceivedAt in status detail, not detail receipt or age', async (receipt) => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/validators/v-1': () => jsonResponse({ ...VALIDATOR_A, insight: { ...VALIDATOR_A.insight, activityReceivedAt: receipt.activityReceivedAt }, links: [] }, 200),
+    })
+    renderAt('/admin/validators/v-1')
+    const heading = await screen.findByRole('heading', { name: 'Current Validator status' })
+    const panel = heading.closest('[data-slot="card-x"]')
+    expect(panel?.textContent).toContain('Last confirmed at')
+    expect(panel?.textContent).toContain(receipt.expected)
+    expect(panel?.textContent).not.toContain('2026-03-01')
+    expect(panel?.textContent).not.toContain('1m')
+  })
+})
+
+const RANK_CASES = [
+  {
+    name: 'failed ranking with retained last-good rank',
+    rank: 12,
+    rankState: 'error',
+    rankFreshness: 'stale',
+    rankOutcome: 'error',
+    rankLastGoodReceivedAt: '2026-02-28T22:00:00Z',
+    rankLastGoodAgeSeconds: 7200,
+    rankDiagnostic: 'ranking request timed out',
+    value: '#12',
+    evidence: 'Retained rank (stale)',
+    outcome: 'Rank refresh error',
+  },
+  {
+    name: 'failed ranking without a last-good observation',
+    rank: null,
+    rankState: 'error',
+    rankFreshness: 'unknown',
+    rankOutcome: 'error',
+    rankLastGoodReceivedAt: null,
+    rankLastGoodAgeSeconds: null,
+    rankDiagnostic: 'ranking request timed out',
+    value: 'Unknown',
+    evidence: 'Rank not established',
+    outcome: 'Rank refresh error',
+  },
+  {
+    name: 'successful complete ranking without this Validator',
+    rank: null,
+    rankState: 'unranked',
+    rankFreshness: 'fresh',
+    rankOutcome: 'success',
+    rankLastGoodReceivedAt: '2026-02-28T23:58:25Z',
+    rankLastGoodAgeSeconds: 95,
+    rankDiagnostic: null,
+    value: 'Unranked',
+    evidence: 'Fresh rank',
+    outcome: 'Rank refresh success',
+  },
+  {
+    name: 'aged successful rank despite fresh detail',
+    rank: 12,
+    rankState: 'ranked',
+    rankFreshness: 'stale',
+    rankOutcome: 'success',
+    rankLastGoodReceivedAt: '2026-02-28T22:00:00Z',
+    rankLastGoodAgeSeconds: 7200,
+    rankDiagnostic: null,
+    value: '#12',
+    evidence: 'Retained rank (stale)',
+    outcome: 'Rank refresh success',
+  },
+]
+
+describe('independent Admin metrics evidence', () => {
+  it('discloses a latest detail failure without turning recent metrics or independent rank stale', async () => {
+    const validator = {
+      ...VALIDATOR_A,
+      insight: {
+        ...VALIDATOR_A.insight,
+        outcome: 'error',
+        diagnostic: 'detail upstream unavailable (sanitized)',
+        currentValidatorStatusState: 'stale',
+        activityState: 'stale',
+      },
+    }
+    mockFetch(registryRoutes({ validators: [validator], identities: [] }))
+    renderAt('/admin/validators')
+    const row = await screen.findByRole('row', { name: /Alpha Validator/ })
+    const metrics = row.querySelector('[data-label="Metrics evidence"]')
+    expect(metrics?.textContent).toContain('Fresh metrics')
+    expect(metrics?.textContent).toContain('Last-good metric age 1m')
+    expect(metrics?.textContent).toContain('Last-good metric received at 2026-03-01 00:00:00 UTC')
+    expect(metrics?.textContent).toContain('Latest detail refresh error')
+    expect(metrics?.textContent).toContain('Retained last-good metrics')
+    expect(metrics?.textContent).toContain('detail upstream unavailable (sanitized)')
+    expect(metrics?.textContent).not.toContain('Retained metrics (stale)')
+    expect(row.querySelector('[data-label="Rank"]')?.textContent).toContain('Fresh rank')
+    expect(row.querySelector('[data-label="Rank"]')?.textContent).toContain('Rank refresh success')
+    expect(row.querySelector('[data-label="Rank"]')?.textContent).not.toContain('detail upstream unavailable')
+  })
+
+  const cases = [
+    { freshness: 'stale', lastGoodReceivedAt: '2026-02-27T00:00:00Z', lastGoodAgeSeconds: 172800, evidence: 'Retained metrics (stale)' },
+    { freshness: 'unknown', lastGoodReceivedAt: null, lastGoodAgeSeconds: null, evidence: 'Metrics not established' },
+  ]
+
+  it.each(cases)('discloses $freshness metrics separately from current verdict and retained rank', async (metrics) => {
+    const validator = {
+      ...VALIDATOR_A,
+      insight: {
+        ...VALIDATOR_A.insight,
+        ...RANK_CASES[0],
+        ...metrics,
+        outcome: 'empty',
+        currentValidatorStatus: 'not_validator',
+        activity: 'observing',
+        receivedAt: metrics.lastGoodReceivedAt,
+        stakeAmount: metrics.lastGoodReceivedAt ? STAKE_A : null,
+        delegatorCount: metrics.lastGoodReceivedAt ? 18 : null,
+      },
+    }
+    mockFetch(registryRoutes({ validators: [validator], identities: [] }))
+    renderAt('/admin/validators')
+    const row = await screen.findByRole('row', { name: /Alpha Validator/ })
+    expect(row.querySelector('[data-label="Current status"]')?.textContent).toContain('Current')
+    expect(row.querySelector('[data-label="Last confirmed at"]')?.textContent).toBe('2026-03-01 00:00:00 UTC')
+    const rank = row.querySelector('[data-label="Rank"]')
+    expect(rank?.textContent).toContain('Rank confirmed at 2026-02-28 22:00:00 UTC')
+    expect(rank?.textContent).toContain('Retained rank (stale)')
+    const cell = row.querySelector('[data-label="Metrics evidence"]')
+    expect(cell).not.toBeNull()
+    expect(cell?.textContent).toContain(metrics.evidence)
+    expect(cell?.textContent).not.toContain('2026-03-01')
+    expect(cell?.textContent).not.toContain('2026-02-28')
+    if (metrics.lastGoodReceivedAt) {
+      expect(cell?.textContent).toContain('Last-good metric age 2d')
+      expect(cell?.textContent).toContain('Last-good metric received at 2026-02-27 00:00:00 UTC')
+      expect(row.querySelector('[data-label="Stake"]')?.textContent).toContain(formatAmountExact(STAKE_A))
+    } else {
+      expect(cell?.textContent).toContain('Metrics never observed')
+      expect(cell?.textContent).not.toContain('Last-good metric age 0')
+      expect(row.querySelector('[data-label="Stake"]')?.textContent).toBe('Unknown')
+      expect(row.querySelector('[data-label="Delegators"]')?.textContent).toBe('Unknown')
+    }
+  })
+})
+
+describe('independent Admin rank evidence', () => {
+  it.each(RANK_CASES)('discloses $name in the registry without borrowing fresh detail evidence', async (rankCase) => {
+    const validator = {
+      ...VALIDATOR_A,
+      insight: { ...VALIDATOR_A.insight, ...rankCase },
+    }
+    mockFetch(registryRoutes({ validators: [validator], identities: [] }))
+    renderAt('/admin/validators')
+    const row = await screen.findByRole('row', { name: /Alpha Validator/ })
+    const cell = row.querySelector('[data-label="Rank"]')
+    expect(cell?.textContent).toContain(rankCase.value)
+    expect(cell?.textContent).toContain(rankCase.evidence)
+    expect(cell?.textContent).toContain(rankCase.outcome)
+    const confirmation = rankCase.rankLastGoodReceivedAt
+      ? 'Rank confirmed at ' + rankCase.rankLastGoodReceivedAt.replace('T', ' ').replace('Z', ' UTC')
+      : 'Rank never observed'
+    expect(cell?.textContent).toContain(confirmation)
+    expect(cell?.textContent).not.toContain('2026-03-01') // Fresh detail/verdict receipt is not rank evidence.
+    if (rankCase.rankDiagnostic) expect(cell?.textContent).toContain(rankCase.rankDiagnostic)
+    if (rankCase.rankFreshness !== 'fresh') expect(cell?.textContent).not.toContain('Fresh rank')
+    if (rankCase.rankOutcome === 'error' && rankCase.rank == null) expect(cell?.textContent).not.toContain('Unranked')
+    expect(row.textContent).toContain('Current') // Detail really is fresh.
+  })
+
+  it.each(RANK_CASES)('discloses $name and its own timestamps in detail', async (rankCase) => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/validators/v-1': () => jsonResponse({
+        ...VALIDATOR_A,
+        insight: { ...VALIDATOR_A.insight, ...rankCase },
+        links: [],
+      }, 200),
+    })
+    renderAt('/admin/validators/v-1')
+    const heading = await screen.findByRole('heading', { name: 'Rank evidence' })
+    const panel = heading.closest('[data-slot="card-x"]') ?? heading.parentElement?.parentElement
+    expect(panel?.textContent).toContain(rankCase.value)
+    expect(panel?.textContent).toContain(rankCase.evidence)
+    expect(panel?.textContent).toContain(rankCase.outcome)
+    expect(panel?.textContent).toContain('Rank attempted at')
+    expect(panel?.textContent).toContain('Rank last-good age')
+    expect(panel?.textContent).toContain(rankCase.rankLastGoodAgeSeconds == null ? 'No last-good observation' : rankCase.rankLastGoodAgeSeconds === 95 ? '1m' : '2h')
+    if (rankCase.rankDiagnostic) expect(panel?.textContent).toContain(rankCase.rankDiagnostic)
+    // The independent detail evidence panel still truthfully reports fresh.
+    const detailHeading = screen.getByRole('heading', { name: 'Provider evidence' })
+    const detailPanel = detailHeading.closest('[data-slot="card-x"]') ?? detailHeading.parentElement?.parentElement
+    expect(detailPanel?.textContent).toContain('Fresh')
   })
 })
 

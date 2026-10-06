@@ -21,7 +21,7 @@ use thiserror::Error;
 pub static SERVER_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Server binary.
-pub const SERVER_SCHEMA_VERSION: i64 = 71;
+pub const SERVER_SCHEMA_VERSION: i64 = 72;
 
 /// The Server currently serializes all SQLite operations through one pool
 /// connection. Read scaling can be added with a concrete query need; it is
@@ -652,6 +652,109 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn confirmed_verdict_migration_preserves_metrics_and_does_not_guess_failed_history() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("server.db");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(SERVER_WRITE_CONNECTIONS)
+            .connect_with(sqlite_options(&config(&path), true))
+            .await
+            .unwrap();
+        // Pin the actual upgrade boundary, not latest_schema - 1.
+        migrations_through(71).run(&pool).await.unwrap();
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Mainnet', '0xgenesis', 1, 1, 'lat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(&pool).await.unwrap();
+        for outcome in [
+            "success",
+            "empty",
+            "error",
+            "not_found",
+            "unsupported",
+            "not_configured",
+        ] {
+            sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, created_at, updated_at) VALUES (?, 'mainnet', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+                .bind(outcome).bind(outcome).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, activity, last_attempt_received_at, last_good_received_at, stake_amount, counter_state, change_state, candidate_observations, updated_at) VALUES (?, 'platscan', ?, 'active', '2026-02-02T00:00:00Z', '2026-01-01T00:00:00Z', '123456789000000000000', 'normal', 'normal', 0, '2026-02-02T00:00:00Z')")
+                .bind(outcome).bind(outcome).execute(&pool).await.unwrap();
+        }
+        pool.close().await;
+        let database = ServerDatabase::open(config(&path)).await.unwrap();
+        assert_eq!(
+            database.schema_version().await.unwrap(),
+            SERVER_SCHEMA_VERSION
+        );
+        for outcome in [
+            "success",
+            "empty",
+            "error",
+            "not_found",
+            "unsupported",
+            "not_configured",
+        ] {
+            let (kind, verdict_time, detail_time, stake): (Option<String>, Option<String>, String, String) =
+                sqlx::query_as("SELECT last_good_verdict_outcome, last_good_verdict_received_at, last_good_received_at, stake_amount FROM current_validator_insights WHERE validator_id = ?")
+                    .bind(outcome).fetch_one(database.pool()).await.unwrap();
+            assert_eq!(detail_time, "2026-01-01T00:00:00Z");
+            assert_eq!(stake, "123456789000000000000");
+            match outcome {
+                "success" => {
+                    assert_eq!(kind.as_deref(), Some("success"));
+                    assert_eq!(verdict_time.as_deref(), Some("2026-01-01T00:00:00Z"));
+                }
+                "empty" => {
+                    assert_eq!(kind.as_deref(), Some("empty"));
+                    assert_eq!(verdict_time.as_deref(), Some("2026-02-02T00:00:00Z"));
+                }
+                _ => {
+                    assert_eq!(kind, None, "ambiguous failure is not proof of old Activity");
+                    assert_eq!(verdict_time, None);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn confirmed_verdict_migration_does_not_reconfirm_cached_activity_after_metric_only_success()
+     {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("server.db");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(SERVER_WRITE_CONNECTIONS)
+            .connect_with(sqlite_options(&config(&path), true))
+            .await
+            .unwrap();
+        migrations_through(71).run(&pool).await.unwrap();
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Mainnet', '0xgenesis', 1, 1, 'lat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, created_at, updated_at) VALUES ('metric-only', 'mainnet', 'metric-only', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, activity, last_attempt_received_at, last_good_received_at, stake_amount, counter_state, change_state, candidate_observations, updated_at) VALUES ('metric-only', 'normalized-provider', 'success', 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '123456789000000000000', 'normal', 'normal', 0, '2026-01-01T00:00:00Z')")
+            .execute(&pool).await.unwrap();
+        // Schema 71 discarded negative provenance but retained raw Activity.
+        sqlx::query("UPDATE current_validator_insights SET outcome = 'empty', last_attempt_received_at = '2026-01-02T00:00:00Z' WHERE validator_id = 'metric-only'")
+            .execute(&pool).await.unwrap();
+        // A supported Success(None Activity) changed metrics and their receipt,
+        // but that cached Active value is not a newly confirmed identity.
+        sqlx::query("UPDATE current_validator_insights SET outcome = 'success', last_attempt_received_at = '2026-01-03T00:00:00Z', last_good_received_at = '2026-01-03T00:00:00Z', stake_amount = '234567890000000000000' WHERE validator_id = 'metric-only'")
+            .execute(&pool).await.unwrap();
+        pool.close().await;
+        let database = ServerDatabase::open(config(&path)).await.unwrap();
+        let (kind, verdict_time, activity, detail_time, stake): (Option<String>, Option<String>, String, String, String) =
+            sqlx::query_as("SELECT last_good_verdict_outcome, last_good_verdict_received_at, activity, last_good_received_at, stake_amount FROM current_validator_insights WHERE validator_id = 'metric-only'")
+                .fetch_one(database.pool()).await.unwrap();
+        assert_eq!(
+            kind, None,
+            "a legacy cached Activity is not proof of the latest success verdict"
+        );
+        assert_eq!(verdict_time, None);
+        assert_eq!(
+            activity, "active",
+            "preserve cached data, but do not classify from it"
+        );
+        assert_eq!(detail_time, "2026-01-03T00:00:00Z");
+        assert_eq!(stake, "234567890000000000000");
+    }
     #[tokio::test]
     async fn existing_open_rejects_missing_database_without_creating_one() {
         let directory = tempdir().unwrap();

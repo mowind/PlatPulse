@@ -130,9 +130,13 @@ function activityReason(
     const identity = identityReason?.trim()
     return identity || 'No effective Node Validator Link.'
   }
-  if (value === 'observing') return 'PlatScan reports no staking identity for this Validator.'
+  if (value === 'observing') {
+    if (validator.state === 'error') return 'Showing the last confirmed absence; the latest refresh failed.'
+    if (validator.activityState === 'stale') return 'Showing the last confirmed absence; it is no longer current.'
+    return 'PlatScan reports no staking identity for this Validator.'
+  }
   if (validator.state === 'error') {
-    return validator.receivedAt
+    return validator.activityReceivedAt
       ? 'Showing the last successful value; the latest refresh failed.'
       : 'The latest refresh failed and no successful value is available.'
   }
@@ -172,8 +176,8 @@ export function ValidatorActivityBadge({
   const { presentation, value } = resolveActivity(validator)
   const stale = validator?.activityState === 'stale'
   const Icon = presentation.icon
-  const updated = validator?.receivedAt
-    ? `updated ${formatObservedAt(validator.receivedAt)}`
+  const updated = validator?.activityReceivedAt
+    ? `updated ${formatObservedAt(validator.activityReceivedAt)}`
     : 'never observed'
   const reason = activityReason(validator, value, identityReason)
   const accessibleName = [
@@ -199,7 +203,7 @@ export function ValidatorActivityBadge({
         <>
           <span className="block">Source: {activitySource(validator)}</span>
           <span className="block">Status: {presentation.label}</span>
-          <span className="block">Updated: {formatObservedAt(validator?.receivedAt)}</span>
+          <span className="block">Updated: {formatObservedAt(validator?.activityReceivedAt)}</span>
           {reason && <span className="block">{reason}</span>}
         </>
       }

@@ -9,6 +9,7 @@
 //! build_app against a temporary SQLite database, drive the real discovery
 //! pass, and read the results back over HTTP.
 
+use async_trait::async_trait;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
@@ -181,6 +182,15 @@ impl Harness {
             .bind(&now)
             .bind(last_good.as_deref())
             .bind(&now)
+            .execute(self.pool())
+            .await
+            .unwrap();
+        // This fixture is an explicit known verdict, not a legacy ambiguous
+        // detail observation. Presence/absence now has its own receipt.
+        sqlx::query("UPDATE current_validator_insights SET last_good_verdict_outcome = ?, last_good_verdict_received_at = ? WHERE validator_id = ?")
+            .bind(last_good.as_ref().map(|_| if outcome == "empty" { "empty" } else { "success" }))
+            .bind(last_good.as_deref())
+            .bind(validator_id)
             .execute(self.pool())
             .await
             .unwrap();
@@ -609,8 +619,9 @@ async fn node_purge_keeps_the_shared_validator_identity_and_its_history() {
         .execute(harness.pool())
         .await
         .unwrap();
-    sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, counter_state, updated_at) VALUES (?, 'platscan', 'success', NULL, NULL, 'active', ?, ?, 'normal', ?)")
+    sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_good_verdict_outcome, last_good_verdict_received_at, last_attempt_received_at, last_good_received_at, counter_state, updated_at) VALUES (?, 'platscan', 'success', NULL, NULL, 'active', 'success', ?, ?, ?, 'normal', ?)")
         .bind(&validator_id)
+        .bind(&now)
         .bind(&now)
         .bind(&now)
         .bind(&now)
@@ -705,4 +716,192 @@ async fn node_purge_keeps_the_shared_validator_identity_and_its_history() {
         listed, 0,
         "the purged Node must not appear in the identity coverage list"
     );
+}
+
+/// A controllable Provider at the real refresh boundary, not a projected DTO.
+struct RankProvider(validator::RankingProviderResult);
+
+#[async_trait]
+impl validator::ValidatorProvider for RankProvider {
+    fn source(&self) -> &str {
+        "platscan"
+    }
+
+    async fn fetch(
+        &self,
+        _network_key: &str,
+        _validator_node_id: &str,
+    ) -> validator::ValidatorProviderResult {
+        validator::ValidatorProviderResult::Success(Box::new(validator::ValidatorObservation {
+            activity: Some(validator::ValidatorActivity::Active),
+            stake_amount: Some("1000".to_owned()),
+            ..validator::ValidatorObservation::default()
+        }))
+    }
+
+    async fn fetch_ranking(&self, _network_key: &str) -> validator::RankingProviderResult {
+        self.0.clone()
+    }
+}
+
+async fn rank_insights(harness: &Harness, session: &Session, validator_id: &str) -> [Value; 2] {
+    let list = harness
+        .send(admin_get("/api/admin/v1/validators", session))
+        .await;
+    assert_eq!(list.status(), StatusCode::OK);
+    let list = body_json(list).await;
+    let registry = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["validatorId"] == validator_id)
+        .unwrap()["insight"]
+        .clone();
+    let detail = harness
+        .send(admin_get(
+            &format!("/api/admin/v1/validators/{validator_id}"),
+            session,
+        ))
+        .await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    [registry, body_json(detail).await["insight"].clone()]
+}
+
+#[tokio::test]
+async fn admin_rank_failure_is_stale_independently_of_fresh_detail_after_real_refresh() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness, OWNER_LOGIN_BODY).await;
+    harness
+        .seed_validator("v-rank", 'a', "success", Some("active"), None)
+        .await;
+    let ranked = RankProvider(validator::RankingProviderResult::Success(Box::new(
+        validator::NetworkRanking {
+            entries: [(p2p_key('a'), 4)].into_iter().collect(),
+            cohort_size: 5,
+        },
+    )));
+    validator::refresh_all(harness.state.db(), &ranked)
+        .await
+        .unwrap();
+    let baseline = rank_insights(&harness, &owner, "v-rank").await;
+    let last_good = baseline[0]["rankLastGoodReceivedAt"].clone();
+    assert!(last_good.is_string());
+    assert_eq!(baseline[0]["rankState"], "ranked");
+    assert_eq!(baseline[0]["rankFreshness"], "fresh");
+
+    // Detail still succeeds while the independent Network list fails.
+    let failed = RankProvider(validator::RankingProviderResult::Error(
+        "ranking unavailable".to_owned(),
+    ));
+    validator::refresh_all(harness.state.db(), &failed)
+        .await
+        .unwrap();
+    for insight in rank_insights(&harness, &owner, "v-rank").await {
+        assert_eq!(insight["outcome"], "success");
+        assert_eq!(insight["freshness"], "fresh");
+        assert_eq!(insight["rank"], 4);
+        assert_eq!(insight["rankOutcome"], "error");
+        assert_eq!(insight["rankState"], "error");
+        assert_eq!(insight["rankFreshness"], "stale");
+        assert_eq!(insight["rankLastGoodReceivedAt"], last_good);
+        assert!(insight["rankAttemptedAt"].is_string());
+        assert!(insight["rankLastGoodAgeSeconds"].as_i64().unwrap() >= 0);
+        assert_eq!(insight["rankDiagnostic"], "ranking unavailable");
+    }
+}
+
+#[tokio::test]
+async fn admin_rank_unknown_unranked_failures_and_aged_success_keep_independent_evidence() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness, OWNER_LOGIN_BODY).await;
+    harness
+        .seed_validator("v-rank", 'a', "success", Some("active"), None)
+        .await;
+    for insight in rank_insights(&harness, &owner, "v-rank").await {
+        assert_eq!(insight["rankState"], "unknown");
+        assert_eq!(insight["rankFreshness"], "unknown");
+        assert!(insight["rank"].is_null());
+        assert!(insight["rankLastGoodAgeSeconds"].is_null());
+    }
+    // Every failure outcome without rank evidence must stay Unknown, not zero
+    // or Unranked; a fresh detail request cannot establish the Network list.
+    for (result, outcome) in [
+        (
+            validator::RankingProviderResult::Error(
+                "api_key=rank-secret https://user:password@provider.test/rank".to_owned(),
+            ),
+            "error",
+        ),
+        (
+            validator::RankingProviderResult::NotConfigured("ranking disabled".to_owned()),
+            "not_configured",
+        ),
+        (
+            validator::RankingProviderResult::Unsupported("ranking unsupported".to_owned()),
+            "unsupported",
+        ),
+    ] {
+        validator::refresh_all(harness.state.db(), &RankProvider(result))
+            .await
+            .unwrap();
+        for insight in rank_insights(&harness, &owner, "v-rank").await {
+            assert_eq!(insight["freshness"], "fresh");
+            assert_eq!(insight["rankOutcome"], outcome);
+            assert_eq!(insight["rankState"], outcome);
+            assert_eq!(insight["rankFreshness"], "unknown");
+            assert!(insight["rank"].is_null());
+            assert!(insight["rankLastGoodReceivedAt"].is_null());
+            assert!(insight["rankLastGoodAgeSeconds"].is_null());
+            assert!(insight["rankAttemptedAt"].is_string());
+            let diagnostic = insight["rankDiagnostic"].as_str().unwrap();
+            assert!(!diagnostic.contains("rank-secret"));
+            assert!(!diagnostic.contains("user:password"));
+            assert!(!diagnostic.contains("https://"));
+        }
+    }
+    // A complete successful list that omits this Validator is authoritative
+    // Unranked, unlike all the failed/never-observed cases above.
+    validator::refresh_all(
+        harness.state.db(),
+        &RankProvider(validator::RankingProviderResult::Success(Box::new(
+            validator::NetworkRanking {
+                entries: [(p2p_key('b'), 1)].into_iter().collect(),
+                cohort_size: 1,
+            },
+        ))),
+    )
+    .await
+    .unwrap();
+    for insight in rank_insights(&harness, &owner, "v-rank").await {
+        assert_eq!(insight["rankState"], "unranked");
+        assert_eq!(insight["rankFreshness"], "fresh");
+        assert_eq!(insight["rankOutcome"], "success");
+        assert!(insight["rank"].is_null());
+        assert!(insight["rankLastGoodReceivedAt"].is_string());
+        assert!(insight["rankDiagnostic"].is_null());
+    }
+    validator::refresh_all(
+        harness.state.db(),
+        &RankProvider(validator::RankingProviderResult::Success(Box::new(
+            validator::NetworkRanking {
+                entries: [(p2p_key('a'), 4)].into_iter().collect(),
+                cohort_size: 5,
+            },
+        ))),
+    )
+    .await
+    .unwrap();
+    let old_rank_receipt = harness.now("-7200 seconds").await;
+    sqlx::query("UPDATE current_validator_insights SET rank_last_good_received_at = ? WHERE validator_id = 'v-rank'")
+        .bind(&old_rank_receipt).execute(harness.pool()).await.unwrap();
+    for insight in rank_insights(&harness, &owner, "v-rank").await {
+        assert_eq!(insight["outcome"], "success");
+        assert_eq!(insight["freshness"], "fresh");
+        assert_eq!(insight["rankState"], "ranked");
+        assert_eq!(insight["rankOutcome"], "success");
+        assert_eq!(insight["rankFreshness"], "stale");
+        assert_eq!(insight["rank"], 4);
+        assert_eq!(insight["rankLastGoodReceivedAt"], old_rank_receipt);
+        assert!(insight["rankLastGoodAgeSeconds"].as_i64().unwrap() >= 7200);
+    }
 }

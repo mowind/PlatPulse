@@ -32,6 +32,8 @@ import {
   validatorMatchesQuery,
   validatorPublicAssociation,
   validatorRank,
+  validatorRankEvidence,
+  validatorRankOutcome,
   validatorSourceLabel,
   validatorStatusEvidence,
   validatorStatusLabel,
@@ -351,16 +353,17 @@ function ValidatorRegistrySection({
         <div className="overflow-x-auto">
           <table data-stack data-slot="validator-table" className="w-full text-sm">
             <caption className="sr-only">
-              Resolved Validators with their current status, evidence age, and staking metrics
+              Resolved Validators with independent verdict, rank, and staking-metric evidence
             </caption>
             <thead>
               <tr className="border-b">
                 <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Validator</th>
                 <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Current status</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Last-good age</th>
+                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Last confirmed at</th>
                 <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Rank</th>
                 <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Stake</th>
                 <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Delegators</th>
+                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Metrics evidence</th>
                 <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Nodes</th>
               </tr>
             </thead>
@@ -402,22 +405,63 @@ function ValidatorRow({ validator }: { validator: Validator }) {
           Activity {validatorActivity(insight)} · {validatorActivityEvidence(insight)}
         </small>
       </td>
-      <td data-label="Last-good age" className="min-w-0 px-3 py-3">
-        {validatorLastGoodAge(insight?.lastGoodAgeSeconds)}
-        <small className="mt-0.5 block text-[11px] text-muted-foreground">
-          {insight?.lastGoodReceivedAt
-            ? formatObservedAt(insight.lastGoodReceivedAt)
-            : 'No last-good observation'}
-        </small>
+      <td data-label="Last confirmed at" className="min-w-0 px-3 py-3">
+        {insight?.activityReceivedAt
+          ? formatObservedAt(insight.activityReceivedAt)
+          : 'No confirmed verdict'}
       </td>
       <td data-label="Rank" className="min-w-0 px-3 py-3">
         {validatorRank(insight)}
+        <small className="mt-0.5 block text-[11px] text-muted-foreground">
+          {validatorRankEvidence(insight)} · {validatorRankOutcome(insight)}
+        </small>
+        <small className="mt-0.5 block break-words text-[11px] text-muted-foreground">
+          {insight?.rankLastGoodReceivedAt
+            ? 'Rank confirmed at ' + formatObservedAt(insight.rankLastGoodReceivedAt)
+            : 'Rank never observed'}
+        </small>
+        {insight?.rankDiagnostic && (
+          <small className="mt-0.5 block break-words text-[11px] text-muted-foreground">
+            {insight.rankDiagnostic}
+          </small>
+        )}
       </td>
       <td data-label="Stake" className="min-w-0 px-3 py-3">
         {formatAmountExact(insight?.stakeAmount)}
       </td>
       <td data-label="Delegators" className="min-w-0 px-3 py-3">
         {insight?.delegatorCount ?? 'Unknown'}
+      </td>
+      <td data-label="Metrics evidence" className="min-w-0 px-3 py-3">
+        <span className="block text-[11px] text-muted-foreground">
+          {!insight?.lastGoodReceivedAt
+            ? 'Metrics not established'
+            : insight.freshness === 'fresh'
+              ? 'Fresh metrics'
+              : insight.freshness === 'stale'
+                ? 'Retained metrics (stale)'
+                : 'Metrics freshness unknown'}
+        </span>
+        <small className="mt-0.5 block text-[11px] text-muted-foreground">
+          Latest detail refresh {insight?.outcome ?? 'unknown'}
+          {insight?.outcome === 'error' && insight.lastGoodReceivedAt && ' · Retained last-good metrics'}
+          {insight?.outcome === 'empty' && ' · No metric sample'}
+        </small>
+        {insight?.diagnostic && (
+          <small className="mt-0.5 block break-words text-[11px] text-muted-foreground">
+            {insight.diagnostic}
+          </small>
+        )}
+        {insight?.lastGoodReceivedAt && (
+          <small className="mt-0.5 block text-[11px] text-muted-foreground">
+            Last-good metric age {validatorLastGoodAge(insight.lastGoodAgeSeconds)}
+          </small>
+        )}
+        <small className="mt-0.5 block break-words text-[11px] text-muted-foreground">
+          {insight?.lastGoodReceivedAt
+            ? 'Last-good metric received at ' + formatObservedAt(insight.lastGoodReceivedAt)
+            : 'Metrics never observed'}
+        </small>
       </td>
       <td data-label="Nodes" className="min-w-0 px-3 py-3">
         {validator.linkCount}
@@ -506,6 +550,7 @@ export function AdminValidatorDetail() {
             </div>
           )}
           <StatusPanel validator={query.data} />
+          <RankPanel validator={query.data} />
           <EvidencePanel validator={query.data} />
           <StakingPanel validator={query.data} />
           <LinksPanel validator={query.data} />
@@ -538,14 +583,10 @@ function StatusPanel({ validator }: { validator: ValidatorDetail }) {
       <div className="mt-3">
         <DetailList>
           <DetailItem label="Evidence">{validatorStatusEvidence(insight)}</DetailItem>
-          <DetailItem label="Last-good age">
-            {validatorLastGoodAge(insight?.lastGoodAgeSeconds)}
-            {insight?.lastGoodReceivedAt ? (
-              <span className="text-muted-foreground">
-                {' '}
-                · {formatObservedAt(insight.lastGoodReceivedAt)}
-              </span>
-            ) : null}
+          <DetailItem label="Last confirmed at">
+            {insight?.activityReceivedAt
+              ? formatObservedAt(insight.activityReceivedAt)
+              : 'No confirmed verdict'}
           </DetailItem>
           <DetailItem label="Activity">
             {validatorActivity(insight)}{' '}
@@ -571,6 +612,44 @@ function StatusPanel({ validator }: { validator: ValidatorDetail }) {
   )
 }
 
+function RankPanel({ validator }: { validator: ValidatorDetail }) {
+  const insight = validator.insight ?? null
+  return (
+    <CardX
+      size="medium"
+      className={CARD_SURFACE}
+      header={<h2 className="text-lg font-semibold">Rank evidence</h2>}
+    >
+      <p className="text-sm text-muted-foreground">
+        The Network ranking list refreshes independently of Validator detail. A failed refresh keeps
+        the last-good rank marked stale; without successful rank evidence it stays Unknown, not Unranked.
+      </p>
+      <div className="mt-3">
+        <DetailList>
+          <DetailItem label="Rank">{validatorRank(insight)}</DetailItem>
+          <DetailItem label="Rank freshness">
+            <StatusBadge
+              status={validatorRankEvidence(insight)}
+              tone={insight?.rankFreshness === 'fresh' ? 'ok' : insight?.rankFreshness === 'stale' ? 'warning' : 'neutral'}
+            />
+          </DetailItem>
+          <DetailItem label="Rank outcome">{validatorRankOutcome(insight)}</DetailItem>
+          <DetailItem label="Rank attempted at">
+            {insight?.rankAttemptedAt ? formatObservedAt(insight.rankAttemptedAt) : 'Not attempted'}
+          </DetailItem>
+          <DetailItem label="Rank last-good received at">
+            {insight?.rankLastGoodReceivedAt ? formatObservedAt(insight.rankLastGoodReceivedAt) : 'Never observed'}
+          </DetailItem>
+          <DetailItem label="Rank last-good age">
+            {insight?.rankLastGoodAgeSeconds == null ? 'No last-good observation' : validatorLastGoodAge(insight.rankLastGoodAgeSeconds)}
+          </DetailItem>
+          <DetailItem label="Rank diagnostic">{insight?.rankDiagnostic ?? 'None reported'}</DetailItem>
+        </DetailList>
+      </div>
+    </CardX>
+  )
+}
+
 function EvidencePanel({ validator }: { validator: ValidatorDetail }) {
   const insight = validator.insight ?? null
   return (
@@ -587,7 +666,7 @@ function EvidencePanel({ validator }: { validator: ValidatorDetail }) {
         <DetailList>
           <DetailItem label="Source">{validatorSourceLabel(insight?.source)}</DetailItem>
           <DetailItem label="Freshness">
-            {insight ? freshnessLabel(insight.freshness) : 'Unknown'}
+            {insight?.freshness === 'fresh' ? 'Fresh' : freshnessLabel(insight?.freshness)}
           </DetailItem>
           <DetailItem label="Outcome">{insight?.outcome ?? 'Not observed'}</DetailItem>
           <DetailItem label="Counter state">{validatorCounterStateLabel(insight)}</DetailItem>
@@ -621,7 +700,6 @@ function StakingPanel({ validator }: { validator: ValidatorDetail }) {
       </p>
       <div className="mt-3">
         <DetailList>
-          <DetailItem label="Rank">{validatorRank(insight)}</DetailItem>
           <DetailItem label="Stake">{formatAmountExact(insight?.stakeAmount)}</DetailItem>
           <DetailItem label="Delegators">{insight?.delegatorCount ?? 'Unknown'}</DetailItem>
           <DetailItem label="Blocks produced">{insight?.blockCount ?? 'Unknown'}</DetailItem>

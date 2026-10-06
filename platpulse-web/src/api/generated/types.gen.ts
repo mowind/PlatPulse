@@ -1215,6 +1215,10 @@ export type AdminValidatorInsight = {
      */
     activity?: string | null;
     /**
+     * Server receipt of the last authoritative presence/absence verdict.
+     */
+    activityReceivedAt?: string | null;
+    /**
      * Currency of `activity`: `current`, `stale`, or `unknown`.
      */
     activityState: string;
@@ -1248,7 +1252,26 @@ export type AdminValidatorInsight = {
     lastGoodReceivedAt?: string | null;
     outcome: string;
     providerTimestamp?: string | null;
+    /**
+     * Last-good Network-wide Provider rank, independent of detail refresh.
+     */
     rank?: number | null;
+    rankAttemptedAt?: string | null;
+    /**
+     * Provider diagnostic sanitized at the refresh trust boundary.
+     */
+    rankDiagnostic?: string | null;
+    /**
+     * Currency of rank evidence, never inherited from detail freshness.
+     */
+    rankFreshness: string;
+    rankLastGoodAgeSeconds?: number | null;
+    rankLastGoodReceivedAt?: string | null;
+    rankOutcome: string;
+    /**
+     * `ranked`, `unranked`, `error`, `not_configured`, `unsupported`, or `unknown`.
+     */
+    rankState: string;
     receivedAt?: string | null;
     rewardAmount?: string | null;
     rewardRate?: string | null;
@@ -3941,6 +3964,11 @@ export type PublicValidatorInsight = {
      * Link exposes it on a Public Node (#100).
      */
     activity: string;
+    /**
+     * Receipt time of the last confirmed Activity/identity verdict, including
+     * authoritative absence. Independent of detail metrics received_at.
+     */
+    activityReceivedAt?: string | null;
     /**
      * `current`, `stale`, or `unknown` currency of the Activity value.
      * Provider failure with a last-good Activity is always `stale`, even
