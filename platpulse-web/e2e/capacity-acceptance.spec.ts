@@ -210,9 +210,17 @@ test.describe('Storage capacity and low-space protection (issue #212)', () => {
         await expect(intervals.getByText('Low space', { exact: true })).toBeVisible()
         await expect(intervals.getByText('Still active', { exact: true })).toBeVisible()
         const gap = page.locator('[data-slot=\'capacity-skipped-series\']')
-        // Both Agent host series lost samples, so the scope token repeats once
-        // per series; naming the metric is what identifies each row.
-        await expect(gap.getByText('host:' + agent.agentId, { exact: true })).toHaveCount(2)
+        // Every Host series the Agent collected lost samples while history was
+        // paused, so the scope token repeats once per series and naming the
+        // metric is what identifies each row. The count comes from the Server's
+        // own record instead of a constant, so it keeps up when the set of
+        // collected Host series grows.
+        const hostSeries = gapped.skippedSeries.filter(
+          (series) => series.scopeKind === 'host' && series.scopeKey === agent.agentId,
+        )
+        await expect(gap.getByText('host:' + agent.agentId, { exact: true })).toHaveCount(
+          hostSeries.length,
+        )
         await expect(gap.getByText('network_rx_bytes_per_sec', { exact: true })).toBeVisible()
         await expect(gap.getByText('process_memory_percent', { exact: true })).toBeVisible()
 
@@ -311,8 +319,8 @@ test.describe('Storage capacity and low-space protection (issue #212)', () => {
             await expect(
               page
                 .locator('[data-slot=\'capacity-skipped-series\']')
-                // The Agent's two host series each carry the same scope token,
-                // and the first of them is what the viewport must show.
+                // Every Agent host series carries the same scope token, and
+                // the first of them is what the viewport must show.
                 .getByText('host:' + agent.agentId, { exact: true })
                 .first(),
             ).toBeVisible()
