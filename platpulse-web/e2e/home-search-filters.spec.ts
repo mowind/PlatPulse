@@ -489,6 +489,14 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     // row, because a long Network name can be wider than the scroller.
     if (await page.evaluate(() => navigator.maxTouchPoints > 0)) {
       const tapPill = async (name: string) => {
+        // Committing a Network selection grows the overview band above the
+        // toolbar, which can push the row past the bottom of the 360x800
+        // phone: a real touch dispatched outside the viewport is dropped
+        // before it reaches the page. Bring the row into the viewport first,
+        // the way a reader scrolls to it. The row itself is never scrolled
+        // here, so the pill still has to be reachable in the part of the row
+        // its own scroller shows.
+        await pillRow.evaluate((row) => row.scrollIntoView({ block: 'nearest', inline: 'nearest' }))
         const point = await tab(page, name).evaluate((pill) => {
           const rect = pill.getBoundingClientRect()
           const row = pill.closest('div.overflow-x-auto')?.getBoundingClientRect()
@@ -496,9 +504,13 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
           const left = Math.max(rect.left, row.left)
           const right = Math.min(rect.right, row.right)
           if (right - left < 8) return null
-          return { x: (left + right) / 2, y: rect.top + rect.height / 2 }
+          return { x: (left + right) / 2, y: rect.top + rect.height / 2, viewportHeight: window.innerHeight }
         })
         expect(point, `the ${name} pill must be reachable inside the pill row`).not.toBeNull()
+        expect(
+          point!.y,
+          `the ${name} tap point must stay inside the viewport: a touch outside it never reaches the pill`,
+        ).toBeLessThan(point!.viewportHeight)
         await page.touchscreen.tap(point!.x, point!.y)
       }
 
