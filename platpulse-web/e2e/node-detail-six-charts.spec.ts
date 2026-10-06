@@ -219,6 +219,15 @@ async function openNodeDetail(page: Page) {
 
 test.describe('Node Detail real latest-60-second six-chart closure (issue #150)', () => {
   test('normal, unknown, stale, and single-CPU failure in both themes', async ({ page }, testInfo) => {
+    // Seven scenarios times both themes is fourteen steps, and each one reloads
+    // Node Detail in its own theme and re-asserts the whole reading order, with
+    // a full-page evidence screenshot at 1440. That put the test at 24-28s
+    // against Playwright's default 30s budget, so a slower machine spent the
+    // budget instead of reporting a failure: desktop-1440 hit exactly 30.0s
+    // locally while desktop-1280 passed at 28.1s. The budget is declared here,
+    // like the other multi-step acceptance matrices in this suite, so the test
+    // fails on an assertion rather than on the clock.
+    test.setTimeout(180_000)
     await loginAs(page)
 
     for (const scenario of SCENARIOS) {
