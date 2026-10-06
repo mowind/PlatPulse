@@ -5649,7 +5649,7 @@ async fn admin_agent_metric_history(
     };
     let metric = metric.to_owned();
     if let Err(response) = host_owner_exists(&state, &request_id.0, &agent_id).await {
-        return response;
+        return *response;
     }
     // The series this Agent collected once for every Node on it.
     let dimension = params.dimension.clone().unwrap_or_default();
@@ -5713,7 +5713,7 @@ async fn admin_agent_storage_mounts(
     Path(agent_id): Path<String>,
 ) -> Response {
     if let Err(response) = host_owner_exists(&state, &request_id.0, &agent_id).await {
-        return response;
+        return *response;
     }
     // Both sides of a mount path, and the cadence a silence is judged against,
     // come from one snapshot of the ledger: the answer opens one read
@@ -5965,19 +5965,23 @@ fn metric_history_params(
 }
 
 /// Whether the Agent a shared Host series is stored under is registered.
+///
+/// The error is boxed for the same reason the metric-history query rejection is:
+/// the envelope is built once on a missing or unreadable Agent, and every caller
+/// would otherwise carry its size in the Result they return on success too.
 async fn host_owner_exists(
     state: &AppState,
     request_id: &str,
     agent_id: &str,
-) -> Result<(), Response> {
+) -> Result<(), Box<Response>> {
     match sqlx::query_scalar::<_, i64>("SELECT 1 FROM agents WHERE agent_id=?")
         .bind(agent_id)
         .fetch_optional(state.db().pool())
         .await
     {
         Ok(Some(_)) => Ok(()),
-        Ok(None) => Err(not_found_response(request_id)),
-        Err(_) => Err(unavailable_response(request_id)),
+        Ok(None) => Err(Box::new(not_found_response(request_id))),
+        Err(_) => Err(Box::new(unavailable_response(request_id))),
     }
 }
 
