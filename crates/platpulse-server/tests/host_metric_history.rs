@@ -1664,7 +1664,9 @@ async fn a_slow_cadence_is_measured_and_a_path_that_stopped_is_answered_as_silen
     let harness = Harness::boot().await;
     let session = owner_session(&harness).await;
     let (agent_id, credential) = enroll_agent(&harness, &session).await;
-    let base = auth::now_utc() - time::Duration::minutes(20);
+    // Do not let a same-second run hide the time between the fixture and its
+    // query: reported silence is measured at the Server's answer time.
+    let base = auth::now_utc() - time::Duration::minutes(20) - time::Duration::seconds(2);
     let instant = |minutes: i64| auth::format_rfc3339(base + time::Duration::minutes(minutes));
 
     // A fifteen-minute cadence, and the second Report stops carrying /logs.
@@ -1692,8 +1694,21 @@ async fn a_slow_cadence_is_measured_and_a_path_that_stopped_is_answered_as_silen
         assert_eq!(status, StatusCode::OK, "{body}");
     }
 
+    let request_started_at = auth::now_utc();
     let (status, body) = read_mounts(&harness, Some(&session.cookie), &agent_id).await;
+    let request_finished_at = auth::now_utc();
     assert_eq!(status, StatusCode::OK, "{body}");
+    let answered_at = time::OffsetDateTime::parse(
+        body["answeredAt"]
+            .as_str()
+            .expect("the response names its clock"),
+        &time::format_description::well_known::Rfc3339,
+    )
+    .expect("the response clock is a canonical timestamp");
+    assert!(
+        (request_started_at..=request_finished_at).contains(&answered_at),
+        "the answer must use the clock of this request: {body}"
+    );
     assert_eq!(
         body["cadenceSeconds"],
         Value::from(900),
@@ -1708,7 +1723,11 @@ async fn a_slow_cadence_is_measured_and_a_path_that_stopped_is_answered_as_silen
 
     let alive = mount_entry(&body, "/data");
     assert_eq!(alive["observationState"], "reported", "{alive}");
-    assert_eq!(alive["silentSeconds"], Value::from(300), "{alive}");
+    assert_eq!(
+        alive["silentSeconds"],
+        Value::from((answered_at - (base + time::Duration::minutes(15))).whole_seconds()),
+        "the age of the latest reading is exact at the response clock: {alive}"
+    );
     assert_eq!(alive["used"]["latestValue"], Value::from(150.0), "{alive}");
     assert_eq!(alive["used"]["observationCount"], Value::from(2), "{alive}");
     assert_eq!(
@@ -1719,7 +1738,11 @@ async fn a_slow_cadence_is_measured_and_a_path_that_stopped_is_answered_as_silen
 
     let stopped = mount_entry(&body, "/logs");
     assert_eq!(stopped["observationState"], "silent", "{stopped}");
-    assert_eq!(stopped["silentSeconds"], Value::from(1200), "{stopped}");
+    assert_eq!(
+        stopped["silentSeconds"],
+        Value::from((answered_at - base).whole_seconds()),
+        "the stopped path retains its own last observation time: {stopped}"
+    );
     // Stopping is not deletion: the path and everything counted on it stay, and
     // the answer states the age of the newest reading it does hold.
     assert_eq!(

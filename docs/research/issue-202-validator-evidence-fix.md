@@ -48,4 +48,10 @@ The test now pins backend pending/no producing Operation before submission, temp
 - OpenAPI/schema plus generated browser client reproduced exactly with no drift.
 - Independent standards and spec audits: completed; the registry rank receipt, independent metric evidence, and conservative migration-provenance findings were addressed. One nonblocking duplicated rank-predicate refactoring suggestion remains; Public/Admin DTO boundaries stay separate.
 
-No new CI or release certification is implied by this uncommitted local repair. This pass does not rerun the synthetic capacity baselines or expand the separately scoped database/metrics integrations.
+The local results above predate the push and are not new CI or release certification. This pass does not rerun the synthetic capacity baselines or expand the separately scoped database/metrics integrations.
+
+## Push / CI follow-up (2026-10-06)
+
+The repair was pushed as `25898e764d974d9e696a72867b0f3ca31642734c`. [Its first CI attempt](https://github.com/mowind/PlatPulse/actions/runs/37414811638) exposed a pre-existing Host storage-history test assuming no wall-clock seconds elapse between fixture construction and the HTTP answer: `silentSeconds` was correctly `301` rather than the asserted `300`. The production response uses one clock value for both `answeredAt` and the exact silence age.
+
+The test-only follow-up deliberately places the fixture two seconds behind the clock (reproducing `302 != 300` before the fix), then checks both mount ages exactly against the response’s `answeredAt`, also verifying that timestamp lies between request start and completion. Cadence, silence threshold, Reported/Silent classification, preserved values/counts and observation timestamps retain their strict assertions. No production clock or history behavior changed. The full Host history integration group passes 18/18; formatting, Clippy and whitespace checks pass. #202 remains open until the newest pushed commit has successful CI evidence, which will be recorded in its closing comment.
