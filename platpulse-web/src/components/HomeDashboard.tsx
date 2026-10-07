@@ -630,9 +630,7 @@ export default function HomeDashboard({
               >
                 Showing <span className="tabular-nums">{matching.length.toLocaleString()}</span> of{' '}
                 <span className="tabular-nums">{scoped.length.toLocaleString()}</span> Active Nodes
-                {scopeName ? <> in <span className="[overflow-wrap:anywhere]">{scopeName}</span></> : null}. Search,
-                health, and Validator status narrow this list only; the Home summary and the Peer map cover the whole
-                Network selection.
+                {scopeName ? <> in <span className="[overflow-wrap:anywhere]">{scopeName}</span></> : null}.
               </p>
               {scoped.length === 0 ? (
                 <Empty description="No Active Nodes in this view.">

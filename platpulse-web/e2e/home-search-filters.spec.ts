@@ -153,7 +153,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     const counts = await expectListAgreesWithSummary(page)
     expect(counts.matching).toBe(1)
     expect(counts.scoped).toBe(activeNodes)
-    await expect(resultCount(page)).toContainText('narrow this list only')
+    await expect(resultCount(page)).toContainText(`Showing 1 of ${activeNodes} Active Nodes`)
   })
 
   test('matches the public Node name, Node ID, and Network name', async ({ page }) => {
