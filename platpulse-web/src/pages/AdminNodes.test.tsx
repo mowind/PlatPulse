@@ -877,6 +877,11 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
     expect(whisker?.getAttribute('x1')).toBe(whisker?.getAttribute('x2'))
   })
   it('reports a range the raw window no longer holds, and pages an older answer without faking samples', async () => {
+    // The coordinate is named once and handed to both sides: the mocked Server
+    // answers with this instant and the assertion reads it back. Recomputing it
+    // from the wall clock at assertion time would compare two reads of
+    // `Date.now()` taken either side of a second boundary.
+    const oldestAnswered = canonical(-90 * MINUTE)
     let call = 0
     const olderCalls: string[] = []
     mockFetch({
@@ -888,7 +893,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
           olderCalls.push(request.url)
           return jsonResponse(
             metricHistoryFixture({
-              to: canonical(-90 * MINUTE),
+              to: oldestAnswered,
               truncated: false,
               continuation: null,
             }),
@@ -916,7 +921,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
           metricHistoryFixture({
             truncated: true,
             windowSeconds: 3600,
-            continuation: canonical(-90 * MINUTE),
+            continuation: oldestAnswered,
           }),
           200,
         )
@@ -947,7 +952,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
     await waitFor(() => {
       expect(olderCalls.length).toBeGreaterThan(0)
     })
-    expect(decodeURIComponent(olderCalls[0])).toContain('before=' + canonical(-90 * MINUTE))
+    expect(decodeURIComponent(olderCalls[0])).toContain('before=' + oldestAnswered)
     expect(await screen.findByText(/An older page/)).toBeTruthy()
     expect(screen.getByText(/No point is skipped between two pages/)).toBeTruthy()
     // Returning to the newest points drops the cursor rather than keeping it.
