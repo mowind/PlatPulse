@@ -8,7 +8,11 @@ async function openAdminNav(page: Parameters<typeof loginAs>[0], linkName: strin
   await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible({ timeout: 15_000 })
   const menu = page.getByRole('button', { name: 'Menu' })
   if (await menu.isVisible()) await menu.click()
-  await page.getByRole('link', { name: linkName }).click()
+  // The Overview summary cards are links too ("Networks 3 · 1 with Network
+  // Identity Mismatch"), so the entry must be resolved inside the Admin
+  // navigation landmark instead of by a loose name match.
+  const adminNav = page.getByRole('navigation', { name: 'Admin' })
+  await adminNav.getByRole('link', { name: linkName, exact: true }).click()
 }
 
 async function openNetworks(page: Parameters<typeof loginAs>[0]) {
