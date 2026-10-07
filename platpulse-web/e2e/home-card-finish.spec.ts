@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import type { PublicNetwork, PublicValidatorInsight } from '../src/api/generated'
-import { expectNoHorizontalOverflow, loginAs } from './helpers'
+import { expectNoHorizontalOverflow, loginAs, openHomeSort } from './helpers'
 
 test('resource content determines the shared card height without a Speed spacer', async ({ page }) => {
   await loginAs(page)
@@ -16,7 +16,7 @@ test('resource content determines the shared card height without a Speed spacer'
     await route.fulfill({ response, json: [{ ...network, nodes }] })
   })
   await page.goto('/')
-  await page.getByLabel('Sort', { exact: true }).selectOption('name')
+  await (await openHomeSort(page)).selectOption('name')
   const cards = page.locator('[data-slot="node-card"]')
   await expect(cards).toHaveCount(7)
   await expect.poll(async () => cards.evaluateAll(elements => elements.map(card => {
@@ -77,7 +77,7 @@ test('mixed Validator states retain aligned regions and center only empty messag
     })) }] })
   })
   await page.goto('/')
-  await page.getByLabel('Sort', { exact: true }).selectOption('name')
+  await (await openHomeSort(page)).selectOption('name')
   const cards = page.locator('[data-slot="node-card"]')
   await expect(cards).toHaveCount(7)
   for (const dark of [false, true]) {

@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test'
 import type { PublicNetwork, PublicNode } from '../src/api/generated'
-import { expectNoHorizontalOverflow, loginAs } from './helpers'
+import { closeHomeSurface, expectNoHorizontalOverflow, loginAs, openHomeSort } from './helpers'
 
 // Exercise the routed Public Home seam. Keep the real authenticated Server and
 // its response shape; only replace the Public Nodes needed for this scenario.
@@ -33,7 +33,10 @@ async function fixture(page: Page) {
     await route.fulfill({ response, json: [{ ...network, nodes }] })
   })
   await page.goto('/')
-  await page.getByLabel('Sort', { exact: true }).selectOption('name')
+  // The Sort order lives behind the Home toolbar's Sort & filter entry (issue
+  // #232); the surface is closed again so it cannot overlay the cards below.
+  await (await openHomeSort(page)).selectOption('name')
+  await closeHomeSurface(page)
   await expect(nodeCard(page, 'A Resync')).toBeVisible()
 }
 

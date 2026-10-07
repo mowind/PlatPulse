@@ -1,8 +1,11 @@
 import { expect, test, type Page } from '@playwright/test'
 import {
+  closeHomeSurface,
   expectFocusedElementHasVisibleFocus,
   expectNoHorizontalOverflow, expectVisibleInteractiveTargets,
+  homeFilterEntry,
   loginAs,
+  openHomeSort,
 } from './helpers'
 
 async function expectShellFitsViewport(page: Page, heading: string) {
@@ -55,7 +58,9 @@ test.describe('Authenticated shell', () => {
     await expect(page.getByText('Networks', { exact: true })).toBeVisible()
     await expect(page.getByRole('tablist', { name: 'Network filter' })).toBeVisible()
     await expect(page.getByRole('tab', { name: 'All Networks' })).toHaveAttribute('aria-selected', 'true')
-    await expect(page.getByRole('combobox', { name: 'Sort' })).toBeVisible()
+    // Issue #232: the row control a reader reaches is the Sort & filter entry;
+    // the Sort select behind it is not in the DOM until the surface is opened.
+    await expect(homeFilterEntry(page)).toBeVisible()
     await expect(page.getByRole('link', { name: 'Admin', exact: true })).toHaveAttribute('href', '/admin')
     await expectNoHorizontalOverflow(page)
   })
@@ -64,7 +69,10 @@ test.describe('Authenticated shell', () => {
     await loginAs(page)
     const home = page.getByRole('region', { name: 'Home' })
     await expect(home.getByRole('tab', { name: 'All Networks' })).toHaveAttribute('aria-selected', 'true')
-    await home.getByRole('combobox', { name: 'Sort' }).selectOption('head')
+    await (await openHomeSort(page)).selectOption('head')
+    // Close the surface again: the touch-target measurement below must see the
+    // toolbar row as a reader does, without the surface's own controls (issue #232).
+    await closeHomeSurface(page)
 
     await expectVisibleInteractiveTargets(page)
     await expectNoHorizontalOverflow(page)

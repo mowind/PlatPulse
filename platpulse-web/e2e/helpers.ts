@@ -44,6 +44,56 @@ export function homeNodeColumns(gridWidth: number, gap: number): number {
   return Math.max(1, Math.floor((gridWidth + gap) / (300 + gap)))
 }
 
+/**
+ * Issue #232: Home keeps one toolbar row — the Network pills, the Sort & filter
+ * entry, the card/list choice, and the search entry — and the controls behind
+ * the two entries are not in the row and not in the tab walk until the reader
+ * opens the surface that holds them. These helpers open a surface, and every
+ * spec that reads or changes a control behind one uses them first.
+ */
+export const homeFilterEntry = (page: Page) => page.getByRole('button', { name: /^Sort & filter/ })
+export const homeSearchEntry = (page: Page) => page.getByRole('button', { name: 'Search Active Nodes' })
+export const homeFilterSurface = (page: Page) => page.getByRole('dialog', { name: 'Sort and filters' })
+export const homeSearchSurface = (page: Page) => page.getByRole('dialog', { name: 'Search Active Nodes' })
+
+/** Open the Sort & filter surface if it is closed and return it. */
+export async function openHomeFilters(page: Page) {
+  const surface = homeFilterSurface(page)
+  await expect(homeFilterEntry(page)).toBeVisible()
+  if (!(await surface.isVisible())) await homeFilterEntry(page).click()
+  await expect(surface).toBeVisible()
+  return surface
+}
+
+/** Open the Home search surface if it is closed and return its field. */
+export async function openHomeSearch(page: Page) {
+  const surface = homeSearchSurface(page)
+  await expect(homeSearchEntry(page)).toBeVisible()
+  if (!(await surface.isVisible())) await homeSearchEntry(page).click()
+  await expect(surface).toBeVisible()
+  return surface.getByRole('searchbox', { name: 'Search Active Nodes' })
+}
+
+/** The Sort order, read from the surface the entry holds. */
+export async function openHomeSort(page: Page) {
+  return (await openHomeFilters(page)).getByRole('combobox', { name: 'Sort', exact: true })
+}
+
+/** The Server Health filter, read from the surface the entry holds. */
+export async function openHomeHealth(page: Page) {
+  return (await openHomeFilters(page)).getByRole('combobox', { name: 'Health filter' })
+}
+
+/** The Server Validator status filter, read from the surface the entry holds. */
+export async function openHomeValidator(page: Page) {
+  return (await openHomeFilters(page)).getByRole('combobox', { name: 'Validator status filter' })
+}
+
+/** Close an open toolbar surface the way a keyboard reader does. */
+export async function closeHomeSurface(page: Page) {
+  await page.keyboard.press('Escape')
+}
+
 /** The document must never overflow the viewport horizontally. */
 export async function expectNoHorizontalOverflow(page: Page) {
   const { overflow, offenders } = await page.evaluate(() => {

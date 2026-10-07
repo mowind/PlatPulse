@@ -18,7 +18,7 @@ import { Alert, AlertDescription } from './ui/alert'
 import { Empty } from './ui/empty'
 import { Input, Select } from './ui/input'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
-import { Server, HeartPulse, TriangleAlert, Network, ChevronUp, ChevronDown, Info } from 'lucide-react'
+import { Server, HeartPulse, TriangleAlert, Network, ChevronUp, ChevronDown, Info, Search, X } from 'lucide-react'
 import { SURFACE_TOOLBAR } from '../lib/surface'
 import { cn } from '../lib/utils'
 import {
@@ -45,6 +45,7 @@ import { SummaryMetricCard } from './SummaryMetricCard'
 import { OverviewBand } from './OverviewBand'
 import { Button } from './ui/button'
 import { Dialog, DialogTrigger, DialogContent, DialogTitle, DialogDescription } from './ui/dialog'
+import { ToolbarPopover } from './ui/toolbar-popover'
 
 type HomeDashboardProps = {
   networks: PublicNetwork[]
@@ -243,6 +244,43 @@ export default function HomeDashboard({
     setSearch(next, { replace })
   }
 
+  // The two toolbar surfaces (#232): the sort order with the two status
+  // filters, and the search field. Only one is open at a time, and neither is
+  // part of the URL: a copied link never carries an open panel, and Back never
+  // closes one.
+  const [panel, setPanel] = useState<'none' | 'filters' | 'search'>('none')
+  const filtersOpen = panel === 'filters'
+  const searchOpen = panel === 'search'
+  const closePanel = useCallback(() => setPanel('none'), [])
+  const togglePanel = (which: 'filters' | 'search') =>
+    setPanel((current) => (current === which ? 'none' : which))
+  const filtersTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const searchTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
+  useEffect(() => {
+    // Typing is the reason the field is there, so it takes focus as it appears.
+    if (searchOpen) searchInputRef.current?.focus()
+  }, [searchOpen])
+  // Only Health and Validator status are counted: they are the two choices that
+  // live behind the toolbar entry and would otherwise be invisible, while the
+  // Network selection, the sort order, the view, and the search text each show
+  // their own state on the surface. The count is stated at zero as well — "no
+  // status filter is on" is a fact about the reading, not an absence — and it is
+  // decorative: the entry's own name stays "Sort & filter", and a reader who
+  // cannot see the count is told it through the entry's description.
+  const statusFilterCount = (filters.health === 'all' ? 0 : 1) + (filters.validator === 'all' ? 0 : 1)
+  const statusFilterCountId = 'home-status-filter-count'
+  const statusFilterSummary = `${statusFilterCount} of 2 status filters on`
+  // The search entry states its own condition twice over: a marker drawn inside
+  // the control, so an active search is never read through colour alone, and a
+  // description naming the text in force, so a reader who sees neither still
+  // knows why the list is narrowed while the field itself is out of sight.
+  const searchActive = queryText.trim() !== ''
+  const searchStateId = 'home-search-state'
+  // Only Health and Validator status reset: the sort order, the search text, and
+  // the Network selection are the reader's other choices and stay as they are.
+  const clearStatusFilters = () => updateFilters({ health: 'all', validator: 'all' })
+
   const scopeName = scope.network === 'all'
     ? null
     : networks.find((network) => network.networkKey === scope.network)?.displayName ?? scope.network
@@ -370,19 +408,110 @@ export default function HomeDashboard({
               </TabsList>
             </Tabs>
           </div>
-          <label className="ml-auto flex items-center gap-2 text-xs text-muted-foreground md:relative md:z-10 md:shrink-0 md:rounded-md md:bg-background md:pl-2">
-            Sort
-            <Select
-              aria-label="Sort"
-              className={cn('compact-select h-8 w-auto rounded-md border-x-0 border-y-[6px] border-transparent bg-clip-padding -my-1.5 shadow-none md:bg-background md:text-foreground dark:md:bg-background', SURFACE_TOOLBAR)}
-              value={filters.sort}
-              onChange={(event) => updateFilters({ sort: event.target.value as HomeSort })}
+          {/* The sort order and the two status filters share one toolbar
+              control (issue #232): the row keeps the Network pills, this entry,
+              the card/list choice, and the search control, and every control
+              this entry hides leaves the tab walk with it. The badge counts the
+              status filters, the only choices this entry represents and the only
+              ones the row could not otherwise show; the Network selection, the
+              sort order, the view, and the search text each say their own state. */}
+          <div className={cn('ml-auto md:relative md:shrink-0', filtersOpen ? 'md:z-30' : 'md:z-10')}>
+            <ToolbarPopover
+              open={filtersOpen}
+              onClose={closePanel}
+              returnFocusRef={filtersTriggerRef}
+              label="Sort and filters"
+              className="flex w-72 flex-col gap-3"
+              trigger={
+                <Button
+                  ref={filtersTriggerRef}
+                  variant="outline"
+                  aria-expanded={filtersOpen}
+                  aria-haspopup="dialog"
+                  aria-describedby={statusFilterCountId}
+                  data-slot="home-filter-trigger"
+                  className={cn('gap-1.5 rounded-md px-2.5 text-xs shadow-none md:bg-background', SURFACE_TOOLBAR)}
+                  onClick={() => togglePanel('filters')}
+                >
+                  Sort &amp; filter
+                  {/* The count is always drawn, zero included: it is the one piece
+                      of toolbar state this entry represents and the row could not
+                      otherwise show. A live count keeps the accent chip; zero is a
+                      muted chip, so "nothing is filtering" never reads as an active
+                      filter. */}
+                  <span
+                    data-slot="home-filter-count"
+                    aria-hidden="true"
+                    className={cn(
+                      'rounded-full border px-1.5 text-[0.625rem] font-semibold leading-4',
+                      statusFilterCount > 0
+                        ? 'border-emerald-600 bg-emerald-600 text-white dark:border-emerald-500 dark:bg-emerald-500 dark:text-emerald-950'
+                        : 'border-border text-muted-foreground',
+                    )}
+                  >
+                    {statusFilterCount}
+                  </span>
+                </Button>
+              }
             >
-              {sortOptions.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </Select>
-          </label>
+              <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
+                Sort
+                <Select
+                  aria-label="Sort"
+                  className="w-full"
+                  value={filters.sort}
+                  onChange={(event) => updateFilters({ sort: event.target.value as HomeSort })}
+                >
+                  {sortOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </Select>
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
+                Health
+                <Select
+                  aria-label="Health filter"
+                  className="w-full"
+                  value={filters.health}
+                  onChange={(event) => updateFilters({ health: event.target.value as HomeHealthFilter })}
+                >
+                  <option value="all">All health</option>
+                  <option value="healthy">Healthy</option>
+                  <option value="unhealthy">Unhealthy</option>
+                  <option value="unknown">Unknown</option>
+                </Select>
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
+                Validator status
+                <Select
+                  aria-label="Validator status filter"
+                  className="w-full"
+                  value={filters.validator}
+                  onChange={(event) => updateFilters({ validator: event.target.value as HomeValidatorFilter })}
+                >
+                  <option value="all">All Validator status</option>
+                  <option value="validator">Validator</option>
+                  <option value="not_validator">Not a Validator</option>
+                  <option value="unknown">Unknown</option>
+                </Select>
+              </label>
+              <div className="flex items-center justify-between gap-2 border-t pt-3">
+                <p className="text-xs text-muted-foreground">
+                  {statusFilterCount === 0 ? 'No status filter is on' : statusFilterSummary}
+                </p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="px-2 text-xs"
+                  disabled={statusFilterCount === 0}
+                  onClick={clearStatusFilters}
+                >
+                  Clear filters
+                </Button>
+              </div>
+            </ToolbarPopover>
+            <span id={statusFilterCountId} className="sr-only">{statusFilterSummary}</span>
+          </div>
           {/* The card/list choice is part of the same ordinary Home URL contract
               as the filters and the sort (design §9). It sits after the Network
               pills on purpose: the pill row stays the first tab stop on the
@@ -399,56 +528,83 @@ export default function HomeDashboard({
               <TabsTrigger value="list" className="flex-none text-xs">List</TabsTrigger>
             </TabsList>
           </Tabs>
-          </div>
 
-          {/* Search, health, and Validator status narrow the list below. None of
-              them changes the overview band or the map, which follow the Network
-              selection alone (design §9). Every value searched here is public:
-              the Node display name, the Node ID, and the Network display name. */}
-          <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
-            <label className="flex min-w-0 grow flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground sm:grow-0">
-              Search
-              <Input
-                type="search"
-                aria-label="Search Active Nodes"
-                className="w-full min-w-48 sm:w-64"
-                placeholder="Name, Node ID, or Network"
-                value={queryText}
-                onChange={(event) => {
-                  setQueryDraft(event.target.value)
-                  updateFilters({ query: event.target.value }, true)
-                }}
-                onBlur={() => setQueryDraft(null)}
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
-              Health
-              <Select
-                aria-label="Health filter"
-                className="w-auto min-w-32"
-                value={filters.health}
-                onChange={(event) => updateFilters({ health: event.target.value as HomeHealthFilter })}
-              >
-                <option value="all">All health</option>
-                <option value="healthy">Healthy</option>
-                <option value="unhealthy">Unhealthy</option>
-                <option value="unknown">Unknown</option>
-              </Select>
-            </label>
-            <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
-              Validator status
-              <Select
-                aria-label="Validator status filter"
-                className="w-auto min-w-36"
-                value={filters.validator}
-                onChange={(event) => updateFilters({ validator: event.target.value as HomeValidatorFilter })}
-              >
-                <option value="all">All Validator status</option>
-                <option value="validator">Validator</option>
-                <option value="not_validator">Not a Validator</option>
-                <option value="unknown">Unknown</option>
-              </Select>
-            </label>
+          {/* Search stays a visible toolbar control (#232): the field it opens is
+              the only thing that moved, and the marker on the control stays on
+              while a search is in force — closed or open — so a narrowed list is
+              never mistaken for an empty one. The marker is a drawn dot beside
+              the icon rather than the accent colour on its own, and the entry's
+              description names the text in force, so neither state depends on
+              seeing a hue. It is an icon-only entry drawn by the same line-icon
+              set as the card/list choice beside it, and it opens its own small
+              field rather than taking the row. */}
+          <div className={cn('md:relative md:shrink-0', searchOpen ? 'md:z-30' : 'md:z-10')}>
+            <ToolbarPopover
+              open={searchOpen}
+              onClose={closePanel}
+              returnFocusRef={searchTriggerRef}
+              label="Search Active Nodes"
+              className="w-72 sm:w-80"
+              trigger={
+                <Button
+                  ref={searchTriggerRef}
+                  variant="outline"
+                  size="icon"
+                  aria-label="Search Active Nodes"
+                  aria-expanded={searchOpen}
+                  aria-haspopup="dialog"
+                  aria-describedby={searchActive ? searchStateId : undefined}
+                  data-slot="home-search-trigger"
+                  data-search-state={searchActive ? 'on' : 'off'}
+                  className={cn(
+                    'relative rounded-md shadow-none md:bg-background',
+                    searchActive && 'border-emerald-600 text-emerald-700 dark:border-emerald-500 dark:text-emerald-400',
+                  )}
+                  onClick={() => togglePanel('search')}
+                >
+                  <Search aria-hidden="true" />
+                  {searchActive && (
+                    <span
+                      data-slot="home-search-active"
+                      aria-hidden="true"
+                      className="absolute top-1 right-1 size-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400"
+                    />
+                  )}
+                </Button>
+              }
+            >
+              <div className="flex items-center gap-2">
+                <Input
+                  ref={searchInputRef}
+                  type="search"
+                  aria-label="Search Active Nodes"
+                  className="w-full"
+                  placeholder="Name, Node ID, or Network"
+                  value={queryText}
+                  onChange={(event) => {
+                    setQueryDraft(event.target.value)
+                    updateFilters({ query: event.target.value }, true)
+                  }}
+                  onBlur={() => setQueryDraft(null)}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Clear search"
+                  disabled={queryText === ''}
+                  onClick={() => {
+                    setQueryDraft(null)
+                    updateFilters({ query: '' }, true)
+                  }}
+                >
+                  <X aria-hidden="true" />
+                </Button>
+              </div>
+            </ToolbarPopover>
+            {searchActive && (
+              <span id={searchStateId} className="sr-only">{`Search is on: ${queryText}`}</span>
+            )}
+          </div>
           </div>
         </div>
 

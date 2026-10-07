@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test'
 import type { PublicNetwork } from '../src/api/generated'
-import { expectNoHorizontalOverflow, homeNodeColumns, loginAs } from './helpers'
+import { closeHomeSurface, expectNoHorizontalOverflow, homeNodeColumns, loginAs, openHomeSort } from './helpers'
 
 const labels = ['Active Nodes', 'Healthy Nodes', 'Cumulative blocks', 'Attention', 'Networks', 'Cumulative rewards']
 
@@ -138,7 +138,10 @@ test('short and long Node names retain identity actions and one shared card heig
     await route.fulfill({ response, json: [{ ...network, nodes }] })
   })
   await page.goto('/')
-  await page.getByLabel('Sort', { exact: true }).selectOption('name')
+  await (await openHomeSort(page)).selectOption('name')
+  // Close the surface again: the identity action clicked below lives in a card
+  // the open surface would otherwise overlay (issue #232).
+  await closeHomeSurface(page)
   const cards = page.locator('[data-slot="node-card"]')
   await expect(cards).toHaveCount(6)
   for (const dark of [false, true]) {

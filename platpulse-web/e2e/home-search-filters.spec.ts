@@ -1,5 +1,17 @@
 import { expect, test, type Page } from '@playwright/test'
-import { expectNoHorizontalOverflow, expectVisibleInteractiveTargets, loginAs } from './helpers'
+import {
+  expectNoHorizontalOverflow,
+  expectVisibleInteractiveTargets,
+  homeFilterEntry,
+  homeFilterSurface,
+  homeSearchEntry,
+  homeSearchSurface,
+  loginAs,
+  openHomeHealth,
+  openHomeSearch,
+  openHomeSort,
+  openHomeValidator,
+} from './helpers'
 
 /**
  * Public Home search and filter URLs (issue #222). The shared Server is seeded
@@ -23,10 +35,24 @@ const summary = (page: Page) => home(page).locator('[aria-label="Home summary"]'
 const nodeGrid = (page: Page) => page.locator('[data-slot="node-grid"]')
 const resultCount = (page: Page) => page.locator('[data-slot="home-result-count"]')
 const filterNotice = (page: Page) => page.locator('[data-slot="home-filter-notice"]')
-const searchBox = (page: Page) => page.getByRole('searchbox', { name: 'Search Active Nodes' })
-const healthFilter = (page: Page) => page.getByRole('combobox', { name: 'Health filter' })
-const validatorFilter = (page: Page) => page.getByRole('combobox', { name: 'Validator status filter' })
-const sortSelect = (page: Page) => page.getByRole('combobox', { name: 'Sort', exact: true })
+// Issue #232: the search field and the three select controls live behind their
+// own toolbar entries, so every read or change opens the surface that holds the
+// control first. Opening is idempotent: an already open surface stays open.
+const searchBox = (page: Page) => openHomeSearch(page)
+const healthFilter = (page: Page) => openHomeHealth(page)
+const validatorFilter = (page: Page) => openHomeValidator(page)
+const sortSelect = (page: Page) => openHomeSort(page)
+// The entries themselves, and the same controls read from a surface the test
+// has already opened (a plain locator, so the test never toggles it shut).
+const filterEntry = (page: Page) => homeFilterEntry(page)
+const searchField = (page: Page) =>
+  homeSearchSurface(page).getByRole('searchbox', { name: 'Search Active Nodes' })
+const sortField = (page: Page) =>
+  homeFilterSurface(page).getByRole('combobox', { name: 'Sort', exact: true })
+const healthField = (page: Page) =>
+  homeFilterSurface(page).getByRole('combobox', { name: 'Health filter' })
+const validatorField = (page: Page) =>
+  homeFilterSurface(page).getByRole('combobox', { name: 'Validator status filter' })
 const networkControl = (page: Page) => page.locator('[aria-label="Network filter"]')
 /** One control tab by its accessible name. The Network pills and the card/list
  *  View control share the `tab` role, so the name carries the choice. */
@@ -114,7 +140,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     expect(unfiltered.cards).toBe(activeNodes)
     await expect.poll(async () => (await listedNodes(page)).some((name) => name.includes('Node H'))).toBe(true)
 
-    await searchBox(page).fill('node h')
+    await (await searchBox(page)).fill('node h')
 
     await expectListedNodes(page, 1)
     await expect(nodeGrid(page).locator(`a[href="/nodes/${SOLO_NODE_ID}"]`)).toHaveCount(1)
@@ -136,12 +162,12 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     const activeNodes = await summaryValue(page, 'Active Nodes')
 
     // A Node ID is a public identifier, so it finds exactly its own Node.
-    await searchBox(page).fill(SOLO_NODE_ID)
+    await (await searchBox(page)).fill(SOLO_NODE_ID)
     await expectListedNodes(page, 1)
     await expect(nodeGrid(page).locator(`a[href="/nodes/${SOLO_NODE_ID}"]`)).toHaveCount(1)
 
     // A Network name finds that Network's Nodes, and still counts every Network.
-    await searchBox(page).fill(CONVERGENCE_NETWORK_NAME)
+    await (await searchBox(page)).fill(CONVERGENCE_NETWORK_NAME)
     await expectConvergenceList(page)
     const counts = await expectListAgreesWithSummary(page)
     expect(counts.matching).toBe(CONVERGENCE_NODE_LETTERS.length)
@@ -149,7 +175,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expectSummaryValue(page, 'Active Nodes', activeNodes)
 
     // Clearing the search is an ordinary link again: the whole list returns.
-    await searchBox(page).fill('')
+    await (await searchBox(page)).fill('')
     await expectListedNodes(page, activeNodes)
     await expectSummaryValue(page, 'Active Nodes', activeNodes)
   })
@@ -161,7 +187,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
 
     // Node H is Healthy, so the health filter alone drops it; the Unknown Node
     // states the Server cannot attest are what remains.
-    await healthFilter(page).selectOption('unknown')
+    await (await healthFilter(page)).selectOption('unknown')
     const filtered = await expectListAgreesWithSummary(page)
     expect(filtered.matching, 'the Unknown Node states the Server cannot attest remain').toBeGreaterThan(0)
     expect(filtered.scoped).toBe(activeNodes)
@@ -170,7 +196,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
 
     // Search and health combine with AND, so the two together match nothing,
     // and the list states that plainly instead of showing an empty grid.
-    await searchBox(page).fill('Node H')
+    await (await searchBox(page)).fill('Node H')
     await expect(nodeGrid(page)).toHaveCount(0)
     await expect(page.getByText('No Active Nodes match these filters.')).toBeVisible()
     await expect(resultCount(page)).toContainText(`Showing 0 of ${activeNodes} Active Nodes`)
@@ -184,7 +210,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expect(nodeGrid(page).locator(`a[href="/nodes/${SOLO_NODE_ID}"]`)).toBeVisible({ timeout: 15_000 })
     const activeNodes = await summaryValue(page, 'Active Nodes')
 
-    await searchBox(page).fill('Node H')
+    await (await searchBox(page)).fill('Node H')
     await expectListedNodes(page, 1)
     await expectSummaryValue(page, 'Active Nodes', activeNodes)
 
@@ -211,8 +237,8 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
 
     await expect(home(page)).toBeVisible()
     await expect(tab(page, CONVERGENCE_NETWORK_NAME)).toHaveAttribute('aria-selected', 'true')
-    await expect(searchBox(page)).toHaveValue('Node H')
-    await expect(sortSelect(page)).toHaveValue('name')
+    await expect(await searchBox(page)).toHaveValue('Node H')
+    await expect(await sortSelect(page)).toHaveValue('name')
     await expect(nodeGrid(page).locator('a[href^="/nodes/"]')).toHaveCount(1)
     await expect(nodeGrid(page).locator(`a[href="/nodes/${SOLO_NODE_ID}"]`)).toHaveCount(1)
     await expect(filterNotice(page)).toHaveCount(0)
@@ -221,12 +247,12 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     // An ordinary refresh restores the same view, and so does reaching the
     // address directly, without the page rewriting what it was given.
     await page.reload()
-    await expect(searchBox(page)).toHaveValue('Node H')
-    await expect(sortSelect(page)).toHaveValue('name')
+    await expect(await searchBox(page)).toHaveValue('Node H')
+    await expect(await sortSelect(page)).toHaveValue('name')
     await expect(nodeGrid(page).locator('a[href^="/nodes/"]')).toHaveCount(1)
 
     await page.goto(url)
-    await expect(sortSelect(page)).toHaveValue('name')
+    await expect(await sortSelect(page)).toHaveValue('name')
     await expect(tab(page, CONVERGENCE_NETWORK_NAME)).toHaveAttribute('aria-selected', 'true')
     await expect(page).toHaveURL(/[?]network=home-convergence&q=Node[+]H&sort=name$/)
   })
@@ -246,16 +272,16 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     // The refused values fell back to their defaults in place, the link the
     // reader followed is untouched, and the rest of it still took effect.
     await expect(tab(page, 'All Networks')).toHaveAttribute('aria-selected', 'true')
-    await expect(healthFilter(page)).toHaveValue('all')
-    await expect(sortSelect(page)).toHaveValue('health')
+    await expect(await healthFilter(page)).toHaveValue('all')
+    await expect(await sortSelect(page)).toHaveValue('health')
     await expect(page).toHaveURL(/[?]network=gone&health=critical&sort=size$/)
     await expectListAgreesWithSummary(page)
 
     // Acting on a control is what rewrites the address, without the refused
     // values it could not honour.
-    await sortSelect(page).selectOption('name')
+    await (await sortSelect(page)).selectOption('name')
     await expect(filterNotice(page)).toHaveCount(0)
-    await expect(sortSelect(page)).toHaveValue('name')
+    await expect(await sortSelect(page)).toHaveValue('name')
     await expect(page).toHaveURL(/[?]sort=name$/)
   })
 
@@ -305,9 +331,25 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expect.poll(selectedPill).toBe(initialPill)
     expect(page.url(), 'the default Network selection is omitted from the URL').toBe(plainHome)
 
-    // The search box is operable from the keyboard and paints its own visible
-    // focus indicator (the shared field uses a ring rather than an outline).
-    await searchBox(page).focus()
+    // The toolbar row keeps one stop per entry — the Network filter, the Sort &
+    // filter entry, the card/list choice, and the search entry — and the
+    // controls behind an entry leave the walk with it while its surface is
+    // closed (issue #232). The keyboard therefore reaches an entry, opens it,
+    // and only then meets the field it holds.
+    await networkControl(page).locator('[role="tab"][aria-selected="true"]').focus()
+    await page.keyboard.press('Tab')
+    await expect(filterEntry(page)).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(tab(page, 'Cards')).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(homeSearchEntry(page)).toBeFocused()
+
+    // Opening the search entry from the keyboard hands the field inside it the
+    // focus, and the field paints its own visible focus indicator (the shared
+    // field uses a ring rather than an outline).
+    await page.keyboard.press('Enter')
+    await expect(homeSearchSurface(page)).toBeVisible()
+    await expect(searchField(page)).toBeFocused()
     const focus = await page.evaluate(() => {
       const element = document.activeElement
       if (!(element instanceof HTMLElement)) return null
@@ -328,40 +370,57 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await page.keyboard.type('Node H')
     await expect(nodeGrid(page).locator('a[href^="/nodes/"]')).toHaveCount(1)
 
-    // Tab order inside the toolbar follows the reading order and hands the
-    // keyboard on to the filtered card.
+    // Tab from the field walks the surface it opened, then the rest of the row in
+    // reading order, and hands the keyboard on to the filtered card.
     await page.keyboard.press('Tab')
-    await expect(healthFilter(page)).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(validatorFilter(page)).toBeFocused()
+    await expect(page.getByRole('button', { name: 'Clear search' })).toBeFocused()
+    await page.keyboard.press('Shift+Tab')
+    await expect(searchField(page)).toBeFocused()
+
+    // Escape closes the surface, takes its field out of the walk with it, and
+    // hands the keyboard back to the entry that opened the surface.
+    await page.keyboard.press('Escape')
+    await expect(homeSearchSurface(page)).toHaveCount(0)
+    await expect(searchField(page)).toHaveCount(0)
+    await expect(homeSearchEntry(page)).toBeFocused()
     await page.keyboard.press('Tab')
     expect(await page.evaluate(() => document.activeElement?.getAttribute('href') ?? '')).toBe(
       `/nodes/${SOLO_NODE_ID}`,
     )
 
-    // The same order read backwards walks the controls in reverse and returns
-    // to the search field, so nothing in the toolbar is a keyboard dead end.
+    // Read backwards, the same row crosses the entries in reverse order, so
+    // nothing in the toolbar is a keyboard dead end.
     await page.keyboard.press('Shift+Tab')
-    await expect(validatorFilter(page)).toBeFocused()
-    await page.keyboard.press('Shift+Tab')
-    await expect(healthFilter(page)).toBeFocused()
-    await page.keyboard.press('Shift+Tab')
-    await expect(searchBox(page)).toBeFocused()
+    await expect(homeSearchEntry(page)).toBeFocused()
     await page.keyboard.press('Shift+Tab')
     await expect(tab(page, 'Cards')).toBeFocused()
     await page.keyboard.press('Shift+Tab')
-    await expect(sortSelect(page)).toBeFocused()
+    await expect(filterEntry(page)).toBeFocused()
     await page.keyboard.press('Shift+Tab')
     expect(
       await page.evaluate(() => document.activeElement?.closest('[aria-label="Network filter"]') !== null),
-      'the Network filter sits before the sort control in the reading order',
+      'the Network filter sits before the Sort & filter entry in the reading order',
     ).toBe(true)
+
+    // The Sort & filter entry opens the same way from the keyboard, and the three
+    // controls it holds join the walk between the entry and the card/list choice.
     await page.keyboard.press('Tab')
-    await expect(sortSelect(page)).toBeFocused()
+    await expect(filterEntry(page)).toBeFocused()
+    await page.keyboard.press('Enter')
+    await expect(homeFilterSurface(page)).toBeVisible()
+    await page.keyboard.press('Tab')
+    await expect(sortField(page)).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(healthField(page)).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(validatorField(page)).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(tab(page, 'Cards')).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(searchBox(page)).toBeFocused()
+    await page.keyboard.press('Shift+Tab')
+    await expect(validatorField(page)).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(homeFilterSurface(page)).toHaveCount(0)
+    await expect(filterEntry(page)).toBeFocused()
 
     await expectNoHorizontalOverflow(page)
     await expectVisibleInteractiveTargets(page)
@@ -385,19 +444,19 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
       'selecting a Network must add one history step',
     ).toBe(stepsBefore + 1)
 
-    await searchBox(page).click()
+    await (await searchBox(page)).click()
     await page.keyboard.type('Node H')
     await expectListedNodes(page, 1)
-    expect(await searchBox(page).inputValue()).toBe('Node H')
+    expect(await (await searchBox(page)).inputValue()).toBe('Node H')
 
     // Back restores the URL the reader actually reached, so the box must show
     // that text again rather than the entry it was holding.
     await page.goBack()
     expect(
-      await searchBox(page).evaluate((element) => element === document.activeElement),
+      await (await searchBox(page)).evaluate((element) => element === document.activeElement),
       'the browser must not steal focus from the search box',
     ).toBe(true)
-    await expect(searchBox(page)).toHaveValue('')
+    await expect(await searchBox(page)).toHaveValue('')
     const restored = await expectListAgreesWithSummary(page)
     expect(restored.matching).toBe(initial.matching)
     expect(await listedNodes(page)).toEqual(allNodes)
@@ -410,7 +469,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
 
     // Validator status is the Server's own Linked-Validator answer, so the Nodes
     // it links leave the list while the overview stays where it was.
-    await validatorFilter(page).selectOption('not_validator')
+    await (await validatorFilter(page)).selectOption('not_validator')
     await expect(page).toHaveURL(/[?&]validator=not_validator$/)
     const notValidator = await expectListAgreesWithSummary(page)
     const notValidatorNames = await listedNodes(page)
@@ -421,7 +480,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
 
     // Unknown is its own answer, never folded into Not a Validator, and the two
     // cannot overlap because each Node carries exactly one status.
-    await validatorFilter(page).selectOption('unknown')
+    await (await validatorFilter(page)).selectOption('unknown')
     const unknown = await expectListAgreesWithSummary(page)
     const unknownNames = await listedNodes(page)
     expect(unknown.matching, 'an Unlinked Validator status is listed as Unknown').toBeGreaterThan(0)
@@ -430,7 +489,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
 
     // The three statuses partition the Active Node set: nothing is left outside
     // the vocabulary the Server publishes.
-    await validatorFilter(page).selectOption('validator')
+    await (await validatorFilter(page)).selectOption('validator')
     const validators = await expectListAgreesWithSummary(page)
     expect(validators.matching + unknown.matching + notValidator.matching).toBe(activeNodes)
     const validatorNames = await expectListedNodes(page, validators.matching)
@@ -445,15 +504,15 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expect
       .poll(() => page.evaluate(() => document.documentElement.classList.contains('dark')))
       .toBe(true)
-    await expect(validatorFilter(page)).toHaveValue('validator')
+    await expect(await validatorFilter(page)).toHaveValue('validator')
     const dark = await expectListAgreesWithSummary(page)
     expect(dark.matching, 'Dark does not change the filtered list').toBe(validators.matching)
     expect(dark.scoped).toBe(activeNodes)
     await expectVisibleInteractiveTargets(page)
     await expectNoHorizontalOverflow(page)
-    await validatorFilter(page).focus()
+    await (await validatorFilter(page)).focus()
     expect(
-      await validatorFilter(page).evaluate((element) => element.matches(':focus-visible')),
+      await (await validatorFilter(page)).evaluate((element) => element.matches(':focus-visible')),
       'a focused Validator status filter must match :focus-visible in Dark',
     ).toBe(true)
   })

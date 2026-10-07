@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { loginAs } from './helpers'
+import { closeHomeSurface, homeFilterEntry, loginAs, openHomeSort } from './helpers'
 
 // Measure painted geography, not just the full-width canvas element.
 test('desktop geography fills its map track without overlapping the overview', async ({ page }, testInfo) => {
@@ -50,8 +50,11 @@ test('desktop geography fills its map track without overlapping the overview', a
     expect(geometry.chart.bottom).toBeLessThanOrEqual(geometry.map.bottom + 1)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     // Overflowing geography must not cover foreground controls or Node links.
-    await page.getByRole('combobox', { name: 'Sort', exact: true }).click({ trial: true })
-    await page.getByRole('combobox', { name: 'Sort', exact: true }).selectOption('name')
+    await homeFilterEntry(page).click({ trial: true })
+    await (await openHomeSort(page)).selectOption('name')
+    // Close the surface again before the Node link below is hit-tested: the
+    // surface hangs over the Node grid (issue #232).
+    await closeHomeSurface(page)
     await page.locator('[data-slot="node-card"] a').first().click({ trial: true })
     if (width === 1440) {
       await page.screenshot({ path: testInfo.outputPath('map-size-dark.png'), animations: 'disabled' })

@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { expectNoHorizontalOverflow, expectVisibleInteractiveTargets, loginAs } from './helpers'
+import { expectNoHorizontalOverflow, expectVisibleInteractiveTargets, loginAs, openHomeSort } from './helpers'
 
 /**
  * Public Home card and list views (issue #223). The shared Server is seeded by
@@ -33,7 +33,8 @@ const nodeGrid = (page: Page) => page.locator('[data-slot="node-grid"]')
 const listTable = (page: Page) => page.getByRole('table', { name: 'Active Nodes' })
 const listScroller = (page: Page) => page.locator('[data-slot="node-list-scroll"]')
 const listRows = (page: Page) => listTable(page).getByRole('row').filter({ has: page.getByRole('cell') })
-const sortSelect = (page: Page) => page.getByRole('combobox', { name: 'Sort', exact: true })
+/** The Sort order, read from the surface the toolbar entry holds (issue #232). */
+const sortSelect = async (page: Page) => openHomeSort(page)
 const viewTab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true })
 
 /** The list's column labels, left to right. */
@@ -152,7 +153,7 @@ test.describe('Public Home card and list views (issue #223)', () => {
     await expect(listTable(page)).toBeVisible()
     await expect(listRows(page)).toHaveCount(NODE_LETTERS.length)
 
-    expect(await sortSelect(page).locator('option').allInnerTexts()).toEqual([
+    expect(await (await sortSelect(page)).locator('option').allInnerTexts()).toEqual([
       'Health',
       'Name',
       'Current Head',
@@ -180,11 +181,11 @@ test.describe('Public Home card and list views (issue #223)', () => {
 
     // The name and Current Head sorts are ordinary public rankings, and the
     // never-observed Node's Head is Unknown, never zero.
-    await sortSelect(page).selectOption('name')
+    await (await sortSelect(page)).selectOption('name')
     await expect.poll(() => page.url()).toContain('sort=name')
     await expectList(page, NODE_LETTERS)
 
-    await sortSelect(page).selectOption('head')
+    await (await sortSelect(page)).selectOption('head')
     await expect.poll(() => page.url()).toContain('sort=head')
     await expectList(page, NODE_LETTERS)
     const heads = await metricColumn(page, 'Current Head')
@@ -195,7 +196,7 @@ test.describe('Public Home card and list views (issue #223)', () => {
 
     // Peers: the authoritative empty peer set is a real zero that ranks last
     // among the attested values, and only the never-observed Node is Unknown.
-    await sortSelect(page).selectOption('peers')
+    await (await sortSelect(page)).selectOption('peers')
     await expect.poll(() => page.url()).toContain('sort=peers')
     await expectList(page, PEERS_ORDER)
     const peers = await metricColumn(page, 'Peers')
@@ -213,7 +214,7 @@ test.describe('Public Home card and list views (issue #223)', () => {
     // Both process metrics are Unknown for every Node of this Network, so the
     // stable Node-identity tie-break keeps one predictable order.
     for (const [sort, column] of [['process_cpu', 'Process CPU'], ['process_memory', 'Process memory']] as const) {
-      await sortSelect(page).selectOption(sort)
+      await (await sortSelect(page)).selectOption(sort)
       await expect.poll(() => page.url()).toContain(`sort=${sort}`)
       await expectList(page, NODE_LETTERS)
       expect(await metricColumn(page, column)).toEqual([null, null, null, null, null, null])

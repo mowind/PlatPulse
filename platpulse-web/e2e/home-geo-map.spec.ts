@@ -2,9 +2,12 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import {
+  closeHomeSurface,
   expectNoHorizontalOverflow,
   expectVisibleInteractiveTargets,
+  homeFilterEntry,
   loginAs,
+  openHomeSort,
 } from './helpers'
 
 /**
@@ -359,7 +362,10 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const expectedAttention = String(nodes.length - nodes.filter(node => node.health === 'healthy').length)
     await expect.poll(async () => (await summaryValues(page)).map(fact => fact.value))
       .toEqual([expectedActive, expectedHealthy, expectedAttention, '2'])
-    await expect(page.getByRole('combobox', { name: 'Sort' })).toHaveValue('health')
+    await expect(await openHomeSort(page)).toHaveValue('health')
+    // Close the surface again so the evidence captured below shows the toolbar
+    // row alone, the way a reader leaves it (issue #232).
+    await closeHomeSurface(page)
     await expectQuietMap(page)
 
     // The whole Home body never shows a raw Peer address or the database path.
@@ -749,7 +755,9 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     expect(Math.round(routineBand.height), 'the canvas fills the fixed band').toBe(352)
     const toolbarTop = (await page.getByRole('tablist', { name: 'Network filter' }).boundingBox())!.y
     expect(compactOverview.y + compactOverview.height, 'the overview content band ends before the toolbar').toBeLessThanOrEqual(toolbarTop + 1)
-    await page.getByRole('combobox', { name: 'Sort', exact: true }).click({ trial: true })
+    // Issue #232: the row control a reader has to reach is the Sort & filter
+    // entry, so overflowing geography must not cover that entry either.
+    await homeFilterEntry(page).click({ trial: true })
     await page.getByRole('tab', { name: 'All Networks', exact: true }).click({ trial: true })
   })
 

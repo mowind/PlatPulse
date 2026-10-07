@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { E2E_PASSWORD, expectFocusedElementHasVisibleFocus, expectNoHorizontalOverflow, loginAs, expectComputedColor, expectLiftedUp } from './helpers'
+import { E2E_PASSWORD, expectFocusedElementHasVisibleFocus, expectNoHorizontalOverflow, loginAs, expectComputedColor, expectLiftedUp, closeHomeSurface, openHomeSort } from './helpers'
 
 /**
  * SCN-THEME-LIFECYCLE (webui.md §11.1 "Theme behavior"): the production
@@ -418,7 +418,10 @@ for (const theme of ['light', 'dark'] as const) {
 
     await expect(page.locator('[data-slot="home-shell"]')).toHaveCSS('font-family', font)
     await expect(themeButton(page)).toHaveCSS('font-family', font)
-    await expect(page.getByRole('combobox', { name: 'Sort' })).toHaveCSS('font-family', font)
+    await expect(await openHomeSort(page)).toHaveCSS('font-family', font)
+    // The surface is read and closed again: the card checks below hover cards the
+    // open surface would otherwise overlay (issue #232).
+    await closeHomeSurface(page)
     await expect(page.locator('[data-slot="node-card"] h2').first()).toHaveCSS('font-weight', '600')
     await expect(page.locator('[data-slot="node-card"] h2').first()).toHaveCSS('font-size', '16px')
     await checkCard(page.getByRole('article').filter({ hasText: 'Active Nodes' }).first(), { interactive: true })
@@ -429,10 +432,12 @@ for (const theme of ['light', 'dark'] as const) {
     // A real keyboard traversal retains the whole-card link's visible focus ring.
     await page.mouse.move(2, 2)
     await themeButton(page).focus()
-    // The Home toolbar carries the Network filter, the sort control, and the
-    // search, Health, and Validator status filters (issue #222), and every card
-    // contributes its link, its identity action, and its PlatScan status, so
-    // the traversal needs a wider budget than the cards alone.
+    // The Home toolbar row carries the Network pills, the Sort & filter entry,
+    // the card/list choice, and the search entry (issue #232): the controls
+    // behind the two entries leave the tab walk with them until the reader opens
+    // the surface that holds them, and every card contributes its link, its
+    // identity action, and its PlatScan status, so the traversal needs a wider
+    // budget than the cards alone.
     for (let step = 0; step < 80; step += 1) {
       if (await nodeLink.evaluate((element) => element === document.activeElement)) break
       await page.keyboard.press('Tab')
@@ -465,7 +470,10 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(nodeLink).toBeVisible({ timeout: 15_000 })
     // Filters and sorting stay operable on both public surfaces.
     await page.getByRole('tablist', { name: 'Network filter' }).getByRole('tab').nth(1).click()
-    await page.getByRole('combobox', { name: 'Sort' }).selectOption('head')
+    await (await openHomeSort(page)).selectOption('head')
+    // Close the surface before the card hover below: an open surface would sit
+    // between the pointer and the card (issue #232).
+    await closeHomeSurface(page)
     await page.getByRole('tab', { name: 'All Networks', exact: true }).click()
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await nodeCard.hover()

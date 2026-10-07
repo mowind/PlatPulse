@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { execSync } from 'node:child_process'
-import { loginAs, expectNoHorizontalOverflow, expectVisibleInteractiveTargets } from './helpers'
+import { loginAs, expectNoHorizontalOverflow, expectVisibleInteractiveTargets, openHomeFilters, closeHomeSurface } from './helpers'
 
 async function fixture(page: Page, scenario = 'normal') {
   await page.route('**/api/public/v1/networks*', async route => {
@@ -91,8 +91,14 @@ test('refinement scenarios and measured evidence', async ({ page }, info) => {
       return canvas && context && context.getImageData(0, 0, canvas.width, canvas.height).data.some((value, index) => index % 4 === 3 && value > 0)
     })
     await page.evaluate(() => document.fonts.ready)
+    // The Sort & filter entry holds Home's three native selects (the sort order
+    // and the two status filters) since issue #232, so the surface is opened for
+    // this measurement and dismissed immediately after it - before the evidence
+    // screenshots and the overflow checks, which want the resting toolbar.
+    await openHomeFilters(page)
     const geometry = await page.locator('[data-slot="tabs-list"], [data-slot="tabs-trigger"], select, header button, header a').evaluateAll(els => els.map(el => ({ slot: el.getAttribute('data-slot'), ariaLabel: el.getAttribute('aria-label'), inNetworkTablist: el.closest('[aria-label="Network filter"]') !== null, text: el.textContent, width: el.getBoundingClientRect().width, height: el.getBoundingClientRect().height, paintedHeight: el.getBoundingClientRect().height - parseFloat(getComputedStyle(el).borderTopWidth) - parseFloat(getComputedStyle(el).borderBottomWidth), fontSize: getComputedStyle(el).fontSize })))
     measurements[scenario] = geometry
+    await closeHomeSurface(page)
     if (process.env.REFINEMENT_EVIDENCE) {
       const dir = `../docs/visual-migration/emerald/refinement/${process.env.REFINEMENT_EVIDENCE}/${info.project.name}`
       mkdirSync(dir, { recursive: true })
@@ -113,8 +119,14 @@ test('refinement scenarios and measured evidence', async ({ page }, info) => {
       // so the pill assertions name that tablist instead of sweeping the page.
       const list = geometry.find(item => item.slot === 'tabs-list' && item.ariaLabel === 'Network filter')!
       expect(list.height).toBe(32)
-      expect(geometry.find(item => item.slot === 'select')?.height).toBe(44)
-      expect(geometry.find(item => item.slot === 'select')?.paintedHeight).toBe(32)
+      // Measured inside the open Sort & filter surface (#232). The sort order and
+      // the two status filters are now the panel's ordinary Emerald controls -
+      // a 44px box with its 1px border - not the toolbar row's compact recipe
+      // that paints a 32px surface inside a 44px target with two 6px transparent
+      // borders. The row keeps that recipe on the controls that are still there:
+      // the 32px pill list and its 26px triggers, asserted above.
+      expect(geometry.filter(item => item.slot === 'select').map(item => item.height)).toEqual([44, 44, 44])
+      expect(geometry.filter(item => item.slot === 'select').map(item => item.paintedHeight)).toEqual([42, 42, 42])
       expect(geometry.find(item => item.slot === 'theme-toggle')?.height).toBe(44)
       expect(geometry.find(item => item.slot === 'theme-toggle')?.paintedHeight).toBe(32)
       expect(geometry.find(item => item.slot === 'admin-action')?.height).toBe(44)

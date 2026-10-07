@@ -87,7 +87,21 @@ function renderHome(networks: PublicNetwork[], options: { loading?: boolean } = 
   )
 }
 
-const selectNamed = (name: string) => screen.getByRole('combobox', { name }) as HTMLSelectElement
+/** Issue #232: the Sort & filter entry holds the three select controls behind
+ *  its own toolbar surface, so a test opens that surface before reading or
+ *  changing one of them. Opening is guarded, because a second click on the
+ *  trigger would close the surface again. A click dispatches no pointerdown,
+ *  so the open surface stays open for the rest of the test. */
+const openFilterPanel = () => {
+  if (!screen.queryByRole('combobox', { name: 'Sort' })) {
+    fireEvent.click(screen.getByRole('button', { name: /^Sort & filter/ }))
+  }
+}
+
+const selectNamed = (name: string) => {
+  openFilterPanel()
+  return screen.getByRole('combobox', { name }) as HTMLSelectElement
+}
 
 /** The compact list read the way a reader reads it: the named table, its own
  *  rows, and the column each public header names. Only the scroller container,
@@ -743,7 +757,7 @@ describe('Public Home dashboard', () => {
     expect(screen.queryByRole('link', { name: /Alpha/ })).toBeNull()
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'All Networks' }))
-    fireEvent.change(screen.getByRole('combobox', { name: 'Sort' }), { target: { value: 'head' } })
+    fireEvent.change(selectNamed('Sort'), { target: { value: 'head' } })
     const nodeLinks = screen.getAllByRole('link').filter((link) => link.getAttribute('href')?.startsWith('/nodes/'))
     expect(nodeLinks.map((link) => link.getAttribute('href'))).toEqual(['/nodes/node-c', '/nodes/node-a', '/nodes/node-b'])
   })
@@ -838,7 +852,14 @@ describe('Public Home filter URLs', () => {
   const nodeHrefs = () => screen.queryAllByRole('link')
     .map((link) => link.getAttribute('href'))
     .filter((href): href is string => href !== null && href.startsWith('/nodes/'))
-  const searchbox = () => screen.getByRole('searchbox', { name: 'Search Active Nodes' }) as HTMLInputElement
+  // Issue #232: the field lives behind the toolbar's search entry, so reading
+  // or typing into it opens that entry first.
+  const searchbox = () => {
+    if (!screen.queryByRole('searchbox', { name: 'Search Active Nodes' })) {
+      fireEvent.click(screen.getByRole('button', { name: 'Search Active Nodes' }))
+    }
+    return screen.getByRole('searchbox', { name: 'Search Active Nodes' }) as HTMLInputElement
+  }
   const resultCount = () => document.querySelector('[data-slot="home-result-count"]') as HTMLElement
   const filterNotice = () => document.querySelector('[data-slot="home-filter-notice"]')
 
@@ -1121,6 +1142,152 @@ describe('Public Home card and list views', () => {
 
     expect(window.location.search).toBe('?sort=process_memory&view=list')
     expect(listedNames()).toEqual(['Gamma', 'Alpha', 'Beta'])
+  })
+})
+
+/** Issue #232: Home keeps one row of toolbar entries — the Network pills, one
+ *  Sort & filter entry, the card/list choice, and one search entry — and every
+ *  control behind those entries stays out of the row, and out of the tab walk,
+ *  until a reader opens the surface that holds it. */
+describe('Public Home toolbar entries', () => {
+  const secondNetwork = {
+    ...network,
+    networkKey: 'testnet',
+    displayName: 'Testnet',
+    nodes: [{ ...network.nodes[0], nodeId: 'node-c', displayName: 'Gamma', networkKey: 'testnet', currentHead: 900 }],
+  }
+  const filterEntry = /^Sort & filter$/
+  const trigger = (name: string | RegExp) => screen.getByRole('button', { name })
+  const badge = () => document.querySelector('[data-slot="home-filter-count"]')
+  const surface = (label: string) => screen.queryByRole('dialog', { name: label })
+
+  it('keeps the controls of a closed entry out of the row and out of the tab walk', () => {
+    renderHome([network])
+
+    // A control the reader cannot see is not in the reading order either.
+    expect(screen.queryAllByRole('combobox')).toEqual([])
+    expect(screen.queryByRole('searchbox')).toBeNull()
+    expect(surface('Sort and filters')).toBeNull()
+    expect(surface('Search Active Nodes')).toBeNull()
+
+    // What the row does keep: the Network pills, the two entries, and the view.
+    expect(screen.getByRole('tablist', { name: 'Network filter' })).toBeTruthy()
+    expect(screen.getByRole('tablist', { name: 'View' })).toBeTruthy()
+    expect(trigger(filterEntry).getAttribute('data-slot')).toBe('home-filter-trigger')
+    expect(trigger('Search Active Nodes').getAttribute('data-slot')).toBe('home-search-trigger')
+    // The count is part of the row, not of the surface: it is stated while the
+    // entry is closed, including at zero.
+    expect(badge()?.textContent).toBe('0')
+
+    fireEvent.click(trigger(filterEntry))
+    expect(surface('Sort and filters')).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Sort' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Health filter' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Validator status filter' })).toBeTruthy()
+    expect(trigger(filterEntry).getAttribute('aria-expanded')).toBe('true')
+    // Nothing to clear while both filters are the default.
+    expect((screen.getByRole('button', { name: 'Clear filters' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('opens one entry at a time and closes the open one from its own trigger', () => {
+    renderHome([network])
+
+    fireEvent.click(trigger(filterEntry))
+    fireEvent.click(trigger('Search Active Nodes'))
+
+    expect(surface('Sort and filters')).toBeNull()
+    expect(surface('Search Active Nodes')).toBeTruthy()
+
+    fireEvent.click(trigger('Search Active Nodes'))
+    expect(surface('Search Active Nodes')).toBeNull()
+  })
+
+  it('counts only the status filters that differ from the default', () => {
+    renderHome([network])
+
+    fireEvent.click(trigger(filterEntry))
+    // Zero is a count like any other: the chip says so instead of vanishing.
+    expect(badge()?.textContent).toBe('0')
+    expect(document.getElementById('home-status-filter-count')?.textContent).toBe('0 of 2 status filters on')
+
+    fireEvent.change(selectNamed('Health filter'), { target: { value: 'healthy' } })
+    expect(badge()?.textContent).toBe('1')
+    // The entry still reads exactly "Sort & filter"; the count reaches a
+    // screen reader through the description instead of the name.
+    expect(trigger(filterEntry).getAttribute('aria-describedby')).toBe('home-status-filter-count')
+    expect(document.getElementById('home-status-filter-count')?.textContent).toBe('1 of 2 status filters on')
+
+    fireEvent.change(selectNamed('Validator status filter'), { target: { value: 'unknown' } })
+    expect(badge()?.textContent).toBe('2')
+
+    // Choosing a value is not a reason to close the surface the reader is in.
+    expect(surface('Sort and filters')).toBeTruthy()
+
+    fireEvent.change(selectNamed('Health filter'), { target: { value: 'all' } })
+    fireEvent.change(selectNamed('Validator status filter'), { target: { value: 'all' } })
+    expect(badge()?.textContent).toBe('0')
+    expect(trigger(filterEntry).getAttribute('aria-describedby')).toBe('home-status-filter-count')
+    expect(document.getElementById('home-status-filter-count')?.textContent).toBe('0 of 2 status filters on')
+  })
+
+  it('clears only the two status filters and leaves the rest of the reading alone', () => {
+    window.history.replaceState({}, '', '/?network=testnet&q=Gamma&sort=name&health=unhealthy&validator=unknown&view=list')
+    renderHome([network, secondNetwork])
+
+    fireEvent.click(trigger(filterEntry))
+    expect(badge()?.textContent).toBe('2')
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
+
+    expect(window.location.search).toBe('?network=testnet&q=Gamma&sort=name&view=list')
+    expect(selectNamed('Health filter').value).toBe('all')
+    expect(selectNamed('Validator status filter').value).toBe('all')
+    expect(badge()?.textContent).toBe('0')
+    expect(surface('Sort and filters')).toBeTruthy()
+  })
+
+  it('keeps the search entry marked while a search is in force and returns focus when it closes', async () => {
+    window.history.replaceState({}, '', '/?q=Gamma')
+    renderHome([network])
+    const searchEntry = trigger('Search Active Nodes')
+
+    // The marker is on the entry itself, so a narrowed list is never mistaken
+    // for an empty deployment while the field is out of sight — drawn beside the
+    // icon rather than carried by the accent colour alone, and named for a
+    // reader who sees neither.
+    expect(searchEntry.getAttribute('data-search-state')).toBe('on')
+    expect(document.querySelector('[data-slot="home-search-active"]')).toBeTruthy()
+    expect(searchEntry.getAttribute('aria-describedby')).toBe('home-search-state')
+    expect(document.getElementById('home-search-state')?.textContent).toBe('Search is on: Gamma')
+
+    fireEvent.click(searchEntry)
+    const box = screen.getByRole('searchbox', { name: 'Search Active Nodes' }) as HTMLInputElement
+    await waitFor(() => expect(document.activeElement).toBe(box))
+    expect(box.value).toBe('Gamma')
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('searchbox', { name: 'Search Active Nodes' })).toBeNull()
+    expect(document.activeElement).toBe(searchEntry)
+    expect(window.location.search).toBe('?q=Gamma')
+
+    // Reopening hands the reader back the text they had, and the marker stays.
+    fireEvent.click(searchEntry)
+    expect((screen.getByRole('searchbox', { name: 'Search Active Nodes' }) as HTMLInputElement).value).toBe('Gamma')
+    expect(searchEntry.getAttribute('data-search-state')).toBe('on')
+    expect(document.querySelector('[data-slot="home-search-active"]')).toBeTruthy()
+  })
+
+  it('clears the search from inside its own entry and keeps the Network selection', () => {
+    window.history.replaceState({}, '', '/?network=testnet&q=Gamma')
+    renderHome([network, secondNetwork])
+    fireEvent.click(trigger('Search Active Nodes'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
+
+    expect(window.location.search).toBe('?network=testnet')
+    expect((screen.getByRole('searchbox', { name: 'Search Active Nodes' }) as HTMLInputElement).value).toBe('')
+    expect(trigger('Search Active Nodes').getAttribute('data-search-state')).toBe('off')
+    expect(document.querySelector('[data-slot="home-search-active"]')).toBeNull()
+    expect(trigger('Search Active Nodes').getAttribute('aria-describedby')).toBeNull()
   })
 })
 

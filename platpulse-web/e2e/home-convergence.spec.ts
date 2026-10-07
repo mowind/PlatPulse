@@ -5,6 +5,7 @@ import {
   expectNoHorizontalOverflow,
   expectVisibleInteractiveTargets,
   loginAs,
+  openHomeSort,
 } from './helpers'
 
 /**
@@ -271,7 +272,7 @@ test.describe('Converged Public Home (issue #102)', () => {
 
     // Current Head sorting descends by the projected Head; never-observed
     // Nodes (Unknown) sort last instead of fabricating zero.
-    await page.getByRole('combobox', { name: 'Sort' }).selectOption('head')
+    await (await openHomeSort(page)).selectOption('head')
     // The chosen sort travels through the ordinary Home URL (issue #222) and a
     // router navigation is painted a frame later, so the ordered list is read
     // through a retrying assertion instead of a synchronous snapshot.
@@ -285,7 +286,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     expect(names.findIndex((name) => name.includes('Node P — Never Observed'))).toBeGreaterThan(observedNodeIndex)
 
     // Name sorting keeps the same whole-card navigation targets.
-    await page.getByRole('combobox', { name: 'Sort' }).selectOption('name')
+    await (await openHomeSort(page)).selectOption('name')
     await expect.poll(async () => (await nodeCardNames(page))[0] ?? '').toContain('Node A')
     names = await nodeCardNames(page)
     expect(names.at(-1)).toContain('Node P — Never Observed')
@@ -355,7 +356,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expectFocusedElementHasVisibleFocus(page)
 
     // Sorting stays operable and the full list comes back.
-    await page.getByRole('combobox', { name: 'Sort' }).selectOption('head')
+    await (await openHomeSort(page)).selectOption('head')
     await page.getByRole('tab', { name: 'All Networks', exact: true }).click()
     await expectNoHorizontalOverflow(page)
   })
