@@ -24,7 +24,8 @@ import {
  * names, the address bar, and externally observable layout geometry.
  *
  * This spec runs on every fixed viewport project, so the same contract is read
- * on both phones, the tablet, and both desktops.
+ * on both phones, the tablet, and both desktops — including the band the sticky
+ * header keeps for itself when the row is scrolled up into it.
  */
 test.describe('Public Home toolbar entries (issue #232)', () => {
   const badge = (page: Page) => page.locator('[data-slot="home-filter-count"]')
@@ -64,18 +65,49 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
       ),
     )
 
-  /** A surface opens below the entry that owns it and never crosses a viewport
-   *  edge, at every fixed width. */
+  /** A surface opens below the entry that owns it and stays inside the viewport's
+   *  own width at every fixed viewport. The vertical extent is deliberately not
+   *  clamped here: a surface is anchored below its entry and is never re-placed
+   *  vertically, so on a phone-height viewport it is taller than the room the
+   *  entry leaves under itself and the reader scrolls the page to its tail
+   *  (expectReachable reads that half of the contract). */
   const expectAnchoredInside = async (page: Page, entry: Locator, surface: Locator, what: string) => {
     const entryBox = (await entry.boundingBox())!
     const box = (await surface.boundingBox())!
+    const viewport = page.viewportSize()!
     expect(box.y, what + ' opens below its entry, not over the row').toBeGreaterThanOrEqual(
       entryBox.y + entryBox.height - 1,
     )
     expect(box.x, what + ' stays inside the left edge').toBeGreaterThanOrEqual(0)
-    expect(box.x + box.width, what + ' stays inside the right edge').toBeLessThanOrEqual(
-      page.viewportSize()!.width + 0.5,
+    expect(box.x + box.width, what + ' stays inside the right edge').toBeLessThanOrEqual(viewport.width + 0.5)
+  }
+
+  /** The tail of a surface taller than the room under its entry is still reachable:
+   *  the reader scrolls the page to it, and there it is inside the viewport and is
+   *  still the thing the pointer meets — so a surface that hangs past the fold on
+   *  a phone is reachable rather than merely tall, and its last control is not
+   *  covered by the list it hangs over. */
+  const expectReachable = async (page: Page, control: Locator, surface: Locator, what: string) => {
+    // The excursion scrolls the page, and the geometry checks around this helper
+    // read the toolbar at rest, so the resting scroll position is restored.
+    const resting = await page.evaluate(() => window.scrollY)
+    await control.scrollIntoViewIfNeeded()
+    const box = (await control.boundingBox())!
+    const viewport = page.viewportSize()!
+    expect(box.y, what + ' is inside the viewport once the page is scrolled to it').toBeGreaterThanOrEqual(0)
+    expect(box.y + box.height, what + ' stays inside the bottom edge once scrolled to').toBeLessThanOrEqual(
+      viewport.height + 0.5,
     )
+    const reaches = await surface.evaluate(
+      (element, point) => {
+        const found = document.elementFromPoint(point.x, point.y)
+        return found !== null && element.contains(found)
+      },
+      { x: box.x + box.width / 2, y: box.y + box.height / 2 },
+    )
+    expect(reaches, 'the pointer still meets the surface at ' + what).toBe(true)
+    await page.evaluate((top) => window.scrollTo({ top }), resting)
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(resting)
   }
 
   /** An open surface reads as an elevated tier, never as a transparent box over
@@ -145,6 +177,10 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
     await expectUncovered(filterSurface, 'the open Sort & filter surface')
     await expectNoHorizontalOverflow(page)
     await expectVisibleInteractiveTargets(page)
+    // The surface is taller than the room under its entry on a phone-height
+    // viewport, and nothing re-places it once it is open: its tail is reached by
+    // scrolling the page to it.
+    await expectReachable(page, clearFilters(page), filterSurface, 'Clear filters of the open Sort & filter surface')
 
     // The search entry opens its own surface the same way, and its field takes
     // the focus a reader needs while the surface is open.
@@ -161,6 +197,12 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
     expect(await rowGeometry(page), 'the open search surface must not shift the toolbar row').toEqual(before)
     await expectNoHorizontalOverflow(page)
     await expectVisibleInteractiveTargets(page)
+    await expectReachable(
+      page,
+      clearSearch(page),
+      homeSearchSurface(page),
+      'Clear search of the open Search surface',
+    )
 
     // Escape closes the surface and hands the keyboard back to its entry, so the
     // row a reader leaves is the row they started from.
@@ -168,6 +210,57 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
     await expect(homeSearchSurface(page)).toHaveCount(0)
     await expect(homeSearchEntry(page)).toBeFocused()
     expect(await rowGeometry(page)).toEqual(before)
+  })
+
+  /** The sticky header keeps its own pixels over anything Home paints below it. An
+   *  open toolbar surface lifts its own wrapper to `md:z-30` (design §15.27), so
+   *  the header has to outrank that tier: a row — or the surface hanging off its
+   *  entry — that is scrolled into the header band must pass under the brand, the
+   *  theme toggle and the Admin link rather than paint over them. */
+  test('keeps the sticky header above a row scrolled into it', async ({ page }) => {
+    await loginAs(page)
+    await expect(page.locator('[data-slot="node-card"]').first()).toBeVisible({ timeout: 15_000 })
+    const header = page.locator('[data-slot="app-header"]')
+
+    // Open the surface, then scroll the page so that the surface's own top edge
+    // sits inside the header band and the row above it crosses the band as well:
+    // one position that covers both the entry and the surface it opened.
+    const filterSurface = await openHomeFilters(page)
+    const surfaceDocTop = await filterSurface.evaluate(
+      (element) => element.getBoundingClientRect().top + window.scrollY,
+    )
+    await page.evaluate((top) => window.scrollTo({ top }), surfaceDocTop - 20)
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0)
+
+    const headerBox = (await header.boundingBox())!
+    const bandBottom = headerBox.y + headerBox.height
+    expect((await filterSurface.boundingBox())!.y, 'the open surface reaches into the header band').toBeLessThan(
+      bandBottom,
+    )
+    expect((await row(page).boundingBox())!.y, 'the scrolled row reaches into the header band').toBeLessThan(
+      bandBottom,
+    )
+
+    // Every pixel of the band still belongs to the header, whatever the scrolled
+    // row and its open surface paint behind it.
+    const covered = await header.evaluate((element) => {
+      const box = element.getBoundingClientRect()
+      const hits: string[] = []
+      for (let column = 1; column < 10; column += 1) {
+        for (let line = 1; line < 10; line += 1) {
+          const x = box.left + (box.width * column) / 10
+          const y = box.top + (box.height * line) / 10
+          if (x < 0 || y < 0 || x > window.innerWidth - 1 || y > window.innerHeight - 1) continue
+          const hit = document.elementFromPoint(x, y)
+          if (hit && !element.contains(hit)) {
+            const slot = hit.getAttribute('data-slot')
+            hits.push(`${Math.round(x)},${Math.round(y)} -> ${hit.tagName.toLowerCase()}${slot ? `[${slot}]` : ''}`)
+          }
+        }
+      }
+      return hits
+    })
+    expect(covered, 'nothing Home paints below the header may cover the header band').toEqual([])
   })
 
   test('counts the status filters on the entry and clears only those', async ({ page }) => {

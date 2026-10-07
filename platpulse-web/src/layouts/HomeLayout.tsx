@@ -127,10 +127,14 @@ function HomeLayoutContent() {
   return (
     <div data-slot="home-shell" className="flex min-h-screen flex-col">
       <BackgroundDecoration />
+      {/* The header outranks everything Home paints under it: an open toolbar
+          surface lifts its own wrapper to md:z-30 (design §15.27), so a row or a
+          surface scrolled into the header band has to pass under it. The Radix
+          dialog tier (z-50) still covers both. */}
       <header
         data-slot="app-header"
         className={cn(
-          'sticky top-0 z-10 border-b border-transparent transition-all duration-200',
+          'sticky top-0 z-40 border-b border-transparent transition-all duration-200',
           scrolled ? 'backdrop-blur-xl' : 'bg-transparent',
         )}
       >
