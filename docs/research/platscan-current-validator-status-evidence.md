@@ -2,6 +2,8 @@
 
 调研日期：2026-09-20。用于 #165（§15）"自动 Validator 身份与 Current Validator Status"的实现前置（#173），回应 [Validator Provider](../design/validator-provider.md) 与 [Validator metrics](../design/validator-metrics.md) 中的 **Technical verification pending** 占位，以及 [ADR 0005](../adr/0005-automatic-validator-identity.md) 中"exact PlatScan evidence mapping still requires primary-source verification"的未决项。
 
+> **2026-10-08 更新**：§1.5、§4 证据表（status 6 行）、§4.2 与 §7 fixture 表已按 Owner 决定改判 `verifying`(6) 为 **Validator**。本文其余部分（证据方法、§5/§6 的否定与排除项、§8 限制）保持原样；原 4.2 的冲突标注作为历史记录保留。
+
 本文只确立证据谓词与可复用 fixture；不实现分类、不执行迁移、不删除或改写任何运行时数据。所有结论以**一手来源**（browser-server 源码、PlatON-Go 源码）与**主网部署实测**为准；未能证实之处一律标注为限制，不以推测代替事实。本文不把旧的整数 Activity 映射当作已经验证的当前有效性（见 §8）。
 
 ## 1. 结论摘要
@@ -10,7 +12,7 @@
 2. `candidate`(1)、`active`(2)、`producing`(3) 是当前有效质押身份：`1/2` 由详情接口给出，`3` **只能**由 `aliveStakingList` 的"当前出块节点"分支给出——详情接口没有任何分支会返回 3。
 3. `exiting`(4) 与 `locked`(7) 在**新鲜、成功且身份匹配**的详情观测下是当前有效质押身份，但必须显示限定词：链上候选人在退出冻结期结束前仍是有效候选人（`WithdrewStaking` 才置 `Invalided|Withdrew`），锁定是保留质押、可恢复为候选人的惩罚态。
 4. `exited`(5) 是**已完成退出**的权威否定；`nodeId==""` 且 `status==0` 的 200 空对象是**权威缺席**。二者共同构成可接受的否定证据。
-5. PlatScan **不存在**名为"inconclusive"的状态码。`verifying`(6) 的源码语义是"候选人在共识周期"（CANDIDATE + `isConsensus=1`）；但 [CONTEXT.md](../../CONTEXT.md) 的 Current Validator Status 定义、[validator-metrics.md](../design/validator-metrics.md) 与 ADR 0005 都把"verification in progress"归为 **Unknown**。因此 **6 判 Unknown**：既不是否定，也不是对当前有效性的确认。源码事实另行记录；要改判为 Validator 须先改领域定义（domain-modeling），不是实现细节。
+5. PlatScan **不存在**名为"inconclusive"的状态码。`verifying`(6) 的源码语义是"候选人在共识周期"（CANDIDATE + `isConsensus=1`，质押在册）。本文原按 [CONTEXT.md](../../CONTEXT.md) / [validator-metrics.md](../design/validator-metrics.md) / ADR 0005 的 "verification in progress = Unknown" 把 **6 判 Unknown**；**2026-10-08 Owner 决定改判为 Validator**（理由与同步更新的文档见 §4.2）。
 6. **HTTP 404、传输失败、`aliveStakingList` ranking 缺失都不得作为无质押/否定的证据**；详情接口对"不存在的节点"本来就以 200 空对象回答，404 只会来自路由/部署异常。
 7. 主网部署在 2026-09-20 实测确认了 1/2/4/5/6/7、空缺席形态与"列表 3 / 详情非 3"的差异；原始响应与 provenance 见 §7。
 
@@ -110,7 +112,7 @@ browser-server 用 `CustomBeanSerializerModifier` 给不同字段类型的 null 
 | 1 candidate | 在册候选人，非共识期、非结算期 | **Validator** | 候选人质押在册；链上 `CandidateStatus.IsValid()` |
 | 2 active | 候选人且在结算期，或退出中且在结算期 | **Validator** | 两种来源都是有效在册身份；仅凭状态无法区分，无需区分 |
 | 3 producing | 列表专用：当前出块节点 | **Validator** | 只可能来自 `aliveStakingList`；详情不会返回 |
-| 6 verifying | 候选人且在共识周期 | **Unknown** | 源码语义是 CANDIDATE + `isConsensus=1`，但 CONTEXT.md / ADR 0005 / metrics 把"verification in progress"判为 Unknown（见 §4.2） |
+| 6 verifying | 候选人且在共识周期 | **Validator** | 源码语义 CANDIDATE + `isConsensus=1`：质押在册；共识周期参与不改变身份有效性。2026-10-08 由 Owner 改判（见 §4.2） |
 | 4 exiting | 退出中，且不在结算期 | **Validator（exiting 限定）** | 退出冻结期未结束，链上尚未 `Invalided`（§5） |
 | 7 locked | 低/零出块惩罚锁定 | **Validator（locked 限定）** | 质押保留且可恢复为 CANDIDATE（§5） |
 | 5 exited | 已完成退出 | **NotValidator** | 链上候选人已 `Invalided|Withdrew` 并可能删除（§5） |
@@ -136,11 +138,17 @@ browser-server 用 `CustomBeanSerializerModifier` 给不同字段类型的 null 
 
 **任何时候都不得把 locked/exiting 判成 NotValidator**：它们只在"已确认完成退出(5)"或"权威缺席(空形态)"时才是否定。
 
-### 4.2 verifying(6) 的裁定与冲突标注
+### 4.2 verifying(6) 的裁定（2026-10-08 Owner 决定：改判 Validator）
 
 源码事实：`getCodeByStatus(CANDIDATE, isConsensus=1, *)` 返回 6，源码注释为"共识中"，即候选人在共识周期，且有在册质押。
 
-**与既有权威定义的冲突**：CONTEXT.md 的 Current Validator Status 定义明确写 "verification in progress ... remain Unknown"；`docs/design/validator-metrics.md` 写 "verifying or inconclusive evidence is Unknown"；ADR 0005 把 "verifying, missing/conflicting evidence, and provider failures" 并列为不可作为否定。三处一致。因此本文**不**按源码事实把 6 改判为 Validator，而是保留 **Unknown**，并显式标注"源码语义（在册共识候选人）与目标定义（verification in progress = Unknown）不一致"（`docs/agents/domain.md` 要求 flag ADR conflicts）。实现 #173 必须按 Unknown 处理；若 Owner 决定改判，应先更新 CONTEXT.md 与 ADR 0005，而不是让实现猜测。
+**原始冲突（历史记录）**：CONTEXT.md 的 Current Validator Status 定义曾写 "verification in progress ... remain Unknown"；`docs/design/validator-metrics.md` 曾写 "verifying or inconclusive evidence is Unknown"；ADR 0005 曾把 "verifying, missing/conflicting evidence, and provider failures" 并列。三处一致，所以本文最初**不**按源码事实改判，而是保留 **Unknown** 并显式标注"源码语义（在册共识候选人）与目标定义（verification in progress = Unknown）不一致"（`docs/agents/domain.md` 要求 flag ADR conflicts），把改判留给 Owner。
+
+**裁定**：Owner 决定按源码事实把 6 改判为 **Validator**。理由：(a) 6 是"候选人在共识周期"，即在册质押加 `isConsensus=1`，把这种展示态判成 Unknown 会让**正在参与当前共识的身份比空闲候选人（1）更不确定**，与 "currently valid staking identity, not current consensus selection" 的意图相反；(b) 本地部署实测同一身份在 1/2 与 6 之间切换时，Home 的 Validator 桶在无任何代码变更的情况下静默进出该节点。
+
+**同步更新**：CONTEXT.md 删去 "verification in progress" 并把入选/落选共识周期明确为独立维度；[ADR 0005](../adr/0005-automatic-validator-identity.md) 增加 2026-10-08 amendment log；[validator-metrics.md](../design/validator-metrics.md) 与 [validator-provider.md](../design/validator-provider.md) 状态表同步；[platpulse.md §15](../design/platpulse.md) 增加对应行与裁定说明。
+
+**实现与回归**：[validator.rs](../../crates/platpulse-server/src/validator.rs) 的 `classify_activity(Some("verifying"))` 现返回 `(Validator, None)`（原为 `Unknown`）；Activity 线缆值仍是 `verifying`，因此没有 wire、DB CHECK 或迁移变更。回归测试用 §7 的 `staking-details-status-6.json` 经 PlatScan 适配器与 Public 投影断言 `currentValidatorStatus == "validator"`。
 
 ## 5. 链上有效性的一手证据
 
@@ -190,7 +198,7 @@ Valided       = 0                         // 0000: in force
 | `staking-details-status-2.json` | active |
 | `staking-details-status-4.json` | exiting |
 | `staking-details-status-5.json` | exited（否定） |
-| `staking-details-status-6.json` | verifying |
+| `staking-details-status-6.json` | verifying（2026-10-08 起判 **Validator**，见 §4.2；已被实现回归测试使用） |
 | `staking-details-status-7.json` | locked |
 | `staking-details-empty.json` | 严格空缺席形态（200/code 0/nodeId ""/status 0） |
 | `staking-details-list-producer.json` | **列表报 3、详情返回 6** 的差异证据（与下方 `alive-staking-list-producer.json` 同一次生产） |

@@ -66,7 +66,8 @@ any historical PlatScan entry:
 | Confirmed candidate, active or producing identity with valid stake | Validator |
 | Locked or exiting identity whose staking validity is independently confirmed to remain effective | Validator, with locked/exiting state shown explicitly; not a claim of normal participation |
 | Confirmed completed exit or authoritative absence of current staking identity | Not Validator |
-| Verifying, insufficient or conflicting evidence that cannot establish validity | Unknown |
+| Candidate taking part in the current consensus round (PlatScan status 6, Activity `verifying`) with valid stake | Validator |
+| Insufficient or conflicting evidence that cannot establish validity | Unknown |
 | Lookup failure or incomplete evidence | Last-good status marked stale when available; otherwise Unknown, never a default negative |
 
 **Primary-source verification recorded ([#168][status-evidence]):** the baseline
@@ -75,15 +76,17 @@ staking validity. The required validity predicates — locked/exiting validity,
 completed exit, authoritative absence, and the exclusions for HTTP 404,
 transport failure and ranking absence — are now established from browser-server
 and PlatON-Go source evidence plus a captured mainnet deployment. The source
-shows the `verifying` code is a candidate in a consensus round; because
-[CONTEXT.md](../../CONTEXT.md), the table above and ADR 0005 define verification
-in progress as Unknown, that code stays **Unknown** here, and the
-source-vs-target disagreement is flagged in the evidence note rather than
-silently reclassified. A bare transport failure, ranking absence or the legacy
-HTTP 404 normalization must not silently become new proof of staking absence.
-Preserve the independently evidenced ranking contract; unranked is not
-synonymous with Not Validator. This documentation update did not run a live
-capture beyond the recorded fixtures.
+shows the `verifying` code is a candidate in a consensus round
+(`getCodeByStatus(CANDIDATE, isConsensus = 1, *)`), and it is now classified
+as **Validator** (amended 2026-10-08, see [ADR 0005](../adr/0005-automatic-validator-identity.md)):
+verification in progress was never staking invalidity, and reading it as Unknown
+made a Node taking part in the current consensus round look *less* confirmed
+than an idle candidate — the inverse of the "not current consensus selection"
+intent of [CONTEXT.md](../../CONTEXT.md). A bare transport failure, ranking
+absence or the legacy HTTP 404 normalization must not silently become new proof
+of staking absence. Preserve the independently evidenced ranking contract;
+unranked is not synonymous with Not Validator. This documentation update did not
+run a live capture beyond the recorded fixtures.
 
 [status-evidence]: ../research/platscan-current-validator-status-evidence.md
 

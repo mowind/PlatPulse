@@ -29,9 +29,13 @@ re-verification.
 - Current Validator Status means currently valid staking identity, not current
   consensus selection. Confirmed candidates/active/producing identities count;
   locked/exiting identities count only while staking validity is confirmed and
-  their special state remains visible. Completed exit or authoritative absence
-  is Not Validator; verifying or inconclusive evidence is Unknown. Lookup
-  failures retain established last-good values as stale, not fresh negatives.
+  their special state remains visible. A candidate taking part in the current
+  consensus round also counts: consensus selection is an independent dimension,
+  so the Provider's consensus-round presentation (PlatScan status 6, Validator
+  Activity `verifying`) is a Validator, not Unknown. Completed exit or
+  authoritative absence is Not Validator; inconclusive evidence is Unknown.
+  Lookup failures retain established last-good values as stale, not fresh
+  negatives.
 - **Technical verification recorded ([#168](../research/platscan-current-validator-status-evidence.md)):**
   the precise PlatScan validity predicates — including locked/exiting validity,
   authoritative absence, and the exclusions for HTTP 404, transport failure and

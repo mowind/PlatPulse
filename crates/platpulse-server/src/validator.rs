@@ -658,11 +658,14 @@ fn classify_activity(
             Some(CurrentValidatorQualifier::Locked),
         ),
         Some("exited") | Some("observing") => (CurrentValidatorStatus::NotValidator, None),
-        // The investigated source maps 6 to "candidate in a consensus round",
-        // but CONTEXT.md, the metrics design and ADR 0005 define verification
-        // in progress as Unknown; the implementation follows the domain
-        // definition (#168).
-        Some("verifying") => (CurrentValidatorStatus::Unknown, None),
+        // The investigated source maps 6 to "candidate in a consensus round"
+        // (getCodeByStatus(CANDIDATE, isConsensus = 1, *)): the stake is in
+        // force and only the consensus-round dimension differs. Reading it as
+        // Unknown made a Node taking part in the current round look less
+        // confirmed than an idle candidate and made the Home Validator bucket
+        // flap, so it classifies as Validator (Owner decision 2026-10-08,
+        // amending CONTEXT.md and ADR 0005; see #168 evidence note §4.2).
+        Some("verifying") => (CurrentValidatorStatus::Validator, None),
         _ => (CurrentValidatorStatus::Unknown, None),
     }
 }
@@ -4708,6 +4711,118 @@ mod tests {
         handle.abort();
     }
 
+    /// The same recorded mainnet Validator appears once as status 2 and once as
+    /// status 6 — a candidate in a consensus round whose stake is still in
+    /// force. Both are currently valid staking identities, so the
+    /// consensus-round capture must reach the Public API as `validator`:
+    /// reading it as Unknown dropped the Node from the Home Validator filter
+    /// precisely while it was taking part in consensus (Owner decision
+    /// 2026-10-08; docs/research/platscan-current-validator-status-evidence.md
+    /// section 4.2).
+    #[tokio::test]
+    async fn platscan_consensus_round_capture_is_validator_in_public_api() {
+        use axum::body::to_bytes;
+        use axum::extract::State;
+
+        const DETAIL: &[u8] = include_bytes!(
+            "../tests/fixtures/platscan-validator-status/staking-details-status-6.json"
+        );
+        const PAGES: [&[u8]; 5] = [
+            include_bytes!(
+                "../tests/fixtures/platscan-validator-status/alive-staking-list-page-1.json"
+            ),
+            include_bytes!(
+                "../tests/fixtures/platscan-validator-status/alive-staking-list-page-2.json"
+            ),
+            include_bytes!(
+                "../tests/fixtures/platscan-validator-status/alive-staking-list-page-3.json"
+            ),
+            include_bytes!(
+                "../tests/fixtures/platscan-validator-status/alive-staking-list-page-4.json"
+            ),
+            include_bytes!(
+                "../tests/fixtures/platscan-validator-status/alive-staking-list-page-5.json"
+            ),
+        ];
+        const NODE_ID: &str = "0xc6c2f9185236d29b3deb0a463b10bf65c88fed993128b422b1f5e1c8fcf7f32e8c8d0a896b3969303c85b4815cf42715c06dfcd33c5b5dc3e78b4159d7f771e2";
+        let (dir, db) = test_db().await;
+        let owner_id: String =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE username = 'owner'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        let (validator, _) = create_validator(&db, "platon-mainnet", NODE_ID, None, &owner_id)
+            .await
+            .unwrap();
+        let (link, _) = create_link(
+            &db,
+            "node-1",
+            &validator.validator_id,
+            "observer",
+            "2025-01-01T00:00:00Z",
+            None,
+            &owner_id,
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE node_validator_links SET origin = 'automatic' WHERE link_id = ?")
+            .bind(&link.link_id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let app_state = crate::http::AppState::new(db, None, auth);
+
+        let mut responses = vec![(200, DETAIL.to_vec())];
+        responses.extend(PAGES.iter().map(|body| (200, body.to_vec())));
+        let (base_url, _mock, handle) = start_mock_platscan(responses, 0).await;
+        let provider = PlatScanValidatorProvider::new(
+            deployments(&base_url, &["platon-mainnet"]),
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+
+        async fn public_network(state: &crate::http::AppState) -> Value {
+            let response = crate::http::public::public_networks(State(state.clone())).await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            serde_json::from_slice::<Value>(&body).unwrap()[0].clone()
+        }
+        assert_eq!(
+            refresh_all(app_state.db(), &provider)
+                .await
+                .unwrap()
+                .successful,
+            1
+        );
+        let network = public_network(&app_state).await;
+        let insight = &network["nodes"][0]["validator"];
+        assert_eq!(insight["validatorNodeId"], NODE_ID);
+        // Exactly the literal the Home validator filter compares against.
+        assert_eq!(insight["currentValidatorStatus"], "validator");
+        assert_eq!(insight["currentValidatorStatusState"], "current");
+        assert_eq!(insight["currentValidatorStatusQualifier"], Value::Null);
+        // The consensus-round presentation stays visible as its own Activity.
+        assert_eq!(insight["activity"], "verifying");
+        assert_eq!(insight["activityState"], "current");
+        assert_eq!(insight["source"], "platscan");
+        assert_eq!(insight["state"], "fresh");
+        assert_eq!(insight["blockCount"], 1_019_029);
+        assert_eq!(insight["expectedBlockCount"], 1_020_790);
+        assert_eq!(insight["rewardAmount"], "7906866.977823844245");
+        assert_eq!(insight["rewardRate"], "3.72");
+        assert_eq!(insight["genBlocksRate"], "101.5625");
+        assert_eq!(insight["rank"], 1);
+        assert_eq!(insight["rankState"], "ranked");
+        assert_eq!(network["validatorSummary"]["blocks"]["knownSum"], "1019029");
+        handle.abort();
+    }
+
     #[test]
     fn platscan_normalization_maps_statuses_and_allows_activity_only_snapshots() {
         let node_id = provider_node_id();
@@ -7985,10 +8100,11 @@ mod tests {
             view(Some("success"), Some("exited")).status,
             CurrentValidatorStatus::NotValidator
         );
-        // Verifying stays Unknown per CONTEXT.md / ADR 0005 (#168).
+        // Verifying is a candidate in a consensus round: a currently valid
+        // staking identity, so Validator (Owner decision 2026-10-08).
         assert_eq!(
             view(Some("success"), Some("verifying")).status,
-            CurrentValidatorStatus::Unknown
+            CurrentValidatorStatus::Validator
         );
         // A success without an Activity, an unrecognized status, or a status 0
         // with a non-empty identifier cannot be fabricated into a negative.

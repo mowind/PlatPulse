@@ -532,10 +532,13 @@ async fn current_validator_status_never_turns_provider_failure_into_a_negative()
     assert_eq!(locked["currentValidatorStatusQualifier"], "locked");
     assert_eq!(locked["activity"], "locked");
 
-    // Verification in progress stays Unknown even while its evidence is fresh.
+    // A candidate in the current consensus round is a currently valid staking
+    // identity. Its Activity evidence here is stale, so it reads Validator with
+    // a stale state rather than Unknown (Owner decision 2026-10-08).
     let verifying = insight_of("v-verifying");
-    assert_eq!(verifying["currentValidatorStatus"], "unknown");
-    assert_eq!(verifying["currentValidatorStatusState"], "unknown");
+    assert_eq!(verifying["currentValidatorStatus"], "validator");
+    assert_eq!(verifying["currentValidatorStatusState"], "stale");
+    assert_eq!(verifying["currentValidatorStatusQualifier"], Value::Null);
     assert_eq!(verifying["activity"], "verifying");
     assert_eq!(verifying["activityState"], "stale");
 }
