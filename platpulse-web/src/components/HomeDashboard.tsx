@@ -7,7 +7,7 @@ import { peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightVal
 import { NodeHealthMarker, formatRelativeTime, formatUtcDateTime } from './StatusBadge'
 import GeoMapBoundary from './GeoMapBoundary'
 import GeoWorldMap from './GeoWorldMap'
-import { geoMapStatus, homeGeoOverview } from '../homeGeo'
+import { geoMapStatus, homeGeoOverview, homeNodeSelectionGeoOverview } from '../homeGeo'
 import { formatNodeDataBytes } from '../formatBytes'
 import { formatDuration } from '../formatDuration'
 import { nodeDataProgress } from '../nodeData'
@@ -118,8 +118,9 @@ export default function HomeDashboard({
   // the selection stays provisional until a projection is available.
   const networkKeys = useMemo(() => networks.map((network) => network.networkKey), [networks])
   const scope = homeNetworkScope(filters.network, hasProjection ? networkKeys : null)
-  // Two scopes, read once: the Network selection covers the overview band and
-  // the map, while search, health, and Validator status narrow the list only.
+  // Two scopes, read once (#233): the Network selection is the whole reading
+  // while nothing is narrowed, and once search, health, or Validator status
+  // narrows the list, the overview band and the map read the Nodes it holds.
   const { scoped, matching } = useMemo(
     () => selectHomeRecords(records, { ...filters, network: scope.network }),
     [filters, records, scope.network],
@@ -284,19 +285,68 @@ export default function HomeDashboard({
   const scopeName = scope.network === 'all'
     ? null
     : networks.find((network) => network.networkKey === scope.network)?.displayName ?? scope.network
-  // The map receives a projection, never raw Network input; the same overview
-  // also covers the selected Network, and only that selection changes it.
-  const geoOverview = useMemo(
-    () => homeGeoOverview(networks, scope.network),
+  // The Network selection's own Networks: the scope of the two cumulative
+  // Validator cells, which never follow a narrowed list (#233).
+  const scopedNetworks = useMemo(
+    () => (scope.network === 'all'
+      ? networks
+      : networks.filter((network) => network.networkKey === scope.network)),
     [networks, scope.network],
   )
+  // The list selection is what a filter narrows. While it holds every Active
+  // Node of the Network selection nothing is narrowed, and every reading stays
+  // the one Home has always shown.
+  const selectionNarrowed = matching.length !== scoped.length
+  const matchedNodes = useMemo(() => matching.map(({ node }) => node), [matching])
+  // A narrowed list is counted by the Networks that still hold a matched Node;
+  // unfiltered, the counter keeps reading the Network selection itself, so a
+  // Network with no Active Node is not silently dropped from it.
+  const matchedNetworkCount = useMemo(() => {
+    if (!selectionNarrowed) return scopedNetworks.length
+    const keys = new Set(matching.map(({ network }) => network.networkKey))
+    return scopedNetworks.filter((network) => keys.has(network.networkKey)).length
+  }, [matching, scopedNetworks, selectionNarrowed])
+  const healthyCount = hasProjection ? matching.filter(({ node }) => healthCategory(node.health) === 'healthy').length : null
+  // A narrowed selection that matches no Node leaves the whole band in an
+  // explicit empty state (#233, decision 8): the four counters that follow the
+  // list read no figure at all — never a zero, and never a failure tone — while
+  // the list keeps its "Showing 0 of N" line and the map states the reason in
+  // words. Without a projection the counters keep reading 'Unknown', which is a
+  // different statement from "no Node matches". The two cumulative cells are
+  // not part of the empty state: they keep their Network-level totals.
+  const emptySelection = hasProjection && selectionNarrowed && matching.length === 0
+  const emptyLabel = emptySelection ? 'No match' : undefined
+  const activeNodeCount = emptySelection ? null : hasProjection ? matching.length : null
+  const selectionHealthyCount = emptySelection ? null : healthyCount
+  const attentionCount = activeNodeCount === null || selectionHealthyCount === null
+    ? null
+    : activeNodeCount - selectionHealthyCount
+  const selectionNetworkCount = emptySelection ? null : hasProjection ? matchedNetworkCount : null
+  // The map receives a projection, never raw Network input. While nothing is
+  // narrowed that projection is the Network-level Geo Insight, field for field;
+  // a narrowed list reads the Node Selection Geo Aggregate over exactly the
+  // Nodes the search, health, and Validator status filters left (#233), which
+  // the Server ships as compact per-Node buckets in the same response.
+  const selectionLabel = scopeName
+    ? 'the current list selection in ' + scopeName
+    : 'the current list selection'
+  const geoOverview = useMemo(
+    () => (selectionNarrowed
+      ? homeNodeSelectionGeoOverview(matchedNodes, scopedNetworks, selectionLabel, scope.network)
+      : homeGeoOverview(networks, scope.network)),
+    [matchedNodes, networks, scopedNetworks, scope.network, selectionLabel, selectionNarrowed],
+  )
+  const geoSelectionBasis = selectionNarrowed ? 'node-selection' : 'network'
   const geoStatus = geoMapStatus(geoOverview, { loading, hasProjection })
+  // The two cumulative Validator cells keep the Network selection, so they say
+  // which selection they cover as soon as a filter makes that visible.
+  const cumulativeScopeNote = selectionNarrowed
+    ? 'Whole Network selection, never the filtered list'
+    : undefined
   // The measured region minima belong to the card grid: leave the measurement
   // off in the list view, and let the changed flag remeasure the grid when the
   // reader switches back, because that grid element is mounted again.
   const nodeGridRef = useNodeRegionHeights(matching, hasProjection && filters.view === 'card')
-  const scopedNetworks = scope.network === 'all' ? networks : networks.filter(network => network.networkKey === scope.network)
-  const healthyCount = hasProjection ? scoped.filter(({ node }) => healthCategory(node.health) === 'healthy').length : null
   const streamLabel = realtimeStreamLabel(realtimeStatus)
   return (
     <section aria-label="Home">
@@ -370,16 +420,23 @@ export default function HomeDashboard({
         metricsLabel="Home summary"
         mapFirst
         metrics={<>
-          <SummaryCard label="Active Nodes" value={hasProjection ? scoped.length : null} tone="green" icon="server" />
-          <SummaryCard label="Healthy Nodes" value={healthyCount} tone="green" icon="heart" />
-          <ValidatorTotalCard networks={scopedNetworks} metric="blocks" availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
-          <SummaryCard label="Attention" value={healthyCount === null ? null : scoped.length - healthyCount}
-            tone={healthyCount !== null && scoped.length === healthyCount ? 'green' : 'red'} icon="alert" />
-          <SummaryCard label="Networks" value={hasProjection ? scopedNetworks.length : null} tone="green" icon="network" />
-          <ValidatorTotalCard networks={scopedNetworks} metric="rewards" availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
+          {/* Four counters read the current list selection (#233); the two
+              cumulative Validator cells keep the Network selection and say so
+              on their face, because the Server publishes those totals per
+              Network and a Node filter must never re-sum them. A selection that
+              matches no Node puts these four in their own explicit empty state
+              instead of a zero, while the cumulative cells keep counting the
+              Network selection. */}
+          <SummaryCard label="Active Nodes" value={activeNodeCount} tone="green" icon="server" emptyLabel={emptyLabel} />
+          <SummaryCard label="Healthy Nodes" value={selectionHealthyCount} tone="green" icon="heart" emptyLabel={emptyLabel} />
+          <ValidatorTotalCard networks={scopedNetworks} metric="blocks" scopeNote={cumulativeScopeNote} availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
+          <SummaryCard label="Attention" value={attentionCount}
+            tone={attentionCount === null || attentionCount === 0 ? 'green' : 'red'} icon="alert" emptyLabel={emptyLabel} />
+          <SummaryCard label="Networks" value={selectionNetworkCount} tone="green" icon="network" emptyLabel={emptyLabel} />
+          <ValidatorTotalCard networks={scopedNetworks} metric="rewards" scopeNote={cumulativeScopeNote} availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
         </>}
         map={<GeoMapBoundary>
-          <GeoWorldMap overview={geoOverview} status={geoStatus} />
+          <GeoWorldMap overview={geoOverview} status={geoStatus} selectionBasis={geoSelectionBasis} />
         </GeoMapBoundary>}
       />
 
@@ -684,10 +741,12 @@ const SUMMARY_ICONS = {
   network: Network,
 } as const
 
-function SummaryCard({ label, value, tone, icon }: {
+function SummaryCard({ label, value, tone, icon, emptyLabel }: {
   label: string; value: number | null; tone: 'green' | 'red'; icon: keyof typeof SUMMARY_ICONS
+  /** Copy for an explicit empty state; without it a null value reads 'Unknown'. */
+  emptyLabel?: string
 }) {
-  return <SummaryMetricCard label={label} value={value === null ? 'Unknown' : value.toLocaleString()}
+  return <SummaryMetricCard label={label} value={value === null ? emptyLabel ?? 'Unknown' : value.toLocaleString()}
     tone={value !== null && value > 0 ? tone : 'green'} icon={SUMMARY_ICONS[icon]} />
 }
 
@@ -837,7 +896,7 @@ function HomeNodeCard({ network, node, linkState }: NodeRecord & { linkState: Ho
             <Dialog><DialogTrigger asChild><Button variant="ghost" size="icon" className="relative z-10 -my-3.5 size-11 shrink-0" aria-label="Node identity details"><Info className="size-3.5" /></Button></DialogTrigger>
               <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm"><DialogTitle className="pr-10 [overflow-wrap:anywhere]">{homeNodeLabel(node)}</DialogTitle><DialogDescription className="[overflow-wrap:anywhere]">Network: {network.displayName} · Uptime {formatDuration(node.processUptimeMs)}. Node role describes the Node’s consensus membership, not its linked Validator’s current staking validity or the freshness of Provider data.</DialogDescription>
                 <p className="text-sm text-muted-foreground">Active Nodes are in the latest Agent Inventory, not necessarily online. Healthy reflects successful, fresh RPC, sync and consensus observations. Process errors, a stopped or Unknown process state, or Network Identity Mismatch prevent Healthy; disabled process monitoring does not. Healthy does not mean synchronization is complete; Resyncing is shown independently.</p>
-                <p className="text-sm text-muted-foreground">Home Attention counts Active Nodes that are not Healthy, including Unknown. Overview counts and the Peer map follow the selected Network; the search, health, and Validator status filters narrow only the Node list.</p>
+                <p className="text-sm text-muted-foreground">Home Attention counts Active Nodes that are not Healthy, including Unknown. While nothing is narrowed, these counters and the Peer map read the whole Network selection. Once search, health, or Validator status narrows the list, they read the Active Nodes that matched instead, so a Node's countries count only where that Node is listed — while the two cumulative Validator cells keep the Network selection, and the list still reports how many Nodes matched.</p>
                 {diagnostic && <p className="text-sm text-muted-foreground">Current health diagnostic: {diagnostic.text}</p>}
                 {dataStatus && <p className="text-sm text-muted-foreground">Validator data: {dataStatus.label}. {dataStatus.description}</p>}
               </DialogContent>

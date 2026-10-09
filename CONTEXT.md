@@ -272,6 +272,10 @@ _Avoid_: Node deployment map, unique Peer count, Browser geolocation, Lookup ins
 The Server-owned country projection over the current Peer records of exactly one PlatON Node. It shares Geo Insight's Geo Location Cache, selected Geo Provider, record counting and Unknown rules, but its scope is a single Node: it is complete or never-observed, with no partial state. It describes where that Node's Peers are, never where the Node itself is deployed.
 _Avoid_: Node deployment map, Node location, filtered Geo Insight, unique Peer count
 
+**Node Selection Geo Aggregate**:
+The Server-owned country projection over the current Peer records of the Nodes the reader has selected on the Home list. It shares Geo Insight's Geo Location Cache, selected Geo Provider, record counting and Unknown rules, but its scope is a set of Nodes rather than a Network or one Node: the browser sums the compact per-Node buckets the same `GET /api/public/v1/networks` response already carries, so a Network reading is exactly the sum of its Active Nodes' buckets and a one-Node selection reads what that Node's Node Peer Country View reads. A Node whose peers were never observed contributes no counts instead of a zero, which can leave the aggregate partial but never complete. Provider and database status stay Network-level facts of the Networks the selection lands in.
+_Avoid_: filtered Geo Insight, Geo Insight per Node, client-side country parsing, re-aggregated Validator totals
+
 **Block Production Attribution**:
 The evidence describing how an observed block relates to a monitored Node. It keeps Coinbase, Seal Signer Match, and Protocol Proposer distinct rather than collapsing them into one inferred producer flag.
 _Avoid_: Miner flag, Validator guess, Default false

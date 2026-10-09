@@ -20,6 +20,7 @@ const network = {
       networkReferenceConfidence: 'high', freshness: 'current', resyncProgress: null,
       hostCpuPercent: 91.5, hostMemoryPercent: 82.25, processCpuPercent: 12.5, processMemoryPercent: 45.25, hostStoragePercent: 80, nodeDataDirectorySizeBytes: 12_884_901_888, nodeDataDirectoryCapacityBytes: 51_539_607_552, hostNetworkRxBytesPerSec: 1024, hostNetworkTxBytesPerSec: 2048,
       peers: { state: 'ok', freshness: 'current', peerCount: 0 },
+      peerCountries: { scope: 'unavailable', countries: [] },
       consensus: {
         state: 'ok', freshness: 'current', observedAt: '2026-08-25T00:00:00Z', receivedAt: '2026-08-25T00:00:00Z',
         epoch: 1, viewNumber: 2, validator: true, highestQcBlock: 100, highestLockBlock: 99, highestCommitBlock: 98,
@@ -32,6 +33,7 @@ const network = {
       currentHead: null, latestBlockTransactionCount: null, historicalHighWatermark: null, hostCpuPercent: null, networkReferenceHead: null,
       networkReferenceConfidence: 'unknown', freshness: 'unknown', resyncProgress: null,
       peers: { state: 'unknown', freshness: 'unknown', peerCount: null },
+      peerCountries: { scope: 'unavailable', countries: [] },
       consensus: { state: 'unknown', freshness: 'unknown', validator: null, highestQcBlock: null, highestLockBlock: null, highestCommitBlock: null },
       validator: null,
     },
@@ -875,16 +877,23 @@ describe('Public Home filter URLs', () => {
     expect(filterNotice()).toBeNull()
   })
 
-  it('narrows the list by search while the overview keeps covering the Network selection', () => {
+  it('narrows the list by search and reads the four counters over that selection', () => {
     renderHome([network, secondNetwork])
     expect(resultCount().textContent).toContain('Showing 3 of 3 Active Nodes')
+    expect(summaryValueOf('Active Nodes').textContent).toBe('3')
+    expect(document.querySelector('[data-scope-basis]')?.getAttribute('data-scope-basis')).toBe('network')
 
     fireEvent.change(searchbox(), { target: { value: 'Alpha' } })
 
     expect(nodeHrefs()).toEqual(['/nodes/node-a'])
     expect(resultCount().textContent).toContain('Showing 1 of 3 Active Nodes')
-    // Only the Network selection moves the overview counters and the map.
-    expect(summaryValueOf('Active Nodes').textContent).toBe('3')
+    // Issue #233: the four attributable counters and the map read the list
+    // selection the filters left, while the two cumulative cells keep the
+    // Network selection and say so on the card.
+    expect(summaryValueOf('Active Nodes').textContent).toBe('1')
+    expect(summaryValueOf('Networks').textContent).toBe('1')
+    expect(document.querySelector('[data-scope-basis]')?.getAttribute('data-scope-basis')).toBe('node-selection')
+    expect(document.body.textContent).toContain('Whole Network selection, never the filtered list')
     expect(window.location.search).toBe('?q=Alpha')
   })
 
@@ -917,7 +926,7 @@ describe('Public Home filter URLs', () => {
     expect(nodeHrefs()).toEqual(['/nodes/node-c'])
   })
 
-  it('combines the search with the health filter and explains an empty result', () => {
+  it('combines the search with the health filter and reads an empty selection as empty', () => {
     window.history.replaceState({}, '', '/?q=Alpha&health=unknown')
     renderHome([network])
 
@@ -925,7 +934,20 @@ describe('Public Home filter URLs', () => {
     expect(screen.getByText('No Active Nodes match these filters.')).toBeTruthy()
     expect(document.body.textContent).toContain('widen the filters')
     expect(resultCount().textContent).toContain('Showing 0 of 2 Active Nodes')
-    expect(summaryValueOf('Active Nodes').textContent).toBe('2')
+    // Issue #233: a selection that holds no Node is an empty reading, not a
+    // zero — the four counters that follow the list state no figure at all
+    // instead of inventing a country count for the Nodes they did not find.
+    expect(summaryValueOf('Active Nodes').textContent).toBe('No match')
+    expect(summaryValueOf('Healthy Nodes').textContent).toBe('No match')
+    expect(summaryValueOf('Attention').textContent).toBe('No match')
+    expect(summaryValueOf('Networks').textContent).toBe('No match')
+    expect(document.querySelector('[data-scope-basis]')?.getAttribute('data-scope-basis')).toBe('node-selection')
+    // The two cumulative cells do not follow the list, so they keep the
+    // Network selection's figures and say so on the card.
+    expect(document.body.textContent).toContain('Whole Network selection, never the filtered list')
+    // The map says the selection holds no Node; it never draws an empty world
+    // and never reports a failure.
+    expect(document.body.textContent).toContain('No Active Nodes match these filters')
   })
 
   it('reports the URL values this deployment cannot honour instead of obeying them', () => {

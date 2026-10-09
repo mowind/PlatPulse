@@ -3786,6 +3786,13 @@ export type PublicNode = {
     nodeDataDirectoryCapacityBytes?: number | null;
     nodeDataDirectorySizeBytes?: number | null;
     nodeId: string;
+    /**
+     * This Node's compact country buckets over exactly its own current Peer
+     * records. The Network list ships these instead of one full country
+     * projection per Node, so the browser can sum the Nodes that match the
+     * current filters without a second request.
+     */
+    peerCountries: PublicNodePeerCountries;
     peers: PublicPeerInsight;
     processCpuPercent?: number | null;
     processMemoryPercent?: number | null;
@@ -3817,8 +3824,9 @@ export type PublicNode = {
 /**
  * Public Node Detail response: every `PublicNode` field plus the Node Peer
  * Country View over exactly this Node's current Peer records. The Node list
- * keeps `PublicNode`, so a Home or Network response never carries one country
- * projection per Node.
+ * keeps `PublicNode`, so a Home or Network response never carries a full
+ * country projection per Node; a listed Node carries only the compact
+ * `peerCountries` buckets the Home selection aggregate sums.
  */
 export type PublicNodeDetail = PublicNode & {
     geo: PublicGeoInsight;
@@ -3844,6 +3852,28 @@ export type PublicNodeMetricHistory = {
     to: string;
     transactionCount: Array<PublicMetricPoint>;
     windowSeconds: number;
+};
+
+/**
+ * The compact per-Node country buckets a Network response carries on every
+ * listed Node. They are the source of the Node Selection Geo Aggregate: the
+ * browser sums the buckets of the Nodes that match the current filters, so a
+ * selection never needs a second request and never parses a country itself.
+ *
+ * Provider and database state stay Network-level (`PublicGeoInsight`): they
+ * are read once per response rather than per Node. `scope` follows the same
+ * vocabulary restricted to what one Node can be: `complete`, `unobserved`
+ * or `unavailable`. Every count is `None` whenever the Node has no reliable
+ * denominator, so Unknown is never read as a zero.
+ */
+export type PublicNodePeerCountries = {
+    availablePeerCount?: number | null;
+    countries: Array<PublicCountryCount>;
+    knownCountryCount?: number | null;
+    scope: string;
+    unknownCountryCount?: number | null;
+    unknownWithPublicIpCount?: number | null;
+    unknownWithoutRemoteIpCount?: number | null;
 };
 
 export type PublicPeerAggregate = {

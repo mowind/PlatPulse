@@ -1,12 +1,18 @@
-import type { PublicCountryCount, PublicNetwork, PublicNodeDetail } from './api/generated'
+import type { PublicCountryCount, PublicNetwork, PublicNode, PublicNodeDetail } from './api/generated'
 import type { RepresentativePoint } from './worldGeometry'
 
 /**
- * Home Geo overview (issue #133). It is a pure projection of the Server's
- * Public Geo Insight: the browser never derives a country, a count, or an
- * Unknown bucket on its own. Country counts stay on the Server's per-Node
- * Peer-record basis, so the same Peer observed on two Nodes is two records
- * and the same country observed on two Networks keeps both contributions.
+ * Home Geo overviews (issues #133, #233). They are pure projections of what
+ * the Server already computed: the browser never derives a country, a count,
+ * or an Unknown bucket on its own. Country counts stay on the Server's
+ * per-Node Peer-record basis, so the same Peer observed on two Nodes is two
+ * records and the same country observed on two Networks keeps both
+ * contributions.
+ *
+ * Two readings share this shape. `homeGeoOverview` projects the Network-level
+ * Geo Insight of a Network selection. `homeNodeSelectionGeoOverview` projects
+ * the Node Selection Geo Aggregate (#233): the same fields, summed over the
+ * compact per-Node buckets of the Nodes the current list selection holds.
  */
 
 export type HomeGeoState = 'current' | 'stale' | 'error' | 'disabled' | 'unknown'
@@ -32,9 +38,12 @@ export type HomeGeoOverview = {
   /** Home's Network filter key, exposed as the map's `data-network-filter`
    * hook. It is null when the scope is not a Network selection. */
   scopeKey: string | null
-  networksInScope: number
-  /** In-scope Networks that published a Known/Unknown denominator. */
-  networksWithBasis: number
+  /** How many units this reading covers, counted in the reading's own unit:
+   *  Networks for Home's own Network reading, Nodes for the two Node-scoped
+   *  readings. The shared map reads a zero as an empty scope. */
+  unitsInScope: number
+  /** Of those units, how many published a Known/Unknown denominator. */
+  unitsWithBasis: number
   state: HomeGeoState
   scope: HomeGeoScope
   countries: HomeGeoCountry[]
@@ -68,41 +77,29 @@ export function homeGeoOverview(networks: PublicNetwork[], networkFilter: string
   let unknownWithPublicIpCount: number | null = null
   let unknownWithoutRemoteIpCount: number | null = null
   let availablePeerCount: number | null = null
-  let networksWithBasis = 0
+  let unitsWithBasis = 0
 
   for (const network of inScope) {
     // A Geo Insight that is missing or partial must degrade to Unknown for
     // that Network; it must never crash Home or fabricate a zero.
     const geo = network.geo ?? {}
     if (geo.knownCountryCount != null && geo.unknownCountryCount != null) {
-      networksWithBasis += 1
+      unitsWithBasis += 1
       knownCountryCount = (knownCountryCount ?? 0) + geo.knownCountryCount
       unknownCountryCount = (unknownCountryCount ?? 0) + geo.unknownCountryCount
     }
     unknownWithPublicIpCount = addNullable(unknownWithPublicIpCount, geo.unknownWithPublicIpCount)
     unknownWithoutRemoteIpCount = addNullable(unknownWithoutRemoteIpCount, geo.unknownWithoutRemoteIpCount)
     availablePeerCount = addNullable(availablePeerCount, geo.availablePeerCount)
-    for (const country of geo.countries ?? []) {
-      const existing = countries.get(country.countryCode)
-      if (!existing) {
-        countries.set(country.countryCode, geoCountry(country))
-        continue
-      }
-      existing.count += country.count
-      existing.staleCount += country.staleCount
-      // A Server representative point is filled in from the first Network
-      // that has one; countries whose coordinates are missing on every
-      // Network stay unplottable instead of being placed at a guessed spot.
-      existing.point ??= geoCountry(country).point
-    }
+    for (const country of geo.countries ?? []) addCountry(countries, country)
   }
 
   const worst = worstGeoNetwork(inScope)
   return {
     scopeLabel,
     scopeKey: networkFilter,
-    networksInScope: inScope.length,
-    networksWithBasis,
+    unitsInScope: inScope.length,
+    unitsWithBasis,
     state: combinedState(inScope),
     scope: combinedScope(inScope),
     countries: [...countries.values()].sort(byCountThenCode),
@@ -142,8 +139,8 @@ export function nodeGeoOverview(node: PublicNodeDetail): HomeGeoOverview {
     // The Node scope is not a Home Network selection, so the map carries no
     // Network-filter hook.
     scopeKey: null,
-    networksInScope: 1,
-    networksWithBasis: hasBasis ? 1 : 0,
+    unitsInScope: 1,
+    unitsWithBasis: hasBasis ? 1 : 0,
     state: nodeScope ? normalizeGeoState(geo.state) : 'unknown',
     scope,
     countries,
@@ -158,6 +155,90 @@ export function nodeGeoOverview(node: PublicNodeDetail): HomeGeoOverview {
     staleSince: geo.staleSince ?? null,
     databaseAgeSeconds: geo.databaseAgeSeconds ?? null,
     peerObservation: peerFreshness(node.peers?.freshness),
+  }
+}
+
+/**
+ * Node Selection Geo Aggregate (issue #233): the whole map reading over the
+ * Nodes the current list selection actually holds. The Server ships one
+ * compact bucket per listed Node in the same response that carries the
+ * Network-level Geo Insight, so this sums the matched Nodes' buckets without a
+ * second request, without parsing a country, without deduplicating a Peer, and
+ * without subtracting an Unknown. Both readings are computed from one batch of
+ * rows on the Server, so a selection that holds every Active Node of the scope
+ * sums to exactly the Network reading.
+ *
+ * Provider and database state stays Network-level (state, attribution,
+ * errorReason, lastGoodAt, staleSince, databaseAgeSeconds), read from the
+ * Networks the selection lands in: a list filter cannot make a provider read
+ * fresh or stale, while Peer collection freshness follows the selected Nodes
+ * the map reads. `unitsInScope` counts those Nodes and `unitsWithBasis` how
+ * many of them published a Known/Unknown denominator, which is how the shared
+ * map reads a selection with no Node as empty.
+ */
+export function homeNodeSelectionGeoOverview(
+  matchedNodes: readonly PublicNode[],
+  networks: PublicNetwork[],
+  scopeLabel: string,
+  scopeKey: string | null,
+): HomeGeoOverview {
+  const countries = new Map<string, HomeGeoCountry>()
+  const scopes: HomeGeoScope[] = []
+  let knownCountryCount: number | null = null
+  let unknownCountryCount: number | null = null
+  let unknownWithPublicIpCount: number | null = null
+  let unknownWithoutRemoteIpCount: number | null = null
+  let availablePeerCount: number | null = null
+  let unitsWithBasis = 0
+
+  for (const node of matchedNodes) {
+    // A Node bucket is the same Server projection restricted to one Node. A
+    // Server that predates it, Geo Disabled, or a failed read carries nothing,
+    // so the Node contributes no scope and no count — never a zero.
+    const buckets = node.peerCountries
+    if (!buckets) {
+      scopes.push('unavailable')
+      continue
+    }
+    scopes.push(normalizeNodeGeoScope(buckets.scope))
+    if (buckets.knownCountryCount != null && buckets.unknownCountryCount != null) {
+      unitsWithBasis += 1
+      knownCountryCount = addNullable(knownCountryCount, buckets.knownCountryCount)
+      unknownCountryCount = addNullable(unknownCountryCount, buckets.unknownCountryCount)
+    }
+    unknownWithPublicIpCount = addNullable(unknownWithPublicIpCount, buckets.unknownWithPublicIpCount)
+    unknownWithoutRemoteIpCount = addNullable(unknownWithoutRemoteIpCount, buckets.unknownWithoutRemoteIpCount)
+    availablePeerCount = addNullable(availablePeerCount, buckets.availablePeerCount)
+    for (const country of buckets.countries ?? []) addCountry(countries, country)
+  }
+
+  // The scope rule is the Network-level one, applied to Node buckets: an
+  // unavailable or unobserved Node is never hidden, and a selection with any
+  // basis left is Partial rather than a Complete claim. A selection with no
+  // Node keeps no denominator at all. `combineScopes` is that one rule, so the
+  // two readings cannot drift apart.
+  const scope = combineScopes(scopes)
+  const hasBasis = scope !== 'unavailable' && scope !== 'unobserved'
+  const worst = worstGeoNetwork(networks)
+  return {
+    scopeLabel,
+    scopeKey,
+    unitsInScope: matchedNodes.length,
+    unitsWithBasis,
+    state: combinedState(networks),
+    scope,
+    countries: hasBasis ? [...countries.values()].sort(byCountThenCode) : [],
+    knownCountryCount: hasBasis ? knownCountryCount : null,
+    unknownCountryCount: hasBasis ? unknownCountryCount : null,
+    unknownWithPublicIpCount: hasBasis ? unknownWithPublicIpCount : null,
+    unknownWithoutRemoteIpCount: hasBasis ? unknownWithoutRemoteIpCount : null,
+    availablePeerCount: hasBasis ? availablePeerCount : null,
+    attribution: networks.map((network) => network.geo?.attribution).find(isPresent) ?? null,
+    errorReason: worst?.geo?.errorReason ?? null,
+    lastGoodAt: worst?.geo?.lastGoodAt ?? null,
+    staleSince: worst?.geo?.staleSince ?? null,
+    databaseAgeSeconds: worst?.geo?.databaseAgeSeconds ?? null,
+    peerObservation: combinedNodePeerObservation(matchedNodes),
   }
 }
 
@@ -176,7 +257,7 @@ export function geoMapStatus(
 ): GeoMapStatus {
   if (source.loading) return 'starting'
   if (!source.hasProjection) return 'unavailable'
-  if (overview.networksInScope === 0) return 'empty'
+  if (overview.unitsInScope === 0) return 'empty'
   return overview.state
 }
 
@@ -201,6 +282,22 @@ function geoCountry(country: PublicCountryCount): HomeGeoCountry {
     staleCount: country.staleCount,
     point: representativePoint(country.centroidLat, country.centroidLon),
   }
+}
+
+/** Merge one Server country count into a reading's country map. The same
+ * country read on two sources is one country whose counts add up, and a Server
+ * representative point is filled in from the first source that has one:
+ * countries whose coordinates are missing everywhere stay unplottable instead
+ * of being placed at a guessed spot. */
+function addCountry(countries: Map<string, HomeGeoCountry>, country: PublicCountryCount): void {
+  const existing = countries.get(country.countryCode)
+  if (!existing) {
+    countries.set(country.countryCode, geoCountry(country))
+    return
+  }
+  existing.count += country.count
+  existing.staleCount += country.staleCount
+  existing.point ??= geoCountry(country).point
 }
 
 /** The one ordering every Peer country map uses. */
@@ -257,16 +354,24 @@ function isHomeGeoState(value: string): value is HomeGeoState {
   return ['current', 'stale', 'error', 'disabled', 'unknown'].includes(value)
 }
 
-/** Scope completeness for the whole selection. Any Network without a country
- * basis makes the aggregate Partial, and an unavailable projection keeps the
- * whole scope Unavailable so a partial list is never read as complete. */
-function combinedScope(networks: PublicNetwork[]): HomeGeoScope {
-  if (networks.length === 0) return 'unavailable'
-  const scopes = networks.map((network) => network.geo?.scope ?? 'unavailable')
+/** Scope completeness over one scope per unit of a reading, the one rule both
+ * Home's Network reading and the Node Selection Geo Aggregate apply to the
+ * scopes they summed. Any unit without a country basis makes the reading
+ * Partial, and an unavailable projection keeps the whole scope Unavailable so
+ * a partial list is never read as complete. A reading that covers no unit at
+ * all has nothing observed in it, so it stays Unavailable rather than
+ * Complete over an empty set. */
+function combineScopes(scopes: readonly string[]): HomeGeoScope {
+  if (scopes.length === 0) return 'unavailable'
   if (scopes.includes('unavailable')) return 'unavailable'
   if (scopes.every((scope) => scope === 'complete')) return 'complete'
   if (scopes.every((scope) => scope === 'unobserved')) return 'unobserved'
   return 'partial'
+}
+
+/** Scope completeness for the whole Network selection. */
+function combinedScope(networks: PublicNetwork[]): HomeGeoScope {
+  return combineScopes(networks.map((network) => network.geo?.scope ?? 'unavailable'))
 }
 
 /** The Server's Peer freshness vocabulary is `current`, `stale`, and
@@ -283,4 +388,17 @@ function combinedPeerObservation(networks: PublicNetwork[]): PeerObservation {
     return only
   }
   return 'mixed'
+}
+
+/** Peer-collection freshness of a Node selection (#233) by the rule the Server
+ * already applies to one scope: Current only while every Node reported
+ * Current, Stale as soon as one reported Stale, and Unknown when any Node has
+ * no freshness to report. A selection holding one Node therefore reads exactly
+ * as that Node's own page does. */
+function combinedNodePeerObservation(nodes: readonly PublicNode[]): PeerObservation {
+  if (nodes.length === 0) return 'unknown'
+  if (nodes.some((node) => node.peers?.freshness == null)) return 'unknown'
+  const states = new Set(nodes.map((node) => peerFreshness(node.peers?.freshness)))
+  if (states.size === 1 && states.has('current')) return 'current'
+  return states.has('stale') ? 'stale' : 'unknown'
 }

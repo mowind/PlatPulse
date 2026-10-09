@@ -14,7 +14,11 @@ import {
 } from './helpers'
 
 /**
- * Public Home search and filter URLs (issue #222). The shared Server is seeded
+ * Public Home search and filter URLs (issue #222, revised by issue #233). The
+ * four attributable overview counters and the Peer map now read the current
+ * list selection, while the two cumulative Validator cells keep the Network
+ * selection and say so, so this spec reads the band and the list together. The
+ * shared Server is seeded
  * by e2e/start-server.sh with two public Networks: "PlatON E2E Network" and the
  * convergence Network, whose six Active Nodes carry the display names this spec
  * searches for. Every value searched here is public (Node display name, Node ID,
@@ -35,6 +39,8 @@ const summary = (page: Page) => home(page).locator('[aria-label="Home summary"]'
 const nodeGrid = (page: Page) => page.locator('[data-slot="node-grid"]')
 const resultCount = (page: Page) => page.locator('[data-slot="home-result-count"]')
 const filterNotice = (page: Page) => page.locator('[data-slot="home-filter-notice"]')
+const geoMap = (page: Page) => page.getByRole('region', { name: 'Peer countries' })
+const cumulativeNote = 'Whole Network selection, never the filtered list'
 // Issue #232: the search field and the three select controls live behind their
 // own toolbar entries, so every read or change opens the surface that holds the
 // control first. Opening is idempotent: an already open surface stays open.
@@ -74,6 +80,12 @@ async function summaryValue(page: Page, label: string): Promise<number> {
   return Number(digits)
 }
 
+/** Read one Home summary statistic exactly as the card presents it. */
+async function summaryText(page: Page, label: string): Promise<string> {
+  const card = summary(page).getByRole('article', { name: label, exact: true })
+  return (await card.locator('[data-slot="summary-value"]').innerText()).trim()
+}
+
 /** Parse the list's own "Showing X of Y Active Nodes" line. */
 async function listCounts(page: Page): Promise<{ matching: number; scoped: number }> {
   const text = await resultCount(page).innerText()
@@ -97,19 +109,20 @@ async function expectSummaryValue(page: Page, label: string, value: number) {
     .toBe(value)
 }
 
-/** The list's in-scope total is the same Network scope the summary counts, and
- *  the grid shows every matching Node, so the three can never look
- *  contradictory. Polls until one consistent reading exists, then returns it. */
+/** Issue #233: Active Nodes counts the Nodes the filters left, the in-scope
+ *  total stays the Network selection's own Active Node count, and the grid shows
+ *  every matching Node — three readings that can never look contradictory.
+ *  Polls until one consistent reading exists, then returns it. */
 async function expectListAgreesWithSummary(page: Page) {
   const reading = async () => {
     const counts = await listCounts(page)
     const activeNodes = await summaryValue(page, 'Active Nodes')
     const cards = await nodeGrid(page).locator('a[href^="/nodes/"]').count()
-    return { ...counts, cards, activeNodes, agrees: counts.scoped === activeNodes && counts.matching === cards }
+    return { ...counts, cards, activeNodes, agrees: counts.matching === activeNodes && counts.matching === cards }
   }
   await expect
     .poll(() => reading().then((settled) => settled.agrees), {
-      message: 'the list scope must equal the summary Active Nodes count and list every matching card',
+      message: 'the summary Active Nodes count must equal the filtered list and show every matching card',
     })
     .toBe(true)
   return reading()
@@ -128,7 +141,7 @@ async function expectConvergenceList(page: Page): Promise<string[]> {
 }
 
 test.describe('Public Home search and filter URLs (issue #222)', () => {
-  test('narrows the Node list without moving the Network overview', async ({ page }) => {
+  test('narrows the Node list and reads the four counters over that selection', async ({ page }) => {
     await loginAs(page)
     await expect(home(page)).toBeVisible()
     await expect(nodeGrid(page).locator(`a[href="/nodes/${SOLO_NODE_ID}"]`)).toBeVisible({ timeout: 15_000 })
@@ -146,14 +159,30 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expect(nodeGrid(page).locator(`a[href="/nodes/${SOLO_NODE_ID}"]`)).toHaveCount(1)
     expect(await listedNodes(page)).toEqual([expect.stringContaining('Node H')])
 
-    // The search owns the list alone: every overview statistic still counts the
-    // whole Network selection.
-    await expectSummaryValue(page, 'Active Nodes', activeNodes)
-    await expectSummaryValue(page, 'Networks', networks)
+    // Issue #233: the four attributable counters read the Nodes the search left
+    // — one Node in one Network — while the in-scope total stays the Network
+    // selection's own, and the two cumulative cells say which selection they
+    // cover.
+    await expectSummaryValue(page, 'Active Nodes', 1)
+    await expectSummaryValue(page, 'Networks', 1)
+    expect(networks, 'the unfiltered Network count was the whole Registry').toBeGreaterThan(1)
+    await expect(summary(page).getByText(cumulativeNote).first()).toBeVisible()
     const counts = await expectListAgreesWithSummary(page)
     expect(counts.matching).toBe(1)
     expect(counts.scoped).toBe(activeNodes)
     await expect(resultCount(page)).toContainText(`Showing 1 of ${activeNodes} Active Nodes`)
+    // The map reads the same selection: its scope basis names the Node
+    // selection, not the Network.
+    await expect(geoMap(page)).toHaveAttribute('data-scope-basis', 'node-selection')
+
+    // Clearing the search is an ordinary link again, and the reading returns to
+    // the Network selection.
+    await (await searchBox(page)).fill('')
+    await expectListedNodes(page, activeNodes)
+    await expectSummaryValue(page, 'Active Nodes', activeNodes)
+    await expectSummaryValue(page, 'Networks', networks)
+    await expect(geoMap(page)).toHaveAttribute('data-scope-basis', 'network')
+    await expect(summary(page).getByText(cumulativeNote)).toHaveCount(0)
   })
 
   test('matches the public Node name, Node ID, and Network name', async ({ page }) => {
@@ -166,13 +195,14 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expectListedNodes(page, 1)
     await expect(nodeGrid(page).locator(`a[href="/nodes/${SOLO_NODE_ID}"]`)).toHaveCount(1)
 
-    // A Network name finds that Network's Nodes, and still counts every Network.
+    // A Network name finds that Network's Nodes, and the counters follow that
+    // selection while the in-scope total still counts the whole list scope.
     await (await searchBox(page)).fill(CONVERGENCE_NETWORK_NAME)
     await expectConvergenceList(page)
     const counts = await expectListAgreesWithSummary(page)
     expect(counts.matching).toBe(CONVERGENCE_NODE_LETTERS.length)
     expect(counts.scoped).toBe(activeNodes)
-    await expectSummaryValue(page, 'Active Nodes', activeNodes)
+    await expectSummaryValue(page, 'Active Nodes', CONVERGENCE_NODE_LETTERS.length)
 
     // Clearing the search is an ordinary link again: the whole list returns.
     await (await searchBox(page)).fill('')
@@ -193,6 +223,8 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     expect(filtered.scoped).toBe(activeNodes)
     const unknowns = await expectListedNodes(page, filtered.matching)
     expect(unknowns.filter((name) => name.startsWith('Node H '))).toHaveLength(0)
+    // The four attributable counters read the filtered selection.
+    await expectSummaryValue(page, 'Active Nodes', filtered.matching)
 
     // Search and health combine with AND, so the two together match nothing,
     // and the list states that plainly instead of showing an empty grid.
@@ -201,27 +233,44 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expect(page.getByText('No Active Nodes match these filters.')).toBeVisible()
     await expect(resultCount(page)).toContainText(`Showing 0 of ${activeNodes} Active Nodes`)
     await expect(page.getByText(/widen the filters/)).toBeVisible()
-    // The empty list is a statement about the list, never about the overview.
-    await expectSummaryValue(page, 'Active Nodes', activeNodes)
+    // Issue #233: a selection that holds no Node is an empty reading, and the
+    // whole band says so. The four counters that follow the list read no figure
+    // at all — never a zero, never a failure tone — the map states that no Node
+    // matches instead of drawing an empty world, and the two cumulative cells
+    // keep the Network selection's totals and name that selection.
+    for (const label of ['Active Nodes', 'Healthy Nodes', 'Attention', 'Networks']) {
+      await expect
+        .poll(() => summaryText(page, label), { message: `the ${label} statistic reads its empty state` })
+        .toBe('No match')
+    }
+    await expect(summary(page).getByText(cumulativeNote).first()).toBeVisible()
+    await expect(summary(page).getByRole('article', { name: 'Cumulative blocks', exact: true })
+      .locator('[data-slot="summary-value"]')).not.toHaveText('No match')
+    await expect(geoMap(page)).toHaveAttribute('data-scope-basis', 'node-selection')
+    await expect(geoMap(page).getByText('No Active Nodes match these filters')).toBeVisible()
+    // Nothing is drawn for an empty selection: no country entry in the
+    // screen-reader list and no corner chip, so no figure is invented either.
+    await expect(geoMap(page).locator('[data-slot="geo-country-list"] li')).toHaveCount(0)
+    await expect(geoMap(page).locator('[data-slot="geo-counters"]')).toHaveCount(0)
   })
 
-  test('moves the overview with the Network selection while the filters stay in the list', async ({ page }) => {
+  test('reads both the Network selection and the filters inside it', async ({ page }) => {
     await loginAs(page)
     await expect(nodeGrid(page).locator(`a[href="/nodes/${SOLO_NODE_ID}"]`)).toBeVisible({ timeout: 15_000 })
     const activeNodes = await summaryValue(page, 'Active Nodes')
 
     await (await searchBox(page)).fill('Node H')
     await expectListedNodes(page, 1)
-    await expectSummaryValue(page, 'Active Nodes', activeNodes)
+    await expectSummaryValue(page, 'Active Nodes', 1)
 
     await tab(page, CONVERGENCE_NETWORK_NAME).click()
 
-    // The Network selection is what moves the overview, the map, and the
-    // in-scope total; the search keeps narrowing only the list inside it.
+    // The Network selection replaces the scope, the search keeps narrowing the
+    // counters inside it, and the in-scope total is the new scope's own count.
     await expect(tab(page, CONVERGENCE_NETWORK_NAME)).toHaveAttribute('aria-selected', 'true')
     const scoped = CONVERGENCE_NODE_LETTERS.length
     expect(scoped).toBeLessThan(activeNodes)
-    await expectSummaryValue(page, 'Active Nodes', scoped)
+    await expectSummaryValue(page, 'Active Nodes', 1)
     await expectSummaryValue(page, 'Networks', 1)
     const counts = await expectListAgreesWithSummary(page)
     expect(counts.scoped).toBe(scoped)
@@ -468,14 +517,15 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     const activeNodes = await summaryValue(page, 'Active Nodes')
 
     // Validator status is the Server's own Linked-Validator answer, so the Nodes
-    // it links leave the list while the overview stays where it was.
+    // it links leave the list and the counters read what is left, while the
+    // in-scope total stays the Network selection's own count.
     await (await validatorFilter(page)).selectOption('not_validator')
     await expect(page).toHaveURL(/[?&]validator=not_validator$/)
     const notValidator = await expectListAgreesWithSummary(page)
     const notValidatorNames = await listedNodes(page)
     expect(notValidator.matching, 'the Validator status filter narrows the list').toBeLessThan(activeNodes)
     expect(notValidator.scoped, 'the Validator status filter does not change the scope').toBe(activeNodes)
-    await expectSummaryValue(page, 'Active Nodes', activeNodes)
+    await expectSummaryValue(page, 'Active Nodes', notValidator.matching)
     await expect(filterNotice(page)).toHaveCount(0)
 
     // Unknown is its own answer, never folded into Not a Validator, and the two

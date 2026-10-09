@@ -7,6 +7,7 @@ import {
   expectVisibleInteractiveTargets,
   homeFilterEntry,
   loginAs,
+  openHomeSearch,
   openHomeSort,
 } from './helpers'
 
@@ -274,6 +275,54 @@ async function withGeoProjection(page: Page, patch: (geo: Record<string, unknown
       for (const network of body) {
         network.geo = patch(network.geo ?? {})
         if (peerFreshness) network.peers = { ...network.peers, freshness: peerFreshness }
+      }
+    }
+    await route.fulfill({ response, json: body })
+  })
+}
+
+/** One representative-pointed Swedish Peer record, the shape the Server ships. */
+const SWEDEN_ONE = { countryCode: 'SE', count: 1, staleCount: 0, centroidLat: 60.1282, centroidLon: 18.6435 }
+
+/**
+ * Issue #233: give every listed Node one deterministic compact bucket and make
+ * each Network's own Geo Insight the exact sum of the buckets it lists — the two
+ * readings the Server publishes from one batch of rows. An unfiltered Home and a
+ * selection that holds every Active Node then read the same numbers.
+ */
+async function withNodeSelectionBuckets(page: Page) {
+  await page.route('**/api/public/v1/networks*', async (route) => {
+    const response = await route.fetch()
+    const body = await response.json()
+    if (Array.isArray(body)) {
+      for (const network of body) {
+        const nodes = Array.isArray(network.nodes) ? network.nodes : []
+        for (const node of nodes) {
+          node.peerCountries = {
+            scope: 'complete',
+            countries: [SWEDEN_ONE],
+            knownCountryCount: 1,
+            unknownCountryCount: 0,
+            unknownWithPublicIpCount: 0,
+            unknownWithoutRemoteIpCount: 0,
+            availablePeerCount: 1,
+          }
+        }
+        network.geo = {
+          state: 'current',
+          scope: 'complete',
+          countries: [{ ...SWEDEN_ONE, count: nodes.length }],
+          knownCountryCount: nodes.length,
+          unknownCountryCount: 0,
+          unknownWithPublicIpCount: 0,
+          unknownWithoutRemoteIpCount: 0,
+          availablePeerCount: nodes.length,
+          attribution: null,
+          lastGoodAt: null,
+          staleSince: null,
+          databaseAgeSeconds: null,
+          errorReason: null,
+        }
       }
     }
     await route.fulfill({ response, json: body })
@@ -883,6 +932,52 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await pills.getByRole('tab', { name: 'All Networks', exact: true }).click()
     await expect.poll(() => items.count(), 'the full scope comes back').toBe(allNames.length)
     expect(await summaryValues(page)).toEqual(before)
+    await expectQuietMap(page)
+    await expectNoHorizontalOverflow(page)
+  })
+
+  test('isolated DTO fixture: reads the counters and the map over the filtered Node selection', async ({ page }) => {
+    await openHomeWithGeo(page)
+    const map = mapRegion(page)
+    await expect(map).toBeVisible({ timeout: 30_000 })
+    await withNodeSelectionBuckets(page)
+    await page.reload()
+    await expect(geoChart(page).locator('canvas').first()).toBeVisible({ timeout: 30_000 })
+
+    // Every listed Node owns one record and every Network publishes the sum of
+    // its own Nodes, so the unfiltered reading is the Network reading.
+    const projection = await page.evaluate(async () => {
+      const response = await fetch('/api/public/v1/networks', { credentials: 'include' })
+      return response.json() as Promise<Array<{ nodes?: Array<{ nodeId?: string }> }>>
+    })
+    const nodes = projection.flatMap(network => network.nodes ?? [])
+    const total = nodes.length
+    expect(total, 'the fixture lists more than one Active Node').toBeGreaterThan(1)
+    await expect(map).toHaveAttribute('data-scope-basis', 'network')
+    await expect(map.locator('[data-slot="geo-counter"]')).toHaveText(`Peers: ${total}`, { timeout: 30_000 })
+    await expect(countryItems(page)).toHaveText([`Sweden: ${total} records`])
+    expect((await summaryValues(page)).find(fact => fact.label === 'Active Nodes')?.value).toBe(String(total))
+
+    // One Node's own ID narrows the list to one Node: the four attributable
+    // counters and the whole map reading follow it, without a second request.
+    await (await openHomeSearch(page)).fill(nodes[0].nodeId!)
+    await expect(page.locator('[data-slot="node-card"]')).toHaveCount(1)
+    await expect(map).toHaveAttribute('data-scope-basis', 'node-selection')
+    await expect(map.locator('[data-slot="geo-counter"]')).toHaveText('Peers: 1')
+    await expect(countryItems(page)).toHaveText(['Sweden: 1 records'])
+    await expect.poll(async () => (await summaryValues(page)).map(fact => fact.value))
+      .toEqual(['1', '1', '0', '1'])
+    // Clearing the field is what widens the list again: Escape closes the
+    // surface, but the query stays in the URL, so the wide reading has to come
+    // back on the same page. It is what an unfiltered Home shows, field for
+    // field.
+    await closeHomeSurface(page)
+    const field = await openHomeSearch(page)
+    await field.fill('')
+    await expect(page.locator('[data-slot="node-card"]')).toHaveCount(total)
+    await expect(map).toHaveAttribute('data-scope-basis', 'network')
+    await expect(map.locator('[data-slot="geo-counter"]')).toHaveText(`Peers: ${total}`, { timeout: 30_000 })
+    await expect(countryItems(page)).toHaveText([`Sweden: ${total} records`])
     await expectQuietMap(page)
     await expectNoHorizontalOverflow(page)
   })

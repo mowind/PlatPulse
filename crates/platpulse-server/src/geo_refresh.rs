@@ -689,6 +689,7 @@ mod tests {
     use crate::geo::GeoSelection;
     use crate::geo_external::ExternalGeoClient;
     use crate::geo_external::stub::{StubReply, StubServer};
+    use crate::geo_test_support::network_geo_insight;
     use std::time::Duration;
     use tempfile::tempdir;
 
@@ -1183,12 +1184,7 @@ mod tests {
         // provider's own reply time.
         let started = Instant::now();
         insert_peer(&state, "geo-node-a", "p2", NO_COUNTRY).await;
-        let insight = crate::http::public::public_country_distribution(
-            &state,
-            "geo-net",
-            &state.geo_status(),
-        )
-        .await;
+        let insight = network_geo_insight(&state, "geo-net").await;
         assert_eq!(insight.known_country_count, Some(0));
         assert_eq!(insight.unknown_country_count, Some(2));
         assert!(

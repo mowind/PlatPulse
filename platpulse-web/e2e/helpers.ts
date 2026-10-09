@@ -198,6 +198,14 @@ export async function expectVisibleInteractiveTargets(page: Page) {
         // Partially scrolled-out tabs are exercised after scrollIntoView in
         // emerald-refinement.spec.ts, not counted as fully exposed targets.
         if (right - left < rect.width - 1) return []
+        // The viewport is the second edge a padded band can run past: the
+        // toolbar row sits close to the fold on a 360x800 phone, where the band
+        // loses its last pixel and the probe below reads whatever is behind it.
+        // A control the viewport clips is not fully exposed here either, and the
+        // same row is measured in full once the page is scrolled to it. Only a
+        // band that already declares the 44px its control promises is excused:
+        // one that is genuinely too short still falls through and fails below.
+        if (bottom - top >= 44 && (top < 0 || bottom > window.innerHeight)) return []
         const x = (left + right) / 2
         if (html.contains(document.elementFromPoint(x, top + 1)) && html.contains(document.elementFromPoint(x, bottom - 1))) hitHeight = bottom - top
       }

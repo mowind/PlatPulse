@@ -57,10 +57,14 @@ function NetworkTotals({ network }: { network: PublicNetwork }) {
   </article>
 }
 
-export function ValidatorTotalCard({ networks, metric, availability = 'ready' }: {
+export function ValidatorTotalCard({ networks, metric, availability = 'ready', scopeNote }: {
   networks: PublicNetwork[]
   metric: Metric
   availability?: 'ready' | 'loading' | 'unavailable'
+  /** Which selection this card covers, when that is not the whole page scope.
+   * #233: the cumulative totals stay Network-level even while a Node filter
+   * narrows the list, so the card says so instead of appearing to follow it. */
+  scopeNote?: string
 }) {
   const total = selectionTotal(availability === 'ready' ? networks : [], metric)
   const label = metric === 'blocks' ? 'Cumulative blocks' : 'Cumulative rewards'
@@ -83,8 +87,8 @@ export function ValidatorTotalCard({ networks, metric, availability = 'ready' }:
   // without opening the Breakdown. A load/unavailable result still names the
   // scope it is waiting on rather than dropping it.
   const caption = (availability === 'ready'
-    ? [scope, coverageSummary]
-    : [networks.length > 0 ? scope : null, availability === 'loading' ? 'Loading coverage…' : 'Coverage unavailable']
+    ? [scope, scopeNote, coverageSummary]
+    : [networks.length > 0 ? scope : null, scopeNote, availability === 'loading' ? 'Loading coverage…' : 'Coverage unavailable']
   ).filter(Boolean).join(' · ')
   const shown = metric === 'blocks' ? <ExactAmount value={exact} split /> : formatAmountOverview(total.knownSum)
   return <SummaryMetricCard label={label} value={shown} caption={caption} icon={metric === 'blocks' ? Blocks : Coins}
@@ -101,6 +105,7 @@ export function ValidatorTotalCard({ networks, metric, availability = 'ready' }:
           <div className="min-w-0"><dt className="text-muted-foreground">Coverage</dt><dd className="m-0 break-words">{coverageSummary}</dd></div>
         </dl>
         {total.missingNetworks > 0 && <p className="text-xs text-muted-foreground" data-slot="validator-overview-missing">{total.missingNetworks} Network {total.missingNetworks === 1 ? 'summary' : 'summaries'} unavailable</p>}
+        {scopeNote && <p className="text-xs text-muted-foreground" data-slot="validator-overview-note">{scopeNote}</p>}
         <p className="text-xs text-muted-foreground">{networks.length > 1
           ? 'Cross-Network numerical sum. Rewards are added in each Network’s native unit without asset conversion; this is not a single-asset balance or monetary valuation.'
           : 'Amounts use the Network native unit; no asset conversion is applied.'}</p>

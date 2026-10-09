@@ -6,6 +6,7 @@ import { LinkedValidatorSection, currentValidatorStatusLabel, validatorDataStatu
 const node: PublicNode = {
   nodeId: 'node-1',
   displayName: 'Node One',
+  peerCountries: { scope: 'unavailable', countries: [] },
   networkKey: 'mainnet',
   health: 'healthy',
   healthReason: 'RPC reachable',

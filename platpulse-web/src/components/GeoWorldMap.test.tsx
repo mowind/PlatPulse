@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { PublicNetwork, PublicNodeDetail } from '../api/generated'
-import { geoMapStatus, homeGeoOverview, nodeGeoOverview } from '../homeGeo'
+import type { PublicNetwork, PublicNode, PublicNodeDetail } from '../api/generated'
+import { geoMapStatus, homeGeoOverview, homeNodeSelectionGeoOverview, nodeGeoOverview } from '../homeGeo'
 import { NODE_PEER_COUNTRIES_HEADING } from './geoPresentation'
 
 /**
@@ -319,6 +319,56 @@ describe('GeoWorldMap', () => {
     expect(container.querySelector('[data-slot="geo-counter-unknown"]')?.textContent).toBe('5 unknown')
     expect(container.querySelector('[data-slot="geo-country-list"]')?.textContent)
       .toContain('5 unknown locations: 5 without a retained country result')
+  })
+
+  it('names the basis it stands on and says why a Node selection reads empty', async () => {
+    stubBasemap()
+    const selected = {
+      nodeId: 'node-1',
+      displayName: 'Validator A',
+      health: 'healthy',
+      peerCountries: {
+        scope: 'complete',
+        countries: [seCountry],
+        knownCountryCount: 3,
+        unknownCountryCount: 0,
+        unknownWithPublicIpCount: 0,
+        unknownWithoutRemoteIpCount: 0,
+        availablePeerCount: 3,
+      },
+    } as unknown as PublicNode
+    const overview = homeNodeSelectionGeoOverview([selected], [network()], 'All Networks', null)
+    const { container } = render(
+      <GeoWorldMap
+        overview={overview}
+        status={geoMapStatus(overview, { loading: false, hasProjection: true })}
+        selectionBasis="node-selection"
+      />,
+    )
+    const region = screen.getByRole('region', { name: 'Peer countries' })
+    // The basis is stated on the region so a reader can tell a Network reading
+    // from a reading of the current list selection.
+    expect(region.getAttribute('data-scope-basis')).toBe('node-selection')
+    await screen.findByRole('img')
+    expect(container.querySelector('[data-slot="geo-counter"]')?.textContent).toBe('Peers: 3')
+    expect(container.querySelector('[data-slot="geo-country-list"]')?.textContent).toContain('Sweden: 3 records')
+  })
+
+  it('explains an empty Node selection instead of inventing a zero', async () => {
+    stubBasemap()
+    // A selection with no Node is no reading at all rather than a zero the
+    // browser invented, so the empty arm names the selection.
+    const nothing = homeNodeSelectionGeoOverview([], [network()], 'All Networks', null)
+    const { container } = render(
+      <GeoWorldMap
+        overview={nothing}
+        status={geoMapStatus(nothing, { loading: false, hasProjection: true })}
+        selectionBasis="node-selection"
+      />,
+    )
+    expect(screen.getByRole('status').textContent).toBe('No Active Nodes match these filters')
+    expect(container.querySelector('[data-slot="geo-counter"]')).toBeNull()
+    expect(container.querySelector('[data-slot="geo-counter-unknown"]')).toBeNull()
   })
 
   it('names the Node unit, drops the Network filter hook, and keeps the same states', async () => {

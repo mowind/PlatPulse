@@ -29,6 +29,9 @@ pub mod geo_external;
 pub mod geo_geojs;
 pub mod geo_ipinfo;
 pub mod geo_refresh;
+/// Test-only Geo helpers shared by the crate's suites (see the module docs).
+#[cfg(test)]
+pub(crate) mod geo_test_support;
 pub mod http;
 pub mod init;
 pub mod investigation;

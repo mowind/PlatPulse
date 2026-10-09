@@ -89,6 +89,12 @@ type GeoWorldMapProps = {
   status: GeoMapStatus
   /** Accessible name of the surface; Node Detail names its own unit. */
   heading?: string
+  /** Which projection produced `overview` (#233): the Network-level Geo
+   * Insight of a Network selection, or the Node Selection Geo Aggregate over
+   * the Nodes the current list selection holds. It names the basis on the
+   * surface and lets a Node selection with no Node say so, instead of reading
+   * `No data` as though the Network had none. */
+  selectionBasis?: 'network' | 'node-selection'
 }
 
 /** One registration per page load, shared by every mount of the map. */
@@ -129,7 +135,7 @@ function useIsDark() {
   return dark
 }
 
-export default function GeoWorldMap({ overview, status, heading = PEER_COUNTRIES_HEADING }: GeoWorldMapProps) {
+export default function GeoWorldMap({ overview, status, heading = PEER_COUNTRIES_HEADING, selectionBasis }: GeoWorldMapProps) {
   const container = useRef<HTMLDivElement>(null)
   const chart = useRef<ECharts | null>(null)
   const optionRef = useRef<ReturnType<typeof mapChartOption> | null>(null)
@@ -254,14 +260,14 @@ export default function GeoWorldMap({ overview, status, heading = PEER_COUNTRIES
     : status === 'disabled' ? PEER_COUNTRIES_DISABLED_NOTICE
     : status === 'starting' ? 'Loading data'
     : status === 'unavailable' ? 'Data unavailable'
-    : status === 'empty' ? 'No data'
+    : status === 'empty' ? (selectionBasis === 'node-selection' ? 'No Active Nodes match these filters' : 'No data')
     : neverObserved ? 'No observations yet'
     : status === 'error' ? 'Data unavailable'
     : status === 'unknown' ? 'Data unknown'
     : status === 'stale' || overview.peerObservation === 'stale' || overview.countries.some((country) => country.staleCount > 0) ? 'Map data stale'
     : overview.availablePeerCount === 0 ? 'No data'
     : !countsAvailable ? 'Data unavailable'
-    : overview.scope !== 'complete' || overview.networksWithBasis < overview.networksInScope ? 'Partial data'
+    : overview.scope !== 'complete' || overview.unitsWithBasis < overview.unitsInScope ? 'Partial data'
     : overview.peerObservation === 'unknown' ? 'Observation status unknown'
     : overview.peerObservation === 'mixed' ? 'Observation status varies'
     : null
@@ -279,7 +285,7 @@ export default function GeoWorldMap({ overview, status, heading = PEER_COUNTRIES
     '. Each marker is a Server-provided country representative point, not a Peer location or a Node deployment location.'
 
   return (
-    <section aria-label={heading} data-state={status} data-network-filter={overview.scopeKey ?? undefined} data-scope={overview.scope} className="relative h-full">
+    <section aria-label={heading} data-state={status} data-network-filter={overview.scopeKey ?? undefined} data-scope={overview.scope} data-scope-basis={selectionBasis} className="relative h-full">
       {/* Normal stays quiet; exceptions are visible without moving the canvas. */}
       {notice && (
         <span

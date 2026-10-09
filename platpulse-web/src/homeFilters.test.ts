@@ -31,6 +31,7 @@ function node(overrides: Partial<PublicNode> = {}): PublicNode {
     networkKey: 'mainnet',
     networkReferenceConfidence: 'high',
     nodeId: 'node-a',
+    peerCountries: { scope: 'unavailable', countries: [] },
     peers: { freshness: 'current', peerCount: 8, state: 'ok' },
     processState: 'running',
     resyncState: 'idle',

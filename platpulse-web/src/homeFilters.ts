@@ -6,10 +6,14 @@
  * field the Public projection does not carry.
  *
  * Two scopes are deliberately kept apart here. The Network selection scopes the
- * whole Home reading — overview statistics, the Peer country map, and the
- * Validator totals. Search, health, and Validator-status filters narrow the
- * result list only (#222, design §9). `selectHomeRecords` returns both, so the
- * overview and the list can never disagree about which Node set they read.
+ * whole Home reading. Search, health, and Validator-status filters narrow the
+ * result list, and once they do, the four attributable overview counters and
+ * the Peer country map read that list selection too, through the Node Selection
+ * Geo Aggregate (#233, design §9); the two cumulative Validator cells keep the
+ * Network selection and say so on their face. `selectHomeRecords` returns both
+ * Node sets, so the band and the map can never disagree with the list about
+ * which Nodes they read. While nothing is narrowed the two sets are equal and
+ * every reading is the Network-level one.
  *
  * Every value the URL carries is validated against the vocabulary Home supports
  * and against the projection Home actually has (`readHomeFilters`,
@@ -292,9 +296,11 @@ function compareHomeNodes(left: PublicNode, right: PublicNode, sort: HomeSort): 
 }
 
 /**
- * The Network scope and the matching list, both read at once: Network selection
- * alone scopes the overview and the map, while search, health, and
- * Validator-status filters narrow only the list (design §9, #222).
+ * The Network scope and the matching list, both read at once. Network selection
+ * scopes both; search, health, and Validator-status filters narrow `matching`,
+ * which while it is narrower than `scoped` is also what the overview counters
+ * and the Peer country map read (#233, design §9). `scoped` stays the scope of
+ * the cumulative Validator cells and of the unfiltered readings.
  */
 export function selectHomeRecords<T extends HomeNodeRecord>(
   records: readonly T[],

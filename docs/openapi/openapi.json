@@ -16403,7 +16403,8 @@
           "peers",
           "consensus",
           "resyncState",
-          "networkReferenceConfidence"
+          "networkReferenceConfidence",
+          "peerCountries"
         ],
         "properties": {
           "consensus": {
@@ -16523,6 +16524,10 @@
           "nodeId": {
             "type": "string"
           },
+          "peerCountries": {
+            "$ref": "#/components/schemas/PublicNodePeerCountries",
+            "description": "This Node's compact country buckets over exactly its own current Peer\nrecords. The Network list ships these instead of one full country\nprojection per Node, so the browser can sum the Nodes that match the\ncurrent filters without a second request."
+          },
           "peers": {
             "$ref": "#/components/schemas/PublicPeerInsight"
           },
@@ -16620,7 +16625,7 @@
             }
           }
         ],
-        "description": "Public Node Detail response: every `PublicNode` field plus the Node Peer\nCountry View over exactly this Node's current Peer records. The Node list\nkeeps `PublicNode`, so a Home or Network response never carries one country\nprojection per Node."
+        "description": "Public Node Detail response: every `PublicNode` field plus the Node Peer\nCountry View over exactly this Node's current Peer records. The Node list\nkeeps `PublicNode`, so a Home or Network response never carries a full\ncountry projection per Node; a listed Node carries only the compact\n`peerCountries` buckets the Home selection aggregate sums."
       },
       "PublicNodeMetricHistory": {
         "type": "object",
@@ -16709,6 +16714,60 @@
           },
           "windowSeconds": {
             "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PublicNodePeerCountries": {
+        "type": "object",
+        "description": "The compact per-Node country buckets a Network response carries on every\nlisted Node. They are the source of the Node Selection Geo Aggregate: the\nbrowser sums the buckets of the Nodes that match the current filters, so a\nselection never needs a second request and never parses a country itself.\n\nProvider and database state stay Network-level (`PublicGeoInsight`): they\nare read once per response rather than per Node. `scope` follows the same\nvocabulary restricted to what one Node can be: `complete`, `unobserved`\nor `unavailable`. Every count is `None` whenever the Node has no reliable\ndenominator, so Unknown is never read as a zero.",
+        "required": [
+          "scope",
+          "countries"
+        ],
+        "properties": {
+          "availablePeerCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "countries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicCountryCount"
+            }
+          },
+          "knownCountryCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "unknownCountryCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "unknownWithPublicIpCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "unknownWithoutRemoteIpCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
           }
         }

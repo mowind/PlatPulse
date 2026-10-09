@@ -37,6 +37,7 @@ const PUBLIC_NODE: PublicNode = {
   syncState: 'synced',
   consensusState: 'current',
   consensus: { state: 'ok', freshness: 'current' },
+  peerCountries: { scope: 'unavailable', countries: [] },
   processState: 'running',
   resyncState: 'idle',
   currentHead: 123,

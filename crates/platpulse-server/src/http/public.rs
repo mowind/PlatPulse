@@ -588,6 +588,40 @@ fn unknown_public_geo_insight() -> PublicGeoInsight {
     }
 }
 
+/// The compact per-Node country buckets a Network response carries on every
+/// listed Node. They are the source of the Node Selection Geo Aggregate: the
+/// browser sums the buckets of the Nodes that match the current filters, so a
+/// selection never needs a second request and never parses a country itself.
+///
+/// Provider and database state stay Network-level (`PublicGeoInsight`): they
+/// are read once per response rather than per Node. `scope` follows the same
+/// vocabulary restricted to what one Node can be: `complete`, `unobserved`
+/// or `unavailable`. Every count is `None` whenever the Node has no reliable
+/// denominator, so Unknown is never read as a zero.
+#[derive(Debug, Serialize, ToSchema, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicNodePeerCountries {
+    pub scope: String,
+    pub known_country_count: Option<i64>,
+    pub unknown_country_count: Option<i64>,
+    pub available_peer_count: Option<i64>,
+    pub unknown_without_remote_ip_count: Option<i64>,
+    pub unknown_with_public_ip_count: Option<i64>,
+    pub countries: Vec<PublicCountryCount>,
+}
+
+fn unknown_public_node_peer_countries() -> PublicNodePeerCountries {
+    PublicNodePeerCountries {
+        scope: "unavailable".to_owned(),
+        known_country_count: None,
+        unknown_country_count: None,
+        available_peer_count: None,
+        unknown_without_remote_ip_count: None,
+        unknown_with_public_ip_count: None,
+        countries: Vec::new(),
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicPeerInsight {
@@ -2007,12 +2041,18 @@ pub struct PublicNode {
     /// Sanitized explanation when this Node has no established automatic
     /// correspondence. It never contains a raw diagnostic or a public key.
     pub validator_identity_reason: Option<String>,
+    /// This Node's compact country buckets over exactly its own current Peer
+    /// records. The Network list ships these instead of one full country
+    /// projection per Node, so the browser can sum the Nodes that match the
+    /// current filters without a second request.
+    pub peer_countries: PublicNodePeerCountries,
 }
 
 /// Public Node Detail response: every `PublicNode` field plus the Node Peer
 /// Country View over exactly this Node's current Peer records. The Node list
-/// keeps `PublicNode`, so a Home or Network response never carries one country
-/// projection per Node.
+/// keeps `PublicNode`, so a Home or Network response never carries a full
+/// country projection per Node; a listed Node carries only the compact
+/// `peerCountries` buckets the Home selection aggregate sums.
 #[derive(Debug, Serialize, ToSchema, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicNodeDetail {
@@ -2370,80 +2410,205 @@ impl<'a> GeoScope<'a> {
     }
 }
 
-/// Project one Network's country distribution. `geo_status` is read once per
-/// response so every Network in a list shares one database-status reading.
-pub(crate) async fn public_country_distribution(
-    state: &AppState,
-    network_key: &str,
-    geo_status: &crate::geo::GeoStatus,
-) -> PublicGeoInsight {
-    public_scoped_country_distribution(state, GeoScope::Network(network_key), geo_status).await
+/// One Active Node's country buckets inside a [`PublicGeoReadings`] map.
+#[derive(Debug)]
+struct PublicNodeGeo {
+    network_key: String,
+    distribution: GeoDistribution,
 }
 
-/// Project exactly one Node's current Peer records as the Node Peer Country
-/// View. It reuses the Network scope's Geo Location Cache, selected Provider,
-/// per-record counting and Unknown rules, so both scopes read the same
-/// retained cache rows the same way.
-pub(crate) async fn public_node_country_distribution(
-    state: &AppState,
-    node_id: &str,
-    geo_status: &crate::geo::GeoStatus,
-) -> PublicGeoInsight {
-    public_scoped_country_distribution(state, GeoScope::Node(node_id), geo_status).await
+/// Every in-scope country bucket plus the shared Geo database status, read
+/// once per response. One set of rows feeds all three readings: each Node's
+/// compact `PublicNodePeerCountries`, the Network-level Geo Insight and the
+/// Node Peer Country View, so the Network reading is by construction the sum
+/// of its Active Node buckets and a Node reading is that Node's own bucket.
+pub(crate) struct PublicGeoReadings {
+    status: crate::geo::GeoStatus,
+    database_age_seconds: Option<u64>,
+    stale_since: Option<String>,
+    /// `None` when Geo is Disabled or the read failed: no scope has a basis.
+    nodes: Option<std::collections::BTreeMap<String, PublicNodeGeo>>,
 }
 
-async fn public_scoped_country_distribution(
-    state: &AppState,
-    scope: GeoScope<'_>,
-    geo_status: &crate::geo::GeoStatus,
-) -> PublicGeoInsight {
-    if geo_status.state == "disabled" {
-        return unknown_public_geo_insight();
-    }
-    let now_utc = crate::auth::now_utc();
-    let (database_age_seconds, stale_since) = geo_timing(geo_status, now_utc);
-    let now = crate::auth::format_rfc3339(now_utc);
-    let Some(distribution) = load_geo_distribution(state, scope, &now).await else {
-        return PublicGeoInsight {
-            state: "error".to_owned(),
-            last_good_at: geo_status.loaded_at.clone(),
+impl PublicGeoReadings {
+    /// `scope` is `None` for every Active Node, which the Network list needs
+    /// so each listed Node can carry its own buckets; a scoped caller (the Node
+    /// Detail handler, or a test projecting one scope) passes `Some`.
+    pub(crate) async fn load(
+        state: &AppState,
+        status: crate::geo::GeoStatus,
+        scope: Option<GeoScope<'_>>,
+    ) -> Self {
+        let now_utc = crate::auth::now_utc();
+        let (database_age_seconds, stale_since) = geo_timing(&status, now_utc);
+        let readings = Self {
+            status,
             database_age_seconds,
             stale_since,
-            // Loader errors can contain filesystem/parser details. Public
-            // responses expose only a stable, non-sensitive explanation.
-            error_reason: Some(PUBLIC_GEO_ERROR.to_owned()),
-            scope: "unavailable".to_owned(),
-            known_country_count: None,
-            unknown_country_count: None,
-            available_peer_count: None,
-            unknown_without_remote_ip_count: None,
-            unknown_with_public_ip_count: None,
-            countries: None,
-            attribution: None,
+            nodes: None,
         };
-    };
+        if readings.status.state == "disabled" {
+            return readings;
+        }
+        let now = crate::auth::format_rfc3339(now_utc);
+        match load_node_geo(state, scope, &now).await {
+            Some(nodes) => Self {
+                nodes: Some(nodes),
+                ..readings
+            },
+            // A failed read keeps the database status and timing, and leaves
+            // every scope without a basis.
+            None => readings,
+        }
+    }
+
+    /// Restrict the reading to exactly the Nodes a response lists, keyed by the
+    /// Network each one was listed under. The listed rows and this Geo batch
+    /// are two separate reads, so a Node that changed lifecycle in between must
+    /// neither enter a Network Geo Insight whose response carries no bucket for
+    /// it (an extra batch Node) nor vanish from one whose response does list it
+    /// (a Node this batch lost). A listed Node the batch no longer knows keeps
+    /// its place in the Active Node count with no observed reading of its own,
+    /// so that Network can only read `partial` and never `complete`, and its
+    /// own compact bucket carries no basis — which is what the browser computes
+    /// from the buckets it was handed, so summing them still reproduces the
+    /// reading exactly.
+    pub(crate) fn restrict_to_listed_nodes(
+        &mut self,
+        listed: &std::collections::BTreeMap<String, String>,
+    ) {
+        let Some(nodes) = self.nodes.as_mut() else {
+            return;
+        };
+        nodes.retain(|node_id, _| listed.contains_key(node_id));
+        for (node_id, network_key) in listed {
+            nodes
+                .entry(node_id.clone())
+                .or_insert_with(|| PublicNodeGeo {
+                    network_key: network_key.clone(),
+                    distribution: GeoDistribution {
+                        active_node_count: 1,
+                        ..GeoDistribution::default()
+                    },
+                });
+        }
+    }
+
+    /// Sum the in-scope Node buckets. A scope with no Active Node at all sums
+    /// to an empty distribution, which is `unobserved` rather than a zero.
+    ///
+    /// A Node whose own scope is `unobserved` has no reliable denominator, so
+    /// its rows are not a country count at that Node either; it keeps its
+    /// place in the Active Node count (a Network with one such Node is still
+    /// `partial`, never `complete`) but contributes no Known, Unknown or
+    /// country bucket. The Network reading is therefore exactly the sum of the
+    /// compact Node buckets the same response hands to the browser, which is
+    /// what makes the unfiltered reading and a selection that matches every
+    /// Node one reading. Ingestion writes `current_node_peers` rows only
+    /// inside the transaction that records a successful Peer Snapshot, so a
+    /// Node with rows and no accepted value is not a state the write path
+    /// produces; the gate still keeps both readings equal there instead of
+    /// reporting a country the Node's own reading denies.
+    fn distribution(&self, scope: GeoScope<'_>) -> GeoDistribution {
+        let mut total = GeoDistribution::default();
+        let Some(nodes) = self.nodes.as_ref() else {
+            return total;
+        };
+        for (node_id, node_geo) in nodes {
+            let in_scope = match scope {
+                GeoScope::Network(network_key) => node_geo.network_key == network_key,
+                GeoScope::Node(id) => node_id == id,
+            };
+            if !in_scope {
+                continue;
+            }
+            let distribution = &node_geo.distribution;
+            total.active_node_count += distribution.active_node_count;
+            if distribution.scope() == "unobserved" {
+                continue;
+            }
+            total.observed_node_count += distribution.observed_node_count;
+            total.known_country_count += distribution.known_country_count;
+            total.unknown_country_count += distribution.unknown_country_count;
+            total.unknown_without_remote_ip_count += distribution.unknown_without_remote_ip_count;
+            for (country_code, bucket) in &distribution.countries {
+                let entry = total.countries.entry(country_code.clone()).or_default();
+                entry.count += bucket.count;
+                entry.stale_count += bucket.stale_count;
+            }
+        }
+        total
+    }
+
+    pub(crate) fn insight(&self, state: &AppState, scope: GeoScope<'_>) -> PublicGeoInsight {
+        if self.status.state == "disabled" {
+            return unknown_public_geo_insight();
+        }
+        if self.nodes.is_none() {
+            return public_geo_error_insight(
+                &self.status,
+                self.database_age_seconds,
+                self.stale_since.clone(),
+            );
+        }
+        public_geo_insight(
+            state,
+            &self.status,
+            self.database_age_seconds,
+            self.stale_since.clone(),
+            &self.distribution(scope),
+        )
+    }
+
+    /// One Node's compact buckets. A Node outside the scope, or one whose
+    /// scope has no reliable denominator, projects nothing at all.
+    pub(crate) fn node_peer_countries(&self, node_id: &str) -> PublicNodePeerCountries {
+        let Some(node_geo) = self.nodes.as_ref().and_then(|nodes| nodes.get(node_id)) else {
+            return unknown_public_node_peer_countries();
+        };
+        node_peer_countries(&node_geo.distribution)
+    }
+}
+
+fn public_geo_error_insight(
+    status: &crate::geo::GeoStatus,
+    database_age_seconds: Option<u64>,
+    stale_since: Option<String>,
+) -> PublicGeoInsight {
+    PublicGeoInsight {
+        state: "error".to_owned(),
+        last_good_at: status.loaded_at.clone(),
+        database_age_seconds,
+        stale_since,
+        // Loader errors can contain filesystem/parser details. Public
+        // responses expose only a stable, non-sensitive explanation.
+        error_reason: Some(PUBLIC_GEO_ERROR.to_owned()),
+        scope: "unavailable".to_owned(),
+        known_country_count: None,
+        unknown_country_count: None,
+        available_peer_count: None,
+        unknown_without_remote_ip_count: None,
+        unknown_with_public_ip_count: None,
+        countries: None,
+        attribution: None,
+    }
+}
+
+fn public_geo_insight(
+    state: &AppState,
+    status: &crate::geo::GeoStatus,
+    database_age_seconds: Option<u64>,
+    stale_since: Option<String>,
+    distribution: &GeoDistribution,
+) -> PublicGeoInsight {
     let scope = distribution.scope();
     // Without a single successful Peer Snapshot there is no reliable
     // denominator: never-observed is not a country count of zero.
     let has_basis = scope != "unobserved";
-    let countries = distribution
-        .countries
-        .iter()
-        .map(|(country_code, bucket)| {
-            let (centroid_lat, centroid_lon) = crate::geo::country_centroid(country_code);
-            PublicCountryCount {
-                country_code: country_code.clone(),
-                count: bucket.count,
-                stale_count: bucket.stale_count,
-                centroid_lat,
-                centroid_lon,
-            }
-        })
-        .collect::<Vec<_>>();
-    let geo_error = geo_status.state == "error";
+    let geo_error = status.state == "error";
     PublicGeoInsight {
-        state: geo_status.state.clone(),
-        last_good_at: geo_status.loaded_at.clone(),
+        state: status.state.clone(),
+        last_good_at: status.loaded_at.clone(),
         database_age_seconds,
         stale_since,
         error_reason: geo_error.then(|| PUBLIC_GEO_ERROR.to_owned()),
@@ -2456,7 +2621,7 @@ async fn public_scoped_country_distribution(
         unknown_with_public_ip_count: has_basis.then(|| {
             distribution.unknown_country_count - distribution.unknown_without_remote_ip_count
         }),
-        countries: has_basis.then_some(countries),
+        countries: has_basis.then(|| public_countries(distribution)),
         // The selected provider owns the attribution its terms require; a
         // provider that resolves locally must never be credited to an
         // external service and vice versa.
@@ -2464,76 +2629,149 @@ async fn public_scoped_country_distribution(
     }
 }
 
-/// Project the current Peer records in scope onto the retained country
-/// cache. A Peer record is one row of `current_node_peers`: the same IP seen
-/// on two Peers or two Nodes is two records. A row is only retainable inside
-/// the hard cache-retention boundary; inside that boundary an expired country
-/// stays as explicit last-good Stale data instead of becoming Unknown.
+fn public_countries(distribution: &GeoDistribution) -> Vec<PublicCountryCount> {
+    distribution
+        .countries
+        .iter()
+        .map(|(country_code, bucket)| {
+            let (centroid_lat, centroid_lon) = crate::geo::country_centroid(country_code);
+            PublicCountryCount {
+                country_code: country_code.clone(),
+                count: bucket.count,
+                stale_count: bucket.stale_count,
+                centroid_lat,
+                centroid_lon,
+            }
+        })
+        .collect()
+}
+
+fn node_peer_countries(distribution: &GeoDistribution) -> PublicNodePeerCountries {
+    let scope = distribution.scope();
+    let has_basis = scope != "unobserved";
+    PublicNodePeerCountries {
+        scope: scope.to_owned(),
+        known_country_count: has_basis.then_some(distribution.known_country_count),
+        unknown_country_count: has_basis.then_some(distribution.unknown_country_count),
+        available_peer_count: has_basis.then(|| distribution.available_peer_count()),
+        unknown_without_remote_ip_count: has_basis
+            .then_some(distribution.unknown_without_remote_ip_count),
+        unknown_with_public_ip_count: has_basis.then(|| {
+            distribution.unknown_country_count - distribution.unknown_without_remote_ip_count
+        }),
+        // A Node without a reliable denominator carries no countries at all.
+        // The browser gates on the counts, so an empty list is never a zero.
+        countries: if has_basis {
+            public_countries(distribution)
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+/// Load the current Peer records in scope grouped by Active Node and country
+/// onto the retained country cache. A Peer record is one row of
+/// current_node_peers: the same IP seen on two Peers or two Nodes is two
+/// records. A row is only retainable inside the hard cache-retention
+/// boundary; inside that boundary an expired country stays as explicit
+/// last-good Stale data instead of becoming Unknown.
 ///
 /// Only the fixed scope column varies between the Network and Node scopes;
 /// everything after the filter — the selected provider, the Peer-record
-/// denominator, retention and the Unknown split — is shared, so both scopes
-/// apply the same rules to the same retained cache rows.
-async fn load_geo_distribution(
+/// denominator, retention and the Unknown split — is shared. The per-Node
+/// denominator is loaded separately, so a Node that never reported a Peer
+/// Snapshot stays distinguishable from one whose snapshot was authoritatively
+/// empty.
+async fn load_node_geo(
     state: &AppState,
-    scope: GeoScope<'_>,
+    scope: Option<GeoScope<'_>>,
     now: &str,
-) -> Option<GeoDistribution> {
+) -> Option<std::collections::BTreeMap<String, PublicNodeGeo>> {
     let rebuild_before = crate::geo::cache_rebuild_cutoff(now);
-    let (scope_column, scope_key) = scope.filter();
-    // Only the selected provider's retained rows are usable: a result left
-    // over from another provider is not a country for the current projection.
-    let rows = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>)>(
-        &format!(
-            "SELECT p.remote_ip, g.country_code, g.created_at, g.expires_at FROM current_node_peers p JOIN nodes n ON n.node_id = p.node_id LEFT JOIN geo_location_cache g ON g.provider = ? AND g.canonical_ip = p.remote_ip WHERE {scope_column} = ? AND n.lifecycle = 'active'"
-        ),
-    )
-    .bind(state.geo_config().provider.as_str())
-    .bind(scope_key)
-    .fetch_all(state.db().pool())
-    .await
-    .ok()?;
-    let node_counts = sqlx::query_as::<_, (i64, i64)>(
-        &format!(
-            "SELECT COUNT(*), COALESCE(SUM(CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN 1 ELSE 0 END), 0) FROM nodes n LEFT JOIN component_status ps ON ps.node_id = n.node_id AND ps.component_key = 'peers' WHERE {scope_column} = ? AND n.lifecycle = 'active'"
-        ),
-    )
-    .bind(scope_key)
-    .fetch_one(state.db().pool())
-    .await
-    .ok()?;
-
-    let mut distribution = GeoDistribution {
-        active_node_count: node_counts.0,
-        observed_node_count: node_counts.1,
-        ..GeoDistribution::default()
+    let filter = match scope {
+        Some(scope) => format!(" AND {} = ?", scope.filter().0),
+        None => String::new(),
     };
-    for (remote_ip, country_code, created_at, expires_at) in rows {
-        // Timestamps are canonical RFC 3339 UTC, so the ordering comparisons
-        // the cache itself relies on are valid here too. A row outside the
-        // hard retention boundary is no longer retainable at all.
-        let retainable = created_at
-            .as_deref()
-            .is_some_and(|created| created > rebuild_before.as_str());
-        match (country_code, retainable) {
-            (Some(country_code), true) => {
-                let stale = expires_at.as_deref().is_none_or(|expires| expires <= now);
-                distribution.known_country_count += 1;
-                let bucket = distribution.countries.entry(country_code).or_default();
-                bucket.count += 1;
-                if stale {
-                    bucket.stale_count += 1;
-                }
-            }
-            _ => {
-                distribution.unknown_country_count += 1;
-                if remote_ip.is_none() {
-                    distribution.unknown_without_remote_ip_count += 1;
-                }
+    // Timestamps are canonical RFC 3339 UTC, so the ordering comparisons the
+    // cache itself relies on are valid here too. A row outside the hard
+    // retention boundary is not retainable at all, and only the selected
+    // provider's retained rows are usable: a result left over from another
+    // provider is not a country for the current projection.
+    let sql = format!(
+        "SELECT p.node_id, n.network_key, g.country_code, COUNT(*) AS record_count, COALESCE(SUM(CASE WHEN g.country_code IS NOT NULL AND g.created_at > ? THEN 1 ELSE 0 END), 0) AS known_count, COALESCE(SUM(CASE WHEN g.country_code IS NOT NULL AND g.created_at > ? AND (g.expires_at IS NULL OR g.expires_at <= ?) THEN 1 ELSE 0 END), 0) AS stale_count, COALESCE(SUM(CASE WHEN g.country_code IS NULL AND p.remote_ip IS NULL THEN 1 ELSE 0 END), 0) AS unknown_without_remote_ip_count FROM current_node_peers p JOIN nodes n ON n.node_id = p.node_id LEFT JOIN geo_location_cache g ON g.provider = ? AND g.canonical_ip = p.remote_ip WHERE n.lifecycle = 'active'{filter} GROUP BY p.node_id, n.network_key, g.country_code"
+    );
+    let mut rows = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, i64, i64)>(&sql)
+        .bind(rebuild_before.as_str())
+        .bind(rebuild_before.as_str())
+        .bind(now)
+        .bind(state.geo_config().provider.as_str());
+    if let Some(scope) = scope {
+        rows = rows.bind(scope.filter().1);
+    }
+    let rows = rows.fetch_all(state.db().pool()).await.ok()?;
+    // The denominator is one row per Active Node in scope, whether or not it
+    // currently has any Peer record.
+    let sql = format!(
+        "SELECT n.node_id, n.network_key, COALESCE(SUM(CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN 1 ELSE 0 END), 0) FROM nodes n LEFT JOIN component_status ps ON ps.node_id = n.node_id AND ps.component_key = 'peers' WHERE n.lifecycle = 'active'{filter} GROUP BY n.node_id, n.network_key"
+    );
+    let mut denominator = sqlx::query_as::<_, (String, String, i64)>(&sql);
+    if let Some(scope) = scope {
+        denominator = denominator.bind(scope.filter().1);
+    }
+    let denominator = denominator.fetch_all(state.db().pool()).await.ok()?;
+
+    let mut nodes = std::collections::BTreeMap::new();
+    for (node_id, network_key, observed) in denominator {
+        nodes.insert(
+            node_id,
+            PublicNodeGeo {
+                network_key,
+                distribution: GeoDistribution {
+                    active_node_count: 1,
+                    observed_node_count: i64::from(observed > 0),
+                    ..GeoDistribution::default()
+                },
+            },
+        );
+    }
+    for (
+        node_id,
+        network_key,
+        country_code,
+        record_count,
+        known_count,
+        stale_count,
+        unknown_without_remote_ip_count,
+    ) in rows
+    {
+        // A Peer record only exists for an Active Node, so its denominator row
+        // is already present; this entry is defensive only.
+        let node_geo = nodes.entry(node_id).or_insert_with(|| PublicNodeGeo {
+            network_key,
+            distribution: GeoDistribution {
+                active_node_count: 1,
+                ..GeoDistribution::default()
+            },
+        });
+        let distribution = &mut node_geo.distribution;
+        distribution.known_country_count += known_count;
+        // Every row of a country group that is not retained is one more
+        // Unknown record; a group without a country is Unknown entirely.
+        distribution.unknown_country_count += record_count - known_count;
+        distribution.unknown_without_remote_ip_count += unknown_without_remote_ip_count;
+        if known_count > 0 {
+            if let Some(country_code) = country_code {
+                distribution.countries.insert(
+                    country_code,
+                    CountryBucket {
+                        count: known_count,
+                        stale_count,
+                    },
+                );
             }
         }
     }
-    Some(distribution)
+    Some(nodes)
 }
 
 fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
@@ -2596,6 +2834,9 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
             row.auto_validator_identity_state.as_deref(),
         ),
         validator_identity_state: row.auto_validator_identity_state,
+        // Filled in by the caller from the response's single Geo read, so
+        // every projection of this Node shares one set of buckets.
+        peer_countries: unknown_public_node_peer_countries(),
     };
     (row.network_display_name, node)
 }
@@ -2707,9 +2948,22 @@ pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
         }
     };
     let mut networks: Vec<PublicNetwork> = Vec::new();
-    // One database-status reading per response keeps every Network's Geo
-    // projection mutually consistent.
-    let geo_status = state.geo_status();
+    // One database-status reading and one set of country rows per response
+    // keep every Network's and every Node's Geo projection mutually
+    // consistent: a Network Geo Insight is the sum of its Active Node buckets,
+    // so the two can never drift apart. The batch is then restricted to
+    // exactly the Nodes this response lists, each with its Network: the rows
+    // above and the Geo rows below are separate reads, so a Node that changed
+    // lifecycle between them would otherwise be counted in a Network reading
+    // without being listed, and no browser could reproduce that reading from
+    // the buckets it was handed. A listed Node the Geo batch lost keeps its
+    // place in its Network's denominator without a reading of its own.
+    let listed_nodes: std::collections::BTreeMap<String, String> = rows
+        .iter()
+        .map(|row| (row.node_id.clone(), row.network_key.clone()))
+        .collect();
+    let mut geo_readings = PublicGeoReadings::load(&state, state.geo_status(), None).await;
+    geo_readings.restrict_to_listed_nodes(&listed_nodes);
     for row in rows {
         let network_key = row.network_key.clone();
         let (network_display_name, node) = public_node(row);
@@ -2732,7 +2986,10 @@ pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
     }
     for network in &mut networks {
         network.peers = aggregate_peer_insight(&network.nodes);
-        network.geo = public_country_distribution(&state, &network.network_key, &geo_status).await;
+        network.geo = geo_readings.insight(&state, GeoScope::Network(&network.network_key));
+        for node in &mut network.nodes {
+            node.peer_countries = geo_readings.node_peer_countries(&node.node_id);
+        }
         match public_validator_insights(&state, &network.network_key).await {
             Ok(validators) => {
                 match effective_public_links(&state, None, Some(&network.network_key)).await {
@@ -2802,10 +3059,18 @@ pub(crate) async fn public_node_detail(
                     }
                 }
             }
-            // The Node Peer Country View is filtered to this Node and reads
-            // the same retained cache rows as the Network projection.
-            let geo =
-                public_node_country_distribution(&state, &node.node_id, &state.geo_status()).await;
+            // The Node Peer Country View and this Node's compact buckets come
+            // from one read of the same retained cache rows the Network
+            // projection uses, so the Node reading is exactly what Home shows
+            // with only this Node selected.
+            let geo_readings = PublicGeoReadings::load(
+                &state,
+                state.geo_status(),
+                Some(GeoScope::Node(&node.node_id)),
+            )
+            .await;
+            node.peer_countries = geo_readings.node_peer_countries(&node.node_id);
+            let geo = geo_readings.insight(&state, GeoScope::Node(&node.node_id));
             Json(PublicNodeDetail { node, geo }).into_response()
         }
         Ok(None) => error_response(
@@ -2996,7 +3261,7 @@ mod tests {
                 provider: crate::geo::GeoProvider::LocalMmdb,
                 generation: 1,
             });
-        let insight = public_country_distribution(&state, "mainnet", &state.geo_status()).await;
+        let insight = geo_insight_for(&state, "mainnet").await;
         assert_eq!(insight.state, "error");
         assert_eq!(insight.error_reason.as_deref(), Some(PUBLIC_GEO_ERROR));
         assert!(
@@ -3006,6 +3271,34 @@ mod tests {
                 .unwrap()
                 .contains("missing-geolite")
         );
+
+        // A failed loader with a readable store still serves the retained
+        // reading: the state is reported, the countries are not discarded.
+        seed_geo_network(&state, "mainnet", &["geo-error-node"]).await;
+        mark_peer_snapshot(&state, "geo-error-node", 1).await;
+        insert_geo_peer(&state, "geo-error-node", "err-1", Some("8.8.8.8")).await;
+        insert_geo_cache(&state, "8.8.8.8", "US", 60, 3600).await;
+        let list = public_network_list(&state).await;
+        assert_eq!(list["geo"]["state"], "error");
+        assert_eq!(list["geo"]["knownCountryCount"], 1);
+        assert_eq!(list["nodes"][0]["peerCountries"]["knownCountryCount"], 1);
+        assert_network_geo_is_the_node_sum(&list);
+
+        // An unreadable store is the one case with no reading at all: neither
+        // the Network nor a listed Node may fabricate a count.
+        sqlx::query("DROP TABLE geo_location_cache")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let list = public_network_list(&state).await;
+        assert_eq!(list["geo"]["state"], "error");
+        assert_eq!(list["geo"]["scope"], "unavailable");
+        assert!(list["geo"]["knownCountryCount"].is_null());
+        assert!(list["geo"]["countries"].is_null());
+        let buckets = &list["nodes"][0]["peerCountries"];
+        assert_eq!(buckets["scope"], "unavailable");
+        assert!(buckets["knownCountryCount"].is_null());
+        assert!(buckets["countries"].as_array().unwrap().is_empty());
     }
 
     /// A selected Local MMDB provider whose loader reports Current.
@@ -3113,8 +3406,98 @@ mod tests {
             .unwrap();
     }
 
+    /// The same scoped Geo read the public handlers perform, so a test projects
+    /// one Network or one Node exactly as a request would.
+    async fn scoped_geo_insight(state: &AppState, scope: GeoScope<'_>) -> PublicGeoInsight {
+        PublicGeoReadings::load(state, state.geo_status(), Some(scope))
+            .await
+            .insight(state, scope)
+    }
+
     async fn geo_insight_for(state: &AppState, network_key: &str) -> PublicGeoInsight {
-        public_country_distribution(state, network_key, &state.geo_status()).await
+        scoped_geo_insight(state, GeoScope::Network(network_key)).await
+    }
+
+    /// Sum one compact bucket field over a response's listed Nodes. `None`
+    /// when not one of them has a reliable basis.
+    fn sum_node_buckets(nodes: &[serde_json::Value], field: &str) -> Option<i64> {
+        let mut total: Option<i64> = None;
+        for node in nodes {
+            if let Some(count) = node["peerCountries"][field].as_i64() {
+                total = Some(total.unwrap_or(0) + count);
+            }
+        }
+        total
+    }
+
+    /// The Node IDs one response lists, each with the Network it was listed
+    /// under, in the shape `PublicGeoReadings::restrict_to_listed_nodes` takes.
+    fn listed_nodes(
+        network_key: &str,
+        node_ids: &[&str],
+    ) -> std::collections::BTreeMap<String, String> {
+        node_ids
+            .iter()
+            .map(|node_id| ((*node_id).to_owned(), network_key.to_owned()))
+            .collect()
+    }
+
+    /// The listed Nodes' country buckets merged by country code, as
+    /// `(count, stale_count)`.
+    fn sum_node_countries(
+        nodes: &[serde_json::Value],
+    ) -> std::collections::BTreeMap<String, (i64, i64)> {
+        let mut total: std::collections::BTreeMap<String, (i64, i64)> =
+            std::collections::BTreeMap::new();
+        for node in nodes {
+            for country in node["peerCountries"]["countries"].as_array().unwrap() {
+                let entry = total
+                    .entry(country["countryCode"].as_str().unwrap().to_owned())
+                    .or_insert((0, 0));
+                entry.0 += country["count"].as_i64().unwrap();
+                entry.1 += country["staleCount"].as_i64().unwrap();
+            }
+        }
+        total
+    }
+
+    /// The invariant a selection aggregate depends on: a Network's own Geo
+    /// read is exactly the sum of the compact Node buckets the same response
+    /// carries, so selecting every Node can never disagree with the
+    /// unfiltered reading.
+    fn assert_network_geo_is_the_node_sum(network: &serde_json::Value) {
+        let nodes = network["nodes"].as_array().unwrap();
+        for field in [
+            "knownCountryCount",
+            "unknownCountryCount",
+            "availablePeerCount",
+            "unknownWithoutRemoteIpCount",
+            "unknownWithPublicIpCount",
+        ] {
+            assert_eq!(
+                network["geo"][field].as_i64(),
+                sum_node_buckets(nodes, field),
+                "{field} must be the sum of the listed Nodes' buckets"
+            );
+        }
+        let from_geo: std::collections::BTreeMap<String, (i64, i64)> = network["geo"]["countries"]
+            .as_array()
+            .map(|countries| {
+                countries
+                    .iter()
+                    .map(|country| {
+                        (
+                            country["countryCode"].as_str().unwrap().to_owned(),
+                            (
+                                country["count"].as_i64().unwrap(),
+                                country["staleCount"].as_i64().unwrap(),
+                            ),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(from_geo, sum_node_countries(nodes));
     }
 
     #[tokio::test]
@@ -3312,10 +3695,22 @@ mod tests {
         assert!(insight.available_peer_count.is_none());
         assert!(insight.unknown_with_public_ip_count.is_none());
         assert!(insight.attribution.is_none());
+
+        // A disabled Geo never lets a listed Node claim a country either.
+        let list = public_network_list(&state).await;
+        assert_eq!(list["geo"]["scope"], "unavailable");
+        let buckets = &list["nodes"][0]["peerCountries"];
+        assert_eq!(buckets["scope"], "unavailable");
+        assert!(buckets["knownCountryCount"].is_null());
+        assert!(buckets["unknownCountryCount"].is_null());
+        assert!(buckets["availablePeerCount"].is_null());
+        assert!(buckets["unknownWithoutRemoteIpCount"].is_null());
+        assert!(buckets["unknownWithPublicIpCount"].is_null());
+        assert!(buckets["countries"].as_array().unwrap().is_empty());
     }
 
     async fn node_insight_for(state: &AppState, node_id: &str) -> PublicGeoInsight {
-        public_node_country_distribution(state, node_id, &state.geo_status()).await
+        scoped_geo_insight(state, GeoScope::Node(node_id)).await
     }
 
     async fn public_node_detail_value(state: &AppState, node_id: &str) -> serde_json::Value {
@@ -3427,6 +3822,29 @@ mod tests {
         );
         assert_eq!(insight.unknown_without_remote_ip_count, Some(1));
         assert_eq!(insight.unknown_with_public_ip_count, Some(1));
+
+        // A listed Node and its Detail page serve those same numbers as
+        // compact buckets.
+        let list = public_network_list(&state).await;
+        let buckets = &list["nodes"][0]["peerCountries"];
+        assert_eq!(buckets["scope"], "complete");
+        assert_eq!(buckets["knownCountryCount"], 1);
+        assert_eq!(buckets["unknownCountryCount"], 2);
+        assert_eq!(buckets["availablePeerCount"], 3);
+        assert_eq!(buckets["unknownWithoutRemoteIpCount"], 1);
+        assert_eq!(buckets["unknownWithPublicIpCount"], 1);
+        let bucket_countries = buckets["countries"].as_array().unwrap();
+        assert_eq!(
+            bucket_countries.len(),
+            1,
+            "the unretainable row is no country"
+        );
+        assert_eq!(bucket_countries[0]["countryCode"], "US");
+        assert_eq!(bucket_countries[0]["count"], 1);
+        assert_eq!(bucket_countries[0]["staleCount"], 1);
+        let detail = public_node_detail_value(&state, "geo-stale-node").await;
+        assert_eq!(detail["peerCountries"], *buckets);
+        assert_network_geo_is_the_node_sum(&list);
     }
     #[tokio::test]
     async fn node_country_view_projects_nothing_while_geo_is_disabled() {
@@ -3501,10 +3919,11 @@ mod tests {
         assert!(insight.available_peer_count.is_none());
     }
 
-    /// The country projection belongs to the Node Detail DTO only: a listed
-    /// Node in a Network response must not carry one.
+    /// A listed Node carries the compact buckets a Home selection aggregate
+    /// sums — never a Network-shaped Geo Insight of its own — and those
+    /// buckets are the same reading that Node's own route serves.
     #[tokio::test]
-    async fn node_geo_is_only_on_node_detail_not_on_each_listed_node() {
+    async fn listed_nodes_carry_compact_peer_country_buckets_not_a_geo_insight() {
         let (_dir, state) = test_state().await;
         let state = geo_enabled(state);
         seed_geo_network(&state, "mainnet", &["geo-dto-node"]).await;
@@ -3519,11 +3938,53 @@ mod tests {
         );
         assert_eq!(list["geo"]["knownCountryCount"], 1);
 
+        // The bucket carries exactly what a selection needs to sum: counts,
+        // the Unknown reasons, and enough of each country to place its dot.
+        let buckets = &list["nodes"][0]["peerCountries"];
+        assert_eq!(buckets["scope"], "complete");
+        assert_eq!(buckets["knownCountryCount"], 1);
+        assert_eq!(buckets["unknownCountryCount"], 0);
+        assert_eq!(buckets["availablePeerCount"], 1);
+        assert_eq!(buckets["unknownWithoutRemoteIpCount"], 0);
+        assert_eq!(buckets["unknownWithPublicIpCount"], 0);
+        let countries = buckets["countries"].as_array().unwrap();
+        assert_eq!(countries.len(), 1);
+        assert_eq!(countries[0]["countryCode"], "US");
+        assert_eq!(countries[0]["count"], 1);
+        assert_eq!(countries[0]["staleCount"], 0);
+        assert!(
+            countries[0]["centroidLat"].is_number() && countries[0]["centroidLon"].is_number(),
+            "a listed country bucket already carries its centroid"
+        );
+        assert_network_geo_is_the_node_sum(&list);
+
         let detail = public_node_detail_value(&state, "geo-dto-node").await;
         assert_eq!(detail["geo"]["knownCountryCount"], 1);
         assert_eq!(
             detail["geo"]["availablePeerCount"],
             detail["peers"]["peerCount"]
+        );
+        // The Node's compact buckets and its Node-scoped projection are one
+        // reading: selecting only this Node reproduces its Detail page.
+        assert_eq!(detail["peerCountries"], *buckets);
+        assert_eq!(
+            detail["peerCountries"]["knownCountryCount"],
+            detail["geo"]["knownCountryCount"]
+        );
+        assert_eq!(
+            detail["peerCountries"]["unknownCountryCount"],
+            detail["geo"]["unknownCountryCount"]
+        );
+        assert_eq!(
+            detail["peerCountries"]["availablePeerCount"],
+            detail["geo"]["availablePeerCount"]
+        );
+        assert_eq!(
+            detail["peerCountries"]["countries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            detail["geo"]["countries"].as_array().unwrap().len()
         );
     }
     #[tokio::test]
@@ -3563,6 +4024,264 @@ mod tests {
         assert_eq!(testnet["geo"]["unknownWithPublicIpCount"], 0);
         assert_eq!(testnet["geo"]["availablePeerCount"], 2);
         assert_eq!(testnet["peers"]["peerCount"], 2);
+        // Each listed Node carries its own compact buckets, and each Network
+        // reading is exactly the sum of them.
+        assert_eq!(mainnet["nodes"][0]["peerCountries"]["knownCountryCount"], 1);
+        assert_eq!(
+            mainnet["nodes"][0]["peerCountries"]["availablePeerCount"],
+            1
+        );
+        assert_eq!(testnet["nodes"][0]["peerCountries"]["knownCountryCount"], 1);
+        assert_eq!(
+            testnet["nodes"][0]["peerCountries"]["unknownCountryCount"],
+            1
+        );
+        assert_eq!(
+            testnet["nodes"][0]["peerCountries"]["unknownWithoutRemoteIpCount"],
+            1
+        );
+        assert_eq!(
+            testnet["nodes"][0]["peerCountries"]["availablePeerCount"],
+            2
+        );
+        assert_network_geo_is_the_node_sum(&mainnet);
+        assert_network_geo_is_the_node_sum(&testnet);
+    }
+
+    /// The Network reading is the sum of its Active Node buckets by
+    /// construction, and a Node with no successful Peer Snapshot contributes
+    /// no buckets at all — so it can never be read as a country zero.
+    #[tokio::test]
+    async fn network_geo_reading_is_the_sum_of_its_active_node_buckets() {
+        let (_dir, state) = test_state().await;
+        let state = geo_enabled(state);
+        seed_geo_network(&state, "mainnet", &["geo-sum-a", "geo-sum-b", "geo-sum-c"]).await;
+        mark_peer_snapshot(&state, "geo-sum-a", 1).await;
+        mark_peer_snapshot(&state, "geo-sum-b", 1).await;
+        mark_peer_snapshot(&state, "geo-sum-c", 0).await;
+
+        // Node A: two Peer records in the United States, one of them retained
+        // last-good past its expiry, and one record without a usable IP.
+        insert_geo_peer(&state, "geo-sum-a", "sum-a-1", Some("8.8.8.8")).await;
+        insert_geo_peer(&state, "geo-sum-a", "sum-a-2", Some("9.9.9.9")).await;
+        insert_geo_peer(&state, "geo-sum-a", "sum-a-3", None).await;
+        insert_geo_cache(&state, "8.8.8.8", "US", 60, 3600).await;
+        insert_geo_cache(&state, "9.9.9.9", "US", 3600, -60).await;
+        // Node B: one address past the retention boundary and one in Germany.
+        insert_geo_peer(&state, "geo-sum-b", "sum-b-1", Some("5.5.5.5")).await;
+        insert_geo_peer(&state, "geo-sum-b", "sum-b-2", Some("6.6.6.6")).await;
+        insert_geo_cache(&state, "5.5.5.5", "US", 31 * 24 * 3600 + 60, 3600).await;
+        insert_geo_cache(&state, "6.6.6.6", "DE", 60, 3600).await;
+        // Node C: never produced a Peer Snapshot, so its single record is no
+        // country at the Network either.
+        insert_geo_peer(&state, "geo-sum-c", "sum-c-1", Some("8.8.8.8")).await;
+
+        let list = public_network_list(&state).await;
+        assert_eq!(list["geo"]["scope"], "partial");
+        assert_eq!(list["geo"]["knownCountryCount"], 3);
+        assert_eq!(list["geo"]["unknownCountryCount"], 2);
+        assert_eq!(list["geo"]["availablePeerCount"], 5);
+        assert_eq!(list["geo"]["unknownWithoutRemoteIpCount"], 1);
+        assert_eq!(list["geo"]["unknownWithPublicIpCount"], 1);
+        assert_network_geo_is_the_node_sum(&list);
+
+        let node = |node_id: &str| {
+            list["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|node| node["nodeId"] == node_id)
+                .unwrap()
+                .clone()
+        };
+        let a = node("geo-sum-a");
+        assert_eq!(a["peerCountries"]["scope"], "complete");
+        assert_eq!(a["peerCountries"]["knownCountryCount"], 2);
+        assert_eq!(a["peerCountries"]["unknownCountryCount"], 1);
+        assert_eq!(a["peerCountries"]["unknownWithoutRemoteIpCount"], 1);
+        assert_eq!(a["peerCountries"]["unknownWithPublicIpCount"], 0);
+        let a_countries = a["peerCountries"]["countries"].as_array().unwrap();
+        assert_eq!(a_countries.len(), 1);
+        assert_eq!(a_countries[0]["countryCode"], "US");
+        assert_eq!(a_countries[0]["count"], 2);
+        assert_eq!(a_countries[0]["staleCount"], 1);
+        let b = node("geo-sum-b");
+        assert_eq!(b["peerCountries"]["scope"], "complete");
+        assert_eq!(b["peerCountries"]["knownCountryCount"], 1);
+        assert_eq!(b["peerCountries"]["unknownCountryCount"], 1);
+        assert_eq!(b["peerCountries"]["countries"][0]["countryCode"], "DE");
+        let c = node("geo-sum-c");
+        assert_eq!(c["peerCountries"]["scope"], "unobserved");
+        assert!(c["peerCountries"]["knownCountryCount"].is_null());
+        assert!(c["peerCountries"]["unknownCountryCount"].is_null());
+        assert!(c["peerCountries"]["availablePeerCount"].is_null());
+        assert!(
+            c["peerCountries"]["countries"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A response's Geo reading covers exactly the Nodes that response lists.
+    /// The listed rows and the Geo rows are separate reads, so without the
+    /// restriction a Node activated in between would enter the Network reading
+    /// with no compact bucket of its own — the one way the sum invariant a
+    /// selection aggregate relies on could break.
+    #[tokio::test]
+    async fn network_geo_reading_covers_only_the_listed_nodes() {
+        let (_dir, state) = test_state().await;
+        let state = geo_enabled(state);
+        seed_geo_network(&state, "mainnet", &["geo-scan-a", "geo-scan-b"]).await;
+        mark_peer_snapshot(&state, "geo-scan-a", 1).await;
+        mark_peer_snapshot(&state, "geo-scan-b", 1).await;
+        insert_geo_peer(&state, "geo-scan-a", "scan-a-1", Some("7.7.7.7")).await;
+        insert_geo_peer(&state, "geo-scan-b", "scan-b-1", Some("4.4.4.4")).await;
+        insert_geo_cache(&state, "7.7.7.7", "US", 60, 3600).await;
+        insert_geo_cache(&state, "4.4.4.4", "DE", 60, 3600).await;
+
+        let mut readings = PublicGeoReadings::load(&state, state.geo_status(), None).await;
+        // The response lists only Node A, so only Node A's bucket is read.
+        readings.restrict_to_listed_nodes(&listed_nodes("mainnet", &["geo-scan-a"]));
+
+        let network = readings.insight(&state, GeoScope::Network("mainnet"));
+        assert_eq!(network.scope, "complete");
+        assert_eq!(network.known_country_count, Some(1));
+        assert_eq!(network.available_peer_count, Some(1));
+        let countries = network.countries.as_ref().unwrap();
+        assert_eq!(countries.len(), 1);
+        assert_eq!(countries[0].country_code, "US");
+        assert_eq!(countries[0].count, 1);
+
+        let listed = readings.node_peer_countries("geo-scan-a");
+        assert_eq!(listed.scope, "complete");
+        assert_eq!(listed.known_country_count, Some(1));
+        // A Node the response does not list projects nothing at all.
+        let unlisted = readings.node_peer_countries("geo-scan-b");
+        assert_eq!(unlisted.scope, "unavailable");
+        assert!(unlisted.known_country_count.is_none());
+    }
+
+    /// The other half of the same race: the Node the response lists is the one
+    /// this Geo batch lost. It keeps its place in the Active Node count, so the
+    /// Network reading stays `partial` instead of claiming a basis over the
+    /// Nodes that remain, and its own compact bucket carries no basis either —
+    /// summing the listed buckets still reproduces the reading exactly.
+    #[tokio::test]
+    async fn network_geo_reading_keeps_a_listed_node_the_batch_lost() {
+        let (_dir, state) = test_state().await;
+        let state = geo_enabled(state);
+        seed_geo_network(&state, "mainnet", &["geo-scan-a", "geo-scan-b"]).await;
+        mark_peer_snapshot(&state, "geo-scan-a", 1).await;
+        mark_peer_snapshot(&state, "geo-scan-b", 1).await;
+        insert_geo_peer(&state, "geo-scan-a", "scan-a-1", Some("7.7.7.7")).await;
+        insert_geo_peer(&state, "geo-scan-b", "scan-b-1", Some("4.4.4.4")).await;
+        insert_geo_cache(&state, "7.7.7.7", "US", 60, 3600).await;
+        insert_geo_cache(&state, "4.4.4.4", "DE", 60, 3600).await;
+
+        let mut readings = PublicGeoReadings::load(&state, state.geo_status(), None).await;
+        // Node C was listed by the response the later Geo read never saw, and
+        // Node B is no longer listed at all.
+        readings.restrict_to_listed_nodes(&listed_nodes("mainnet", &["geo-scan-a", "geo-scan-c"]));
+
+        let network = readings.insight(&state, GeoScope::Network("mainnet"));
+        assert_eq!(network.scope, "partial");
+        assert_eq!(network.known_country_count, Some(1));
+        assert_eq!(network.available_peer_count, Some(1));
+        let countries = network.countries.as_ref().unwrap();
+        assert_eq!(countries.len(), 1);
+        assert_eq!(countries[0].country_code, "US");
+
+        let lost = readings.node_peer_countries("geo-scan-c");
+        assert_eq!(lost.scope, "unobserved");
+        assert!(lost.known_country_count.is_none());
+        assert!(lost.countries.is_empty());
+        // Node B is not listed, so it contributes neither denominator nor count.
+        assert!(
+            readings
+                .node_peer_countries("geo-scan-b")
+                .known_country_count
+                .is_none()
+        );
+    }
+
+    /// Compact buckets grow by Nodes × countries, and the sum invariant holds
+    /// at a copy far larger than any real Network: one response is enough for
+    /// a selection aggregate, with no per-Node follow-up request.
+    #[tokio::test]
+    async fn listed_node_peer_countries_scale_with_nodes_and_countries() {
+        const NODES: usize = 256;
+        const COUNTRIES: [&str; 10] = ["AU", "BR", "CA", "DE", "FR", "GB", "IN", "JP", "NL", "US"];
+        let (_dir, state) = test_state().await;
+        let state = geo_enabled(state);
+        let node_ids: Vec<String> = (0..NODES)
+            .map(|index| format!("geo-scale-{index}"))
+            .collect();
+        let node_refs: Vec<&str> = node_ids.iter().map(String::as_str).collect();
+        seed_geo_network(&state, "mainnet", &node_refs).await;
+        for node_id in &node_ids {
+            mark_peer_snapshot(&state, node_id, 1).await;
+        }
+        for (index, country_code) in COUNTRIES.iter().enumerate() {
+            insert_geo_cache(
+                &state,
+                &format!("10.10.0.{}", index + 1),
+                country_code,
+                60,
+                3600,
+            )
+            .await;
+        }
+        // One statement per batch keeps the fixture cheap while still writing
+        // the same rows the ingest path produces.
+        let now = seconds_ago(0);
+        for chunk in node_ids.chunks(32) {
+            let mut rows = Vec::new();
+            for node_id in chunk {
+                for (index, _) in COUNTRIES.iter().enumerate() {
+                    rows.push(format!(
+                        "('{node_id}', 'scale-{node_id}-{index}', '10.10.0.{}', 'inbound', 0, 0, 0, '{now}')",
+                        index + 1
+                    ));
+                }
+            }
+            sqlx::query(&format!(
+                "INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, updated_at) VALUES {}",
+                rows.join(", ")
+            ))
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        }
+
+        let list = public_network_list(&state).await;
+        let nodes = list["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), NODES);
+        assert_eq!(list["geo"]["scope"], "complete");
+        assert_eq!(
+            list["geo"]["knownCountryCount"],
+            (NODES * COUNTRIES.len()) as i64
+        );
+        assert_eq!(list["geo"]["unknownCountryCount"], 0);
+        assert_eq!(
+            list["geo"]["availablePeerCount"],
+            (NODES * COUNTRIES.len()) as i64
+        );
+        let countries = list["geo"]["countries"].as_array().unwrap();
+        assert_eq!(countries.len(), COUNTRIES.len());
+        for country in countries {
+            assert_eq!(country["count"], NODES as i64);
+            assert_eq!(country["staleCount"], 0);
+        }
+        for node in nodes {
+            assert_eq!(node["peerCountries"]["scope"], "complete");
+            assert_eq!(node["peerCountries"]["knownCountryCount"], 10);
+            assert_eq!(
+                node["peerCountries"]["countries"].as_array().unwrap().len(),
+                COUNTRIES.len()
+            );
+        }
+        assert_network_geo_is_the_node_sum(&list);
     }
 
     /// The Owner-facing path end to end against the real Server: the Admin
@@ -3589,6 +4308,9 @@ mod tests {
         );
         seed_geo_network(&state, "mainnet", &["geo-ipinfo-a", "geo-ipinfo-b"]).await;
         mark_peer_snapshot(&state, "geo-ipinfo-a", 1).await;
+        // Peer rows exist only where a Peer Snapshot value was accepted, so
+        // both Nodes report one and the Network reading counts every row.
+        mark_peer_snapshot(&state, "geo-ipinfo-b", 1).await;
         // One address shared by three Peer records across two Nodes, plus a
         // documentation address the trust boundary refuses.
         for (node_id, peer_id, remote_ip) in [
@@ -3702,6 +4424,9 @@ mod tests {
         );
         seed_geo_network(&state, "mainnet", &["geo-geojs-a", "geo-geojs-b"]).await;
         mark_peer_snapshot(&state, "geo-geojs-a", 1).await;
+        // Peer rows exist only where a Peer Snapshot value was accepted, so
+        // both Nodes report one and the Network reading counts every row.
+        mark_peer_snapshot(&state, "geo-geojs-b", 1).await;
         // One address shared by three Peer records across two Nodes, plus a
         // documentation address the trust boundary refuses.
         for (node_id, peer_id, remote_ip) in [

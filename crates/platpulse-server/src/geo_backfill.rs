@@ -406,6 +406,7 @@ pub async fn run_worker(state: AppState) {
 mod tests {
     use super::*;
     use crate::geo_external::stub::{StubReply, StubServer};
+    use crate::geo_test_support::network_geo_insight;
     use tempfile::tempdir;
 
     const NOW: &str = "2026-08-12T10:00:00Z";
@@ -1000,22 +1001,12 @@ mod tests {
         // The projection compares retained expiries against the real clock,
         // so this test injects the pass time from the same clock.
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-        let before = crate::http::public::public_country_distribution(
-            &state,
-            "geo-net",
-            &state.geo_status(),
-        )
-        .await;
+        let before = network_geo_insight(&state, "geo-net").await;
         assert_eq!(before.known_country_count, Some(0));
         assert_eq!(before.unknown_country_count, Some(1));
 
         assert_eq!(run_pass(&state, &now).await.unwrap().resolved, 1);
-        let insight = crate::http::public::public_country_distribution(
-            &state,
-            "geo-net",
-            &state.geo_status(),
-        )
-        .await;
+        let insight = network_geo_insight(&state, "geo-net").await;
         assert_eq!(insight.known_country_count, Some(1));
         assert_eq!(insight.unknown_country_count, Some(0));
         let countries = insight.countries.unwrap();
@@ -1154,12 +1145,7 @@ mod tests {
 
         // The projection compares retained expiries against the real clock.
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-        let before = crate::http::public::public_country_distribution(
-            &state,
-            "geo-net",
-            &state.geo_status(),
-        )
-        .await;
+        let before = network_geo_insight(&state, "geo-net").await;
         assert_eq!(before.known_country_count, Some(0));
         assert_eq!(before.unknown_country_count, Some(2));
         assert_eq!(
@@ -1169,12 +1155,7 @@ mod tests {
         );
 
         assert_eq!(run_pass(&state, &now).await.unwrap().resolved, 1);
-        let insight = crate::http::public::public_country_distribution(
-            &state,
-            "geo-net",
-            &state.geo_status(),
-        )
-        .await;
+        let insight = network_geo_insight(&state, "geo-net").await;
         assert_eq!(insight.state, "current");
         assert_eq!(insight.known_country_count, Some(2));
         assert_eq!(insight.unknown_country_count, Some(0));
@@ -1225,12 +1206,7 @@ mod tests {
         // retained country stays visible as last-good.
         assert_eq!(state.geo_status().state, "error");
         assert!(state.geo_status().last_error.is_some());
-        let insight = crate::http::public::public_country_distribution(
-            &state,
-            "geo-net",
-            &state.geo_status(),
-        )
-        .await;
+        let insight = network_geo_insight(&state, "geo-net").await;
         assert_eq!(insight.state, "error");
         assert!(
             insight.error_reason.is_some(),
@@ -1560,7 +1536,12 @@ mod tests {
         // A documentation address is refused by the trust boundary and never
         // reaches the third party.
         insert_peer(&state, "geo-node-a", "p4", "203.0.113.9").await;
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-geo-backfill', 'node', 'geo-node-a', 'geo-node-a', 'peers', 'ok', ?, ?, ?, ?, 1, 1)")
+        // Ingestion writes a Node's Peer rows inside the same transaction that
+        // records its Peer Snapshot value, so both Nodes here have produced one.
+        for node_id in ["geo-node-a", "geo-node-b"] {
+            sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-geo-backfill', 'node', ?, ?, 'peers', 'ok', ?, ?, ?, ?, 1, 1)")
+            .bind(node_id)
+            .bind(node_id)
             .bind(NOW)
             .bind(NOW)
             .bind(NOW)
@@ -1568,6 +1549,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
+        }
 
         // The Public projection below compares retained expiries against the
         // real clock, so this test injects the pass time from the same clock;
@@ -1612,12 +1594,7 @@ mod tests {
         // The Public projection reads the same retained result, counts Peer
         // records rather than deduplicated addresses, and carries the GeoJS
         // attribution the selected provider owns.
-        let insight = crate::http::public::public_country_distribution(
-            &state,
-            "geo-net",
-            &state.geo_status(),
-        )
-        .await;
+        let insight = network_geo_insight(&state, "geo-net").await;
         assert_eq!(insight.state, "current");
         assert_eq!(insight.known_country_count, Some(3));
         assert_eq!(insight.unknown_country_count, Some(1));
