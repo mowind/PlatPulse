@@ -264,6 +264,25 @@ describe('PAGE-ADMIN-NETWORKS (Network Registry)', () => {
     expect(rowB.textContent).toContain('chain id 999999')
   })
 
+  it('names the Node-side remedy for a mismatch and never offers the Registry tuple as the fix', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/networks/platon-e2e': () => jsonResponse(NETWORK_DETAIL, 200),
+    })
+    renderAt('/admin/networks/platon-e2e')
+
+    const remedy = await screen.findByText(/Correct the observation on the Node itself/)
+    const banner = remedy.closest('[role="alert"]')
+    expect(banner).toBeTruthy()
+    expect(banner?.textContent).toContain('its build and its configuration, not this Registry')
+    expect(banner?.textContent).toContain('Rewriting the tuple to match one Node is not a remedy')
+    expect(banner?.textContent).toContain('contradict every other Node on this Network')
+    expect(banner?.textContent).toContain('never merged and never backfilled')
+    expect(banner?.textContent).toContain('permanent gap')
+    // The remedy is never "correct the tuple" (ADR 0011).
+    expect(banner?.textContent).not.toContain('or the tuple is corrected')
+  })
+
   it('updates the Registry tuple with an audited confirmation and refetches', async () => {
     let displayName = 'PlatON E2E Network'
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -290,6 +309,10 @@ describe('PAGE-ADMIN-NETWORKS (Network Registry)', () => {
     // The confirmation step is explicit before the identity tuple mutation.
     expect(
       await screen.findByText(/Update the expected identity tuple\?/),
+    ).toBeTruthy()
+    // A tuple edit changes no Node state and reclaims no rejected Block History.
+    expect(
+      screen.getByText(/Block History already rejected on a mismatch is not reclaimed/),
     ).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
     expect(await screen.findByText('Updated PlatON E2E Network v2.')).toBeTruthy()

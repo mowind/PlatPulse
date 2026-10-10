@@ -596,6 +596,8 @@ Before upgrading, stop the Server, take a backup with the packaged `backup` comm
 
 If readiness or a post-upgrade smoke check fails, stop the new process, restore the previous matching Server/Agent artifacts, and start the previous version against the unchanged state directory. Do not delete or downgrade the database in place: a schema migration is forward-only. If the new version has already migrated the database, restore the pre-upgrade backup into a fresh state directory, restore the pepper and secret files with their private permissions, and validate the restored instance before switching the service back. Keep the failed release logs and recovery-rehearsal evidence for incident review.
 
+A Node build upgrade is a separate operation from a Server upgrade: the Agent stamps each Block Summary with the identity its own Node reports, so a Node whose build changes the identity it answers with keeps producing rejected samples. When a Node's binary or network configuration changes, follow "Node Network Identity at onboarding and after a Node build upgrade" at the end of this document.
+
 ### Coordinated Inventory v2 cutover (issue #192)
 
 The Server-managed Inventory Revision protocol (v2) replaces the Agent-supplied inventory_revision. Migrating an existing frozen-v1 deployment is a coordinated offline operation with one explicit switch gate; it is not a rolling upgrade, and new and old protocols must never run mixed.
@@ -622,5 +624,38 @@ Operator sequence (each step runs with the Server stopped; never point the old b
 8. Start the new Server with the converted server.toml and the Agent with the converted agent.toml. Confirm /health/ready, that the first v2 Report completes the existing DrainedPrevious transition without changing the preserved revision, and that the Admin Inventory diagnosis reports protocol v2.
 
 Failure diagnosis: cutover status distinguishes not_converted, awaiting_resume and resumed. A missing transcript, a mismatched hash or revision, a changed Boot/Closing identity or a failed offline verification leaves the deployment at awaiting_resume and refuses the switch; it never silently adopts a new baseline. After the switch, repair forward: do not restore an older backup as a routine rollback, because that may discard post-cutover declarations, Purge barriers and other writes.
+
+## Node Network Identity at onboarding and after a Node build upgrade
+
+A Network's identity is its Registry tuple: genesis hash, chain ID, P2P network ID, and address HRP. The Agent stamps every Block Summary with the identity tuple its own Node reports, and the Server compares that stamp with the Registry row for the Node's Network key. A sample whose stamp differs is terminally rejected with `network_identity_mismatch` ("Block network identity does not match the registered Network"); the rejected interval is a History Gap that is never merged, re-labelled, or backfilled.
+
+Confirm a Node's own identity before adding it to a Network, and again after any Node build upgrade:
+
+- `eth_chainId` must answer the Registry chain ID. PlatON mainnet/testnet is 210425 (`0x335f9`); a pre-PIP-7 build answers the legacy `100` instead.
+- `admin_nodeInfo` must report the same PIP-7 chain ID, while the legacy `chainId` field may still report the pre-PIP-7 value.
+- `platon version` must be at or after commit `45c3e086d`, the PIP-7 chain-ID fix. Builds without it (for example `v1.5.1-unstable-34e50429-20251023`) still answer `eth_chainId` with `100`.
+
+Symptoms of a mismatching Node: Admin → Home raises the critical Network Identity Mismatch attention item (`node_identity_mismatch`); Admin → Networks and the Node page show the Node as Mismatched with the contradicting field names and the observed tuple beside the Registry tuple; every Block Summary from that Node is rejected, so the Blocks and Txs of its heights stay unknown. The mismatch is repaired on the Node side, never in the Registry:
+
+1. Correct the Node: upgrade its binary to a build containing the chain-ID fix, or correct its network configuration, and restart it.
+2. Restart that Host's Agent (`sudo systemctl restart platpulse-agent`, or the matching `systemctl --user` unit). The Agent re-reads the Node identity when it re-subscribes, so only then do new samples carry a stamp that matches the Registry.
+3. Do not edit the Registry tuple to match a Node (Admin → Networks → Edit tuple, or `PUT /api/admin/v1/networks/{network_key}`). The observed tuple is the Node's own claim; matching it would contradict every other Node on the same Network, and it reclaims no already-rejected Block History.
+
+Read-only verification. The packaged units keep the Server database at `/var/lib/platpulse/platpulse.db` (see the configured `db_path`). The running Server holds that database exclusively, so read it through the `immutable` URI, or use a snapshot produced by the packaged `backup` command:
+
+```bash
+sqlite3 'file:/var/lib/platpulse/platpulse.db?immutable=1' \
+  "SELECT n.display_name, o.network_chain_id, o.network_p2p_network_id,
+          o.network_address_hrp, o.network_genesis_hash
+     FROM nodes n
+     JOIN current_node_chain_observations o ON o.node_id = n.node_id
+    WHERE n.network_key = 'REPLACE_WITH_NETWORK_KEY';"
+
+sqlite3 'file:/var/lib/platpulse/platpulse.db?immutable=1' \
+  "SELECT network_key, chain_id, p2p_network_id, address_hrp, genesis_hash FROM networks;"
+```
+
+A Node's `display_name` is assigned when the Node is first accepted; a later Inventory declaration does not rename it, so rename the Node through the Admin Node metadata action (`PUT /api/admin/v1/nodes/{node_id}/metadata`).
+
 
 

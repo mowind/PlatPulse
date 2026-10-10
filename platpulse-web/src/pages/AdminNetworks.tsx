@@ -527,7 +527,8 @@ function IdentityTuplePanel({
               <>
                 <span className="text-[11px] text-muted-foreground">
                   Update the expected identity tuple? Existing Nodes whose observed identity
-                  contradicts the new tuple surface as typed mismatches; no Node state changes.
+                  contradicts the new tuple surface as typed mismatches; no Node state changes,
+                  and Block History already rejected on a mismatch is not reclaimed.
                 </span>
                 <Button type="button" onClick={() => void confirm()}>
                   Confirm tuple update
@@ -616,8 +617,11 @@ function NetworkNodesPanel({
         >
           <StatusBadge status="Mismatched" tone="error" /> {mismatched} Node
           {mismatched === 1 ? ' observes' : 's observe'} an identity that contradicts
-          this Registry tuple. Their history is not merged until the observation or
-          the tuple is corrected.
+          this Registry tuple. Correct the observation on the Node itself: its build
+          and its configuration, not this Registry. Rewriting the tuple to match one
+          Node is not a remedy — it would contradict every other Node on this Network.
+          Block History already rejected from those Nodes is never merged and never
+          backfilled, so the affected heights stay a permanent gap.
         </div>
       )}
       {nodes.length === 0 && (
