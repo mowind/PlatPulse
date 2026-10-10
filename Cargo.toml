@@ -1,3 +1,13 @@
+# The bundled SQLite inside libsqlite3-sys is patched in-tree: the 0.30.1
+# bindings that sqlx 0.8.6 pins (`^0.30.1`) ship SQLite 3.46.0, which is inside
+# the WAL-reset corruption window (SQLite < 3.51.3). vendor/libsqlite3-sys is the
+# upstream 0.30.1 crate with only sqlite3/sqlite3.c, sqlite3/sqlite3.h and
+# sqlite3/sqlite3ext.h replaced by the 3.53.2 amalgamation. See
+# vendor/libsqlite3-sys/README.platpulse.md and
+# docs/research/server-db-corruption-investigation.md.
+[patch.crates-io]
+libsqlite3-sys = { path = "vendor/libsqlite3-sys" }
+
 [workspace]
 resolver = "2"
 members = [

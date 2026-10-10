@@ -608,8 +608,16 @@ impl AppState {
         self.runtime.wait_for_ingestion(deadline).await
     }
 
+    /// Flush the write-ahead log into the main database file.
+    ///
+    /// Deliberately a FULL checkpoint rather than TRUNCATE: resetting the WAL on
+    /// the shutdown path is the trigger identified in
+    /// docs/research/server-db-corruption-investigation.md for the upstream
+    /// WAL-reset corruption bug (SQLite < 3.51.3), and the truncation buys
+    /// nothing - the frames are already in the main file and any remaining WAL
+    /// content is replayed on the next start.
     pub async fn checkpoint_wal(&self) -> Result<(), sqlx::Error> {
-        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        sqlx::query("PRAGMA wal_checkpoint(FULL)")
             .execute(self.db.pool())
             .await
             .map(|_| ())
