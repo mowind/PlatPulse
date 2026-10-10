@@ -818,10 +818,15 @@ impl RegisteredNetworkIdentity {
         if stamped.address_hrp.as_deref().unwrap_or("") != self.address_hrp {
             fields.push(StampedIdentityField {
                 field: "address_hrp",
+                // A sample's stamp need not carry an HRP. Say so in words
+                // that can never be a registered value: a Network's address
+                // HRP must not contain whitespace (crates/platpulse-server/src/network.rs),
+                // so "not reported" stays unambiguous next to a registered
+                // HRP that literally reads "unset".
                 stamped: stamped
                     .address_hrp
                     .clone()
-                    .unwrap_or_else(|| "unset".to_owned()),
+                    .unwrap_or_else(|| "not reported".to_owned()),
                 registered: self.address_hrp.clone(),
             });
         }
@@ -851,25 +856,32 @@ fn fresh_network_identity<I: ReportInventory>(
 /// same Node when its samples span a subscription boundary (the wire format
 /// validates each sample's stamp on its own), so every rejection is keyed by
 /// the stamp it diagnosed rather than by the Node alone.
-type StampedIdentityKey = (platpulse_core::identity::NodeId, String);
-
-/// Fingerprint of the stamp a sample carries, used as the diagnosis key. Field
-/// separators keep two different stamps from producing one key; an absent HRP
-/// is spelled out rather than rendered as an empty segment.
-fn stamped_identity_key(
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct StampedIdentityKey {
     node_id: platpulse_core::identity::NodeId,
-    stamp: &platpulse_core::network::NetworkIdentity,
-) -> StampedIdentityKey {
-    (
-        node_id,
-        format!(
-            "{}|{}|{}|{}",
-            stamp.genesis_hash,
-            stamp.chain_id,
-            stamp.p2p_network_id,
-            stamp.address_hrp.as_deref().unwrap_or("unset")
-        ),
-    )
+    genesis_hash: String,
+    chain_id: u64,
+    p2p_network_id: u64,
+    address_hrp: Option<String>,
+}
+
+impl StampedIdentityKey {
+    /// The key of the stamp one sample carries. Every field is kept as it was
+    /// stamped, so two different stamps can never collapse into one key: an
+    /// absent HRP is not the same stamp as a Network registered under the
+    /// literal HRP "unset".
+    fn new(
+        node_id: platpulse_core::identity::NodeId,
+        stamp: &platpulse_core::network::NetworkIdentity,
+    ) -> Self {
+        Self {
+            node_id,
+            genesis_hash: stamp.genesis_hash.to_string(),
+            chain_id: stamp.chain_id,
+            p2p_network_id: stamp.p2p_network_id,
+            address_hrp: stamp.address_hrp.clone(),
+        }
+    }
 }
 
 /// Samples whose stamped Network Identity contradicts the Registry, keyed by
@@ -921,7 +933,7 @@ async fn block_network_identity_rejections<I: ReportInventory>(
             Some(_) => StampDivergence::NetworkConflict,
         };
         rejections
-            .entry(stamped_identity_key(
+            .entry(StampedIdentityKey::new(
                 sample.node_id,
                 &sample.network_identity,
             ))
@@ -2991,7 +3003,7 @@ async fn ingest_report<I: ReportInventory>(
         // trust boundary and never presents Agent input as its own evidence).
         let reason = if ownership_mismatches.contains(&sample.node_id) {
             "Node ownership mismatch".to_owned()
-        } else if let Some(evidence) = identity_rejections.get(&stamped_identity_key(
+        } else if let Some(evidence) = identity_rejections.get(&StampedIdentityKey::new(
             sample.node_id,
             &sample.network_identity,
         )) {
@@ -3155,7 +3167,7 @@ async fn ingest_report<I: ReportInventory>(
         .block_summaries
         .iter()
         .map(|sample| {
-            let identity_rejection = identity_rejections.get(&stamped_identity_key(
+            let identity_rejection = identity_rejections.get(&StampedIdentityKey::new(
                 sample.node_id,
                 &sample.network_identity,
             ));
@@ -7171,6 +7183,119 @@ mod tests {
         assert_eq!(gaps[1].2, hrp.reason);
     }
 
+    /// The diagnosis key is built from the stamp's own fields, so a stamp that
+    /// carries no HRP can never share the key of a stamp whose HRP reads
+    /// "unset" - the literal is a legal Registry value, and collapsing the two
+    /// would reject a matching sample on a sibling sample's contradiction.
+    #[test]
+    fn an_absent_hrp_is_not_the_stamp_registered_as_unset() {
+        let node_id: platpulse_core::identity::NodeId =
+            "0195f2a1-0013-4013-8013-000000000307".parse().unwrap();
+        let mut absent = registered_identity();
+        absent.address_hrp = None;
+        let mut literal = registered_identity();
+        literal.address_hrp = Some("unset".to_owned());
+
+        assert_ne!(
+            StampedIdentityKey::new(node_id, &absent),
+            StampedIdentityKey::new(node_id, &literal)
+        );
+        // Equal stamps still share a key: the same contradicted stamp must not
+        // be diagnosed twice.
+        assert_eq!(
+            StampedIdentityKey::new(node_id, &literal),
+            StampedIdentityKey::new(node_id, &literal.clone())
+        );
+    }
+
+    /// A Network registered under the literal HRP "unset" is a legal Registry
+    /// tuple, and a sample whose stamp matches it must be accepted even when a
+    /// sibling sample of the same Report carries no HRP at all. Before the
+    /// diagnosis was keyed by an explicit field list both stamps produced the
+    /// same key, so the matching summary was refused (and a permanent History
+    /// Gap invented for it) while the data plane stored it anyway.
+    #[tokio::test]
+    async fn samples_are_diagnosed_by_their_own_stamp_not_by_a_sibling_ones() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        sqlx::query("UPDATE networks SET address_hrp = 'unset'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let mut registered = registered_identity();
+        registered.address_hrp = Some("unset".to_owned());
+        let mut absent = registered.clone();
+        absent.address_hrp = None;
+        let mut report = report_with_stamped_samples(
+            "0195f2a1-0013-4013-8013-000000000307",
+            &registered,
+            &absent,
+            &[10],
+        );
+        let node_id = report.inventory.nodes[0].node_id;
+        let mut matching = report.block_summaries[0].clone();
+        matching.block_number = 11;
+        matching.block_hash = format!("0x{:064x}", 12).parse().unwrap();
+        matching.parent_hash = format!("0x{:064x}", 11).parse().unwrap();
+        matching.network_identity = registered.clone();
+        report.block_summaries.push(matching);
+        report.validate().unwrap();
+
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
+        let rejection_at = |height: u64| {
+            receipt
+                .samples
+                .iter()
+                .find(|sample| {
+                    sample.sample == platpulse_core::receipt::SampleRef::Block { height }
+                })
+                .and_then(|sample| sample.rejection.clone())
+        };
+
+        let absent = rejection_at(10).expect("the HRP-less stamp is contradicted");
+        assert_eq!(
+            absent.code,
+            platpulse_core::RejectionCode::NetworkIdentityMismatch
+        );
+        // The refusal names the missing HRP without pretending it was this
+        // Network's registered value.
+        assert!(
+            absent
+                .reason
+                .contains("address_hrp stamped not reported registered unset"),
+            "{}",
+            absent.reason
+        );
+        assert!(
+            rejection_at(11).is_none(),
+            "the matching stamp is accepted, not judged by its sibling"
+        );
+
+        let accepted: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE node_id = ?")
+                .bind(node_id.to_string())
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(accepted, 1);
+        // The data plane, the Receipt and the Server's own gap row agree: the
+        // accepted summary is counted once and only the contradicted height is
+        // refused.
+        let counted: i64 = sqlx::query_scalar(
+            "SELECT cumulative_block_count FROM block_history_state WHERE node_id = ?",
+        )
+        .bind(node_id.to_string())
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(counted, 1);
+        let gaps = recorded_gap_reasons(&state, node_id).await;
+        assert_eq!(gaps.len(), 1);
+        assert_eq!((gaps[0].0, gaps[0].1), (10, 10));
+        assert_eq!(gaps[0].2, absent.reason);
+    }
+
     /// A contradicted stamp is the more specific finding about a sample, so it
     /// outranks the generic refusals in the Receipt: a GapBackfill sample
     /// outside an open recoverable gap reports the identity contradiction the
@@ -7283,6 +7408,63 @@ mod tests {
                     "agent".to_owned()
                 ),
             ]
+        );
+    }
+
+    /// A refusal is the Server's own finding, so it must correct a row the
+    /// Agent declared first for the same height: the Agent's insert keeps its
+    /// hands off an existing row, and the Server's upsert owns the row it
+    /// refused. Otherwise a reporting Agent could dictate what the Admin
+    /// diagnosis says about a refusal the Server made (AGENTS.md: the Server
+    /// is the trust boundary).
+    #[tokio::test]
+    async fn a_server_refusal_corrects_the_gap_the_agent_declared_first() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut declared = report_with_stamped_samples(
+            "0195f2a1-0013-4013-8013-000000000310",
+            &registered_identity(),
+            &pre_upgrade_identity(),
+            &[],
+        );
+        let node_id = declared.inventory.nodes[0].node_id;
+        declared.history_gaps = std::iter::once(platpulse_core::gap::HistoryGap {
+            node_id,
+            kind: platpulse_core::gap::GapKind::ServerRejected,
+            from_height: 10,
+            to_height: 10,
+            reason: "locally retained history gap".to_owned(),
+            recorded_at: declared.generated_at,
+        })
+        .collect();
+        declared.validate().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&declared).unwrap()).await;
+        assert_eq!(
+            recorded_gap_rows(&state, node_id).await,
+            vec![(
+                10,
+                10,
+                "locally retained history gap".to_owned(),
+                "agent".to_owned()
+            )]
+        );
+
+        let mut refused = report_with_stamped_samples(
+            "0195f2a1-0013-4013-8013-000000000311",
+            &registered_identity(),
+            &pre_upgrade_identity(),
+            &[10],
+        );
+        refused.report_sequence = declared.report_sequence + 1;
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&refused).unwrap()).await;
+        let server_reason = receipt.samples[0]
+            .rejection
+            .as_ref()
+            .unwrap()
+            .reason
+            .clone();
+        assert_eq!(
+            recorded_gap_rows(&state, node_id).await,
+            vec![(10, 10, server_reason, "server".to_owned())]
         );
     }
 

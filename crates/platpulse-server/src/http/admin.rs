@@ -2330,12 +2330,16 @@ pub struct BlockHistoryRejection {
 async fn block_history_rejection(state: &AppState, node_id: &str) -> Option<BlockHistoryRejection> {
     // One query keeps the newest refusal and its aggregate on the same
     // predicate, so the panel can never report a height span from evidence
-    // other than the refusal it displays.
+    // other than the refusal it displays. The two recovery proofs are compared
+    // as text and the newer one wins (an empty string stands for "none", which
+    // sorts before every RFC 3339 timestamp): a Node whose raw summaries
+    // retention has not aged out yet is judged by its newest accepted summary,
+    // and one whose summaries are gone by the durable acceptance stamp.
     let (count, from_height, to_height, reason, recorded_at) = sqlx::query_as::<
         _,
         (i64, Option<i64>, Option<i64>, Option<String>, Option<String>),
     >(
-        "WITH current_refusals AS (SELECT g.from_height, g.to_height, g.reason, g.created_at FROM block_history_gaps g WHERE g.node_id = ? AND g.kind = 'server_rejected' AND g.authored_by = 'server' AND g.created_at > COALESCE((SELECT MAX(s.accepted_at) FROM block_summaries s WHERE s.node_id = g.node_id), (SELECT h.last_accepted_summary_at FROM block_history_state h WHERE h.node_id = g.node_id), '')) SELECT COUNT(*), MIN(from_height), MAX(to_height), (SELECT reason FROM current_refusals ORDER BY created_at DESC, from_height DESC LIMIT 1), (SELECT created_at FROM current_refusals ORDER BY created_at DESC, from_height DESC LIMIT 1) FROM current_refusals",
+        "WITH current_refusals AS (SELECT g.from_height, g.to_height, g.reason, g.created_at FROM block_history_gaps g WHERE g.node_id = ? AND g.kind = 'server_rejected' AND g.authored_by = 'server' AND g.created_at > max(COALESCE((SELECT MAX(s.accepted_at) FROM block_summaries s WHERE s.node_id = g.node_id), ''), COALESCE((SELECT h.last_accepted_summary_at FROM block_history_state h WHERE h.node_id = g.node_id), ''))) SELECT COUNT(*), MIN(from_height), MAX(to_height), (SELECT reason FROM current_refusals ORDER BY created_at DESC, from_height DESC LIMIT 1), (SELECT created_at FROM current_refusals ORDER BY created_at DESC, from_height DESC LIMIT 1) FROM current_refusals",
     )
     .bind(node_id)
     .fetch_one(state.db().pool())
