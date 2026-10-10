@@ -49,7 +49,7 @@ The Server-managed set of expected Network identities. An Agent declares a Node'
 _Avoid_: Free-text network name, Agent-owned network identity
 
 **Network Identity Mismatch**:
-A state in which a Node's observed Network Identity differs from its registered Network. Current diagnostic observations may continue, but block history must not merge into the registered Network's history.
+A state in which a Node's observed Network Identity differs from its registered Network. Current diagnostic observations may continue, but block history must not merge into the registered Network's history. Its binding point is Block Resolution rather than the component observation that reports it, so a Node whose own identity changes, for example a build upgrade that changes the chain ID it answers with, keeps producing rejected samples until its Agent is restarted; the rejected interval is recorded as a History Gap and is never backfilled (ADR 0011).
 _Avoid_: Automatic network migration, RPC error
 
 **Observed Network Head**:
@@ -201,11 +201,15 @@ A bounded point-query recovery of blocks missed across startup, reconnection, or
 _Avoid_: Continuous polling, Full-chain scan
 
 **Block Summary**:
-A per-Node observation of one block containing operational metadata and Block Production Attribution without complete transaction contents.
+A per-Node observation of one block containing operational metadata and Block Production Attribution without complete transaction contents. Each Block Summary carries the Network Identity its Agent held at Block Resolution, not an identity re-read from the block, and the Server compares that stamp against the Network Registry for every sample.
 _Avoid_: Archived block, Transaction record
 
+**Block Identity Stamp**:
+The Network Identity an Agent holds when it resolves a block and attaches to each Block Summary it produces, bound at Block Resolution and refreshed only when that Node's Block Worker re-subscribes, so a Node whose own Network Identity changes keeps producing mismatching samples until its Agent is restarted (ADR 0011).
+_Avoid_: Server-assigned Network, Re-read network identity, Live network identity
+
 **History Gap**:
-An explicit interval for which time-series samples were lost or intentionally dropped while a later current-state report may still remain authoritative.
+An explicit interval for which time-series samples were lost or intentionally dropped while a later current-state report may still remain authoritative. An interval rejected because a sample's Agent-side Network Identity stamp did not match the Network Registry remains a History Gap: it never opens a recoverable coverage interval and is never backfilled (ADR 0011).
 _Avoid_: Zero activity, Unknown outage
 
 **Historical High-Water Mark**:
