@@ -7243,17 +7243,26 @@ mod tests {
 
         let receipt = submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
         assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
-        let rejection_at = |height: u64| {
+        // Both samples must be reported on by the Receipt: a missing entry
+        // would let the "no rejection" assertion below pass for the wrong
+        // reason, so each height is looked up by presence, not by absence.
+        let sample_at = |height: u64| {
             receipt
                 .samples
                 .iter()
                 .find(|sample| {
                     sample.sample == platpulse_core::receipt::SampleRef::Block { height }
                 })
-                .and_then(|sample| sample.rejection.clone())
+                .unwrap_or_else(|| panic!("the Receipt reports the sample for height {height}"))
+                .clone()
         };
+        assert_eq!(receipt.samples.len(), 2);
 
-        let absent = rejection_at(10).expect("the HRP-less stamp is contradicted");
+        let refused = sample_at(10);
+        assert_eq!(refused.disposition, SampleDispositionKind::TerminalRejected);
+        let absent = refused
+            .rejection
+            .expect("the HRP-less stamp is contradicted");
         assert_eq!(
             absent.code,
             platpulse_core::RejectionCode::NetworkIdentityMismatch
@@ -7267,8 +7276,13 @@ mod tests {
             "{}",
             absent.reason
         );
+        // The sibling stamp that genuinely matches the Registry is accepted on
+        // its own merits, not condemned through a key it shares with a
+        // normalized spelling of the absent HRP.
+        let matched = sample_at(11);
+        assert_eq!(matched.disposition, SampleDispositionKind::Accepted);
         assert!(
-            rejection_at(11).is_none(),
+            matched.rejection.is_none(),
             "the matching stamp is accepted, not judged by its sibling"
         );
 
@@ -7466,6 +7480,26 @@ mod tests {
             recorded_gap_rows(&state, node_id).await,
             vec![(10, 10, server_reason, "server".to_owned())]
         );
+        // The Server also stamps the row with its own clock instead of keeping
+        // the Agent's claim about when the refusal happened. The Receipt's
+        // `server_time` and the row's `created_at` are both canonical
+        // second-precision UTC text, and the row's text is minted first, so it
+        // can only sort at or before the Receipt's time — never at the Agent's
+        // past-dated `recorded_at`.
+        let (created_at, authored_by): (String, String) = sqlx::query_as(
+            "SELECT created_at, authored_by FROM block_history_gaps WHERE node_id = ? AND from_height = 10 AND to_height = 10",
+        )
+        .bind(node_id.to_string())
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(authored_by, "server");
+        assert_ne!(
+            created_at,
+            declared.generated_at.to_string(),
+            "the Agent's own timestamp must not survive the Server's refusal"
+        );
+        assert!(created_at.as_str() <= receipt.server_time.to_string().as_str());
     }
 
     /// Acceptance evidence for the Admin refusal diagnosis outlives raw Block
