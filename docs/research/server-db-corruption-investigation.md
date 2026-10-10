@@ -18,6 +18,8 @@
 
 **限制（必须保留）**：WAL-reset bug 需要 ≥2 个并发连接，而 09-17 当天运行的提交 `1076718` 尚无运行时完整性监控，连接池 `max_connections = min_connections = 1` 且 `locking_mode=Exclusive` 使语句串行。因此 **09-17 事件的「≥2 连接」前提尚未被现场证据证实**；09-17 与 09-23 是否同源，仍需产物比对或隔离复现坐实。09-18 及之后的构建（`abe342f`）同时具备运行时监控与定时 `VACUUM INTO`，触发面明显扩大。
 
+**2026-10-10 更新（现场库静止态判定）：现场库本身不处于损坏状态。** 停机后对副本用两个独立引擎复核：系统 `sqlite3 3.53.4`（`immutable=1`）`PRAGMA integrity_check(1)` → `ok`（54s）；新构建的 `platpulse-server verify-integrity`（内置 SQLite 3.53.2）→ `SQLite integrity check: ok`，exit 0（63s）。同一份库在**运行中**用 `immutable=1` 打开却报 `malformed`（`Freelist: freelist leaf count too big on page 3819225`）——差异来自 `-wal` 未回填（`immutable=1` 忽略 `-wal`，读到陈旧主文件视图）。因此 2026-10-09/10 期间在活库上观察到的 `malformed`/`btreeInitPage() returns error code 11` 属**外部只读打开造成的伪影，不是盘上损坏**；09-17 的两份原始产物在静止态复核仍为真损坏。⇒ 现场库**无需修复/重建**，只需按 §7 建议 1/2 消除触发面。详见 §11。
+
 **已排除**：介质/文件系统故障；09-17 首次报错前的外部进程；09-23 的 gdb 注入式 abort。详见 §4。
 
 ## 2. 事件与时间线
@@ -79,11 +81,11 @@
 
 | 事实 | 位置 / 值 |
 | --- | --- |
-| SQLite 版本 | 3.46.0（`libsqlite3-sys 0.30.1` + `sqlx 0.8.6`；系统 `/usr/sbin/sqlite3` 为 3.53.4，已修复） |
+| SQLite 版本 | 调查时（HEAD `f355eb8`）为 3.46.0（`libsqlite3-sys 0.30.1` + `sqlx 0.8.6`）；**2026-10-10 起构建的二进制为 3.53.2**（vendored patch，§7 建议 1）；系统 `/usr/sbin/sqlite3` 为 3.53.4 |
 | 日志模式 | WAL；`synchronous=Full` |
 | 独占锁 | `crates/platpulse-server/src/database.rs:114` `Self::new(path).with_exclusive_locking(!development)`；`:124` 定义；`:477` `options.locking_mode(SqliteLockingMode::Exclusive)` |
 | 连接池 | `crates/platpulse-server/src/database.rs:29` `pub const SERVER_WRITE_CONNECTIONS: u32 = 1;`；`:501-502` `max_connections(1).min_connections(1)` → 单连接串行 |
-| 关闭期 checkpoint | `crates/platpulse-server/src/http/mod.rs:573-574` `checkpoint_wal` → `PRAGMA wal_checkpoint(TRUNCATE)`（唯一显式 checkpoint 点，也是最激进的一种） |
+| 关闭期 checkpoint | 调查时 `crates/platpulse-server/src/http/mod.rs:573-574` 为 `PRAGMA wal_checkpoint(TRUNCATE)`（唯一显式 checkpoint 点，也是最激进的一种）；**2026-10-10 起改为 `PRAGMA wal_checkpoint(FULL)`（`crates/platpulse-server/src/http/mod.rs:616`）** |
 | 运行时监控（09-18+） | `abe342f` 新增 `http/health.rs` 的 `monitor_integrity` / `bounded_integrity_query` / `IntegrityConnection`，以及 `backup_schedule.rs` |
 | 在线备份（09-18+） | `crates/platpulse-server/src/backup.rs:126` `VACUUM INTO '{temp}'` 在活池上执行；快照自身的 `VACUUM` 在 `backup.rs:226`（只作用于快照文件） |
 
@@ -132,15 +134,24 @@ WAL-reset bug 的五步（[sqlite.org/draft/wal.html §11.1](https://sqlite.org/
 
 ## 7. 建议下一步（按优先级）
 
+> 状态（2026-10-10）：建议 1、2、3 已实施（见各条下的「已实施」）；建议 4–5 待办。损坏库的最终处置：静止态判定为**无损坏、无需修复**（§11），现场库保持原样继续使用。
+
 1. **升级内置 SQLite 至 ≥ 3.51.3**（或 backport 3.44.6 / 3.50.7）。注意：`libsqlite3-sys 0.33.0` 自带 SQLite **3.49.1，仍然受影响**，不能只升这一档。
+   - **已实施**：sqlx 0.8.6 的 `sqlx-sqlite/bundled` 把 `libsqlite3-sys` 钉在 `^0.30.1`（= SQLite 3.46.0）；放宽该约束要等 sqlx 0.9.0（`>= 0.30.1, < 0.38.0`），而那是破坏性大版本迁移。因此把 `libsqlite3-sys` **0.30.1 原样 vendor 进仓库**（版本号保持 0.30.1，继续满足 `^0.30.1`），只把 `sqlite3/sqlite3.c`、`sqlite3/sqlite3.h`、`sqlite3/sqlite3ext.h` 换成 **SQLite 3.53.2** amalgamation，并用根 `Cargo.toml` 的 `[patch.crates-io] libsqlite3-sys = { path = "vendor/libsqlite3-sys" }` 接入。依据：0.30.1 的预生成绑定没有任何 `libsqlite3_sys_<版本>` cfg 门控、C API 向后兼容，故只换 C 源可行。sha256、改动清单与退出计划见 `vendor/libsqlite3-sys/README.platpulse.md`。
+   - 复核：`strings target/release/platpulse-server | grep -E '^3\.[0-9]+\.[0-9]+$'` 应打印 3.53.2（修复前为 3.46.0）。
 2. **收缩触发面**：去掉/减少关闭路径的 `PRAGMA wal_checkpoint(TRUNCATE)`（`http/mod.rs:574`）；避免在活库上开第二连接做整库扫描。ADR 0008 已将备份改为离线，会顺带降低暴露。
+   - **已实施**：关闭路径的 `checkpoint_wal` 改为 `PRAGMA wal_checkpoint(FULL)`（`crates/platpulse-server/src/http/mod.rs:616`，`TRUNCATE` 时位于 `:611-612`）。TRUNCATE 会重置 WAL，正是 §5 机制的触发点，而截断对关停没有任何收益；调用方与优雅关停断言（`crates/platpulse-server/src/cli.rs:1469`、`:1504` 两处）语义不变。
+   - **未发现**运行时第二个长驻活库连接或周期整库扫描（`crates/platpulse-server/src` 内只剩连接池）；本报告此前所称「2026-09-18 起存在第二个活库连接」在现码里无法复现。
 3. **离线权威判定**：停机后对副本执行 `platpulse-server verify-integrity --config <COPY>/server.toml`（#194 新增），记录**首条错误与耗时**。
+   - **已实施**（2026-10-10，取证目录 `/data/platpulse-forensics-20261010T113926`）：停机副本（sha256 `68618c30c6df9efecd09f12b517eb7dbdb30de7706a26308ce2d8e4a43a33767`）在系统 `sqlite3 3.53.4` `immutable=1` 下 `integrity_check(1)` → `ok`（54s）、在 `platpulse-server verify-integrity` → `SQLite integrity check: ok`、exit 0（63s）。结论与完整证据见 §11。
 4. **保留并比对现场产物**：`corrupt-20260917-175157` / `recorrupted-20260917-175524` / `platpulse-pre-repair-20260922T073657Z.db`，做 `dbstat`、freelist 计数、首条 `integrity_check` 错误比对。
 5. **坐实机制（可选但最有说服力）**：用 SQLite **3.46.0 amalgamation** 编译 Phil Eaton 复现程序（2 线程 / 3 连接 + 大 `PRAGMA mmap_size`），在隔离环境跑出「丢失写入 + 主库损坏」；再用系统 `sqlite3 3.53.4` 作对照，应只在 3.46.0 上坏。
 
 ## 8. 明确不作为损坏检测手段
 
 `VACUUM INTO` 只重建逻辑内容，既不反映源库物理损坏，也不构成可验证的恢复点（ADR 0008）。本调查不使用 `VACUUM INTO` 判断损坏。
+
+**对运行中的 WAL 库做外部打开同样不作为判定手段**：`immutable=1` 忽略 `-wal`，读到的是未回填的陈旧主文件视图，会给出与静止态相反的 `malformed`（本例运行中副本报 `Freelist: freelist leaf count too big on page 3819225`，同一库静止后为 `ok`）；`mode=ro` 则需要 `-shm`，存在 #137 记录的截断风险。判定必须以**停机后的副本**为准。
 
 ## 9. 来源
 
@@ -163,6 +174,27 @@ sqlite3 "file:...corrupt-20260917-175157?immutable=1" \
 sqlite3 "file:...corrupt-20260917-175157?immutable=1" \
   "SELECT pageno,name,path FROM dbstat WHERE pageno=6804;"
 
-# 内置 SQLite 版本
-strings target/release/platpulse-server | grep -E '^3\.4[0-9]\.[0-9]+$'
+# 内置 SQLite 版本（2026-10-10 起应为 3.53.2）
+strings target/release/platpulse-server | grep -E '^3\.[0-9]+\.[0-9]+$'
 ```
+
+## 11. 2026-10-10 停机取证与静止态判定
+
+取证目录 `/data/platpulse-forensics-20261010T113926/`：`hot/`（运行中副本）、`stopped/`（停机后副本）、`verify/{server.toml,state}`、`logs/stage1.log`、`logs/stage2.log`、`MANIFEST.sha256`。修复后二进制（内置 SQLite 3.53.2）于 11:38 构建，11:42:08 重启服务。
+
+| 阶段 | 做法 | 结果 |
+| --- | --- | --- |
+| 停机前 | 运行中库 `cp`（14s） | `hot/platpulse.db` sha256 `97c922bd450352ae58f0371f1db0f9d077898f603a20fa560a2df495760a8b2f`（`-wal` `7ff5e7ef…fe2d63`、`-shm` `bad077a0…86d783`） |
+| 停机 | `systemctl --user stop platpulse-agent` → `platpulse-server` | 均 exit 0、无残留进程；停机后库 17,629,487,104 B 且 **`-wal` 消失**（干净关停已 checkpoint 并删除 WAL） |
+| 静止副本 | `stopped/platpulse.db` sha256 `68618c30c6df9efecd09f12b517eb7dbdb30de7706a26308ce2d8e4a43a33767`（无 wal） | `page_size=4096`、`page_count=4,304,074`、`freelist_count=4`、`journal_mode=delete`、`application_id=0`、`sqlite_master` 259 对象 |
+| 系统引擎 | `sqlite3 3.53.4` `file:…?immutable=1` `PRAGMA integrity_check(1)` | **ok**（54s） |
+| 内置引擎 | `target/release/platpulse-server verify-integrity --config <COPY>/verify/server.toml` | **`SQLite integrity check: ok`**、exit 0（63s） |
+| 对照：运行中副本 | `hot/platpulse.db` `immutable=1` | `*** in database main *** Freelist: freelist leaf count too big on page 3819225`（0s） |
+| 对照：09-17 原始件 | 两份产物 `immutable=1` | 静止态仍为真损坏：`Tree 64576 page 6804 cell 17: Rowid 1232489 out of order`；`Tree 25 page 208236 cell 431: 2nd reference to page 381576` |
+
+结论：
+
+- 现场库**静止态无损坏**（两个独立引擎一致 `ok`）⇒ **无需修复、无需重建**；处置为保持原库继续使用，同时按 §7 建议 1/2 消除触发面。
+- 同一份库**运行中**以 `immutable=1` 打开即报 `malformed`；差异只来自 `-wal` 未回填（`immutable=1` 忽略 `-wal`）。**2026-10-09/10 记录的 `malformed` / `btreeInitPage() returns error code 11` 属此类伪影，不是盘上损坏**（详见 §8）。判定损坏必须在停机后对副本进行。
+- 09-17 的真实损坏（§3.2 两份原始件）在静止态复核仍成立，与本结论不冲突：那两份是 09-17 现场的产物，与当前库的物理状态无关。
+- 重启耗时与预算相符：启动整库校验约 226s（11:42:08 → 11:45:54 `listening on 127.0.0.1:8080`），远低于 `STARTUP_INTEGRITY_BUDGET = 600s`。重启后 `/health/ready` 各组件全 ready；Agent 在 11:45–11:46 出现两条 `stale_report` 拒绝后恢复，`/api/admin/v1/agents` 显示两个 Agent `online`、节点 `Sync` `healthy`、`last_received_at` 持续更新。
