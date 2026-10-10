@@ -264,7 +264,7 @@ describe('PAGE-ADMIN-NETWORKS (Network Registry)', () => {
     expect(rowB.textContent).toContain('chain id 999999')
   })
 
-  it('names the Node-side remedy for a mismatch and never offers the Registry tuple as the fix', async () => {
+  it('states the whole Node-side remedy, including the Agent restart, as the exact alert copy', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/networks/platon-e2e': () => jsonResponse(NETWORK_DETAIL, 200),
@@ -274,13 +274,20 @@ describe('PAGE-ADMIN-NETWORKS (Network Registry)', () => {
     const remedy = await screen.findByText(/Correct the observation on the Node itself/)
     const banner = remedy.closest('[role="alert"]')
     expect(banner).toBeTruthy()
-    expect(banner?.textContent).toContain('its build and its configuration, not this Registry')
-    expect(banner?.textContent).toContain('Rewriting the tuple to match one Node is not a remedy')
-    expect(banner?.textContent).toContain('contradict every other Node on this Network')
-    expect(banner?.textContent).toContain('never merged and never backfilled')
-    expect(banner?.textContent).toContain('permanent gap')
-    // The remedy is never "correct the tuple" (ADR 0011).
-    expect(banner?.textContent).not.toContain('or the tuple is corrected')
+    expect(banner?.textContent).toContain("restart that Host's Agent")
+    // Pinned in full on purpose: this copy is the operator contract (ADR 0011
+    // Decision 2 — the Agent restart is the remedy, the tuple is never the fix).
+    expect((banner?.textContent ?? '').replace(/\s+/g, ' ').trim()).toBe(
+      `Mismatched 1 Node observes an identity that contradicts this Registry tuple. ` +
+        `Correct the observation on the Node itself: its build and its configuration, ` +
+        `not this Registry, and then restart that Host's Agent — the identity stamp is ` +
+        `refreshed only when the Agent re-reads its Node. Rewriting the tuple to match ` +
+        `one Node is not a remedy — it would contradict every other Node on this ` +
+        `Network. Block History already rejected from those Nodes is never merged and ` +
+        `never backfilled, so the affected heights stay a permanent gap. See "Node ` +
+        `Network Identity at onboarding and after a Node build upgrade" in ` +
+        `docs/deployment.md.`,
+    )
   })
 
   it('updates the Registry tuple with an audited confirmation and refetches', async () => {

@@ -618,10 +618,13 @@ function NetworkNodesPanel({
           <StatusBadge status="Mismatched" tone="error" /> {mismatched} Node
           {mismatched === 1 ? ' observes' : 's observe'} an identity that contradicts
           this Registry tuple. Correct the observation on the Node itself: its build
-          and its configuration, not this Registry. Rewriting the tuple to match one
-          Node is not a remedy — it would contradict every other Node on this Network.
-          Block History already rejected from those Nodes is never merged and never
-          backfilled, so the affected heights stay a permanent gap.
+          and its configuration, not this Registry, and then restart that Host's
+          Agent — the identity stamp is refreshed only when the Agent re-reads its
+          Node. Rewriting the tuple to match one Node is not a remedy — it would
+          contradict every other Node on this Network. Block History already rejected
+          from those Nodes is never merged and never backfilled, so the affected
+          heights stay a permanent gap. See "Node Network Identity at onboarding and
+          after a Node build upgrade" in docs/deployment.md.
         </div>
       )}
       {nodes.length === 0 && (

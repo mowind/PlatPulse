@@ -631,27 +631,31 @@ A Network's identity is its Registry tuple: genesis hash, chain ID, P2P network 
 
 Confirm a Node's own identity before adding it to a Network, and again after any Node build upgrade:
 
-- `eth_chainId` must answer the Registry chain ID. PlatON mainnet/testnet is 210425 (`0x335f9`); a pre-PIP-7 build answers the legacy `100` instead.
+- `eth_chainId` must answer the chain ID registered for that Network — never a value borrowed from another chain. On PlatON mainnet that is 210425 (`0x335f9`), and a pre-PIP-7 build answers the legacy `100` instead; PlatON's own testnet is a different chain (210429, legacy `104`). Take the expected values from this Network's Registry row, not from a generalised example.
 - `admin_nodeInfo` must report the same PIP-7 chain ID, while the legacy `chainId` field may still report the pre-PIP-7 value.
 - `platon version` must be at or after commit `45c3e086d`, the PIP-7 chain-ID fix. Builds without it (for example `v1.5.1-unstable-34e50429-20251023`) still answer `eth_chainId` with `100`.
 
 Symptoms of a mismatching Node: Admin → Home raises the critical Network Identity Mismatch attention item (`node_identity_mismatch`); Admin → Networks and the Node page show the Node as Mismatched with the contradicting field names and the observed tuple beside the Registry tuple; every Block Summary from that Node is rejected, so the Blocks and Txs of its heights stay unknown. The mismatch is repaired on the Node side, never in the Registry:
 
 1. Correct the Node: upgrade its binary to a build containing the chain-ID fix, or correct its network configuration, and restart it.
-2. Restart that Host's Agent (`sudo systemctl restart platpulse-agent`, or the matching `systemctl --user` unit). The Agent re-reads the Node identity when it re-subscribes, so only then do new samples carry a stamp that matches the Registry.
-3. Do not edit the Registry tuple to match a Node (Admin → Networks → Edit tuple, or `PUT /api/admin/v1/networks/{network_key}`). The observed tuple is the Node's own claim; matching it would contradict every other Node on the same Network, and it reclaims no already-rejected Block History.
+2. Confirm the Node now answers the Registry tuple — repeat the checks above — and let the Agent's collection run at least once afterwards (`collection_interval_seconds`), so a Report carrying the new identity is persisted, before you touch the Agent. A restart taken while the Agent still holds the pre-upgrade identity is not harmless: its Block workers stamp samples from the identity in the most recent persisted Report (`load_last_report` in `crates/platpulse-agent/src/collector.rs`), those workers start before the Report collection loop (`crates/platpulse-agent/src/cli.rs`), and a graceful stop persists last-good observations without probing the Node (`crates/platpulse-agent/src/shutdown.rs`). Without a successful post-upgrade collection the restarted Agent can keep the stale stamp for a whole subscription and extend the permanent gap.
+3. Restart that Host's Agent (`sudo systemctl restart platpulse-agent`, or the matching `systemctl --user` unit), then verify the outcome instead of assuming it: the Node must leave the Mismatched state, the `node_identity_mismatch` alert must clear, and its new heights must stop arriving as rejected samples. If samples are still rejected, wait one `collection_interval_seconds` so a fresh Report is persisted, then restart the Agent once more.
+4. Do not edit the Registry tuple to match a Node (Admin → Networks → Edit tuple, or `PUT /api/admin/v1/networks/{network_key}`). The observed tuple is the Node's own claim; matching it would contradict every other Node on the same Network, and it reclaims no already-rejected Block History.
 
-Read-only verification. The packaged units keep the Server database at `/var/lib/platpulse/platpulse.db` (see the configured `db_path`). The running Server holds that database exclusively, so read it through the `immutable` URI, or use a snapshot produced by the packaged `backup` command:
+Read-only verification. The packaged units keep the Server database at `/var/lib/platpulse/platpulse.db` (see the configured `db_path`). Query a **consistent snapshot**, never the live file: either the artifact written by the packaged `platpulse-server backup` command in an [Offline Backup Window](#offline-backups-no-packaged-automation) (the Server stopped, as that command requires), or a copy of `db_path` taken while the Server is stopped. The live database is written under WAL with exclusive locking, so opening it directly under the `immutable` URI bypasses that synchronisation — it can miss not-yet-checkpointed WAL content, and under concurrent writes it can even fail with `database disk image is malformed`. A live `immutable` read is a best-effort eyeball, never evidence:
 
 ```bash
-sqlite3 'file:/var/lib/platpulse/platpulse.db?immutable=1' \
+# Packaged `backup` artifact, or a copy of db_path taken while the Server was stopped.
+SNAPSHOT=/var/backups/platpulse/<backup-artifact>
+
+sqlite3 "$SNAPSHOT" \
   "SELECT n.display_name, o.network_chain_id, o.network_p2p_network_id,
           o.network_address_hrp, o.network_genesis_hash
      FROM nodes n
      JOIN current_node_chain_observations o ON o.node_id = n.node_id
     WHERE n.network_key = 'REPLACE_WITH_NETWORK_KEY';"
 
-sqlite3 'file:/var/lib/platpulse/platpulse.db?immutable=1' \
+sqlite3 "$SNAPSHOT" \
   "SELECT network_key, chain_id, p2p_network_id, address_hrp, genesis_hash FROM networks;"
 ```
 
