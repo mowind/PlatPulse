@@ -642,6 +642,18 @@ Symptoms of a mismatching Node: Admin → Home raises the critical Network Ident
 3. Restart that Host's Agent (`sudo systemctl restart platpulse-agent`, or the matching `systemctl --user` unit), then verify the outcome instead of assuming it: the Node must leave the Mismatched state, the `node_identity_mismatch` alert must clear, and its new heights must stop arriving as rejected samples. If samples are still rejected, wait one `collection_interval_seconds` so a fresh Report is persisted, then restart the Agent once more.
 4. Do not edit the Registry tuple to match a Node (Admin → Networks → Edit tuple, or `PUT /api/admin/v1/networks/{network_key}`). The observed tuple is the Node's own claim; matching it would contradict every other Node on the same Network, and it reclaims no already-rejected Block History.
 
+### When the observation matches but the Block history is still rejected
+
+A second shape of the same failure is the one that reads as a contradiction (issue #235): the Node's observed identity **matches** the Registry, Admin → Home shows the `node_identity_mismatch` attention item as resolved, and yet every Block Summary from that Node is still terminally rejected, so its Blocks and Txs stay Unknown and new History Gaps keep arriving. Nothing is wrong with the Node or the Registry — the **Agent's Block Identity Stamp** is stale.
+
+The Agent takes that stamp from the most recent persisted Report when its Block Worker subscribes to the Node (`load_last_report` in `crates/platpulse-agent/src/collector.rs`) and reuses it for the whole subscription. A Node rebuild, reconfiguration, or binary swap does not necessarily fail the Agent's own RPC connection, so that subscription — and with it the stamp — can outlive the identity change; the Server, which only ever compares the stamp it is given, keeps refusing samples that carry the old tuple. The stamp is refreshed when the Agent re-subscribes or restarts, never by anything the Server or the Registry does.
+
+Where the Server says so: Admin → the Node's detail page → Network identity renders a **History rejected** diagnosis that states the refusal in the Server's own words — every differing field with its stamped and registered value, which side was found stale (the Agent's stamp, or a genuine cross-Network conflict because the current observation contradicts the Registry as well), the refused height range, and the most recent refusal time. The identical reason text is stored on the History Gap rows themselves (`block_history_gaps.reason` where `kind = 'server_rejected'`), so it survives in a snapshot and in the audit trail. A diagnosis that names the current observation as contradicting too is not a stale stamp: repair it with the mismatch steps above.
+
+1. Restart that Host's Agent (`sudo systemctl restart platpulse-agent`, or the matching `systemctl --user` unit). That is the only repair: the Node is already correct.
+2. Verify the outcome instead of assuming it: the Node's new heights must stop arriving as rejected samples and it must start producing accepted Block Summaries again, so its Blocks and Txs stop being Unknown. The History rejected diagnosis clears itself once the Server accepts a Block Summary again — it names the newest refusal only while that refusal is later than the newest accepted summary.
+3. Accept the loss: the already-refused interval stays a permanent History Gap. Those heights are never merged, re-labelled, or backfilled, and the Registry tuple is still never edited to match a stamped sample (step 4 above).
+
 Read-only verification. The packaged units keep the Server database at `/var/lib/platpulse/platpulse.db` (see the configured `db_path`). Query a **consistent snapshot**, never the live file: either the artifact written by the packaged `platpulse-server backup` command in an [Offline Backup Window](#offline-backups-no-packaged-automation) (the Server stopped, as that command requires), or a copy of `db_path` taken while the Server is stopped. The live database is written under WAL with exclusive locking, so opening it directly under the `immutable` URI bypasses that synchronisation — it can miss not-yet-checkpointed WAL content, and under concurrent writes it can even fail with `database disk image is malformed`. A live `immutable` read is a best-effort eyeball, never evidence:
 
 ```bash
@@ -657,6 +669,19 @@ sqlite3 "$SNAPSHOT" \
 
 sqlite3 "$SNAPSHOT" \
   "SELECT network_key, chain_id, p2p_network_id, address_hrp, genesis_hash FROM networks;"
+
+# The refusals one Node's stamp produced, and the Server's newest reason for them.
+sqlite3 "$SNAPSHOT" \
+  "SELECT kind, MIN(from_height) AS first_height, MAX(to_height) AS last_height,
+          COUNT(*) AS gap_rows, MAX(created_at) AS latest
+     FROM block_history_gaps
+    WHERE node_id = 'REPLACE_WITH_NODE_ID'
+    GROUP BY kind;"
+
+sqlite3 "$SNAPSHOT" \
+  "SELECT reason FROM block_history_gaps
+    WHERE node_id = 'REPLACE_WITH_NODE_ID' AND kind = 'server_rejected'
+    ORDER BY created_at DESC, from_height DESC LIMIT 1;"
 ```
 
 A Node's `display_name` is assigned when the Node is first accepted; a later Inventory declaration does not rename it, so rename the Node through the Admin Node metadata action (`PUT /api/admin/v1/nodes/{node_id}/metadata`).

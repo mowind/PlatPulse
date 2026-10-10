@@ -1084,6 +1084,42 @@ function IdentityPanel({ node }: { node: AdminNodeDetailDto }) {
           registered Network history.
         </p>
       )}
+      {/* The Server's own refusal diagnosis (ADR 0011 decision 4, issue #235):
+          the reason is rendered verbatim, and the panel says outright that it
+          can be present while the observation above matches the Registry, so
+          "identity matched, alert resolved, history still rejected" never
+          reads as a contradiction the UI cannot explain. */}
+      {node.block_history_rejection && (
+        <div className="mt-2 space-y-2 text-sm" role="alert" data-slot="block-history-rejection">
+          <p className="flex flex-wrap items-center gap-2">
+            <StatusBadge status="History rejected" tone="error" /> The Server is refusing
+            this Node's Block history.
+          </p>
+          <p className="text-muted-foreground">{node.block_history_rejection.reason}</p>
+          <DetailList>
+            <DetailItem label="Refused heights">
+              <span className="tabular-nums">
+                {node.block_history_rejection.rejected_heights.toLocaleString()}
+              </span>{' '}
+              heights, {node.block_history_rejection.from_height.toLocaleString()} to{' '}
+              {node.block_history_rejection.to_height.toLocaleString()}
+            </DetailItem>
+            <DetailItem label="Most recent refusal">
+              {formatObservedAt(node.block_history_rejection.recorded_at)}
+            </DetailItem>
+          </DetailList>
+          {node.identity.state === 'matched' && (
+            <p className="text-muted-foreground">
+              The observation above matches the Registry, so the refusal is about the Block
+              Identity Stamp the Agent carries for this Node, not about the Registry.
+            </p>
+          )}
+          <p className="text-muted-foreground">
+            See &quot;When the observation matches but the Block history is still
+            rejected&quot; in docs/deployment.md.
+          </p>
+        </div>
+      )}
       <div className="mt-3">
         <DetailList>
           <DetailItem label="Network">

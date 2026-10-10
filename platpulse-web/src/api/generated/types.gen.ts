@@ -520,6 +520,7 @@ export type AdminNetworkNode = {
  */
 export type AdminNodeDetail = {
     agent_id: string;
+    block_history_rejection?: null | BlockHistoryRejection;
     consensus?: null | ConsensusDiagnostic;
     current_head?: number | null;
     data_directory?: null | DataDirectoryDiagnostic;
@@ -1908,6 +1909,42 @@ export type BackupArtifactSummary = {
      * verification task ever recorded a result for this artifact.
      */
     verifyOperationId?: string | null;
+};
+
+/**
+ * The Server's own diagnosis of the Block history it is refusing for one
+ * Node right now (ADR 0011 decision 4, issue #235). The reason names the
+ * identity fields that differ with both values, and distinguishes an Agent
+ * stamp that went stale after a Node build upgrade from a genuine
+ * cross-Network conflict, so "identity matched, incident resolved, history
+ * fully rejected" stops being an unexplained state. The Server writes this
+ * same text to the History Gap its rejected samples leave behind, which keeps
+ * the Receipt, the gap, and this view naming one cause. The Server never
+ * rewrites the Registry to match a stamped sample.
+ */
+export type BlockHistoryRejection = {
+    /**
+     * Lowest height the Server is currently refusing.
+     */
+    from_height: number;
+    /**
+     * Server-authored diagnosis: the differing fields, whether the stamp is
+     * stale or the Node really moved Networks, and the remedy.
+     */
+    reason: string;
+    /**
+     * When the Server recorded the most recent refusal.
+     */
+    recorded_at: string;
+    /**
+     * How many heights the Server has refused since the Node's newest
+     * accepted Block Summary.
+     */
+    rejected_heights: number;
+    /**
+     * Highest height the Server is currently refusing.
+     */
+    to_height: number;
 };
 
 /**

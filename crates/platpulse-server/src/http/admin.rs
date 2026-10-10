@@ -2287,6 +2287,65 @@ async fn node_identity_status(
     }
 }
 
+/// The Server's own diagnosis of the Block history it is refusing for one
+/// Node right now (ADR 0011 decision 4, issue #235). The reason names the
+/// identity fields that differ with both values, and distinguishes an Agent
+/// stamp that went stale after a Node build upgrade from a genuine
+/// cross-Network conflict, so "identity matched, incident resolved, history
+/// fully rejected" stops being an unexplained state. The Server writes this
+/// same text to the History Gap its rejected samples leave behind, which keeps
+/// the Receipt, the gap, and this view naming one cause. The Server never
+/// rewrites the Registry to match a stamped sample.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct BlockHistoryRejection {
+    /// Server-authored diagnosis: the differing fields, whether the stamp is
+    /// stale or the Node really moved Networks, and the remedy.
+    pub reason: String,
+    /// Lowest height the Server is currently refusing.
+    pub from_height: i64,
+    /// Highest height the Server is currently refusing.
+    pub to_height: i64,
+    /// How many heights the Server has refused since the Node's newest
+    /// accepted Block Summary.
+    pub rejected_heights: i64,
+    /// When the Server recorded the most recent refusal.
+    pub recorded_at: String,
+}
+
+/// Read the Block history the Server is refusing for one Node *currently*: a
+/// refusal older than the Node's newest accepted Block Summary belongs to a
+/// Node that has since recovered, and reporting it as a live alarm would
+/// invent an incident. Every timestamp here is RFC 3339 UTC text written by
+/// the Server, so the boundary comparison is a plain text comparison. A Node
+/// with no retained Block Summary (never accepted, or aged out of retention)
+/// keeps showing its newest refusal; that Node has no accepted history in the
+/// retention window to prove recovery with.
+async fn block_history_rejection(state: &AppState, node_id: &str) -> Option<BlockHistoryRejection> {
+    let newest = sqlx::query_as::<_, (String, String)>(
+        "SELECT reason, created_at FROM block_history_gaps g WHERE g.node_id = ? AND g.kind = 'server_rejected' AND g.created_at > COALESCE((SELECT MAX(s.accepted_at) FROM block_summaries s WHERE s.node_id = g.node_id), '') ORDER BY g.created_at DESC, g.from_height DESC LIMIT 1",
+    )
+    .bind(node_id)
+    .fetch_optional(state.db().pool())
+    .await
+    .ok()
+    .flatten()?;
+    let span = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT COUNT(*), MIN(g.from_height), MAX(g.to_height) FROM block_history_gaps g WHERE g.node_id = ? AND g.kind = 'server_rejected' AND g.created_at > COALESCE((SELECT MAX(s.accepted_at) FROM block_summaries s WHERE s.node_id = g.node_id), '')",
+    )
+    .bind(node_id)
+    .fetch_one(state.db().pool())
+    .await
+    .ok()?;
+    Some(BlockHistoryRejection {
+        reason: newest.0,
+        from_height: span.1,
+        to_height: span.2,
+        rejected_heights: span.0,
+        recorded_at: newest.1,
+    })
+}
+
 fn redact_optional_message(value: Option<String>) -> Option<String> {
     value.map(|message| crate::redaction::redact_sensitive(&message))
 }
@@ -2478,6 +2537,11 @@ pub struct AdminNodeDetail {
     pub health_reason: String,
     pub freshness: String,
     pub identity: NodeIdentityStatus,
+    /// Block history the Server is refusing for this Node right now, with the
+    /// Server's own reason; None when the Server stopped refusing, so the
+    /// field never grows into a stale alarm after the Node recovers (ADR 0011
+    /// decision 4, issue #235).
+    pub block_history_rejection: Option<BlockHistoryRejection>,
     pub process: Option<ProcessDiagnostic>,
     pub data_directory: Option<DataDirectoryDiagnostic>,
     pub rpc: Option<RpcDiagnostic>,
@@ -2557,6 +2621,7 @@ async fn admin_node_detail(
     .ok()
     .flatten();
     let identity = node_identity_status(&state, &row.node_id, &row.network_key).await;
+    let block_history_rejection = block_history_rejection(&state, &row.node_id).await;
     let transfer = sqlx::query_as::<_, NodeTransferRow>(&format!(
         "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE node_id=? ORDER BY created_at DESC LIMIT 1"
     ))
@@ -2598,6 +2663,7 @@ async fn admin_node_detail(
         health_reason: diagnostic.health_reason.clone(),
         freshness: diagnostic.freshness.clone(),
         identity,
+        block_history_rejection,
         process: diagnostic.process,
         data_directory: diagnostic.data_directory,
         rpc: diagnostic.rpc,
@@ -10353,6 +10419,101 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("never changes Node lifecycle")
+        );
+    }
+
+    /// ADR 0011 decision 4 / issue #235: the Owner Node detail carries the
+    /// Server's own diagnosis of the Block history it is refusing *right now*,
+    /// which is exactly the #235 state the old surfaces could not explain
+    /// (identity matched, incident resolved, every Block Summary rejected).
+    /// The field disappears once the Node's history moves past the refusal, so
+    /// it can never grow into a stale alarm.
+    #[tokio::test]
+    async fn admin_node_detail_reports_the_block_history_the_server_refuses() {
+        let (_dir, state) = node_inventory_state().await;
+
+        async fn detail(state: &AppState, node_id: &str) -> Value {
+            let response = admin_node_detail(
+                State(state.clone()),
+                Path(node_id.to_owned()),
+                Extension(lifecycle_session()),
+                Extension(request_id()),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap()
+        }
+
+        async fn reject_gap(state: &AppState, reason: &str, height: i64, at: &str) {
+            sqlx::query(
+                "INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES ('node-healthy', ?, ?, 'server_rejected', ?, ?)",
+            )
+            .bind(height)
+            .bind(height)
+            .bind(reason)
+            .bind(at)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        }
+
+        async fn accept_summary(state: &AppState, at: &str) {
+            sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES ('node-healthy', 100, '0xhash', '0xparent', '0xgenesis', 210425, 1, 'lat', 1, ?, 2, 'subscription', '0x0000000000000000000000000000000000000000', 'unknown', 'unknown', 'test', ?)")
+                .bind(at)
+                .bind(at)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+
+        let value = detail(&state, "node-healthy").await;
+        assert!(
+            value["block_history_rejection"].is_null(),
+            "a Node whose history the Server accepts carries no refusal"
+        );
+
+        // The Server records the refusal itself while ingesting a Report, so
+        // the reason an operator reads is the Server's diagnosis rather than
+        // an Agent claim about itself.
+        let stale = "Block network identity does not match the registered Network (genesis_hash stamped 0xaa registered 0x01). Because the Agent's stamp is stale, restarting the Agent on that Host is the only remedy.";
+        reject_gap(&state, stale, 41, "2026-08-12T10:00:00Z").await;
+        let value = detail(&state, "node-healthy").await;
+        assert_eq!(value["block_history_rejection"]["reason"], stale);
+        assert_eq!(value["block_history_rejection"]["from_height"], 41);
+        assert_eq!(value["block_history_rejection"]["to_height"], 41);
+        assert_eq!(value["block_history_rejection"]["rejected_heights"], 1);
+        assert_eq!(
+            value["block_history_rejection"]["recorded_at"],
+            "2026-08-12T10:00:00Z"
+        );
+
+        // A Block Summary accepted after the refusal proves the Node moved on.
+        accept_summary(&state, "2026-08-12T11:00:00Z").await;
+        let value = detail(&state, "node-healthy").await;
+        assert!(
+            value["block_history_rejection"].is_null(),
+            "a recovered Node must not keep reporting the refusal it already recovered from"
+        );
+
+        // A fresh refusal is the Node's current disposition again, and it
+        // stays visible even while the identity component reports matched:
+        // this is the #235 contradiction the field exists to explain.
+        let conflict = "Block network identity does not match the registered Network (chain_id stamped 100 registered 210425). Because the Node itself contradicts the Registry, this is a genuine cross-Network conflict that restarting the Agent cannot reconcile.";
+        reject_gap(&state, conflict, 52, "2026-08-12T12:00:00Z").await;
+        reject_gap(&state, conflict, 53, "2026-08-12T12:00:00Z").await;
+        let value = detail(&state, "node-healthy").await;
+        assert_eq!(value["identity"]["state"], "matched");
+        assert_eq!(value["block_history_rejection"]["reason"], conflict);
+        assert_eq!(value["block_history_rejection"]["from_height"], 52);
+        assert_eq!(value["block_history_rejection"]["to_height"], 53);
+        assert_eq!(
+            value["block_history_rejection"]["rejected_heights"], 2,
+            "only the heights refused since the last accepted Block Summary count"
+        );
+        assert_eq!(
+            value["block_history_rejection"]["recorded_at"],
+            "2026-08-12T12:00:00Z"
         );
     }
 

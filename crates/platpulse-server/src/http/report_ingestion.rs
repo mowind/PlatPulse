@@ -693,12 +693,170 @@ async fn update_network_references(
     Ok(())
 }
 
-async fn block_network_identity_mismatches<I: ReportInventory>(
+/// One Network Identity field whose stamped value contradicted the Registry
+/// tuple. Both sides are kept so a rejection can name what actually differed
+/// instead of only asserting that something did (ADR 0011 decision 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StampedIdentityField {
+    field: &'static str,
+    stamped: String,
+    registered: String,
+}
+
+/// Why a Node's stamped samples contradicted the Registry, as far as the
+/// Server can tell from the fresh component observation carried by the same
+/// Report. The mismatch stays terminal and unrecoverable in every case; this
+/// only chooses the remedy the rejection points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StampDivergence {
+    /// The Node's current Network Identity observation matches the Registry
+    /// while its stamped samples do not: the Agent stamps samples with an
+    /// identity it cached before the Node's build changed (issue #235).
+    StaleStamp,
+    /// The current observation contradicts the Registry too: the Node serves a
+    /// different Network, and no Agent restart can reconcile that.
+    NetworkConflict,
+    /// The Report carried no complete successful identity observation, so a
+    /// stale stamp cannot yet be told apart from a cross-Network conflict.
+    Unobserved,
+}
+
+/// A Node's rejected samples with the diagnosed cause, used for both the
+/// Receipt rejection and the History Gap the Server records for them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BlockIdentityRejection {
+    fields: Vec<StampedIdentityField>,
+    divergence: StampDivergence,
+}
+
+impl BlockIdentityRejection {
+    /// Operator-facing reason: every differing field with its stamped and
+    /// registered value, the side that was found stale, and the remedy for
+    /// that side. Field names avoid the redaction keyword list and values are
+    /// stated without a separator so the sanctioned diagnostics survive
+    /// redaction intact.
+    fn reason(&self) -> String {
+        let differences = self
+            .fields
+            .iter()
+            .map(|field| {
+                format!(
+                    "{} stamped {} registered {}",
+                    field.field, field.stamped, field.registered
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let (diagnosis, disposition) = match self.divergence {
+            StampDivergence::StaleStamp => (
+                "the Node's current Network Identity observation matches the registered Network, \
+                 so this Agent stamps samples with an identity it cached before the Node's build \
+                 changed and restarting the Agent on that Host is the only remedy",
+                "The rejected heights stay a History Gap and are never backfilled; the Registry tuple is never edited to match a stamped sample",
+            ),
+            StampDivergence::NetworkConflict => (
+                "the Node's current Network Identity observation contradicts the registered Network \
+                 as well, so this is a genuine cross-Network conflict that restarting the Agent \
+                 cannot reconcile",
+                "The rejected heights are never merged into block history and are never backfilled; the Registry tuple is never edited to match a stamped sample",
+            ),
+            StampDivergence::Unobserved => (
+                "this Report carried no complete successful Network Identity observation, so a \
+                 stale stamp cannot yet be told apart from a genuine cross-Network conflict",
+                "Confirm the Node's current identity and then restart the Agent on that Host; the rejected heights stay a History Gap and are never backfilled",
+            ),
+        };
+        format!(
+            "Block network identity does not match the registered Network ({differences}). Because {diagnosis}. {disposition}."
+        )
+    }
+}
+
+/// The Registry identity tuple a Node's Network is registered under.
+struct RegisteredNetworkIdentity {
+    genesis_hash: String,
+    chain_id: i64,
+    p2p_network_id: i64,
+    address_hrp: String,
+}
+
+impl RegisteredNetworkIdentity {
+    fn matches(&self, observed: &platpulse_core::network::NetworkIdentity) -> bool {
+        observed.genesis_hash.to_string() == self.genesis_hash
+            && observed.chain_id == self.chain_id as u64
+            && observed.p2p_network_id == self.p2p_network_id as u64
+            && observed.address_hrp.as_deref().unwrap_or("") == self.address_hrp
+    }
+
+    fn differing_fields(
+        &self,
+        stamped: &platpulse_core::network::NetworkIdentity,
+    ) -> Vec<StampedIdentityField> {
+        let mut fields = Vec::new();
+        let genesis_hash = stamped.genesis_hash.to_string();
+        if genesis_hash != self.genesis_hash {
+            fields.push(StampedIdentityField {
+                field: "genesis_hash",
+                stamped: genesis_hash,
+                registered: self.genesis_hash.clone(),
+            });
+        }
+        if stamped.chain_id != self.chain_id as u64 {
+            fields.push(StampedIdentityField {
+                field: "chain_id",
+                stamped: stamped.chain_id.to_string(),
+                registered: self.chain_id.to_string(),
+            });
+        }
+        if stamped.p2p_network_id != self.p2p_network_id as u64 {
+            fields.push(StampedIdentityField {
+                field: "p2p_network_id",
+                stamped: stamped.p2p_network_id.to_string(),
+                registered: self.p2p_network_id.to_string(),
+            });
+        }
+        if stamped.address_hrp.as_deref().unwrap_or("") != self.address_hrp {
+            fields.push(StampedIdentityField {
+                field: "address_hrp",
+                stamped: stamped
+                    .address_hrp
+                    .clone()
+                    .unwrap_or_else(|| "unset".to_owned()),
+                registered: self.address_hrp.clone(),
+            });
+        }
+        fields
+    }
+}
+
+/// The Node's own Network Identity as observed in this very Report. This is
+/// what lets the Server separate an Agent's stale stamp from a Node that
+/// really serves another Network (ADR 0011 decision 4); a Node whose identity
+/// was not observed completely yields nothing rather than a guess.
+fn fresh_network_identity<I: ReportInventory>(
+    report: &AgentReport<I>,
+    node_id: platpulse_core::identity::NodeId,
+) -> Option<&platpulse_core::network::NetworkIdentity> {
+    report
+        .nodes
+        .iter()
+        .find(|observation| observation.node_id == node_id)
+        .filter(|observation| observation.chain.network_identity.status == ComponentStatus::Ok)
+        .and_then(|observation| observation.chain.network_identity.latest.as_ref())
+        .filter(|identity| identity.address_hrp.is_some())
+}
+
+/// Samples whose stamped Network Identity contradicts the Registry, keyed by
+/// Node and carrying the differing fields plus the diagnosed cause.
+async fn block_network_identity_rejections<I: ReportInventory>(
     tx: &mut Transaction<'_, Sqlite>,
     report: &AgentReport<I>,
     purged_nodes: &std::collections::HashSet<platpulse_core::identity::NodeId>,
-) -> Result<std::collections::HashSet<platpulse_core::identity::NodeId>, sqlx::Error> {
-    let mut mismatches = std::collections::HashSet::new();
+) -> Result<
+    std::collections::HashMap<platpulse_core::identity::NodeId, BlockIdentityRejection>,
+    sqlx::Error,
+> {
+    let mut rejections = std::collections::HashMap::new();
     for sample in &report.block_summaries {
         // A purged Node has no Network projection left to compare against and
         // must never raise an identity contradiction.
@@ -716,18 +874,32 @@ async fn block_network_identity_mismatches<I: ReportInventory>(
         let registered = sqlx::query_as::<_, (String, i64, i64, String)>(
             "SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks WHERE network_key = ?",
         ).bind(node.network_key.as_str()).fetch_optional(&mut **tx).await?;
-        let Some((genesis, chain_id, p2p_network_id, address_hrp)) = registered else {
+        let Some((genesis_hash, chain_id, p2p_network_id, address_hrp)) = registered else {
             continue;
         };
-        if sample.network_identity.genesis_hash.to_string() != genesis
-            || sample.network_identity.chain_id != chain_id as u64
-            || sample.network_identity.p2p_network_id != p2p_network_id as u64
-            || sample.network_identity.address_hrp.as_deref().unwrap_or("") != address_hrp
-        {
-            mismatches.insert(sample.node_id);
+        let registered = RegisteredNetworkIdentity {
+            genesis_hash,
+            chain_id,
+            p2p_network_id,
+            address_hrp,
+        };
+        let fields = registered.differing_fields(&sample.network_identity);
+        if fields.is_empty() {
+            continue;
         }
+        // Samples of one Node share one stamp, so the first diagnosis stands.
+        rejections
+            .entry(sample.node_id)
+            .or_insert_with(move || BlockIdentityRejection {
+                fields,
+                divergence: match fresh_network_identity(report, sample.node_id) {
+                    None => StampDivergence::Unobserved,
+                    Some(observed) if registered.matches(observed) => StampDivergence::StaleStamp,
+                    Some(_) => StampDivergence::NetworkConflict,
+                },
+            });
     }
-    Ok(mismatches)
+    Ok(rejections)
 }
 
 async fn observe_block_identity(
@@ -2596,19 +2768,19 @@ async fn ingest_report<I: ReportInventory>(
             );
         }
     }
-    let mismatches = match block_network_identity_mismatches(&mut tx, &parsed, &purged_nodes).await
-    {
-        Ok(value) => value,
-        Err(_) => {
-            return error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
-    };
-    if !mismatches.is_empty() {
+    let identity_rejections =
+        match block_network_identity_rejections(&mut tx, &parsed, &purged_nodes).await {
+            Ok(value) => value,
+            Err(_) => {
+                return error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Server database is unavailable",
+                );
+            }
+        };
+    if !identity_rejections.is_empty() {
         // Identity mismatch is a typed, audited outcome (design §7.1): the
         // samples are never merged and the Agent's security counter records
         // the contradiction so the Admin surface can surface it.
@@ -2772,22 +2944,33 @@ async fn ingest_report<I: ReportInventory>(
         );
     }
     for sample in &parsed.block_summaries {
-        if ownership_mismatches.contains(&sample.node_id) {
-            let inserted = sqlx::query("INSERT OR IGNORE INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES (?, ?, ?, 'server_rejected', 'Node ownership mismatch', ?)")
-                .bind(sample.node_id.to_string())
-                .bind(sample.block_number as i64)
-                .bind(sample.block_number as i64)
-                .bind(&now_text)
-                .execute(&mut *tx)
-                .await;
-            if inserted.is_err() {
-                return error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
-            }
+        // The Server records the History Gap for a rejected sample itself, so
+        // the reason operators read is the Server's own diagnosis of what it
+        // rejected and why, not an Agent claim about itself. The Agent records
+        // the same (node, from, to, kind) triple once it applies the Receipt,
+        // which the unique gap index folds into this row.
+        let reason = if ownership_mismatches.contains(&sample.node_id) {
+            "Node ownership mismatch".to_owned()
+        } else if let Some(evidence) = identity_rejections.get(&sample.node_id) {
+            crate::redaction::redact_sensitive(&evidence.reason())
+        } else {
+            continue;
+        };
+        let inserted = sqlx::query("INSERT OR IGNORE INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES (?, ?, ?, 'server_rejected', ?, ?)")
+            .bind(sample.node_id.to_string())
+            .bind(sample.block_number as i64)
+            .bind(sample.block_number as i64)
+            .bind(&reason)
+            .bind(&now_text)
+            .execute(&mut *tx)
+            .await;
+        if inserted.is_err() {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
         }
     }
     for gap in &parsed.history_gaps {
@@ -2927,7 +3110,7 @@ async fn ingest_report<I: ReportInventory>(
         .iter()
         .map(|sample| {
             let rejected = rejected_nodes.contains(&sample.node_id)
-                || mismatches.contains(&sample.node_id)
+                || identity_rejections.contains_key(&sample.node_id)
                 || outside_open_gap.contains(&(sample.node_id, sample.block_number))
                 || divergence_samples.contains(&(sample.node_id, sample.block_number))
                 || replay_samples.contains(&(sample.node_id, sample.block_number));
@@ -2966,6 +3149,14 @@ async fn ingest_report<I: ReportInventory>(
                             "Normal resync replay at or below the historical high-water mark",
                         );
                     }
+                    if let Some(evidence) = identity_rejections.get(&sample.node_id) {
+                        return rejection(
+                            platpulse_core::RejectionCode::NetworkIdentityMismatch,
+                            &evidence.reason(),
+                        );
+                    }
+                    // Only a rejected sample with no other attribution reaches
+                    // here; the bounded fallback keeps every rejection typed.
                     rejection(
                         platpulse_core::RejectionCode::NetworkIdentityMismatch,
                         "Block network identity does not match the registered Network",
@@ -6618,6 +6809,351 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(owner, source_agent);
+    }
+
+    /// The Registry tuple of the Network `state_with_agent` registers.
+    fn registered_identity() -> platpulse_core::network::NetworkIdentity {
+        platpulse_core::network::NetworkIdentity {
+            genesis_hash: "0x0000000000000000000000000000000000000000000000000000000000000001"
+                .parse()
+                .unwrap(),
+            chain_id: 210425,
+            p2p_network_id: 210425,
+            address_hrp: Some("lat".to_owned()),
+        }
+    }
+
+    /// The identity a Node served before its build upgrade: the legacy chain
+    /// and p2p ids, and a genesis hash that is not the registered one.
+    fn pre_upgrade_identity() -> platpulse_core::network::NetworkIdentity {
+        platpulse_core::network::NetworkIdentity {
+            genesis_hash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .parse()
+                .unwrap(),
+            chain_id: 100,
+            p2p_network_id: 100,
+            address_hrp: Some("lat".to_owned()),
+        }
+    }
+
+    /// A v1 report whose Node observation is `observed`, carrying one sample
+    /// per requested height stamped with `stamp`. The observation is the
+    /// Node's own fresh identity; the stamp is what the Agent cached and
+    /// replays into every sample until its Block Worker reconnects.
+    fn report_with_stamped_samples(
+        report_id: &str,
+        observed: &platpulse_core::network::NetworkIdentity,
+        stamp: &platpulse_core::network::NetworkIdentity,
+        heights: &[u64],
+    ) -> AgentReport {
+        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        report.report_id = report_id.parse().unwrap();
+        let node_id = report.inventory.nodes[0].node_id;
+        let observation = &mut report.nodes[0].chain.network_identity;
+        observation.status = ComponentStatus::Ok;
+        observation.latest = Some(observed.clone());
+        observation.latest_observed_at = Some(report.generated_at);
+        observation.error = None;
+        for height in heights {
+            report
+                .block_summaries
+                .push(platpulse_core::block::BlockSummary {
+                    node_id,
+                    network_identity: stamp.clone(),
+                    block_number: *height,
+                    block_hash: format!("0x{:064x}", height + 1).parse().unwrap(),
+                    parent_hash: format!("0x{:064x}", height).parse().unwrap(),
+                    block_timestamp_ms: 1_000,
+                    observed_at: report.generated_at,
+                    transaction_count: 3,
+                    block_interval_ms: None,
+                    source: platpulse_core::block::BlockSource::Subscription,
+                    attribution:
+                        platpulse_core::block::BlockProductionAttribution::unknown_attribution(
+                            "0x1111111111111111111111111111111111111111"
+                                .parse()
+                                .unwrap(),
+                            "test",
+                        ),
+                });
+        }
+        report.validate().unwrap();
+        report
+    }
+
+    async fn recorded_gap_reasons(
+        state: &AppState,
+        node_id: platpulse_core::identity::NodeId,
+    ) -> Vec<(i64, i64, String)> {
+        sqlx::query_as(
+            "SELECT from_height, to_height, reason FROM block_history_gaps WHERE node_id=? ORDER BY from_height, to_height",
+        )
+        .bind(node_id.to_string())
+        .fetch_all(state.db().pool())
+        .await
+        .unwrap()
+    }
+
+    /// #235 decision 4: after a Node build upgrade the Node reports the
+    /// registered Network while the Agent keeps stamping samples with the
+    /// identity it cached. Every rejection must name the differing fields with
+    /// their stamped and registered values, point at the Agent restart as the
+    /// remedy, and leave the Server's own diagnosis as the History Gap reason
+    /// operators read — the Agent's later declaration of the same gap may not
+    /// replace it.
+    #[tokio::test]
+    async fn stale_stamp_rejection_names_the_differing_fields_and_the_agent_restart() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let report = report_with_stamped_samples(
+            "0195f2a1-0013-4013-8013-000000000301",
+            &registered_identity(),
+            &pre_upgrade_identity(),
+            &[10, 11],
+        );
+        let node_id = report.inventory.nodes[0].node_id;
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+
+        assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
+        assert_eq!(receipt.samples.len(), 2);
+        for sample in &receipt.samples {
+            assert_eq!(sample.disposition, SampleDispositionKind::TerminalRejected);
+            let rejection = sample.rejection.as_ref().unwrap();
+            assert_eq!(
+                rejection.code,
+                platpulse_core::RejectionCode::NetworkIdentityMismatch
+            );
+            assert!(!rejection.retryable);
+            // The reason names every field that actually differed, on both
+            // sides, and never invents one that matched.
+            assert!(
+                rejection.reason.contains(
+                    "genesis_hash stamped 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa registered 0x0000000000000000000000000000000000000000000000000000000000000001"
+                ),
+                "{}",
+                rejection.reason
+            );
+            assert!(
+                rejection
+                    .reason
+                    .contains("chain_id stamped 100 registered 210425"),
+                "{}",
+                rejection.reason
+            );
+            assert!(
+                rejection
+                    .reason
+                    .contains("p2p_network_id stamped 100 registered 210425"),
+                "{}",
+                rejection.reason
+            );
+            assert!(
+                !rejection.reason.contains("address_hrp"),
+                "{}",
+                rejection.reason
+            );
+            // ...and points at the stale side plus the remedy for it.
+            assert!(
+                rejection
+                    .reason
+                    .contains("restarting the Agent on that Host is the only remedy"),
+                "{}",
+                rejection.reason
+            );
+            assert!(
+                rejection
+                    .reason
+                    .contains("never edited to match a stamped sample"),
+                "{}",
+                rejection.reason
+            );
+        }
+
+        let summaries: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE node_id=?")
+                .bind(node_id.to_string())
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(summaries, 0);
+
+        // The Server recorded its own diagnosis for exactly the rejected
+        // heights, one row per sample.
+        let gaps = recorded_gap_reasons(&state, node_id).await;
+        assert_eq!(gaps.len(), 2);
+        assert_eq!(gaps[0].0, 10);
+        assert_eq!(gaps[0].1, 10);
+        assert_eq!(gaps[1].0, 11);
+        assert_eq!(gaps[1].1, 11);
+        let reason = receipt.samples[0]
+            .rejection
+            .as_ref()
+            .unwrap()
+            .reason
+            .clone();
+        assert_eq!(gaps[0].2, reason);
+        assert_eq!(gaps[1].2, reason);
+
+        // The Agent reports the same gap back with its own wording, as the
+        // in-process Agent does once it applies the Receipt. The unique gap
+        // identity folds it into the Server's row, so the diagnosis survives.
+        let mut declared = report.clone();
+        declared.report_sequence += 1;
+        declared.report_id = "0195f2a1-0013-4013-8013-000000000302".parse().unwrap();
+        declared.block_summaries.clear();
+        declared.history_gaps = [10u64, 11]
+            .into_iter()
+            .map(|height| platpulse_core::gap::HistoryGap {
+                node_id,
+                kind: platpulse_core::gap::GapKind::ServerRejected,
+                from_height: height,
+                to_height: height,
+                reason: "locally retained history gap".to_owned(),
+                recorded_at: report.generated_at,
+            })
+            .collect();
+        declared.validate().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&declared).unwrap()).await;
+        assert_eq!(recorded_gap_reasons(&state, node_id).await, gaps);
+    }
+
+    /// A Node that really serves another Network is not a stale stamp: no
+    /// Agent restart can reconcile it, and the reason must say so instead of
+    /// sending an operator through the restart runbook.
+    #[tokio::test]
+    async fn cross_network_conflict_is_not_reported_as_a_stale_stamp() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let report = report_with_stamped_samples(
+            "0195f2a1-0013-4013-8013-000000000303",
+            &pre_upgrade_identity(),
+            &pre_upgrade_identity(),
+            &[10],
+        );
+        let node_id = report.inventory.nodes[0].node_id;
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+
+        assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
+        let rejection = receipt.samples[0].rejection.as_ref().unwrap();
+        assert_eq!(
+            rejection.code,
+            platpulse_core::RejectionCode::NetworkIdentityMismatch
+        );
+        assert!(
+            rejection.reason.contains(
+                "genuine cross-Network conflict that restarting the Agent cannot reconcile"
+            ),
+            "{}",
+            rejection.reason
+        );
+        assert!(
+            !rejection.reason.contains("is the only remedy"),
+            "{}",
+            rejection.reason
+        );
+        let gaps = recorded_gap_reasons(&state, node_id).await;
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].2, rejection.reason);
+    }
+
+    /// Without a complete successful identity observation the Server cannot
+    /// tell a stale stamp from a cross-Network conflict, and the reason must
+    /// say that rather than guess.
+    #[tokio::test]
+    async fn unobserved_identity_is_not_reported_as_a_stale_stamp() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut report = report_with_stamped_samples(
+            "0195f2a1-0013-4013-8013-000000000304",
+            &registered_identity(),
+            &pre_upgrade_identity(),
+            &[10],
+        );
+        report.nodes[0].chain.network_identity.status = ComponentStatus::Error;
+        report.nodes[0].chain.network_identity.latest = None;
+        report.nodes[0].chain.network_identity.latest_observed_at = None;
+        report.nodes[0].chain.network_identity.error =
+            Some(platpulse_core::component::BoundedError {
+                code: "rpc_unreachable".into(),
+                message: "identity probe failed".into(),
+            });
+        report.validate().unwrap();
+        let node_id = report.inventory.nodes[0].node_id;
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+
+        assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
+        let rejection = receipt.samples[0].rejection.as_ref().unwrap();
+        assert_eq!(
+            rejection.code,
+            platpulse_core::RejectionCode::NetworkIdentityMismatch
+        );
+        assert!(
+            rejection
+                .reason
+                .contains("no complete successful Network Identity observation"),
+            "{}",
+            rejection.reason
+        );
+        assert!(
+            rejection.reason.contains(
+                "Confirm the Node's current identity and then restart the Agent on that Host"
+            ),
+            "{}",
+            rejection.reason
+        );
+        assert!(
+            !rejection.reason.contains("is the only remedy"),
+            "{}",
+            rejection.reason
+        );
+        let gaps = recorded_gap_reasons(&state, node_id).await;
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].2, rejection.reason);
+    }
+
+    /// The widest reason this can render is four differing fields with 32-byte
+    /// hashes on both sides. It must stay inside the bounded diagnostic budget
+    /// the Receipt contract validates against, in every classification and
+    /// after redaction.
+    #[test]
+    fn identity_rejection_reason_stays_inside_the_diagnostic_budget() {
+        let hex = |lead: char| format!("0x{}", lead.to_string().repeat(64));
+        let field =
+            |name: &'static str, stamped: String, registered: String| StampedIdentityField {
+                field: name,
+                stamped,
+                registered,
+            };
+        for divergence in [
+            StampDivergence::StaleStamp,
+            StampDivergence::NetworkConflict,
+            StampDivergence::Unobserved,
+        ] {
+            let rejection = BlockIdentityRejection {
+                fields: vec![
+                    field("genesis_hash", hex('a'), hex('b')),
+                    field(
+                        "chain_id",
+                        "18446744073709551615".to_owned(),
+                        "210425".to_owned(),
+                    ),
+                    field(
+                        "p2p_network_id",
+                        "18446744073709551615".to_owned(),
+                        "210425".to_owned(),
+                    ),
+                    field("address_hrp", hex('c'), hex('d')),
+                ],
+                divergence,
+            };
+            let reason = crate::redaction::redact_sensitive(&rejection.reason());
+            assert!(
+                reason.len() <= platpulse_core::protocol::MAX_ERROR_MESSAGE_BYTES,
+                "{:?}: {} bytes",
+                divergence,
+                reason.len()
+            );
+        }
     }
 
     #[tokio::test]

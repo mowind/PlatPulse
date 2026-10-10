@@ -8583,6 +8583,17 @@
           "agent_id": {
             "type": "string"
           },
+          "block_history_rejection": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BlockHistoryRejection",
+                "description": "Block history the Server is refusing for this Node right now, with the\nServer's own reason; None when the Server stopped refusing, so the\nfield never grows into a stale alarm after the Node recovers (ADR 0011\ndecision 4, issue #235)."
+              }
+            ]
+          },
           "consensus": {
             "oneOf": [
               {
@@ -11904,6 +11915,42 @@
               "null"
             ],
             "description": "The most recent Operation that verified this artifact, so the page can\nlink the recorded outcome to the task that produced it. Absent means no\nverification task ever recorded a result for this artifact."
+          }
+        }
+      },
+      "BlockHistoryRejection": {
+        "type": "object",
+        "description": "The Server's own diagnosis of the Block history it is refusing for one\nNode right now (ADR 0011 decision 4, issue #235). The reason names the\nidentity fields that differ with both values, and distinguishes an Agent\nstamp that went stale after a Node build upgrade from a genuine\ncross-Network conflict, so \"identity matched, incident resolved, history\nfully rejected\" stops being an unexplained state. The Server writes this\nsame text to the History Gap its rejected samples leave behind, which keeps\nthe Receipt, the gap, and this view naming one cause. The Server never\nrewrites the Registry to match a stamped sample.",
+        "required": [
+          "reason",
+          "from_height",
+          "to_height",
+          "rejected_heights",
+          "recorded_at"
+        ],
+        "properties": {
+          "from_height": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Lowest height the Server is currently refusing."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Server-authored diagnosis: the differing fields, whether the stamp is\nstale or the Node really moved Networks, and the remedy."
+          },
+          "recorded_at": {
+            "type": "string",
+            "description": "When the Server recorded the most recent refusal."
+          },
+          "rejected_heights": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many heights the Server has refused since the Node's newest\naccepted Block Summary."
+          },
+          "to_height": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Highest height the Server is currently refusing."
           }
         }
       },

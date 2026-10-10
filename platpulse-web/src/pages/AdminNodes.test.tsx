@@ -514,6 +514,11 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     expect(screen.getByText('Network identity')).toBeTruthy()
     expect(screen.getByText('Observed chain ID / P2P network')).toBeTruthy()
     expect(screen.getByText(/210425 \/ 1/)).toBeTruthy()
+    // The refusal panel is rendered only while the Server is actually
+    // refusing history, never as a permanent decoration (issue #235).
+    expect(
+      screen.queryByText(/The Server is refusing this Node's Block history/),
+    ).toBeNull()
     // Administrative RPC diagnostics stay separate from Home's full
     // observation view and retain the redacted endpoint.
     expect(screen.getByText('RPC diagnostics')).toBeTruthy()
@@ -549,6 +554,66 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
       await screen.findByText(/Contradicts the Registry: chain_id/),
     ).toBeTruthy()
     expect(screen.getByText(/New history is not merged/)).toBeTruthy()
+  })
+
+  it('shows the Block history the Server refuses while the observation matches', async () => {
+    // ADR 0011 decision 4 / issue #235: a matched observation and an
+    // incident that already resolved must not hide the fact that every
+    // Block sample is still being refused.
+    const reason =
+      'Block network identity does not match the registered Network (genesis_hash stamped 0xaa...aaaa registered 0x00...0001). ' +
+      "Because the Node's current Network Identity observation matches the registered Network, the Agent's Block Identity Stamp for this Node was found stale: " +
+      'the Node was rebuilt or reconfigured and restarting the Agent on that Host is the only remedy. ' +
+      'The rejected heights stay a History Gap and are never backfilled; the Registry tuple is never edited to match a stamped sample.'
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(
+          {
+            ...NODE_A_DETAIL,
+            block_history_rejection: {
+              reason,
+              from_height: 12841800,
+              to_height: 12842019,
+              rejected_heights: 220,
+              recorded_at: '2026-08-12T08:00:00Z',
+            },
+          },
+          200,
+        ),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    await screen.findByRole('heading', { level: 1, name: /Node A/ })
+    const refusal = await screen.findByText(
+      /The Server is refusing this Node's Block history/,
+    )
+    const panel = refusal.closest(
+      '[data-slot="block-history-rejection"]',
+    ) as HTMLElement
+    expect(panel).toBeTruthy()
+    // The Server's own diagnosis is rendered verbatim, including the
+    // differing field and the remedy.
+    expect(within(panel).getByText(/genesis_hash stamped 0xaa/)).toBeTruthy()
+    expect(within(panel).getByText(/restarting the Agent on that Host is the only remedy/)).toBeTruthy()
+    expect(within(panel).getByText('Refused heights')).toBeTruthy()
+    expect(within(panel).getByText('220')).toBeTruthy()
+    expect(within(panel).getByText(/12,841,800 to 12,842,019/)).toBeTruthy()
+    expect(within(panel).getByText('Most recent refusal')).toBeTruthy()
+    // The observation still matches the Registry: the panel says which side
+    // is stale instead of letting the two contradict.
+    expect(screen.getAllByText('Matched').length).toBeGreaterThan(0)
+    expect(
+      within(panel).getByText(/The observation above matches the Registry/),
+    ).toBeTruthy()
+    // The panel points at the runbook step for this exact symptom.
+    expect(
+      within(panel).getByText(
+        /"When the observation matches but the Block history is still\s+rejected" in docs\/deployment\.md/,
+      ),
+    ).toBeTruthy()
+    // It names the stamped side, not the Registry, as the stale one.
+    expect(within(panel).getAllByText(/Block Identity Stamp/).length).toBeGreaterThan(0)
   })
 
   it('shows the Retired lifecycle from Node Inventory, separate from health', async () => {
