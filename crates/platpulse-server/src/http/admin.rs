@@ -2317,32 +2317,41 @@ pub struct BlockHistoryRejection {
 /// refusal older than the Node's newest accepted Block Summary belongs to a
 /// Node that has since recovered, and reporting it as a live alarm would
 /// invent an incident. Every timestamp here is RFC 3339 UTC text written by
-/// the Server, so the boundary comparison is a plain text comparison. A Node
-/// with no retained Block Summary (never accepted, or aged out of retention)
-/// keeps showing its newest refusal; that Node has no accepted history in the
-/// retention window to prove recovery with.
+/// the Server, so the boundary comparison is a plain text comparison.
+///
+/// A refusal counts only when the Server authored it. An Agent declares its
+/// own `server_rejected` gaps, and its reason and timestamp are Agent input:
+/// presenting them here would let a reporting Agent fabricate this diagnosis
+/// (AGENTS.md: the Server is the trust boundary). Recovery is proven by the
+/// newer of the Node's newest retained Block Summary and the durable
+/// acceptance stamp on its history state, so the diagnosis does not reappear
+/// once retention ages the raw summaries out. A Node with neither keeps
+/// showing its newest refusal: nothing proves that history resumed.
 async fn block_history_rejection(state: &AppState, node_id: &str) -> Option<BlockHistoryRejection> {
-    let newest = sqlx::query_as::<_, (String, String)>(
-        "SELECT reason, created_at FROM block_history_gaps g WHERE g.node_id = ? AND g.kind = 'server_rejected' AND g.created_at > COALESCE((SELECT MAX(s.accepted_at) FROM block_summaries s WHERE s.node_id = g.node_id), '') ORDER BY g.created_at DESC, g.from_height DESC LIMIT 1",
-    )
-    .bind(node_id)
-    .fetch_optional(state.db().pool())
-    .await
-    .ok()
-    .flatten()?;
-    let span = sqlx::query_as::<_, (i64, i64, i64)>(
-        "SELECT COUNT(*), MIN(g.from_height), MAX(g.to_height) FROM block_history_gaps g WHERE g.node_id = ? AND g.kind = 'server_rejected' AND g.created_at > COALESCE((SELECT MAX(s.accepted_at) FROM block_summaries s WHERE s.node_id = g.node_id), '')",
+    // One query keeps the newest refusal and its aggregate on the same
+    // predicate, so the panel can never report a height span from evidence
+    // other than the refusal it displays.
+    let (count, from_height, to_height, reason, recorded_at) = sqlx::query_as::<
+        _,
+        (i64, Option<i64>, Option<i64>, Option<String>, Option<String>),
+    >(
+        "WITH current_refusals AS (SELECT g.from_height, g.to_height, g.reason, g.created_at FROM block_history_gaps g WHERE g.node_id = ? AND g.kind = 'server_rejected' AND g.authored_by = 'server' AND g.created_at > COALESCE((SELECT MAX(s.accepted_at) FROM block_summaries s WHERE s.node_id = g.node_id), (SELECT h.last_accepted_summary_at FROM block_history_state h WHERE h.node_id = g.node_id), '')) SELECT COUNT(*), MIN(from_height), MAX(to_height), (SELECT reason FROM current_refusals ORDER BY created_at DESC, from_height DESC LIMIT 1), (SELECT created_at FROM current_refusals ORDER BY created_at DESC, from_height DESC LIMIT 1) FROM current_refusals",
     )
     .bind(node_id)
     .fetch_one(state.db().pool())
     .await
     .ok()?;
+    let (Some(from_height), Some(to_height), Some(reason), Some(recorded_at)) =
+        (from_height, to_height, reason, recorded_at)
+    else {
+        return None;
+    };
     Some(BlockHistoryRejection {
-        reason: newest.0,
-        from_height: span.1,
-        to_height: span.2,
-        rejected_heights: span.0,
-        recorded_at: newest.1,
+        reason,
+        from_height,
+        to_height,
+        rejected_heights: count,
+        recorded_at,
     })
 }
 
@@ -10445,14 +10454,28 @@ mod tests {
                 .unwrap()
         }
 
+        /// A refusal the Server recorded while ingesting a Report, which is
+        /// the only kind of row the panel may present as its own diagnosis.
         async fn reject_gap(state: &AppState, reason: &str, height: i64, at: &str) {
+            insert_gap(state, reason, height, at, "server").await;
+        }
+
+        /// A gap the reporting Agent declared about itself: the Server stores
+        /// it with its author, and it must never become the Server's own
+        /// diagnosis, however it is timestamped.
+        async fn declare_gap(state: &AppState, reason: &str, height: i64, at: &str) {
+            insert_gap(state, reason, height, at, "agent").await;
+        }
+
+        async fn insert_gap(state: &AppState, reason: &str, height: i64, at: &str, author: &str) {
             sqlx::query(
-                "INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES ('node-healthy', ?, ?, 'server_rejected', ?, ?)",
+                "INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES ('node-healthy', ?, ?, 'server_rejected', ?, ?, ?)",
             )
             .bind(height)
             .bind(height)
             .bind(reason)
             .bind(at)
+            .bind(author)
             .execute(state.db().pool())
             .await
             .unwrap();
@@ -10471,6 +10494,23 @@ mod tests {
         assert!(
             value["block_history_rejection"].is_null(),
             "a Node whose history the Server accepts carries no refusal"
+        );
+
+        // An Agent declares its own server_rejected gaps, with its own reason
+        // and its own timestamp. Presenting one here would let a reporting
+        // Agent fabricate this diagnosis, so a future-dated Agent claim leaves
+        // the panel empty (AGENTS.md: the Server is the trust boundary).
+        declare_gap(
+            &state,
+            "Block network identity does not match the registered Network (Agent claim)",
+            40,
+            "2099-01-01T00:00:00Z",
+        )
+        .await;
+        let value = detail(&state, "node-healthy").await;
+        assert!(
+            value["block_history_rejection"].is_null(),
+            "an Agent-declared gap is Agent evidence, not a Server refusal"
         );
 
         // The Server records the refusal itself while ingesting a Report, so
@@ -10494,6 +10534,24 @@ mod tests {
         assert!(
             value["block_history_rejection"].is_null(),
             "a recovered Node must not keep reporting the refusal it already recovered from"
+        );
+
+        // Retention ages accepted Block Summaries out. The recovery evidence
+        // survives it on the history state row, so the refusal cannot come
+        // back as a live alarm for a Node that already recovered (ADR 0011
+        // decision 4).
+        sqlx::query("DELETE FROM block_summaries WHERE node_id = 'node-healthy'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO block_history_state (node_id, updated_at, last_accepted_summary_at) VALUES ('node-healthy', '2026-08-12T11:00:00Z', '2026-08-12T11:00:00Z') ON CONFLICT(node_id) DO UPDATE SET last_accepted_summary_at = excluded.last_accepted_summary_at")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let value = detail(&state, "node-healthy").await;
+        assert!(
+            value["block_history_rejection"].is_null(),
+            "recovery evidence must outlive raw Block Summary retention"
         );
 
         // A fresh refusal is the Node's current disposition again, and it

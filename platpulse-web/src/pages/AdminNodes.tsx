@@ -1095,7 +1095,11 @@ function IdentityPanel({ node }: { node: AdminNodeDetailDto }) {
             <StatusBadge status="History rejected" tone="error" /> The Server is refusing
             this Node's Block history.
           </p>
-          <p className="text-muted-foreground">{node.block_history_rejection.reason}</p>
+          {/* The reason names stamped/registered values such as a 66-character
+              genesis hash, so it must wrap instead of widening the viewport. */}
+          <p className="break-words text-muted-foreground">
+            {node.block_history_rejection.reason}
+          </p>
           <DetailList>
             <DetailItem label="Refused heights">
               <span className="tabular-nums">

@@ -846,16 +846,39 @@ fn fresh_network_identity<I: ReportInventory>(
         .filter(|identity| identity.address_hrp.is_some())
 }
 
+/// Identity of one stamped sample: the Node plus the exact Block Identity
+/// Stamp its sample carries. One Report can carry more than one stamp for the
+/// same Node when its samples span a subscription boundary (the wire format
+/// validates each sample's stamp on its own), so every rejection is keyed by
+/// the stamp it diagnosed rather than by the Node alone.
+type StampedIdentityKey = (platpulse_core::identity::NodeId, String);
+
+/// Fingerprint of the stamp a sample carries, used as the diagnosis key. Field
+/// separators keep two different stamps from producing one key; an absent HRP
+/// is spelled out rather than rendered as an empty segment.
+fn stamped_identity_key(
+    node_id: platpulse_core::identity::NodeId,
+    stamp: &platpulse_core::network::NetworkIdentity,
+) -> StampedIdentityKey {
+    (
+        node_id,
+        format!(
+            "{}|{}|{}|{}",
+            stamp.genesis_hash,
+            stamp.chain_id,
+            stamp.p2p_network_id,
+            stamp.address_hrp.as_deref().unwrap_or("unset")
+        ),
+    )
+}
+
 /// Samples whose stamped Network Identity contradicts the Registry, keyed by
-/// Node and carrying the differing fields plus the diagnosed cause.
+/// Node and stamp, each carrying the differing fields plus the diagnosed cause.
 async fn block_network_identity_rejections<I: ReportInventory>(
     tx: &mut Transaction<'_, Sqlite>,
     report: &AgentReport<I>,
     purged_nodes: &std::collections::HashSet<platpulse_core::identity::NodeId>,
-) -> Result<
-    std::collections::HashMap<platpulse_core::identity::NodeId, BlockIdentityRejection>,
-    sqlx::Error,
-> {
+) -> Result<std::collections::HashMap<StampedIdentityKey, BlockIdentityRejection>, sqlx::Error> {
     let mut rejections = std::collections::HashMap::new();
     for sample in &report.block_summaries {
         // A purged Node has no Network projection left to compare against and
@@ -887,17 +910,22 @@ async fn block_network_identity_rejections<I: ReportInventory>(
         if fields.is_empty() {
             continue;
         }
-        // Samples of one Node share one stamp, so the first diagnosis stands.
+        // Every contradicted sample gets the diagnosis of the stamp it
+        // actually carries, so the Receipt and the History Gap name the fields
+        // that differed for that sample (ADR 0011 decision 4). The refusal
+        // itself stays Node-scoped: one contradicted stamp already condemns the
+        // Node's samples, and the operator-facing remedy is per Node.
+        let divergence = match fresh_network_identity(report, sample.node_id) {
+            None => StampDivergence::Unobserved,
+            Some(observed) if registered.matches(observed) => StampDivergence::StaleStamp,
+            Some(_) => StampDivergence::NetworkConflict,
+        };
         rejections
-            .entry(sample.node_id)
-            .or_insert_with(move || BlockIdentityRejection {
-                fields,
-                divergence: match fresh_network_identity(report, sample.node_id) {
-                    None => StampDivergence::Unobserved,
-                    Some(observed) if registered.matches(observed) => StampDivergence::StaleStamp,
-                    Some(_) => StampDivergence::NetworkConflict,
-                },
-            });
+            .entry(stamped_identity_key(
+                sample.node_id,
+                &sample.network_identity,
+            ))
+            .or_insert(BlockIdentityRejection { fields, divergence });
     }
     Ok(rejections)
 }
@@ -1866,9 +1894,16 @@ async fn save_current<I: ReportInventory>(
 
         sqlx::query("INSERT INTO observed_network_heads (node_id, block_number, block_hash, observed_at, confidence, eligible_sources) VALUES (?, ?, ?, ?, 'unknown', '[\\\"subscription\\\"]') ON CONFLICT(node_id) DO UPDATE SET block_number=excluded.block_number, block_hash=excluded.block_hash, observed_at=excluded.observed_at, confidence=excluded.confidence, eligible_sources=excluded.eligible_sources")
             .bind(&node_id).bind(sample.block_number as i64).bind(sample.block_hash.to_string()).bind(sample.observed_at.to_string()).execute(&mut **tx).await?;
-        sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, updated_at) VALUES (?, ?, 1, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET historical_high_watermark=MAX(block_history_state.historical_high_watermark, excluded.historical_high_watermark), cumulative_block_count=block_history_state.cumulative_block_count + 1, cumulative_transaction_count=block_history_state.cumulative_transaction_count + excluded.cumulative_transaction_count, cumulative_self_seal_count=block_history_state.cumulative_self_seal_count + excluded.cumulative_self_seal_count, updated_at=excluded.updated_at")
+        // last_accepted_summary_at is the durable proof that this Node's
+        // history was accepted again (ADR 0011 decision 4). The Admin refusal
+        // diagnosis compares its newest Server-authored gap against it, so the
+        // diagnosis clears when history resumes and stays clear after
+        // retention ages the raw Block Summary rows out; updated_at cannot
+        // serve that purpose because the current-head projection writes it on
+        // every Report.
+        sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, last_accepted_summary_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET historical_high_watermark=MAX(block_history_state.historical_high_watermark, excluded.historical_high_watermark), cumulative_block_count=block_history_state.cumulative_block_count + 1, cumulative_transaction_count=block_history_state.cumulative_transaction_count + excluded.cumulative_transaction_count, cumulative_self_seal_count=block_history_state.cumulative_self_seal_count + excluded.cumulative_self_seal_count, last_accepted_summary_at=excluded.last_accepted_summary_at, updated_at=excluded.updated_at")
             .bind(&node_id).bind(sample.block_number as i64).bind(sample.transaction_count as i64)
-            .bind((sample.attribution.seal_signer_match == platpulse_core::block::SealSignerMatch::SignerSelf) as i64).bind(received_at).execute(&mut **tx).await?;
+            .bind((sample.attribution.seal_signer_match == platpulse_core::block::SealSignerMatch::SignerSelf) as i64).bind(received_at).bind(received_at).execute(&mut **tx).await?;
     }
     Ok(())
 }
@@ -2946,17 +2981,25 @@ async fn ingest_report<I: ReportInventory>(
     for sample in &parsed.block_summaries {
         // The Server records the History Gap for a rejected sample itself, so
         // the reason operators read is the Server's own diagnosis of what it
-        // rejected and why, not an Agent claim about itself. The Agent records
-        // the same (node, from, to, kind) triple once it applies the Receipt,
-        // which the unique gap index folds into this row.
+        // rejected and why, not an Agent claim about itself.
+        //
+        // The row is upserted rather than ignored so the Server's text wins
+        // even when the Agent recorded the same (node, from, to, kind) triple
+        // first: the unique gap index folds the Agent's row into this one, and
+        // authored_by is what lets the Admin surface present only the rows the
+        // Server wrote as its own live refusal (AGENTS.md: the Server is the
+        // trust boundary and never presents Agent input as its own evidence).
         let reason = if ownership_mismatches.contains(&sample.node_id) {
             "Node ownership mismatch".to_owned()
-        } else if let Some(evidence) = identity_rejections.get(&sample.node_id) {
+        } else if let Some(evidence) = identity_rejections.get(&stamped_identity_key(
+            sample.node_id,
+            &sample.network_identity,
+        )) {
             crate::redaction::redact_sensitive(&evidence.reason())
         } else {
             continue;
         };
-        let inserted = sqlx::query("INSERT OR IGNORE INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES (?, ?, ?, 'server_rejected', ?, ?)")
+        let inserted = sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES (?, ?, ?, 'server_rejected', ?, ?, 'server') ON CONFLICT(node_id, from_height, to_height, kind) DO UPDATE SET reason=excluded.reason, created_at=excluded.created_at, authored_by=excluded.authored_by")
             .bind(sample.node_id.to_string())
             .bind(sample.block_number as i64)
             .bind(sample.block_number as i64)
@@ -2982,7 +3025,10 @@ async fn ingest_report<I: ReportInventory>(
             platpulse_core::gap::GapKind::SpoolOverflow => "spool_overflow",
             platpulse_core::gap::GapKind::ServerRejected => "server_rejected",
         };
-        let inserted = sqlx::query("INSERT OR IGNORE INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        // An Agent-declared gap is Agent evidence: it is stored with its
+        // author so the Server never presents it as its own refusal, and it
+        // never overwrites the Server's own text for the same triple.
+        let inserted = sqlx::query("INSERT OR IGNORE INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES (?, ?, ?, ?, ?, ?, 'agent')")
             .bind(gap.node_id.to_string()).bind(gap.from_height as i64).bind(gap.to_height as i64)
             .bind(kind)
             .bind(crate::redaction::redact_sensitive(&gap.reason))
@@ -3109,8 +3155,12 @@ async fn ingest_report<I: ReportInventory>(
         .block_summaries
         .iter()
         .map(|sample| {
+            let identity_rejection = identity_rejections.get(&stamped_identity_key(
+                sample.node_id,
+                &sample.network_identity,
+            ));
             let rejected = rejected_nodes.contains(&sample.node_id)
-                || identity_rejections.contains_key(&sample.node_id)
+                || identity_rejection.is_some()
                 || outside_open_gap.contains(&(sample.node_id, sample.block_number))
                 || divergence_samples.contains(&(sample.node_id, sample.block_number))
                 || replay_samples.contains(&(sample.node_id, sample.block_number));
@@ -3131,6 +3181,20 @@ async fn ingest_report<I: ReportInventory>(
                     if ownership_mismatches.contains(&sample.node_id) {
                         return ownership_mismatch_rejection();
                     }
+                    // A contradicted stamp is the more specific finding about
+                    // this sample, and it is what the Server's own History Gap
+                    // row for the same height already records, so it outranks
+                    // the generic refusals below: the Receipt must state the
+                    // same reason as the gap it leaves behind (ADR 0011
+                    // decision 4). Samples whose stamp matches the Registry
+                    // never carry a diagnosis here, so the other refusals keep
+                    // their priority for every other sample.
+                    if let Some(evidence) = identity_rejection {
+                        return rejection(
+                            platpulse_core::RejectionCode::NetworkIdentityMismatch,
+                            &evidence.reason(),
+                        );
+                    }
                     if outside_open_gap.contains(&(sample.node_id, sample.block_number)) {
                         return rejection(
                             platpulse_core::RejectionCode::GapBackfillOutsideOpenGap,
@@ -3149,14 +3213,9 @@ async fn ingest_report<I: ReportInventory>(
                             "Normal resync replay at or below the historical high-water mark",
                         );
                     }
-                    if let Some(evidence) = identity_rejections.get(&sample.node_id) {
-                        return rejection(
-                            platpulse_core::RejectionCode::NetworkIdentityMismatch,
-                            &evidence.reason(),
-                        );
-                    }
-                    // Only a rejected sample with no other attribution reaches
-                    // here; the bounded fallback keeps every rejection typed.
+                    // Only a rejected sample with no identity diagnosis and no
+                    // other attribution reaches here; the bounded fallback
+                    // keeps every rejection typed.
                     rejection(
                         platpulse_core::RejectionCode::NetworkIdentityMismatch,
                         "Block network identity does not match the registered Network",
@@ -6897,6 +6956,20 @@ mod tests {
         .unwrap()
     }
 
+    /// The History Gap rows a Node carries with their author, in height order.
+    async fn recorded_gap_rows(
+        state: &AppState,
+        node_id: platpulse_core::identity::NodeId,
+    ) -> Vec<(i64, i64, String, String)> {
+        sqlx::query_as(
+            "SELECT from_height, to_height, reason, authored_by FROM block_history_gaps WHERE node_id=? ORDER BY from_height, to_height",
+        )
+        .bind(node_id.to_string())
+        .fetch_all(state.db().pool())
+        .await
+        .unwrap()
+    }
+
     /// #235 decision 4: after a Node build upgrade the Node reports the
     /// registered Network while the Agent keeps stamping samples with the
     /// identity it cached. Every rejection must name the differing fields with
@@ -7017,6 +7090,237 @@ mod tests {
         declared.validate().unwrap();
         submit(&state, &agent_id, serde_json::to_vec(&declared).unwrap()).await;
         assert_eq!(recorded_gap_reasons(&state, node_id).await, gaps);
+    }
+
+    /// One Report can carry more than one Block Identity Stamp for the same
+    /// Node: samples spooled across a subscription boundary keep the stamp
+    /// they were collected with, and the wire format validates each sample's
+    /// stamp on its own. Every rejection must name the fields that actually
+    /// differed for *its* sample (ADR 0011 decision 4), and the History Gap
+    /// the Server leaves behind must carry that same text.
+    #[tokio::test]
+    async fn each_stamped_sample_is_diagnosed_on_its_own_stamp() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut report = report_with_stamped_samples(
+            "0195f2a1-0013-4013-8013-000000000305",
+            &registered_identity(),
+            &pre_upgrade_identity(),
+            &[10],
+        );
+        let node_id = report.inventory.nodes[0].node_id;
+        let mut hrp_stamp = registered_identity();
+        hrp_stamp.address_hrp = Some("lax".to_owned());
+        let mut second = report.block_summaries[0].clone();
+        second.block_number = 11;
+        second.block_hash = format!("0x{:064x}", 12).parse().unwrap();
+        second.parent_hash = format!("0x{:064x}", 11).parse().unwrap();
+        second.network_identity = hrp_stamp;
+        report.block_summaries.push(second);
+        report.validate().unwrap();
+
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
+        assert_eq!(receipt.samples.len(), 2);
+        let rejection_at = |height: u64| {
+            receipt
+                .samples
+                .iter()
+                .find(|sample| {
+                    sample.sample == platpulse_core::receipt::SampleRef::Block { height }
+                })
+                .and_then(|sample| sample.rejection.clone())
+                .unwrap()
+        };
+
+        let legacy = rejection_at(10);
+        assert_eq!(
+            legacy.code,
+            platpulse_core::RejectionCode::NetworkIdentityMismatch
+        );
+        assert!(
+            legacy.reason.contains("genesis_hash stamped 0xaaaa")
+                && legacy
+                    .reason
+                    .contains("chain_id stamped 100 registered 210425")
+                && !legacy.reason.contains("address_hrp"),
+            "{}",
+            legacy.reason
+        );
+
+        let hrp = rejection_at(11);
+        assert_eq!(
+            hrp.code,
+            platpulse_core::RejectionCode::NetworkIdentityMismatch
+        );
+        assert!(
+            hrp.reason
+                .contains("address_hrp stamped lax registered lat")
+                && !hrp.reason.contains("chain_id")
+                && !hrp.reason.contains("genesis_hash"),
+            "{}",
+            hrp.reason
+        );
+
+        // Each refused height carries its own sample's diagnosis instead of the
+        // first sample's fields repeated for the whole Node.
+        let gaps = recorded_gap_reasons(&state, node_id).await;
+        assert_eq!(gaps.len(), 2);
+        assert_eq!((gaps[0].0, gaps[0].1), (10, 10));
+        assert_eq!(gaps[0].2, legacy.reason);
+        assert_eq!((gaps[1].0, gaps[1].1), (11, 11));
+        assert_eq!(gaps[1].2, hrp.reason);
+    }
+
+    /// A contradicted stamp is the more specific finding about a sample, so it
+    /// outranks the generic refusals in the Receipt: a GapBackfill sample
+    /// outside an open recoverable gap reports the identity contradiction the
+    /// Server records on its History Gap, instead of two surfaces naming two
+    /// different causes. A sample whose stamp matches the Registry keeps the
+    /// backfill-protocol rejection it always had.
+    #[tokio::test]
+    async fn identity_refusal_agrees_with_the_gap_it_records() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut mismatched = report_with_stamped_samples(
+            "0195f2a1-0013-4013-8013-000000000306",
+            &registered_identity(),
+            &pre_upgrade_identity(),
+            &[10],
+        );
+        let node_id = mismatched.inventory.nodes[0].node_id;
+        mismatched.block_summaries[0].source = platpulse_core::block::BlockSource::GapBackfill;
+        mismatched.validate().unwrap();
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&mismatched).unwrap()).await;
+        let rejection = receipt.samples[0].rejection.as_ref().unwrap();
+        assert_eq!(
+            rejection.code,
+            platpulse_core::RejectionCode::NetworkIdentityMismatch
+        );
+        assert!(
+            rejection.reason.contains("genesis_hash stamped 0xaaaa"),
+            "{}",
+            rejection.reason
+        );
+        let gaps = recorded_gap_reasons(&state, node_id).await;
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].2, rejection.reason);
+
+        // The same sample shape with a matching stamp is still refused for the
+        // backfill protocol, and the Server records no identity gap for it.
+        let mut matching = report_with_stamped_samples(
+            "0195f2a1-0013-4013-8013-000000000307",
+            &registered_identity(),
+            &registered_identity(),
+            &[20],
+        );
+        matching.report_sequence = mismatched.report_sequence + 1;
+        matching.block_summaries[0].source = platpulse_core::block::BlockSource::GapBackfill;
+        matching.validate().unwrap();
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&matching).unwrap()).await;
+        let rejection = receipt.samples[0].rejection.as_ref().unwrap();
+        assert_eq!(
+            rejection.code,
+            platpulse_core::RejectionCode::GapBackfillOutsideOpenGap
+        );
+        assert_eq!(recorded_gap_reasons(&state, node_id).await, gaps);
+    }
+
+    /// History Gap rows carry their author: the Server writes its own refusals
+    /// as 'server', and a gap an Agent declares about itself stays 'agent'
+    /// evidence. Only the Server's own rows may be presented as its live
+    /// refusal diagnosis, so a reporting Agent cannot fabricate one
+    /// (AGENTS.md: the Server is the trust boundary).
+    #[tokio::test]
+    async fn history_gaps_carry_their_author() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let report = report_with_stamped_samples(
+            "0195f2a1-0013-4013-8013-000000000308",
+            &registered_identity(),
+            &pre_upgrade_identity(),
+            &[10],
+        );
+        let node_id = report.inventory.nodes[0].node_id;
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        let server_reason = receipt.samples[0]
+            .rejection
+            .as_ref()
+            .unwrap()
+            .reason
+            .clone();
+        assert_eq!(
+            recorded_gap_rows(&state, node_id).await,
+            vec![(10, 10, server_reason.clone(), "server".to_owned())]
+        );
+
+        // The Agent applies the Receipt and reports the same gap back with its
+        // own wording, plus a gap of its own that the Server never refused. The
+        // Server's row keeps its text and its author, and the Agent's row is
+        // stored as the Agent's.
+        let mut declared = report.clone();
+        declared.report_sequence += 1;
+        declared.report_id = "0195f2a1-0013-4013-8013-000000000309".parse().unwrap();
+        declared.block_summaries.clear();
+        declared.history_gaps = [10u64, 12]
+            .into_iter()
+            .map(|height| platpulse_core::gap::HistoryGap {
+                node_id,
+                kind: platpulse_core::gap::GapKind::ServerRejected,
+                from_height: height,
+                to_height: height,
+                reason: "locally retained history gap".to_owned(),
+                recorded_at: report.generated_at,
+            })
+            .collect();
+        declared.validate().unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&declared).unwrap()).await;
+        assert_eq!(
+            recorded_gap_rows(&state, node_id).await,
+            vec![
+                (10, 10, server_reason, "server".to_owned()),
+                (
+                    12,
+                    12,
+                    "locally retained history gap".to_owned(),
+                    "agent".to_owned()
+                ),
+            ]
+        );
+    }
+
+    /// Acceptance evidence for the Admin refusal diagnosis outlives raw Block
+    /// Summary retention: the Server stamps the moment it last accepted a
+    /// summary on the durable per-Node history state (ADR 0011 decision 4).
+    #[tokio::test]
+    async fn accepted_history_records_when_it_resumed() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let report = report_with_stamped_samples(
+            "0195f2a1-0013-4013-8013-000000000310",
+            &registered_identity(),
+            &registered_identity(),
+            &[20, 21],
+        );
+        let node_id = report.inventory.nodes[0].node_id;
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert_eq!(receipt.disposition, ReceiptDisposition::Accepted);
+
+        let accepted: String = sqlx::query_scalar(
+            "SELECT accepted_at FROM block_summaries WHERE node_id=? ORDER BY block_number DESC LIMIT 1",
+        )
+        .bind(node_id.to_string())
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        let recorded: Option<String> = sqlx::query_scalar(
+            "SELECT last_accepted_summary_at FROM block_history_state WHERE node_id=?",
+        )
+        .bind(node_id.to_string())
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            recorded,
+            Some(accepted),
+            "the acceptance stamp is the same Server-authored text as the summary it proves"
+        );
     }
 
     /// A Node that really serves another Network is not a stale stamp: no
