@@ -73,9 +73,11 @@
 | `platpulse.db.recorrupted-20260917-175524` | 1,814,585,344 | 122 | `Tree 25 page 208236 cell 431: 2nd reference to page 381576` |
 | `platpulse-pre-repair-20260922T073657Z.db` | 5,341,560,832 | 1 | `Freelist: size is 79 but should be 81` |
 
+> **产物清理（2026-10-10）**：本表与本节提到的全部历史副本（`platpulse.db.corrupt-20260917-175157`、`platpulse.db.recorrupted-20260917-175524` 及其 `-shm`/`-wal`，连同 `/home/mowind/.local/state/platpulse-backups/` 与 `/home/mowind/.local/state/platpulse-agent/` 下的历史 `.db` 副本，共约 11 GB）已按运维决定删除。表中大小、`schema_version` 与首条错误保留为记录；§10 的复现命令需先重新取得产物才能执行。**当前库不在此列，未被触碰。**
+
 两份 09-17 原始件携带**同一错误家族**：`Rowid ... out of order`、`2nd reference to page`、`never used` 页、索引条目数错误、`row N missing from index`、`non-unique entry in index`。
 
-血缘澄清：`/home/mowind/.local/state/platpulse-backups/platpulse.db.predelete-20260917-181452` 含 `lost_and_found|422335|table`、schema_version 122、193 个 sqlite_master 对象、`integrity_check=ok`，是 **sqlite3 `.recover` 重建件**，不是原始现场文件；`platpulse-pre-repair-20260922T073657Z.db` 同样是重建后再次损坏的谱系。**原始损坏件只有两份 09-17 文件。**
+血缘澄清：`/home/mowind/.local/state/platpulse-backups/platpulse.db.predelete-20260917-181452` 含 `lost_and_found|422335|table`、schema_version 122、193 个 sqlite_master 对象、`integrity_check=ok`，是 **sqlite3 `.recover` 重建件**，不是原始现场文件；`platpulse-pre-repair-20260922T073657Z.db` 同样是重建后再次损坏的谱系。**原始损坏件只有两份 09-17 文件。**（上述副本已于 2026-10-10 清理。）
 
 ### 3.3 运行环境（HEAD `f355eb8`）
 
@@ -164,6 +166,7 @@ WAL-reset bug 的五步（[sqlite.org/draft/wal.html §11.1](https://sqlite.org/
 ## 10. 复现命令（可复查）
 
 ```bash
+# 产物已于 2026-10-10 清理；以下命令需先重新取得产物。
 # 完整性首条错误（务必带 immutable=1，避免污染产物）
 sqlite3 "file:/home/mowind/.local/state/platpulse/platpulse.db.corrupt-20260917-175157?immutable=1" \
   "PRAGMA integrity_check(1);"
@@ -180,7 +183,7 @@ strings target/release/platpulse-server | grep -E '^3\.[0-9]+\.[0-9]+$'
 
 ## 11. 2026-10-10 停机取证与静止态判定
 
-取证目录 `/data/platpulse-forensics-20261010T113926/`：`hot/`（运行中副本）、`stopped/`（停机后副本）、`verify/{server.toml,state}`、`logs/stage1.log`、`logs/stage2.log`、`MANIFEST.sha256`。修复后二进制（内置 SQLite 3.53.2）于 11:38 构建，11:42:08 重启服务。
+取证目录 `/data/platpulse-forensics-20261010T113926/`：`hot/`（运行中副本）、`stopped/`（停机后副本）、`verify/{server.toml,state}`、`logs/stage1.log`、`logs/stage2.log`、`MANIFEST.sha256`。修复后二进制（内置 SQLite 3.53.2）于 11:38 构建，11:42:08 重启服务。**该取证目录已连同 §3.2 的历史副本于 2026-10-10 清理；本节保留其哈希、命令与判定结果。**
 
 | 阶段 | 做法 | 结果 |
 | --- | --- | --- |
