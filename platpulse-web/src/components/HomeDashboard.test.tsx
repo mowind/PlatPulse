@@ -1345,7 +1345,7 @@ describe('Public Home card and list views', () => {
     window.history.replaceState({}, '', '/?view=list&sort=peers')
     renderHome([network, secondNetwork])
     expect([...selectNamed('Sort').options].map((option) => option.value)).toEqual([
-      'health', 'name', 'head', 'peers', 'process_cpu', 'process_memory',
+      'health', 'name', 'head', 'peers', 'process_cpu', 'process_memory', 'disk', 'uptime', 'attention',
     ])
     // Alpha and Gamma both report an authoritative 0 against Beta's never
     // observed Peer snapshot: the tie keeps the Node identity order and the
@@ -1356,6 +1356,82 @@ describe('Public Home card and list views', () => {
 
     expect(window.location.search).toBe('?sort=process_memory&view=list')
     expect(listedNames()).toEqual(['Gamma', 'Alpha', 'Beta'])
+  })
+
+  it('sorts by Disk, Uptime and Attention First through the one sort entry, in both views', () => {
+    // Every Node's Host storage percentage disagrees with its own Node data
+    // ratio, and each key ranks these three Nodes differently, so no two of them
+    // can be satisfied by one reading of the same field (#242).
+    const busy = {
+      ...network.nodes[0],
+      nodeId: 'node-busy',
+      displayName: 'Busy',
+      health: 'healthy',
+      nodeDataDirectorySizeBytes: 90,
+      nodeDataDirectoryCapacityBytes: 100,
+      hostStoragePercent: 5,
+      processUptimeMs: 1_000,
+    }
+    const empty = {
+      ...network.nodes[0],
+      nodeId: 'node-empty',
+      displayName: 'Empty',
+      health: 'unknown',
+      nodeDataDirectorySizeBytes: 0,
+      nodeDataDirectoryCapacityBytes: 100,
+      hostStoragePercent: 95,
+      processUptimeMs: 356_400_000,
+    }
+    const gone = {
+      ...network.nodes[1],
+      nodeId: 'node-gone',
+      displayName: 'Gone',
+      health: 'unhealthy',
+      nodeDataDirectorySizeBytes: null,
+      nodeDataDirectoryCapacityBytes: 100,
+      processUptimeMs: 0,
+    }
+    window.history.replaceState({}, '', '/?sort=disk')
+    renderHome([{ ...network, nodes: [empty, gone, busy] }])
+
+    // The entry offers the three new keys under the six delivered ones, with no
+    // direction control of its own.
+    expect([...selectNamed('Sort').options].map((option) => option.textContent)).toEqual([
+      'Health', 'Name', 'Current Head', 'Peers', 'Process CPU', 'Process memory', 'Disk', 'Uptime', 'Attention First',
+    ])
+    // The grid holds one link per card and nothing else, so the card order is
+    // read through the links' own role and name.
+    const cardNames = () => within(cardGrid() as HTMLElement).getAllByRole('link').map((link) => link.getAttribute('aria-label'))
+    // Disk reads the Node data ratio: the 90% directory leads, the real zero
+    // follows, and the ratio the Server never attested sorts last.
+    expect(cardNames()).toEqual(['Busy', 'Empty', 'Gone'])
+    const diskValue = (name: string) => cardOf(nodeCardLink(name))
+      .querySelector('[data-slot="resource-cell"][data-metric="node-data"] [data-slot="resource-value"]')?.textContent
+    expect(diskValue('Busy')).toBe('90.0%')
+    expect(diskValue('Empty')).toBe('0.0%')
+    expect(diskValue('Gone')).toBe('Unknown')
+
+    // Uptime is the process uptime, and it is a different ranking: the long-lived
+    // process leads, a freshly restarted one stays a zero, and an unobserved
+    // process is last.
+    fireEvent.change(selectNamed('Sort'), { target: { value: 'uptime' } })
+    expect(window.location.search).toBe('?sort=uptime')
+    expect(cardNames()).toEqual(['Empty', 'Busy', 'Gone'])
+
+    // Attention First is its own order over the same Server health value:
+    // Unhealthy, then Unknown, then Healthy — the reverse of the delivered
+    // Health key's grouping, and no health is turned into another.
+    fireEvent.change(selectNamed('Sort'), { target: { value: 'attention' } })
+    expect(window.location.search).toBe('?sort=attention')
+    expect(cardNames()).toEqual(['Gone', 'Empty', 'Busy'])
+    fireEvent.change(selectNamed('Sort'), { target: { value: 'health' } })
+    expect(cardNames()).toEqual(['Gone', 'Busy', 'Empty'])
+
+    // The list reads the same matching collection and the same order.
+    fireEvent.change(selectNamed('Sort'), { target: { value: 'attention' } })
+    fireEvent.mouseDown(viewTab('List'))
+    expect(window.location.search).toBe('?sort=attention&view=list')
+    expect(listedNames()).toEqual(['Gone', 'Empty', 'Busy'])
   })
 })
 

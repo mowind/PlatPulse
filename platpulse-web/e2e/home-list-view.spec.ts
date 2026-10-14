@@ -154,6 +154,9 @@ test.describe('Public Home card and list views (issue #223)', () => {
     await expect(listTable(page)).toBeVisible()
     await expect(listRows(page)).toHaveCount(NODE_LETTERS.length)
 
+    // Issue #242 appended Disk, Uptime and Attention First after these six, so
+    // every key this ticket delivered keeps its place, name and order; the three
+    // new rankings are held by e2e/home-sort-keys.spec.ts.
     expect(await (await sortSelect(page)).locator('option').allInnerTexts()).toEqual([
       'Health',
       'Name',
@@ -161,6 +164,9 @@ test.describe('Public Home card and list views (issue #223)', () => {
       'Peers',
       'Process CPU',
       'Process memory',
+      'Disk',
+      'Uptime',
+      'Attention First',
     ])
 
     // The default Health sort keeps the same economy as the four metric keys: a

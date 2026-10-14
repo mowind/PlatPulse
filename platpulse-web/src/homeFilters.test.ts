@@ -133,6 +133,19 @@ describe('Home filter vocabulary in a navigation URL', () => {
     expect(state).toEqual({ filters: DEFAULT_HOME_FILTERS, rejected: [] })
   })
 
+  it('owns the three sort keys #242 adds, and still refuses a key it never published', () => {
+    for (const sort of ['disk', 'uptime', 'attention']) {
+      expect(readHomeFilters(new URLSearchParams(`sort=${sort}`)).filters.sort).toBe(sort)
+    }
+    expect(readHomeFilters(new URLSearchParams('sort=disk_percent'))).toEqual({
+      filters: DEFAULT_HOME_FILTERS,
+      rejected: [{ parameter: 'sort', value: 'disk_percent' }],
+    })
+    // The new keys are ordinary Home parameters like the six before them: what
+    // Home writes as a non-default selection is what it reads back.
+    expect(writeHomeFilters(filters({ sort: 'attention' })).toString()).toBe('sort=attention')
+  })
+
   it('owns the view parameter: card and list are the only views Home reads', () => {
     expect(readHomeFilters(new URLSearchParams('view=list')).filters.view).toBe('list')
     expect(readHomeFilters(new URLSearchParams('view=card')).filters.view).toBe('card')
@@ -316,6 +329,196 @@ describe('Home list selection', () => {
     expect(order('process_memory')).toEqual(['Busy', 'Zero', 'Never'])
   })
 
+
+  /** Every Node's Host storage percentage disagrees with its own Node data ratio,
+   *  so a sort that read the Host column instead would rewrite this order. */
+  it('sorts by Disk as the Node data ratio the card publishes, never as Host storage', () => {
+    const full = record({
+      nodeId: 'full',
+      displayName: 'Full',
+      nodeDataDirectorySizeBytes: 180,
+      nodeDataDirectoryCapacityBytes: 200,
+      hostStoragePercent: 5,
+    })
+    const half = record({
+      nodeId: 'half',
+      displayName: 'Half',
+      nodeDataDirectorySizeBytes: 100,
+      nodeDataDirectoryCapacityBytes: 200,
+      hostStoragePercent: 95,
+    })
+    const zero = record({
+      nodeId: 'zero',
+      displayName: 'Zero',
+      nodeDataDirectorySizeBytes: 0,
+      nodeDataDirectoryCapacityBytes: 200,
+      hostStoragePercent: 60,
+    })
+    const never = record({
+      nodeId: 'never',
+      displayName: 'Never',
+      nodeDataDirectorySizeBytes: null,
+      nodeDataDirectoryCapacityBytes: 200,
+      hostStoragePercent: 99,
+    })
+    // A capacity that cannot hold anything has no ratio at all, so it is Unknown
+    // rather than an infinite or zero share.
+    const noCapacity = record({
+      nodeId: 'no-capacity',
+      displayName: 'No capacity',
+      nodeDataDirectorySizeBytes: 12,
+      nodeDataDirectoryCapacityBytes: 0,
+      hostStoragePercent: 98,
+    })
+    // Byte counts no Server can attest carry no ratio either, so the order and the
+    // card's own column agree on which Nodes have one at all.
+    const negative = record({
+      nodeId: 'negative',
+      displayName: 'Negative',
+      nodeDataDirectorySizeBytes: -12,
+      nodeDataDirectoryCapacityBytes: 200,
+      hostStoragePercent: 97,
+    })
+    const unmeasured = record({
+      nodeId: 'unmeasured',
+      displayName: 'Unmeasured',
+      nodeDataDirectorySizeBytes: Number.NaN,
+      nodeDataDirectoryCapacityBytes: Number.POSITIVE_INFINITY,
+      hostStoragePercent: 96,
+    })
+    const order = (nodes: HomeNodeRecord[]) =>
+      selectHomeRecords(nodes, filters({ sort: 'disk' })).matching.map((entry) => homeNodeLabel(entry.node))
+    expect(order([never, noCapacity, zero, half, full])).toEqual(['Full', 'Half', 'Zero', 'Never', 'No capacity'])
+    expect(order([negative, unmeasured, zero, full])).toEqual(['Full', 'Zero', 'Negative', 'Unmeasured'])
+  })
+
+  it('sorts by Uptime as the process uptime, keeping a real zero and every invalid value last', () => {
+    const uptime = (processUptimeMs: number | null, nodeId: string, displayName: string) =>
+      record({ nodeId, displayName, processUptimeMs })
+    const order = (nodes: HomeNodeRecord[]) =>
+      selectHomeRecords(nodes, filters({ sort: 'uptime' })).matching.map((entry) => homeNodeLabel(entry.node))
+    expect(
+      order([
+        uptime(null, 'never', 'Never'),
+        uptime(0, 'restarted', 'Restarted'),
+        uptime(1_000, 'short', 'Short'),
+        uptime(356_400_000, 'long', 'Long'),
+      ]),
+    ).toEqual(['Long', 'Short', 'Restarted', 'Never'])
+    // An uptime no browser can rank is not a very large uptime: it is Unknown
+    // like a missing one, and the Node identity keeps the two apart.
+    expect(
+      order([
+        uptime(Number.POSITIVE_INFINITY, 'infinite', 'Infinite'),
+        uptime(Number.NaN, 'not-a-number', 'Not a number'),
+        uptime(1_000, 'short', 'Short'),
+      ]),
+    ).toEqual(['Short', 'Infinite', 'Not a number'])
+  })
+
+  it('orders Attention First as Unhealthy, Unknown, then Healthy, on the Server health alone', () => {
+    // The healthy Node carries every signal that is not a health verdict — a
+    // high process CPU, a resyncing process, a lagging height and an Observing
+    // Activity — and none of them may promote it over an Unknown or an Unhealthy
+    // Node (#242 reads the existing Server health classification and nothing
+    // else).
+    const busyHealthy = record({
+      nodeId: 'busy-healthy',
+      displayName: 'Busy Healthy',
+      health: 'healthy',
+      processCpuPercent: 99,
+      resyncState: 'resyncing',
+      syncState: 'syncing',
+      currentHead: 1,
+      validator: insight({ activity: 'observing' }),
+    })
+    const observing = record({
+      nodeId: 'observing',
+      displayName: 'Observing Unknown',
+      health: 'unknown',
+      validator: insight({ activity: 'producing' }),
+    })
+    const failed = record({ nodeId: 'failed', displayName: 'Failed', health: 'unhealthy' })
+    const records = [busyHealthy, observing, failed]
+    const order = (sort: HomeSort) =>
+      selectHomeRecords(records, filters({ sort })).matching.map((entry) => homeNodeLabel(entry.node))
+    expect(order('attention')).toEqual(['Failed', 'Observing Unknown', 'Busy Healthy'])
+    // The delivered Health key keeps its own order: an attested Healthy Node
+    // leads an Unknown one, and neither key changes the other.
+    expect(order('health')).toEqual(['Failed', 'Busy Healthy', 'Observing Unknown'])
+  })
+
+  it('ranks every Activity × health combination by the Server health alone', () => {
+    // Activity is a chain dimension rather than a health verdict (#242): a
+    // Producing or an Observing Node is not thereby healthy, and no combination of
+    // Activity and health may move a Node inside either health order. Every
+    // combination Home can receive is ranked here.
+    const activities = ['producing', 'verifying', 'observing', 'unknown']
+    const healths = ['unhealthy', 'unknown', 'healthy']
+    const nodes = activities.flatMap((activity) =>
+      healths.map((health) =>
+        record({
+          nodeId: `${activity}-${health}`,
+          displayName: `${activity} ${health}`,
+          health,
+          validator: insight({ activity, activityState: 'current' }),
+        }),
+      ),
+    )
+    const order = (sort: HomeSort) => selectHomeRecords(nodes, filters({ sort })).matching
+    const words = (sort: HomeSort) => order(sort).map((entry) => healthCategory(entry.node.health))
+    const ids = (sort: HomeSort) => order(sort).map((entry) => entry.node.nodeId)
+    const times = (word: string) => Array.from({ length: activities.length }, () => word)
+    expect(words('attention')).toEqual([...times('unhealthy'), ...times('unknown'), ...times('healthy')])
+    expect(words('health')).toEqual([...times('unhealthy'), ...times('healthy'), ...times('unknown')])
+    // Inside a group the Activity decides nothing either: both keys keep the
+    // Node-identity order of each health group they read.
+    expect(ids('attention').slice(0, activities.length)).toEqual(ids('health').slice(0, activities.length))
+    expect(ids('attention').slice(activities.length * 2)).toEqual(ids('health').slice(activities.length, activities.length * 2))
+  })
+
+  it('breaks a tie on the Node identity under every key, so a refetch cannot reorder the list', () => {
+    // One shared set with equal values under every key — the same health, the
+    // same Node data ratio, the same uptime — so each key can only fall back to
+    // the Node identity, and each input order must produce the same output.
+    const first = record({
+      nodeId: 'first',
+      displayName: 'Same Name',
+      nodeDataDirectorySizeBytes: 50,
+      nodeDataDirectoryCapacityBytes: 100,
+      processUptimeMs: 1_000,
+    })
+    const second = record({
+      nodeId: 'second',
+      displayName: 'Same Name',
+      nodeDataDirectorySizeBytes: 50,
+      nodeDataDirectoryCapacityBytes: 100,
+      processUptimeMs: 1_000,
+    })
+    const third = record({
+      nodeId: 'third',
+      displayName: 'Same Name',
+      nodeDataDirectorySizeBytes: 50,
+      nodeDataDirectoryCapacityBytes: 100,
+      processUptimeMs: 1_000,
+    })
+    const order = (nodes: HomeNodeRecord[], sort: HomeSort) =>
+      selectHomeRecords(nodes, filters({ sort })).matching.map((entry) => entry.node.nodeId)
+    const permutations = [
+      [first, second, third],
+      [third, first, second],
+      [second, third, first],
+      [third, second, first],
+    ]
+    for (const sort of HOME_SORTS) {
+      expect(order(permutations[0], sort), sort).toEqual(['first', 'second', 'third'])
+      for (const permutation of permutations.slice(1)) {
+        expect(order(permutation, sort), sort).toEqual(['first', 'second', 'third'])
+      }
+    }
+  })
+
+
   it('reads each metric sort from its own field, so two metrics never share one rank', () => {
     // Every single-metric order above stays correct even if one metric sort read
     // another column, so these fixtures disagree with each other: Crossed leads on
@@ -360,8 +563,21 @@ describe('Home list selection', () => {
 })
 
 describe('Home list vocabulary', () => {
-  it('carries the six documented sort keys in their documented order', () => {
-    expect(HOME_SORTS).toEqual(['health', 'name', 'head', 'peers', 'process_cpu', 'process_memory'])
+  it('carries the nine documented sort keys in their documented order', () => {
+    // The three #242 adds are appended after the six #223 delivered, so every
+    // existing key, direction and accessible name keeps its place.
+    expect(HOME_SORTS).toEqual([
+      'health',
+      'name',
+      'head',
+      'peers',
+      'process_cpu',
+      'process_memory',
+      'disk',
+      'uptime',
+      'attention',
+    ])
+    expect(DEFAULT_HOME_FILTERS.sort).toBe('health')
   })
 
   it('carries the two documented views, with the card view the default', () => {

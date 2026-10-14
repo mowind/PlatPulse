@@ -23,6 +23,7 @@
  * navigation URL — it is not a protected sharing link and carries no authority.
  */
 import type { PublicNetwork, PublicNode } from './api/generated'
+import { nodeDataProgress } from './nodeData'
 
 /** One Public Node together with the Network that projected it. */
 export type HomeNodeRecord = {
@@ -31,12 +32,25 @@ export type HomeNodeRecord = {
 }
 
 /**
- * The six list sorts. Health, Name and Current Head were the three the delivered
+ * The nine list sorts. Health, Name and Current Head were the three the delivered
  * toolbar already offered, kept in the same place so an existing Home link still
  * means what it meant; Peers, Process CPU and Process memory are the metric
- * columns #223 adds beside them.
+ * columns #223 adds beside them; Disk, Uptime and Attention First are the three
+ * #242 adds. Attention First is its own order over the same Server health
+ * classification, not a second direction of the Health key (see
+ * `ATTENTION_SORT_ORDER`).
  */
-export const HOME_SORTS = ['health', 'name', 'head', 'peers', 'process_cpu', 'process_memory'] as const
+export const HOME_SORTS = [
+  'health',
+  'name',
+  'head',
+  'peers',
+  'process_cpu',
+  'process_memory',
+  'disk',
+  'uptime',
+  'attention',
+] as const
 export type HomeSort = (typeof HOME_SORTS)[number]
 
 /** The two Node list views: the delivered card grid, and the compact list (#223). */
@@ -237,18 +251,50 @@ export function healthTone(value: string): 'good' | 'warn' | 'bad' | 'neutral' {
   return 'neutral'
 }
 
+/** One of the three health words Home reads, never the `all` filter value. */
+type HomeHealthWord = Exclude<HomeHealthFilter, 'all'>
+
 /**
- * The Health sort rank. Every sort key shares one rule — a value the Server never
- * attested sorts last — so Health is graded in the same three words the Health
- * filter and the Health cell already read (#223, stories 73 and 74): an
- * unhealthy Node leads, a healthy Node follows, and a health Home can only read
- * as Unknown sorts after both. Attention still leads, and an unattested health
- * never outranks an attested one.
+ * The two orders Home ranks the Server's health value by, in the three words
+ * `healthCategory` reads it in (#223, #242): the delivered Health key's order —
+ * an unhealthy Node leads, a healthy Node follows, and a health Home can only
+ * read as Unknown sorts after both — and Attention First's, which leads with what
+ * the Server has not confirmed Healthy and puts the Unknown health before the
+ * confirmed one, the order a reader investigates in. Every sort key shares one
+ * further rule — a value the Server never attested sorts last — so an unattested
+ * health never outranks an attested one in either order. Nothing else decides a
+ * place in these orders: Activity, consensus membership, a resource percentage, a
+ * height lag and Resyncing are not health verdicts.
  */
-function healthSortRank(value: string): number {
-  const category = healthCategory(value)
-  if (category === 'unhealthy') return 0
-  return category === 'healthy' ? 1 : 2
+const HEALTH_SORT_ORDER: readonly HomeHealthWord[] = ['unhealthy', 'healthy', 'unknown']
+const ATTENTION_SORT_ORDER: readonly HomeHealthWord[] = ['unhealthy', 'unknown', 'healthy']
+
+/** Where one Node's Server-reported health sits in the order a key ranks by. */
+function healthRank(value: string, order: readonly HomeHealthWord[]): number {
+  const rank = order.indexOf(healthCategory(value))
+  return rank === -1 ? order.length : rank
+}
+
+/**
+ * The Node data ratio behind the Home card's Disk column (#242): the Node data
+ * directory's size as a share of the capacity of the filesystem that holds it.
+ * The sort reads the two public fields through the same `nodeDataProgress` the
+ * card and the Node Detail hero read, so the order and the column can never
+ * disagree about which Nodes have a ratio at all, and the Host's own storage
+ * percentage — a different observation — is never read here.
+ */
+function nodeDataRatio(node: PublicNode): number | null {
+  return attestedValue(nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes))
+}
+
+/**
+ * A value the Server never attested (`null`/`undefined`), or one it published as
+ * something no browser can rank (a non-finite number): both are Unknown to an
+ * order and sort last. A measured zero is a value like any other and keeps its
+ * place in the ranking.
+ */
+function attestedValue(value: number | null | undefined): number | null {
+  return value !== null && value !== undefined && Number.isFinite(value) ? value : null
 }
 
 /**
@@ -264,12 +310,15 @@ function compareUnknownLast(left: number | null, right: number | null): number {
 
 /**
  * The requested order. Every key puts a value the Server never attested last and
- * keeps a measured zero as a value: the four metric sorts compare the metric
- * itself (Current Head, Peers, Process CPU, Process memory) and the Health sort
- * compares the three-value health grade. Equal values fall back to the Node
- * identity, so the order is deterministic: the same set sorts the same way
- * whatever order the projection happened to arrive in, and a refetch cannot make
- * the list jump.
+ * keeps a measured zero as a value: the six metric sorts compare the metric
+ * itself (Current Head, Peers, Process CPU, Process memory, the Node data ratio,
+ * process uptime), the Health sort compares the three-value health grade, and
+ * Attention First compares the same grade in the order a reader investigates in
+ * (Unhealthy, Unknown, Healthy) — a Node's health classification decides its
+ * place there, and its Activity, its resources and its Resyncing state do not.
+ * Equal values fall back to the Node identity, so the order is deterministic:
+ * the same set sorts the same way whatever order the projection happened to
+ * arrive in, and a refetch cannot make the list jump.
  */
 export function sortHomeRecords<T extends HomeNodeRecord>(records: readonly T[], sort: HomeSort): T[] {
   return [...records].sort((left, right) => {
@@ -283,15 +332,21 @@ function compareHomeNodes(left: PublicNode, right: PublicNode, sort: HomeSort): 
     case 'name':
       return homeNodeLabel(left).localeCompare(homeNodeLabel(right))
     case 'head':
-      return compareUnknownLast(left.currentHead ?? null, right.currentHead ?? null)
+      return compareUnknownLast(attestedValue(left.currentHead), attestedValue(right.currentHead))
     case 'peers':
-      return compareUnknownLast(left.peers?.peerCount ?? null, right.peers?.peerCount ?? null)
+      return compareUnknownLast(attestedValue(left.peers?.peerCount), attestedValue(right.peers?.peerCount))
     case 'process_cpu':
-      return compareUnknownLast(left.processCpuPercent ?? null, right.processCpuPercent ?? null)
+      return compareUnknownLast(attestedValue(left.processCpuPercent), attestedValue(right.processCpuPercent))
     case 'process_memory':
-      return compareUnknownLast(left.processMemoryPercent ?? null, right.processMemoryPercent ?? null)
+      return compareUnknownLast(attestedValue(left.processMemoryPercent), attestedValue(right.processMemoryPercent))
+    case 'disk':
+      return compareUnknownLast(nodeDataRatio(left), nodeDataRatio(right))
+    case 'uptime':
+      return compareUnknownLast(attestedValue(left.processUptimeMs), attestedValue(right.processUptimeMs))
     case 'health':
-      return healthSortRank(left.health) - healthSortRank(right.health)
+      return healthRank(left.health, HEALTH_SORT_ORDER) - healthRank(right.health, HEALTH_SORT_ORDER)
+    case 'attention':
+      return healthRank(left.health, ATTENTION_SORT_ORDER) - healthRank(right.health, ATTENTION_SORT_ORDER)
   }
 }
 

@@ -104,6 +104,9 @@ const SEARCH_LABEL = 'Search Active Nodes'
  */
 const SEARCH_FIELD_TRACK = 16 * 16
 
+/** The one sort control's keys, in `HOME_SORTS` order (#223, #242): the six the
+ *  delivered toolbar already offered, then Disk, Uptime and Attention First. No
+ *  direction control is added — each key's direction is the key itself. */
 const sortOptions: Array<{ value: HomeSort; label: string }> = [
   { value: 'health', label: 'Health' },
   { value: 'name', label: 'Name' },
@@ -111,6 +114,9 @@ const sortOptions: Array<{ value: HomeSort; label: string }> = [
   { value: 'peers', label: 'Peers' },
   { value: 'process_cpu', label: 'Process CPU' },
   { value: 'process_memory', label: 'Process memory' },
+  { value: 'disk', label: 'Disk' },
+  { value: 'uptime', label: 'Uptime' },
+  { value: 'attention', label: 'Attention First' },
 ]
 
 /** Emerald Home: six equal overview cards beside a proportional Peer map.

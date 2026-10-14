@@ -75,8 +75,10 @@ export function NodePage() {
       : metricsQuery.error
         ? 'Metric history unavailable'
         : undefined
-  const nodeDataProgressValue = finiteNonNegative(node.nodeDataDirectorySizeBytes) && finiteNonNegative(node.nodeDataDirectoryCapacityBytes)
-    ? nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes) : null
+  // The shared helper validates both byte counts, so the hero reads the one ratio
+  // the Home card's Disk column and the Home Disk sort read (#242) instead of
+  // guarding the same two fields a second time.
+  const nodeDataProgressValue = nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
   const metricWindowTitle = describeMetricWindow(metricHistory)
   const validatorNode = nodeUsesValidatorComposition(node)
 
