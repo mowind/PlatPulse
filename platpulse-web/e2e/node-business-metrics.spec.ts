@@ -84,7 +84,7 @@ test('the chain block keeps one full-value Head line and three resource columns'
         await expectResourceColumnsAligned(card)
         // The Disk bar names the Node data directory and the capacity that holds
         // it; the Host's own storage percentage never becomes the Disk reading.
-        await expect(resources.getByRole('progressbar', { name: 'Disk: Node data directory size as a share of the filesystem capacity holding it, not whole-filesystem fullness' })).toHaveCount(1)
+        await expect(resources.getByRole('progressbar', { name: 'Disk: Node data directory size as a share of the filesystem capacity holding it, not whole-filesystem fullness', exact: true })).toHaveCount(1)
         const bars = await resources.locator('[role="progressbar"]').evaluateAll(elements => elements.map(el => {
           const box = el.getBoundingClientRect()
           return { top: box.top, width: box.width, valuenow: el.getAttribute('aria-valuenow') }

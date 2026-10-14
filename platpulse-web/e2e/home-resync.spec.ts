@@ -98,7 +98,7 @@ async function statusAndGeometry(page: Page) {
   for (const label of ['CPU', 'Mem', 'Disk', 'Head']) {
     await expect(normal.getByText(label, { exact: true })).toBeVisible()
   }
-  await expect(normal.locator('[data-slot="node-peers-meta"]')).toHaveText(/^Peers \d/)
+  await expect(normal.locator('[data-slot="node-peers-meta"]')).toHaveText(/^Peers \d+$/)
   await expect(normal.getByText('Txs', { exact: true })).toHaveCount(0)
   const unknown = nodeCard(page, 'C Unknown progress')
   await unknown.getByRole('button', { name: /Resync progress: 4\.34% toward/ }).click()
