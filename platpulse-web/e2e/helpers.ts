@@ -197,6 +197,16 @@ export async function expectResourceColumnsAligned(scope: Locator) {
   expect(offenders, 'every resource column keeps its label and value ordered, right-aligned and unclipped').toEqual([])
 }
 
+/** Home's three resource columns (#237) read inside the region that owns them:
+ *  one short label per column (the full source name stays the label's title and
+ *  the bar's accessible name) and, when the caller knows the fixture, the
+ *  right-aligned values the columns publish. */
+export async function expectResourceColumns(scope: Locator, values?: string[]) {
+  const region = scope.locator('[data-slot="node-resource-region"]')
+  await expect(region.locator('[data-slot="resource-label"]')).toHaveText(['CPU', 'Mem', 'Disk'])
+  if (values) await expect(region.locator('[data-slot="resource-value"]')).toHaveText(values)
+}
+
 /** Every visible control in a fixed-viewport scenario must remain a usable
  * 44px touch target. The selector is intentionally limited to native
  * interactive elements; it does not depend on component implementation

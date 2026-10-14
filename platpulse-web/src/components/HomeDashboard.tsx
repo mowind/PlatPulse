@@ -1015,7 +1015,8 @@ function validHeight(value: number | null | undefined): number | null {
  *  Emerald's normal-state success token, the same green family as the online
  *  dot and the theme accent, instead of the informational blue or the default
  *  primary (white in the dark theme). A Server-owned warning/error rule would
- *  replace this, and it would still have to map onto the existing tokens. */
+ *  replace this, and it would still have to map onto the existing tokens: the
+ *  ordinary resource bar keeps the ticket's own success green (#237). */
 const RESOURCE_BAR_STATUS: ProgressStatus = 'success'
 
 /** What the Disk bar measures (#237). The Node data directory's size over the
@@ -1023,6 +1024,11 @@ const RESOURCE_BAR_STATUS: ProgressStatus = 'success'
  *  the Host's own storage percentage is a different observation — so the bar's
  *  accessible name names the source it reads, and the identity explanation
  *  repeats the sentence beside the used / capacity bytes. */
+/* The three bars share one Emerald success-green fill: it colours a reading the
+ * Server published, never a verdict, so no occupancy threshold is invented and
+ * the theme's default primary (white in the dark theme) is left for real
+ * emphasis. A Server-owned rule can replace the constant without touching the
+ * columns. */
 const DISK_BAR_NAME = 'Disk: Node data directory size as a share of the filesystem capacity holding it, not whole-filesystem fullness'
 
 type ResourceMetric = {
@@ -1047,7 +1053,12 @@ function ResourceMetrics({ node }: { node: PublicNode }) {
   const nodeDataRatio = nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
   const metrics: ResourceMetric[] = [
     { metric: 'process-cpu', label: 'CPU', name: 'Process CPU', value: formatPercent(node.processCpuPercent), progress: node.processCpuPercent ?? null },
-    { metric: 'process-memory', label: 'Memory', name: 'Process memory', value: formatPercent(node.processMemoryPercent), progress: node.processMemoryPercent ?? null },
+    // 'Mem' is the shortest honest form of the longest of the three labels: the
+    // card's own minimum track must hold the label and its right-aligned
+    // percentage on one line, and the full 'Process memory' name stays the
+    // label's title and the bar's accessible name (the short-label form the
+    // Linked Validator parameters already use).
+    { metric: 'process-memory', label: 'Mem', name: 'Process memory', value: formatPercent(node.processMemoryPercent), progress: node.processMemoryPercent ?? null },
     { metric: 'node-data', label: 'Disk', name: DISK_BAR_NAME, value: formatPercent(nodeDataRatio), progress: nodeDataRatio },
   ]
   return (

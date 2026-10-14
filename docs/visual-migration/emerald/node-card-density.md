@@ -165,17 +165,21 @@ region; light and dark agree):
 
 | Project | Card | Resource region | Chain block |
 | --- | ---: | ---: | ---: |
-| phone-360-touch | 328 × 468 | 72 | 35 |
+| phone-360-touch | 328 × 452 | 56 | 35 |
 | phone-390-touch | 358 × 580 | 56 | 35 |
 | tablet-768-touch | 362 × 488 | 56 | 35 |
-| desktop-1280 | 303 × 468 | 72 | 35 |
-| desktop-1440 | 303 × 468 | 72 | 35 |
+| desktop-1280 | 303 × 452 | 56 | 35 |
+| desktop-1440 | 303 × 452 | 56 | 35 |
 
 The chain block is 35px at every width, against the 160px / 240px minima this
-record lists, and the resource region is 56–72px against its 112px minimum: the
-interior shrank, and the card's remaining height is the identity block's wrapping
-and the Validator region's own 176px minimum, which the parent's slice 2 (#238)
-addresses. Reaching the parent's 250–290px whole-card target is therefore not
-this slice's claim. The 328px card measures 72px of resources because one of its
-three columns cannot share its label's line at that width; at 358px and 362px
-(the same fixture) it is 56px, with every percentage on its label's line.
+record lists, and the resource region is 56px against its 112px minimum: one
+shared bar row under one label/value line per column, with every percentage on
+its label's line at all five projects — including the 303px auto-filled card, the
+tightest track the grid's own 300px minimum produces. The longest of the three
+labels renders as `Mem` (the full `Process memory` name stays the label's title
+and the bar's accessible name), which is what holds that same-line contract at
+the minimum track in any font; a value that is not a percentage may still take
+its own right-aligned line. The card's remaining height is the identity block's
+wrapping and the Validator region's own 176px minimum, which the parent's slice 2
+(#238) addresses; reaching the parent's 250–290px whole-card target is therefore
+not this slice's claim.

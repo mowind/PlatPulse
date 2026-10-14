@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import type { PublicNetwork } from '../src/api/generated'
-import { expectMetricRowsAligned, expectNoHorizontalOverflow, expectResourceColumnsAligned, homeNodeColumns, loginAs } from './helpers'
+import { expectMetricRowsAligned, expectNoHorizontalOverflow, expectResourceColumns, expectResourceColumnsAligned, homeNodeColumns, loginAs } from './helpers'
 
 /**
  * The Home Node card keeps one compact key-value line for the current Block
@@ -79,13 +79,12 @@ test('the chain block keeps one full-value Head line and three resource columns'
 
         // Resources: three columns, each reading its own source, value and bar.
         const resources = card.locator('[data-slot="node-resource-region"]')
-        await expect(resources.locator('[data-slot="resource-label"]')).toHaveText(['CPU', 'Memory', 'Disk'])
-        await expect(resources.locator('[data-slot="resource-value"]')).toHaveText(expectedResourceValues[i])
+        await expectResourceColumns(card, expectedResourceValues[i])
         await expectMetricRowsAligned(card)
         await expectResourceColumnsAligned(card)
         // The Disk bar names the Node data directory and the capacity that holds
         // it; the Host's own storage percentage never becomes the Disk reading.
-        await expect(resources.getByRole('progressbar', { name: /^Disk: Node data directory size as a share of the filesystem capacity/ })).toHaveCount(1)
+        await expect(resources.getByRole('progressbar', { name: 'Disk: Node data directory size as a share of the filesystem capacity holding it, not whole-filesystem fullness' })).toHaveCount(1)
         const bars = await resources.locator('[role="progressbar"]').evaluateAll(elements => elements.map(el => {
           const box = el.getBoundingClientRect()
           return { top: box.top, width: box.width, valuenow: el.getAttribute('aria-valuenow') }
@@ -96,22 +95,18 @@ test('the chain block keeps one full-value Head line and three resource columns'
         expect(Math.max(...bars.map(bar => bar.top)) - Math.min(...bars.map(bar => bar.top)), JSON.stringify({ width, i })).toBeLessThanOrEqual(1)
         expect(bars[0].width).toBeCloseTo(bars[1].width, 0)
         expect(bars.map(bar => bar.valuenow)).toEqual(expectedBarValues[i])
-        // An attested percentage always shares its label's line; only a value too
-        // wide for its column may take its own right-aligned line (never overflow).
+        // Every attested percentage shares its label's line at every card width
+        // and font: the three columns' shortest honest labels are what keeps that
+        // true at the auto-fill grid's own 300px minimum track. An unattested word
+        // may still take its own right-aligned line (never overflow, clip or
+        // shrink), which is the only case the columns' fallback exists for.
         const sameLine = await resources.locator('[data-slot="resource-cell"]').evaluateAll(cells => cells.map(cell => {
           const label = (cell.querySelector('[data-slot="resource-label"]') as HTMLElement).getBoundingClientRect()
           const value = (cell.querySelector('[data-slot="resource-value"]') as HTMLElement).getBoundingClientRect()
           return Math.abs(label.top - value.top) <= 8
         }))
-        if (i < 2) {
-          // The attested percentages share their labels' lines. CPU and Disk do so
-          // at every width and font; the longest label (Memory) can only share the
-          // narrowest track while the card's own font leaves room, so it is
-          // asserted strictly on a wide card and tolerated below it — the alignment
-          // helper still proves the value stays unclipped and right-aligned.
-          expect([sameLine[0], sameLine[2]], `CPU and Disk share their labels' lines at ${width}px`).toEqual([true, true])
-          if (width === 560) expect(sameLine[1], 'Memory shares its label line on a wide card').toBe(true)
-        } else expect(sameLine.filter(Boolean).length, JSON.stringify({ width, i, sameLine })).toBeGreaterThanOrEqual(2)
+        if (i < 2) expect(sameLine, `the attested percentages share their labels' lines at ${width}px`).toEqual([true, true, true])
+        else expect(sameLine.filter(Boolean).length, JSON.stringify({ width, i, sameLine })).toBeGreaterThanOrEqual(2)
         await expect(card.locator('[data-slot="node-business-metrics"] [data-short-label]')).toHaveCount(0)
         expect(await badge.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true)
       }

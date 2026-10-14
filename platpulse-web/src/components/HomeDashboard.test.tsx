@@ -230,7 +230,12 @@ describe('Public Home dashboard', () => {
     expect(resources.compareDocumentPosition(highlights) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     const cells = [...resources.querySelectorAll('[data-slot="resource-cell"]')]
     expect(cells.map(cell => cell.getAttribute('data-metric'))).toEqual(['process-cpu', 'process-memory', 'node-data'])
-    expect(cells.map(cell => cell.querySelector('[data-slot="resource-label"]')?.textContent)).toEqual(['CPU', 'Memory', 'Disk'])
+    // The longest label is shortened so its percentage keeps sharing the label's
+    // line at the card's own minimum track; the full process name stays the
+    // label's title and the bar's accessible name (#237).
+    expect(cells.map(cell => cell.querySelector('[data-slot="resource-label"]')?.textContent)).toEqual(['CPU', 'Mem', 'Disk'])
+    expect(cells.map(cell => cell.querySelector('[data-slot="resource-label"]')?.getAttribute('title')))
+      .toEqual(['Process CPU', 'Process memory', 'Disk: Node data directory size as a share of the filesystem capacity holding it, not whole-filesystem fullness'])
     expect(cells.map(cell => cell.querySelector('[data-slot="resource-value"]')?.textContent)).toEqual(['12.5%', '45.3%', '25.0%'])
     // Every column keeps one thin Emerald bar underneath its label/value line.
     expect(within(resources).getAllByRole('progressbar').map(bar => bar.getAttribute('aria-valuenow')))

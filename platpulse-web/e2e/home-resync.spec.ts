@@ -95,10 +95,10 @@ async function statusAndGeometry(page: Page) {
   await expect(normal).not.toContainText(/Resyncing|last progress/i)
   // The compact card keeps its three resource columns, its one chain height and
   // the Peer count on the identity line; the removed consensus rows are gone.
-  for (const label of ['CPU', 'Memory', 'Disk', 'Head']) {
+  for (const label of ['CPU', 'Mem', 'Disk', 'Head']) {
     await expect(normal.getByText(label, { exact: true })).toBeVisible()
   }
-  await expect(normal.getByText(/^Peers \d/)).toBeVisible()
+  await expect(normal.locator('[data-slot="node-peers-meta"]')).toHaveText(/^Peers \d/)
   await expect(normal.getByText('Txs', { exact: true })).toHaveCount(0)
   const unknown = nodeCard(page, 'C Unknown progress')
   await unknown.getByRole('button', { name: /Resync progress: 4\.34% toward/ }).click()

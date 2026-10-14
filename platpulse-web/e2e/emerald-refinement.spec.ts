@@ -156,7 +156,7 @@ test('refinement scenarios and measured evidence', async ({ page }, info) => {
         await expect(card.locator('[data-slot="node-business-metrics"] [data-slot="metric-row-value"]')).toHaveText('9,007,199,254,740,991')
         await expect(card.getByText('Locked', { exact: true })).toHaveCount(0)
         await expect(card.getByText('Committed', { exact: true })).toHaveCount(0)
-        expect(await page.locator('[data-slot="metric-row-value"], [data-slot="resource-value"], [data-slot="resource-label"]').evaluateAll(els => els.every(el => el.scrollWidth <= el.clientWidth + 1))).toBe(true)
+        expect(await card.locator('[data-slot="metric-row-value"], [data-slot="resource-value"], [data-slot="resource-label"]').evaluateAll(els => els.every(el => el.scrollWidth <= el.clientWidth + 1))).toBe(true)
       }
     }
   }
