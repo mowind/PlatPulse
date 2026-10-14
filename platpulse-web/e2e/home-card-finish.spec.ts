@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 import type { PublicNetwork, PublicValidatorInsight } from '../src/api/generated'
 import { expectNoHorizontalOverflow, loginAs, openHomeSort } from './helpers'
 
-test('resource content determines the shared card height without a Speed spacer', async ({ page }) => {
+test('resource content determines the shared card height without a Speed spacer', async ({ page }, testInfo) => {
   await loginAs(page)
   await page.route('**/api/public/v1/networks', async route => {
     const response = await route.fetch()
@@ -38,12 +38,16 @@ test('resource content determines the shared card height without a Speed spacer'
     expect(card.regions[2].top - card.regions[1].top - card.regions[1].height).toBe(10)
     expect(card.regions[3].top - card.regions[2].top - card.regions[2].height).toBe(10)
     expect(card.height - card.regions[3].top - card.regions[3].height).toBe(16)
+    // The compaction is structural, not a size trick: the chain block is the one
+    // compact Head line it now carries (#237).
+    expect(card.regions[2].height, 'the chain block is one compact Head line').toBeLessThanOrEqual(40)
   }
+  console.log(`[home-card-finish] ${testInfo.project.name}: card ${Math.round(geometry[0].width)}x${Math.round(geometry[0].height)}, resource ${Math.round(geometry[0].regions[1].height)}, chain ${Math.round(geometry[0].regions[2].height)}`)
   expect(await cards.locator('h2 a').evaluateAll(links => links.map(link => link.getAttribute('href'))))
     .toEqual(Array.from({ length: 7 }, (_, index) => '/nodes/finish-' + index))
   for (const card of await cards.all()) {
     await expect(card.getByRole('group', { name: 'Linked Validator metrics' })).toBeVisible()
-    const overflow = await card.locator('[data-slot="metric-row-value"], [data-slot="validator-metric"] strong')
+    const overflow = await card.locator('[data-slot="metric-row-value"], [data-slot="resource-value"], [data-slot="resource-label"], [data-slot="validator-metric"] strong')
       .evaluateAll(elements => elements.filter(el => el.scrollWidth > el.clientWidth + 1).map(el => el.textContent))
     expect(overflow).toEqual([])
   }

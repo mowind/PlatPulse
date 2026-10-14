@@ -63,21 +63,14 @@ describe('MetricRow', () => {
     expect(row.querySelector('[data-slot="metric-row-value"]')?.className).toContain('whitespace-nowrap')
   })
 
-  it('renders a wide value that absorbs the caption it supersedes', () => {
+  it('renders one caption under a resource row with no wide/narrow split (#237)', () => {
     const { container } = render(
-      <MetricRow
-        layout="compact"
-        label="Node data"
-        value="8.8%"
-        wideValue="310 GiB / 3.43 TiB · 8.8%"
-        detail="310 GiB / 3.43 TiB"
-        progress={8.8}
-      />,
+      <MetricRow layout="compact" label="Node data" value="8.8%" detail="310 GiB / 3.43 TiB" progress={8.8} />,
     )
     const row = container.querySelector('[data-slot="metric-row"]') as HTMLElement
-    expect(row.querySelector('[data-value-narrow]')?.textContent).toBe('8.8%')
-    expect(row.querySelector('[data-value-wide]')?.textContent).toBe('310 GiB / 3.43 TiB · 8.8%')
-    expect(row.querySelector('[data-slot="metric-row-detail"]')?.getAttribute('data-hide-wide')).toBe('true')
+    expect(row.querySelector('[data-slot="metric-row-value"]')?.textContent).toBe('8.8%')
+    expect(row.querySelector('[data-slot="metric-row-detail"]')?.textContent).toBe('310 GiB / 3.43 TiB')
+    expect(row.querySelector('[data-value-wide], [data-value-narrow]')).toBeNull()
     expect(row.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('9')
   })
 })

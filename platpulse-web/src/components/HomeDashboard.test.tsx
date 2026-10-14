@@ -152,8 +152,9 @@ describe('Public Home dashboard', () => {
     expect(summaryValueOf('Healthy Nodes').textContent).toBe('1')
     expect(summaryValueOf('Attention').textContent).toBe('1')
     const alphaCard = cardOf(nodeCardLink('Alpha'))
-    expect(within(alphaCard).getByText('Peers').nextElementSibling?.textContent).toBe('0')
-    // A successful zero snapshot stays an authoritative zero, not Unknown.
+    // The count reads on the secondary identity line with the one cue an
+    // authoritative empty snapshot needs; it is never a bare zero or Unknown.
+    expect(within(alphaCard).getByText('Peers 0')).toBeTruthy()
     expect(within(alphaCard).getByText('Empty; authoritative zero')).toBeTruthy()
   })
 
@@ -178,76 +179,97 @@ describe('Public Home dashboard', () => {
 
     for (const state of ['starting', 'disabled', 'unsupported', 'error']) {
       const card = cardOf(nodeCardLink(`Retained ${state}`))
-      expect(within(card).getByText('0')).toBeTruthy()
-      expect(within(card).getByText(/Showing last successful snapshot/)).toBeTruthy()
+      expect(within(card).getByText('Peers 0')).toBeTruthy()
+      expect(within(card).getByText(/^last good \(/)).toBeTruthy()
     }
     const failedCard = cardOf(nodeCardLink('Retained error'))
-    expect(within(failedCard).getByText(/Collection failed.*Stale.*Showing last successful snapshot/)).toBeTruthy()
+    expect(within(failedCard).getByText('last good (collection error, freshness stale)')).toBeTruthy()
+    // The card states the cue in short form; the identity entry keeps the whole
+    // collection/freshness/value sentence, so compacting it loses nothing.
+    fireEvent.click(within(failedCard).getByRole('button', { name: 'Node identity details' }))
+    const dialog = screen.getByRole('dialog', { name: 'Retained error' })
+    expect(dialog.textContent).toContain('Collection failed')
+    expect(dialog.textContent).toContain('Showing last successful snapshot')
   })
 
-  it('shows the first compact metric row as Head, Txs, and Peers with Unknown on absence', () => {
+  it('keeps the Home chain block to the current Block Height and reads Peers on the second line', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
     const alphaCard = cardOf(nodeCardLink('Alpha'))
-    expect(within(alphaCard).getByText('Head')).toBeTruthy()
-    expect(within(alphaCard).getByText('120')).toBeTruthy()
-    expect(within(alphaCard).getByText('Txs')).toBeTruthy()
-    // Formatted exact match is rendered with locale grouping, never as a raw number.
-    expect(within(alphaCard).getByText('12,345')).toBeTruthy()
-    expect(within(alphaCard).getByText('Peers')).toBeTruthy()
-    expect(within(alphaCard).getByText('0')).toBeTruthy()
+    const chain = alphaCard.querySelector('[data-slot="node-business-metrics"]') as HTMLElement
+    expect(Array.from(chain.querySelectorAll('[data-slot="metric-row-label"]'), el => el.textContent)).toEqual(['Head'])
+    expect(within(chain).getByText('120')).toBeTruthy()
+    // Peers is metadata now, not a chain row: the same count reads on the
+    // secondary identity line and never inside the chain block.
+    expect(within(alphaCard).getByText('Peers 0')).toBeTruthy()
+    expect(chain.contains(within(alphaCard).getByText('Peers 0'))).toBe(false)
+    // QC, Locked, Committed and Txs stay Node Detail statements: the card neither
+    // shows them nor restates a raw transaction count.
+    for (const label of ['QC', 'Locked', 'Committed', 'Txs']) {
+      expect(within(alphaCard).queryByText(label, { exact: true })).toBeNull()
+    }
+    expect(within(alphaCard).queryByText('12,345')).toBeNull()
     for (const legacyLabel of ['HEAD', 'TXS', 'PEERS', 'MEMORY', 'NODE DATA', 'LOCKED', 'COMMITTED', 'VALIDATOR']) {
       expect(within(alphaCard).queryByText(legacyLabel, { exact: true })).toBeNull()
     }
-    // No exact Block Summary match is Unknown, not zero (issue #98).
+    // A never-observed height stays Unknown, never zero (issue #98), and an
+    // unattested Peer count says why rather than implying a zero set.
     const betaCard = cardOf(nodeCardLink('Beta'))
     expect(within(betaCard).getByText('Head')).toBeTruthy()
-    expect(within(betaCard).getByText('Txs')).toBeTruthy()
-    expect(within(betaCard).getByText('Peers')).toBeTruthy()
-    expect(within(betaCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(3)
+    expect(within(betaCard).getByText('Peers Unknown')).toBeTruthy()
+    expect(within(betaCard).getByText('no successful snapshot')).toBeTruthy()
+    expect(within(betaCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(4)
   })
 
-  it('shows process CPU and memory with Node data and host network rates', () => {
+  it('reads CPU, Memory and Disk as three resource columns from their own fields', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
     const alphaCard = cardOf(nodeCardLink('Alpha'))
     const resources = within(alphaCard).getByLabelText('Node process and host network resources')
     const highlights = alphaCard.querySelector('[data-slot="node-business-metrics"]')!
     expect(resources.compareDocumentPosition(highlights) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(within(resources).getByText('CPU')).toBeTruthy()
-    expect(within(resources).getByText('12.5%')).toBeTruthy()
-    expect(within(resources).getByText('45.3%')).toBeTruthy()
-    const nodeDataLabel = within(resources).getByText('Node data')
-    expect(nodeDataLabel).toBeTruthy()
-    expect(within(resources).getByText('12.0 GiB / 48.0 GiB')).toBeTruthy()
-    const nodeDataMetric = nodeDataLabel.parentElement as HTMLElement
-    expect(nodeDataMetric.getAttribute('data-slot')).toBe('metric-row')
-    expect(nodeDataMetric.parentElement?.classList.contains('col-span-2')).toBe(true)
-    expect(resources.className).toContain('grid-cols-2')
-    expect(nodeDataMetric.querySelector('[data-slot="progress-thin"]')).toBeTruthy()
-    expect(nodeDataMetric.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('25')
+    const cells = [...resources.querySelectorAll('[data-slot="resource-cell"]')]
+    expect(cells.map(cell => cell.getAttribute('data-metric'))).toEqual(['process-cpu', 'process-memory', 'node-data'])
+    expect(cells.map(cell => cell.querySelector('[data-slot="resource-label"]')?.textContent)).toEqual(['CPU', 'Memory', 'Disk'])
+    expect(cells.map(cell => cell.querySelector('[data-slot="resource-value"]')?.textContent)).toEqual(['12.5%', '45.3%', '25.0%'])
+    // Every column keeps one thin Emerald bar underneath its label/value line.
+    expect(within(resources).getAllByRole('progressbar').map(bar => bar.getAttribute('aria-valuenow')))
+      .toEqual(['13', '45', '25'])
+    // The Disk bar names the Node data directory it measures, not whole-disk
+    // fullness, and the Host storage percentage (80) is a different observation
+    // that never becomes the Disk reading.
+    expect(within(resources).getByRole('progressbar', { name: /^Disk: Node data directory size as a share of the filesystem capacity/ })).toBeTruthy()
+    expect(within(resources).queryByText('80.0%')).toBeNull()
     expect(within(resources).queryByText('STORAGE')).toBeNull()
     expect(within(resources).getByText('16.4Kbps')).toBeTruthy()
     expect(within(resources).getByLabelText('Upload 16.4Kbps').querySelector('svg')).not.toBeNull()
     expect(within(resources).getByText('8.19Kbps')).toBeTruthy()
+    // The used / capacity bytes remain answerable from the identity entry.
+    fireEvent.click(within(alphaCard).getByRole('button', { name: 'Node identity details' }))
+    const dialog = screen.getByRole('dialog', { name: 'Alpha' })
+    expect(dialog.textContent).toContain('12.0 GiB / 48.0 GiB')
+    expect(dialog.textContent).toContain('not whole-filesystem fullness')
+    expect(dialog.textContent).toContain("process's own percentages")
   })
-  it('places Network and uptime in the second identity line while host speed stays full width', () => {
+  it('keeps Network, uptime and Peers on one secondary line while host speed stays full width', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
     const card = cardOf(nodeCardLink('Alpha'))
     const resources = within(card).getByLabelText('Node process and host network resources')
     const speed = within(resources).getByRole('group', { name: 'Host network speed' })
     expect(speed.parentElement).toBe(resources)
-    expect(speed.classList.contains('col-span-2')).toBe(true)
-    const uptime = within(card).getByText('Uptime Unknown')
-    const identity = uptime.closest('p')
-    expect(identity?.textContent).toBe('Mainnet · Uptime Unknown')
-    expect(resources.contains(uptime)).toBe(false)
-    expect(identity).not.toBeNull()
-    expect(identity!.compareDocumentPosition(resources) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The shared Host line spans all three resource columns and carries no
+    // resource of its own.
+    expect(speed.classList.contains('col-span-3')).toBe(true)
+    const meta = card.querySelector('[data-slot="node-identity-meta"]') as HTMLElement
+    expect(meta.textContent).toContain('Mainnet')
+    expect(meta.textContent).toContain('Uptime Unknown')
+    expect(meta.textContent).toContain('Peers 0')
+    expect(resources.contains(meta)).toBe(false)
+    expect(meta.compareDocumentPosition(resources) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(within(resources).queryByRole('group', { name: 'Node uptime' })).toBeNull()
     expect(within(speed).getByLabelText('Upload 16.4Kbps')).toBeTruthy()
     expect(within(speed).getByLabelText('Download 8.19Kbps')).toBeTruthy()
-    expect(within(speed).queryByText('Node data')).toBeNull()
+    expect(within(speed).queryByText('Disk')).toBeNull()
   })
 
   it.each([
@@ -267,50 +289,51 @@ describe('Public Home dashboard', () => {
     expect(within(cardOf(nodeCardLink('Alpha'))).getByText(`Uptime ${expected}`).textContent).toBe(`Uptime ${expected}`)
   })
 
-  it('renders Node data as a percentage with the used / total byte detail under its progress bar', () => {
-    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+  it('keeps a real zero at zero and an uncomputable Disk ratio Unknown', () => {
+    const zero = { ...network.nodes[0], nodeId: 'node-zero', displayName: 'Zero data', processCpuPercent: 0, processMemoryPercent: 0, nodeDataDirectorySizeBytes: 0, nodeDataDirectoryCapacityBytes: 51_539_607_552 }
+    const missing = { ...network.nodes[0], nodeId: 'node-missing', displayName: 'Missing data', processCpuPercent: null, processMemoryPercent: null, nodeDataDirectorySizeBytes: null, nodeDataDirectoryCapacityBytes: 51_539_607_552 }
+    const noCapacity = { ...network.nodes[0], nodeId: 'node-nocapacity', displayName: 'No capacity', nodeDataDirectorySizeBytes: 12_884_901_888, nodeDataDirectoryCapacityBytes: 0 }
+    render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [zero, missing, noCapacity] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
-    const alphaCard = cardOf(nodeCardLink('Alpha'))
-    const nodeDataMetric = within(alphaCard).getByText('Node data').parentElement as HTMLElement
-    expect(within(nodeDataMetric).getByText('25.0%')).toBeTruthy()
-    expect(within(nodeDataMetric).getByText('12.0 GiB / 48.0 GiB')).toBeTruthy()
-    expect(nodeDataMetric.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('25')
+    const diskValue = (name: string) => cardOf(nodeCardLink(name))
+      .querySelector('[data-slot="resource-cell"][data-metric="node-data"] [data-slot="resource-value"]')?.textContent
+    expect(diskValue('Zero data')).toBe('0.0%')
+    expect(diskValue('Missing data')).toBe('Unknown')
+    expect(diskValue('No capacity')).toBe('Unknown')
+    // An unknown ratio draws the track alone: no value is published for it and
+    // no zero-width fill pretends the directory is empty.
+    const bars = within(cardOf(nodeCardLink('Missing data'))).getAllByRole('progressbar')
+    expect(bars.map(bar => bar.getAttribute('aria-valuenow'))).toEqual([null, null, null])
+    expect(within(cardOf(nodeCardLink('Zero data'))).getAllByRole('progressbar').map(bar => bar.getAttribute('aria-valuenow')))
+      .toEqual(['0', '0', '0'])
   })
 
-  it('uses compact key-value rows for every resource, chain height and count', () => {
+  it('keeps one compact key-value line for the chain height and the shared network row', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
     const alphaCard = cardOf(nodeCardLink('Alpha'))
-    // Uptime is identity metadata, not a resource row. Resources (4), chain
-    // heights (4), and Txs/Peers (2) retain their independent observations, and
-    // every ordinary parameter uses the same left-label/right-value line.
-    expect(alphaCard.querySelectorAll('[data-slot="metric-row"]')).toHaveLength(10)
-    expect(alphaCard.querySelectorAll('[data-slot="metric-row"][data-layout="compact"]')).toHaveLength(10)
+    // Uptime and Peers are identity metadata, not metric rows, and the three
+    // resource columns are their own anatomy (#237): the compact key-value line
+    // is what is left for the chain height and the shared Host network row.
+    // The shared Host network row leads its region; the chain block follows.
+    const rows = [...alphaCard.querySelectorAll('[data-slot="metric-row"]')]
+    expect(rows.map(row => row.querySelector('[data-slot="metric-row-label"]')?.textContent)).toEqual(['Speed', 'Head'])
+    expect(rows.every(row => row.getAttribute('data-layout') === 'compact')).toBe(true)
     expect(alphaCard.querySelectorAll('[data-slot="metric-row"][data-layout="inline"]')).toHaveLength(0)
+    expect(alphaCard.querySelectorAll('[data-slot="node-counts"]')).toHaveLength(0)
+    expect(alphaCard.querySelectorAll('[data-slot="metric-row"] [data-short-label]')).toHaveLength(0)
   })
 
-  it('orders Head/QC/Locked/Committed as compact rows before Txs and Peers and keeps the PlatScan status in the header', () => {
+  it('keeps the PlatScan Activity in the header and out of the metric grid', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
     const card = cardOf(nodeCardLink('Alpha'))
     expect(card.querySelector('[data-slot="metric-triple"]')).toBeNull()
     const metrics = card.querySelector('[data-slot="node-business-metrics"]')!
-    expect(Array.from(metrics.querySelectorAll('[data-slot="metric-row-label"]'), el => el.textContent))
-      .toEqual(['Head', 'QC', 'Locked', 'Committed', 'Txs', 'Peers'])
-    // The two-column/full-width switch is a card-width container rule keyed on
-    // the group's data-wide marker: no hard-coded class, no viewport breakpoint.
-    expect(metrics.getAttribute('data-wide')).toBeNull()
-    for (const label of ['Head', 'QC', 'Locked', 'Committed']) {
-      expect(within(metrics as HTMLElement).getByText(label).parentElement?.getAttribute('data-layout')).toBe('compact')
-    }
-    const counts = metrics.querySelector('[data-slot="node-counts"]')!
-    expect(Array.from(counts.querySelectorAll('[data-slot="metric-row-label"]'), el => el.textContent)).toEqual(['Txs', 'Peers'])
-    expect(counts.querySelectorAll('[data-layout="compact"]')).toHaveLength(2)
-    expect(metrics.querySelector('[data-short-label]')).toBeNull()
+    expect(Array.from(metrics.querySelectorAll('[data-slot="metric-row-label"]'), el => el.textContent)).toEqual(['Head'])
     // The PlatScan status belongs to the identity row, never to the metric grid.
     expect(metrics.querySelector('[data-slot="validator-activity"]')).toBeNull()
-    // Node alpha has no effective Node Validator Link, so its Activity is the
-    // unified Observing state rather than a named production status.
     expect(card.querySelector('[data-slot="card-x-header"] [data-slot="validator-activity"]')?.getAttribute('data-activity')).toBe('observing')
+    expect(within(card).getByLabelText(/^PlatScan status: Observing/)).toBeTruthy()
   })
 
   it.each([
@@ -335,31 +358,28 @@ describe('Public Home dashboard', () => {
     expect(within(cardOf(nodeCardLink('Beta'))).getByText('Speed').nextElementSibling?.textContent).toBe('UnknownUnknown')
   })
 
-  it('shows the second compact metric row as QC, Locked, Committed, and Validator', () => {
+  it('never restates the consensus block heights on the card', () => {
     render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
 
     const alphaCard = cardOf(nodeCardLink('Alpha'))
-    expect(within(alphaCard).getByText('QC')).toBeTruthy()
-    expect(within(alphaCard).getByText('100')).toBeTruthy()
-    expect(within(alphaCard).getByText('Locked')).toBeTruthy()
-    expect(within(alphaCard).getByText('99')).toBeTruthy()
-    expect(within(alphaCard).getByText('Committed')).toBeTruthy()
-    expect(within(alphaCard).getByText('98')).toBeTruthy()
-    // Consensus membership no longer drives the header chip: the PlatScan
-    // Activity badge is an independent dimension.
+    // The Node observed QC 100 / Locked 99 / Committed 98 and a raw transaction
+    // count; Home reports none of them now (#237), while the same public fields
+    // stay readable on Node Detail.
+    for (const value of ['100', '99', '98']) {
+      expect(within(alphaCard).queryByText(value, { exact: true })).toBeNull()
+    }
+    // Consensus membership never drives the header chip: the PlatScan Activity
+    // badge is an independent dimension.
     expect(within(alphaCard).getByLabelText(/^PlatScan status: Observing/)).toBeTruthy()
     expect(within(alphaCard).queryByText('Stale')).toBeNull()
 
     // Never-observed consensus is Unknown for every metric, never zero/No.
     const betaCard = cardOf(nodeCardLink('Beta'))
-    for (const label of ['QC', 'Locked', 'Committed']) {
-      expect(within(betaCard).getByText(label)).toBeTruthy()
-    }
-    expect(within(betaCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(7)
+    expect(within(betaCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(4)
     expect(within(betaCard).getByLabelText(/^PlatScan status: Observing/)).toBeTruthy()
   })
 
-  it('retains last-good consensus values and visibly marks failed or stale collections', () => {
+  it('keeps the last-good Block Height while the consensus rows move to Node Detail', () => {
     const staleTrue = {
       ...network.nodes[0],
       nodeId: 'node-stale-true', displayName: 'Stale True',
@@ -375,65 +395,33 @@ describe('Public Home dashboard', () => {
       nodeId: 'node-failed-none', displayName: 'Failed None',
       consensus: { state: 'error', freshness: 'unknown', validator: null, highestQcBlock: null, highestLockBlock: null, highestCommitBlock: null },
     }
-    const currentFalse = {
-      ...network.nodes[0],
-      nodeId: 'node-current-false', displayName: 'Current False',
-      consensus: { ...network.nodes[0].consensus!, validator: false, highestQcBlock: 0, highestLockBlock: 0, highestCommitBlock: 0 },
-    }
-    const staleFalse = {
-      ...network.nodes[0],
-      nodeId: 'node-stale-false', displayName: 'Stale False',
-      consensus: { ...network.nodes[0].consensus!, freshness: 'stale', validator: false, highestQcBlock: 161, highestLockBlock: 160, highestCommitBlock: 159 },
-    }
-    const unknownFreshness = {
-      ...network.nodes[0],
-      nodeId: 'node-unknown-freshness', displayName: 'Unknown Freshness',
-      consensus: { ...network.nodes[0].consensus!, freshness: 'unknown', validator: true, highestQcBlock: 171, highestLockBlock: 170, highestCommitBlock: 169 },
-    }
     render(<BrowserRouter><HomeDashboard
-      networks={[{ ...network, nodes: [staleTrue, staleFalse, failedTrue, failedWithoutLastGood, currentFalse, unknownFreshness] }]}
+      networks={[{ ...network, nodes: [staleTrue, failedTrue, failedWithoutLastGood] }]}
       realtimeStatus="connected" online resetting={false} error={null} loading={false}
     /></BrowserRouter>)
 
-    // A stale successful observation keeps Yes and every block height, and
-    // visibly marks the retained row Stale (text, never color only).
-    const staleCard = cardOf(nodeCardLink('Stale True'))
-    expect(within(staleCard).getByText('141')).toBeTruthy()
-    expect(within(staleCard).getByText('140')).toBeTruthy()
-    expect(within(staleCard).getByText('139')).toBeTruthy()
-    // QC/Locked/Committed carry the retained-row Stale text; the Activity badge
-    // marks its own staleness with a mark plus an accessible name, not a word.
-    expect(within(staleCard).getAllByText('Stale')).toHaveLength(3)
-
-    // A failed collection with last-good true keeps the value and is Stale.
-    const failedCard = cardOf(nodeCardLink('Failed True'))
-    expect(within(failedCard).getByText('151')).toBeTruthy()
-    expect(within(failedCard).getByText('150')).toBeTruthy()
-    expect(within(failedCard).getByText('149')).toBeTruthy()
-    expect(within(failedCard).getAllByText('Stale')).toHaveLength(3)
-
-    // A stale successful non-membership keeps No and marks it Stale.
-    const staleFalseCard = cardOf(nodeCardLink('Stale False'))
-    expect(within(staleFalseCard).getByText('161')).toBeTruthy()
-    expect(within(staleFalseCard).getAllByText('Stale')).toHaveLength(3)
-
-    // A failed collection without a last-good membership is Unknown, never
-    // No, and is not dressed up as Stale with no retained value.
-    const failedNoneCard = cardOf(nodeCardLink('Failed None'))
-    expect(within(failedNoneCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(4)
-    expect(within(failedNoneCard).queryByText('Stale')).toBeNull()
-
-    // A current successful non-membership renders No; an observed zero
-    // block height is an authoritative zero, never Unknown.
-    const falseCard = cardOf(nodeCardLink('Current False'))
-    expect(within(falseCard).getAllByText('0').length).toBeGreaterThanOrEqual(4)
-    expect(within(falseCard).queryByText('Stale')).toBeNull()
-
-    // Unknown freshness means currency cannot be certified: the retained
-    // value must not be presented as current Yes/No or block heights.
-    const unknownFreshnessCard = cardOf(nodeCardLink('Unknown Freshness'))
-    expect(within(unknownFreshnessCard).getAllByText('Unknown').length).toBeGreaterThanOrEqual(3)
-    expect(within(unknownFreshnessCard).queryByText('Stale')).toBeNull()
+    // The Node-level last-good Block Height stays on the card whatever the
+    // consensus observation did: it is the Node's own published value, and Home
+    // no longer restates QC, Locked, Committed or their retained Stale marker
+    // (#237) — Node Detail keeps those rows and their last-good annotation.
+    for (const name of ['Stale True', 'Failed True']) {
+      const card = cardOf(nodeCardLink(name))
+      expect(within(card).getByText('Head')).toBeTruthy()
+      expect(within(card).getByText('120')).toBeTruthy()
+      expect(within(card).queryByText('Stale')).toBeNull()
+    }
+    for (const name of ['Stale True', 'Failed True', 'Failed None']) {
+      const card = cardOf(nodeCardLink(name))
+      for (const label of ['QC', 'Locked', 'Committed']) {
+        expect(within(card).queryByText(label, { exact: true })).toBeNull()
+      }
+      for (const value of ['141', '140', '139', '151', '150', '149']) {
+        expect(within(card).queryByText(value, { exact: true })).toBeNull()
+      }
+    }
+    // A Node whose height was never observed keeps Unknown, never a zero.
+    expect(within(cardOf(nodeCardLink('Failed None'))).getByText('Head')).toBeTruthy()
+    expect(within(cardOf(nodeCardLink('Failed None'))).getAllByText('Unknown').length).toBeGreaterThanOrEqual(4)
   })
 
   it('shows the PlatScan Activity badge beside the independent Node Health marker', () => {
@@ -640,8 +628,9 @@ describe('Public Home dashboard', () => {
     const betaCard = cardOf(nodeCardLink('Beta'))
     expect(within(betaCard).getByText('Never observed')).toBeTruthy()
     expect(betaCard.querySelectorAll('[data-slot="node-diagnostic"]')).toHaveLength(1)
-    // The unknown peer observation is explicit and never presented as Current.
-    expect(within(betaCard).getByText(/No successful Peer snapshot is available/)).toBeTruthy()
+    // The unattested Peer count is explicit and never presented as Current.
+    expect(within(betaCard).getByText('Peers Unknown')).toBeTruthy()
+    expect(within(betaCard).getByText('no successful snapshot')).toBeTruthy()
     expect(within(betaCard).queryByText('Current observation')).toBeNull()
 
     // Gamma keeps the live Resyncing percentage directly visible in the same
@@ -706,9 +695,9 @@ describe('Public Home dashboard', () => {
     const { rerender } = render(view('resyncing'))
     expect(screen.getByRole('button', { name: /Resync progress:/ })).toBeTruthy()
     expect(screen.getByText('RPC observation failed')).toBeTruthy()
-    for (const label of ['QC', 'Locked', 'Committed']) {
-      expect(screen.getByText(label).nextElementSibling?.textContent).toBe('0')
-    }
+    // An observed zero block height is an authoritative zero, never Unknown, and
+    // the chain block keeps only the current Block Height (#237).
+    expect(within(cardOf(nodeCardLink('Alpha'))).getByText('Head').nextElementSibling?.textContent).toBe('100')
     expect(summaryValueOf('Healthy Nodes').textContent).toBe('0')
     expect(summaryValueOf('Attention').textContent).toBe('1')
     rerender(view('normal'))

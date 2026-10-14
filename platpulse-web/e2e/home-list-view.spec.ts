@@ -125,8 +125,9 @@ test.describe('Public Home card and list views (issue #223)', () => {
     await expect(nodeGrid(page)).toHaveCount(0)
     await expect.poll(() => page.url()).toContain('view=list')
     expect(await columnLabels(page)).toEqual(COLUMN_LABELS)
-    // QC, Locked and Committed are card-only statements, so the list omits them
-    // rather than inventing a column the Server never attests.
+    // QC, Locked and Committed are Node Detail statements (issue #237 removed
+    // them from the Home card too), so the list omits them rather than inventing
+    // a column the Server never attests.
     expect(await listTable(page).innerText()).not.toContain('Locked')
 
     // The view is an ordinary Home parameter: a link to it restores the list.

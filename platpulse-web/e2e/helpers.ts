@@ -168,6 +168,35 @@ export async function expectMetricRowsAligned(scope: Locator) {
   expect(offenders, 'every metric row keeps its label and value on one aligned line without overflow').toEqual([])
 }
 
+/** Home's three resource columns (#237) keep the muted short label at the left
+ *  of their cell and the tabular value flush with the cell's right edge. A value
+ *  too wide to share its label's line (an unattested one, or a very long ratio)
+ *  takes its own right-aligned line instead of overflowing, clipping or being
+ *  shrunk, so the geometry is checked as an ordered, right-aligned, unclipped
+ *  pair rather than as a single line. Returns the offending cells as the
+ *  failure payload. */
+export async function expectResourceColumnsAligned(scope: Locator) {
+  const offenders = await scope.locator('[data-slot="resource-cell"]').evaluateAll((cells) =>
+    cells.flatMap((cell) => {
+      const label = cell.querySelector('[data-slot="resource-label"]')
+      const value = cell.querySelector('[data-slot="resource-value"]')
+      if (!label || !value) return ['a resource cell is missing its label or value']
+      const labelBox = label.getBoundingClientRect()
+      const valueBox = value.getBoundingClientRect()
+      const cellBox = cell.getBoundingClientRect()
+      const sameLine = Math.abs(labelBox.top - valueBox.top) <= 8
+      const labelLeft = Math.abs(labelBox.left - cellBox.left) <= 1.5
+      const valueRightAligned = Math.abs(valueBox.right - cellBox.right) <= 1.5
+      const ordered = sameLine ? valueBox.left >= labelBox.right - 1 : valueBox.top > labelBox.top
+      const unclipped = value.scrollWidth <= value.clientWidth + 1 && label.scrollWidth <= label.clientWidth + 1
+      return labelLeft && valueRightAligned && ordered && unclipped
+        ? []
+        : [`"${(cell.textContent ?? '').replace(/\s+/g, ' ').trim()}" labelLeft=${labelLeft} rightAligned=${valueRightAligned} ordered=${ordered} unclipped=${unclipped} sameLine=${sameLine}`]
+    }),
+  )
+  expect(offenders, 'every resource column keeps its label and value ordered, right-aligned and unclipped').toEqual([])
+}
+
 /** Every visible control in a fixed-viewport scenario must remain a usable
  * 44px touch target. The selector is intentionally limited to native
  * interactive elements; it does not depend on component implementation

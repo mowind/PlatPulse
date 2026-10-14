@@ -1,35 +1,42 @@
 import { expect, test } from '@playwright/test'
 import type { PublicNetwork } from '../src/api/generated'
-import { expectNoHorizontalOverflow, homeNodeColumns, loginAs } from './helpers'
+import { expectMetricRowsAligned, expectNoHorizontalOverflow, expectResourceColumnsAligned, homeNodeColumns, loginAs } from './helpers'
 
 /**
- * The Home Node card now keeps one emphasized label-over-value form only for
- * the cumulative metrics and uses a compact left-label/right-value key-value
- * line for ordinary parameters. Whether a group is two columns or one
- * full-width line per metric is decided by the card's own width through a CSS
- * container query, so the same DOM is measured here at forced card widths.
+ * The Home Node card keeps one compact key-value line for the current Block
+ * Height (#237) and reads CPU, Memory and Disk as three resource columns whose
+ * label and value share a line while they fit, with one shared row of Emerald
+ * thin bars underneath. The card's own width decides whether a value can share
+ * its label's line, so the same DOM is measured at forced card widths instead
+ * of relying on a page breakpoint.
  */
-test('business metrics preserve full values with compact rows and distinct Validator Activity', async ({ page }, testInfo) => {
+test('the chain block keeps one full-value Head line and three resource columns', async ({ page }, testInfo) => {
   await loginAs(page)
   // Three distinct canonical Activity values exercise the badge's named states
-  // alongside the metric rows (ADR 0006 replaced the consensus role badge).
+  // alongside the compact metric lines (ADR 0006 replaced the consensus badge).
   const activities = ['producing', 'verifying', 'observing']
+  // Each card reads its own resource fields. The Host storage percentage differs
+  // from every Disk reading, so a swapped source would be visible here, and the
+  // third card has no attested ratio at all.
+  const resourceFixtures = [
+    { processCpuPercent: 12.5, processMemoryPercent: 45.25, nodeDataDirectorySizeBytes: 12_884_901_888, nodeDataDirectoryCapacityBytes: 51_539_607_552, hostStoragePercent: 80 },
+    { processCpuPercent: 0, processMemoryPercent: 0, nodeDataDirectorySizeBytes: 0, nodeDataDirectoryCapacityBytes: 51_539_607_552, hostStoragePercent: 12.5 },
+    { processCpuPercent: null, processMemoryPercent: null, nodeDataDirectorySizeBytes: null, nodeDataDirectoryCapacityBytes: null, hostStoragePercent: null },
+  ]
+  const expectedResourceValues = [['12.5%', '45.3%', '25.0%'], ['0.0%', '0.0%', '0.0%'], ['Unknown', 'Unknown', 'Unknown']]
+  const expectedBarValues = [['13', '45', '25'], ['0', '0', '0'], [null, null, null]]
   await page.route('**/api/public/v1/networks*', async route => {
     const response = await route.fetch()
     const [network]: PublicNetwork[] = await response.json()
     const base = network.nodes[0]
     const nodes = activities.map((activity, i) => ({
-      ...base, nodeId: 'business-' + i, displayName: 'Node ' + i + ' Extremely Long Production Node Name That Must Not Squeeze The Role',
-      // Node 1 carries the spec's own 11-character example heights, so the
-      // tightest two-column track is exercised with the longest ordinary value.
+      ...base, ...resourceFixtures[i], nodeId: 'business-' + i, displayName: 'Node ' + i + ' Extremely Long Production Node Name That Must Not Squeeze The Role',
+      // The first card carries the spec's own 11-character example height, so the
+      // tightest track is exercised with the longest ordinary chain value.
       currentHead: i === 0 ? 9007199254740991 : 159320291,
       latestBlockTransactionCount: i === 0 ? 9007199254740991 : 12,
-      peers: { ...base.peers, peerCount: i === 0 ? 9007199254740991 : 3 },
+      peers: { ...base.peers, peerCount: i === 0 ? 9007199254740991 : i === 1 ? 0 : null },
       validator: base.validator ? { ...base.validator, activity, activityState: 'current' } : base.validator,
-      consensus: { state: 'ok', freshness: 'current', validator: i === 0 ? true : i === 1 ? false : null,
-        highestQcBlock: i === 0 ? 9007199254740991 : 159320293,
-        highestLockBlock: i === 0 ? 9007199254740990 : 159320292,
-        highestCommitBlock: i === 0 ? 9007199254740989 : 159320291 },
     }))
     await route.fulfill({ response, json: [{ ...network, nodes }] })
   })
@@ -48,69 +55,63 @@ test('business metrics preserve full values with compact rows and distinct Valid
         const badge = card.locator('[data-slot="card-x-header"] [data-slot="validator-activity"]')
         await expect(badge).toHaveAttribute('data-activity', activities[i])
         await expect(badge.locator('[data-slot="validator-activity-label"]')).toHaveText(['Producing', 'Verifying', 'Observing'][i])
-        const metrics = card.locator('[data-slot="node-business-metrics"]')
-        await expect(metrics.locator('[data-slot="metric-row-label"]')).toHaveText(['Head', 'QC', 'Locked', 'Committed', 'Txs', 'Peers'])
-        await expect(metrics.locator('[data-slot="metric-row-value"]')).toHaveText(i === 0
-          ? ['9,007,199,254,740,991', '9,007,199,254,740,991', '9,007,199,254,740,990', '9,007,199,254,740,989', '9,007,199,254,740,991', '9,007,199,254,740,991']
-          : ['159,320,291', ...(i === 1 ? ['159,320,293', '159,320,292', '159,320,291'] : ['Unknown', 'Unknown', 'Unknown']), '12', '3'])
-        const layout = await metrics.evaluate(el => {
-          const rows = [...el.querySelectorAll('[data-slot="metric-row"]')].map(row => {
-            const label = row.querySelector('[data-slot="metric-row-label"]')!
-            const value = row.querySelector('[data-slot="metric-row-value"]')!
-            const range = document.createRange()
-            range.selectNodeContents(value)
-            const rect = row.getBoundingClientRect()
-            const labelBox = label.getBoundingClientRect()
-            const textBox = range.getBoundingClientRect()
-            return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
-              textTop: textBox.top, textRight: textBox.right, textLeft: textBox.left,
-              labelTop: labelBox.top, labelBottom: labelBox.bottom, labelRight: labelBox.right,
-              textLines: range.getClientRects().length, fontSize: getComputedStyle(value).fontSize,
-              overflow: row.scrollWidth > row.clientWidth }
-          })
-          const counts = el.querySelector('[data-slot="node-counts"]')!
-          return {
-            rows,
-            columns: getComputedStyle(el).gridTemplateColumns.split(' ').length,
-            countsColumns: getComputedStyle(counts).gridTemplateColumns.split(' ').length,
-          }
+
+        // Chain: one compact key-value line carrying the current Block Height alone.
+        const chain = card.locator('[data-slot="node-business-metrics"]')
+        await expect(chain.locator('[data-slot="metric-row-label"]')).toHaveText(['Head'])
+        await expect(chain.locator('[data-slot="metric-row-value"]')).toHaveText(i === 0 ? '9,007,199,254,740,991' : '159,320,291')
+        for (const removed of ['QC', 'Locked', 'Committed', 'Txs']) {
+          await expect(card.getByText(removed, { exact: true })).toHaveCount(0)
+        }
+        const chainLine = await chain.locator('[data-slot="metric-row-value"]').evaluate(el => {
+          const range = document.createRange()
+          range.selectNodeContents(el)
+          const box = el.getBoundingClientRect()
+          const row = (el.closest('[data-slot="metric-row"]') as HTMLElement).getBoundingClientRect()
+          return { lines: range.getClientRects().length, right: box.right, rowRight: row.right, left: box.left, labelRight: (el.parentElement!.querySelector('[data-slot="metric-row-label"]') as HTMLElement).getBoundingClientRect().right, fontSize: getComputedStyle(el).fontSize, overflow: el.scrollWidth > el.clientWidth + 1 }
         })
-        for (const row of layout.rows) {
-          // A compact key-value line: one line, right-aligned, label at the left.
-          expect(row.textLines, JSON.stringify({ width, i, layout })).toBe(1)
-          expect(row.overflow, JSON.stringify({ width, i, layout })).toBe(false)
-          expect(row.textRight).toBeLessThanOrEqual(row.right + 1)
-          expect(row.textLeft).toBeGreaterThanOrEqual(row.left - 1)
-          expect(row.fontSize).toBe('13px')
-          expect(Math.abs(row.textTop - row.labelTop)).toBeLessThanOrEqual(4)
-          expect(row.textLeft).toBeGreaterThan(row.labelRight)
-        }
-        const [head, qc, locked, committed, txs, peers] = layout.rows
-        if (layout.columns === 1) {
-          // A narrow card (or an over-long safe integer) gives each of the four
-          // chain metrics its own full-width line; nothing is split or clipped.
-          for (let j = 1; j < 4; j++) {
-            expect(layout.rows[j].left).toBeCloseTo(layout.rows[0].left, 1)
-            expect(layout.rows[j].right).toBeCloseTo(layout.rows[0].right, 1)
-            expect(layout.rows[j].top).toBeGreaterThanOrEqual(layout.rows[j - 1].bottom)
-          }
-        } else {
-          expect(qc.top).toBeCloseTo(head.top, 1)
-          expect(qc.left).toBeGreaterThan(head.right)
-          expect(locked.left).toBeCloseTo(head.left, 1)
-          expect(committed.top).toBeCloseTo(locked.top, 1)
-          expect(committed.left).toBeCloseTo(qc.left, 1)
-          expect(locked.top).toBeGreaterThan(head.bottom)
-        }
-        expect(txs.top).toBeGreaterThanOrEqual(committed.bottom)
-        if (layout.countsColumns === 1) {
-          expect(peers.top).toBeGreaterThanOrEqual(txs.bottom)
-          expect(peers.left).toBeCloseTo(txs.left, 1)
-        } else {
-          expect(peers.top).toBeCloseTo(txs.top, 1)
-          expect(peers.left).toBeGreaterThan(txs.right)
-          expect(Math.abs(peers.textTop - txs.textTop)).toBeLessThanOrEqual(4)
-        }
+        // An 11-character height stays one unclipped, right-aligned line as well.
+        expect(chainLine.lines, JSON.stringify({ width, i })).toBe(1)
+        expect(chainLine.overflow, JSON.stringify({ width, i })).toBe(false)
+        expect(Math.abs(chainLine.right - chainLine.rowRight), JSON.stringify({ width, i })).toBeLessThanOrEqual(1.5)
+        expect(chainLine.left).toBeGreaterThan(chainLine.labelRight)
+        expect(chainLine.fontSize).toBe('13px')
+
+        // Resources: three columns, each reading its own source, value and bar.
+        const resources = card.locator('[data-slot="node-resource-region"]')
+        await expect(resources.locator('[data-slot="resource-label"]')).toHaveText(['CPU', 'Memory', 'Disk'])
+        await expect(resources.locator('[data-slot="resource-value"]')).toHaveText(expectedResourceValues[i])
+        await expectMetricRowsAligned(card)
+        await expectResourceColumnsAligned(card)
+        // The Disk bar names the Node data directory and the capacity that holds
+        // it; the Host's own storage percentage never becomes the Disk reading.
+        await expect(resources.getByRole('progressbar', { name: /^Disk: Node data directory size as a share of the filesystem capacity/ })).toHaveCount(1)
+        const bars = await resources.locator('[role="progressbar"]').evaluateAll(elements => elements.map(el => {
+          const box = el.getBoundingClientRect()
+          return { top: box.top, width: box.width, valuenow: el.getAttribute('aria-valuenow') }
+        }))
+        expect(bars).toHaveLength(3)
+        // One shared bar row: the three tracks start on the same line, each spans
+        // its own column, and an unattested ratio publishes no value at all.
+        expect(Math.max(...bars.map(bar => bar.top)) - Math.min(...bars.map(bar => bar.top)), JSON.stringify({ width, i })).toBeLessThanOrEqual(1)
+        expect(bars[0].width).toBeCloseTo(bars[1].width, 0)
+        expect(bars.map(bar => bar.valuenow)).toEqual(expectedBarValues[i])
+        // An attested percentage always shares its label's line; only a value too
+        // wide for its column may take its own right-aligned line (never overflow).
+        const sameLine = await resources.locator('[data-slot="resource-cell"]').evaluateAll(cells => cells.map(cell => {
+          const label = (cell.querySelector('[data-slot="resource-label"]') as HTMLElement).getBoundingClientRect()
+          const value = (cell.querySelector('[data-slot="resource-value"]') as HTMLElement).getBoundingClientRect()
+          return Math.abs(label.top - value.top) <= 8
+        }))
+        if (i < 2) {
+          // The attested percentages share their labels' lines. CPU and Disk do so
+          // at every width and font; the longest label (Memory) can only share the
+          // narrowest track while the card's own font leaves room, so it is
+          // asserted strictly on a wide card and tolerated below it — the alignment
+          // helper still proves the value stays unclipped and right-aligned.
+          expect([sameLine[0], sameLine[2]], `CPU and Disk share their labels' lines at ${width}px`).toEqual([true, true])
+          if (width === 560) expect(sameLine[1], 'Memory shares its label line on a wide card').toBe(true)
+        } else expect(sameLine.filter(Boolean).length, JSON.stringify({ width, i, sameLine })).toBeGreaterThanOrEqual(2)
         await expect(card.locator('[data-slot="node-business-metrics"] [data-short-label]')).toHaveCount(0)
         expect(await badge.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true)
       }
@@ -206,13 +207,13 @@ test('Linked Validator keeps two emphasized cells and four compact parameter row
 /**
  * Density regression for the auto-fill minimum track. The grid minimum is
  * Emerald's own 300px (HomeView.vue's `minmax(300px, 1fr)`), so a desktop card
- * is about 303px and the card's own measured 22.5rem width switch stays in
- * charge: below it each chain count and each ordinary Validator parameter takes
- * one full-width line, and an over-long value falls back further on purpose.
- * The assertions read geometry, not the CSS rule, and adapt to every fixed
- * project instead of hardcoding a desktop column count.
+ * is about 303px. The chain block is one Head line at every card width (#237),
+ * the three resource columns keep three bars on one shared row, and the
+ * Validator group keeps the one/two-column pairing its own 22.5rem width switch
+ * allows. The assertions read geometry, not the CSS rule, and adapt to every
+ * fixed project instead of hardcoding a desktop column count.
  */
-test('auto-filled cards use the two-column metric grids their width allows', async ({ page }) => {
+test('auto-filled cards keep one chain line, one bar row and unclipped cells', async ({ page }) => {
   await loginAs(page)
   const grid = page.locator('[data-slot="node-grid"]')
   const cards = grid.locator('[data-slot="node-card"]')
@@ -234,21 +235,30 @@ test('auto-filled cards use the two-column metric grids their width allows', asy
         return tops.reduce<number[]>((rows, top) => rows.some(existing => Math.abs(existing - top) <= 2) ? rows : [...rows, top], []).length
       }
       const business = cardEl.querySelector('[data-slot="node-business-metrics"]')
+      const resource = cardEl.querySelector('[data-slot="node-resource-region"]')
       const validator = cardEl.querySelector('[data-slot="linked-validator-metrics"]')
       return {
         width: cardEl.getBoundingClientRect().width,
-        businessRows: business ? rowCount(business, ':scope > [data-slot="metric-row"], :scope > [role="group"] > [data-slot="metric-row"], :scope > [data-slot="node-counts"]') : 0,
+        businessRows: business ? rowCount(business, ':scope > [data-slot="metric-row"]') : 0,
+        resourceCells: resource ? resource.querySelectorAll('[data-slot="resource-cell"]').length : 0,
+        bars: resource ? resource.querySelectorAll('[role="progressbar"]').length : 0,
+        barRows: resource ? rowCount(resource, '[role="progressbar"]') : 0,
         validatorRows: validator ? rowCount(validator, ':scope > [data-slot="metric-row"], :scope > [data-slot="validator-metric"]') : null,
       }
     })
     const expectedRows = cardGeometry.width >= 360 ? 3 : 5
     const where = ' on card ' + index + ' at ' + cardGeometry.width + 'px'
-    expect(cardGeometry.businessRows, 'business rows' + where).toBe(expectedRows)
+    // The chain block is one Head line at every card width, and the three
+    // resource bars share one row however narrow the card gets.
+    expect(cardGeometry.businessRows, 'chain rows' + where).toBe(1)
+    expect(cardGeometry.resourceCells, 'resource columns' + where).toBe(3)
+    expect(cardGeometry.bars, 'resource bars' + where).toBe(3)
+    expect(cardGeometry.barRows, 'resource bar rows' + where).toBe(1)
     if (cardGeometry.validatorRows != null) expect(cardGeometry.validatorRows, 'Validator rows' + where).toBe(expectedRows)
-    // The two-column switch is only safe if no label or value overflows its
-    // cell at the tightest track, including an 11-character chain height.
+    // Nothing may overflow its cell at the tightest track, including an
+    // 11-character chain height and an unattested resource value.
     const overflow = await cards.nth(index)
-      .locator('[data-slot="metric-row-value"], [data-slot="metric-row-label"], [data-slot="validator-metric"] strong')
+      .locator('[data-slot="metric-row-value"], [data-slot="metric-row-label"], [data-slot="resource-value"], [data-slot="resource-label"], [data-slot="validator-metric"] strong')
       .evaluateAll(elements => elements.filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.textContent))
     expect(overflow, 'no metric label or value overflows its cell' + where).toEqual([])
   }

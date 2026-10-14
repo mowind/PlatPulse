@@ -10,9 +10,6 @@ export type MetricRowProps = {
   layout?: 'inline' | 'compact'
   shortLabel?: string
   value: ReactNode
-  /** Alternate value for a wide Node card. The caller folds the explanatory
-   *  detail into it, so the paired `detail` line is hidden while it shows. */
-  wideValue?: ReactNode
   detail?: ReactNode
   progress?: number | null
   progressStatus?: ProgressStatus
@@ -32,12 +29,8 @@ export type MetricRowProps = {
  * sibling; the progress bar and caption span both grid columns. A row without
  * a known progress value reserves unpainted space, never a zero-like track.
  *
- * `wideValue` renders an alternate value that is revealed by the Node card's
- * own width (see the named `node-card` container in emerald.css) instead of a
- * viewport breakpoint or a JavaScript size listener. Only its presentation
- * changes with width; both values carry the same fields.
  */
-export function MetricRow({ label, shortLabel, value, wideValue, detail, progress, progressStatus, className, layout = 'inline' }: MetricRowProps) {
+export function MetricRow({ label, shortLabel, value, detail, progress, progressStatus, className, layout = 'inline' }: MetricRowProps) {
   const compact = layout === 'compact'
   return (
     <div
@@ -71,12 +64,7 @@ export function MetricRow({ label, shortLabel, value, wideValue, detail, progres
             : 'text-right font-medium [overflow-wrap:anywhere]',
         )}
       >
-        {wideValue == null ? value : (
-          <>
-            <span data-value-narrow>{value}</span>
-            <span data-value-wide>{wideValue}</span>
-          </>
-        )}
+        {value}
       </strong>
       {typeof progress === 'number' && (
         <ProgressThin className="col-span-2" percentage={progress} status={progressStatus} label={label} />
@@ -85,7 +73,6 @@ export function MetricRow({ label, shortLabel, value, wideValue, detail, progres
       {detail != null && (
         <small
           data-slot="metric-row-detail"
-          data-hide-wide={wideValue == null ? undefined : 'true'}
           className={cn('col-span-2 text-[11px] text-muted-foreground', compact ? 'truncate' : 'whitespace-normal [overflow-wrap:anywhere]')}
         >
           {detail}

@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 import {
   expectFocusedElementHasVisibleFocus,
   expectMetricRowsAligned,
+  expectResourceColumnsAligned,
   expectNoHorizontalOverflow,
   expectVisibleInteractiveTargets,
   loginAs,
@@ -56,21 +57,22 @@ test.describe('Converged Public Home (issue #102)', () => {
       page.getByRole('link', { name: /^Node H — Producing Card/ }),
     ).toHaveCount(1)
 
-    // Business rows carry full labels. The header's top-right badge is PlatScan
-    // Validator Activity (ADR 0006), not consensus membership, so no business
-    // row label collides with it.
-    for (const label of ['Head', 'Txs', 'Peers', 'QC', 'Locked', 'Committed']) {
-      await expect(hCard.getByText(label, { exact: true })).toBeVisible()
+    // The chain block carries the current Block Height alone (#237): QC, Locked,
+    // Committed and the raw transaction count stay Node Detail statements, and
+    // the Peer count reads on the secondary identity line instead.
+    await expect(hCard.locator('[data-slot="node-business-metrics"] [data-slot="metric-row-label"]')).toHaveText(['Head'])
+    await expect(hCard.getByText('12,842,025', { exact: true })).toHaveCount(1)
+    await expect(hCard.getByText('Peers 3', { exact: true })).toBeVisible()
+    for (const removed of ['QC', 'Locked', 'Committed', 'Txs']) {
+      await expect(hCard.getByText(removed, { exact: true })).toHaveCount(0)
     }
+    await expect(hCard.getByText('21', { exact: true })).toHaveCount(0)
     await expect(hCard.getByRole('img', { name: 'Healthy' })).toBeVisible()
-    // Resources/counts remain inline; chain/consensus units stack label over value.
-    // The shared geometry helper checks each unit's declared presentation.
+    // The one compact key-value line and the three resource columns each keep
+    // their declared presentation; the shared helpers read their geometry.
     await expectMetricRowsAligned(hCard)
-    // Head, QC, and Committed share the height; each appears once per row.
-    await expect(hCard.getByText('12,842,025', { exact: true })).toHaveCount(3)
-    await expect(hCard.getByText('12,842,024', { exact: true })).toHaveCount(1)
-    await expect(hCard.getByText('21', { exact: true })).toHaveCount(1)
-    await expect(hCard.getByText('3', { exact: true })).toHaveCount(1)
+    await expectResourceColumnsAligned(hCard)
+    await expect(hCard.locator('[data-slot="resource-cell"] [data-slot="resource-label"]')).toHaveText(['CPU', 'Memory', 'Disk'])
     await expect(hCard.locator('[data-slot="validator-activity"]')).toHaveAttribute('data-activity', 'producing')
     await expect(hCard.locator('[data-slot="validator-activity"] [data-slot="validator-activity-label"]')).toHaveText('Producing')
 
@@ -181,30 +183,33 @@ test.describe('Converged Public Home (issue #102)', () => {
     // Link presents the unified Observing Activity with its real reason.
     const kCard = nodeCard(page, /Node K/)
     await expect(kCard).toBeVisible({ timeout: 15_000 })
-    // Txs and resource values remain Unknown; uptime now belongs to the identity line.
-    for (const label of ['Txs', 'CPU', 'Memory', 'Node data']) {
-      const row = kCard.locator('[data-slot="metric-row"]').filter({ has: page.getByText(label, { exact: true }) })
-      await expect(row.locator('[data-slot="metric-row-value"]')).toHaveText('Unknown')
+    // Every unattested resource stays explicit in its own column, and the
+    // uptime and Peer count stay explicit on the identity line.
+    for (const metric of ['process-cpu', 'process-memory', 'node-data']) {
+      await expect(kCard.locator(`[data-slot="resource-cell"][data-metric="${metric}"] [data-slot="resource-value"]`)).toHaveText('Unknown')
     }
     await expect(kCard.getByLabel('Upload Unknown')).toBeVisible()
     await expect(kCard.getByLabel('Download Unknown')).toBeVisible()
     await expect(kCard.getByText('Uptime Unknown', { exact: true })).toBeVisible()
-    await expect(kCard.getByText('12,842,024', { exact: true })).toHaveCount(3)
-    await expect(kCard.getByText('12,842,023', { exact: true })).toHaveCount(1)
-    await expect(kCard.getByText('0', { exact: true })).toHaveCount(1)
+    // The one observed height stays; the consensus heights and count are not
+    // restated on Home, and an authoritative empty peer set stays 0.
+    await expect(kCard.getByText('12,842,024', { exact: true })).toHaveCount(1)
+    await expect(kCard.getByText('12,842,023', { exact: true })).toHaveCount(0)
+    await expect(kCard.getByText('Txs', { exact: true })).toHaveCount(0)
+    await expect(kCard.getByText('Peers 0', { exact: true })).toBeVisible()
     await expect(kCard.getByText('Empty; authoritative zero')).toBeVisible()
     await expect(kCard.locator('[data-slot="validator-activity"]')).toHaveAttribute('data-activity', 'observing')
     await expect(kCard.getByRole('img', { name: 'Healthy' })).toBeVisible()
 
-    // Node L: stale last-good consensus keeps the values and marks them.
+    // Node L: the retained current Block Height stays on the card, and the stale
+    // consensus rows it used to restate are Node Detail statements now — Home
+    // prints no consensus Stale marker at all.
     const lCard = nodeCard(page, /Node L/)
-    await expect(lCard.getByText('13', { exact: true })).toHaveCount(1)
-    await expect(lCard.getByText('12,842,023', { exact: true })).toHaveCount(3)
-    await expect(lCard.getByText('12,842,022', { exact: true })).toHaveCount(1)
+    await expect(lCard.getByText('12,842,023', { exact: true })).toHaveCount(1)
+    await expect(lCard.getByText('12,842,022', { exact: true })).toHaveCount(0)
+    await expect(lCard.getByText('13', { exact: true })).toHaveCount(0)
+    await expect(lCard.getByText('Stale', { exact: true })).toHaveCount(0)
     await expect(lCard.locator('[data-slot="validator-activity"]')).toHaveAttribute('data-activity', 'observing')
-    // The three stale consensus values (QC, Locked, Committed) print the Stale
-    // detail; the removed Node-role chip used to carry a fourth.
-    await expect(lCard.getByText('Stale', { exact: true })).toHaveCount(3)
 
     // Node M: effective Link with an authoritative no-live-validator result.
     // The Activity badge unifies to Observing while the explanation names the
@@ -231,22 +236,26 @@ test.describe('Converged Public Home (issue #102)', () => {
     // Node P has no Node observation; only the Agent-shared Host network
     // observation is known, and missing Node values never become 0 or No.
     const pCard = nodeCard(page, /Node P/)
-    // All absent metrics are explicit, including resource and uptime values.
-    for (const label of ['CPU', 'Memory', 'Node data', 'Head', 'Txs', 'Peers', 'QC', 'Locked', 'Committed']) {
-      const row = pCard.locator('[data-slot="metric-row"]').filter({ has: page.getByText(label, { exact: true }) })
-      await expect(row.locator('[data-slot="metric-row-value"]')).toHaveText('Unknown')
+    // All absent metrics are explicit, including the resource columns, the
+    // uptime and Peer metadata and the one chain height the card still carries.
+    for (const metric of ['process-cpu', 'process-memory', 'node-data']) {
+      await expect(pCard.locator(`[data-slot="resource-cell"][data-metric="${metric}"] [data-slot="resource-value"]`)).toHaveText('Unknown')
     }
+    await expect(pCard.locator('[data-slot="node-business-metrics"] [data-slot="metric-row-value"]')).toHaveText('Unknown')
     await expect(pCard.getByText('Uptime Unknown', { exact: true })).toBeVisible()
+    await expect(pCard.getByText('Peers Unknown', { exact: true })).toBeVisible()
+    await expect(pCard.getByText('no successful snapshot')).toBeVisible()
     await expect(pCard.locator('[data-slot="validator-activity"]')).toHaveAttribute('data-activity', 'observing')
     await expect(pCard.locator('[data-slot="validator-activity"]')).toHaveAttribute('data-stale', 'false')
     await expect(pCard.getByText('0', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('Non-validator', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('one or more observations are stale or unknown')).toHaveCount(1)
 
-    // Node A: the exact Current Head Block Summary proves Txs while the
-    // current process, data-directory, and shared Host metrics stay explicit.
+    // Node A: the observed Current Head Block Summary still proves its Block
+    // Height; the transaction count it used to prove is a Node Detail statement.
     const aCard = nodeCard(page, /Node A/)
-    await expect(aCard.getByText('7', { exact: true })).toHaveCount(1)
+    await expect(aCard.getByText('12,842,019', { exact: true })).toHaveCount(1)
+    await expect(aCard.getByText('7', { exact: true })).toHaveCount(0)
     await expect(aCard.getByRole('img', { name: 'Healthy' })).toBeVisible()
 
     await expectNoHorizontalOverflow(page)
@@ -333,12 +342,17 @@ test.describe('Converged Public Home (issue #102)', () => {
     await theme.click()
     expect(await page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(true)
 
-    // The compact card contract, long names, and explicit Unknown/Stale states
-    // are unchanged by the theme.
+    // The compact card contract, long names, and the explicit Unknown and
+    // last-good states are unchanged by the theme: Node L keeps its observed
+    // Block Height and the retained Peer cue, and no consensus Stale marker is
+    // printed anywhere on the card (#237).
     await expect(hCard).toBeVisible()
     await expect(hCard.getByText('Head', { exact: true })).toBeVisible()
     await expect(nodeCard(page, /Node P — Never Observed/)).toBeVisible()
-    await expect(nodeCard(page, /Node L/).getByText('Stale', { exact: true })).toHaveCount(3)
+    const lCard = nodeCard(page, /Node L/)
+    await expect(lCard.getByText('12,842,023', { exact: true })).toBeVisible()
+    await expect(lCard.getByText(/^last good \(/)).toBeVisible()
+    await expect(lCard.getByText('Stale', { exact: true })).toHaveCount(0)
 
     // Filtering stays operable on the dark surface and bounds the tab order.
     await page.getByRole('tab', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()

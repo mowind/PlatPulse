@@ -140,16 +140,23 @@ test('refinement scenarios and measured evidence', async ({ page }, info) => {
       await expect(card.locator('[data-slot="card-x-content"]')).toHaveCSS('padding', '0px 16px 16px')
       await expect(card.locator('h2')).toHaveCSS('font-size', '16px')
       if (scenario === 'unknown') {
-        await expect(card.getByRole('progressbar')).toHaveCount(1) // Node data stays known
-        await expect(card.locator('[data-slot="metric-unknown-space"]')).toHaveCount(2)
-        await expect(card.locator('[data-slot="metric-row-value"]').first()).toHaveText('Unknown')
+        // The three resource columns draw their tracks whether or not the Server
+        // attested a ratio: the two unattested ones publish no value at all and
+        // the known Node data directory keeps its 25% reading.
+        await expect(card.getByRole('progressbar')).toHaveCount(3)
+        await expect(card.locator('[data-slot="resource-cell"][data-metric="process-cpu"] [data-slot="resource-value"]')).toHaveText('Unknown')
+        await expect(card.locator('[data-slot="resource-cell"][data-metric="node-data"] [data-slot="resource-value"]')).toHaveText('25.0%')
+        await expect(card.locator('[data-slot="node-business-metrics"] [data-slot="metric-row-value"]')).toHaveText('Unknown')
       }
       if (scenario === 'long-value') {
         const labels = page.locator('[data-slot="node-card"]').first().locator('[data-slot="node-business-metrics"] [data-short-label]')
         await expect(labels).toHaveCount(0)
-        await expect(card.getByText('Locked', { exact: true })).toBeVisible()
-        await expect(card.getByText('Committed', { exact: true })).toBeVisible()
-        expect(await page.locator('[data-slot="metric-row-value"]').evaluateAll(els => els.every(el => el.scrollWidth <= el.clientWidth + 1))).toBe(true)
+        // The 11-character safe-integer height stays one unclipped line, and the
+        // consensus rows Home no longer carries are restated nowhere.
+        await expect(card.locator('[data-slot="node-business-metrics"] [data-slot="metric-row-value"]')).toHaveText('9,007,199,254,740,991')
+        await expect(card.getByText('Locked', { exact: true })).toHaveCount(0)
+        await expect(card.getByText('Committed', { exact: true })).toHaveCount(0)
+        expect(await page.locator('[data-slot="metric-row-value"], [data-slot="resource-value"], [data-slot="resource-label"]').evaluateAll(els => els.every(el => el.scrollWidth <= el.clientWidth + 1))).toBe(true)
       }
     }
   }

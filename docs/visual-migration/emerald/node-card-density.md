@@ -140,3 +140,42 @@ verified in Chromium (no asset 404, expected unauthenticated session 401). The
 operator service was **not restarted**, so its cached entry still selects the old
 UI until the normal deployment/restart procedure loads the new entry. The new
 build and test results above refer to the isolated port-4173 harness.
+
+## Later state: issue #237 compact identity, three resource columns and one-line chain
+
+The measurements above describe the Emerald migration's card. The parent Home
+compaction (#236) then changed what they record in its first slice (#237):
+
+- **Chain block.** Home keeps the current Block Height alone. The three paired
+  rows this record measures (Head/QC, Locked/Committed, Txs/Peers) and the
+  five-row narrow fallback are gone, so its chain-region heights (83px / 131px)
+  and row pitches describe the old card only. The block is now one compact
+  key-value line with no column switch.
+- **Resources.** Three fixed columns (CPU, Memory, Disk) with one thin bar each
+  in a shared row replace the two-column grid, the full-width Node data row and
+  the wide/narrow Node data caption the 112px resource minimum belonged to. The
+  used / capacity bytes and the Disk source sentence moved into the identity
+  entry; the Peer count and its last-good cue moved to the secondary identity
+  line. `MetricRow`'s `wideValue` capability and its `data-value-wide` /
+  `data-value-narrow` rules were removed with their last caller.
+
+`platpulse-web/e2e/home-card-finish.spec.ts` logs the current geometry at each
+fixed project (CSS px, the harness fixture whose card carries a full Validator
+region; light and dark agree):
+
+| Project | Card | Resource region | Chain block |
+| --- | ---: | ---: | ---: |
+| phone-360-touch | 328 × 468 | 72 | 35 |
+| phone-390-touch | 358 × 580 | 56 | 35 |
+| tablet-768-touch | 362 × 488 | 56 | 35 |
+| desktop-1280 | 303 × 468 | 72 | 35 |
+| desktop-1440 | 303 × 468 | 72 | 35 |
+
+The chain block is 35px at every width, against the 160px / 240px minima this
+record lists, and the resource region is 56–72px against its 112px minimum: the
+interior shrank, and the card's remaining height is the identity block's wrapping
+and the Validator region's own 176px minimum, which the parent's slice 2 (#238)
+addresses. Reaching the parent's 250–290px whole-card target is therefore not
+this slice's claim. The 328px card measures 72px of resources because one of its
+three columns cannot share its label's line at that width; at 358px and 362px
+(the same fixture) it is 56px, with every percentage on its label's line.

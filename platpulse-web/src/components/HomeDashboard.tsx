@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNodeRegionHeights } from './useNodeRegionHeights'
 import { Link, useLocation, useSearchParams } from 'react-router'
-import type { PublicConsensusInsight, PublicNetwork, PublicNode } from '../api/generated'
+import type { PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
 import { peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from './PeerInsight'
 import { NodeHealthMarker, formatRelativeTime, formatUtcDateTime } from './StatusBadge'
@@ -12,7 +12,7 @@ import { formatNodeDataBytes } from '../formatBytes'
 import { formatDuration } from '../formatDuration'
 import { nodeDataProgress } from '../nodeData'
 import { MetricRow } from './MetricRow'
-import type { ProgressStatus } from './ui/progress-thin'
+import { ProgressThin, type ProgressStatus } from './ui/progress-thin'
 import { CardX } from './ui/card-x'
 import { Alert, AlertDescription } from './ui/alert'
 import { Empty } from './ui/empty'
@@ -752,12 +752,14 @@ function SummaryCard({ label, value, tone, icon, emptyLabel }: {
 
 /**
  * Compact Home card, styled as Emerald's NodeCard: a stretched semantic title
- * link to Node Detail, an emerald status dot with a ping ring, a two-column
- * resource grid with thin progress bars, and a label-over-value consensus
- * grid without per-row leaders. Copy, disclosure and identity controls sit
+ * link to Node Detail, an emerald status dot with a ping ring, a secondary
+ * identity line carrying Network, process uptime and Peers, a three-column
+ * resource row with thin progress bars, one shared Host network line, and the
+ * current Block Height alone (#237). Copy, disclosure and identity controls sit
  * outside the anchor so they never trigger navigation. Healthy Nodes carry no
  * routine prose. Exceptional health keeps a short diagnostic line (issue #97);
- * resync progress is a separate, lightweight status area.
+ * resync progress is a separate, lightweight status area, and every explanation
+ * the compaction removed from the face of the card stays in the identity entry.
  */
 /** The compact list view (stories 72, 73, 79): one row per matching Node with
  * the seven public columns this ticket names, inside one local horizontal
@@ -835,19 +837,12 @@ function HomeNodeList({ records, linkState, registerRow }: {
 function HomeNodeCard({ network, node, linkState }: NodeRecord & { linkState: HomeReturnState }) {
   const tone = healthTone(node.health)
   const diagnostic = exceptionalDiagnostic(node)
-  // Every displayed chain value is computed once: the grid borrows the same
-  // strings to decide whether a compact two-column cell can hold them.
-  const consensusStatus = consensusValueStatus(node.consensus)
-  const business = {
-    head: formatNumber(node.currentHead),
-    qc: formatConsensusBlock(node.consensus?.highestQcBlock, consensusStatus),
-    locked: formatConsensusBlock(node.consensus?.highestLockBlock, consensusStatus),
-    committed: formatConsensusBlock(node.consensus?.highestCommitBlock, consensusStatus),
-    txs: formatNumber(node.latestBlockTransactionCount),
-    peers: formatPeerCount(node),
-  }
-  const businessWide = Object.values(business).some((value) => value.length > 12)
   const resyncing = (node.resyncState ?? '').toLowerCase() === 'resyncing'
+  // The compact Peer cue the identity line can carry, and the explanations the
+  // identity entry keeps in full: nothing the card compresses is lost.
+  const peerCue = peerCardCue(node)
+  const peerObservation = formatPeerObservation(node)
+  const nodeDataBytes = formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
   // One compact, abnormal-only Provider data cue for the identity row. A
   // routine Current value stays silent; the region below owns the authoritative
   // no-live-Validator empty state.
@@ -878,7 +873,18 @@ function HomeNodeCard({ network, node, linkState }: NodeRecord & { linkState: Ho
           </div>
           <ValidatorActivityBadge validator={node.validator} identityReason={node.validatorIdentityReason} />
           <div data-slot="node-identity-meta" className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-            <p className="min-w-0 flex-1"><span className="[overflow-wrap:anywhere]">{network.displayName}</span> · <span className="whitespace-nowrap">Uptime {formatDuration(node.processUptimeMs)}</span></p>
+            {/* Second line (#237): the Node's environment at secondary weight —
+                Network, process uptime and the Peer count. A long Network name
+                wraps here instead of squeezing the count or the status cues, and
+                the count itself never breaks: the identity explanation carries
+                the whole name. */}
+            <p className="min-w-0 flex-1">
+              <span className="[overflow-wrap:anywhere]">{network.displayName}</span> · <span className="whitespace-nowrap">Uptime {formatDuration(node.processUptimeMs)}</span> · <span data-slot="node-peers-meta" className="whitespace-nowrap tabular-nums">Peers {formatPeerCount(node)}</span>
+              {/* One short last-good/freshness cue: a retained count must never
+                  read as a current one, and the full observation sentence stays
+                  in the identity explanation this row already opens. */}
+              {peerCue && <span data-slot="node-peers-cue" className="ml-1.5">{peerCue}</span>}
+            </p>
             {/* One unified top status position: an abnormal Node-health summary,
                 a live resync percentage and an abnormal Provider data state sit
                 here as short chips. The normal Data: Current line is gone; the
@@ -897,6 +903,8 @@ function HomeNodeCard({ network, node, linkState }: NodeRecord & { linkState: Ho
               <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm"><DialogTitle className="pr-10 [overflow-wrap:anywhere]">{homeNodeLabel(node)}</DialogTitle><DialogDescription className="[overflow-wrap:anywhere]">Network: {network.displayName} · Uptime {formatDuration(node.processUptimeMs)}. Node role describes the Node’s consensus membership, not its linked Validator’s current staking validity or the freshness of Provider data.</DialogDescription>
                 <p className="text-sm text-muted-foreground">Active Nodes are in the latest Agent Inventory, not necessarily online. Healthy reflects successful, fresh RPC, sync and consensus observations. Process errors, a stopped or Unknown process state, or Network Identity Mismatch prevent Healthy; disabled process monitoring does not. Healthy does not mean synchronization is complete; Resyncing is shown independently.</p>
                 <p className="text-sm text-muted-foreground">Home Attention counts Active Nodes that are not Healthy, including Unknown. While nothing is narrowed, these counters and the Peer map read the whole Network selection. Once search, health, or Validator status narrows the list, they read the Active Nodes that matched instead, so a Node's countries count only where that Node is listed — while the two cumulative Validator cells keep the Network selection, and the list still reports how many Nodes matched.</p>
+                <p className="text-sm text-muted-foreground">CPU and Memory are the monitored PlatON process's own percentages, not the Host's. Disk is the Node data directory's size as a share of the capacity of the filesystem that holds it, not whole-filesystem fullness.{nodeDataBytes ? ' Node data: ' + nodeDataBytes + '.' : ''}</p>
+                {peerObservation && <p className="text-sm text-muted-foreground">Peer observation: {peerObservation}.</p>}
                 {diagnostic && <p className="text-sm text-muted-foreground">Current health diagnostic: {diagnostic.text}</p>}
                 {dataStatus && <p className="text-sm text-muted-foreground">Validator data: {dataStatus.label}. {dataStatus.description}</p>}
               </DialogContent>
@@ -915,20 +923,13 @@ function HomeNodeCard({ network, node, linkState }: NodeRecord & { linkState: Ho
             {diagnostic.text}
           </p>}
         </div></div>}>
-        <div data-node-region="resource"><div data-node-region-content><ResourceRow node={node} /></div></div>
+        <div data-node-region="resource"><div data-node-region-content><ResourceMetrics node={node} /></div></div>
+        {/* Chain (#237): Home keeps the current Block Height alone. QC, Locked,
+            Committed and Txs stay on Node Detail, which reads the same public
+            fields — no field, observation or history is deleted. */}
         <div data-node-region="chain"><div data-node-region-content>
-        <div data-slot="node-business-metrics" data-wide={businessWide || undefined} className="border-t border-border pt-3">
-          <MetricRow layout="compact" label="Head" value={business.head} />
-          <ConsensusRow status={consensusStatus} values={business} />
-          <div data-slot="node-counts" data-wide={business.txs.length > 12 || business.peers.length > 12 || undefined}>
-            <MetricRow layout="compact" label="Txs" value={business.txs} />
-            <MetricRow layout="compact" label="Peers" value={business.peers} />
-          </div>
-          {formatPeerObservation(node) && (
-            <small data-slot="metric-row-detail" className="col-span-2 text-[11px] text-muted-foreground">
-              {formatPeerObservation(node)}
-            </small>
-          )}
+        <div data-slot="node-business-metrics" className="border-t border-border pt-3">
+          <MetricRow layout="compact" label="Head" value={formatNumber(node.currentHead)} />
         </div>
         </div></div>
         <div data-node-region="validator"><div data-node-region-content><LinkedValidatorSection node={node} /></div></div>
@@ -1017,33 +1018,59 @@ function validHeight(value: number | null | undefined): number | null {
  *  replace this, and it would still have to map onto the existing tokens. */
 const RESOURCE_BAR_STATUS: ProgressStatus = 'success'
 
-function ResourceRow({ node }: { node: PublicNode }) {
-  const nodeDataProgressValue = nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
-  const nodeDataBytes = formatNodeDataBytes(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
-  // Wide cards fold the used / total caption into the value line; a narrow
-  // card keeps it as its own caption under the track. The bytes and the
-  // percentage are both always rendered, only regrouped.
-  const nodeDataValue = formatPercent(nodeDataProgressValue)
+/** What the Disk bar measures (#237). The Node data directory's size over the
+ *  capacity of the filesystem that holds it is not whole-filesystem fullness —
+ *  the Host's own storage percentage is a different observation — so the bar's
+ *  accessible name names the source it reads, and the identity explanation
+ *  repeats the sentence beside the used / capacity bytes. */
+const DISK_BAR_NAME = 'Disk: Node data directory size as a share of the filesystem capacity holding it, not whole-filesystem fullness'
+
+type ResourceMetric = {
+  metric: 'process-cpu' | 'process-memory' | 'node-data'
+  /** The short name the three-column row can hold; the full source name stays
+   *  the bar's accessible name and the label's title. */
+  label: string
+  name: string
+  value: string
+  progress: number | null
+}
+
+/** Home's three resource columns (#237): CPU and Memory are the monitored
+ *  PlatON process's own percentages and Disk is the Node data directory's share
+ *  of the filesystem capacity that holds it. Every column keeps the Emerald
+ *  anatomy — muted label at the left, tabular value flush right on the same
+ *  line, one thin success bar underneath — and the three bars share the row
+ *  below the values, so a value that cannot share its label's line (an
+ *  unattested one, or a very long ratio) drops to its own right-aligned line
+ *  instead of overflowing, being clipped, or becoming a zero it never was. */
+function ResourceMetrics({ node }: { node: PublicNode }) {
+  const nodeDataRatio = nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
+  const metrics: ResourceMetric[] = [
+    { metric: 'process-cpu', label: 'CPU', name: 'Process CPU', value: formatPercent(node.processCpuPercent), progress: node.processCpuPercent ?? null },
+    { metric: 'process-memory', label: 'Memory', name: 'Process memory', value: formatPercent(node.processMemoryPercent), progress: node.processMemoryPercent ?? null },
+    { metric: 'node-data', label: 'Disk', name: DISK_BAR_NAME, value: formatPercent(nodeDataRatio), progress: nodeDataRatio },
+  ]
   return (
     <div
       data-slot="node-resource-region"
-      className="grid grid-cols-2 gap-x-3 gap-y-1"
+      className="grid grid-cols-3 gap-x-2.5 gap-y-1"
       aria-label="Node process and host network resources"
     >
-      <MetricRow layout="compact" label="CPU" value={formatPercent(node.processCpuPercent)} progress={node.processCpuPercent ?? null} progressStatus={RESOURCE_BAR_STATUS} />
-      <MetricRow layout="compact" label="Memory" value={formatPercent(node.processMemoryPercent)} progress={node.processMemoryPercent ?? null} progressStatus={RESOURCE_BAR_STATUS} />
-      <div className="col-span-2" data-slot="node-data-resource">
-        <MetricRow
-          layout="compact"
-          label="Node data"
-          value={nodeDataValue}
-          wideValue={nodeDataBytes && nodeDataProgressValue != null ? nodeDataBytes + ' · ' + nodeDataValue : undefined}
-          detail={nodeDataBytes}
-          progress={nodeDataProgressValue}
-          progressStatus={RESOURCE_BAR_STATUS}
-        />
-      </div>
-      <div className="col-span-2" data-slot="host-network-speed" role="group" aria-label="Host network speed">
+      {metrics.map(({ metric, label, name, value }) => (
+        <div
+          key={metric}
+          data-slot="resource-cell"
+          data-metric={metric}
+          className="flex min-w-0 flex-wrap items-baseline gap-x-1 self-end"
+        >
+          <span data-slot="resource-label" title={name} className="text-[11px] leading-4 text-muted-foreground">{label}</span>
+          <strong data-slot="resource-value" className="ml-auto whitespace-nowrap text-[13px] font-medium tabular-nums">{value}</strong>
+        </div>
+      ))}
+      {metrics.map(({ metric, name, progress }) => (
+        <ProgressThin key={metric} percentage={progress} status={RESOURCE_BAR_STATUS} label={name} />
+      ))}
+      <div className="col-span-3" data-slot="host-network-speed" role="group" aria-label="Host network speed">
         <MetricRow layout="compact" label="Speed" value={<span className="flex items-center gap-2 whitespace-nowrap">
           <span aria-label={`Upload ${formatRate(node.hostNetworkTxBytesPerSec)}`} className="inline-flex items-center gap-0.5 text-green-600"><ChevronUp className="size-3 shrink-0" aria-hidden="true" />{formatRate(node.hostNetworkTxBytesPerSec)}</span>
           <span aria-label={`Download ${formatRate(node.hostNetworkRxBytesPerSec)}`} className="inline-flex items-center gap-0.5 text-blue-600"><ChevronDown className="size-3 shrink-0" aria-hidden="true" />{formatRate(node.hostNetworkRxBytesPerSec)}</span>
@@ -1073,46 +1100,6 @@ function formatRate(value: number | null | undefined): string {
     unit += 1
   }
   return `${amount}${units[unit]}`
-}
-
-/**
- * QC, Locked, Committed and the header role badge come from
- * the Node-scoped last-good consensus observation (issue #99). Missing,
- * unsupported, disabled, and never-observed values render Unknown, never zero
- * or No; failed or stale collections keep the last-good values and visibly mark
- * them Stale.
- */
-function ConsensusRow({ status, values }: {
-  status: 'current' | 'stale' | 'unknown'
-  values: { qc: string; locked: string; committed: string }
-}) {
-  const detail = status === 'stale' ? 'Stale' : undefined
-  return (
-    <div className="contents" role="group" aria-label="Consensus values">
-      <MetricRow layout="compact" label="QC" value={values.qc} detail={detail} />
-      <MetricRow layout="compact" label="Locked" value={values.locked} detail={detail} />
-      <MetricRow layout="compact" label="Committed" value={values.committed} detail={detail} />
-    </div>
-  )
-}
-
-function consensusValueStatus(insight: PublicConsensusInsight | undefined): 'current' | 'stale' | 'unknown' {
-  if (!insight || insight.validator == null) return 'unknown'
-  // Starting/Disabled/Unsupported never carry a usable consensus value;
-  // only an accepted successful observation provides membership truth.
-  if (['starting', 'disabled', 'unsupported'].includes(insight.state)) return 'unknown'
-  // Unknown freshness means the Server cannot certify currency; never
-  // present a retained value as current (issue #99).
-  if (insight.freshness === 'unknown') return 'unknown'
-  // A failed collection or an aged value is Stale while the last-good value
-  // remains visible; Server state and freshness remain separate dimensions.
-  if (insight.state === 'error' || insight.freshness === 'stale') return 'stale'
-  return 'current'
-}
-
-function formatConsensusBlock(value: number | null | undefined, status: 'current' | 'stale' | 'unknown'): string {
-  if (value == null || status === 'unknown') return 'Unknown'
-  return value.toLocaleString()
 }
 
 type NodeDiagnostic = { text: string; tone: 'destructive' | 'warning' }
@@ -1187,6 +1174,21 @@ function peerRetentionCue(node: PublicNode): string | undefined {
   }
   if (reasons.length === 0) return undefined
   return `last good (${reasons.join(', ')})`
+}
+
+/** The card's short half of `formatPeerObservation` (#237): the count itself is
+ *  already on the identity line, so this says only what a reader needs in order
+ *  not to misread it — a retained count is last good and why, a successful
+ *  empty snapshot is an authoritative zero, and a count the Server never
+ *  attested has no successful snapshot behind it. A fully current count says
+ *  nothing extra; the full dimension sentence stays in the identity
+ *  explanation. */
+function peerCardCue(node: PublicNode): string | undefined {
+  const value = peerInsightValueStatus(node.peers)
+  if (value === 'Unknown') return 'no successful snapshot'
+  const retention = peerRetentionCue(node)
+  if (retention) return retention
+  return value === 'Empty' ? 'Empty; authoritative zero' : undefined
 }
 
 function healthLabel(value: string): string {
