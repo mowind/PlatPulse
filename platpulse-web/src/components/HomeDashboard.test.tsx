@@ -1018,6 +1018,23 @@ describe('Public Home dashboard', () => {
   })
 })
 
+/**
+ * Issue #241: the Home toolbar's search is the row's own control in two shapes.
+ * The row holds both — a compact field, and the accessibly named entry that
+ * opens that same field — and the toolbar's own width decides which one a
+ * reader gets, in CSS, so jsdom paints neither and the browser acceptance owns
+ * the switch itself. A unit test therefore names the slot it reads; both slots
+ * read the one query, and neither holds a word the other lost.
+ */
+const searchSlots = () => ({
+  inline: document.querySelector('[data-slot="home-search-inline"]'),
+  collapsed: document.querySelector('[data-slot="home-search-collapsed"]'),
+})
+const inlineField = () =>
+  within(searchSlots().inline as HTMLElement).getByRole('searchbox', { name: 'Search Active Nodes' }) as HTMLInputElement
+const collapsedField = () =>
+  within(searchSlots().collapsed as HTMLElement).getByRole('searchbox', { name: 'Search Active Nodes' }) as HTMLInputElement
+
 /** Issue #222: Home keeps its filter state in an ordinary navigation URL. The
  *  URL restores what it can, reports what it cannot honour, and is rewritten
  *  only when the reader acts. */
@@ -1033,14 +1050,10 @@ describe('Public Home filter URLs', () => {
   const nodeHrefs = () => screen.queryAllByRole('link')
     .map((link) => link.getAttribute('href'))
     .filter((href): href is string => href !== null && href.startsWith('/nodes/'))
-  // Issue #232: the field lives behind the toolbar's search entry, so reading
-  // or typing into it opens that entry first.
-  const searchbox = () => {
-    if (!screen.queryByRole('searchbox', { name: 'Search Active Nodes' })) {
-      fireEvent.click(screen.getByRole('button', { name: 'Search Active Nodes' }))
-    }
-    return screen.getByRole('searchbox', { name: 'Search Active Nodes' }) as HTMLInputElement
-  }
+  // Issue #241: the reader's field is the row's own control, so these URL cases
+  // read and type into it directly rather than opening the entry that used to
+  // hold the only field there was.
+  const searchbox = () => inlineField()
   const resultCount = () => document.querySelector('[data-slot="home-result-count"]') as HTMLElement
   const filterNotice = () => document.querySelector('[data-slot="home-filter-notice"]')
 
@@ -1347,9 +1360,11 @@ describe('Public Home card and list views', () => {
 })
 
 /** Issue #232: Home keeps one row of toolbar entries — the Network pills, one
- *  Sort & filter entry, the card/list choice, and one search entry — and every
- *  control behind those entries stays out of the row, and out of the tab walk,
- *  until a reader opens the surface that holds it. */
+ *  Sort & filter entry, the card/list choice, and the search control — and every
+ *  control behind the Sort & filter entry stays out of the row, and out of the
+ *  tab walk, until a reader opens the surface that holds it. Issue #241 gave
+ *  that search control its own two shapes: the row's compact field, and the
+ *  entry that opens the same field for a toolbar without the width for one. */
 describe('Public Home toolbar entries', () => {
   const secondNetwork = {
     ...network,
@@ -1365,11 +1380,14 @@ describe('Public Home toolbar entries', () => {
   it('keeps the controls of a closed entry out of the row and out of the tab walk', () => {
     renderHome([network])
 
-    // A control the reader cannot see is not in the reading order either.
+    // A control the reader cannot see is not in the reading order either: the
+    // closed entry holds no field and no surface, while the row's own field is
+    // the row's own control rather than something behind that entry (#241).
     expect(screen.queryAllByRole('combobox')).toEqual([])
-    expect(screen.queryByRole('searchbox')).toBeNull()
+    expect(within(searchSlots().collapsed as HTMLElement).queryByRole('searchbox')).toBeNull()
     expect(surface('Sort and filters')).toBeNull()
     expect(surface('Search Active Nodes')).toBeNull()
+    expect(inlineField().getAttribute('data-slot')).toBe('home-search-field')
 
     // What the row does keep: the Network pills, the two entries, and the view.
     expect(screen.getByRole('tablist', { name: 'Network filter' })).toBeTruthy()
@@ -1461,18 +1479,20 @@ describe('Public Home toolbar entries', () => {
     expect(document.getElementById('home-search-state')?.textContent).toBe('Search is on: Gamma')
 
     fireEvent.click(searchEntry)
-    const box = screen.getByRole('searchbox', { name: 'Search Active Nodes' }) as HTMLInputElement
+    const box = collapsedField()
     await waitFor(() => expect(document.activeElement).toBe(box))
     expect(box.value).toBe('Gamma')
 
+    // Escape closes the surface without touching the word: the query is the
+    // reader's filter, and only Clear search removes it (#241).
     fireEvent.keyDown(document, { key: 'Escape' })
-    expect(screen.queryByRole('searchbox', { name: 'Search Active Nodes' })).toBeNull()
+    expect(within(searchSlots().collapsed as HTMLElement).queryByRole('searchbox')).toBeNull()
     expect(document.activeElement).toBe(searchEntry)
     expect(window.location.search).toBe('?q=Gamma')
 
     // Reopening hands the reader back the text they had, and the marker stays.
     fireEvent.click(searchEntry)
-    expect((screen.getByRole('searchbox', { name: 'Search Active Nodes' }) as HTMLInputElement).value).toBe('Gamma')
+    expect(collapsedField().value).toBe('Gamma')
     expect(searchEntry.getAttribute('data-search-state')).toBe('on')
     expect(document.querySelector('[data-slot="home-search-active"]')).toBeTruthy()
   })
@@ -1482,13 +1502,129 @@ describe('Public Home toolbar entries', () => {
     renderHome([network, secondNetwork])
     fireEvent.click(trigger('Search Active Nodes'))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
+    fireEvent.click(within(searchSlots().collapsed as HTMLElement).getByRole('button', { name: 'Clear search' }))
 
     expect(window.location.search).toBe('?network=testnet')
-    expect((screen.getByRole('searchbox', { name: 'Search Active Nodes' }) as HTMLInputElement).value).toBe('')
+    expect(collapsedField().value).toBe('')
     expect(trigger('Search Active Nodes').getAttribute('data-search-state')).toBe('off')
     expect(document.querySelector('[data-slot="home-search-active"]')).toBeNull()
     expect(trigger('Search Active Nodes').getAttribute('aria-describedby')).toBeNull()
+  })
+
+  it('reads one query from the row field and from the entry that opens it', () => {
+    window.history.replaceState({}, '', '/?network=testnet&q=Gamma')
+    renderHome([network, secondNetwork])
+
+    // The row's own field is the same labelled control the entry opens, and it
+    // states the flag in force on itself: a narrowed list is never mistaken for
+    // an empty deployment while the reader has the field in their hand.
+    const field = inlineField()
+    expect(field.getAttribute('aria-label')).toBe('Search Active Nodes')
+    expect(field.value).toBe('Gamma')
+    expect(field.getAttribute('data-search-state')).toBe('on')
+    expect(field.getAttribute('aria-describedby')).toBe('home-search-state')
+    expect(document.getElementById('home-search-state')?.textContent).toBe('Search is on: Gamma')
+
+    // Typing in the row's field is what the entry's field then reads: one
+    // query, one filter, one URL — whichever shape the reader was given.
+    fireEvent.change(field, { target: { value: 'Alpha' } })
+    expect(window.location.search).toBe('?network=testnet&q=Alpha')
+    fireEvent.click(trigger('Search Active Nodes'))
+    expect(collapsedField().value).toBe('Alpha')
+    expect(inlineField().value).toBe('Alpha')
+
+    // Closing the entry leaves both shapes on the same word and the same filter.
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(within(searchSlots().collapsed as HTMLElement).queryByRole('searchbox')).toBeNull()
+    expect(inlineField().value).toBe('Alpha')
+    expect(inlineField().getAttribute('data-search-state')).toBe('on')
+    expect(window.location.search).toBe('?network=testnet&q=Alpha')
+
+    // And the same holds the other way round: the entry writes the query the
+    // row's field reads, with nothing lost on the way.
+    fireEvent.click(trigger('Search Active Nodes'))
+    fireEvent.change(collapsedField(), { target: { value: 'Beta' } })
+    expect(inlineField().value).toBe('Beta')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(inlineField().value).toBe('Beta')
+    expect(window.location.search).toBe('?network=testnet&q=Beta')
+  })
+
+  it("keeps the reader's word when Escape is pressed in the row's own field", () => {
+    window.history.replaceState({}, '', '/?q=Gamma')
+    renderHome([network])
+
+    // Escape hands nothing back here: there is no surface to close, and the
+    // reader's search is not something a retreat key gets to clear.
+    fireEvent.keyDown(inlineField(), { key: 'Escape' })
+
+    expect(inlineField().value).toBe('Gamma')
+    expect(window.location.search).toBe('?q=Gamma')
+    expect(inlineField().getAttribute('data-search-state')).toBe('on')
+  })
+
+  it("clears only the query from the row's own field and keeps the Network selection", () => {
+    window.history.replaceState({}, '', '/?network=testnet&q=Gamma')
+    renderHome([network, secondNetwork])
+
+    fireEvent.click(within(searchSlots().inline as HTMLElement).getByRole('button', { name: 'Clear search' }))
+
+    expect(window.location.search).toBe('?network=testnet')
+    expect(inlineField().value).toBe('')
+    expect(within(searchSlots().collapsed as HTMLElement).queryByRole('searchbox')).toBeNull()
+    expect(inlineField().getAttribute('data-search-state')).toBe('off')
+    expect(inlineField().getAttribute('aria-describedby')).toBeNull()
+  })
+
+  /** Issue #241: which of the two shapes the toolbar has room for is CSS's
+   *  decision on the slot's own width, but a reader who is inside the search
+   *  control when a resize replaces that shape must not lose the keyboard, so
+   *  the component measures the same room and hands the focus on. jsdom lays
+   *  nothing out and has no ResizeObserver, so a test states the slot's width and
+   *  drives the observation by hand: the room, the flip, and the reader's place
+   *  are the whole of what is simulated. */
+  it("hands the reader's place to the search shape that replaces the one they were in", async () => {
+    class FakeResizeObserver {
+      static callbacks: Array<() => void> = []
+      constructor(callback: () => void) {
+        FakeResizeObserver.callbacks.push(callback)
+      }
+      observe() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver)
+    const setRoom = (width: number) => {
+      const slot = document.querySelector('[data-slot="home-search-slot"]') as HTMLElement
+      Object.defineProperty(slot, 'clientWidth', { value: width, configurable: true })
+      FakeResizeObserver.callbacks.forEach((callback) => callback())
+    }
+
+    window.history.replaceState({}, '', '/')
+    renderHome([network])
+    const entry = trigger('Search Active Nodes')
+    fireEvent.click(entry)
+    const field = collapsedField()
+    fireEvent.change(field, { target: { value: 'Gamma' } })
+    await waitFor(() => expect(document.activeElement).toBe(field))
+
+    // The toolbar grows room for the field while the reader is in the entry's
+    // surface. The surface is not left open behind a shape that is no longer
+    // displayed; the field that took over takes the reader's place, and the word
+    // and the filter it stands for are exactly as the reader left them.
+    await act(async () => setRoom(400))
+    const rowField = inlineField()
+    await waitFor(() => expect(document.activeElement).toBe(rowField))
+    expect(rowField.value).toBe('Gamma')
+    expect(surface('Search Active Nodes')).toBeNull()
+    expect(window.location.search).toBe('?q=Gamma')
+
+    // And back the other way: the entry speaks for the field that went out of
+    // sight and holds the reader's place, without the word being touched.
+    await act(async () => setRoom(100))
+    await waitFor(() => expect(document.activeElement).toBe(entry))
+    expect(inlineField().value).toBe('Gamma')
+    expect(window.location.search).toBe('?q=Gamma')
+    vi.unstubAllGlobals()
   })
 })
 

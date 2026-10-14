@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react'
 import { Link, useLocation, useSearchParams } from 'react-router'
 import type { PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
@@ -90,6 +90,19 @@ function revealReturnRow(
  *  on screen. Rows are found again through refs keyed by Node ID. */
 type HomeReturnLinkState = (nodeId: string, index: number, count: number) => HomeReturnState
 type NodeRowRefs = (nodeId: string, element: HTMLElement | null) => void
+
+/** The one accessible name Home's search control answers to, in both shapes
+ *  #241 gives it: the row's own field, and the entry that opens that field. */
+const SEARCH_LABEL = 'Search Active Nodes'
+
+/**
+ * The room the toolbar's own search shape takes, in CSS pixels (#241): the
+ * field's readable 13rem plus its 44px Clear search action and the 4px between
+ * them. emerald.css states it once as the 16rem its width query asks for, and
+ * the one measurement below reads the same number, so the query and the focus
+ * handoff disagree about the reader's toolbar only if this pair drifts.
+ */
+const SEARCH_FIELD_TRACK = 16 * 16
 
 const sortOptions: Array<{ value: HomeSort; label: string }> = [
   { value: 'health', label: 'Health' },
@@ -270,6 +283,58 @@ export default function HomeDashboard({
     // Typing is the reason the field is there, so it takes focus as it appears.
     if (searchOpen) searchInputRef.current?.focus()
   }, [searchOpen])
+  const searchSlotRef = useRef<HTMLDivElement | null>(null)
+  const searchFieldRef = useRef<HTMLInputElement | null>(null)
+  /** The shape the last measurement found, and whether the reader was inside the
+   *  search control when it changed under them. */
+  const searchShapeRef = useRef<boolean | null>(null)
+  const searchFocusWasInside = useRef(false)
+  /**
+   * Which of the row's two search shapes the toolbar has room for is a CSS
+   * decision on the slot's own width (#241, emerald.css), and this effect adds
+   * exactly one thing to it: the reader does not lose the keyboard when the
+   * shape they are in is replaced by the other one. It measures the same room
+   * against the same 16rem, and only when a resize crosses that line while the
+   * reader is inside the search control does it hand the focus on — to the field
+   * when the field becomes the row's own control, closing the entry's surface as
+   * it goes, so no control stays behind a shape that is no longer displayed, and
+   * to the entry when the field goes out of sight. It never decides which shape
+   * is displayed: that stays one rule in one place, so the two can never
+   * disagree about the reader's toolbar.
+   */
+  useEffect(() => {
+    const slot = searchSlotRef.current
+    if (!slot || typeof ResizeObserver === 'undefined') return
+    const rememberPlace = (event: FocusEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      // A shape going out of sight takes the keyboard from the reader for a
+      // moment and hands it to the document itself; that is not the reader
+      // moving on, so it does not count as their place changing.
+      if (target === document.body || target === document.documentElement) return
+      searchFocusWasInside.current = slot.contains(target)
+    }
+    const reconcile = () => {
+      const fits = slot.clientWidth >= SEARCH_FIELD_TRACK
+      const previous = searchShapeRef.current
+      searchShapeRef.current = fits
+      if (previous === null || previous === fits || !searchFocusWasInside.current) return
+      if (fits) {
+        setPanel((current) => (current === 'search' ? 'none' : current))
+        searchFieldRef.current?.focus()
+      } else {
+        searchTriggerRef.current?.focus()
+      }
+    }
+    document.addEventListener('focusin', rememberPlace)
+    const observer = new ResizeObserver(reconcile)
+    observer.observe(slot)
+    reconcile()
+    return () => {
+      observer.disconnect()
+      document.removeEventListener('focusin', rememberPlace)
+    }
+  }, [])
   // Only Health and Validator status are counted: they are the two choices that
   // live behind the toolbar entry and would otherwise be invisible, while the
   // Network selection, the sort order, the view, and the search text each show
@@ -289,6 +354,43 @@ export default function HomeDashboard({
   // Only Health and Validator status reset: the sort order, the search text, and
   // the Network selection are the reader's other choices and stay as they are.
   const clearStatusFilters = () => updateFilters({ health: 'all', validator: 'all' })
+  /** Clear search drops the query and nothing else (#232): the Network
+   *  selection, the two status filters, the sort order and the view are the
+   *  reader's other choices and stay exactly where they were. */
+  const clearSearch = () => {
+    setQueryDraft(null)
+    updateFilters({ query: '' }, true)
+  }
+  /** That one action, in either shape (#241): the two shapes are the same
+   *  control, so they carry the same Clear search with the same name, the same
+   *  disabled state and the same effect. */
+  const clearSearchProps = {
+    variant: 'ghost',
+    size: 'icon-sm',
+    'aria-label': 'Clear search',
+    disabled: queryText === '',
+    onClick: clearSearch,
+  } as const
+  /** The one search field, in either of the row's two shapes (#241). Both shapes
+   *  are the same labelled control over the same draft, so the row's own field
+   *  and the field the entry opens are one query rather than two that could
+   *  disagree. Escape is answered here instead of being left to the browser: its
+   *  own action on a search field may revert the text, and the reader's filter is
+   *  not something a retreat key gets to clear. */
+  const searchFieldProps = {
+    type: 'search',
+    'aria-label': SEARCH_LABEL,
+    placeholder: 'Name, Node ID, or Network',
+    value: queryText,
+    onChange: (event: ChangeEvent<HTMLInputElement>) => {
+      setQueryDraft(event.target.value)
+      updateFilters({ query: event.target.value }, true)
+    },
+    onBlur: () => setQueryDraft(null),
+    onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => {
+      if (event.key === 'Escape') event.preventDefault()
+    },
+  } as const
 
   const scopeName = scope.network === 'all'
     ? null
@@ -446,7 +548,10 @@ export default function HomeDashboard({
 
       <div className="relative p-4 pt-0 md:static">
         <div className="flex flex-col gap-2" aria-label="Node filters and sorting">
-          <div className="flex flex-wrap items-start gap-2 md:flex-nowrap md:items-center">
+          <div
+            data-slot="home-toolbar"
+            className="flex flex-wrap items-start gap-2 md:flex-nowrap md:items-center"
+          >
           <div className="w-full overflow-x-auto rounded-sm py-1.5 -my-1.5 md:relative md:z-10 md:w-auto">
             <Tabs
               value={scope.network}
@@ -590,82 +695,98 @@ export default function HomeDashboard({
             </TabsList>
           </Tabs>
 
-          {/* Search stays a visible toolbar control (#232): the field it opens is
-              the only thing that moved, and the marker on the control stays on
-              while a search is in force — closed or open — so a narrowed list is
-              never mistaken for an empty one. The marker is a drawn dot beside
-              the icon rather than the accent colour on its own, and the entry's
-              description names the text in force, so neither state depends on
-              seeing a hue. It is an icon-only entry drawn by the same line-icon
-              set as the card/list choice beside it, and it opens its own small
-              field rather than taking the row. */}
-          <div className={cn('md:relative md:shrink-0', searchOpen ? 'md:z-30' : 'md:z-10')}>
-            <ToolbarPopover
-              open={searchOpen}
-              onClose={closePanel}
-              returnFocusRef={searchTriggerRef}
-              label="Search Active Nodes"
-              className="w-72 sm:w-80"
-              trigger={
-                <Button
-                  ref={searchTriggerRef}
-                  variant="outline"
-                  size="icon"
-                  aria-label="Search Active Nodes"
-                  aria-expanded={searchOpen}
-                  aria-haspopup="dialog"
-                  aria-describedby={searchActive ? searchStateId : undefined}
-                  data-slot="home-search-trigger"
-                  data-search-state={searchActive ? 'on' : 'off'}
-                  className={cn(
-                    'relative rounded-md shadow-none md:bg-background',
-                    searchActive && 'border-emerald-600 text-emerald-700 dark:border-emerald-500 dark:text-emerald-400',
-                  )}
-                  onClick={() => togglePanel('search')}
-                >
-                  <Search aria-hidden="true" />
-                  {searchActive && (
-                    <span
-                      data-slot="home-search-active"
-                      aria-hidden="true"
-                      className="absolute top-1 right-1 size-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400"
-                    />
-                  )}
-                </Button>
-              }
+          {/* The search slot is the room the row has left for the search control
+              (#241): one flex item that takes whatever the Network pills, the
+              Sort & filter entry and the card/list choice leave over at their
+              own widths, so the room is the row's real room rather than a column
+              count of the viewport. Its own width never depends on what it
+              holds, which is what lets the width query in emerald.css ask the
+              row's one question — is there room for a compact field beside the
+              controls that are already there? — and get the same answer
+              whichever shape is displayed. */}
+          <div
+            ref={searchSlotRef}
+            data-slot="home-search-slot"
+            className="flex min-w-11 flex-1 items-center"
+          >
+            {/* One shape: that compact field, with the Clear search action that
+                belongs to it. It is one fixed 16rem — the field's own readable
+                13rem plus that action — so the field a reader is given is never
+                a squeezed version of this one, and the shape is only displayed
+                where the slot holds all of it. */}
+            <div
+              data-slot="home-search-inline"
+              className="w-[16rem] shrink-0 items-center gap-1"
             >
-              <div className="flex items-center gap-2">
-                <Input
-                  ref={searchInputRef}
-                  type="search"
-                  aria-label="Search Active Nodes"
-                  className="w-full"
-                  placeholder="Name, Node ID, or Network"
-                  value={queryText}
-                  onChange={(event) => {
-                    setQueryDraft(event.target.value)
-                    updateFilters({ query: event.target.value }, true)
-                  }}
-                  onBlur={() => setQueryDraft(null)}
-                />
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Clear search"
-                  disabled={queryText === ''}
-                  onClick={() => {
-                    setQueryDraft(null)
-                    updateFilters({ query: '' }, true)
-                  }}
-                >
-                  <X aria-hidden="true" />
-                </Button>
-              </div>
-            </ToolbarPopover>
-            {searchActive && (
-              <span id={searchStateId} className="sr-only">{`Search is on: ${queryText}`}</span>
-            )}
+              <Input
+                ref={searchFieldRef}
+                data-slot="home-search-field"
+                data-search-state={searchActive ? 'on' : 'off'}
+                aria-describedby={searchActive ? searchStateId : undefined}
+                className={cn('w-full', searchActive && 'border-emerald-600 dark:border-emerald-500')}
+                {...searchFieldProps}
+              />
+              <Button {...clearSearchProps}>
+                <X aria-hidden="true" />
+              </Button>
+            </div>
+            {/* The other shape: the icon-only entry (#232) that opens that same
+                field. It is drawn by the same line-icon set as the card/list
+                choice beside it, and its surface is the one place this row's
+                search is ever behind a control. */}
+            <div
+              data-slot="home-search-collapsed"
+              className={cn('md:relative md:shrink-0', searchOpen ? 'md:z-30' : 'md:z-10')}
+            >
+              <ToolbarPopover
+                open={searchOpen}
+                onClose={closePanel}
+                returnFocusRef={searchTriggerRef}
+                label={SEARCH_LABEL}
+                className="w-72 sm:w-80"
+                trigger={
+                  <Button
+                    ref={searchTriggerRef}
+                    variant="outline"
+                    size="icon"
+                    aria-label={SEARCH_LABEL}
+                    aria-expanded={searchOpen}
+                    aria-haspopup="dialog"
+                    aria-describedby={searchActive ? searchStateId : undefined}
+                    data-slot="home-search-trigger"
+                    data-search-state={searchActive ? 'on' : 'off'}
+                    className={cn(
+                      'relative rounded-md shadow-none md:bg-background',
+                      searchActive && 'border-emerald-600 text-emerald-700 dark:border-emerald-500 dark:text-emerald-400',
+                    )}
+                    onClick={() => togglePanel('search')}
+                  >
+                    <Search aria-hidden="true" />
+                    {searchActive && (
+                      <span
+                        data-slot="home-search-active"
+                        aria-hidden="true"
+                        className="absolute top-1 right-1 size-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400"
+                      />
+                    )}
+                  </Button>
+                }
+              >
+                <div className="flex items-center gap-2">
+                  <Input ref={searchInputRef} className="w-full" {...searchFieldProps} />
+                  <Button {...clearSearchProps}>
+                    <X aria-hidden="true" />
+                  </Button>
+                </div>
+              </ToolbarPopover>
+            </div>
           </div>
+          {/* The described-by sentence lives outside both shapes: each shape
+              describes itself with it, so whichever one is displayed carries the
+              flag in words and neither hides the other's description. */}
+          {searchActive && (
+            <span id={searchStateId} className="sr-only">{`Search is on: ${queryText}`}</span>
+          )}
           </div>
         </div>
 

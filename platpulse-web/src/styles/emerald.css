@@ -410,6 +410,35 @@
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * Home toolbar search control (#241)
+ *
+ * The toolbar's search is the row's own control in two shapes: a compact field
+ * where the toolbar has the room for one, and — where it does not — the
+ * accessibly named entry that opens that same field. The question this rule asks
+ * is the row's own room, not a column count of the viewport: the search slot is
+ * one flex item that takes whatever the Network pills, the Sort & filter entry
+ * and the card/list choice leave over at their own widths, its own width never
+ * depends on what it holds (inline-size containment), and 16rem is exactly the
+ * shape it has to hold — the field's readable 13rem, its 44px Clear search
+ * action and the 4px between them. The pills therefore never pay for the field
+ * and the field is never a squeezed version of itself: where the row cannot hold
+ * all of it, the row keeps the entry that opens it. Both shapes read one query
+ * and one draft, so crossing this line neither clears the word nor lifts the
+ * filter, and exactly one of them is displayed: the other leaves the reading
+ * order, and the tab walk, with it. The number is stated twice — here, and as
+ * SEARCH_FIELD_TRACK in HomeDashboard.tsx, which measures the same room for the
+ * focus handoff a resize needs — so the two are kept in step by design.
+ * ------------------------------------------------------------------------- */
+@layer components {
+  [data-slot='home-search-slot'] { container-type: inline-size; }
+  [data-slot='home-search-inline'] { display: none; }
+  @container (min-width: 16rem) {
+    [data-slot='home-search-inline'] { display: flex; }
+    [data-slot='home-search-collapsed'] { display: none; }
+  }
+}
+
 /* Home list view (#223, stories 72, 73, 79). One real table inside one local
  * horizontal scroller. The Node name and its health word stay pinned at the
  * left edge, so both remain readable while the other columns scroll under them;

@@ -51,15 +51,53 @@ export function homeNodeColumns(gridWidth: number, gap: number): number {
 
 /**
  * Issue #232: Home keeps one toolbar row — the Network pills, the Sort & filter
- * entry, the card/list choice, and the search entry — and the controls behind
- * the two entries are not in the row and not in the tab walk until the reader
- * opens the surface that holds them. These helpers open a surface, and every
- * spec that reads or changes a control behind one uses them first.
+ * entry, the card/list choice, and the search control — and the controls behind
+ * the Sort & filter entry are not in the row and not in the tab walk until the
+ * reader opens the surface that holds them. These helpers open a surface, and
+ * every spec that reads or changes a control behind one uses them first.
+ * Issue #241 gave that search control its own two shapes, so the helpers below
+ * also read and open the one the toolbar in front of them shows.
  */
 export const homeFilterEntry = (page: Page) => page.getByRole('button', { name: /^Sort & filter/ })
 export const homeSearchEntry = (page: Page) => page.getByRole('button', { name: 'Search Active Nodes' })
 export const homeFilterSurface = (page: Page) => page.getByRole('dialog', { name: 'Sort and filters' })
 export const homeSearchSurface = (page: Page) => page.getByRole('dialog', { name: 'Search Active Nodes' })
+
+/**
+ * Issue #241: the row's own search field — the compact field Home shows where
+ * the toolbar has the width for one, with the same Clear search action beside
+ * it. It is in the DOM at every width; what a narrower toolbar displays instead
+ * is the entry that opens that same field, so a spec reads the shape in force
+ * from the DOM rather than restating the stylesheet's own breakpoint. Exactly
+ * one shape is ever displayed, which is why the shared role query below still
+ * matches one field.
+ */
+export const homeSearchInline = (page: Page) => page.locator('[data-slot="home-search-field"]')
+
+/** The slot the row keeps for that control: one flex item that takes whatever
+ *  the controls beside it leave over at their own widths. */
+export const homeSearchSlot = (page: Page) => page.locator('[data-slot="home-search-slot"]')
+
+/**
+ * Issue #241: the room that shape takes — the field's readable 13rem plus its
+ * 44px Clear search action and the 4px between them. emerald.css states it once
+ *  as the 16rem its width query asks for; a spec that works the row's own room
+ *  out for itself uses this to say which shape that room has earned.
+ */
+export const HOME_SEARCH_TRACK = 16 * 16
+
+/** Which of the row's two search shapes this toolbar gives a reader. */
+export const homeToolbarShowsField = (page: Page) => homeSearchInline(page).isVisible()
+
+/** The reader's field, whichever shape this toolbar shows: the row's own field,
+ *  or — opening the entry first — the field that entry holds. */
+export async function homeSearchField(page: Page) {
+  if (await homeToolbarShowsField(page)) return homeSearchInline(page)
+  const surface = homeSearchSurface(page)
+  if (!(await surface.isVisible())) await homeSearchEntry(page).click()
+  await expect(surface).toBeVisible()
+  return surface.getByRole('searchbox', { name: 'Search Active Nodes' })
+}
 
 /** Open the Sort & filter surface if it is closed and return it. */
 export async function openHomeFilters(page: Page) {
@@ -70,13 +108,10 @@ export async function openHomeFilters(page: Page) {
   return surface
 }
 
-/** Open the Home search surface if it is closed and return its field. */
+/** The Home search field: the row's own field where the toolbar shows one, and
+ *  otherwise the field inside the entry this opens. */
 export async function openHomeSearch(page: Page) {
-  const surface = homeSearchSurface(page)
-  await expect(homeSearchEntry(page)).toBeVisible()
-  if (!(await surface.isVisible())) await homeSearchEntry(page).click()
-  await expect(surface).toBeVisible()
-  return surface.getByRole('searchbox', { name: 'Search Active Nodes' })
+  return homeSearchField(page)
 }
 
 /** The Sort order, read from the surface the entry holds. */

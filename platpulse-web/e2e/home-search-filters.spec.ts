@@ -6,6 +6,7 @@ import {
   homeFilterSurface,
   homeSearchEntry,
   homeSearchSurface,
+  homeToolbarShowsField,
   loginAs,
   openHomeHealth,
   openHomeSearch,
@@ -41,9 +42,12 @@ const resultCount = (page: Page) => page.locator('[data-slot="home-result-count"
 const filterNotice = (page: Page) => page.locator('[data-slot="home-filter-notice"]')
 const geoMap = (page: Page) => page.getByRole('region', { name: 'Peer countries' })
 const cumulativeNote = 'Whole Network selection, never the filtered list'
-// Issue #232: the search field and the three select controls live behind their
-// own toolbar entries, so every read or change opens the surface that holds the
-// control first. Opening is idempotent: an already open surface stays open.
+// Issue #232: the three select controls live behind the Sort & filter entry, so
+// every read or change opens the surface that holds the control first. Opening
+// is idempotent: an already open surface stays open. Issue #241 made the search
+// control the row's own field where the toolbar has the width for one and the
+// entry that opens that field where it does not, so `searchBox` reads the shape
+// in force instead of assuming the entry.
 const searchBox = (page: Page) => openHomeSearch(page)
 const healthFilter = (page: Page) => openHomeHealth(page)
 const validatorFilter = (page: Page) => openHomeValidator(page)
@@ -51,8 +55,11 @@ const sortSelect = (page: Page) => openHomeSort(page)
 // The entries themselves, and the same controls read from a surface the test
 // has already opened (a plain locator, so the test never toggles it shut).
 const filterEntry = (page: Page) => homeFilterEntry(page)
-const searchField = (page: Page) =>
-  homeSearchSurface(page).getByRole('searchbox', { name: 'Search Active Nodes' })
+// One field, in whichever of the two shapes the toolbar shows it: the row's own
+// field, or the field inside the entry. Exactly one of the two is ever
+// displayed, so this shared role query matches the reader's field and nothing
+// else.
+const searchField = (page: Page) => page.getByRole('searchbox', { name: 'Search Active Nodes' })
 const sortField = (page: Page) =>
   homeFilterSurface(page).getByRole('combobox', { name: 'Sort', exact: true })
 const healthField = (page: Page) =>
@@ -380,25 +387,34 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expect.poll(selectedPill).toBe(initialPill)
     expect(page.url(), 'the default Network selection is omitted from the URL').toBe(plainHome)
 
-    // The toolbar row keeps one stop per entry — the Network filter, the Sort &
-    // filter entry, the card/list choice, and the search entry — and the
+    // The toolbar row keeps one stop per control — the Network filter, the Sort &
+    // filter entry, the card/list choice, and the search control — and the
     // controls behind an entry leave the walk with it while its surface is
-    // closed (issue #232). The keyboard therefore reaches an entry, opens it,
-    // and only then meets the field it holds.
+    // closed (issue #232). The search control is the row's own field where the
+    // toolbar has the width for one, and the entry that opens that field where it
+    // does not (issue #241), so the keyboard lands on one of the two and never on
+    // both.
+    const rowShowsSearchField = await homeToolbarShowsField(page)
     await networkControl(page).locator('[role="tab"][aria-selected="true"]').focus()
     await page.keyboard.press('Tab')
     await expect(filterEntry(page)).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(tab(page, 'Cards')).toBeFocused()
     await page.keyboard.press('Tab')
-    await expect(homeSearchEntry(page)).toBeFocused()
-
-    // Opening the search entry from the keyboard hands the field inside it the
-    // focus, and the field paints its own visible focus indicator (the shared
-    // field uses a ring rather than an outline).
-    await page.keyboard.press('Enter')
-    await expect(homeSearchSurface(page)).toBeVisible()
-    await expect(searchField(page)).toBeFocused()
+    if (rowShowsSearchField) {
+      // The row's own field is the whole search control here: nothing to open,
+      // and no surface for this row to hold.
+      await expect(searchField(page)).toBeFocused()
+      await expect(page.getByRole('dialog')).toHaveCount(0)
+    } else {
+      await expect(homeSearchEntry(page)).toBeFocused()
+      // Opening the search entry from the keyboard hands the field inside it the
+      // focus, and the field paints its own visible focus indicator (the shared
+      // field uses a ring rather than an outline).
+      await page.keyboard.press('Enter')
+      await expect(homeSearchSurface(page)).toBeVisible()
+      await expect(searchField(page)).toBeFocused()
+    }
     const focus = await page.evaluate(() => {
       const element = document.activeElement
       if (!(element instanceof HTMLElement)) return null
@@ -419,32 +435,61 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await page.keyboard.type('Node H')
     await expect(nodeGrid(page).locator('a[href^="/nodes/"]')).toHaveCount(1)
 
-    // Tab from the field walks the surface it opened, then the rest of the row in
-    // reading order, and hands the keyboard on to the filtered card.
+    // Tab from the field reaches that field's own Clear search action in either
+    // shape, then the rest of the row in reading order, and the keyboard goes on
+    // to the filtered card.
     await page.keyboard.press('Tab')
     await expect(page.getByRole('button', { name: 'Clear search' })).toBeFocused()
     await page.keyboard.press('Shift+Tab')
     await expect(searchField(page)).toBeFocused()
 
-    // Escape closes the surface, takes its field out of the walk with it, and
-    // hands the keyboard back to the entry that opened the surface.
-    await page.keyboard.press('Escape')
-    await expect(homeSearchSurface(page)).toHaveCount(0)
-    await expect(searchField(page)).toHaveCount(0)
-    await expect(homeSearchEntry(page)).toBeFocused()
-    await page.keyboard.press('Tab')
-    expect(await page.evaluate(() => document.activeElement?.getAttribute('href') ?? '')).toBe(
-      `/nodes/${SOLO_NODE_ID}`,
-    )
+    if (rowShowsSearchField) {
+      // There is no surface here to close, so Escape takes nothing away: the
+      // reader keeps the word, the filter it stands for, and the field itself.
+      await page.keyboard.press('Escape')
+      await expect(searchField(page)).toHaveValue('Node H')
+      await expect(page).toHaveURL(/[?&]q=Node/)
+      // That word is still in force, so the field's own Clear search action is
+      // still in the walk between the field and the filtered card.
+      await page.keyboard.press('Tab')
+      await expect(page.getByRole('button', { name: 'Clear search' })).toBeFocused()
+      await page.keyboard.press('Tab')
+      expect(await page.evaluate(() => document.activeElement?.getAttribute('href') ?? '')).toBe(
+        `/nodes/${SOLO_NODE_ID}`,
+      )
 
-    // Read backwards, the same row crosses the entries in reverse order, so
-    // nothing in the toolbar is a keyboard dead end.
-    await page.keyboard.press('Shift+Tab')
-    await expect(homeSearchEntry(page)).toBeFocused()
-    await page.keyboard.press('Shift+Tab')
-    await expect(tab(page, 'Cards')).toBeFocused()
-    await page.keyboard.press('Shift+Tab')
-    await expect(filterEntry(page)).toBeFocused()
+      // Read backwards, the same row is crossed in reverse: the same Clear search
+      // action, the field, the card/list choice, the Sort & filter entry, and the
+      // Network filter — so nothing here is a keyboard dead end either.
+      await page.keyboard.press('Shift+Tab')
+      await expect(page.getByRole('button', { name: 'Clear search' })).toBeFocused()
+      await page.keyboard.press('Shift+Tab')
+      await expect(searchField(page)).toBeFocused()
+      await page.keyboard.press('Shift+Tab')
+      await expect(tab(page, 'Cards')).toBeFocused()
+      await page.keyboard.press('Shift+Tab')
+      await expect(filterEntry(page)).toBeFocused()
+    } else {
+      // Escape closes the surface, takes its field out of the walk with it, and
+      // hands the keyboard back to the entry that opened the surface.
+      await page.keyboard.press('Escape')
+      await expect(homeSearchSurface(page)).toHaveCount(0)
+      await expect(searchField(page)).toHaveCount(0)
+      await expect(homeSearchEntry(page)).toBeFocused()
+      await page.keyboard.press('Tab')
+      expect(await page.evaluate(() => document.activeElement?.getAttribute('href') ?? '')).toBe(
+        `/nodes/${SOLO_NODE_ID}`,
+      )
+
+      // Read backwards, the same row crosses the entries in reverse order, so
+      // nothing in the toolbar is a keyboard dead end.
+      await page.keyboard.press('Shift+Tab')
+      await expect(homeSearchEntry(page)).toBeFocused()
+      await page.keyboard.press('Shift+Tab')
+      await expect(tab(page, 'Cards')).toBeFocused()
+      await page.keyboard.press('Shift+Tab')
+      await expect(filterEntry(page)).toBeFocused()
+    }
     await page.keyboard.press('Shift+Tab')
     expect(
       await page.evaluate(() => document.activeElement?.closest('[aria-label="Network filter"]') !== null),
