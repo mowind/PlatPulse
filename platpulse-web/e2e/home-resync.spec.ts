@@ -29,6 +29,11 @@ async function fixture(page: Page) {
       { ...base, nodeId: 'resync-browser-active', displayName: 'A Resync', resyncState: 'resyncing' },
       { ...base, nodeId: 'resync-browser-normal', displayName: 'B Normal', resyncState: 'normal' },
       { ...base, nodeId: 'resync-browser-unknown', displayName: 'C Unknown progress', resyncState: 'resyncing', resyncLastProgressAt: undefined },
+      // An abnormal health diagnostic, a live resync percentage and no Block
+      // Height comparison coexist on one card (#239): health, the Server-owned
+      // resync state and the reference comparison are three independent
+      // statements, and none of them hides another.
+      { ...base, nodeId: 'resync-browser-unhealthy', displayName: 'D Unhealthy', resyncState: 'resyncing', health: 'unhealthy', healthReason: 'RPC observation failed' },
     ]
     await route.fulfill({ response, json: [{ ...network, nodes }] })
   })
@@ -71,7 +76,7 @@ async function regionTops(card: Locator) {
   })
 }
 
-async function statusAndGeometry(page: Page) {
+async function statusAndGeometry(page: Page, testInfo: TestInfo) {
   // Move away from the card before measuring: its existing hover lift must not
   // be mistaken for different grid alignment after a dialog interaction.
   await page.mouse.move(0, 0)
@@ -108,6 +113,56 @@ async function statusAndGeometry(page: Page) {
   await page.keyboard.press('Escape')
   await expect(unknownDialog).toHaveCount(0)
   await expect(unknown).not.toContainText(/2026-08-25/)
+
+  // The unhealthy card keeps all three independent statements in their own
+  // places: the Server's diagnostic, the Resyncing percentage it published, and
+  // the absolute Block Height the Server is not confirming as current — which
+  // says so instead of reading as an ordinary current height, and carries the
+  // comparison conclusion the evidence cannot support nowhere at all (#239).
+  const unhealthy = nodeCard(page, 'D Unhealthy')
+  await expect(unhealthy.getByText('RPC observation failed')).toBeVisible()
+  await expect(unhealthy.getByRole('button', { name: RESYNC_NAME })).toBeVisible()
+  await expect(unhealthy.locator('[data-slot="node-business-metrics"] [data-slot="metric-row-value"]')).toHaveText('6,920,136')
+  await expect(unhealthy.locator('[data-slot="node-head-comparison"]')).toHaveCount(0)
+  const retained = unhealthy.locator('[data-slot="node-head-retained"]')
+  await expect(retained).toHaveText('Last-good')
+  await expect(retained).toHaveAttribute('title', /Current Node Head not confirmed by Server/)
+  await expect(retained).toHaveClass(/text-warning/)
+
+  // The same card's Block Height explanation is its accessible entry, reached by
+  // ordinary keyboard traversal from the card link and, on a touch project, by a
+  // real tap (#239). It states what the retained height is, why no comparison
+  // comes from it, and which deployment-local reference a comparison would have
+  // read — never a public, canonical or explorer head.
+  const homeUrl = page.url()
+  const identity = unhealthy.getByRole('button', { name: 'Node identity details' })
+  const explanation = page.getByRole('dialog', { name: 'D Unhealthy', exact: true })
+  await unhealthy.getByRole('link', { name: 'D Unhealthy', exact: true }).focus()
+  for (let step = 0; step < 8; step++) {
+    await page.keyboard.press('Tab')
+    if (await identity.evaluate(el => el === document.activeElement)) break
+  }
+  await expect(identity).toBeFocused()
+  await page.keyboard.press('Enter')
+  await expect(explanation).toBeVisible()
+  await expect(explanation).toContainText('Block Height: the last Block Height the Server retained for this Node')
+  await expect(explanation).toContainText('marked Last-good because Current Node Head not confirmed by Server')
+  await expect(explanation).toContainText('No comparison is asserted from a retained height')
+  await expect(explanation).toContainText('Observed Network Head')
+  await expect(explanation).toContainText('not the public chain head')
+  await expect(page).toHaveURL(homeUrl)
+  await page.keyboard.press('Escape')
+  await expect(explanation).toBeHidden()
+  await expect(identity).toBeFocused()
+  const identityTarget = await box(identity)
+  expect(identityTarget.width).toBeGreaterThanOrEqual(44)
+  expect(identityTarget.height).toBeGreaterThanOrEqual(44)
+  if (testInfo.project.use.hasTouch) await identity.tap()
+  else await identity.click()
+  await expect(explanation).toBeVisible()
+  await expect(page).toHaveURL(homeUrl)
+  await explanation.getByRole('button', { name: 'Close', exact: true }).click()
+  await expect(explanation).toBeHidden()
 
   // Health remains an independent green marker, not a renamed resync marker;
   // the labeled Resyncing cue has a visually distinct warning color.
@@ -183,7 +238,7 @@ test('minimal resync status and accessible last progress preserve Home in light 
     for (const dark of [false, true]) {
       await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark)
       const name = 'home-resync-' + viewport.width + (dark ? '-dark' : '-light')
-      await statusAndGeometry(page)
+      await statusAndGeometry(page, testInfo)
       await evidence(page, testInfo, name)
       await progressDialog(page, testInfo, name)
     }

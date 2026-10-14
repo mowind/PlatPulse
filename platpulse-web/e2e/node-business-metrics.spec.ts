@@ -25,12 +25,24 @@ test('the chain block keeps one full-value Head line and three resource columns'
   ]
   const expectedResourceValues = [['12.5%', '45.3%', '25.0%'], ['0.0%', '0.0%', '0.0%'], ['Unknown', 'Unknown', 'Unknown']]
   const expectedBarValues = [['13', '45', '25'], ['0', '0', '0'], [null, null, null]]
+  // Each card carries its own Observed Network Head, so one screen drives all
+  // three states the evidence gate can support (#239): the reference's own
+  // height, a lag inside the warning band, and a Node ahead of the reference —
+  // a leading state that is never clamped to the reference or called synced. The
+  // widest value at the tightest track gets the longest comparison, so a hint
+  // that cannot share the height's line has to take its own right-aligned one.
+  const headComparisonFixtures = [
+    { reference: 9_007_199_254_740_991, label: 'At observed head', tone: 'success', toneClass: 'text-success' },
+    { reference: 159_320_301, label: 'Behind 10 blocks', tone: 'warning', toneClass: 'text-warning-foreground dark:text-warning' },
+    { reference: 12, label: 'Ahead 159,320,279 blocks', tone: 'ahead', toneClass: 'text-muted-foreground' },
+  ]
   await page.route('**/api/public/v1/networks*', async route => {
     const response = await route.fetch()
     const [network]: PublicNetwork[] = await response.json()
     const base = network.nodes[0]
     const nodes = activities.map((activity, i) => ({
       ...base, ...resourceFixtures[i], nodeId: 'business-' + i, displayName: 'Node ' + i + ' Extremely Long Production Node Name That Must Not Squeeze The Role',
+      networkReferenceHead: headComparisonFixtures[i].reference, networkReferenceConfidence: 'high',
       // The first card carries the spec's own 11-character example height, so the
       // tightest track is exercised with the longest ordinary chain value.
       currentHead: i === 0 ? 9007199254740991 : 159320291,
@@ -77,6 +89,26 @@ test('the chain block keeps one full-value Head line and three resource columns'
         expect(chainLine.left).toBeGreaterThan(chainLine.labelRight)
         expect(chainLine.fontSize).toBe('13px')
 
+        // The comparison rides beside that absolute height, right-aligned to the
+        // same line's edge whether it shares the line or drops below it, on one
+        // unclipped line of its own, with the tone the detail page paints.
+        const hint = chain.locator('[data-slot="node-head-comparison"]')
+        await expect(hint).toHaveText(headComparisonFixtures[i].label)
+        await expect(hint).toHaveAttribute('data-tone', headComparisonFixtures[i].tone)
+        expect(await hint.getAttribute('class')).toContain(headComparisonFixtures[i].toneClass)
+        await expect(hint).toHaveAttribute('title', /Observed Network Head/)
+        const hintBox = await hint.evaluate(el => {
+          const box = el.getBoundingClientRect()
+          const line = (el.closest('[data-slot="node-head-line"]') as HTMLElement).getBoundingClientRect()
+          return { right: box.right, left: box.left, lineRight: line.right, lineLeft: line.left, overflow: el.scrollWidth > el.clientWidth + 1 }
+        })
+        expect(Math.abs(hintBox.right - hintBox.lineRight), JSON.stringify({ width, i })).toBeLessThanOrEqual(1.5)
+        expect(hintBox.left).toBeGreaterThanOrEqual(hintBox.lineLeft - 1)
+        expect(hintBox.overflow, JSON.stringify({ width, i })).toBe(false)
+        // The deployment-local reference is never named a canonical, public or
+        // explorer head, and a leading Node is never read as synchronized.
+        await expect(card).not.toContainText(/canonical|explorer|Synced/)
+
         // Resources: three columns, each reading its own source, value and bar.
         const resources = card.locator('[data-slot="node-resource-region"]')
         await expectResourceColumns(card, expectedResourceValues[i])
@@ -116,6 +148,32 @@ test('the chain block keeps one full-value Head line and three resource columns'
     await expectNoHorizontalOverflow(page)
     if (process.env.EMERALD_EVIDENCE === '1') await page.screenshot({ path: testInfo.outputPath(dark ? 'business-dark.png' : 'business-light.png'), fullPage: true })
   }
+
+  // The comparison adds no control of its own, so Node navigation keeps its one
+  // link per card; and its boundary stays in the card's own explanation entry,
+  // reached by keyboard and, on a touch project, by a real tap (#239).
+  const first = cards.nth(0)
+  await expect(first.locator('a[href="/nodes/business-0"]')).toHaveCount(1)
+  await expect(first.locator('[data-slot="node-head-line"] a, [data-slot="node-head-line"] button')).toHaveCount(0)
+  await expect(first.locator('[data-slot="node-head-retained"]')).toHaveCount(0)
+  const identity = first.getByRole('button', { name: 'Node identity details' })
+  const explanation = page.getByRole('dialog', { name: /Node 0/ })
+  await identity.focus()
+  await page.keyboard.press('Enter')
+  await expect(explanation).toBeVisible()
+  await expect(explanation).toContainText('Shown here: At observed head')
+  await expect(explanation).toContainText('Observed Network Head')
+  await expect(explanation).toContainText('not the public chain head')
+  await expect(explanation).toContainText('never a health, alert or Attention rule')
+  await expect(explanation).not.toContainText(/canonical|explorer/i)
+  await page.keyboard.press('Escape')
+  await expect(explanation).toBeHidden()
+  await expect(identity).toBeFocused()
+  if (testInfo.project.use.hasTouch) await identity.tap()
+  else await identity.click()
+  await expect(explanation).toBeVisible()
+  await explanation.getByRole('button', { name: 'Close', exact: true }).click()
+  await expect(explanation).toBeHidden()
 })
 
 test('Linked Validator keeps the three summary cells a confirmed Validator owns', async ({ page }, testInfo) => {
@@ -214,7 +272,7 @@ test('auto-filled cards keep one chain line, one bar row and unclipped cells', a
       const validator = cardEl.querySelector('[data-slot="linked-validator-metrics"]')
       return {
         width: cardEl.getBoundingClientRect().width,
-        businessRows: business ? rowCount(business, ':scope > [data-slot="metric-row"]') : 0,
+        businessRows: business ? rowCount(business, '[data-slot="node-head-line"] > [data-slot="metric-row"]') : 0,
         resourceCells: resource ? resource.querySelectorAll('[data-slot="resource-cell"]').length : 0,
         bars: resource ? resource.querySelectorAll('[role="progressbar"]').length : 0,
         barRows: resource ? rowCount(resource, '[role="progressbar"]') : 0,
@@ -235,7 +293,7 @@ test('auto-filled cards keep one chain line, one bar row and unclipped cells', a
     // Nothing may overflow its cell at the tightest track, including an
     // 11-character chain height and an unattested resource value.
     const overflow = await cards.nth(index)
-      .locator('[data-slot="metric-row-value"], [data-slot="metric-row-label"], [data-slot="resource-value"], [data-slot="resource-label"], [data-slot="validator-summary-value"], [data-slot="validator-summary-label"]')
+      .locator('[data-slot="metric-row-value"], [data-slot="metric-row-label"], [data-slot="node-head-comparison"], [data-slot="resource-value"], [data-slot="resource-label"], [data-slot="validator-summary-value"], [data-slot="validator-summary-label"]')
       .evaluateAll(elements => elements.filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.textContent))
     expect(overflow, 'no metric label or value overflows its cell' + where).toEqual([])
   }

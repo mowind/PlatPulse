@@ -63,6 +63,17 @@ test.describe('Converged Public Home (issue #102)', () => {
     // the Peer count reads on the secondary identity line instead.
     await expect(hCard.locator('[data-slot="node-business-metrics"] [data-slot="metric-row-label"]')).toHaveText(['Head'])
     await expect(hCard.locator('[data-slot="node-business-metrics"] [data-slot="metric-row-value"]')).toHaveText('12,842,025')
+    // This deployment publishes no high-confidence Observed Network Head for the
+    // Network, so the evidence gate (#239) supports no comparison at all: the
+    // absolute height stands alone, and no head is named or claimed anywhere on
+    // the card — never a canonical, public or explorer head, and never
+    // synchronization. The supported states run against an explicit reference in
+    // node-business-metrics.spec.ts.
+    await expect(hCard.locator('[data-slot="node-head-comparison"]')).toHaveCount(0)
+    // The Node's own head is confirmed here and only the deployment reference is
+    // unavailable, so this is not a retained value: nothing marks it as one.
+    await expect(hCard.locator('[data-slot="node-head-retained"]')).toHaveCount(0)
+    await expect(hCard).not.toContainText(/canonical|explorer|Synced/)
     await expect(hCard.locator('[data-slot="node-peers-meta"]')).toHaveText('Peers 3')
     // The removed consensus rows are absent from the whole card, not merely from
     // the chain block: Home restates neither their labels nor the count.
@@ -242,6 +253,9 @@ test.describe('Converged Public Home (issue #102)', () => {
     // uptime and Peer metadata and the one chain height the card still carries.
     await expectResourceColumns(pCard, ['Unknown', 'Unknown', 'Unknown'])
     await expect(pCard.locator('[data-slot="node-business-metrics"] [data-slot="metric-row-value"]')).toHaveText('Unknown')
+    // With no Node observation at all there is no comparison to draw: the card
+    // keeps the absolute reading and asserts no head of any kind (#239).
+    await expect(pCard.locator('[data-slot="node-head-comparison"]')).toHaveCount(0)
     await expect(pCard.getByText('Uptime Unknown', { exact: true })).toBeVisible()
     await expect(pCard.locator('[data-slot="node-peers-meta"]')).toHaveText('Peers Unknown')
     await expect(pCard.locator('[data-slot="node-peers-cue"]')).toHaveText('no successful snapshot')

@@ -64,6 +64,19 @@ function headUnavailable(node: HeadObservation): string | undefined {
 }
 
 /**
+ * Why this Node's own Block Height is not a confirmed current reading, or
+ * undefined while the Server confirms one. A surface that prints the absolute
+ * height reads this rather than testing rpcState and health itself, so a retained
+ * value is never presented as the current one and both surfaces word the reason
+ * alike. The Server's own collection state, observation time and health verdict
+ * decide; no client-side freshness rule is invented. A height the Server never
+ * validly observed has nothing retained to annotate.
+ */
+export function nodeHeadUnconfirmed(node: HeadObservation): string | undefined {
+  return validHeight(node.currentHead) ? headUnavailable(node) : undefined
+}
+
+/**
  * The two references a height on this page is compared against, deliberately
  * worded apart: 'node head' is this Node's own head, 'observed network head' is
  * the Server's cross-Node reference (CONTEXT.md: Observed Network Head). One
@@ -90,6 +103,40 @@ export function networkHeadComparison(node: NetworkObservation): { offset: strin
     ?? (node.networkReferenceConfidence !== 'high' ? 'Observed Network Head confidence ' + (node.networkReferenceConfidence || 'unknown') : undefined)
   if (reason || !validHeight(node.currentHead) || !validHeight(node.networkReferenceHead)) return { offset: '—', reason }
   return { offset: offsetLabel(node.currentHead, node.networkReferenceHead, OBSERVED_NETWORK_HEAD) }
+}
+
+/** The display tones a supported height comparison uses. Both surfaces that
+ *  show one — Node Detail's Chain state "Head lag" row and the Home card's own
+ *  short hint — read them from here, so the two cannot drift: an exact match is
+ *  the success state, a lag of one to ten blocks is a warning, a longer lag is
+ *  an error, and a Node ahead of the reference is a real state (the reference
+ *  lags, or the Node is leading) rather than a fault, so it stays neutral.
+ *  These remain display levels: neither surface's colour becomes a health,
+ *  alert or Attention rule. */
+export type HeadComparisonTone = 'success' | 'warning' | 'error' | 'ahead'
+export const HEAD_COMPARISON_TONE_CLASS: Record<HeadComparisonTone, string> = {
+  success: 'text-success',
+  warning: 'text-warning-foreground dark:text-warning',
+  error: 'text-destructive',
+  ahead: 'text-muted-foreground',
+}
+const HEAD_LAG_WARNING_MAX = 10
+
+/**
+ * The evidence-backed signed offset from the Observed Network Head, or null
+ * while the conservative gate above cannot support a comparison at all. The
+ * count is the reference minus the Node Head, so it is positive behind the
+ * reference and negative ahead of it: a leading Node is never clamped to zero
+ * and never reported as being at the reference.
+ */
+export function networkHeadOffset(node: NetworkObservation): { blocks: number; tone: HeadComparisonTone } | null {
+  if (networkHeadComparison(node).reason) return null
+  if (!validHeight(node.currentHead) || !validHeight(node.networkReferenceHead)) return null
+  const blocks = node.networkReferenceHead - node.currentHead
+  const tone: HeadComparisonTone = blocks > 0
+    ? blocks <= HEAD_LAG_WARNING_MAX ? 'warning' : 'error'
+    : blocks === 0 ? 'success' : 'ahead'
+  return { blocks, tone }
 }
 
 /**

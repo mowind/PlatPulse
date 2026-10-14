@@ -4,6 +4,15 @@ import type { PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
 import { peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from './PeerInsight'
 import { NodeHealthMarker, formatRelativeTime, formatUtcDateTime } from './StatusBadge'
+import {
+  HEAD_COMPARISON_TONE_CLASS,
+  OBSERVED_NETWORK_HEAD,
+  networkHeadComparison,
+  networkHeadOffset,
+  nodeHeadUnconfirmed,
+  validHeight,
+  type HeadComparisonTone,
+} from './NodeDetailObservations'
 import GeoMapBoundary from './GeoMapBoundary'
 import GeoWorldMap from './GeoWorldMap'
 import { geoMapStatus, homeGeoOverview, homeNodeSelectionGeoOverview } from '../homeGeo'
@@ -820,8 +829,9 @@ function HomeNodeList({ records, linkState, registerRow }: {
  * link to Node Detail, an emerald status dot with a ping ring, a secondary
  * identity line carrying Network, process uptime and Peers, a three-column
  * resource row with thin progress bars, one shared Host network line, the
- * current Block Height alone (#237), and the three-metric Validator summary or
- * the short identity line a confirmed status allows (#238). Copy, disclosure and
+ * current Block Height with the evidence-backed Observed Network Head comparison
+ * beside it (#237, #239), and the three-metric Validator summary or the short
+ * identity line a confirmed status allows (#238). Copy, disclosure and
  * identity controls sit outside the anchor so they never trigger navigation.
  * Healthy Nodes carry no routine prose. Exceptional health keeps a short
  * diagnostic line (issue #97); resync progress is a separate, lightweight status
@@ -897,6 +907,7 @@ function HomeNodeCard({ network, node, linkState }: NodeRecord & { linkState: Ho
               <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm"><DialogTitle className="pr-10 [overflow-wrap:anywhere]">{homeNodeLabel(node)}</DialogTitle><DialogDescription className="[overflow-wrap:anywhere]">Network: {network.displayName} · Uptime {formatDuration(node.processUptimeMs)}. Node role describes the Node’s consensus membership, not its linked Validator’s current staking validity or the freshness of Provider data.</DialogDescription>
                 <p className="text-sm text-muted-foreground">Active Nodes are in the latest Agent Inventory, not necessarily online. Healthy reflects successful, fresh RPC, sync and consensus observations. Process errors, a stopped or Unknown process state, or Network Identity Mismatch prevent Healthy; disabled process monitoring does not. Healthy does not mean synchronization is complete; Resyncing is shown independently.</p>
                 <p className="text-sm text-muted-foreground">Home Attention counts Active Nodes that are not Healthy, including Unknown. While nothing is narrowed, these counters and the Peer map read the whole Network selection. Once search, health, or Validator status narrows the list, they read the Active Nodes that matched instead, so a Node's countries count only where that Node is listed — while the two cumulative Validator cells keep the Network selection, and the list still reports how many Nodes matched.</p>
+                <p data-slot="node-head-explanation" className="text-sm text-muted-foreground">Block Height: {headComparisonExplanation(node)}</p>
                 <p className="text-sm text-muted-foreground">CPU and Memory are the monitored PlatON process's own percentages, not the Host's. Disk is the Node data directory's size as a share of the capacity of the filesystem that holds it, not whole-filesystem fullness.{nodeDataBytes ? ' Node data: ' + nodeDataBytes + '.' : ''}</p>
                 {peerObservation && <p className="text-sm text-muted-foreground">Peer observation: {peerObservation}.</p>}
                 {diagnostic && <p className="text-sm text-muted-foreground">Current health diagnostic: {diagnostic.text}</p>}
@@ -918,18 +929,121 @@ function HomeNodeCard({ network, node, linkState }: NodeRecord & { linkState: Ho
           </p>}
         </div>}>
         <div data-node-region="resource"><ResourceMetrics node={node} /></div>
-        {/* Chain (#237): Home keeps the current Block Height alone. QC, Locked,
-            Committed and Txs stay on Node Detail, which reads the same public
-            fields — no field, observation or history is deleted. */}
+        {/* Chain (#237, #239): Home keeps the current Block Height alone as one
+            compact key-value line, and names where that height sits against the
+            deployment-local Observed Network Head only while the Server's own
+            evidence supports the comparison. QC, Locked, Committed and Txs stay
+            on Node Detail, which reads the same public fields — no field,
+            observation or history is deleted. */}
         <div data-node-region="chain">
         <div data-slot="node-business-metrics" className="border-t border-border pt-3">
-          <MetricRow layout="compact" label="Head" value={formatNumber(node.currentHead)} />
+          {/* One head line: the height row is the flexible track and the short
+              comparison the fixed one, so the comparison shares the line while
+              the card can hold both and drops to its own right-aligned line when
+              the tightest track cannot — never overflowing, clipping or
+              shrinking the reading itself. */}
+          <div data-slot="node-head-line" className="flex flex-wrap items-baseline justify-end gap-x-2 gap-y-0.5">
+            {/* An unusable height — absent, negative, fractional or non-finite —
+                is a height the Server never validly observed, so it stays
+                explicitly Unknown rather than being restated as a reading the
+                reader could trust, and it supports no comparison either. */}
+            <MetricRow className="min-w-0 flex-[1_1_auto]" layout="compact" label="Head" value={validHeight(node.currentHead) ? formatNumber(node.currentHead) : 'Unknown'} />
+            <HeadComparison node={node} />
+            <HeadRetainedMark node={node} />
+          </div>
         </div>
         </div>
         <div data-node-region="validator"><LinkedValidatorSection node={node} /></div>
         </CardX>
     </article>
   )
+}
+
+/** Home's short form of the evidence-backed comparison (#239): the gated offset
+ *  and its display tone are the Node Detail page's own (`networkHeadOffset`),
+ *  and only this wording is Home's. An exact match is a state rather than a
+ *  measurement, and a Node ahead of the reference is a leading state — never a
+ *  clamped zero and never written as synchronized. */
+function homeHeadComparison(node: PublicNode): { label: string; tone: HeadComparisonTone } | null {
+  const offset = networkHeadOffset(node)
+  if (offset === null) return null
+  if (offset.blocks === 0) return { label: 'At observed head', tone: offset.tone }
+  const blocks = Math.abs(offset.blocks)
+  return {
+    label: (offset.blocks > 0 ? 'Behind ' : 'Ahead ') + blocks.toLocaleString() + ' block' + (blocks === 1 ? '' : 's'),
+    tone: offset.tone,
+  }
+}
+
+/** The same retained-value mark Node Detail prints beside a value a failed
+ *  collection kept (#239). Home's Block Height borrows both the word and its
+ *  warning colour, so one vocabulary covers every retained reading. */
+const HEAD_RETAINED_LABEL = 'Last-good'
+
+/** What the deployment-local reference is, in the one sentence every surface
+ *  that shows a comparison owes the reader: Home's hint title and the card's own
+ *  explanation entry both state it, so neither can call it a canonical, public or
+ *  explorer height, and neither claims synchronization from it. */
+const OBSERVED_NETWORK_HEAD_NOTE =
+  'The ' + OBSERVED_NETWORK_HEAD + " is this deployment's Server-side cross-Node reference, not the public chain head, and the comparison does not claim the Node is synchronized."
+
+/** The short comparison beside the Block Height, drawn only while the Server's
+ *  own evidence supports one. Its absence is the whole statement when it is not:
+ *  the absolute height stays, and the card's explanation entry names what the
+ *  comparison would have needed. */
+function HeadComparison({ node }: { node: PublicNode }) {
+  const comparison = homeHeadComparison(node)
+  if (comparison === null) return null
+  return (
+    <small
+      data-slot="node-head-comparison"
+      data-tone={comparison.tone}
+      title={'Compared with the ' + OBSERVED_NETWORK_HEAD + ': ' + comparison.label + '. ' + OBSERVED_NETWORK_HEAD_NOTE}
+      className={cn('min-w-0 text-right text-[11px] leading-[1.375rem] [overflow-wrap:anywhere]', HEAD_COMPARISON_TONE_CLASS[comparison.tone])}
+    >
+      {comparison.label}
+    </small>
+  )
+}
+
+/** The short mark on a Block Height the Server is not confirming as current
+ *  (#239, design §11.1 item 6): the value it publishes is the last one it
+ *  retained, so the card must not let it read as an ordinary current reading.
+ *  The mark can never share the line with a comparison — the Node's own
+ *  observation is exactly what a comparison needs — and it borrows the detail
+ *  page's own retained-value wording and colour. Its reason stays in the title
+ *  and in the card's explanation entry; Home invents no freshness of its own. */
+function HeadRetainedMark({ node }: { node: PublicNode }) {
+  const reason = nodeHeadUnconfirmed(node)
+  if (!reason) return null
+  return (
+    <small
+      data-slot="node-head-retained"
+      title={HEAD_RETAINED_LABEL + ' value: ' + reason + '. The Server is not confirming this as the Node’s current Block Height, so no comparison is asserted.'}
+      className="min-w-0 text-right text-[11px] leading-[1.375rem] text-warning-foreground dark:text-warning [overflow-wrap:anywhere]"
+    >
+      {HEAD_RETAINED_LABEL}
+    </small>
+  )
+}
+
+/** The card's accessible account of the Block Height line (#239). It states what
+ *  the absolute value is, which reference a comparison reads, why none is
+ *  asserted when the evidence cannot support one, and that the comparison's
+ *  colour is a display level rather than a new health, alert or Attention rule. */
+function headComparisonExplanation(node: PublicNode): string {
+  const retained = nodeHeadUnconfirmed(node)
+  const absolute = retained
+    ? 'the last Block Height the Server retained for this Node, marked ' + HEAD_RETAINED_LABEL + ' because ' + retained + '.'
+    : 'the current head the Server published for this Node; a height the Server never observed stays Unknown rather than a fabricated zero.'
+  const tone = 'Its colour is a display level only — an exact match uses the success colour, a lag of 1 to 10 blocks the warning colour, a longer lag the error colour, and a Node ahead of the reference stays neutral — never a health, alert or Attention rule.'
+  const comparison = homeHeadComparison(node)
+  const boundary = comparison !== null
+    ? ' Shown here: ' + comparison.label + '.'
+    : retained
+      ? ' No comparison is asserted from a retained height.'
+      : ' No comparison is asserted here: ' + (networkHeadComparison(node).reason ?? 'the observation evidence does not support one') + '.'
+  return absolute + boundary + ' ' + OBSERVED_NETWORK_HEAD_NOTE + ' ' + tone
 }
 
 /** Resync targets the retained Historical High-Water Mark, not Network Head.
@@ -944,11 +1058,18 @@ function ResyncCue({ node }: { node: PublicNode }) {
     const timer = window.setInterval(() => refreshAge(tick => tick + 1), 15_000)
     return () => window.clearInterval(timer)
   }, [])
-  const current = validHeight(node.currentHead)
-  const target = validHeight(node.historicalHighWatermark)
+  // The shared guard only says whether a height is usable; the retained value is
+  // what the percentage reads.
+  const current = validHeight(node.currentHead) ? node.currentHead : null
+  const target = validHeight(node.historicalHighWatermark) ? node.historicalHighWatermark : null
+  // A percentage needs both operands: a valid current height and a valid,
+  // computable Historical High-Water Mark target. Without them the cue states
+  // the Server's own resync state alone — never an "Unknown" progress area and
+  // never a fabricated zero — while the retained target and the real last
+  // progress time stay in the same cue's explanation.
   const percent = current !== null && target !== null && target > 0
     ? (current / target * 100).toFixed(2) + '%'
-    : 'Unknown'
+    : null
   const timestamp = node.resyncLastProgressAt
   const date = validProgressDate(timestamp)
   return (
@@ -958,9 +1079,11 @@ function ResyncCue({ node }: { node: PublicNode }) {
             compact metadata line, matching the neighbouring information entry. */}
         <button type="button" data-slot="node-resync-cue"
           className="relative z-10 -my-3.5 inline-flex min-h-11 items-center rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label={`Resync progress: ${percent} toward the Historical High-Water Mark`}>
+          aria-label={percent === null
+            ? `Resync state: ${node.resyncState || 'unknown'}; no progress percentage is asserted`
+            : `Resync progress: ${percent} toward the Historical High-Water Mark`}>
           <span className="inline-flex items-center gap-1 rounded border border-amber-500/40 px-1.5 py-0.5 text-[11px] font-medium leading-4 text-amber-500 dark:text-amber-400">
-            <span>Resyncing</span><span className="tabular-nums">{percent}</span>
+            <span>Resyncing</span>{percent !== null && <span className="tabular-nums">{percent}</span>}
           </span>
         </button>
       </DialogTrigger>
@@ -968,6 +1091,7 @@ function ResyncCue({ node }: { node: PublicNode }) {
         <DialogTitle>Resync progress</DialogTitle>
         <DialogDescription>The last recorded advance toward the Historical High-Water Mark, not the latest report time. The target is the Node’s retained historical height, not the Network Head.</DialogDescription>
         <p className="m-0 text-sm tabular-nums">{formatNumber(current)} / {formatNumber(target)}</p>
+        {percent === null && <p data-slot="resync-progress-unavailable" className="m-0 text-sm">No percentage is asserted: a percentage needs a valid current Block Height and a valid, computable Historical High-Water Mark target.</p>}
         {date ? <p className="m-0 text-sm">Last progress <time dateTime={date.toISOString()}>{formatRelativeTime(date)}</time> · {formatUtcDateTime(date)}</p> : <p className="m-0 text-sm">Last progress: Unknown</p>}
         {date && timestamp && <p className="m-0 min-w-0 overflow-x-auto whitespace-nowrap font-mono text-xs text-muted-foreground" tabIndex={0} aria-label="Full source timestamp with UTC offset">{timestamp}</p>}
       </DialogContent>
@@ -998,10 +1122,6 @@ function validProgressDate(value: string | null | undefined): Date | null {
   const calendar = new Date(calendarDate + 'T00:00:00Z')
   if (!Number.isFinite(date.getTime()) || calendar.toISOString().slice(0, 10) !== calendarDate) return null
   return date
-}
-
-function validHeight(value: number | null | undefined): number | null {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
 }
 
 /** PlatPulse owns no occupancy threshold rule for process CPU/Memory or the

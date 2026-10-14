@@ -23,7 +23,7 @@ import { coverageNotes, coverageRuns, metricCoverage } from '../metricCoverage'
 import type { ChartCoordinate } from '../metricCoverage'
 import { MetricRow } from '../components/MetricRow'
 import { ValidatorActivityBadge } from '../components/ValidatorActivityBadge'
-import { LastReportAge, networkHeadComparison, validHeight } from '../components/NodeDetailObservations'
+import { HEAD_COMPARISON_TONE_CLASS, LastReportAge, networkHeadComparison, networkHeadOffset, validHeight } from '../components/NodeDetailObservations'
 import { SummaryMetricCard } from '../components/SummaryMetricCard'
 import { OverviewBand } from '../components/OverviewBand'
 import { geoMapStatus, nodeGeoOverview } from '../homeGeo'
@@ -266,23 +266,18 @@ function nodeSyncStateLabel(node: PublicNode): string | null {
   return label === 'Unknown' ? null : label
 }
 
-const TONE_OK = 'text-success'
-const TONE_WARNING = 'text-warning-foreground dark:text-warning'
-const TONE_ERROR = 'text-destructive'
-const TONE_MUTED = 'text-muted-foreground'
-const HEAD_LAG_WARNING_MAX = 10
-
 type HeadLagPresentation = { label: string; toneClass: string }
 
-/** Never certify a last-good or low-confidence comparison as at network head. */
+/** Never certify a last-good or low-confidence comparison as at network head.
+ *  The gate, the signed offset and the display tone are the shared ones the Home
+ *  card reads too (#239); only this page's wording is local to it. */
 function headLagPresentation(node: PublicNode): HeadLagPresentation | null {
-  if (networkHeadComparison(node).reason || !validHeight(node.currentHead) || !validHeight(node.networkReferenceHead)) return null
-  const blocks = node.networkReferenceHead - node.currentHead
-  const toneClass = blocks < 0 ? TONE_MUTED : blocks === 0 ? TONE_OK
-    : blocks <= HEAD_LAG_WARNING_MAX ? TONE_WARNING : TONE_ERROR
+  const offset = networkHeadOffset(node)
+  if (offset === null) return null
+  const blocks = offset.blocks
   const label = blocks === 0 ? 'At network head'
     : Math.abs(blocks).toLocaleString() + ' block' + (Math.abs(blocks) === 1 ? '' : 's') + (blocks > 0 ? ' behind' : ' ahead')
-  return { label, toneClass }
+  return { label, toneClass: HEAD_COMPARISON_TONE_CLASS[offset.tone] }
 }
 
 function headLagDetail(node: PublicNode): string | undefined {

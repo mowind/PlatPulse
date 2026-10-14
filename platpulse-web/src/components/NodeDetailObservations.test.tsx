@@ -1,6 +1,13 @@
 import { act, cleanup, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ConsensusHeights, LastReportAge, networkHeadComparison, syncOffsetLabel } from './NodeDetailObservations'
+import {
+  ConsensusHeights,
+  HEAD_COMPARISON_TONE_CLASS,
+  LastReportAge,
+  networkHeadComparison,
+  networkHeadOffset,
+  syncOffsetLabel,
+} from './NodeDetailObservations'
 
 const head = { currentHead: 100, freshness: '2026-01-01T00:00:00Z', health: 'healthy', rpcState: 'ok', networkReferenceHead: 102, networkReferenceConfidence: 'high' }
 const consensus = { state: 'ok', freshness: 'current', highestQcBlock: 100, highestLockBlock: 99, highestCommitBlock: 98 }
@@ -76,6 +83,37 @@ describe('Sync progress against the Observed Network Head', () => {
   it.each([null, undefined])('reports Unknown when the head or reference is absent', value => {
     expect(syncOffsetLabel({ ...head, currentHead: value })).toBe('Reference unavailable; sync progress is Unknown')
     expect(syncOffsetLabel({ ...head, networkReferenceHead: value })).toBe('Reference unavailable; sync progress is Unknown')
+  })
+})
+
+describe('Evidence-gated Observed Network Head offset', () => {
+  it('reads a signed offset with the detail page display tone behind, at and ahead of the reference', () => {
+    // The block count is the reference minus the Node Head, so a positive count
+    // is a lag; zero is the exact match; a negative count is the Node leading.
+    expect(networkHeadOffset(head)).toEqual({ blocks: 2, tone: 'warning' })
+    expect(networkHeadOffset({ ...head, currentHead: 102 })).toEqual({ blocks: 0, tone: 'success' })
+    expect(networkHeadOffset({ ...head, currentHead: 104 })).toEqual({ blocks: -2, tone: 'ahead' })
+    expect(networkHeadOffset({ ...head, networkReferenceHead: 110 })).toEqual({ blocks: 10, tone: 'warning' })
+    expect(networkHeadOffset({ ...head, networkReferenceHead: 111 })).toEqual({ blocks: 11, tone: 'error' })
+  })
+  it.each([
+    { freshness: null }, { freshness: 'not-a-time' }, { freshness: 'current' },
+    { health: 'unknown' }, { health: 'unhealthy' }, { rpcState: 'error' }, { rpcState: 'starting' },
+    { currentHead: null }, { currentHead: undefined }, { currentHead: NaN }, { currentHead: Infinity },
+    { currentHead: -1 }, { currentHead: 0.5 }, { currentHead: Number.MAX_SAFE_INTEGER + 1 },
+    { networkReferenceHead: null }, { networkReferenceHead: undefined }, { networkReferenceHead: NaN },
+    { networkReferenceHead: Infinity }, { networkReferenceHead: -1 }, { networkReferenceHead: 1.5 },
+    { networkReferenceConfidence: 'low' }, { networkReferenceConfidence: 'unknown' }, { networkReferenceConfidence: '' },
+  ])('asserts no offset while the conservative evidence gate is open: %j', (change) => {
+    expect(networkHeadOffset({ ...head, ...change })).toBeNull()
+  })
+  it('keeps one owner for the display tone the detail page paints', () => {
+    expect(HEAD_COMPARISON_TONE_CLASS).toEqual({
+      success: 'text-success',
+      warning: 'text-warning-foreground dark:text-warning',
+      error: 'text-destructive',
+      ahead: 'text-muted-foreground',
+    })
   })
 })
 

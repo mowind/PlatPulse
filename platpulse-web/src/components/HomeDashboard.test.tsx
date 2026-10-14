@@ -429,6 +429,133 @@ describe('Public Home dashboard', () => {
     expect(within(cardOf(nodeCardLink('Failed None'))).getAllByText('Unknown').length).toBeGreaterThanOrEqual(4)
   })
 
+
+  /** One Node whose Block Height comparison the Server's evidence either
+   *  supports or does not (#239). Every case starts from a current, healthy
+   *  observation, so it only has to state what it is about. */
+  const comparableNode = (overrides: Partial<PublicNode> = {}): PublicNode => ({
+    ...network.nodes[0],
+    nodeId: 'node-head',
+    displayName: 'Head Node',
+    health: 'healthy',
+    rpcState: 'ok',
+    freshness: '2026-08-25T00:00:00Z',
+    networkReferenceConfidence: 'high',
+    ...overrides,
+  })
+  const renderHeadCard = (node: PublicNode) => render(
+    <BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [node] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>,
+  )
+  const headChain = () => cardOf(nodeCardLink('Head Node')).querySelector('[data-slot="node-business-metrics"]') as HTMLElement
+
+  it.each<{ height: number; reference: number; label: string; tone: string; toneClass: string }>([
+    { height: 120, reference: 120, label: 'At observed head', tone: 'success', toneClass: 'text-success' },
+    { height: 119, reference: 120, label: 'Behind 1 block', tone: 'warning', toneClass: 'text-warning-foreground dark:text-warning' },
+    { height: 110, reference: 120, label: 'Behind 10 blocks', tone: 'warning', toneClass: 'text-warning-foreground dark:text-warning' },
+    { height: 109, reference: 120, label: 'Behind 11 blocks', tone: 'error', toneClass: 'text-destructive' },
+    { height: 125, reference: 120, label: 'Ahead 5 blocks', tone: 'ahead', toneClass: 'text-muted-foreground' },
+  ])('reads the Block Height as $label only while the Server evidence supports it (#239)', ({ height, reference, label, tone, toneClass }) => {
+    renderHeadCard(comparableNode({ currentHead: height, networkReferenceHead: reference }))
+
+    // The absolute height keeps its own value element and the comparison is a
+    // separate short hint beside it, so a comparison never replaces the reading.
+    const chain = headChain()
+    expect(chain.querySelector('[data-slot="metric-row-label"]')?.textContent).toBe('Head')
+    expect(chain.querySelector('[data-slot="metric-row-value"]')?.textContent).toBe(height.toLocaleString())
+    const hint = chain.querySelector('[data-slot="node-head-comparison"]') as HTMLElement
+    expect(hint.textContent).toBe(label)
+    expect(hint.getAttribute('data-tone')).toBe(tone)
+    // The display tone is the detail page's own scale, reused rather than a new
+    // health or Attention rule.
+    expect(hint.className).toContain(toneClass)
+    // The reference is named in full where the comparison is explained, and the
+    // deployment-local reference is never called a public or canonical head.
+    expect(hint.getAttribute('title')).toContain('Observed Network Head')
+    expect(hint.getAttribute('title')).toContain('not the public chain head')
+    // A comparison needs the Node's own confirmed observation, so the retained
+    // mark can never appear beside one.
+    expect(chain.querySelector('[data-slot="node-head-retained"]')).toBeNull()
+    expect(chain.textContent).not.toMatch(/canonical|explorer|synced/i)
+  })
+
+  it.each<{ name: string; change: Partial<PublicNode>; height: string; retained: string | null }>([
+    { name: 'a Node health the Server has not confirmed', change: { health: 'unhealthy' }, height: '120', retained: 'Current Node Head not confirmed by Server' },
+    { name: 'an Unknown Server health', change: { health: 'unknown' }, height: '120', retained: 'Current Node Head not confirmed by Server' },
+    { name: 'a failed RPC collection', change: { rpcState: 'error' }, height: '120', retained: 'Node RPC collection error' },
+    { name: 'an unknown RPC collection', change: { rpcState: 'unknown' }, height: '120', retained: 'Node RPC collection unknown' },
+    { name: 'a missing observation time', change: { freshness: null }, height: '120', retained: 'Node Head observation time unknown' },
+    { name: 'an invalid observation time', change: { freshness: 'not-a-time' }, height: '120', retained: 'Node Head observation time unknown' },
+    { name: 'a state token where a time belongs', change: { freshness: 'current' }, height: '120', retained: 'Node Head observation time unknown' },
+    // Only this Node's own missing evidence makes the height a retained reading:
+    // when the gap is the reference's, the height stays a confirmed current one.
+    { name: 'a low-confidence reference', change: { networkReferenceConfidence: 'low' }, height: '120', retained: null },
+    { name: 'an unknown-confidence reference', change: { networkReferenceConfidence: 'unknown' }, height: '120', retained: null },
+    { name: 'a missing reference height', change: { networkReferenceHead: null }, height: '120', retained: null },
+    { name: 'an unsafe reference height', change: { networkReferenceHead: 120.5 }, height: '120', retained: null },
+    { name: 'a negative reference height', change: { networkReferenceHead: -1 }, height: '120', retained: null },
+    { name: 'a missing Node height', change: { currentHead: null }, height: 'Unknown', retained: null },
+    // A height that cannot be a Block Height — negative or fractional — is not a
+    // reading this card restates: like a height that was never observed it stays
+    // explicitly Unknown rather than a value a reader could trust, and it
+    // supports no comparison either (design §11.1 item 6, #239).
+    { name: 'a negative Node height', change: { currentHead: -1 }, height: 'Unknown', retained: null },
+    { name: 'a fractional Node height', change: { currentHead: 120.5 }, height: 'Unknown', retained: null },
+  ])('asserts no comparison conclusion for $name (#239)', ({ change, height, retained }) => {
+    renderHeadCard(comparableNode(change))
+
+    // No comparison is drawn and no sync conclusion is written, while the
+    // absolute value keeps its own honest reading: a never-observed or impossible
+    // height stays Unknown and is never a fabricated zero.
+    const chain = headChain()
+    expect(chain.querySelector('[data-slot="node-head-comparison"]')).toBeNull()
+    expect(chain.querySelector('[data-slot="metric-row-value"]')?.textContent).toBe(height)
+    // A value the Server still holds but is not confirming as current says so,
+    // instead of reading as an ordinary current height (#239, #236 story 26).
+    const mark = chain.querySelector('[data-slot="node-head-retained"]')
+    if (retained === null) expect(mark).toBeNull()
+    else {
+      expect(mark?.textContent).toBe('Last-good')
+      expect(mark?.getAttribute('title')).toContain(retained)
+    }
+    expect(chain.textContent).not.toMatch(/Ahead|Behind|At observed head|synced/i)
+  })
+
+  it('names the retained Block Height and that no comparison comes from it (#239)', () => {
+    renderHeadCard(comparableNode({ rpcState: 'error' }))
+    fireEvent.click(within(cardOf(nodeCardLink('Head Node'))).getByRole('button', { name: 'Node identity details' }))
+    const dialog = screen.getByRole('dialog', { name: 'Head Node' })
+
+    expect(dialog.textContent).toContain('the last Block Height the Server retained for this Node')
+    expect(dialog.textContent).toContain('marked Last-good because Node RPC collection error')
+    expect(dialog.textContent).toContain('No comparison is asserted from a retained height')
+    expect(dialog.textContent).toContain('Observed Network Head')
+  })
+
+  it('keeps the comparison, its reference and its display boundary in the card explanation (#239)', () => {
+    renderHeadCard(comparableNode({ currentHead: 118, networkReferenceHead: 120 }))
+    fireEvent.click(within(cardOf(nodeCardLink('Head Node'))).getByRole('button', { name: 'Node identity details' }))
+    const dialog = screen.getByRole('dialog', { name: 'Head Node' })
+
+    expect(dialog.textContent).toContain('Behind 2 blocks')
+    expect(dialog.textContent).toContain('Observed Network Head')
+    expect(dialog.textContent).toContain('not the public chain head')
+    expect(dialog.textContent).toContain('does not claim the Node is synchronized')
+    expect(dialog.textContent).toContain('never a health, alert or Attention rule')
+    expect(dialog.textContent).not.toMatch(/canonical|explorer/i)
+  })
+
+  it('names why no comparison is asserted while the comparison cannot be supported (#239)', () => {
+    renderHeadCard(comparableNode({ networkReferenceConfidence: 'low' }))
+    fireEvent.click(within(cardOf(nodeCardLink('Head Node'))).getByRole('button', { name: 'Node identity details' }))
+    const dialog = screen.getByRole('dialog', { name: 'Head Node' })
+
+    expect(dialog.textContent).toContain('No comparison is asserted here: Observed Network Head confidence low')
+    expect(dialog.textContent).toContain('Observed Network Head')
+    // No comparison label is written anywhere in the explanation.
+    expect(dialog.textContent).not.toContain('Shown here')
+    expect(dialog.textContent).not.toMatch(/At observed head/i)
+  })
+
   it('shows the PlatScan Activity badge beside the independent Node Health marker', () => {
     const linked = (activity: string, activityState: string) => ({
       validatorId: 'validator-a', validatorNodeId: '0xvalidator', displayName: 'Validator A',
@@ -655,28 +782,69 @@ describe('Public Home dashboard', () => {
     expect(dialog.textContent).toContain('not the latest report time')
   })
 
-  it.each([
+  /** A percentage is asserted only while a valid current height and a valid,
+   *  computable Historical High-Water Mark target both exist (#239): an Unknown
+   *  percentage is not a progress area, so the cue keeps the Server's state word
+   *  and the retained target/height stay in its own explanation. */
+  const resyncHeights: Array<{
+    currentHead: number | null | undefined
+    historicalHighWatermark: number | null | undefined
+    height: string
+    percent: string | null
+  }> = [
     { currentHead: 0, historicalHighWatermark: 100, height: '0 / 100', percent: '0.00%' },
-    { currentHead: 0, historicalHighWatermark: 0, height: '0 / 0', percent: 'Unknown' },
-    { currentHead: 50, historicalHighWatermark: null, height: '50 / Unknown', percent: 'Unknown' },
-    { currentHead: 50, historicalHighWatermark: undefined, height: '50 / Unknown', percent: 'Unknown' },
-    { currentHead: null, historicalHighWatermark: 100, height: 'Unknown / 100', percent: 'Unknown' },
-    { currentHead: undefined, historicalHighWatermark: 100, height: 'Unknown / 100', percent: 'Unknown' },
-    { currentHead: NaN, historicalHighWatermark: 100, height: 'Unknown / 100', percent: 'Unknown' },
-    { currentHead: Infinity, historicalHighWatermark: 100, height: 'Unknown / 100', percent: 'Unknown' },
-    { currentHead: 50, historicalHighWatermark: Infinity, height: '50 / Unknown', percent: 'Unknown' },
-    { currentHead: -1, historicalHighWatermark: 100, height: 'Unknown / 100', percent: 'Unknown' },
-    { currentHead: 50, historicalHighWatermark: -1, height: '50 / Unknown', percent: 'Unknown' },
-    { currentHead: 0.5, historicalHighWatermark: 100, height: 'Unknown / 100', percent: 'Unknown' },
     { currentHead: 100, historicalHighWatermark: 100, height: '100 / 100', percent: '100.00%' },
-  ])('renders resync raw heights safely: $height ($percent)', ({ currentHead, historicalHighWatermark, height, percent }) => {
+    { currentHead: 0, historicalHighWatermark: 0, height: '0 / 0', percent: null },
+    { currentHead: 50, historicalHighWatermark: null, height: '50 / Unknown', percent: null },
+    { currentHead: 50, historicalHighWatermark: undefined, height: '50 / Unknown', percent: null },
+    { currentHead: null, historicalHighWatermark: 100, height: 'Unknown / 100', percent: null },
+    { currentHead: undefined, historicalHighWatermark: 100, height: 'Unknown / 100', percent: null },
+    { currentHead: NaN, historicalHighWatermark: 100, height: 'Unknown / 100', percent: null },
+    { currentHead: Infinity, historicalHighWatermark: 100, height: 'Unknown / 100', percent: null },
+    { currentHead: 50, historicalHighWatermark: Infinity, height: '50 / Unknown', percent: null },
+    { currentHead: -1, historicalHighWatermark: 100, height: 'Unknown / 100', percent: null },
+    { currentHead: 50, historicalHighWatermark: -1, height: '50 / Unknown', percent: null },
+    { currentHead: 0.5, historicalHighWatermark: 100, height: 'Unknown / 100', percent: null },
+  ]
+  it.each(resyncHeights)('renders resync heights safely: $height ($percent)', ({ currentHead, historicalHighWatermark, height, percent }) => {
     const node = { ...network.nodes[0], resyncState: 'resyncing', currentHead, historicalHighWatermark }
     render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [node] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
-    const progress = screen.getByRole('button', { name: /Resync progress: .* toward the Historical High-Water Mark/ })
-    expect(progress.textContent).toContain(percent)
-    expect(progress.textContent).not.toMatch(/NaN|Infinity/)
+    const card = cardOf(nodeCardLink('Alpha'))
+    const progress = within(card).getByRole('button', { name: /Resync/ })
+    expect(progress.textContent).not.toMatch(/NaN|Infinity|Unknown/)
+    if (percent === null) {
+      // The state word is the whole cue: no percentage area, and no claim about
+      // progress anywhere on the card.
+      expect(progress.textContent).toBe('Resyncing')
+      expect(card.textContent).not.toContain('Resyncing Unknown')
+      expect(progress.getAttribute('aria-label')).not.toContain('%')
+    } else {
+      expect(progress.textContent).toBe('Resyncing' + percent)
+      expect(progress.getAttribute('aria-label')).toBe('Resync progress: ' + percent + ' toward the Historical High-Water Mark')
+    }
     fireEvent.click(progress)
-    expect(within(screen.getByRole('dialog', { name: 'Resync progress' })).getByText(height)).toBeTruthy()
+    const dialog = within(screen.getByRole('dialog', { name: 'Resync progress' }))
+    expect(dialog.getByText(height)).toBeTruthy()
+    if (percent === null) expect(dialog.getByText(/No percentage is asserted/)).toBeTruthy()
+    else expect(dialog.queryByText(/No percentage is asserted/)).toBeNull()
+  })
+
+  it('keeps the Resyncing state independent of an unavailable comparison and of its health diagnostic (#239)', () => {
+    renderHeadCard(comparableNode({
+      health: 'unhealthy', healthReason: 'RPC observation failed',
+      resyncState: 'resyncing', currentHead: 50, historicalHighWatermark: 100,
+      resyncLastProgressAt: '2026-08-25T00:00:00Z',
+    }))
+    const card = cardOf(nodeCardLink('Head Node'))
+
+    // The health diagnostic stays readable, the comparison is not asserted while
+    // the Server has not confirmed the Node's health, and the Server-owned
+    // Resyncing state keeps its own real percentage: none of the three hides
+    // another, and the retained target is not the Observed Network Head.
+    expect(within(card).getByText('RPC observation failed')).toBeTruthy()
+    expect(card.querySelector('[data-slot="node-head-comparison"]')).toBeNull()
+    expect(card.querySelector('[data-slot="node-resync-cue"]')?.textContent).toBe('Resyncing50.00%')
+    expect(card.textContent).not.toContain('Resyncing Unknown')
   })
 
   it.each([null, undefined, '', 'invalid-time', '2026-02-30T00:00:00Z', '2026-08-25T00:00:00', '2026-08-25T24:00:00Z'])('keeps missing or invalid progress time Unknown: %s', timestamp => {
