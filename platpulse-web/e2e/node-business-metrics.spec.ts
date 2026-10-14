@@ -118,74 +118,54 @@ test('the chain block keeps one full-value Head line and three resource columns'
   }
 })
 
-test('Linked Validator keeps two emphasized cells and four compact parameter rows', async ({ page }, testInfo) => {
+test('Linked Validator keeps the three summary cells a confirmed Validator owns', async ({ page }, testInfo) => {
   await loginAs(page)
   const linked = page.locator('[data-slot="node-card"] [data-slot="linked-validator"]').filter({ has: page.getByRole('group', { name: 'Linked Validator metrics' }) }).first()
   await expect(linked).toBeVisible()
   for (const dark of [false, true]) {
     await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark)
     const metrics = linked.getByRole('group', { name: 'Linked Validator metrics' })
-    // Cumulative blocks and rewards keep the emphasized label-over-value cell.
-    const emphasized = metrics.locator(':scope > [data-slot="validator-metric"]')
-    await expect(emphasized).toHaveCount(2)
-    await expect(emphasized.locator(':scope > span')).toHaveText(['Cumulative blocks', 'Cumulative rewards'])
-    const emphasizedGeometry = await emphasized.evaluateAll(elements => elements.map(el => {
-      const label = el.querySelector('span')!
-      const value = el.querySelector('strong')!
+    // The three summary cells are one content-driven row of label-over-value
+    // cells: the short name is what the cell paints, while the full metric name
+    // stays its accessible name and title (#238).
+    const cells = metrics.locator(':scope > [data-slot="validator-summary-cell"]')
+    await expect(cells).toHaveCount(3)
+    const fullNames = await metrics.locator('[data-full-label]').evaluateAll(elements => elements.map(el => el.textContent))
+    expect(fullNames).toEqual(['Network rank', 'Cumulative blocks', 'Cumulative rewards'])
+    const shortNames = await metrics.locator('[data-short-label]').evaluateAll(elements => elements.map(el => el.getAttribute('aria-label')))
+    expect(shortNames).toEqual(fullNames)
+    const geometry = await cells.evaluateAll(elements => elements.map(el => {
+      const label = el.querySelector('[data-slot="validator-summary-label"]')!
+      const value = el.querySelector('[data-slot="validator-summary-value"]')!
+      const box = el.getBoundingClientRect()
       return {
+        left: box.left, right: box.right, top: box.top, bottom: box.bottom,
         valueTop: value.getBoundingClientRect().top,
         labelBottom: label.getBoundingClientRect().bottom,
         fontWeight: getComputedStyle(value).fontWeight,
-        overflow: el.scrollWidth > el.clientWidth,
+        overflow: value.scrollWidth > value.clientWidth + 1 || label.scrollWidth > label.clientWidth + 1,
       }
     }))
-    for (const cell of emphasizedGeometry) {
+    for (const cell of geometry) {
+      // Each value sits directly beneath its own label, at the emphasized weight.
       expect(cell.valueTop).toBeGreaterThanOrEqual(cell.labelBottom - 1)
-      expect(cell.fontWeight).toBe('600')
+      expect(cell.fontWeight).toBe('500')
       expect(cell.overflow).toBe(false)
     }
-
-    // The other four are compact key-value rows that always keep their full
-    // field name available, even when the card paints the short name.
-    const compact = metrics.locator(':scope > [data-slot="metric-row"]')
-    await expect(compact).toHaveCount(4)
-    const fullNames = await metrics.locator('[data-full-label]').evaluateAll(elements => elements.map(el => el.textContent))
-    expect(fullNames).toEqual(['Network rank', 'Production rate', 'PlatScan 24h rate', 'Delegation reward share'])
-    const shortNames = await metrics.locator('[data-short-label]').evaluateAll(elements => elements.map(el => el.getAttribute('aria-label')))
-    expect(shortNames).toEqual(fullNames)
-
-    const rows = await metrics.locator(':scope > [data-slot="metric-row"]').evaluateAll(elements => elements.map(row => {
-      const label = row.querySelector('[data-slot="metric-row-label"]')!
-      const value = row.querySelector('[data-slot="metric-row-value"]')!
-      const rect = row.getBoundingClientRect()
-      const labelBox = label.getBoundingClientRect()
-      const valueBox = value.getBoundingClientRect()
-      const lineHeight = parseFloat(getComputedStyle(value).lineHeight) || 22
-      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
-        valueTop: valueBox.top, valueRight: valueBox.right, labelTop: labelBox.top,
-        lines: Math.max(1, Math.round(valueBox.height / lineHeight)), overflow: row.scrollWidth > row.clientWidth }
-    }))
-    for (const row of rows) {
-      // A compact key-value line: one line, right-aligned against the row edge.
-      expect(row.lines, JSON.stringify(rows)).toBe(1)
-      expect(row.overflow, JSON.stringify(rows)).toBe(false)
-      expect(Math.abs(row.valueTop - row.labelTop)).toBeLessThanOrEqual(4)
-      expect(Math.abs(row.valueRight - row.right)).toBeLessThanOrEqual(1.5)
-    }
-    const paired = Math.abs(rows[1].top - rows[0].top) <= 1
-    if (paired) {
-      // Wide card: rank/production and PlatScan/delegation form two rows of two.
-      expect(rows[1].left).toBeGreaterThan(rows[0].right)
-      expect(rows[3].top).toBeCloseTo(rows[2].top, 1)
-      expect(rows[3].left).toBeGreaterThan(rows[2].right)
-      expect(rows[2].top).toBeGreaterThan(rows[0].bottom)
+    // Two columns while the card is narrow, three once the card's own width
+    // genuinely holds them, and the third cell keeps the whole row width
+    // whenever it cannot.
+    const columns = await metrics.evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' ').length)
+    expect(columns, 'the summary uses two or three columns').toBeLessThanOrEqual(3)
+    if (columns === 3) {
+      expect(geometry[1].left).toBeGreaterThan(geometry[0].right)
+      expect(geometry[2].left).toBeGreaterThan(geometry[1].right)
+      expect(geometry[2].top).toBeCloseTo(geometry[0].top, 1)
     } else {
-      // Narrow card: four full-width key-value lines, all default-visible.
-      for (let index = 1; index < 4; index++) {
-        expect(rows[index].left).toBeCloseTo(rows[0].left, 1)
-        expect(rows[index].right).toBeCloseTo(rows[0].right, 1)
-        expect(rows[index].top).toBeGreaterThanOrEqual(rows[index - 1].bottom)
-      }
+      expect(geometry[1].left).toBeGreaterThan(geometry[0].right)
+      expect(geometry[2].top).toBeGreaterThan(geometry[0].bottom)
+      expect(geometry[2].left).toBeCloseTo(geometry[0].left, 0)
+      expect(geometry[2].right).toBeCloseTo(geometry[1].right, 0)
     }
 
     // The Home card no longer carries the association identity, the identifier,
@@ -200,11 +180,11 @@ test('Linked Validator keeps two emphasized cells and four compact parameter row
 })
 
 /**
- * Density regression for the auto-fill minimum track. The grid minimum is
- * Emerald's own 300px (HomeView.vue's `minmax(300px, 1fr)`), so a desktop card
- * is about 303px. The chain block is one Head line at every card width (#237),
- * the three resource columns keep three bars on one shared row, and the
- * Validator group keeps the one/two-column pairing its own 22.5rem width switch
+ * Density regression for the auto-fill minimum track. The grid minimum is the
+ * card's own 22.5rem content switch (#238), so a desktop card fills a 408px
+ * track, a tablet card a 362px one. The chain block is one Head line at every
+ * card width (#237), the three resource columns keep three bars on one shared
+ * row, and the Validator summary keeps the two or three columns that switch
  * allows. The assertions read geometry, not the CSS rule, and adapt to every
  * fixed project instead of hardcoding a desktop column count.
  */
@@ -238,10 +218,12 @@ test('auto-filled cards keep one chain line, one bar row and unclipped cells', a
         resourceCells: resource ? resource.querySelectorAll('[data-slot="resource-cell"]').length : 0,
         bars: resource ? resource.querySelectorAll('[role="progressbar"]').length : 0,
         barRows: resource ? rowCount(resource, '[role="progressbar"]') : 0,
-        validatorRows: validator ? rowCount(validator, ':scope > [data-slot="metric-row"], :scope > [data-slot="validator-metric"]') : null,
+        validatorRows: validator ? rowCount(validator, ':scope > [data-slot="validator-summary-cell"]') : null,
       }
     })
-    const expectedRows = cardGeometry.width >= 360 ? 3 : 5
+    // Three summary columns need the card's own 25rem switch; below it the two
+    // columns and their full-width third cell make two rows.
+    const expectedRows = cardGeometry.width >= 400 ? 1 : 2
     const where = ' on card ' + index + ' at ' + cardGeometry.width + 'px'
     // The chain block is one Head line at every card width, and the three
     // resource bars share one row however narrow the card gets.
@@ -253,7 +235,7 @@ test('auto-filled cards keep one chain line, one bar row and unclipped cells', a
     // Nothing may overflow its cell at the tightest track, including an
     // 11-character chain height and an unattested resource value.
     const overflow = await cards.nth(index)
-      .locator('[data-slot="metric-row-value"], [data-slot="metric-row-label"], [data-slot="resource-value"], [data-slot="resource-label"], [data-slot="validator-metric"] strong')
+      .locator('[data-slot="metric-row-value"], [data-slot="metric-row-label"], [data-slot="resource-value"], [data-slot="resource-label"], [data-slot="validator-summary-value"], [data-slot="validator-summary-label"]')
       .evaluateAll(elements => elements.filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.textContent))
     expect(overflow, 'no metric label or value overflows its cell' + where).toEqual([])
   }

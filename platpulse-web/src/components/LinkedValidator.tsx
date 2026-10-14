@@ -3,7 +3,7 @@ import { Copy, Eye, EyeOff, Info } from 'lucide-react'
 import type { PublicNode, PublicValidatorInsight } from '../api/generated'
 import { Button } from './ui/button'
 import { formatAmountCompact, formatAmountExact } from '../lib/amount'
-import { formatRatePercent2, formatRatePercentExact } from '../lib/rate'
+import { formatRatePercentExact } from '../lib/rate'
 import { MetricRow } from './MetricRow'
 import { ExactAmount } from './ExactAmount'
 import { CardX } from './ui/card-x'
@@ -185,20 +185,19 @@ function blockCountLabel(blockCount: number | null | undefined): string {
  * denominator is Not applicable (no scheduled duties), an incomplete pair is
  * Unknown, and only `ok` carries a rate (#156).
  */
-function formatRate(value: string | null | undefined, variant: 'card' | 'detail'): string {
-  if (value == null) return 'Unknown'
-  return variant === 'detail' ? formatRatePercentExact(value) : formatRatePercent2(value)
+function formatRate(value: string | null | undefined): string {
+  return value == null ? 'Unknown' : formatRatePercentExact(value)
 }
 
-function blockRateLabel(validator: PublicValidatorInsight, variant: 'card' | 'detail'): string {
+function blockRateLabel(validator: PublicValidatorInsight): string {
   if (validator.blockRateState === 'not_applicable') return 'Not applicable'
   if (validator.blockRateState !== 'ok') return 'Unknown'
-  return formatRate(validator.blockRate, variant)
+  return formatRate(validator.blockRate)
 }
 
 /** PlatScan's own source-reported 24-hour rate; never locally reconstructed. */
-function genBlocksRateLabel(validator: PublicValidatorInsight, variant: 'card' | 'detail'): string {
-  return formatRate(validator.genBlocksRate, variant)
+function genBlocksRateLabel(validator: PublicValidatorInsight): string {
+  return formatRate(validator.genBlocksRate)
 }
 
 /**
@@ -208,8 +207,8 @@ function genBlocksRateLabel(validator: PublicValidatorInsight, variant: 'card' |
  * a fabricated 0. It is deliberately kept apart from the annualized
  * `rewardRate` and never labelled with a yield or commission meaning (#157).
  */
-function delegationRewardShareLabel(validator: PublicValidatorInsight, variant: 'card' | 'detail'): string {
-  return formatRate(validator.delegationRewardPercentage, variant)
+function delegationRewardShareLabel(validator: PublicValidatorInsight): string {
+  return formatRate(validator.delegationRewardPercentage)
 }
 
 /**
@@ -312,10 +311,12 @@ function emptyMetricsState(validator: PublicValidatorInsight): { text: string; s
 }
 
 /**
- * A Linked Validator region the Home card shares with Node detail. On the Home
- * card it owns only the six metrics and their compact empty state: identity,
- * identifier, copy, Provider data state and every long explanation were moved
- * to Node detail, which the whole card already links to (#154–#158, #173).
+ * A Linked Validator region the Home card shares with Node detail. The Home
+ * card owns only what the Server's Current Validator Status confirms — the three
+ * summary metrics of a Validator, one short word for a confirmed non-Validator,
+ * or a short Validator unknown line with its reason (#238). Identity, identifier,
+ * copy, the remaining metrics and every long explanation were moved to Node
+ * detail, which the whole card already links to (#154–#158, #173).
  */
 export function LinkedValidatorSection({ node, variant = 'card' }: { node: PublicNode; variant?: 'card' | 'detail' }) {
   const validator = node.validator
@@ -327,10 +328,11 @@ export function LinkedValidatorSection({ node, variant = 'card' }: { node: Publi
 }
 
 /**
- * A Node with no effective Link. The Home card keeps one short, accurate
- * state; Node detail keeps the sanitized explanation. Missing discovery and an
- * identified-but-unavailable identity stay distinct from each other and from an
- * established Link whose metrics are unknown (#173).
+ * A Node with no effective Link. The Home card states one short Validator
+ * unknown line and the reason it comes with; Node detail keeps the sanitized
+ * explanation. Missing discovery and an identified-but-unavailable identity stay
+ * distinct from each other and from an established Link whose verdict is unknown
+ * (#173, #238).
  */
 function ValidatorIdentityAbsent({ node, variant }: { node: PublicNode; variant: 'card' | 'detail' }) {
   const state = node.validatorIdentityState
@@ -339,10 +341,10 @@ function ValidatorIdentityAbsent({ node, variant }: { node: PublicNode; variant:
   // full sanitized explanation is kept for Node detail, so the Home card never
   // reprints a long association-identity paragraph (#173).
   const short = state == null
-    ? 'Validator identity has not been observed yet.'
+    ? 'Identity has not been observed yet.'
     : state === 'identified'
-      ? 'Validator data is unavailable for the identified identity.'
-      : 'No Validator identity has been established for this Node.'
+      ? 'Validator data is unavailable.'
+      : 'Identity has not been established.'
   const reason = node.validatorIdentityReason || short
   if (variant === 'detail') {
     return (
@@ -359,10 +361,20 @@ function ValidatorIdentityAbsent({ node, variant }: { node: PublicNode; variant:
   return (
     <section
       data-slot="linked-validator"
-      className="min-w-0"
+      data-identity="unknown"
+      className="min-w-0 border-t border-border pt-3"
       aria-label="Linked Validator"
     >
-      <p data-slot="linked-validator-empty" className="m-0 text-[11px] text-muted-foreground" role="status" aria-label={`Validator identity state: ${state ?? 'not observed'}`}>{short}</p>
+      <p
+        data-slot="linked-validator-identity"
+        className="m-0 text-[11px] leading-4 text-muted-foreground"
+        role="status"
+        aria-label={`Validator identity state: ${state ?? 'not observed'}`}
+      >
+        <span data-slot="linked-validator-identity-label" className="font-medium text-foreground">Validator unknown</span>
+        <span aria-hidden="true"> — </span>
+        <span>{short}</span>
+      </p>
     </section>
   )
 }
@@ -382,9 +394,9 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
   const overviewRewards = rewards.replace(/([.][0-9]{4})[0-9]+$/, '$1')
   const blocks = blockCountLabel(validator.blockCount)
   const rank = rankLabel(validator)
-  const production = blockRateLabel(validator, 'detail')
-  const platscanRate = genBlocksRateLabel(validator, 'detail')
-  const rewardShare = delegationRewardShareLabel(validator, 'detail')
+  const production = blockRateLabel(validator)
+  const platscanRate = genBlocksRateLabel(validator)
+  const rewardShare = delegationRewardShareLabel(validator)
   const metricColumnRules = detailMetricColumnRules([blocks, overviewRewards, rank, production, platscanRate, rewardShare])
   const identifier = validator.validatorNodeId
   const identifierId = useId()
@@ -509,74 +521,133 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
 }
 
 /**
- * The Home card's Linked Validator region: the six Validator metrics, or the
- * one short empty state that keeps the region's reserved height. No heading,
- * identity, identifier, copy control, Details row or long explanation is
- * rendered here — those moved to Node detail (#154–#158, #173).
+ * The Home card's Linked Validator region (#238). Only the Server-owned Current
+ * Validator Status decides what it says: a confirmed Validator shows the three
+ * key summary metrics, a confirmed non-Validator shows one short word, and
+ * evidence that cannot confirm either stays Validator unknown with its real
+ * reason. Activity, consensus membership, a missing rank or reward and retained
+ * history never decide the identity. The six-metric grid, its six Unknown
+ * placeholders and the reserved `No validator metrics` region are gone from
+ * Home; Node detail keeps every metric, state and explanation (#154–#158, #173).
  */
 function ValidatorCard({ validator }: { validator: PublicValidatorInsight }) {
-  if (!hasDisplayableMetrics(validator)) {
-    const empty = emptyMetricsState(validator)
-    return <section data-slot="linked-validator" data-state={empty.state} className="min-w-0" aria-label="Linked Validator">
-      <p data-slot="linked-validator-empty" className="m-0 text-[11px] text-muted-foreground" role="status">{empty.text}</p>
-    </section>
+  const status = (validator.currentValidatorStatus ?? '').toLowerCase()
+  if (status !== 'validator') {
+    // Only current evidence may state the negative verdict: a retained
+    // not_validator status is unconfirmed, so it stays Validator unknown with the
+    // retained verdict as its reason (issue #238).
+    return <ValidatorIdentityNote validator={validator}
+      confirmedNonValidator={status === 'not_validator' && (validator.currentValidatorStatusState ?? '').toLowerCase() === 'current'} />
   }
-  const cumulativeRewards = formatAmountCompact(validator.rewardAmount)
-  return <section data-slot="linked-validator" className="min-w-0 border-t border-border pt-3" aria-label="Linked Validator">
-    <div data-slot="linked-validator-metrics" role="group" aria-label="Linked Validator metrics">
-      <ValidatorMetric label="Cumulative blocks" value={blockCountLabel(validator.blockCount)} reason="No cumulative block count is available from the Validator source." />
-      <ValidatorMetric label="Cumulative rewards" value={cumulativeRewards} reason="No cumulative reward amount is available from the Validator source." />
-      <ValidatorParamRow label="Network rank" shortLabel="Rank" value={rankLabel(validator)} reason={rankNote(validator) ?? 'No Network rank is available.'} />
-      <ValidatorParamRow label="Production rate" shortLabel="Production" value={blockRateLabel(validator, 'card')} reason="The source has not supplied a complete cumulative produced/scheduled block pair." />
-      <ValidatorParamRow label="PlatScan 24h rate" shortLabel="PlatScan 24h" value={genBlocksRateLabel(validator, 'card')} reason="No PlatScan 24-hour block production rate is available." />
-      <ValidatorParamRow label="Delegation reward share" shortLabel="Delegation share" value={delegationRewardShareLabel(validator, 'card')} reason="No effective delegation reward distribution ratio is available." />
-    </div>
-  </section>
+  const rank = rankLabel(validator)
+  const rankReason = rankNote(validator)
+  return (
+    <section data-slot="linked-validator" data-identity="validator" className="min-w-0 border-t border-border pt-3" aria-label="Linked Validator">
+      <div data-slot="linked-validator-metrics" role="group" aria-label="Linked Validator metrics">
+        {/* Rank stays the Network's own PlatScan rank: Unranked, an unattested
+            rank and a retained last-good rank stay three different statements. */}
+        <ValidatorSummaryCell
+          metric="rank"
+          label="Network rank"
+          shortLabel="Rank"
+          value={rank === 'Unknown' ? null : rank}
+          title={rankReason ?? undefined}
+          reason={rankReason ?? 'No Network rank is available.'}
+        />
+        <ValidatorSummaryCell
+          metric="blocks"
+          label="Cumulative blocks"
+          shortLabel="Blocks"
+          value={validator.blockCount == null ? null : blockCountLabel(validator.blockCount)}
+          reason="No cumulative block count is available from the Validator source."
+        />
+        {/* The gross lifetime reward, abbreviated for the compact cell; the exact
+            source digits stay reachable and it is never presented as operator net
+            earnings. */}
+        <ValidatorSummaryCell
+          metric="rewards"
+          label="Cumulative rewards"
+          shortLabel="Rewards"
+          value={validator.rewardAmount == null ? null : formatAmountCompact(validator.rewardAmount)}
+          title={validator.rewardAmount == null ? undefined : formatAmountExact(validator.rewardAmount)}
+          reason="No cumulative reward amount is available from the Validator source."
+        />
+      </div>
+    </section>
+  )
 }
 
 /**
- * The two emphasized cumulative cells (Cumulative blocks and rewards) keep the
- * label-over-value form. A missing value uses the em-dash placeholder with its
- * reason announced to assistive technology, and a long compact reward can span
- * the full group width rather than splitting. The ordinary parameters use the
- * compact key-value row instead (ValidatorParamRow).
+ * The Home card's short identity line for everything Current Validator Status
+ * does not confirm as a Validator (#238): a confirmed non-Validator, and the
+ * unconfirmed case that must never be read as one. Only that Server-owned
+ * verdict decides which word appears; the reason it comes with stays readable,
+ * while the full explanation remains in the identity entry and on Node detail.
  */
-function ValidatorMetric({ label, value, reason }: { label: string; value: string; reason: string }) {
+function ValidatorIdentityNote({ validator, confirmedNonValidator }: {
+  validator: PublicValidatorInsight
+  confirmedNonValidator: boolean
+}) {
+  const state = (validator.currentValidatorStatusState ?? '').toLowerCase()
+  const retainedNegative = !confirmedNonValidator && (validator.currentValidatorStatus ?? '').toLowerCase() === 'not_validator'
+  const reason = confirmedNonValidator
+    ? 'No current staking identity.'
+    : retainedNegative ? 'Confirmed non-Validator status retained.' : 'Staking validity is not established.'
+  return (
+    <section
+      data-slot="linked-validator"
+      data-identity={confirmedNonValidator ? 'not_validator' : 'unknown'}
+      className="min-w-0 border-t border-border pt-3"
+      aria-label="Linked Validator"
+    >
+      <p
+        data-slot="linked-validator-identity"
+        className="m-0 text-[11px] leading-4 text-muted-foreground"
+        role="status"
+        aria-label={`Validator identity state: ${state || 'unknown'}`}
+      >
+        <span data-slot="linked-validator-identity-label" className="font-medium text-foreground">
+          {confirmedNonValidator ? 'Non-validator' : 'Validator unknown'}
+        </span>
+        <span aria-hidden="true"> — </span>
+        <span data-slot="linked-validator-identity-reason">{reason}</span>
+      </p>
+    </section>
+  )
+}
+
+/**
+ * One compact cell of the Home Validator summary (#238): the short label a
+ * narrow cell holds, with the full metric name as its accessible name and title,
+ * and the value beneath it. A value the Server never attested reads Unknown with
+ * its reason announced — never a fabricated zero — while a real zero stays a
+ * value.
+ */
+function ValidatorSummaryCell({ metric, label, shortLabel, value, title, reason }: {
+  metric: 'rank' | 'blocks' | 'rewards'
+  label: string
+  shortLabel: string
+  /** null when the Server never attested this value. */
+  value: string | null
+  title?: string
+  reason: string
+}) {
   const descriptionId = useId()
-  const unknown = value === 'Unknown'
-  // The two emphasized cumulative cells keep the label-over-value form and
-  // span the full group width only when a long compact reward needs it.
-  return <div data-slot="validator-metric" className={cn('min-w-0', value.length > 15 && 'col-span-2')}>
-    <span className="block pb-1 text-xs leading-4 text-muted-foreground">{label}</span>
-    <div className="min-w-0">
-      <strong className={cn('block text-sm font-semibold leading-5 tabular-nums text-foreground', value.length > 15 ? '[overflow-wrap:anywhere]' : 'whitespace-nowrap')} aria-describedby={unknown ? descriptionId : undefined}>
-        {unknown ? '—' : <ExactAmount value={value} />}
+  return (
+    // A compact value too long for one track takes the whole row rather than
+    // splitting its digits (validator-metrics.md, Emerald deviation 22).
+    <div data-slot="validator-summary-cell" data-metric={metric} data-wide={value !== null && value.length > 12 ? 'true' : undefined} className="min-w-0">
+      <span data-slot="validator-summary-label" className="block text-[11px] leading-4 text-muted-foreground">
+        <span data-full-label>{label}</span>
+        <span data-short-label aria-label={label} title={label}>{shortLabel}</span>
+      </span>
+      <strong data-slot="validator-summary-value" className="block min-w-0 text-[13px] font-medium leading-[1.375rem] tabular-nums text-foreground">
+        {value === null
+          ? <span aria-describedby={descriptionId}>Unknown<span id={descriptionId} className="sr-only">: {reason}</span></span>
+          : <span className="block whitespace-nowrap" title={title}><ExactAmount value={value} /></span>}
       </strong>
-      {unknown && <small id={descriptionId} className="block text-[11px] text-muted-foreground">
-        Unknown<span className="sr-only">: {reason}</span>
-      </small>}
     </div>
-  </div>
-}
-
-/**
- * Card-only compact key-value parameter: the full field name stays available
- * (the short label carries it as an accessible name and the Node detail view
- * prints it), and a missing value is an explicit Unknown whose sanitized reason
- * is announced, never a zero. Ordinary parameters use this row; only the two
- * cumulative metrics keep the emphasized label-over-value cell above.
- */
-function ValidatorParamRow({ label, shortLabel, value, reason }: { label: string; shortLabel: string; value: string; reason: string }) {
-  const descriptionId = useId()
-  const unknown = value === 'Unknown'
-  return <MetricRow
-    layout="compact"
-    label={label}
-    shortLabel={shortLabel}
-    value={unknown
-      ? <span aria-describedby={descriptionId}>Unknown<span id={descriptionId} className="sr-only">: {reason}</span></span>
-      : <ExactAmount value={value} />}
-  />
+  )
 }
 
 /** The full accessible status vocabulary for the Node detail region. */

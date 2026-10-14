@@ -61,7 +61,7 @@ try {
       const validator = box('linked-validator')
       const rows = [...card.querySelectorAll('[data-slot="node-business-metrics"] [data-slot="metric-row"]')]
         .map(el => ({ top: el.getBoundingClientRect().top - chain.top, height: el.getBoundingClientRect().height }))
-      const overflow = [...card.querySelectorAll('[data-slot="metric-row-value"], [data-slot="metric-row-label"], [data-slot="validator-metric"] strong')]
+      const overflow = [...card.querySelectorAll('[data-slot="metric-row-value"], [data-slot="metric-row-label"], [data-slot="validator-summary-value"]')]
         .filter(el => el.scrollWidth > el.clientWidth + 1).map(el => el.textContent)
       const region = card.querySelector('[data-node-region="validator"]')
       return {
@@ -72,8 +72,8 @@ try {
         resourceTop: resource.top - rect.top, chainTop: chain.top - rect.top,
         validatorTop: validator.top - rect.top, rows, overflow,
         contentBeyondCard: Math.max(0, validator.bottom - rect.bottom),
-        metricCells: card.querySelectorAll('[data-slot="linked-validator-metrics"] > *').length,
-        emptyText: card.querySelector('[data-slot="linked-validator-empty"]')?.textContent ?? null,
+        metricCells: card.querySelectorAll('[data-slot="validator-summary-cell"]').length,
+        identityText: card.querySelector('[data-slot="linked-validator-identity"]')?.textContent ?? null,
       }
     }))
     console.log(JSON.stringify({ scenario, width, fontSize: process.env.DENSITY_FONT_SIZE ?? '16', cards }, null, 2))

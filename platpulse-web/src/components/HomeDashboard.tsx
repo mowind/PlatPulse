@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNodeRegionHeights } from './useNodeRegionHeights'
 import { Link, useLocation, useSearchParams } from 'react-router'
 import type { PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
@@ -343,10 +342,6 @@ export default function HomeDashboard({
   const cumulativeScopeNote = selectionNarrowed
     ? 'Whole Network selection, never the filtered list'
     : undefined
-  // The measured region minima belong to the card grid: leave the measurement
-  // off in the list view, and let the changed flag remeasure the grid when the
-  // reader switches back, because that grid element is mounted again.
-  const nodeGridRef = useNodeRegionHeights(matching, hasProjection && filters.view === 'card')
   const streamLabel = realtimeStreamLabel(realtimeStatus)
   return (
     <section aria-label="Home">
@@ -666,14 +661,12 @@ export default function HomeDashboard({
         </div>
 
         <div className="mt-4">
-          {/* 300px is Emerald's own auto-fill minimum track (HomeView.vue's
-              minmax(300px, 1fr)), so the Home grid keeps the reference's card
-              size. The card's own two-column switch is an independent, measured
-              22.5rem (see the node-card rules in emerald.css): a 303px
-              auto-filled card is narrower than it, so each chain count and each
-              ordinary Validator parameter takes one full-width line (Txs/Peers
-              and the two cumulative Validator cells stay paired), while a wider
-              card uses its width. */}
+          {/* The grid's minimum track is the card's own 22.5rem content switch
+              (see the node-card rules in emerald.css), so auto-fill resolves on
+              the measured container instead of a fixed column count: one column
+              on a phone, two from the tablet widths, three once the 1280px shell
+              holds three of those tracks, and four only if a container ever
+              genuinely holds four. No row is equalized with another (#238). */}
           {loading || (error && !hasLastGood) ? null : (
             <>
               {/* The list is one scope inside the Network scope: it says how many
@@ -705,8 +698,7 @@ export default function HomeDashboard({
                 <HomeNodeList records={matching} linkState={nodeLinkState} registerRow={registerNodeRow} />
               ) : (
                 <div
-                  className="grid auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(300px,1fr))]"
-                  ref={nodeGridRef}
+                  className="grid grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(min(100%,22.5rem),1fr))]"
                   data-slot="node-grid"
                   aria-label="Active Nodes"
                 >
@@ -750,17 +742,6 @@ function SummaryCard({ label, value, tone, icon, emptyLabel }: {
     tone={value !== null && value > 0 ? tone : 'green'} icon={SUMMARY_ICONS[icon]} />
 }
 
-/**
- * Compact Home card, styled as Emerald's NodeCard: a stretched semantic title
- * link to Node Detail, an emerald status dot with a ping ring, a secondary
- * identity line carrying Network, process uptime and Peers, a three-column
- * resource row with thin progress bars, one shared Host network line, and the
- * current Block Height alone (#237). Copy, disclosure and identity controls sit
- * outside the anchor so they never trigger navigation. Healthy Nodes carry no
- * routine prose. Exceptional health keeps a short diagnostic line (issue #97);
- * resync progress is a separate, lightweight status area, and every explanation
- * the compaction removed from the face of the card stays in the identity entry.
- */
 /** The compact list view (stories 72, 73, 79): one row per matching Node with
  * the seven public columns this ticket names, inside one local horizontal
  * scroller whose Node name and health word stay pinned (emerald.css owns those
@@ -834,6 +815,19 @@ function HomeNodeList({ records, linkState, registerRow }: {
   )
 }
 
+/**
+ * Compact Home card, styled as Emerald's NodeCard: a stretched semantic title
+ * link to Node Detail, an emerald status dot with a ping ring, a secondary
+ * identity line carrying Network, process uptime and Peers, a three-column
+ * resource row with thin progress bars, one shared Host network line, the
+ * current Block Height alone (#237), and the three-metric Validator summary or
+ * the short identity line a confirmed status allows (#238). Copy, disclosure and
+ * identity controls sit outside the anchor so they never trigger navigation.
+ * Healthy Nodes carry no routine prose. Exceptional health keeps a short
+ * diagnostic line (issue #97); resync progress is a separate, lightweight status
+ * area, and every explanation the compaction removed from the face of the card
+ * stays in the identity entry.
+ */
 function HomeNodeCard({ network, node, linkState }: NodeRecord & { linkState: HomeReturnState }) {
   const tone = healthTone(node.health)
   const diagnostic = exceptionalDiagnostic(node)
@@ -862,7 +856,7 @@ function HomeNodeCard({ network, node, linkState }: NodeRecord & { linkState: Ho
         tone === 'warn' && 'shadow-[0_0_0_1px] shadow-amber-500/20',
       )}
     >
-      <CardX bordered={false} className="bg-transparent" contentClassName="gap-2.5" headerClassName="!block !p-0" header={<div data-node-region="identity"><div data-node-region-content className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 gap-y-1.5 px-4 pt-3 pb-2.5">
+      <CardX bordered={false} className="bg-transparent" contentClassName="gap-2.5" headerClassName="!block !p-0" header={<div data-node-region="identity" className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 gap-y-1.5 px-4 pt-3 pb-2.5">
           <div className="flex min-w-0 items-center gap-2">
             <NodeHealthMarker health={node.health} />
             {/* The 44px target is kept on the anchor; the negative block margin
@@ -922,17 +916,17 @@ function HomeNodeCard({ network, node, linkState }: NodeRecord & { linkState: Ho
           >
             {diagnostic.text}
           </p>}
-        </div></div>}>
-        <div data-node-region="resource"><div data-node-region-content><ResourceMetrics node={node} /></div></div>
+        </div>}>
+        <div data-node-region="resource"><ResourceMetrics node={node} /></div>
         {/* Chain (#237): Home keeps the current Block Height alone. QC, Locked,
             Committed and Txs stay on Node Detail, which reads the same public
             fields — no field, observation or history is deleted. */}
-        <div data-node-region="chain"><div data-node-region-content>
+        <div data-node-region="chain">
         <div data-slot="node-business-metrics" className="border-t border-border pt-3">
           <MetricRow layout="compact" label="Head" value={formatNumber(node.currentHead)} />
         </div>
-        </div></div>
-        <div data-node-region="validator"><div data-node-region-content><LinkedValidatorSection node={node} /></div></div>
+        </div>
+        <div data-node-region="validator"><LinkedValidatorSection node={node} /></div>
         </CardX>
     </article>
   )

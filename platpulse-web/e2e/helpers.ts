@@ -30,18 +30,23 @@ export async function loginAs(
   await expect(page.getByRole('region', { name: 'Home' })).toBeVisible()
 }
 
+/** The Home Node grid's minimum track (#238): the card's own 22.5rem content
+ *  switch — 360px at the default 16px root — so no auto-filled card is ever
+ *  narrower than the row layout it can hold. */
+export const HOME_NODE_TRACK = 360
+
 /**
  * Auto-fill track count for the Home Node grid at a measured content width.
- * The grid's minimum track is Emerald's own 300px (HomeView.vue's
- * `minmax(300px, 1fr)`), so the column count is auto-fill floor division with
- * no viewport guard: two 300px tracks plus the 12px gap already need 612px,
- * which is wider than the content column at the `sm` breakpoint, so below it
- * the formula resolves to one column just as `grid-cols-1` does. A content
- * column narrower than one 300px track floors to zero, and CSS Grid treats a
- * zero auto-fill repetition count as one, so the result is clamped to one.
+ * The grid's minimum track is that 22.5rem content switch, and the column count
+ * is auto-fill floor division with no viewport guard: two tracks plus the 12px
+ * gap already need 732px, which is wider than the content column at the `sm`
+ * breakpoint, so below it the formula resolves to one column just as
+ * `grid-cols-1` does. A content column narrower than one track floors to zero,
+ * and CSS Grid treats a zero auto-fill repetition count as one, so the result is
+ * clamped to one.
  */
 export function homeNodeColumns(gridWidth: number, gap: number): number {
-  return Math.max(1, Math.floor((gridWidth + gap) / (300 + gap)))
+  return Math.max(1, Math.floor((gridWidth + gap) / (HOME_NODE_TRACK + gap)))
 }
 
 /**

@@ -72,13 +72,13 @@ async function overviewGeometry(page: Page) {
     const style = getComputedStyle(el)
     return { columns: style.gridTemplateColumns.split(' ').length, gap: parseFloat(style.columnGap) }
   })
-  // The auto-fill minimum track is Emerald's own 300px (HomeView.vue's
-  // `minmax(300px, 1fr)`), so the grid resolves to floor division on the
-  // measured content width and never hardcodes a column count. Home is capped at
-  // max-w-1280 (1248px of content), which fits four 303px tracks at desktop. A
-  // 303px card is below the card's own measured 22.5rem two-column switch, so
-  // its chain counts and ordinary Validator parameters drop to one full-width
-  // line each (an over-long value falls back further on purpose).
+  // The auto-fill minimum track is the card's own 22.5rem content switch (#238),
+  // so the grid resolves to floor division on the measured content width and
+  // never hardcodes a column count. Home is capped at max-w-1280 (1248px of
+  // content), which fits three 408px tracks at desktop: a fourth would need
+  // 1488px and the AC only takes a fourth column once it genuinely fits. A phone
+  // column stays one card wide, a tablet two, and no track is narrower than the
+  // three-cell summary the card holds.
   const expectedColumns = homeNodeColumns(gridBox.width, geometry.gap)
   expect(geometry.columns).toBe(expectedColumns)
   const nodes = grid.locator('[data-slot="node-card"]')
@@ -123,7 +123,7 @@ test('1920 desktop remains max1280 with proportional map and auto-fill Nodes', a
   }
 })
 
-test('short and long Node names retain identity actions and one shared card height', async ({ page }, testInfo) => {
+test('short and long Node names retain identity actions and per-row card heights', async ({ page }, testInfo) => {
   await loginAs(page)
   const longName = 'B Very Long Production Node Name With Readable Words And A Distinct Identity'
   await page.route('**/api/public/v1/networks*', async route => {
@@ -147,13 +147,10 @@ test('short and long Node names retain identity actions and one shared card heig
   for (const dark of [false, true]) {
     await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark)
     await overviewGeometry(page)
-    // The grid uses auto-rows-fr, so every card in every row shares the
-    // tallest card's height — not just the two cards in one row. Six cards at
-    // desktop span two rows, so a single unique height proves cross-row
-    // equality, and a longer sanitized reason cannot stretch a subset.
-    const cardHeights = await cards.evaluateAll(elements => elements.map(el => Math.round(el.getBoundingClientRect().height)))
-    expect(cardHeights).toHaveLength(6)
-    expect(new Set(cardHeights).size, 'all Node cards share one height across every row: ' + JSON.stringify(cardHeights)).toBe(1)
+    // #238 removed the grid-wide equal height: cards on one row still line up
+    // with their own row, while the row holding the long name and its longer
+    // diagnostic grows on its own instead of stretching every other row.
+    expect(await expectPerRowCardHeights(cards)).toHaveLength(6)
     await expect(cards.nth(0).getByRole('link', { name: 'A', exact: true })).toHaveAttribute('href', '/nodes/layout-0')
     await expect(cards.nth(1).getByRole('link', { name: longName, exact: true })).toHaveAttribute('href', '/nodes/layout-1')
     const linkGeometry = await cards.nth(1).getByRole('link', { name: longName, exact: true }).evaluate(el => {

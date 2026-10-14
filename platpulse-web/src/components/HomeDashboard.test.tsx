@@ -51,11 +51,11 @@ const network = {
 const nodeCardLink = (name: string) => screen.getByRole('link', { name: new RegExp(name) })
 const cardOf = (link: HTMLElement) => link.closest('article') as HTMLElement
 
-/** A compact Linked Validator parameter value, addressed by its full accessible
- *  label even though the card may render the shorter display name. */
-const linkedParamValue = (scope: HTMLElement, label: string) => {
-  const full = [...scope.querySelectorAll('[data-full-label]')].find(node => node.textContent === label)
-  return full?.closest('[data-slot="metric-row"]')?.querySelector('[data-slot="metric-row-value"]')?.textContent
+/** A value in the Linked Validator summary, addressed by its full accessible
+ *  label even though the compact cell renders the shorter display name. */
+const validatorSummaryValue = (scope: HTMLElement, label: string) => {
+  const full = [...scope.querySelectorAll('[data-slot="validator-summary-label"] [data-full-label]')].find(node => node.textContent === label)
+  return full?.closest('[data-slot="validator-summary-cell"]')?.querySelector('[data-slot="validator-summary-value"]')?.textContent
 }
 
 /** The summary card carrying the given label (issue #142). */
@@ -788,13 +788,14 @@ describe('Public Home dashboard', () => {
     expect(summaryValueOf('Active Nodes').textContent).toBe('0')
   })
 
-  it('shows the linked Validator cumulative block count, rates, and status on the Home card', () => {
+  it('shows only the three Validator summary metrics a confirmed status allows', () => {
     const linked = {
       validatorId: 'validator-linked', validatorNodeId: '0xlinked', displayName: 'Validator A',
       nodeId: 'node-linked', state: 'fresh', freshness: 'fresh', source: 'platscan',
       providerTimestamp: '2026-08-25T00:00:00Z', receivedAt: '2026-08-25T00:00:05Z',
       blockCount: 123456, expectedBlockCount: 110, blockRate: '90.909091', blockRateState: 'ok',
       rank: 5, rankState: 'ranked', rankFreshness: 'fresh', rankCohortSize: 300,
+      rewardAmount: '1234.123456789012',
       genBlocksRate: '0', delegationRewardPercentage: '20', counterState: 'normal', activity: 'producing', activityState: 'current',
       currentValidatorStatus: 'validator', currentValidatorStatusState: 'current', currentValidatorStatusQualifier: null,
     }
@@ -813,13 +814,18 @@ describe('Public Home dashboard', () => {
     const linkedSection = card.querySelector('[data-slot="linked-validator"]') as HTMLElement
     expect(linkedSection).not.toBeNull()
     expect(linkedSection.getAttribute('aria-label')).toBe('Linked Validator')
-    // The six metrics stay directly visible without hover or expansion, and a
-    // source 0% stays a value.
-    expect(within(card).getByText('Cumulative blocks')).toBeTruthy()
-    expect(within(card).getByText('123,456')).toBeTruthy()
-    expect(linkedParamValue(card, 'Production rate')).toBe('90.91%')
-    expect(linkedParamValue(card, 'PlatScan 24h rate')).toBe('0.00%')
-    expect(linkedParamValue(card, 'Delegation reward share')).toBe('20.00%')
+    expect(linkedSection.getAttribute('data-identity')).toBe('validator')
+    // Only the three key summaries stay, directly visible without hover or
+    // expansion: the Network rank, the lifetime block count and the gross
+    // lifetime rewards (#238).
+    expect(validatorSummaryValue(card, 'Network rank')).toBe('#5')
+    expect(validatorSummaryValue(card, 'Cumulative blocks')).toBe('123,456')
+    expect(validatorSummaryValue(card, 'Cumulative rewards')).toBe('1.23K')
+    // Production rate, the PlatScan 24h rate and the delegation reward share
+    // left the Home card and stay on Node Detail.
+    expect(within(card).queryByText('Production rate')).toBeNull()
+    expect(within(card).queryByText('PlatScan 24h rate')).toBeNull()
+    expect(within(card).queryByText('Delegation reward share')).toBeNull()
     const titleLink = nodeCardLink('Calico')
     expect(titleLink.querySelector('button, input, textarea, a')).toBeNull()
     const control = within(card).getByRole('button', { name: 'Node identity details' })
@@ -827,7 +833,8 @@ describe('Public Home dashboard', () => {
     expect(control.className).toContain('relative z-10')
 
     const unlinkedCard = cardOf(nodeCardLink('Domino'))
-    expect(within(unlinkedCard).getByText('Validator identity has not been observed yet.')).toBeTruthy()
+    expect(within(unlinkedCard).getByText('Validator unknown')).toBeTruthy()
+    expect(within(unlinkedCard).getByText('Identity has not been observed yet.')).toBeTruthy()
     expect(within(unlinkedCard).queryByText('Cumulative blocks')).toBeNull()
     expect(within(unlinkedCard).queryByText('Linked Validator')).toBeNull()
   })

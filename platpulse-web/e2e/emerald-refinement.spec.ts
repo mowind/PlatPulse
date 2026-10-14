@@ -136,7 +136,7 @@ test('refinement scenarios and measured evidence', async ({ page }, info) => {
       // The compact Node card moves the Emerald header padding onto its inner
       // identity region, so the header shell itself is unpadded.
       await expect(card.locator('[data-slot="card-x-header"]')).toHaveCSS('padding', '0px')
-      await expect(card.locator('[data-node-region="identity"] [data-node-region-content]')).toHaveCSS('padding', '12px 16px 10px')
+      await expect(card.locator('[data-node-region="identity"]')).toHaveCSS('padding', '12px 16px 10px')
       await expect(card.locator('[data-slot="card-x-content"]')).toHaveCSS('padding', '0px 16px 16px')
       await expect(card.locator('h2')).toHaveCSS('font-size', '16px')
       if (scenario === 'unknown') {
