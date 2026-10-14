@@ -233,6 +233,15 @@ export function mapChartOption({
         label: {
           fontSize: 10,
           color: '#ffffff',
+          // The locked reference theme draws this numeral as a plain white 10px
+          // glyph (komari-theme-emerald@c2c5e88 NodeEarthMaps.vue, `fontSize: 10`,
+          // `color: '#ffffff'`), which on the emerald or amber disc falls just
+          // under the 4.5:1 ordinary-text contrast. PlatPulse keeps the glyph,
+          // its size and its wording and adds one thin dark halo, so the
+          // aggregate stays readable on either fill in both themes (#240)
+          // without a new colour, a border or a second label.
+          textBorderColor: 'rgba(6, 78, 59, 0.55)',
+          textBorderWidth: 2,
           formatter: (params: { value?: unknown }) => {
             const value = params.value
             if (!Array.isArray(value)) return '0'

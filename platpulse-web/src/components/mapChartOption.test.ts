@@ -110,11 +110,23 @@ describe('mapChartOption', () => {
     expect(data[1].itemStyle.color).toBe(LIGHT_PALETTE.dotYellow)
   })
 
-  it('labels the aggregate in white 10px, as upstream does', () => {
+  it('labels the aggregate in white 10px with a legibility halo, as upstream does', () => {
     const option = build()
-    const label = option.series[1].label as { fontSize: number; color: string; formatter: (params: { value?: unknown }) => string }
+    const label = option.series[1].label as {
+      fontSize: number
+      color: string
+      textBorderColor: string
+      textBorderWidth: number
+      formatter: (params: { value?: unknown }) => string
+    }
+    // The reference theme's own glyph, size and colour are unchanged (#240
+    // only makes them readable): white numerals sit on a 14px emerald or amber
+    // disc, where white-on-emerald is under the 4.5:1 ordinary-text contrast,
+    // so the same glyph carries a thin dark halo in both themes.
     expect(label.fontSize).toBe(10)
     expect(label.color).toBe('#ffffff')
+    expect(label.textBorderColor).toMatch(/^rgba\(\d+, \d+, \d+, 0\.\d+\)$/)
+    expect(label.textBorderWidth).toBeGreaterThanOrEqual(1)
     expect(label.formatter({ value: [1, 2, 42] })).toBe('42')
     expect(label.formatter({ value: undefined })).toBe('0')
   })

@@ -643,6 +643,16 @@ describe('Public Home dashboard', () => {
       expect(card.querySelectorAll('svg[data-icon]')).toHaveLength(1)
       expect(card.querySelectorAll('[data-slot="summary-value"]')).toHaveLength(1)
       expect(card.querySelectorAll('small')).toHaveLength(0)
+      // #240: the trailing marker or control is the one shared slot in every
+      // header, so title, marker and value line up across all six tiles by
+      // construction instead of per-tile offsets (the geometry is measured in
+      // the browser acceptance).
+      const header = card.querySelector('[data-slot="card-x-content"] > div:first-child')!
+      const marker = card.querySelector('[data-slot="summary-marker"]')
+      expect(marker).not.toBeNull()
+      expect(marker!.querySelectorAll('svg[data-icon]')).toHaveLength(1)
+      expect(header.lastElementChild).toBe(marker)
+      expect(header.firstElementChild?.textContent).toBe(card.getAttribute('aria-label'))
     }
   })
 

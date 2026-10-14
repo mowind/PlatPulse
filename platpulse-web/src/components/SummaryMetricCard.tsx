@@ -12,6 +12,15 @@ import { cn } from '../lib/utils'
  * sits immediately under the uniform header — not pinned to the card bottom —
  * so a taller caption in one tile cannot shift its value off the shared
  * baseline; `auto-rows-fr` keeps all six the same height.
+ *
+ * The trailing slot is one box in every card (#240). A metric icon and the
+ * Breakdown control are different sizes — 18px glyph beside a 44px target — so
+ * the glyph used to sit on a different line in the two tile kinds: the plain
+ * icon hung at the title's line and the control sat a dozen pixels below it.
+ * Both now render inside the same `summary-marker` box, whose 44px square is
+ * lifted into the card's own top padding: the six headers therefore share one
+ * title line, one marker position and one value baseline by construction, and
+ * the box is the target the interactive tiles already needed.
  */
 export function SummaryMetricCard({ label, value, icon: Icon, tone = 'green', action, caption, hoverable = true, dataSlot = 'summary-card' }: {
   label: string
@@ -35,7 +44,9 @@ export function SummaryMetricCard({ label, value, icon: Icon, tone = 'green', ac
     contentClassName="flex h-full min-w-0 flex-col gap-1 !p-3">
     <div className="flex min-h-11 items-start justify-between gap-1">
       <span className="min-w-0 text-xs font-medium tracking-wider text-muted-foreground">{label}</span>
-      {action ?? (Icon ? <Icon size={18} strokeWidth={2} className="shrink-0" aria-hidden="true" data-icon={label} /> : null)}
+      <span data-slot="summary-marker" className="-mt-3 -mr-2 grid size-11 shrink-0 place-items-center">
+        {action ?? (Icon ? <Icon size={18} strokeWidth={2} className="shrink-0" aria-hidden="true" data-icon={label} /> : null)}
+      </span>
     </div>
     <div className="flex min-w-0 flex-col gap-0.5">
       <strong data-slot="summary-value" className={cn('text-base font-bold leading-none tracking-tight tabular-nums md:text-2xl [overflow-wrap:anywhere]', tone === 'red' && 'text-destructive')}>{value}</strong>

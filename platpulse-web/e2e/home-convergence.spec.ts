@@ -144,12 +144,13 @@ test.describe('Converged Public Home (issue #102)', () => {
       expect(height, 'summary card stays compact').toBeLessThanOrEqual(160)
     }
 
-    // The cumulative tiles print their own Network scope, coverage and Partial
-    // marker directly on the face; coverage is no longer tooltip-only.
+    // The cumulative tiles print their own Network scope and their own
+    // valued/expected reporting count directly on the face; coverage is no
+    // longer tooltip-only (#240).
     for (const label of ['Cumulative blocks', 'Cumulative rewards']) {
       const caption = page.getByRole('article', { name: label, exact: true }).locator('[data-slot="summary-caption"]')
       await expect(caption).toContainText('2 Networks')
-      await expect(caption).toContainText(/known|Coverage unknown/)
+      await expect(caption).toContainText(/reporting|Coverage unknown/)
     }
 
     // The Node grid fits as many 22.5rem columns as the content width allows:

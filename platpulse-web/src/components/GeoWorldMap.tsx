@@ -303,13 +303,20 @@ export default function GeoWorldMap({ overview, status, heading = PEER_COUNTRIES
           {notice}
         </span>
       )}
+      {/* The locked reference theme draws this chip at `text-[10px]` over
+          `bg-background/60` (komari-theme-emerald@c2c5e88 NodeEarthMaps.vue).
+          #240 keeps the chip exactly where it puts it and only makes it
+          readable: the same two figures at the theme's own secondary-text size
+          (12px, not 10px) over a stronger backing, so the numbers do not rely
+          on the map paint behind them for contrast. Its colour, wording, dots
+          and pointer-inert behaviour are unchanged. */}
       {scopedPeerCount !== null && (
         <p
           data-slot="geo-counters"
           role="note"
           aria-label={countersLabel ?? undefined}
           title={countersTitle ?? undefined}
-          className="pointer-events-none md:pointer-events-auto absolute top-0 right-0 z-2 flex max-w-[calc(55%-8px)] flex-wrap items-center justify-end gap-2 rounded bg-background/60 px-2 py-0.5 text-[10px] text-muted-foreground backdrop-blur-lg md:max-w-[calc(45%-8px)]"
+          className="pointer-events-none md:pointer-events-auto absolute top-0 right-0 z-2 flex max-w-[calc(55%-8px)] flex-wrap items-center justify-end gap-2 rounded bg-background/85 px-2 py-0.5 text-xs text-muted-foreground backdrop-blur-lg md:max-w-[calc(45%-8px)]"
         >
           <span data-slot="geo-counter" className="flex items-center gap-1">
             <span data-slot="geo-counter-dot" className="inline-block size-1.5 animate-pulse rounded-full bg-emerald-600" aria-hidden="true" />

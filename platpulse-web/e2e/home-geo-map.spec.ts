@@ -31,8 +31,8 @@ import {
  *    beside it as a labelled subset;
  *  - abnormal states have a minimal visible role="status".
  *
- * The scatter encoding itself (8px/14px symbols, the white 10px numeral, the
- * tooltip HTML) is covered at the unit level in
+ * The scatter encoding itself (8px/14px symbols, the white 10px numeral with
+ * its legibility halo, the tooltip HTML) is covered at the unit level in
  * src/components/mapChartOption.test.ts and is deliberately not repeated here.
  * A real pointer hover over a painted marker asserts the ECharts tooltip,
  * which is the closest observable equivalent of the old SVG hover preview.
@@ -1105,5 +1105,109 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
       // Local MMDB behind for the specs that run later.
       await setGeoProvider(page, 'Disabled')
     }
+  })
+
+  test('keeps the corner legend readable in both themes at every fixed viewport', async ({ page }, testInfo) => {
+    await openHomeWithGeo(page)
+    // Both of the chip's figures present and multi-digit, which is the widest
+    // shape this legend ever takes; the numbers themselves are the fixture's.
+    await withGeoProjection(page, (geo) => ({
+      ...geo, state: 'current', scope: 'complete',
+      countries: [{ ...SWEDEN_ONE, count: 1234 }],
+      knownCountryCount: 1234, unknownCountryCount: 56,
+      unknownWithPublicIpCount: 20, unknownWithoutRemoteIpCount: 36,
+      availablePeerCount: 1290, attribution: null, lastGoodAt: null,
+      staleSince: null, databaseAgeSeconds: null, errorReason: null,
+    }))
+    await page.reload()
+    const map = mapRegion(page)
+    await expect(geoChart(page).locator('canvas').first()).toBeVisible({ timeout: 30_000 })
+    const counters = map.locator('[data-slot="geo-counters"]')
+    await expect(counters.locator('[data-slot="geo-counter"]')).toHaveText(/^Peers: \d{1,3}(,\d{3})+$/)
+    await expect(counters.locator('[data-slot="geo-counter-unknown"]')).toHaveText(/^\d[\d,]* unknown$/)
+
+    for (const dark of [false, true]) {
+      await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark)
+      const legend = await counters.evaluate((element) => {
+        // Colours are resolved through the browser, not regex-parsed:
+        // Tailwind's oklch tokens serialise as oklab(...), whose digits a
+        // regex reads as near-black RGB (#240 follows the shell's own check).
+        const parseColor = (value: string) => {
+          const canvas = document.createElement('canvas')
+          canvas.width = 1
+          canvas.height = 1
+          const context = canvas.getContext('2d')
+          if (!context) throw new Error('a 2d context is required to read a colour')
+          context.fillStyle = '#010203'
+          context.fillStyle = value
+          if (context.fillStyle === '#010203' && value.trim().toLowerCase() !== '#010203') {
+            throw new Error('Unsupported computed color: ' + value)
+          }
+          context.clearRect(0, 0, 1, 1)
+          context.fillRect(0, 0, 1, 1)
+          const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data
+          return { red, green, blue, alpha: alpha / 255 }
+        }
+        const luminance = ({ red, green, blue }: ReturnType<typeof parseColor>) => {
+          const linear = [red, green, blue].map((channel) => {
+            const normalized = channel / 255
+            return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4
+          })
+          return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+        }
+        const style = getComputedStyle(element)
+        const backing = parseColor(style.backgroundColor)
+        // The nearest painted ancestor is the wash behind the chip; the chip's
+        // own backing is what its figures are read on.
+        let washValue = 'rgb(255, 255, 255)'
+        for (let node: Element | null = element.parentElement; node; node = node.parentElement) {
+          const candidate = getComputedStyle(node).backgroundColor
+          if (candidate && candidate !== 'transparent' && parseColor(candidate).alpha > 0) {
+            washValue = candidate
+            break
+          }
+        }
+        const wash = parseColor(washValue)
+        const paint = {
+          red: backing.red * backing.alpha + wash.red * (1 - backing.alpha),
+          green: backing.green * backing.alpha + wash.green * (1 - backing.alpha),
+          blue: backing.blue * backing.alpha + wash.blue * (1 - backing.alpha),
+          alpha: 1,
+        }
+        const text = parseColor(style.color)
+        const foreground = luminance(text)
+        const background = luminance(paint)
+        return {
+          fontSize: Number.parseFloat(style.fontSize),
+          alpha: backing.alpha,
+          contrast: (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05),
+          box: { width: element.getBoundingClientRect().width, height: element.getBoundingClientRect().height },
+          figures: [...element.querySelectorAll('[data-slot="geo-counter"], [data-slot="geo-counter-unknown"]')]
+            .map(figure => ({ text: figure.textContent, height: figure.getBoundingClientRect().height })),
+        }
+      })
+      // The theme's own secondary-text size, not a 10px scrawl...
+      expect(legend.fontSize, testInfo.project.name + ' legend font size').toBeGreaterThanOrEqual(12)
+      // ...over the chip's own near-opaque backing, so the figures no longer
+      // depend on whatever the canvas happens to paint beneath them.
+      expect(legend.alpha, 'the legend paints its own backing').toBeGreaterThanOrEqual(0.85)
+      // WCAG 2.1 relative-luminance contrast for the two paints the chip owns.
+      expect(legend.contrast, 'legend contrast').toBeGreaterThanOrEqual(4.5)
+      // Both figures keep a line of their own inside the chip, so a wrapped
+      // legend still reads as two numbers rather than one run-on string.
+      expect(legend.figures).toHaveLength(2)
+      for (const figure of legend.figures) {
+        expect(figure.text?.trim()).not.toBe('')
+        expect(figure.height).toBeGreaterThan(0)
+        expect(figure.height).toBeLessThanOrEqual(legend.box.height)
+      }
+      const mapBox = (await map.boundingBox())!
+      const chipBox = (await counters.boundingBox())!
+      expect(chipBox.x).toBeGreaterThanOrEqual(mapBox.x - 1)
+      expect(chipBox.x + chipBox.width).toBeLessThanOrEqual(mapBox.x + mapBox.width + 1)
+      await expectNoHorizontalOverflow(page)
+      await capture(page, testInfo, 'legend-' + testInfo.project.name + (dark ? '-dark' : '-light'))
+    }
+    await page.evaluate(() => document.documentElement.classList.remove('dark'))
   })
 })

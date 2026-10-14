@@ -37,6 +37,50 @@ async function overviewGeometry(page: Page) {
     return value ? value.getBoundingClientRect().top - card.getBoundingClientRect().top : Number.NaN
   }))
   for (const offset of valueOffsets) expect(Math.abs(offset - valueOffsets[0])).toBeLessThanOrEqual(1)
+  // #240: the trailing marker or control is one shared slot in every header, so
+  // the four metric icons and the two Breakdown controls occupy the same column
+  // on the title's own line with the same 44px target, instead of each kind
+  // hanging at its own offset. Measured against each card's own top/right, so
+  // the per-row page offset is not mistaken for an alignment difference.
+  const markers = await summary.locator('[data-slot="summary-card"]').evaluateAll(cards => cards.map(card => {
+    const box = card.getBoundingClientRect()
+    const marker = card.querySelector('[data-slot="summary-marker"]')
+    const title = card.querySelector('[data-slot="card-x-content"] > div:first-child > span')
+    const glyph = marker?.querySelector('svg')
+    if (!marker || !title || !glyph) return null
+    const markerBox = marker.getBoundingClientRect()
+    const glyphBox = glyph.getBoundingClientRect()
+    // The title's own first line, not its box: a title that wraps in a narrow
+    // tile still hangs the marker on its first line, so a two-line title's box
+    // centre is not the measurement that matters.
+    const line = document.createRange()
+    line.selectNodeContents(title)
+    const lineBox = line.getClientRects()[0]
+    if (!lineBox) return null
+    return {
+      title: title.textContent,
+      width: markerBox.width,
+      height: markerBox.height,
+      markerRight: box.right - markerBox.right,
+      titleLeft: title.getBoundingClientRect().left - box.left,
+      glyphCenter: glyphBox.top + glyphBox.height / 2 - box.top,
+      titleCenter: lineBox.top + lineBox.height / 2 - box.top,
+    }
+  }))
+  expect(markers.every(marker => marker !== null)).toBe(true)
+  const fitted = markers as Array<NonNullable<(typeof markers)[number]>>
+  expect(fitted.map(marker => marker.title)).toEqual(labels)
+  for (const marker of fitted) {
+    expect(marker.width, 'every tile reserves the same marker target').toBeGreaterThanOrEqual(44)
+    expect(marker.height).toBeGreaterThanOrEqual(44)
+    // The six titles therefore share one left edge, one marker column, one
+    // marker target and one first-line height, whichever tile kind they are.
+    for (const measurement of ['width', 'height', 'markerRight', 'titleLeft', 'glyphCenter', 'titleCenter'] as const) {
+      expect(Math.abs(marker[measurement] - fitted[0][measurement]), measurement).toBeLessThanOrEqual(1)
+    }
+    // The marker hangs on the title's own line, not a dozen pixels below it.
+    expect(Math.abs(marker.glyphCenter - marker.titleCenter), 'marker and title share one line').toBeLessThanOrEqual(2)
+  }
   const summaryBox = await box(summary)
   const mapBox = await box(page.locator('[data-slot="home-map"]'))
   if (width >= 1024) {
@@ -86,7 +130,10 @@ async function overviewGeometry(page: Page) {
     const nodeBox = await box(nodes.nth(index))
     expect(nodeBox.width).toBeCloseTo((gridBox.width - geometry.gap * (expectedColumns - 1)) / expectedColumns, 0)
   }
-  const labelStyles = await cards.locator('[data-slot="card-x-content"] > div:first-child > span').evaluateAll(elements => elements.map(el => ({
+  // The six tile titles, never the marker slot that now shares each header with
+  // them (#240): a title is never broken mid-word, so the two labels that wrap
+  // on a narrow tile stay whole words on their own lines.
+  const labelStyles = await cards.locator('[data-slot="card-x-content"] > div:first-child > span:first-child').evaluateAll(elements => elements.map(el => ({
     wordBreak: getComputedStyle(el).wordBreak, overflowWrap: getComputedStyle(el).overflowWrap,
   })))
   expect(labelStyles).toHaveLength(6)
@@ -120,6 +167,60 @@ test('1920 desktop remains max1280 with proportional map and auto-fill Nodes', a
     await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark)
     await overviewGeometry(page)
     await evidence(page, testInfo, dark ? 'home-1920-dark' : 'home-1920-light')
+  }
+})
+
+test('long cumulative values and the longest coverage line stay inside their tiles', async ({ page }, testInfo) => {
+  await loginAs(page)
+  // The widest the two cumulative tiles ever get (#240): a 20-digit block count,
+  // the longest coverage line the face can print (a missing Network summary
+  // beside a partial denominator and a stale contributor), and the abbreviated
+  // reward form, all measured at every fixed viewport in both themes.
+  await page.route('**/api/public/v1/networks*', async route => {
+    const response = await route.fetch()
+    const networks: PublicNetwork[] = await response.json()
+    await route.fulfill({ response, json: networks.map((network, index) => index === 0 ? {
+      ...network,
+      validatorSummary: {
+        ...network.validatorSummary,
+        blocks: { expectedCount: 8, knownSum: '18446744073709551615', staleCount: 1, state: 'partial', valuedCount: 5 },
+        rewards: { expectedCount: 8, knownSum: '123456789012345678.123456789012345678', staleCount: 1, state: 'partial', valuedCount: 5 },
+      },
+    } : { ...network, validatorSummary: null }) })
+  })
+  await page.goto('/')
+  const blocks = page.getByRole('article', { name: 'Cumulative blocks', exact: true })
+  const rewards = page.getByRole('article', { name: 'Cumulative rewards', exact: true })
+  await expect(blocks.locator('[data-slot="summary-value"]')).toHaveText('18,446,744,073,709,551,615')
+  await expect(blocks.locator('[data-slot="summary-caption"]'))
+    .toHaveText('2 Networks · 5/8 reporting · 1 Network summary missing · 1 stale')
+  await expect(rewards.locator('[data-slot="summary-caption"]'))
+    .toHaveText('2 Networks · 5/8 reporting · 1 Network summary missing · 1 stale')
+  await expect(rewards.locator('[data-slot="summary-value"]')).not.toHaveText('Unknown')
+  for (const dark of [false, true]) {
+    await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark)
+    // No value and no coverage line is clipped: the value wraps at its own
+    // separators and the coverage line keeps its own wrapped rows.
+    const clipped = await page.locator('[data-slot="summary-card"] [data-slot="summary-value"], [data-slot="summary-card"] [data-slot="summary-caption"]')
+      .evaluateAll(elements => elements.filter(el => el.scrollWidth > el.clientWidth + 1).map(el => el.textContent))
+    expect(clipped, 'a long cumulative value wraps inside its tile').toEqual([])
+    // Nor do they leave the shared surface they belong to.
+    const escaped = await page.locator('[data-slot="summary-card"]').evaluateAll(cards => cards.flatMap(card => {
+      const box = card.getBoundingClientRect()
+      return [...card.querySelectorAll('[data-slot="summary-value"], [data-slot="summary-caption"]')]
+        .filter(el => { const rect = el.getBoundingClientRect(); return rect.right > box.right + 1 || rect.bottom > box.bottom + 1 })
+        .map(el => el.textContent)
+    }))
+    expect(escaped, 'no value or coverage line leaves its tile').toEqual([])
+    // The long text must not cost the six tiles their shared geometry, and the
+    // complete explanation stays reachable from the tile's own control.
+    await overviewGeometry(page)
+    await blocks.getByRole('button', { name: 'Cumulative blocks breakdown and exact values' }).click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByText('Exact known-value subtotal: 18,446,744,073,709,551,615', { exact: true })).toBeVisible()
+    await expect(dialog.getByText('1 Network summary missing from this coverage.')).toBeVisible()
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click()
+    await evidence(page, testInfo, dark ? 'home-long-values-dark' : 'home-long-values-light')
   }
 })
 

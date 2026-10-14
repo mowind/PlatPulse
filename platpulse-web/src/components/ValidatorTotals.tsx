@@ -7,14 +7,50 @@ import { Button } from './ui/button'
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog'
 
 type Metric = 'blocks' | 'rewards'
-type Coverage = { expectedCount: number; valuedCount: number; staleCount: number; state: string }
+/** One metric's own Server-owned coverage inside a Network's summary. */
+type MetricCoverage = { expectedCount: number; valuedCount: number; staleCount: number; state: string }
+/** The same coverage added across the selected Networks, which is why it also
+ *  knows how many populated Networks published no summary at all. */
+type SelectionCoverage = MetricCoverage & { missingNetworks: number }
 
-function coverageLabel(total: Coverage): string {
-  const base = total.valuedCount + '/' + total.expectedCount + ' Validators with values'
-  return total.staleCount > 0 ? base + ' · ' + total.staleCount + ' stale' : base
+/** One short valued/expected count in the ticket's own words: `5/8 reporting`
+ * counts the eligible Validators of the Networks that published a summary and
+ * carry a value for this metric. A denominator of zero is not a `0/0` score,
+ * because there is nothing to be covered. */
+function reportingLabel(total: MetricCoverage): string {
+  return total.expectedCount > 0
+    ? total.valuedCount + '/' + total.expectedCount + ' reporting'
+    : 'No eligible Validators'
 }
 
-function coverageNote(total: Coverage): string | null {
+/** What the cumulative tile and its Breakdown both state about coverage, before
+ * the selection's own scope: the reporting count, then what it cannot claim. A
+ * Network whose summary the Server did not publish is named beside the count
+ * instead of being counted as covered — the reported denominator never stands
+ * for the whole selection — and an Unknown subtotal is named as such rather
+ * than read as a zero. Display only: `selectionTotal` decides every number. */
+function cumulativeCoverage(total: SelectionCoverage, populated: number): string {
+  if (populated > 0 && total.missingNetworks >= populated) return 'Coverage unknown'
+  const parts = [reportingLabel(total)]
+  if (total.missingNetworks > 0) parts.push(missingSummaryLabel(total.missingNetworks))
+  if (total.state === 'unknown') parts.push('Unknown')
+  if (total.staleCount > 0) parts.push(total.staleCount + ' stale')
+  return parts.join(' · ')
+}
+
+/** The same count inside one Network's own row of the Breakdown. A Network's
+ * own stale contributors are named here, where the Network is the subject. */
+function networkCoverage(total: MetricCoverage): string {
+  return reportingLabel(total) + (total.staleCount > 0 ? ' · ' + total.staleCount + ' stale' : '')
+}
+
+/** The count and plural of the summaries the Server published none of, shared
+ *  by the coverage line and the Breakdown sentence so the two cannot drift. */
+function missingSummaryLabel(count: number): string {
+  return count + ' Network ' + (count === 1 ? 'summary' : 'summaries') + ' missing'
+}
+
+function coverageNote(total: MetricCoverage): string | null {
   if (total.state === 'partial') return 'Known values subtotal — not every eligible Validator has a value for this metric.'
   if (total.state === 'unknown') return 'No eligible Validator has a value for this metric; showing Unknown rather than zero.'
   return null
@@ -47,7 +83,7 @@ function NetworkTotals({ network }: { network: PublicNetwork }) {
         {(['blocks', 'rewards'] as const).map(metric => <div key={metric} className="min-w-0" data-slot={'validator-summary-' + metric}>
           <dt className="text-xs text-muted-foreground">{metric === 'blocks' ? 'Cumulative blocks' : 'Cumulative rewards'}</dt>
           <dd className="m-0 mt-1 text-sm font-medium tabular-nums [overflow-wrap:anywhere]">{formatAmountExact(summary[metric].knownSum)}</dd>
-          <p className="mt-1 text-xs text-muted-foreground">{coverageLabel(summary[metric])}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{networkCoverage(summary[metric])}</p>
           {coverageNote(summary[metric]) && <p className="mt-1 text-xs text-muted-foreground">{coverageNote(summary[metric])}</p>}
         </div>)}
       </dl>
@@ -73,27 +109,27 @@ export function ValidatorTotalCard({ networks, metric, availability = 'ready', s
   const exact = formatAmountExact(total.knownSum)
   const scope = networks.length === 1 ? networks[0].displayName : networks.length + ' Networks'
   const populated = networks.filter(network => network.nodes.length > 0).length
-  // One coverage vocabulary for the Breakdown and the tile face: this is the
-  // same Server-owned per-metric coverage text, never a hover-only tooltip.
-  const coverageSummary = total.missingNetworks > 0 && total.missingNetworks === populated
-    ? 'Coverage unknown'
-    : total.valuedCount + '/' + total.expectedCount + ' known'
-      + (total.missingNetworks > 0 ? ' (reported)' : '')
-      + (total.state === 'partial' ? ' · Partial' : '')
-      + (total.state === 'unknown' ? ' · Unknown' : '')
-      + (total.staleCount > 0 ? ' · ' + total.staleCount + ' stale' : '')
+  // One coverage vocabulary for the tile face and the Breakdown: the same
+  // Server-owned per-metric coverage text, never a hover-only tooltip, and every
+  // number it prints still comes from the Server's own summary. While the
+  // summaries are still loading or could not be read, there is no denominator to
+  // state, so both surfaces say exactly that instead of turning the empty input
+  // into an authoritative 'No eligible Validators'.
+  const coverage = availability === 'ready'
+    ? cumulativeCoverage(total, populated)
+    : (availability === 'loading' ? 'Loading coverage…' : 'Coverage unavailable')
   // The tile face prints its own Network scope followed by that same coverage
-  // text, so the scope and the metric's own Partial/denominator are readable
-  // without opening the Breakdown. A load/unavailable result still names the
-  // scope it is waiting on rather than dropping it.
-  const caption = (availability === 'ready'
-    ? [scope, scopeNote, coverageSummary]
-    : [networks.length > 0 ? scope : null, scopeNote, availability === 'loading' ? 'Loading coverage…' : 'Coverage unavailable']
-  ).filter(Boolean).join(' · ')
+  // text, so the scope and the metric's own count are readable without opening
+  // the Breakdown. A load/unavailable result still names the scope it is waiting
+  // on rather than dropping it.
+  const caption = [availability === 'ready' || networks.length > 0 ? scope : null, scopeNote, coverage]
+    .filter(Boolean).join(' · ')
   const shown = metric === 'blocks' ? <ExactAmount value={exact} split /> : formatAmountOverview(total.knownSum)
+  // The marker slot owns the placement of this control (SummaryMetricCard); the
+  // trigger carries no offset of its own, so all six glyphs line up.
   return <SummaryMetricCard label={label} value={shown} caption={caption} icon={metric === 'blocks' ? Blocks : Coins}
     action={<Dialog>
-      <DialogTrigger asChild><Button variant="ghost" size="icon" className="-mr-2 shrink-0" aria-label={label + ' breakdown and exact values'}><Info className="size-[18px]" strokeWidth={2} aria-hidden="true" data-icon={label} /></Button></DialogTrigger>
+      <DialogTrigger asChild><Button variant="ghost" size="icon" className="shrink-0" aria-label={label + ' breakdown and exact values'}><Info className="size-[18px]" strokeWidth={2} aria-hidden="true" data-icon={label} /></Button></DialogTrigger>
       <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm">
         <DialogHeader className="pr-10 text-left">
           <DialogTitle>{label} — Breakdown</DialogTitle>
@@ -102,14 +138,14 @@ export function ValidatorTotalCard({ networks, metric, availability = 'ready', s
         <p className="text-sm">Exact known-value {total.state === 'partial' ? 'subtotal' : 'sum'}: <strong className="tabular-nums [overflow-wrap:anywhere]">{exact}</strong></p>
         <dl className="m-0 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2" data-slot="validator-overview-scope">
           <div className="min-w-0"><dt className="text-muted-foreground">Scope</dt><dd className="m-0 break-words">{scope}</dd></div>
-          <div className="min-w-0"><dt className="text-muted-foreground">Coverage</dt><dd className="m-0 break-words">{coverageSummary}</dd></div>
+          <div className="min-w-0"><dt className="text-muted-foreground">Coverage</dt><dd className="m-0 break-words">{coverage}</dd></div>
         </dl>
-        {total.missingNetworks > 0 && <p className="text-xs text-muted-foreground" data-slot="validator-overview-missing">{total.missingNetworks} Network {total.missingNetworks === 1 ? 'summary' : 'summaries'} unavailable</p>}
+        {total.missingNetworks > 0 && <p className="text-xs text-muted-foreground" data-slot="validator-overview-missing">{missingSummaryLabel(total.missingNetworks)} from this coverage.</p>}
         {scopeNote && <p className="text-xs text-muted-foreground" data-slot="validator-overview-note">{scopeNote}</p>}
         <p className="text-xs text-muted-foreground">{networks.length > 1
           ? 'Cross-Network numerical sum. Rewards are added in each Network’s native unit without asset conversion; this is not a single-asset balance or monetary valuation.'
           : 'Amounts use the Network native unit; no asset conversion is applied.'}</p>
-        <p className="text-xs text-muted-foreground">Each Network summary comes from the Server. An eligible Validator is counted once per Network even when linked to multiple Active Nodes. Blocks and rewards have independent coverage; missing values are not zero. Retained last-good values remain included and stale contributors are counted. Unlinked Nodes are reported separately, outside the eligible-Validator denominator.</p>
+        <p className="text-xs text-muted-foreground">“5/8 reporting” counts one eligible Validator once per Network, across the Networks whose summary the Server published; that reported denominator never claims the whole selection, and a Network whose summary is missing is named beside it, with its Validators neither zero nor covered. Each Network summary comes from the Server. An eligible Validator is counted once per Network even when linked to multiple Active Nodes. Blocks and rewards have independent coverage; missing values are not zero. Retained last-good values remain included and stale contributors are counted. Unlinked Nodes are reported separately, outside the eligible-Validator denominator.</p>
         {availability !== 'ready' ? <p role="status">{availability === 'loading' ? 'Loading Validator summaries…' : 'Validator summaries unavailable.'}</p> : <div className="space-y-4" data-slot="validator-breakdown">
           {networks.filter(network => network.nodes.length > 0).map(network => <NetworkTotals key={network.networkKey} network={network} />)}
           {networks.length === 0 && <p>No Networks in the current selection; no known values.</p>}

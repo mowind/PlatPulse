@@ -28,14 +28,15 @@ describe('Home cumulative overview', () => {
     render(<><ValidatorTotalCard networks={networks} metric="blocks" /><ValidatorTotalCard networks={networks} metric="rewards" /></>)
     const blocksCard = screen.getByRole('article', { name: 'Cumulative blocks' })
     expect(blocksCard.textContent).toContain('1,115')
-    // The tile face now carries its own Network scope and its own coverage
-    // denominator directly; Partial is visible without opening the Breakdown.
-    expect(blocksCard.querySelector('[data-slot="summary-caption"]')?.textContent).toBe('2 Networks · 5/6 known · Partial · 1 stale')
+    // The tile face carries its own Network scope and its own valued/expected
+    // reporting count directly; the partial denominator is readable without
+    // opening the Breakdown.
+    expect(blocksCard.querySelector('[data-slot="summary-caption"]')?.textContent).toBe('2 Networks · 5/6 reporting · 1 stale')
     expect(screen.getByRole('article', { name: 'Cumulative rewards' }).querySelector('[data-slot="summary-caption"]')?.textContent)
-      .toBe('2 Networks · 4/6 known · Partial · 1 stale')
+      .toBe('2 Networks · 4/6 reporting · 1 stale')
     fireEvent.click(screen.getByRole('button', { name: 'Cumulative blocks breakdown and exact values' }))
     const dialog = screen.getByRole('dialog')
-    expect(within(dialog).getByText('5/6 known · Partial · 1 stale')).toBeTruthy()
+    expect(within(dialog).getByText('5/6 reporting · 1 stale')).toBeTruthy()
     expect(within(dialog).getByText(/native unit without asset conversion/)).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
     expect(document.querySelector('[data-slot="validator-summary"]')).toBeNull()
@@ -46,12 +47,12 @@ describe('Home cumulative overview', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cumulative rewards breakdown and exact values' }))
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByText('13.750000000001')).toBeTruthy()
-    expect(within(dialog).getByText('4/6 known · Partial · 1 stale')).toBeTruthy()
+    expect(within(dialog).getByText('4/6 reporting · 1 stale')).toBeTruthy()
     const mainnet = within(dialog).getByRole('article', { name: 'Validator totals for Mainnet' })
     expect(within(mainnet).getByText('1,108')).toBeTruthy()
     expect(within(mainnet).getByText('11.750000000001')).toBeTruthy()
-    expect(within(mainnet).getByText('4/5 Validators with values · 1 stale')).toBeTruthy()
-    expect(within(mainnet).getByText('3/5 Validators with values · 1 stale')).toBeTruthy()
+    expect(within(mainnet).getByText('4/5 reporting · 1 stale')).toBeTruthy()
+    expect(within(mainnet).getByText('3/5 reporting · 1 stale')).toBeTruthy()
     expect(within(mainnet).getByText('1 unlinked Node')).toBeTruthy()
     expect(within(mainnet).getAllByText(/Known values subtotal/)).toHaveLength(2)
     expect(within(dialog).getByText(/not a single-asset balance/)).toBeTruthy()
@@ -70,7 +71,12 @@ describe('Home cumulative overview', () => {
     const card = screen.getByRole('article', { name: 'Cumulative blocks' })
     expect(card.querySelector('[data-slot="summary-value"]')?.textContent).toBe('Unknown')
     // A missing value is Unknown; the visible coverage line never fabricates a zero total.
-    expect(card.querySelector('[data-slot="summary-caption"]')?.textContent).toBe('Missing · 0/2 known · Unknown')
+    expect(card.querySelector('[data-slot="summary-caption"]')?.textContent).toBe('Missing · 0/2 reporting · Unknown')
+    // A real zero keeps its own reporting count instead of reading as Unknown.
+    render(<ValidatorTotalCard networks={[zero]} metric="blocks" />)
+    const zeroCard = screen.getAllByRole('article', { name: 'Cumulative blocks' }).at(-1)!
+    expect(zeroCard.querySelector('[data-slot="summary-value"]')?.textContent).toBe('0')
+    expect(zeroCard.querySelector('[data-slot="summary-caption"]')?.textContent).toBe('Zero · 1/1 reporting')
   })
 
   it('does not fabricate coverage for a missing summary or empty Network', () => {
@@ -79,12 +85,27 @@ describe('Home cumulative overview', () => {
     expect(selectionTotal([networks[0], missing], 'rewards')).toMatchObject({ knownSum: '11.750000000001', missingNetworks: 1, state: 'partial' })
     expect(selectionTotal([network('Empty', other, 0)], 'blocks').knownSum).toBeNull()
     render(<ValidatorTotalCard networks={[networks[0], missing]} metric="rewards" />)
+    // The reported denominator may not claim the whole selection: the missing
+    // Network summary is named beside it instead of being counted as covered.
     expect(screen.getByRole('article', { name: 'Cumulative rewards' }).querySelector('[data-slot="summary-caption"]')?.textContent)
-      .toBe('2 Networks · 3/5 known (reported) · Partial · 1 stale')
+      .toBe('2 Networks · 3/5 reporting · 1 Network summary missing · 1 stale')
     fireEvent.click(screen.getByRole('button', { name: /breakdown/ }))
     const dialog = screen.getByRole('dialog')
-    expect(within(dialog).getByText('3/5 known (reported) · Partial · 1 stale')).toBeTruthy()
-    expect(within(dialog).getByText('1 Network summary unavailable')).toBeTruthy()
+    expect(within(dialog).getByText('3/5 reporting · 1 Network summary missing · 1 stale')).toBeTruthy()
+    expect(within(dialog).getByText('1 Network summary missing from this coverage.')).toBeTruthy()
+    // Every summary missing is coverage unknown, never a complete 0/0 reading.
+    cleanup()
+    render(<ValidatorTotalCard networks={[missing]} metric="rewards" />)
+    expect(screen.getByRole('article', { name: 'Cumulative rewards' }).querySelector('[data-slot="summary-caption"]')?.textContent)
+      .toBe('Unavailable · Coverage unknown')
+  })
+
+  it('states a denominator of zero as no eligible Validators rather than 0/0', () => {
+    const none = network('NoValidators', { ...other, blocks: { knownSum: '0', expectedCount: 0, valuedCount: 0, staleCount: 0, state: 'complete' } })
+    render(<ValidatorTotalCard networks={[none]} metric="blocks" />)
+    const card = screen.getByRole('article', { name: 'Cumulative blocks' })
+    expect(card.querySelector('[data-slot="summary-value"]')?.textContent).toBe('0')
+    expect(card.querySelector('[data-slot="summary-caption"]')?.textContent).toBe('NoValidators · No eligible Validators')
   })
 
   it.each(['loading', 'unavailable'] as const)('keeps %s separate from an authoritative empty response', availability => {
@@ -97,9 +118,16 @@ describe('Home cumulative overview', () => {
     expect(screen.getByRole('article').querySelector('[data-slot="summary-caption"]')?.textContent)
       .toBe('2 Networks · ' + (availability === 'loading' ? 'Loading coverage…' : 'Coverage unavailable'))
     fireEvent.click(screen.getByRole('button', { name: /breakdown/ }))
-    expect(screen.getByRole('dialog').textContent).toContain(
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.textContent).toContain(
       availability === 'loading' ? 'Loading Validator summaries…' : 'Validator summaries unavailable.',
     )
+    // The Breakdown states the same availability the face does: a pending or
+    // failed response is never read as a zero denominator, so the explanation
+    // cannot claim there are no eligible Validators while it says otherwise.
+    expect(dialog.querySelector('[data-slot="validator-overview-scope"]')?.textContent)
+      .toContain(availability === 'loading' ? 'Loading coverage…' : 'Coverage unavailable')
+    expect(dialog.textContent).not.toContain('No eligible Validators')
   })
 
   it('follows selected Network scope without changing the source totals', () => {
@@ -110,7 +138,7 @@ describe('Home cumulative overview', () => {
     const dialog = screen.getByRole('dialog')
     const scope = dialog.querySelector('[data-slot="validator-overview-scope"]')
     expect(scope?.textContent).toContain('Testnet')
-    expect(scope?.textContent).toContain('1/1 known')
+    expect(scope?.textContent).toContain('1/1 reporting')
     expect(within(dialog).queryByRole('article', { name: 'Validator totals for Mainnet' })).toBeNull()
   })
 
