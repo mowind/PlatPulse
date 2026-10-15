@@ -419,9 +419,11 @@
  * is the row's own room, not a column count of the viewport: the search slot is
  * one flex item that takes whatever the Network pills, the Sort & filter entry
  * and the card/list choice leave over at their own widths, its own width never
- * depends on what it holds (inline-size containment), and 16rem is exactly the
- * shape it has to hold — the field's readable 13rem, its 44px Clear search
- * action and the 4px between them. The pills therefore never pay for the field
+ * depends on what it holds (inline-size containment), and 16rem is the least it
+ * takes to hold the shape — the field's readable 13rem, its 44px Clear search
+ * action and the 4px between them. The slot itself asks for a little more than
+ * that least width, so the field it shows is never drawn at the very edge of its
+ * own readable size. The pills therefore never pay for the field
  * and the field is never a squeezed version of itself: where the row cannot hold
  * all of it, the row keeps the entry that opens it. Both shapes read one query
  * and one draft, so crossing this line neither clears the word nor lifts the
@@ -432,6 +434,15 @@
  * ------------------------------------------------------------------------- */
 @layer components {
   [data-slot='home-search-slot'] { container-type: inline-size; }
+  /* Both shapes hold a search input, and a search input draws its own clear
+   * button beside the word it holds — a second way to clear the same word, in
+   * no reading order and with no name, sitting beside the toolbar's own Clear
+   * search action. The toolbar's action is the field's one clear action. */
+  [data-slot='home-search-field']::-webkit-search-cancel-button,
+  [data-slot='home-search-panel-field']::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+    appearance: none;
+  }
   [data-slot='home-search-inline'] { display: none; }
   @container (min-width: 16rem) {
     [data-slot='home-search-inline'] { display: flex; }

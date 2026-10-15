@@ -76,22 +76,35 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
 
   /** The room the row has left for its search control, worked out from the row's
    *  own geometry rather than read back from the implementation: the row's own
-   *  width, minus the Network pills at their content width, minus the two other
-   *  controls at the widths they are drawn, minus the 8px gaps between them all.
-   *  That is the number the stylesheet's own 16rem asks about. */
+   *  width, minus the Network group's own drawn width, minus the two controls
+   *  beside the search slot at the widths they are drawn, minus the 8px gaps
+   *  between them. That is the number the stylesheet's own 16rem asks about: the
+   *  search slot is one flex item of a fixed width that shrinks to whatever the
+   *  controls beside it leave over, and the query on it decides which of its two
+   *  shapes a reader is shown. */
   const searchRoom = (page: Page) =>
     page.evaluate(() => {
       const row = document.querySelector('[data-slot="home-toolbar"]') as HTMLElement
-      const slot = row.querySelector('[data-slot="home-search-slot"]')
-      const used = Array.from(row.children)
-        .filter((child) => child !== slot)
-        .reduce((total, child) => {
-          const element = child as HTMLElement
-          return total + (element.getAttribute('aria-label') === 'Network filter'
-            ? element.scrollWidth
-            : element.getBoundingClientRect().width)
-        }, 0)
-      return row.clientWidth - used - 8 * (row.children.length - 1)
+      const group = row.querySelector('[data-slot="home-toolbar-actions"]') as HTMLElement
+      const slot = group.querySelector('[data-slot="home-search-slot"]') as HTMLElement
+      const width = (element: Element) => element.getBoundingClientRect().width
+      // The row's own two groups: the Network group, and the group that holds the
+      // search slot. A sentence painted for screen readers only is no flex item of
+      // the row at all, so it is left out of both the widths and the gaps.
+      const network = Array.from(row.children).find(
+        (child) => child !== group && getComputedStyle(child).position !== 'absolute',
+      )
+      const beside = Array.from(group.children).filter((child) => child !== slot)
+      // Where one line holds both groups, the Network group grows into everything
+      // the rest of the row does not use; where the row is too narrow for that, the
+      // two groups take a line each and the slot shares its line with the two
+      // controls beside it alone.
+      const wrapped = network === undefined
+        || Math.abs(network.getBoundingClientRect().top - group.getBoundingClientRect().top) > 1
+      const gaps = 8 * (beside.length + (wrapped ? 0 : 1))
+      const used = beside.reduce((total, child) => total + width(child), 0)
+      const networkWidth = wrapped || network === undefined ? 0 : width(network)
+      return row.clientWidth - used - gaps - networkWidth
     })
 
   /** A surface opens below the entry that owns it and stays inside the viewport's
@@ -199,7 +212,11 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
       await expect(homeSearchEntry(page)).toHaveAttribute('aria-expanded', 'false')
       await expect(homeSearchInline(page)).toBeHidden()
     }
-    await expect(badge(page)).toHaveText('0')
+    // The row states the count it draws a chip for; it draws no chip while both
+    // status filters sit on their default, because a chip reading zero says
+    // nothing.
+    await expect(badge(page)).toHaveCount(0)
+    await expect(filterDescription(page)).toHaveText('0 of 2 status filters on')
 
     const before = await rowGeometry(page)
 
@@ -233,8 +250,9 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
       await field.focus()
       await expect(field).toBeFocused()
       await expect(page.getByRole('dialog')).toHaveCount(0)
-      await expect(clearSearch(page)).toBeVisible()
-      await expect(clearSearch(page)).toBeDisabled()
+      // An empty field draws no Clear search action at all: the one clear action
+      // this field has appears with the first word and leaves with the last.
+      await expect(clearSearch(page)).toHaveCount(0)
       expect(await rowGeometry(page), 'focusing the row field must not shift the row').toEqual(before)
       await expectNoHorizontalOverflow(page)
       await expectVisibleInteractiveTargets(page)
@@ -242,19 +260,12 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
       const field = await openHomeSearch(page)
       await expect(field).toBeVisible()
       await expect(field).toBeFocused()
-      await expect(clearSearch(page)).toBeVisible()
-      await expect(clearSearch(page)).toBeDisabled()
+      await expect(clearSearch(page)).toHaveCount(0)
       await expectAnchoredInside(page, homeSearchEntry(page), homeSearchSurface(page), 'the Search surface')
       await expectUncovered(homeSearchSurface(page), 'the open Search surface')
       expect(await rowGeometry(page), 'the open search surface must not shift the toolbar row').toEqual(before)
       await expectNoHorizontalOverflow(page)
       await expectVisibleInteractiveTargets(page)
-      await expectReachable(
-        page,
-        clearSearch(page),
-        homeSearchSurface(page),
-        'Clear search of the open Search surface',
-      )
 
       // Escape closes the surface and hands the keyboard back to its entry, so
       // the row a reader leaves is the row they started from.
@@ -270,17 +281,32 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
         await expect(homeSearchSurface(page)).toBeVisible()
         await field.fill('Node')
         await expect(page).toHaveURL(/[?&]q=Node/)
-        // The tap lands in the row's own gap between the card/list choice and the
-        // search control: on no control at all, outside the entry that owns the
-        // surface, and at a real finger's coordinates rather than a synthetic
-        // event — which is the only way the dismissal a phone uses is read here.
-        const viewBox = (await page.locator('[role="tablist"][aria-label="View"]').boundingBox())!
+        // The tap lands in the Search slot's own trailing room, beside the entry
+        // that opened the surface: on no control at all — a finger-tap in the 8px
+        // gap between two controls is retargeted to the nearer of the two by the
+        // browser's own touch adjustment, which would open that control's surface
+        // and prove nothing about the dismissal — tens of pixels clear of the entry
+        // that owns the surface, and at a real finger's coordinates rather than a
+        // synthetic event, which is the only way the dismissal a phone uses is read
+        // here.
+        const entryBox = (await homeSearchEntry(page).boundingBox())!
         const slotBox = (await homeSearchSlot(page).boundingBox())!
-        await page.touchscreen.tap(
-          (viewBox.x + viewBox.width + slotBox.x) / 2,
-          viewBox.y + viewBox.height / 2,
-        )
+        const tapX = (entryBox.x + entryBox.width + slotBox.x + slotBox.width) / 2
+        const tapY = slotBox.y + slotBox.height / 2
+        expect(
+          await page.evaluate(
+            ([x, y]: number[]) =>
+              document.elementFromPoint(x, y)?.closest('button, input, a, [role="tab"]')?.tagName ?? null,
+            [tapX, tapY],
+          ),
+          'the tap that dismisses the surface lands on no control at all',
+        ).toBeNull()
+        await page.touchscreen.tap(tapX, tapY)
         await expect(homeSearchSurface(page)).toHaveCount(0)
+        // And it opened nothing else: the tap was a dismissal of the surface, not
+        // a press on the entry that stands beside it.
+        await expect(homeFilterSurface(page)).toHaveCount(0)
+        await expect(homeFilterEntry(page)).toHaveAttribute('aria-expanded', 'false')
         await expect(homeSearchEntry(page)).toHaveAttribute('data-search-state', 'on')
         await expect(page.locator('[data-slot="home-search-active"]')).toBeVisible()
         await expect(page).toHaveURL(/[?&]q=Node/)
@@ -319,6 +345,26 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
       showsField,
       `the row displays its own field exactly while the room left in it holds one (${Math.round(room)}px)`,
     ).toBe(room >= HOME_SEARCH_TRACK)
+
+    // §15.33's line discipline is asserted rather than assumed, because the room
+    // read above is the room left on the row's own line: above the phone widths
+    // the two ends are drawn on one line, and a phone row gives each group a line
+    // of its own.
+    const groupLineGap = await page.evaluate(() => {
+      const row = document.querySelector('[data-slot="home-toolbar"]') as HTMLElement
+      const group = row.querySelector('[data-slot="home-toolbar-actions"]') as HTMLElement
+      const network = Array.from(row.children).find(
+        (child) => child !== group && getComputedStyle(child).position !== 'absolute',
+      )
+      return network === undefined
+        ? 0
+        : Math.abs(network.getBoundingClientRect().top - group.getBoundingClientRect().top)
+    })
+    if ((page.viewportSize()?.width ?? 0) >= 768) {
+      expect(groupLineGap, 'the row draws its two ends on one line above the phone widths').toBeLessThanOrEqual(1)
+    } else {
+      expect(groupLineGap, 'a phone row gives each group a line of its own').toBeGreaterThan(1)
+    }
 
     // Both shapes exist; exactly one is displayed, and exactly one field is
     // exposed — never two search controls a reader could reach and neither of
@@ -367,6 +413,81 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
     }
     await expectNoHorizontalOverflow(page)
     await expectVisibleInteractiveTargets(page)
+  })
+
+  /** §15.33: the row's right-hand end is one group of three controls, and that
+   *  group is never squeezed narrower than the controls it holds. A deployment
+   *  whose Networks are many and long is exactly the case the arrangement is for
+   *  — the pills own a scroller of their own and the three controls keep their
+   *  own room — so the list is lengthened in the page's own DOM, where the same
+   *  elements are read by the same stylesheet at a length this deployment's own
+   *  data would have, and the layout that comes out is read in the same pass
+   *  (before React can reconcile the addition away). */
+  test('keeps its three controls inside their own group when a long Network list presses the row', async ({ page }) => {
+    await loginAs(page)
+    await expect(page.locator('[data-slot="node-card"]').first()).toBeVisible({ timeout: 15_000 })
+
+    const geometry = await page.evaluate(() => {
+      const list = document.querySelector('[aria-label="Network filter"]') as HTMLElement
+      const last = list.lastElementChild
+      for (let index = 0; index < 12 && last !== null; index += 1) list.append(last.cloneNode(true))
+
+      const row = document.querySelector('[data-slot="home-toolbar"]') as HTMLElement
+      const group = row.querySelector('[data-slot="home-toolbar-actions"]') as HTMLElement
+      const network = Array.from(row.children).find(
+        (child) => child !== group && getComputedStyle(child).position !== 'absolute',
+      ) as HTMLElement
+      const slot = group.querySelector('[data-slot="home-search-slot"]') as HTMLElement
+      const inline = group.querySelector('[data-slot="home-search-inline"]') as HTMLElement
+      const box = (element: Element) => {
+        const rect = element.getBoundingClientRect()
+        return { left: rect.left, right: rect.right, top: rect.top, width: rect.width, height: rect.height }
+      }
+      const controls = Array.from(group.children).filter(
+        (child) => getComputedStyle(child).position !== 'absolute' && child.getBoundingClientRect().width > 0,
+      )
+      return {
+        row: box(row),
+        group: box(group),
+        network: box(network),
+        slot: box(slot),
+        pills: { content: network.scrollWidth, drawn: network.clientWidth },
+        controls: controls.map((child) => box(child)),
+        inlineShape: getComputedStyle(inline).display,
+        documentOverflow: document.documentElement.scrollWidth - window.innerWidth,
+      }
+    })
+
+    // The case under test is a Network list that does not fit the row it is on: the
+    // pills are the ones that scroll, never the page.
+    expect(geometry.pills.content, 'the Network list is long enough to press the row').toBeGreaterThan(1400)
+    expect(geometry.pills.content, 'the Network pills are the group that scrolls').toBeGreaterThan(geometry.pills.drawn + 1)
+
+    // Every control stays inside the group it belongs to. The group's own floor is
+    // the width its three controls need, so the pills' room and the search slot's
+    // surplus are spent before any control is pushed out of the group — out to the
+    // left, over the pills, which is where right alignment would leave it.
+    for (const control of geometry.controls) {
+      expect(control.left, 'no control overflows its own group to the left').toBeGreaterThanOrEqual(geometry.group.left - 0.5)
+      expect(control.right, 'no control overflows its own group to the right').toBeLessThanOrEqual(geometry.group.right + 0.5)
+      expect(control.height, 'a control pressed for room still keeps its touch target').toBeGreaterThanOrEqual(44)
+    }
+    // The row's two ends are drawn side by side, or on two lines where the row cannot
+    // hold both, but never on top of each other; and the three controls still end at
+    // the row's own right edge.
+    const sameLine = Math.abs(geometry.network.top - geometry.group.top) <= 1
+    expect(geometry.group.left, 'the two ends of the row never overlap').toBeGreaterThanOrEqual(
+      sameLine ? geometry.network.right - 0.5 : geometry.row.left - 0.5,
+    )
+    expect(geometry.group.right, 'the group still ends at the row\'s right edge').toBeCloseTo(geometry.row.right, 0)
+    expect(geometry.documentOverflow, 'the row itself never overflows the page').toBeLessThanOrEqual(1)
+
+    // A row whose Network names have outgrown it is a row with no room for a field:
+    // the shortage reaches the slot, which hands the field back to its entry, rather
+    // than the group leaving its own box to keep a field in a row that cannot hold
+    // one (§15.30).
+    expect(geometry.slot.width, 'a pressed row gives the field back to the entry').toBeLessThan(HOME_SEARCH_TRACK)
+    expect(geometry.inlineShape, 'the entry is the shape a pressed row displays').toBe('none')
   })
 
   /** Issue #241: the switch is about the room the row has, so the one thing that
@@ -473,8 +594,9 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
   test('counts the status filters on the entry and clears only those', async ({ page }) => {
     await loginAs(page)
     await expect(page.locator('[data-slot="node-card"]').first()).toBeVisible({ timeout: 15_000 })
-    // The count is stated whether or not any filter is on.
-    await expect(badge(page)).toHaveText('0')
+    // The count is stated whether or not any filter is on; the chip that shows it
+    // is drawn only while there is a count to show.
+    await expect(badge(page)).toHaveCount(0)
     await expect(filterDescription(page)).toHaveText('0 of 2 status filters on')
     await expect(homeFilterEntry(page)).toHaveAttribute('aria-describedby', 'home-status-filter-count')
 
@@ -501,7 +623,7 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
 
     // Clear filters resets the two status filters and nothing else: the sort
     // order and the Network selection stay where the reader put them.
-    await expect(badge(page)).toHaveText('0')
+    await expect(badge(page)).toHaveCount(0)
     await expect(filterDescription(page)).toHaveText('0 of 2 status filters on')
     await expect(await openHomeHealth(page)).toHaveValue('all')
     await expect(await openHomeValidator(page)).toHaveValue('all')
@@ -579,26 +701,26 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
       await expect(row(page).getByRole('searchbox')).toHaveCount(0)
     }
 
-    // From the selected Network pill, Tab meets the row's own controls in
-    // reading order and nothing else: the controls behind an entry are not in
-    // the walk until that entry is opened.
+    // From the selected Network pill, Tab meets the row's own controls in the
+    // order the row's right-hand group states them — the search control, then the
+    // Sort & filter entry, then the card/list choice — and nothing else: the
+    // controls behind an entry are not in the walk until that entry is opened.
     await selectedPill(page).focus()
     await page.keyboard.press('Tab')
-    await expect(homeFilterEntry(page)).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('tab', { name: 'Cards', exact: true })).toBeFocused()
-    await page.keyboard.press('Tab')
     if (rowShowsSearchField) {
-      // The field is the row's own stop, and with nothing to clear its Clear
-      // search action is disabled — which is itself a stop the walk skips — so
-      // the reading goes straight on to the card rather than through an entry.
+      // The field is the row's own stop. With nothing to clear it carries no
+      // Clear search action at all — the field has one clear action, drawn only
+      // while there is a word for it to clear — so the reading goes straight on
+      // to the entry beside it rather than through a disabled one.
       await expect(homeSearchInline(page)).toBeFocused()
-      await expect(clearSearch(page)).toBeDisabled()
+      await expect(clearSearch(page)).toHaveCount(0)
       await page.keyboard.press('Tab')
-      expect(await page.evaluate(() => document.activeElement?.getAttribute('href') ?? '')).toContain('/nodes/')
+      await expect(homeFilterEntry(page)).toBeFocused()
+      await page.keyboard.press('Tab')
+      await expect(page.getByRole('tab', { name: 'Cards', exact: true })).toBeFocused()
 
-      // Once there is a word to clear the action joins the walk beside the field
-      // and hands it straight back.
+      // Once there is a word to clear the action joins the walk inside the field's
+      // own box and hands it straight back.
       await homeSearchInline(page).fill('Node')
       await expect(clearSearch(page)).toBeEnabled()
       await page.keyboard.press('Tab')
@@ -607,9 +729,14 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
       await expect(homeSearchInline(page)).toBeFocused()
     } else {
       await expect(homeSearchEntry(page)).toBeFocused()
+      await page.keyboard.press('Tab')
+      await expect(homeFilterEntry(page)).toBeFocused()
+      await page.keyboard.press('Tab')
+      await expect(page.getByRole('tab', { name: 'Cards', exact: true })).toBeFocused()
 
       // Opening the entry puts the field it holds into the walk between the entry
       // and the rest of the row, and Escape hands the keyboard back to the entry.
+      await homeSearchEntry(page).focus()
       await page.keyboard.press('Enter')
       await expect(homeSearchSurface(page)).toBeVisible()
       await expect(await openHomeSearch(page)).toBeFocused()
@@ -644,9 +771,15 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
         await field.focus()
         await expect(field).toBeFocused()
         await expect(field).toBeVisible()
+        // The clear action is drawn only while there is a word for it to clear, so
+        // the theme contract is read with a word in the field and the field is
+        // handed back empty for the next scheme.
+        await field.fill('Node')
         await expect(clearSearch(page)).toBeVisible()
         await expectVisibleInteractiveTargets(page)
         await expectNoHorizontalOverflow(page)
+        await clearSearch(page).click()
+        await expect(field).toHaveValue('')
       } else {
         const field = await openHomeSearch(page)
         await expect(field).toBeFocused()

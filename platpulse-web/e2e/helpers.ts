@@ -74,15 +74,17 @@ export const homeSearchSurface = (page: Page) => page.getByRole('dialog', { name
  */
 export const homeSearchInline = (page: Page) => page.locator('[data-slot="home-search-field"]')
 
-/** The slot the row keeps for that control: one flex item that takes whatever
- *  the controls beside it leave over at their own widths. */
+/** The slot the row keeps for that control: one flex item of its own width, which
+ *  takes whatever the controls beside it leave over and shrinks to what is left
+ *  where the row is narrower than the four of them need. */
 export const homeSearchSlot = (page: Page) => page.locator('[data-slot="home-search-slot"]')
 
 /**
- * Issue #241: the room that shape takes — the field's readable 13rem plus its
- * 44px Clear search action and the 4px between them. emerald.css states it once
- *  as the 16rem its width query asks for; a spec that works the row's own room
- *  out for itself uses this to say which shape that room has earned.
+ * Issue #241: the least room that shape can be read in — the field's readable
+ * 13rem plus its 44px Clear search action and the 4px between them. emerald.css
+ *  states it once as the 16rem its width query asks for; a spec that works the
+ *  row's own room out for itself uses this to say which shape that room has
+ *  earned.
  */
 export const HOME_SEARCH_TRACK = 16 * 16
 
@@ -92,6 +94,11 @@ export const homeToolbarShowsField = (page: Page) => homeSearchInline(page).isVi
 /** The reader's field, whichever shape this toolbar shows: the row's own field,
  *  or — opening the entry first — the field that entry holds. */
 export async function homeSearchField(page: Page) {
+  // Which shape the row gives is a question about a laid-out row, so this read
+  // waits for the row's search control to be on screen first: straight after a
+  // navigation the toolbar may not be painted yet, and a shape read from that
+  // frame would send the reader to an entry this row is not showing.
+  await expect(homeSearchSlot(page)).toBeVisible()
   if (await homeToolbarShowsField(page)) return homeSearchInline(page)
   const surface = homeSearchSurface(page)
   if (!(await surface.isVisible())) await homeSearchEntry(page).click()

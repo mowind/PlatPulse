@@ -601,8 +601,12 @@ export function validatorIdentityStatement(validator: PublicValidatorInsight): {
  * does not confirm as a Validator (#238). A confirmed non-Validator shows the
  * word alone: its reason moves to the line's own title and to the identity
  * entry, so the repeated sentence stops crowding a footer that has nothing left
- * to explain. The unconfirmed case keeps its reason on the face, because an
- * unestablished identity must never be read as a confirmed non-Validator.
+ * to explain. That word is the quietest thing the footer can say — the card has
+ * no Validator metrics to show and no verdict to weigh — so it takes the muted
+ * tone the reason beside it uses rather than the foreground tone a value would.
+ * The unconfirmed case keeps its reason on the face and its foreground word,
+ * because an unestablished identity must never be read as a confirmed
+ * non-Validator.
  */
 function ValidatorIdentityNote({ validator, confirmedNonValidator }: {
   validator: PublicValidatorInsight
@@ -625,7 +629,10 @@ function ValidatorIdentityNote({ validator, confirmedNonValidator }: {
         title={statement.detail}
         aria-label={`Validator identity state: ${state || 'unknown'}`}
       >
-        <span data-slot="linked-validator-identity-label" className="font-medium text-foreground">
+        <span
+          data-slot="linked-validator-identity-label"
+          className={cn('font-medium', confirmedNonValidator ? 'text-muted-foreground' : 'text-foreground')}
+        >
           {statement.label}
         </span>
         {!confirmedNonValidator && (

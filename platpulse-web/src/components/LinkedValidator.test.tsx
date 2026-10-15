@@ -226,6 +226,21 @@ describe('LinkedValidatorSection Home identity states', () => {
     expect(screen.queryAllByText('Unknown')).toHaveLength(0)
   })
 
+  it('states the one word a confirmed non-Validator has in the footer\'s own muted tone', () => {
+    renderCard({ validator: { ...notValidator, state: 'empty', freshness: 'fresh' } })
+    const label = identityLine().querySelector('[data-slot="linked-validator-identity-label"]') as HTMLElement
+    // The card has no metric to weigh and no verdict to give, so the one word it
+    // can say is the quietest reading in the footer rather than a value: it
+    // takes the muted tone the reason beside it uses. An unconfirmed identity
+    // keeps the foreground tone, because it is not a settled negative.
+    expect(label.className).toContain('text-muted-foreground')
+    cleanup()
+    renderCard({ validator: { ...insight, currentValidatorStatus: 'unknown' } })
+    const unconfirmed = identityLine().querySelector('[data-slot="linked-validator-identity-label"]') as HTMLElement
+    expect(unconfirmed.className).toContain('text-foreground')
+    expect(unconfirmed.className).not.toContain('text-muted-foreground')
+  })
+
   it('marks a retained non-Validator verdict as retained', () => {
     renderCard({ validator: { ...notValidator, currentValidatorStatusState: 'stale' } })
     expect(identityLine().textContent).toBe('Validator unknown — Confirmed non-Validator status retained.')

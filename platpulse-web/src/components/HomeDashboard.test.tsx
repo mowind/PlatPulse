@@ -1144,14 +1144,18 @@ describe('Public Home filter URLs', () => {
 
   it('narrows the list by search and reads the four counters over that selection', () => {
     renderHome([network, secondNetwork])
-    expect(resultCount().textContent).toContain('Showing 3 of 3 Active Nodes')
+    // With neither a search nor a status filter in force the list states one
+    // number — how many Nodes it lists — because the overview counters above
+    // already state that same figure; a match count against the selection's own
+    // size is a reading only a narrowed list has.
+    expect(resultCount().textContent).toBe('3 nodes')
     expect(summaryValueOf('Active Nodes').textContent).toBe('3')
     expect(document.querySelector('[data-scope-basis]')?.getAttribute('data-scope-basis')).toBe('network')
 
     fireEvent.change(searchbox(), { target: { value: 'Alpha' } })
 
     expect(nodeHrefs()).toEqual(['/nodes/node-a'])
-    expect(resultCount().textContent).toContain('Showing 1 of 3 Active Nodes')
+    expect(resultCount().textContent).toBe('Showing 1 of 3 nodes.')
     // Issue #233: the four attributable counters and the map read the list
     // selection the filters left, while the two cumulative cells keep the
     // Network selection and say so on the card.
@@ -1198,7 +1202,7 @@ describe('Public Home filter URLs', () => {
     expect(nodeHrefs()).toEqual([])
     expect(screen.getByText('No Active Nodes match these filters.')).toBeTruthy()
     expect(document.body.textContent).toContain('widen the filters')
-    expect(resultCount().textContent).toContain('Showing 0 of 2 Active Nodes')
+    expect(resultCount().textContent).toBe('Showing 0 of 2 nodes.')
     // Issue #233: a selection that holds no Node is an empty reading, not a
     // zero — the four counters that follow the list state no figure at all
     // instead of inventing a country count for the Nodes they did not find.
@@ -1543,9 +1547,11 @@ describe('Public Home toolbar entries', () => {
     expect(screen.getByRole('tablist', { name: 'View' })).toBeTruthy()
     expect(trigger(filterEntry).getAttribute('data-slot')).toBe('home-filter-trigger')
     expect(trigger('Search Active Nodes').getAttribute('data-slot')).toBe('home-search-trigger')
-    // The count is part of the row, not of the surface: it is stated while the
-    // entry is closed, including at zero.
-    expect(badge()?.textContent).toBe('0')
+    // The count is part of the row, not of the surface: the row states it while
+    // the entry is closed, and it draws the chip only while there is a count to
+    // state — a chip reading zero is a chip that says nothing.
+    expect(badge()).toBeNull()
+    expect(document.getElementById('home-status-filter-count')?.textContent).toBe('0 of 2 status filters on')
 
     fireEvent.click(trigger(filterEntry))
     expect(surface('Sort and filters')).toBeTruthy()
@@ -1555,6 +1561,28 @@ describe('Public Home toolbar entries', () => {
     expect(trigger(filterEntry).getAttribute('aria-expanded')).toBe('true')
     // Nothing to clear while both filters are the default.
     expect((screen.getByRole('button', { name: 'Clear filters' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('gives the row two ends: the Network group and one right-hand group of three controls', () => {
+    renderHome([network])
+
+    const row = document.querySelector('[data-slot="home-toolbar"]') as HTMLElement
+    const group = row.querySelector('[data-slot="home-toolbar-actions"]') as HTMLElement
+    // The row is two groups rather than four controls with three of them pushed
+    // to the right by their own margins: the Network pills take the left-hand
+    // end, and the search control, the Sort & filter entry and the card/list
+    // choice share one right-hand group, in the order a reader reaches them.
+    // Each group names itself, so the reading is of the row as it is built
+    // rather than of a name this test supplies for a missing one.
+    expect(Array.from(row.children).map(child => child.getAttribute('data-slot')))
+      .toEqual(['network-group', 'home-toolbar-actions'])
+    // The search slot and the view choice carry their own slots; the entry in
+    // between is the Sort & filter wrapper, which holds the trigger and the
+    // surface the row states its count beside.
+    expect(Array.from(group.children).map(child => child.getAttribute('data-slot')))
+      .toEqual(['home-search-slot', 'sort-filter-entry', 'tabs'])
+    expect(group.querySelector('[data-slot="home-filter-trigger"]')).toBeTruthy()
+    expect(group.querySelector('[aria-label="View"]')).toBeTruthy()
   })
 
   it('opens one entry at a time and closes the open one from its own trigger', () => {
@@ -1574,8 +1602,10 @@ describe('Public Home toolbar entries', () => {
     renderHome([network])
 
     fireEvent.click(trigger(filterEntry))
-    // Zero is a count like any other: the chip says so instead of vanishing.
-    expect(badge()?.textContent).toBe('0')
+    // Zero is not a count this chip states: with both filters at their default
+    // the entry draws no chip at all, and the count still reaches a reader that
+    // cannot see one through the entry's own description.
+    expect(badge()).toBeNull()
     expect(document.getElementById('home-status-filter-count')?.textContent).toBe('0 of 2 status filters on')
 
     fireEvent.change(selectNamed('Health filter'), { target: { value: 'healthy' } })
@@ -1593,7 +1623,7 @@ describe('Public Home toolbar entries', () => {
 
     fireEvent.change(selectNamed('Health filter'), { target: { value: 'all' } })
     fireEvent.change(selectNamed('Validator status filter'), { target: { value: 'all' } })
-    expect(badge()?.textContent).toBe('0')
+    expect(badge()).toBeNull()
     expect(trigger(filterEntry).getAttribute('aria-describedby')).toBe('home-status-filter-count')
     expect(document.getElementById('home-status-filter-count')?.textContent).toBe('0 of 2 status filters on')
   })
@@ -1609,7 +1639,7 @@ describe('Public Home toolbar entries', () => {
     expect(window.location.search).toBe('?network=testnet&q=Gamma&sort=name&view=list')
     expect(selectNamed('Health filter').value).toBe('all')
     expect(selectNamed('Validator status filter').value).toBe('all')
-    expect(badge()?.textContent).toBe('0')
+    expect(badge()).toBeNull()
     expect(surface('Sort and filters')).toBeTruthy()
   })
 

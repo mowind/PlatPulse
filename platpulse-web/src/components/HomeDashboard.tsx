@@ -26,7 +26,7 @@ import { Alert, AlertDescription } from './ui/alert'
 import { Empty } from './ui/empty'
 import { Input, Select } from './ui/input'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
-import { Server, HeartPulse, TriangleAlert, Network, ChevronUp, ChevronDown, Info, Search, X } from 'lucide-react'
+import { Server, HeartPulse, TriangleAlert, Network, ChevronUp, ChevronDown, Info, Search, SlidersHorizontal, X } from 'lucide-react'
 import { SURFACE_TOOLBAR } from '../lib/surface'
 import { cn } from '../lib/utils'
 import {
@@ -246,7 +246,14 @@ export default function HomeDashboard({
     return () => window.removeEventListener('popstate', takeOver)
   }, [finishReturn])
   useEffect(() => {
-    if (filters.query === '') setQueryDraft(null)
+    // The draft may outlive the address bar by one commit and no more: a keystroke
+    // writes the URL a frame later, and a blur that lands before that frame would
+    // otherwise leave the typed word owned by nobody. Once the address bar agrees
+    // with the draft, or empties, the draft has nothing left to carry. The setter
+    // reads the draft as it stands when the address bar moves — this effect fires
+    // on that move and not on the reader's keystroke, so a word whose URL has not
+    // landed yet keeps its owner instead of being dropped mid-word.
+    setQueryDraft((draft) => (filters.query === '' || filters.query === draft ? null : draft))
   }, [filters.query])
   // One reader action can reach this toolbar twice: a Network pill reports its
   // value on focus and again on press, and asking the address bar for the same
@@ -386,13 +393,24 @@ export default function HomeDashboard({
   const searchFieldProps = {
     type: 'search',
     'aria-label': SEARCH_LABEL,
-    placeholder: 'Name, Node ID, or Network',
+    placeholder: 'Search nodes...',
     value: queryText,
     onChange: (event: ChangeEvent<HTMLInputElement>) => {
       setQueryDraft(event.target.value)
       updateFilters({ query: event.target.value }, true)
     },
-    onBlur: () => setQueryDraft(null),
+    onBlur: () => {
+      // The commit a keystroke asks for is painted a frame after the keystroke,
+      // so dropping the draft the moment the field loses focus would read an
+      // address bar that does not carry the text yet: for that one frame the
+      // query would be empty, the field would show the reader's text gone and
+      // the two marks that state an active search would leave the row — right
+      // as the reader's Tab is on its way to the Clear search they stand
+      // beside, which then has no control to land on. The draft stands until
+      // the address bar says the same thing, which is the moment the text stops
+      // being the box's and becomes the URL's.
+      if (filters.query === queryDraft) setQueryDraft(null)
+    },
     onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => {
       if (event.key === 'Escape') event.preventDefault()
     },
@@ -416,6 +434,11 @@ export default function HomeDashboard({
   // Node of the Network selection nothing is narrowed, and every reading stays
   // the one Home has always shown.
   const selectionNarrowed = matching.length !== scoped.length
+  // The list states a match count against the selection's own size only while
+  // a search or a status filter is in force: with neither, the two numbers are
+  // the same number, and the overview counters above already state how many
+  // Active Nodes the selection holds.
+  const listNarrowed = searchActive || statusFilterCount > 0
   const matchedNodes = useMemo(() => matching.map(({ node }) => node), [matching])
   // A narrowed list is counted by the Networks that still hold a matched Node;
   // unfiltered, the counter keeps reading the Network selection itself, so a
@@ -564,254 +587,309 @@ export default function HomeDashboard({
         <div className="flex flex-col gap-2" aria-label="Node filters and sorting">
           <div
             data-slot="home-toolbar"
-            className="flex flex-wrap items-start gap-2 md:flex-nowrap md:items-center"
+            className="flex flex-wrap items-center justify-end gap-2 md:flex-nowrap"
           >
-          <div className="w-full overflow-x-auto rounded-sm py-1.5 -my-1.5 md:relative md:z-10 md:w-auto">
-            <Tabs
-              value={scope.network}
-              onValueChange={(value) => updateFilters({ network: value })}
-              className="w-full flex-col gap-4"
-            >
-              <TabsList className={cn('compact-tabs min-h-0 group-data-[orientation=horizontal]/tabs:h-8 h-8 w-max rounded-md md:bg-background', SURFACE_TOOLBAR)} aria-label="Network filter">
-                <TabsTrigger value="all" className="min-h-0 h-6.5 shrink-0 flex-none rounded-sm border-none text-xs shadow-none data-[state=active]:text-emerald-600 dark:data-[state=active]:text-emerald-600">
-                  All Networks
-                </TabsTrigger>
-                {networks.map((network) => (
-                  <TabsTrigger
-                    key={network.networkKey}
-                    value={network.networkKey}
-                    className="min-h-0 h-6.5 shrink-0 flex-none rounded-sm border-none text-xs shadow-none data-[state=active]:text-emerald-600 dark:data-[state=active]:text-emerald-600"
-                  >
-                    {network.displayName}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
-          </div>
-          {/* The sort order and the two status filters share one toolbar
-              control (issue #232): the row keeps the Network pills, this entry,
-              the card/list choice, and the search control, and every control
-              this entry hides leaves the tab walk with it. The badge counts the
-              status filters, the only choices this entry represents and the only
-              ones the row could not otherwise show; the Network selection, the
-              sort order, the view, and the search text each say their own state. */}
-          <div className={cn('ml-auto md:relative md:shrink-0', filtersOpen ? 'md:z-30' : 'md:z-10')}>
-            <ToolbarPopover
-              open={filtersOpen}
-              onClose={closePanel}
-              returnFocusRef={filtersTriggerRef}
-              label="Sort and filters"
-              className="flex w-72 flex-col gap-3"
-              trigger={
-                <Button
-                  ref={filtersTriggerRef}
-                  variant="outline"
-                  aria-expanded={filtersOpen}
-                  aria-haspopup="dialog"
-                  aria-describedby={statusFilterCountId}
-                  data-slot="home-filter-trigger"
-                  className={cn('gap-1.5 rounded-md px-2.5 text-xs shadow-none md:bg-background', SURFACE_TOOLBAR)}
-                  onClick={() => togglePanel('filters')}
-                >
-                  Sort &amp; filter
-                  {/* The count is always drawn, zero included: it is the one piece
-                      of toolbar state this entry represents and the row could not
-                      otherwise show. A live count keeps the accent chip; zero is a
-                      muted chip, so "nothing is filtering" never reads as an active
-                      filter. */}
-                  <span
-                    data-slot="home-filter-count"
-                    aria-hidden="true"
-                    className={cn(
-                      'rounded-full border px-1.5 text-[0.625rem] font-semibold leading-4',
-                      statusFilterCount > 0
-                        ? 'border-emerald-600 bg-emerald-600 text-white dark:border-emerald-500 dark:bg-emerald-500 dark:text-emerald-950'
-                        : 'border-border text-muted-foreground',
-                    )}
-                  >
-                    {statusFilterCount}
-                  </span>
-                </Button>
-              }
-            >
-              <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
-                Sort
-                <Select
-                  aria-label="Sort"
-                  aria-describedby={filters.sort === 'attention' ? attentionSortHintId : undefined}
-                  className="w-full"
-                  value={filters.sort}
-                  onChange={(event) => updateFilters({ sort: event.target.value as HomeSort })}
-                >
-                  {sortOptions.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </Select>
-              </label>
-              {/* Attention First is the one key whose name does not say what it
-                  leads with, so its order is described where it is chosen. The
-                  note is a sibling of the label rather than a child of it, so it
-                  never joins the control's label text; it is sr-only, so the
-                  panel's visible layout is untouched. */}
-              {filters.sort === 'attention' && (
-                <span id={attentionSortHintId} className="sr-only">
-                  Attention First leads with the Active Nodes the Server has not confirmed Healthy, Unhealthy before Unknown, and lists the Healthy ones last.
-                </span>
-              )}
-              <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
-                Health
-                <Select
-                  aria-label="Health filter"
-                  className="w-full"
-                  value={filters.health}
-                  onChange={(event) => updateFilters({ health: event.target.value as HomeHealthFilter })}
-                >
-                  <option value="all">All health</option>
-                  <option value="healthy">Healthy</option>
-                  <option value="unhealthy">Unhealthy</option>
-                  <option value="unknown">Unknown</option>
-                </Select>
-              </label>
-              <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
-                Validator status
-                <Select
-                  aria-label="Validator status filter"
-                  className="w-full"
-                  value={filters.validator}
-                  onChange={(event) => updateFilters({ validator: event.target.value as HomeValidatorFilter })}
-                >
-                  <option value="all">All Validator status</option>
-                  <option value="validator">Validator</option>
-                  <option value="not_validator">Not a Validator</option>
-                  <option value="unknown">Unknown</option>
-                </Select>
-              </label>
-              <div className="flex items-center justify-between gap-2 border-t pt-3">
-                <p className="text-xs text-muted-foreground">
-                  {statusFilterCount === 0 ? 'No status filter is on' : statusFilterSummary}
-                </p>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="px-2 text-xs"
-                  disabled={statusFilterCount === 0}
-                  onClick={clearStatusFilters}
-                >
-                  Clear filters
-                </Button>
-              </div>
-            </ToolbarPopover>
-            <span id={statusFilterCountId} className="sr-only">{statusFilterSummary}</span>
-          </div>
-          {/* The card/list choice is part of the same ordinary Home URL contract
-              as the filters and the sort (design §9). It sits after the Network
-              pills on purpose: the pill row stays the first tab stop on the
-              surface. On a phone the row wraps, so the pills keep the whole
-              width and this control drops to the next line without leaving the
-              reading order. */}
-          <Tabs
-            value={filters.view}
-            onValueChange={(value) => updateFilters({ view: value as HomeView })}
-            className="flex-none md:relative md:z-10"
-          >
-            <TabsList className={cn('flex-none rounded-md md:bg-background', SURFACE_TOOLBAR)} aria-label="View">
-              <TabsTrigger value="card" className="flex-none text-xs">Cards</TabsTrigger>
-              <TabsTrigger value="list" className="flex-none text-xs">List</TabsTrigger>
-            </TabsList>
-          </Tabs>
-
-          {/* The search slot is the room the row has left for the search control
-              (#241): one flex item that takes whatever the Network pills, the
-              Sort & filter entry and the card/list choice leave over at their
-              own widths, so the room is the row's real room rather than a column
-              count of the viewport. Its own width never depends on what it
-              holds, which is what lets the width query in emerald.css ask the
-              row's one question — is there room for a compact field beside the
-              controls that are already there? — and get the same answer
-              whichever shape is displayed. */}
-          <div
-            ref={searchSlotRef}
-            data-slot="home-search-slot"
-            className="flex min-w-11 flex-1 items-center"
-          >
-            {/* One shape: that compact field, with the Clear search action that
-                belongs to it. It is one fixed 16rem — the field's own readable
-                13rem plus that action — so the field a reader is given is never
-                a squeezed version of this one, and the shape is only displayed
-                where the slot holds all of it. */}
+            {/* The Network selection is the row's left-hand group and the three
+                controls a reader reaches for after it are its right-hand one, so the
+                two ends of the row are held by the two ends of the toolbar instead of
+                one pile of controls with the rest of the row left empty. The Network
+                group grows into whatever the right-hand group does not use, and a
+                Network name longer than the room it has scrolls inside this group
+                rather than pushing the controls beside it off the row. */}
             <div
-              data-slot="home-search-inline"
-              className="w-[16rem] shrink-0 items-center gap-1"
+              data-slot="network-group"
+              className="relative z-10 min-w-0 grow overflow-x-auto rounded-sm py-1.5 -my-1.5"
             >
-              <Input
-                ref={searchFieldRef}
-                data-slot="home-search-field"
-                data-search-state={searchActive ? 'on' : 'off'}
-                aria-describedby={searchActive ? searchStateId : undefined}
-                className={cn('w-full', searchActive && 'border-emerald-600 dark:border-emerald-500')}
-                {...searchFieldProps}
-              />
-              <Button {...clearSearchProps}>
-                <X aria-hidden="true" />
-              </Button>
-            </div>
-            {/* The other shape: the icon-only entry (#232) that opens that same
-                field. It is drawn by the same line-icon set as the card/list
-                choice beside it, and its surface is the one place this row's
-                search is ever behind a control. */}
-            <div
-              data-slot="home-search-collapsed"
-              className={cn('md:relative md:shrink-0', searchOpen ? 'md:z-30' : 'md:z-10')}
-            >
-              <ToolbarPopover
-                open={searchOpen}
-                onClose={closePanel}
-                returnFocusRef={searchTriggerRef}
-                label={SEARCH_LABEL}
-                className="w-72 sm:w-80"
-                trigger={
-                  <Button
-                    ref={searchTriggerRef}
-                    variant="outline"
-                    size="icon"
-                    aria-label={SEARCH_LABEL}
-                    aria-expanded={searchOpen}
-                    aria-haspopup="dialog"
-                    aria-describedby={searchActive ? searchStateId : undefined}
-                    data-slot="home-search-trigger"
-                    data-search-state={searchActive ? 'on' : 'off'}
-                    className={cn(
-                      'relative rounded-md shadow-none md:bg-background',
-                      searchActive && 'border-emerald-600 text-emerald-700 dark:border-emerald-500 dark:text-emerald-400',
-                    )}
-                    onClick={() => togglePanel('search')}
-                  >
-                    <Search aria-hidden="true" />
-                    {searchActive && (
-                      <span
-                        data-slot="home-search-active"
-                        aria-hidden="true"
-                        className="absolute top-1 right-1 size-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400"
-                      />
-                    )}
-                  </Button>
-                }
+              <Tabs
+                value={scope.network}
+                onValueChange={(value) => updateFilters({ network: value })}
+                className="w-full flex-col gap-4"
               >
-                <div className="flex items-center gap-2">
-                  <Input ref={searchInputRef} className="w-full" {...searchFieldProps} />
-                  <Button {...clearSearchProps}>
-                    <X aria-hidden="true" />
-                  </Button>
-                </div>
-              </ToolbarPopover>
+                <TabsList className={cn('compact-tabs min-h-0 group-data-[orientation=horizontal]/tabs:h-8 h-8 w-max rounded-md md:bg-background', SURFACE_TOOLBAR)} aria-label="Network filter">
+                  <TabsTrigger value="all" className="min-h-0 h-6.5 shrink-0 flex-none rounded-sm border-none text-xs shadow-none data-[state=active]:text-emerald-600 dark:data-[state=active]:text-emerald-600">
+                    All Networks
+                  </TabsTrigger>
+                  {networks.map((network) => (
+                    <TabsTrigger
+                      key={network.networkKey}
+                      value={network.networkKey}
+                      className="min-h-0 h-6.5 shrink-0 flex-none rounded-sm border-none text-xs shadow-none data-[state=active]:text-emerald-600 dark:data-[state=active]:text-emerald-600"
+                    >
+                      {network.displayName}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
             </div>
-          </div>
-          {/* The described-by sentence lives outside both shapes: each shape
-              describes itself with it, so whichever one is displayed carries the
-              flag in words and neither hides the other's description. */}
-          {searchActive && (
-            <span id={searchStateId} className="sr-only">{`Search is on: ${queryText}`}</span>
-          )}
+            {/* One flex item holds the search control, the Sort & filter entry and the
+                card/list choice, in the order they are read and tabbed, and the row
+                right-aligns the group as a whole (justify-end above) rather than
+                giving each control its own ml-auto: the three stay one block with one
+                set of gaps, beside the Network group on a desktop row, on a line of
+                their own under it where the row cannot hold both, and at the row's
+                right edge in either case. */}
+            {/* The group is a grid, and not a flex row, for one reason: its own width
+                has to be the 17rem search slot plus the two controls beside it, while
+                the smallest width it can be given has to stay the three controls'
+                own minimum — 44px for the slot and the two entries at their own
+                widths. A first track of minmax(44px, 17rem) is exactly that pair: the
+                track's maximum keeps the group's width at the slot plus the entries,
+                so a row with the room gives the reader the field, and the track's
+                44px minimum keeps the group's floor at the controls' minimum, so a
+                row without the room — a long Network list pressing in — hands the
+                shortage to the Network group, which scrolls its pills, instead of
+                drawing a control outside this box and over the pills. A definite
+                width on the slot cannot say both: it would also be the slot's
+                smallest contribution, which lifts the group's floor to 17rem plus the
+                two entries and leaves the Network group to pay for every shortfall. */}
+            <div
+              data-slot="home-toolbar-actions"
+              className="grid grid-flow-col grid-cols-[minmax(2.75rem,17rem)_auto_auto] items-center justify-end gap-2"
+            >
+              {/* The search control is one slot that asks for 17rem — the field's
+                  readable 13rem, the 44px Clear search action inside the field's own
+                  box, the 4px between them, and the 1rem that keeps the field off the
+                  edge of that readable width — and gives that room back to the
+                  controls beside it when the row is narrower than the three of them
+                  need. The first track of the grid above holds both ends of that ask,
+                  17rem as its maximum and 44px as its minimum, and this slot is given
+                  the track's width; its own min-w-11 restates that floor for the one
+                  control that can shrink. The slot's width never depends on which of
+                  its two shapes is displayed, which is what lets the width query in
+                  emerald.css ask the row's one question — is there room for a compact
+                  field beside the controls that are already here? — and get the same
+                  answer whichever shape a reader is shown. */}
+              <div
+                ref={searchSlotRef}
+                data-slot="home-search-slot"
+                className="flex min-w-11 items-center"
+              >
+                {/* The compact field fills the slot, so the field a reader is given is
+                    never a squeezed version of this one, and this shape is only
+                    displayed where the slot holds all of it. Its Search icon and its
+                    Clear search action sit inside the field's own box, and the clear
+                    action is drawn only while there is a word to clear: the field
+                    carries one clear action, never two (the browser's own search-input
+                    clear button is switched off in emerald.css for the same reason). */}
+                <div
+                  data-slot="home-search-inline"
+                  className="w-full items-center"
+                >
+                  <div className="relative flex w-full items-center">
+                    <Search aria-hidden="true" className="pointer-events-none absolute left-2.5 size-4 text-muted-foreground" />
+                    <Input
+                      ref={searchFieldRef}
+                      data-slot="home-search-field"
+                      data-search-state={searchActive ? 'on' : 'off'}
+                      aria-describedby={searchActive ? searchStateId : undefined}
+                      className={cn('w-full pl-8', searchActive ? 'pr-11 border-emerald-600 dark:border-emerald-500' : 'pr-2')}
+                      {...searchFieldProps}
+                    />
+                    {searchActive && (
+                      <Button
+                        {...clearSearchProps}
+                        data-slot="home-search-clear"
+                        className="absolute top-1/2 right-0 -translate-y-1/2"
+                      >
+                        <X aria-hidden="true" />
+                      </Button>
+                    )}
+                  </div>
+                </div>
+                {/* The other shape of that one control: the icon-only entry that opens
+                    the same field. It is drawn by the same line-icon set as the
+                    card/list choice beside it, and it is the only shape whose search
+                    sits behind a control. */}
+                <div
+                  data-slot="home-search-collapsed"
+                  className={cn('relative', searchOpen ? 'z-30' : 'z-10')}
+                >
+                  <ToolbarPopover
+                    open={searchOpen}
+                    onClose={closePanel}
+                    returnFocusRef={searchTriggerRef}
+                    label={SEARCH_LABEL}
+                    className="w-72 sm:w-80"
+                    trigger={
+                      <Button
+                        ref={searchTriggerRef}
+                        variant="outline"
+                        size="icon"
+                        aria-label={SEARCH_LABEL}
+                        aria-expanded={searchOpen}
+                        aria-haspopup="dialog"
+                        aria-describedby={searchActive ? searchStateId : undefined}
+                        data-slot="home-search-trigger"
+                        data-search-state={searchActive ? 'on' : 'off'}
+                        className={cn(
+                          'relative rounded-md shadow-none md:bg-background',
+                          searchActive && 'border-emerald-600 text-emerald-700 dark:border-emerald-500 dark:text-emerald-400',
+                        )}
+                        onClick={() => togglePanel('search')}
+                      >
+                        <Search aria-hidden="true" />
+                        {searchActive && (
+                          <span
+                            data-slot="home-search-active"
+                            aria-hidden="true"
+                            className="absolute top-1 right-1 size-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400"
+                          />
+                        )}
+                      </Button>
+                    }
+                  >
+                    <div className="relative flex w-full items-center">
+                      <Search aria-hidden="true" className="pointer-events-none absolute left-2.5 size-4 text-muted-foreground" />
+                      <Input
+                        ref={searchInputRef}
+                        data-slot="home-search-panel-field"
+                        className={cn('w-full pl-8', searchActive ? 'pr-11' : 'pr-2')}
+                        {...searchFieldProps}
+                      />
+                      {searchActive && (
+                        <Button
+                          {...clearSearchProps}
+                          className="absolute top-1/2 right-0 -translate-y-1/2"
+                        >
+                          <X aria-hidden="true" />
+                        </Button>
+                      )}
+                    </div>
+                  </ToolbarPopover>
+                </div>
+              </div>
+              {/* The sort order and the two status filters share one toolbar control
+                  (issue #232): the row keeps the Network group, this entry, the
+                  card/list choice and the search control, and every control this entry
+                  hides leaves the tab walk with it. The badge counts the status
+                  filters, the only choices this entry represents that the row could
+                  not otherwise show, and it is drawn only while there is one: a zero
+                  badge would be a chip that says nothing. The count itself is still
+                  stated for a reader that cannot see the chip
+                  (statusFilterCountId). */}
+              <div data-slot="sort-filter-entry" className={cn('relative', filtersOpen ? 'z-30' : 'z-10')}>
+                <ToolbarPopover
+                  open={filtersOpen}
+                  onClose={closePanel}
+                  returnFocusRef={filtersTriggerRef}
+                  label="Sort and filters"
+                  className="flex w-72 flex-col gap-3"
+                  trigger={
+                    <Button
+                      ref={filtersTriggerRef}
+                      variant="outline"
+                      aria-expanded={filtersOpen}
+                      aria-haspopup="dialog"
+                      aria-describedby={statusFilterCountId}
+                      data-slot="home-filter-trigger"
+                      className={cn('gap-1.5 rounded-md px-2.5 text-xs shadow-none md:bg-background', SURFACE_TOOLBAR)}
+                      onClick={() => togglePanel('filters')}
+                    >
+                      <SlidersHorizontal aria-hidden="true" className="size-3.5" />
+                      Sort &amp; filter
+                      {statusFilterCount > 0 && (
+                        <span
+                          data-slot="home-filter-count"
+                          aria-hidden="true"
+                          className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-600 px-1 text-[0.625rem] font-semibold leading-none tabular-nums text-white dark:bg-emerald-500 dark:text-emerald-950"
+                        >
+                          {statusFilterCount}
+                        </span>
+                      )}
+                    </Button>
+                  }
+                >
+                    <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
+                      Sort
+                      <Select
+                        aria-label="Sort"
+                        aria-describedby={filters.sort === 'attention' ? attentionSortHintId : undefined}
+                        className="w-full"
+                        value={filters.sort}
+                        onChange={(event) => updateFilters({ sort: event.target.value as HomeSort })}
+                      >
+                        {sortOptions.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </Select>
+                    </label>
+                    {/* Attention First is the one key whose name does not say what it
+                        leads with, so its order is described where it is chosen. The
+                        note is a sibling of the label rather than a child of it, so it
+                        never joins the control's label text; it is sr-only, so the
+                        panel's visible layout is untouched. */}
+                    {filters.sort === 'attention' && (
+                      <span id={attentionSortHintId} className="sr-only">
+                        Attention First leads with the Active Nodes the Server has not confirmed Healthy, Unhealthy before Unknown, and lists the Healthy ones last.
+                      </span>
+                    )}
+                    <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
+                      Health
+                      <Select
+                        aria-label="Health filter"
+                        className="w-full"
+                        value={filters.health}
+                        onChange={(event) => updateFilters({ health: event.target.value as HomeHealthFilter })}
+                      >
+                        <option value="all">All health</option>
+                        <option value="healthy">Healthy</option>
+                        <option value="unhealthy">Unhealthy</option>
+                        <option value="unknown">Unknown</option>
+                      </Select>
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
+                      Validator status
+                      <Select
+                        aria-label="Validator status filter"
+                        className="w-full"
+                        value={filters.validator}
+                        onChange={(event) => updateFilters({ validator: event.target.value as HomeValidatorFilter })}
+                      >
+                        <option value="all">All Validator status</option>
+                        <option value="validator">Validator</option>
+                        <option value="not_validator">Not a Validator</option>
+                        <option value="unknown">Unknown</option>
+                      </Select>
+                    </label>
+                    <div className="flex items-center justify-between gap-2 border-t pt-3">
+                      <p className="text-xs text-muted-foreground">
+                        {statusFilterCount === 0 ? 'No status filter is on' : statusFilterSummary}
+                      </p>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="px-2 text-xs"
+                        disabled={statusFilterCount === 0}
+                        onClick={clearStatusFilters}
+                      >
+                        Clear filters
+                      </Button>
+                    </div>
+                </ToolbarPopover>
+                <span id={statusFilterCountId} className="sr-only">{statusFilterSummary}</span>
+              </div>
+              {/* The card/list choice is part of the same ordinary Home URL contract as
+                  the filters and the sort (design §9). It is the last control of the
+                  right-hand group, so the row's own right edge is this choice's edge
+                  at every width. The two choices keep their words rather than gaining
+                  icons: a phone row leaves 268px for this control and the Sort &
+                  filter entry together, and a pair of line icons would spend 40px of
+                  it on a segmented control whose labels already say which shape it
+                  selects. */}
+              <Tabs
+                value={filters.view}
+                onValueChange={(value) => updateFilters({ view: value as HomeView })}
+                className="flex-none md:relative md:z-10"
+              >
+                <TabsList className={cn('flex-none rounded-md md:bg-background', SURFACE_TOOLBAR)} aria-label="View">
+                  <TabsTrigger value="card" className="flex-none text-xs">Cards</TabsTrigger>
+                  <TabsTrigger value="list" className="flex-none text-xs">List</TabsTrigger>
+                </TabsList>
+              </Tabs>
+            </div>
+            {searchActive && (
+              <span id={searchStateId} className="sr-only">{`Search is on: ${queryText}`}</span>
+            )}
           </div>
         </div>
 
@@ -829,14 +907,20 @@ export default function HomeDashboard({
                   overview counters and the cards can never look contradictory. */}
               <p
                 data-slot="home-result-count"
-                role="status"
-                aria-live="polite"
-                className="mb-3 text-xs text-muted-foreground"
-              >
-                Showing <span className="tabular-nums">{matching.length.toLocaleString()}</span> of{' '}
-                <span className="tabular-nums">{scoped.length.toLocaleString()}</span> Active Nodes
-                {scopeName ? <> in <span className="[overflow-wrap:anywhere]">{scopeName}</span></> : null}.
-              </p>
+                  role="status"
+                  aria-live="polite"
+                  className="mb-3 text-xs text-muted-foreground"
+                >
+                  {listNarrowed ? (
+                    <>
+                      Showing <span className="tabular-nums">{matching.length.toLocaleString()}</span> of{' '}
+                      <span className="tabular-nums">{scoped.length.toLocaleString()}</span> nodes
+                      {scopeName ? <> in <span className="[overflow-wrap:anywhere]">{scopeName}</span></> : null}.
+                    </>
+                  ) : (
+                    <><span className="tabular-nums">{matching.length.toLocaleString()}</span> nodes</>
+                  )}
+                </p>
               {scoped.length === 0 ? (
                 <Empty description="No Active Nodes in this view.">
                   <span className="text-xs">Retired Nodes are not listed on Home.</span>

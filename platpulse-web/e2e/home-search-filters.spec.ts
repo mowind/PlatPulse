@@ -93,12 +93,21 @@ async function summaryText(page: Page, label: string): Promise<string> {
   return (await card.locator('[data-slot="summary-value"]').innerText()).trim()
 }
 
-/** Parse the list's own "Showing X of Y Active Nodes" line. */
+/** Parse the list's own count line, in either of the two readings it states: a
+ *  list narrowed by a search or a status filter says how many Nodes match against
+ *  how many the selection holds, and an unnarrowed one states the single number
+ *  it lists — the same number twice, which is why it says it once. */
 async function listCounts(page: Page): Promise<{ matching: number; scoped: number }> {
   const text = await resultCount(page).innerText()
-  const match = /Showing ([\d,]+) of ([\d,]+) Active Nodes/.exec(text)
-  if (!match) throw new Error(`unexpected Home result count: ${text}`)
-  return { matching: Number(match[1].replace(/,/g, '')), scoped: Number(match[2].replace(/,/g, '')) }
+  const number = (value: string) => Number(value.replace(/,/g, ''))
+  const narrowed = /Showing ([\d,]+) of ([\d,]+) nodes/.exec(text)
+  if (narrowed) return { matching: number(narrowed[1]), scoped: number(narrowed[2]) }
+  const plain = /^([\d,]+) nodes$/.exec(text.trim())
+  if (plain) {
+    const listed = number(plain[1])
+    return { matching: listed, scoped: listed }
+  }
+  throw new Error(`unexpected Home result count: ${text}`)
 }
 
 /** Wait for the list to hold exactly `count` Node cards, then read their names.
@@ -177,7 +186,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     const counts = await expectListAgreesWithSummary(page)
     expect(counts.matching).toBe(1)
     expect(counts.scoped).toBe(activeNodes)
-    await expect(resultCount(page)).toContainText(`Showing 1 of ${activeNodes} Active Nodes`)
+    await expect(resultCount(page)).toContainText(`Showing 1 of ${activeNodes} nodes`)
     // The map reads the same selection: its scope basis names the Node
     // selection, not the Network.
     await expect(geoMap(page)).toHaveAttribute('data-scope-basis', 'node-selection')
@@ -238,7 +247,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await (await searchBox(page)).fill('Node H')
     await expect(nodeGrid(page)).toHaveCount(0)
     await expect(page.getByText('No Active Nodes match these filters.')).toBeVisible()
-    await expect(resultCount(page)).toContainText(`Showing 0 of ${activeNodes} Active Nodes`)
+    await expect(resultCount(page)).toContainText(`Showing 0 of ${activeNodes} nodes`)
     await expect(page.getByText(/widen the filters/)).toBeVisible()
     // Issue #233: a selection that holds no Node is an empty reading, and the
     // whole band says so. The four counters that follow the list read no figure
@@ -387,30 +396,36 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expect.poll(selectedPill).toBe(initialPill)
     expect(page.url(), 'the default Network selection is omitted from the URL').toBe(plainHome)
 
-    // The toolbar row keeps one stop per control — the Network filter, the Sort &
-    // filter entry, the card/list choice, and the search control — and the
-    // controls behind an entry leave the walk with it while its surface is
-    // closed (issue #232). The search control is the row's own field where the
-    // toolbar has the width for one, and the entry that opens that field where it
-    // does not (issue #241), so the keyboard lands on one of the two and never on
-    // both.
+    // The toolbar row keeps one stop per control — the Network filter, the search
+    // control, the Sort & filter entry, and the card/list choice, in the order the
+    // row states them — and the controls behind an entry leave the walk with it
+    // while its surface is closed (issue #232). The search control is the row's
+    // own field where the toolbar has the width for one, and the entry that opens
+    // that field where it does not (issue #241), so the keyboard lands on one of
+    // the two and never on both.
     const rowShowsSearchField = await homeToolbarShowsField(page)
     await networkControl(page).locator('[role="tab"][aria-selected="true"]').focus()
-    await page.keyboard.press('Tab')
-    await expect(filterEntry(page)).toBeFocused()
-    await page.keyboard.press('Tab')
-    await expect(tab(page, 'Cards')).toBeFocused()
     await page.keyboard.press('Tab')
     if (rowShowsSearchField) {
       // The row's own field is the whole search control here: nothing to open,
       // and no surface for this row to hold.
       await expect(searchField(page)).toBeFocused()
       await expect(page.getByRole('dialog')).toHaveCount(0)
+      await page.keyboard.press('Tab')
+      await expect(filterEntry(page)).toBeFocused()
+      await page.keyboard.press('Tab')
+      await expect(tab(page, 'Cards')).toBeFocused()
+      await searchField(page).focus()
     } else {
       await expect(homeSearchEntry(page)).toBeFocused()
+      await page.keyboard.press('Tab')
+      await expect(filterEntry(page)).toBeFocused()
+      await page.keyboard.press('Tab')
+      await expect(tab(page, 'Cards')).toBeFocused()
       // Opening the search entry from the keyboard hands the field inside it the
       // focus, and the field paints its own visible focus indicator (the shared
       // field uses a ring rather than an outline).
+      await homeSearchEntry(page).focus()
       await page.keyboard.press('Enter')
       await expect(homeSearchSurface(page)).toBeVisible()
       await expect(searchField(page)).toBeFocused()
@@ -436,8 +451,9 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expect(nodeGrid(page).locator('a[href^="/nodes/"]')).toHaveCount(1)
 
     // Tab from the field reaches that field's own Clear search action in either
-    // shape, then the rest of the row in reading order, and the keyboard goes on
-    // to the filtered card.
+    // shape — the action the field draws inside its own box while there is a word
+    // to clear — then the rest of the row in reading order, and the keyboard goes
+    // on to the filtered card.
     await page.keyboard.press('Tab')
     await expect(page.getByRole('button', { name: 'Clear search' })).toBeFocused()
     await page.keyboard.press('Shift+Tab')
@@ -450,25 +466,31 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
       await expect(searchField(page)).toHaveValue('Node H')
       await expect(page).toHaveURL(/[?&]q=Node/)
       // That word is still in force, so the field's own Clear search action is
-      // still in the walk between the field and the filtered card.
+      // still in the walk, between the field and the controls the row states after
+      // it: the Sort & filter entry, the card/list choice, and then the filtered
+      // card.
       await page.keyboard.press('Tab')
       await expect(page.getByRole('button', { name: 'Clear search' })).toBeFocused()
+      await page.keyboard.press('Tab')
+      await expect(filterEntry(page)).toBeFocused()
+      await page.keyboard.press('Tab')
+      await expect(tab(page, 'Cards')).toBeFocused()
       await page.keyboard.press('Tab')
       expect(await page.evaluate(() => document.activeElement?.getAttribute('href') ?? '')).toBe(
         `/nodes/${SOLO_NODE_ID}`,
       )
 
-      // Read backwards, the same row is crossed in reverse: the same Clear search
-      // action, the field, the card/list choice, the Sort & filter entry, and the
+      // Read backwards, the same row is crossed in reverse: the card/list choice,
+      // the Sort & filter entry, the same Clear search action, the field, and the
       // Network filter — so nothing here is a keyboard dead end either.
-      await page.keyboard.press('Shift+Tab')
-      await expect(page.getByRole('button', { name: 'Clear search' })).toBeFocused()
-      await page.keyboard.press('Shift+Tab')
-      await expect(searchField(page)).toBeFocused()
       await page.keyboard.press('Shift+Tab')
       await expect(tab(page, 'Cards')).toBeFocused()
       await page.keyboard.press('Shift+Tab')
       await expect(filterEntry(page)).toBeFocused()
+      await page.keyboard.press('Shift+Tab')
+      await expect(page.getByRole('button', { name: 'Clear search' })).toBeFocused()
+      await page.keyboard.press('Shift+Tab')
+      await expect(searchField(page)).toBeFocused()
     } else {
       // Escape closes the surface, takes its field out of the walk with it, and
       // hands the keyboard back to the entry that opened the surface.
@@ -476,6 +498,12 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
       await expect(homeSearchSurface(page)).toHaveCount(0)
       await expect(searchField(page)).toHaveCount(0)
       await expect(homeSearchEntry(page)).toBeFocused()
+      // From the entry, the rest of the row in reading order: the Sort & filter
+      // entry, the card/list choice, and then the filtered card.
+      await page.keyboard.press('Tab')
+      await expect(filterEntry(page)).toBeFocused()
+      await page.keyboard.press('Tab')
+      await expect(tab(page, 'Cards')).toBeFocused()
       await page.keyboard.press('Tab')
       expect(await page.evaluate(() => document.activeElement?.getAttribute('href') ?? '')).toBe(
         `/nodes/${SOLO_NODE_ID}`,
@@ -484,11 +512,11 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
       // Read backwards, the same row crosses the entries in reverse order, so
       // nothing in the toolbar is a keyboard dead end.
       await page.keyboard.press('Shift+Tab')
-      await expect(homeSearchEntry(page)).toBeFocused()
-      await page.keyboard.press('Shift+Tab')
       await expect(tab(page, 'Cards')).toBeFocused()
       await page.keyboard.press('Shift+Tab')
       await expect(filterEntry(page)).toBeFocused()
+      await page.keyboard.press('Shift+Tab')
+      await expect(homeSearchEntry(page)).toBeFocused()
     }
     await page.keyboard.press('Shift+Tab')
     expect(
@@ -498,7 +526,20 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
 
     // The Sort & filter entry opens the same way from the keyboard, and the three
     // controls it holds join the walk between the entry and the card/list choice.
+    // The search control the row shows sits between the Network filter and that
+    // entry, so the walk reaches the entry through it — and where the row shows
+    // its own field, the word this walk typed is still in force, so the field's
+    // own Clear search action stands between the two as well.
     await page.keyboard.press('Tab')
+    if (rowShowsSearchField) {
+      await expect(searchField(page)).toBeFocused()
+      await page.keyboard.press('Tab')
+      await expect(page.getByRole('button', { name: 'Clear search' })).toBeFocused()
+      await page.keyboard.press('Tab')
+    } else {
+      await expect(homeSearchEntry(page)).toBeFocused()
+      await page.keyboard.press('Tab')
+    }
     await expect(filterEntry(page)).toBeFocused()
     await page.keyboard.press('Enter')
     await expect(homeFilterSurface(page)).toBeVisible()
