@@ -578,21 +578,39 @@ function ValidatorCard({ validator }: { validator: PublicValidatorInsight }) {
 }
 
 /**
+ * The identity statement behind the Home card's short line for everything
+ * Current Validator Status does not confirm as a Validator (#238, round 2).
+ * Only that Server-owned verdict decides which word appears: a `current`
+ * non-Validator is confirmed, a retained non-Validator verdict is not, and
+ * unestablished validity always reads Validator unknown — never Non-validator.
+ * `null` means the Server does confirm a Validator, so the line has nothing to
+ * say and the summary cells speak instead.
+ */
+export function validatorIdentityStatement(validator: PublicValidatorInsight): { label: string; detail: string } | null {
+  const status = (validator.currentValidatorStatus ?? '').toLowerCase()
+  if (status === 'validator') return null
+  if (status !== 'not_validator') return { label: 'Validator unknown', detail: 'Staking validity is not established.' }
+  const state = (validator.currentValidatorStatusState ?? '').toLowerCase()
+  return state === 'current'
+    ? { label: 'Non-validator', detail: 'No current staking identity.' }
+    : { label: 'Validator unknown', detail: 'Confirmed non-Validator status retained.' }
+}
+
+/**
  * The Home card's short identity line for everything Current Validator Status
- * does not confirm as a Validator (#238): a confirmed non-Validator, and the
- * unconfirmed case that must never be read as one. Only that Server-owned
- * verdict decides which word appears; the reason it comes with stays readable,
- * while the full explanation remains in the identity entry and on Node detail.
+ * does not confirm as a Validator (#238). A confirmed non-Validator shows the
+ * word alone: its reason moves to the line's own title and to the identity
+ * entry, so the repeated sentence stops crowding a footer that has nothing left
+ * to explain. The unconfirmed case keeps its reason on the face, because an
+ * unestablished identity must never be read as a confirmed non-Validator.
  */
 function ValidatorIdentityNote({ validator, confirmedNonValidator }: {
   validator: PublicValidatorInsight
   confirmedNonValidator: boolean
 }) {
   const state = (validator.currentValidatorStatusState ?? '').toLowerCase()
-  const retainedNegative = !confirmedNonValidator && (validator.currentValidatorStatus ?? '').toLowerCase() === 'not_validator'
-  const reason = confirmedNonValidator
-    ? 'No current staking identity.'
-    : retainedNegative ? 'Confirmed non-Validator status retained.' : 'Staking validity is not established.'
+  const statement = validatorIdentityStatement(validator)
+    ?? { label: 'Validator unknown', detail: 'Staking validity is not established.' }
   return (
     <section
       data-slot="linked-validator"
@@ -604,13 +622,18 @@ function ValidatorIdentityNote({ validator, confirmedNonValidator }: {
         data-slot="linked-validator-identity"
         className="m-0 text-[11px] leading-4 text-muted-foreground"
         role="status"
+        title={statement.detail}
         aria-label={`Validator identity state: ${state || 'unknown'}`}
       >
         <span data-slot="linked-validator-identity-label" className="font-medium text-foreground">
-          {confirmedNonValidator ? 'Non-validator' : 'Validator unknown'}
+          {statement.label}
         </span>
-        <span aria-hidden="true"> — </span>
-        <span data-slot="linked-validator-identity-reason">{reason}</span>
+        {!confirmedNonValidator && (
+          <>
+            <span aria-hidden="true"> — </span>
+            <span data-slot="linked-validator-identity-reason">{statement.detail}</span>
+          </>
+        )}
       </p>
     </section>
   )

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ECharts } from 'echarts/core'
 import type { GeoMapStatus, HomeGeoOverview } from '../homeGeo'
 import { WORLD_MAP_NAME, loadWorldGeoJson, regionNameByCode, type WorldGeoJson } from '../worldGeometry'
@@ -80,6 +80,39 @@ const UNDRAWABLE_STATUSES: ReadonlySet<GeoMapStatus> = new Set([
   'unknown',
   'unavailable',
 ])
+
+/** How urgent a corner notice is. Missing, stale, or unknown evidence is never a
+ * confirmed failure, so only the two unavailability notices are errors. */
+type MapNoticeTone = 'quiet' | 'warning' | 'destructive'
+
+/** A corner notice with the tone it carries, so no reader — and no test — has to
+ * recover the tone from the visible words. */
+type MapNotice = { text: string; tone: MapNoticeTone }
+
+const QUIET_NOTICE = (text: string): MapNotice => ({ text, tone: 'quiet' })
+const WARNING_NOTICE = (text: string): MapNotice => ({ text, tone: 'warning' })
+const ERROR_NOTICE = (text: string): MapNotice => ({ text, tone: 'destructive' })
+
+/** The worse of two tones: a chip that states both dimensions takes the more
+ * urgent reading rather than averaging them. */
+const NOTICE_TONE_RANK: Record<MapNoticeTone, number> = { quiet: 0, warning: 1, destructive: 2 }
+function worseNoticeTone(first: MapNoticeTone, second: MapNoticeTone): MapNoticeTone {
+  return NOTICE_TONE_RANK[second] > NOTICE_TONE_RANK[first] ? second : first
+}
+
+/** The Server's Peer-observation verdict, with the notice it raises and the
+ * freshness word the explanation uses read from the same entry, so the two can
+ * never disagree. Peer collection freshness is its own dimension, read from the
+ * Server's `peerObservation` (ADR 0010); it is never inferred from the Geo
+ * Location Cache's per-country retention. */
+const PEER_OBSERVATION_READINGS: Record<string, { notice: string | null; freshness: string }> = {
+  stale: { notice: 'Peer observations stale', freshness: 'stale' },
+  unknown: { notice: 'Peer observations unknown', freshness: 'unknown' },
+  mixed: { notice: 'Peer observations vary', freshness: 'mixed across the selected Networks' },
+}
+
+/** A Peer observation the Server reports as current raises no notice. */
+const PEER_OBSERVATION_CURRENT = { notice: null, freshness: 'current' }
 
 type GeoWorldMapProps = {
   /** The already-projected scope the map draws. This component never derives
@@ -256,28 +289,67 @@ export default function GeoWorldMap({ overview, status, heading = PEER_COUNTRIES
           (unknownReasons.length > 0 ? ': ' + unknownReasons.join('; ') : '') + '.')
   const countsAvailable = overview.knownCountryCount != null && unknownCount != null
   const neverObserved = overview.scope === 'unobserved'
-  const primaryNotice = failed && needsBasemap ? 'Map unavailable'
-    : status === 'disabled' ? PEER_COUNTRIES_DISABLED_NOTICE
-    : status === 'starting' ? 'Loading data'
-    : status === 'unavailable' ? 'Data unavailable'
-    : status === 'empty' ? (selectionBasis === 'node-selection' ? 'No Active Nodes match these filters' : 'No data')
-    : neverObserved ? 'No observations yet'
-    : status === 'error' ? 'Data unavailable'
-    : status === 'unknown' ? 'Data unknown'
-    : status === 'stale' || overview.peerObservation === 'stale' || overview.countries.some((country) => country.staleCount > 0) ? 'Map data stale'
-    : overview.availablePeerCount === 0 ? 'No data'
-    : !countsAvailable ? 'Data unavailable'
-    : overview.scope !== 'complete' || overview.unitsWithBasis < overview.unitsInScope ? 'Partial data'
-    : overview.peerObservation === 'unknown' ? 'Observation status unknown'
-    : overview.peerObservation === 'mixed' ? 'Observation status varies'
+  // Two independent freshness dimensions meet in this corner, and this round
+  // keeps them apart. The Geo dimension is the provider/database state plus the
+  // per-country retention of its Geo Location Cache; the Peer dimension is the
+  // freshness of the Peer observations the countries were computed from. The
+  // single merged `Map data stale` line blamed each dimension for the other's
+  // staleness, so each now names itself and the other is stated beside it.
+  // `staleCount` is the Geo Location Cache's own retention (the Server's
+  // `load_node_geo` reads `geo_location_cache.expires_at`), never Peer
+  // collection freshness, so it stays in the Geo dimension.
+  const staleCountryAttributions = overview.countries.some((country) => country.staleCount > 0)
+  const geoNotice: MapNotice | null = failed && needsBasemap ? ERROR_NOTICE('Map unavailable')
+    : status === 'disabled' ? QUIET_NOTICE(PEER_COUNTRIES_DISABLED_NOTICE)
+    : status === 'starting' ? QUIET_NOTICE('Loading data')
+    : status === 'unavailable' ? ERROR_NOTICE('Data unavailable')
+    : status === 'empty' ? QUIET_NOTICE(selectionBasis === 'node-selection' ? 'No Active Nodes match these filters' : 'No data')
+    : neverObserved ? QUIET_NOTICE('No observations yet')
+    : status === 'error' ? ERROR_NOTICE('Data unavailable')
+    : status === 'unknown' ? QUIET_NOTICE('Data unknown')
+    : status === 'stale' || staleCountryAttributions ? WARNING_NOTICE('Map data stale')
+    : overview.availablePeerCount === 0 ? QUIET_NOTICE('No data')
+    : !countsAvailable ? ERROR_NOTICE('Data unavailable')
+    : overview.scope !== 'complete' || overview.unitsWithBasis < overview.unitsInScope ? QUIET_NOTICE('Partial data')
     : null
+  // The Peer dimension reads one Server verdict, and the notice and the freshness
+  // word come from the same entry.
+  const peerReading = PEER_OBSERVATION_READINGS[overview.peerObservation ?? ''] ?? PEER_OBSERVATION_CURRENT
+  const observationNotice = peerReading.notice === null ? null : WARNING_NOTICE(peerReading.notice)
   // The Unknown count is a coverage figure, not an exception, so it lives in
   // the corner chip. The one notice it can still raise is the map with nothing
   // to plot at all: no resolved country, only unlocated records.
   const noLocationsNotice =
-    primaryNotice === null && overview.knownCountryCount === 0 && shownUnknownCount !== null
-      ? 'No locations to show' : null
-  const notice = primaryNotice ?? noLocationsNotice
+    geoNotice === null && observationNotice === null && overview.knownCountryCount === 0 && shownUnknownCount !== null
+      ? QUIET_NOTICE('No locations to show') : null
+  const notice = geoNotice ?? observationNotice ?? noLocationsNotice
+  // A chip whose own line already is the Peer dimension has nothing to add
+  // beside itself; every other notice states the Peer dimension next to it, so
+  // the two readings can never be confused again. A slot with no real
+  // denominator states nothing about observations at all.
+  const observationLine =
+    notice !== null && notice !== observationNotice && scopedPeerCount !== null
+      ? observationNotice?.text ?? 'Peer observations current'
+      : null
+  const noticeTone = notice === null
+    ? 'quiet'
+    : worseNoticeTone(notice.tone, observationNotice?.tone ?? 'quiet')
+  // The whole two-dimension reading, kept in the accessibility tree beside the
+  // chip: which dimension is not current, and that the plotted countries are the
+  // retained last-good ones rather than live data.
+  const geoFreshness = status === 'stale' ? 'stale'
+    : status === 'current' ? 'current'
+      : status === 'unknown' ? 'unknown'
+        : 'not established'
+  const peerFreshness = peerReading.freshness
+  const noticeExplanation = notice === null ? null
+    : 'Two freshness dimensions are reported separately. Geo database: ' + geoFreshness +
+      '. Peer observations: ' + peerFreshness + '.' +
+      (staleCountryAttributions ? ' Some retained country attributions are stale.' : '') +
+      (geoFreshness === 'stale' || staleCountryAttributions || peerFreshness === 'stale'
+        ? ' The map keeps the last-good country counts the Server retained; they are not live data.' : '')
+  const observationId = useId()
+  const explanationId = useId()
   const mapDescription =
     formatGeoCount(overview.countries.length) +
     (overview.countries.length === 1 ? ' country has ' : ' countries have ') +
@@ -288,20 +360,42 @@ export default function GeoWorldMap({ overview, status, heading = PEER_COUNTRIES
     <section aria-label={heading} data-state={status} data-network-filter={overview.scopeKey ?? undefined} data-scope={overview.scope} data-scope-basis={selectionBasis} className="relative h-full">
       {/* Normal stays quiet; exceptions are visible without moving the canvas. */}
       {notice && (
-        <span
+        <div
           data-slot="map-status"
-          role="status"
+          data-tone={noticeTone}
           className={cn(
-            'absolute top-0 left-0 z-10 rounded-md bg-background/90 px-2 py-1 text-xs text-muted-foreground',
+            'absolute top-0 left-0 z-10 flex flex-col items-start gap-0.5 rounded-md bg-background/90 px-2 py-1 text-xs text-muted-foreground',
             // The corner chip reserves the complementary width, so the two can
             // never overlap however long either text grows.
             scopedPeerCount !== null
               ? 'max-w-[45%] md:max-w-[55%]'
               : 'max-w-[calc(100%-88px)] md:max-w-[80%]',
+            noticeTone === 'warning' && 'text-warning-foreground dark:text-warning',
+            noticeTone === 'destructive' && 'text-destructive',
           )}
         >
-          {notice}
-        </span>
+          <span
+            data-slot="map-status-geo"
+            role="status"
+            title={noticeExplanation ?? undefined}
+            aria-describedby={observationLine === null ? explanationId : observationId + ' ' + explanationId}
+            className="inline-flex items-center gap-1.5"
+          >
+            {noticeTone !== 'quiet' && (
+              <span
+                aria-hidden="true"
+                className={cn('inline-block size-1.5 shrink-0 rounded-full', noticeTone === 'destructive' ? 'bg-destructive' : 'bg-warning')}
+              />
+            )}
+            <span>{notice.text}</span>
+          </span>
+          {observationLine && (
+            <span id={observationId} data-slot="map-status-observation" className="block">
+              {observationLine}
+            </span>
+          )}
+          <span id={explanationId} className="sr-only">{noticeExplanation}</span>
+        </div>
       )}
       {/* The locked reference theme draws this chip at `text-[10px]` over
           `bg-background/60` (komari-theme-emerald@c2c5e88 NodeEarthMaps.vue).

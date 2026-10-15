@@ -168,12 +168,25 @@ export function nodeHealthLabel(value: string | null | undefined): 'Healthy' | '
   }
 }
 
+/** The three Node health marker tones, each drawn from Emerald's own tokens
+ * (ADR 0002). Healthy keeps the brand green; Unhealthy takes the error tone
+ * because the Server confirmed a failed observation; and Unknown takes the
+ * warning tone, because missing, stale, or never-observed evidence is not a
+ * confirmed failure and must never be painted as one. The marker's accessible
+ * name carries the same word, so the state is never colour-only. */
+const NODE_HEALTH_MARKER_TONES = {
+  healthy: 'node-health-marker-healthy bg-emerald-600',
+  unhealthy: 'node-health-marker-unhealthy bg-destructive',
+  unknown: 'node-health-marker-unknown bg-warning',
+} as const
+
 /**
- * Two-state Node health marker (issue #141). The Server-owned health word is
- * the marker's accessible name, so removing the text badge leaves Healthy,
- * Unhealthy, and Unknown in the accessibility tree. Healthy renders green and
- * every other state - Unhealthy, Unknown, and never-observed - renders grey;
- * the exceptional Server reason stays visible as text on each surface.
+ * Three-state Node health marker (issue #141, round 2). The Server-owned health
+ * word is the marker's accessible name, so removing the text badge leaves
+ * Healthy, Unhealthy, and Unknown in the accessibility tree. The three tones
+ * are distinct: Unknown reads as a warning, never as Offline, and the
+ * exceptional Server reason stays visible as text on each surface. PlatScan
+ * Validator Activity is a separate dimension and keeps its own badge.
  */
 export function NodeHealthMarker({ health }: { health: string | null | undefined }) {
   const label = nodeHealthLabel(health)
@@ -182,7 +195,7 @@ export function NodeHealthMarker({ health }: { health: string | null | undefined
     <span
       data-slot="node-health-marker"
       data-tone={tone}
-      className={`relative inline-flex size-2 shrink-0 rounded-full ${label === 'Healthy' ? 'node-health-marker-healthy bg-emerald-600' : 'node-health-marker-other bg-muted-foreground'}`}
+      className={`relative inline-flex size-2 shrink-0 rounded-full ${NODE_HEALTH_MARKER_TONES[tone]}`}
       role="img"
       aria-label={label}
     >

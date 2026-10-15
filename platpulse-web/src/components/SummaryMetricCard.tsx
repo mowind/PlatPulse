@@ -22,7 +22,7 @@ import { cn } from '../lib/utils'
  * title line, one marker position and one value baseline by construction, and
  * the box is the target the interactive tiles already needed.
  */
-export function SummaryMetricCard({ label, value, icon: Icon, tone = 'green', action, caption, hoverable = true, dataSlot = 'summary-card' }: {
+export function SummaryMetricCard({ label, value, icon: Icon, tone = 'green', action, caption, hint, hoverable = true, dataSlot = 'summary-card' }: {
   label: string
   value: ReactNode
   /** Trailing metric icon; omit it for a read-only tile that carries none. */
@@ -32,6 +32,12 @@ export function SummaryMetricCard({ label, value, icon: Icon, tone = 'green', ac
   /** Directly visible stat line under the value. Every tile reserves the same
    *  slot so all six keep one height and one value baseline. */
   caption?: ReactNode
+  /** The longer reading of the same figure, exposed as the `title` of the
+   *  value-and-caption reading so the visible caption can stay short and the
+   *  explanation stays reachable without adding copy the compact shell would
+   *  have to grow for. It deliberately does not travel through CardX's own
+   *  `title` prop: that one is the card's *visible* header. */
+  hint?: string
   /** Home's tiles carry the interactive hover ring; a read-only tile (Node
    *  Detail) keeps the same resting surface without it. */
   hoverable?: boolean
@@ -48,7 +54,7 @@ export function SummaryMetricCard({ label, value, icon: Icon, tone = 'green', ac
         {action ?? (Icon ? <Icon size={18} strokeWidth={2} className="shrink-0" aria-hidden="true" data-icon={label} /> : null)}
       </span>
     </div>
-    <div className="flex min-w-0 flex-col gap-0.5">
+    <div data-slot="summary-reading" title={hint} className="flex min-w-0 flex-col gap-0.5">
       <strong data-slot="summary-value" className={cn('text-base font-bold leading-none tracking-tight tabular-nums md:text-2xl [overflow-wrap:anywhere]', tone === 'red' && 'text-destructive')}>{value}</strong>
       <span data-slot="summary-caption" className="min-h-4 text-[11px] leading-4 text-muted-foreground [overflow-wrap:anywhere]">{caption}</span>
     </div>

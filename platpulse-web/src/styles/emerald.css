@@ -389,7 +389,7 @@
   }
   /* A compact value too long for one track takes the whole row instead of
      splitting its digits (validator-metrics.md, Emerald deviation 22). */
-  [data-slot='validator-summary-cell'][data-wide='true'] { grid-column: 1 / -1 }
+  [data-slot='linked-validator-metrics'] > [data-slot='validator-summary-cell'][data-wide='true'] { grid-column: 1 / -1; }
 }
 
 /* Home Node-card anatomy (#238): no region reserves a shared minimum height and

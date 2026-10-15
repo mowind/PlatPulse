@@ -117,24 +117,31 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(page.getByRole('link', { name: /Node H/ })).toHaveCount(1)
 
     // CONTEXT.md: the reason for an abnormal Node Health state stays visible as
-    // text, on its own reserved line.
+    // text, on its own reserved line. Round 2 shortens the Server's long sentence
+    // to one readable line whose own title keeps the whole wording.
     const lCard = nodeCard(page, /Node L/)
-    await expect(lCard.getByText('one or more observations are stale or unknown')).toHaveCount(1)
+    const lDiagnostic = lCard.locator('[data-slot="node-diagnostic"]')
+    await expect(lDiagnostic).toHaveText('Observations stale / unknown')
+    await expect(lDiagnostic).toHaveAttribute('title', 'one or more observations are stale or unknown')
+    await expect(lDiagnostic).toHaveAttribute('data-tone', 'warning')
 
-    // The four non-cumulative summary cards stay marker, title and number;
-    // only the two cumulative cards add their scope/coverage stat line.
-    const summaryFacts: Array<{ label: string; value: string }> = [
+    // The four non-cumulative summary cards stay marker, title and number, with
+    // one deliberate exception: the Attention tile names what it counts on the
+    // shared stat line, so its figure is never read as a chain-height
+    // difference. The two cumulative cards add their scope/coverage line to
+    // that same slot.
+    const summaryFacts: Array<{ label: string; value: string; caption?: string }> = [
       { label: 'Active Nodes', value: '12' },
       { label: 'Healthy Nodes', value: '5' },
-      { label: 'Attention', value: '7' },
+      { label: 'Attention', value: '7', caption: 'Unhealthy or Unknown' },
       { label: 'Networks', value: '2' },
     ]
-    for (const { label, value } of summaryFacts) {
+    for (const { label, value, caption } of summaryFacts) {
       const card = page.getByRole('article', { name: label, exact: true })
       await expect(card).toHaveCount(1)
-      // The card exposes marker, title, and number only - no explanatory
-      // footer text.
-      await expect(card).toHaveText(`${label} ${value}`, { useInnerText: true })
+      // The card exposes marker, title, number and at most one reading - no
+      // explanatory footer text.
+      await expect(card).toHaveText(`${label} ${value}${caption ? ' ' + caption : ''}`, { useInnerText: true })
       const height = (await card.boundingBox())!.height
       // The tiles keep the compact height of the original four-card 2x2 grid:
       // a 44px control-sized header row, the value and the shared stat slot.
@@ -264,7 +271,9 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(pCard.locator('[data-slot="validator-activity"]')).toHaveAttribute('data-stale', 'false')
     await expect(pCard.getByText('0', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('Non-validator', { exact: true })).toHaveCount(0)
-    await expect(pCard.getByText('one or more observations are stale or unknown')).toHaveCount(1)
+    const pDiagnostic = pCard.locator('[data-slot="node-diagnostic"]')
+    await expect(pDiagnostic).toHaveText('Observations stale / unknown')
+    await expect(pDiagnostic).toHaveAttribute('title', 'one or more observations are stale or unknown')
 
     // Node A: the observed Current Head Block Summary still proves its Block
     // Height; the transaction count it used to prove is a Node Detail statement.

@@ -595,7 +595,7 @@ describe('Public Home dashboard', () => {
     expect(document.querySelector('[data-slot="validator-role"]')).toBeNull()
   })
 
-  it('marks Healthy green and every other Node grey before the name (issue #141)', () => {
+  it('marks Healthy green, Unhealthy red, and Unknown amber before the name (issue #141, round 2)', () => {
     const unhealthy = { ...network.nodes[0], nodeId: 'node-unhealthy', displayName: 'Unhealthy Node', health: 'unhealthy', healthReason: 'RPC failed' }
     render(<BrowserRouter><HomeDashboard
       networks={[{ ...network, nodes: [network.nodes[0], network.nodes[1], unhealthy] }]}
@@ -608,8 +608,18 @@ describe('Public Home dashboard', () => {
     const alphaHeading = within(alphaCard).getByRole('heading', { level: 2, name: 'Alpha' })
     expect(alphaMarker.compareDocumentPosition(alphaHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
-    expect(within(cardOf(nodeCardLink('Beta'))).getByRole('img', { name: 'Unknown' }).classList.contains('node-health-marker-other')).toBe(true)
-    expect(within(cardOf(nodeCardLink('Unhealthy Node'))).getByRole('img', { name: 'Unhealthy' }).classList.contains('node-health-marker-other')).toBe(true)
+    // Three distinct tones, not two: a confirmed failed observation takes the
+    // error tone, while missing, stale or never-observed evidence is a warning.
+    // Neither is ever painted as Offline.
+    const unknownMarker = within(cardOf(nodeCardLink('Beta'))).getByRole('img', { name: 'Unknown' })
+    expect(unknownMarker.classList.contains('node-health-marker-unknown')).toBe(true)
+    expect(unknownMarker.getAttribute('data-tone')).toBe('unknown')
+    expect(unknownMarker.classList.contains('bg-warning')).toBe(true)
+    const unhealthyMarker = within(cardOf(nodeCardLink('Unhealthy Node'))).getByRole('img', { name: 'Unhealthy' })
+    expect(unhealthyMarker.classList.contains('node-health-marker-unhealthy')).toBe(true)
+    expect(unhealthyMarker.getAttribute('data-tone')).toBe('unhealthy')
+    expect(document.querySelector('.node-health-marker-other')).toBeNull()
+    expect(screen.queryByText(/Offline/)).toBeNull()
 
     // The health marker is the only header status cue besides the independent
     // PlatScan Activity badge; CONTEXT.md's rule holds: the reason for an
@@ -622,6 +632,40 @@ describe('Public Home dashboard', () => {
     expect(within(alphaCard).queryByText('RPC reachable')).toBeNull()
     expect(within(cardOf(nodeCardLink('Beta'))).getByText('Never observed')).toBeTruthy()
     expect(within(cardOf(nodeCardLink('Unhealthy Node'))).getByText('RPC failed')).toBeTruthy()
+    // The diagnostic line carries the same verdict as the marker and keeps the
+    // Server's own sentence as its title, so a short line hides no reason.
+    const unknownDiagnostic = cardOf(nodeCardLink('Beta')).querySelector('[data-slot="node-diagnostic"]')!
+    expect(unknownDiagnostic.getAttribute('data-tone')).toBe('warning')
+    expect(unknownDiagnostic.getAttribute('title')).toBe('Never observed')
+    const unhealthyDiagnostic = cardOf(nodeCardLink('Unhealthy Node')).querySelector('[data-slot="node-diagnostic"]')!
+    expect(unhealthyDiagnostic.getAttribute('data-tone')).toBe('destructive')
+    expect(unhealthyDiagnostic.getAttribute('title')).toBe('RPC failed')
+  })
+
+  it('shortens a long stale-observation reason to one line and keeps the full one reachable', () => {
+    // The Centaur case: the Server's stale/unknown verdict arrives as one long
+    // sentence that used to crowd the card header in red, as if the evidence
+    // that was missing were a confirmed failure.
+    const reason = 'one or more observations are stale or unknown'
+    const centaur = { ...network.nodes[1], nodeId: 'node-centaur', displayName: 'Centaur', health: 'unknown', healthReason: reason }
+    render(<BrowserRouter><HomeDashboard
+      networks={[{ ...network, nodes: [centaur] }]}
+      realtimeStatus="connected" online resetting={false} error={null} loading={false}
+    /></BrowserRouter>)
+
+    const card = cardOf(nodeCardLink('Centaur'))
+    const diagnostic = card.querySelector('[data-slot="node-diagnostic"]')!
+    expect(diagnostic.textContent).toBe('Observations stale / unknown')
+    expect(diagnostic.getAttribute('data-tone')).toBe('warning')
+    expect(diagnostic.className).toContain('text-warning-foreground')
+    expect(diagnostic.className).not.toContain('text-destructive')
+    expect(diagnostic.getAttribute('title')).toBe(reason)
+    expect(card.getAttribute('data-tone')).toBe('warn')
+    // The identity entry keeps the Server's full reason, so nothing is lost.
+    fireEvent.click(within(card).getByRole('button', { name: 'Node identity details' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText('Current health diagnostic: ' + reason)).toBeTruthy()
+    expect(within(dialog).queryByText('Current health diagnostic: Observations stale / unknown')).toBeNull()
   })
 
   it('keeps summary cards to marker, title, and number with a compact shell', () => {
@@ -673,6 +717,35 @@ describe('Public Home dashboard', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(within(summary).getByRole('button', { name: 'Cumulative blocks breakdown and exact values' })).toBeTruthy()
     expect(within(summary).getByRole('button', { name: 'Cumulative rewards breakdown and exact values' })).toBeTruthy()
+  })
+
+  it('states what Attention counts and what Attention First leads with, without widening either', () => {
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    const attention = summaryCardOf('Attention')
+    // The tile names the two states it counts inside the caption slot every card
+    // already reserves, and the full reading travels as the tile's title. The
+    // other five tiles stay wordless, so the band keeps its density (round 2).
+    expect(attention.querySelector('[data-slot="summary-caption"]')?.textContent).toBe('Unhealthy or Unknown')
+    expect(attention.querySelector('[data-slot="summary-reading"]')?.getAttribute('title')).toBe('Home Attention counts Active Nodes the Server has not confirmed Healthy: Unhealthy or Unknown. A chain-height difference never counts, and Observing is not an abnormal state.')
+    // The explanation is a tooltip, never copy the compact tile has to render.
+    expect(attention.querySelector('[data-slot="card-x-header"]')).toBeNull()
+    expect(screen.queryByText(/^Home Attention counts Active Nodes/)).toBeNull()
+    const summary = screen.getByLabelText('Home summary')
+    expect([...summary.querySelectorAll('[data-slot="summary-caption"]')].filter((caption) => caption.textContent === 'Unhealthy or Unknown')).toHaveLength(1)
+    // The three plain count tiles stay wordless: the caption slot they already
+    // reserve is empty, so the band's height and density are unchanged.
+    expect(['Active Nodes', 'Healthy Nodes', 'Networks'].map((label) => summaryCardOf(label).querySelector('[data-slot="summary-caption"]')?.textContent)).toEqual(['', '', ''])
+    // Attention First is the one order whose name does not say what it leads
+    // with, so its explanation is announced with the control that selects it,
+    // and withdrawn again when another order is chosen.
+    const sort = selectNamed('Sort')
+    expect(sort.getAttribute('aria-describedby')).toBeNull()
+    fireEvent.change(sort, { target: { value: 'attention' } })
+    const hintId = sort.getAttribute('aria-describedby')
+    expect(hintId).toBeTruthy()
+    expect(document.getElementById(hintId as string)?.textContent).toBe('Attention First leads with the Active Nodes the Server has not confirmed Healthy, Unhealthy before Unknown, and lists the Healthy ones last.')
+    fireEvent.change(sort, { target: { value: 'health' } })
+    expect(sort.getAttribute('aria-describedby')).toBeNull()
   })
 
   it('opens full long Node identity without navigating and restores focus on close', async () => {

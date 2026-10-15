@@ -37,7 +37,7 @@ const metricValue = (scope: Locator, label: string) =>
 /** The Home card's Linked Validator summary (#238): the three key metrics in
  *  the two or three columns the card's own width holds, with the third cell
  *  keeping the whole row when only two fit. */
-async function expectCardMetrics(scope: Locator) {
+async function expectCardMetrics(scope: Locator, rewardsTakeFullRow = false) {
   const metrics = scope.getByRole('group', { name: 'Linked Validator metrics' })
   const cells = metrics.locator(':scope > [data-slot="validator-summary-cell"]')
   await expect(cells).toHaveCount(3)
@@ -55,11 +55,12 @@ async function expectCardMetrics(scope: Locator) {
   expect(layout.tracks.length, 'the summary uses two or three columns').toBeGreaterThanOrEqual(2)
   expect(layout.tracks.length).toBeLessThanOrEqual(3)
   expect(layout.cells[1].left, 'the first two cells share one row').toBeGreaterThan(layout.cells[0].right)
-  if (layout.tracks.length === 3) {
+  if (layout.tracks.length === 3 && !rewardsTakeFullRow) {
     expect(layout.cells[2].left).toBeGreaterThan(layout.cells[1].right)
     expect(layout.cells[2].top).toBeCloseTo(layout.cells[0].top, 1)
   } else {
-    // The third cell keeps the whole row width once only two columns fit.
+    // The reward cell keeps the whole row when only two columns fit, or when
+    // its exceptional source value cannot fit an ordinary summary cell.
     expect(layout.cells[2].top).toBeGreaterThan(layout.cells[0].bottom)
     expect(layout.cells[2].left).toBeCloseTo(layout.group.left, 0)
     expect(layout.cells[2].right).toBeCloseTo(layout.group.right, 0)
@@ -228,7 +229,7 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await loginAs(page)
     const card = page.getByRole('link', { name: PUBLIC_NODE_NAME, exact: true }).locator('xpath=ancestor::article[1]')
     const metrics = card.getByRole('group', { name: 'Linked Validator metrics' })
-    await expectCardMetrics(card)
+    await expectCardMetrics(card, true)
     const rewardCell = metrics.locator(':scope > [data-slot="validator-summary-cell"][data-metric="rewards"]')
     const rewardValue = rewardCell.locator('[data-slot="validator-summary-value"]')
     await expect(rewardValue).toHaveText('123456789012345678.9T')
@@ -444,9 +445,27 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await expect(metricValue(nCard, 'Network rank')).toHaveText('#2')
     await expect(nCard.getByRole('status', { name: /Validator data: Failed/ })).toBeVisible()
 
+    const mName = await mCard.getByRole('link', { name: /Node M/ }).textContent()
+    expect(mName).not.toBeNull()
+    const hPath = await hCard.getByRole('link', { name: /Node H/ }).getAttribute('href')
+    expect(hPath).not.toBeNull()
+    await page.route('**/api/public/v1' + hPath, async route => {
+      const response = await route.fetch()
+      const node: PublicNode = await response.json()
+      expect(node.validator?.currentValidatorStatus).toBe('validator')
+      await route.fulfill({ response, json: { ...node, validator: { ...node.validator,
+        rank: null, rankState: 'unranked', rankFreshness: 'fresh' } } })
+    })
     await mCard.getByRole('link', { name: /Node M/ }).click()
+    // A confirmed non-Validator has no performance panel on Node Detail either.
+    await expect(page.getByRole('heading', { name: mName!, exact: true })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Validator performance' })).toHaveCount(0)
+    // The same Unranked evidence remains readable with all six metrics on an
+    // eligible Validator's detail, rather than inventing a panel for Node M.
+    await page.goto(hPath!)
     const detail = page.getByRole('region', { name: 'Validator performance' })
     await expect(metricValue(detail, 'Network rank')).toHaveText('Unranked')
+    await expectDetailMetrics(detail)
 
     await expectNoHorizontalOverflow(page)
   })
@@ -473,7 +492,12 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     const identity = linked.locator('[data-slot="linked-validator-identity"]')
     await expect(identity).toBeVisible()
     await expect(identity.locator('[data-slot="linked-validator-identity-label"]')).toHaveText('Non-validator')
-    await expect(identity).toHaveText(/No current staking identity\./)
+    // The reason stops repeating itself on the card face (#238 round 2): one
+    // word stays visible and the sentence moves to the line's own title, where
+    // it is still reachable without crowding the identity row.
+    await expect(identity).toHaveText('Non-validator')
+    await expect(identity).toHaveAttribute('title', 'No current staking identity.')
+    await expect(identity.locator('[data-slot="linked-validator-identity-reason"]')).toHaveCount(0)
     await expect(linked.getByRole('group', { name: 'Linked Validator metrics' })).toHaveCount(0)
     await expect(card.getByText('No validator metrics')).toHaveCount(0)
     await expect(card.getByText('Loading Validator metrics…')).toHaveCount(0)

@@ -1,4 +1,8 @@
-# Node card compact equal-height verification
+# Node card density verification
+
+> Historical equal-height measurements are retained for comparison, not as the
+> current acceptance contract. Issue #236 supersedes cross-grid equality, six
+> Home metrics and reserved empty-state height. See the final record below.
 
 ## Scope and method
 
@@ -183,3 +187,203 @@ its own right-aligned line. The card's remaining height is the identity block's
 wrapping and the Validator region's own 176px minimum, which the parent's slice 2
 (#238) addresses; reaching the parent's 250–290px whole-card target is therefore
 not this slice's claim.
+
+## Final Compact Dashboard acceptance — issue #236 (2026-10-14)
+
+Baseline for the six feature slices: `e331389`; slice implementation HEAD:
+`6e4e772`. This working-tree acceptance cleanup repairs browser regressions,
+updates old contracts and fixes one actual CSS cascade defect; it does not change
+Server/Agent, API/DTO, health/freshness policy, collection or Node Detail layout.
+
+### Reproduction and controlled fixtures
+
+The [recorder](../../../platpulse-web/scripts/measure-node-density.mjs) uses the
+existing isolated production-asset Playwright harness, not operator Nodes. It
+replaces only the Public networks response through the existing routed-page seam.
+Normal fixtures retain three Home Validator metrics, current Peer evidence,
+process CPU/Memory, Node data used/capacity, upload/download and an evidence-backed
+`At observed head`. Node-level freshness is an ISO receipt timestamp;
+Peer freshness is the separate `current` enum. Ordinary fixtures contain no
+fabricated last-good cue. Status fixtures retain long names/diagnostics, Provider
+failure with last-good values, missing metrics, current negative, no Link, stale
+negative and valid Resyncing rather than hiding exceptions.
+
+`DENSITY_MATRIX=1` captures 40 combinations: five exact CI viewports × Light/Dark
+× ordinary/status/20px-root-text/reduced-motion. The complete raw measurements are
+[geometry.json](issue-236/geometry.json). Run from the WebUI directory against the
+disposable existing harness on port 4186:
+
+```sh
+E2E_PORT=4186 DENSITY_MATRIX=1 \
+  DENSITY_OUTPUT=../docs/visual-migration/emerald/issue-236/geometry.json \
+  DENSITY_SCREENSHOTS=../docs/visual-migration/emerald/issue-236/home \
+  node scripts/measure-node-density.mjs
+```
+
+These are browser geometry and screenshots, not a timing experiment with human
+readers. The system font and existing text sizes are unchanged. The 20px mode
+increases root-relative sizing, not every OS text setting or browser zoom level.
+Existing browser acceptance also covers 200% zoom.
+
+### Final ordinary complete Validator dimensions
+
+Light and Dark have the same geometry; all seven ordinary cards retain three
+Validator cells, current Peer metadata and the valid reference comparison.
+
+| Fixed viewport | Columns | Card width × height (CSS px) | Natural structure |
+|---|---:|---:|---|
+| 360 × 800 touch | 1 | 328 × 292.5 | Two-column summary; Rewards on the next row |
+| 390 × 844 touch | 1 | 358 × 292.5 | Same two-row summary |
+| 768 × 1024 touch | 2 | 362 × 292.5 | Same two-row summary |
+| 1280 × 800 | 3 | 408 × 246.5 | Three metrics on one row |
+| 1440 × 900 | 3 | 408 × 246.5 | The unchanged 1280px shell does not force four columns |
+
+250–290px is an aim, not a lower bound or cropping rule. A fully current desktop
+card is naturally 246.5px; adding blank space to reach 250px would contradict the
+content-driven contract. Narrow cards exceed 290px by 2.5px to keep the third metric
+on a second readable row. There is no font shrink, fixed high minimum or clipping.
+The ordinary chain remains 35px and resources/single-line Speed region 55.5px.
+
+At both desktop widths the status row with a long diagnostic and extreme reward
+reaches 337.5px; unrelated rows remain 246.5px. At 360px cards independently range
+from 224.5px (identity-only) to 364px (long diagnostic); no empty metric placeholder
+is reserved. At 20px root text ordinary cards grow to 302.7–380.2px and track counts
+reduce as needed. All 40 records report no page horizontal overflow, metric clipping
+or Validator content beyond its card. Reduced-motion geometry is unchanged.
+
+A separate routed browser regression constrains the real Home `main` container
+to 600px without changing its viewport, adding an internal measurement hook or
+altering shell CSS. All five fixed projects in both themes keep one readable Node
+track (568px at wider viewports): desktop viewport width does not force several
+columns into an actually narrow container.
+
+### Actual overflow repair and browser contract corrections
+
+The extreme reward cell declared its wide-value intent, but the three-column
+third-cell rule had higher CSS specificity than the full-row rule. A browser probe
+measured 115px available / 134px scroll width before the fix; the corrected
+parent-qualified selector lets it use all 376px with no overflow. The existing
+long-value browser test now checks actual whole-row geometry.
+
+Tests replace all-card/cross-row region equality with same-row bottoms and a
+before/after check that a wrapped diagnostic grows only its own row. The formerly
+undefined row helper is local and executable. Unknown rank fixtures explicitly
+carry unknown evidence and exact accessible reasons, not inherited `Unranked`.
+A confirmed non-Validator has no Node Detail performance panel; a real Validator
+retains Unranked and all six detail metrics. No coverage is removed to force a pass.
+
+The complete matrix also exposed a shared summary-title assertion reading the
+new empty marker span as six extra titles; it now scopes the actual title span.
+Two release zoom checks sampled the map canvas before ResizeObserver ran: a
+browser probe measured viewport 320px / scroll 344px immediately after resize,
+then scroll 320px and canvas width 288px after two animation frames. The existing
+zoom seam now waits for that rendering cycle, without relaxing the no-overflow
+assertion or introducing a sleep, a test hook or a production-layout change.
+
+### Screenshot visual review
+
+Twenty unmodified grid captures cover ordinary/status at every fixed viewport and
+in both themes. They are document-space full-page clips: the sticky header is not
+hidden/changed or accidentally painted over the first card by scroll-into-view.
+
+- Ordinary desktop: [Light](issue-236/home-normal-1440-light.png), [Dark](issue-236/home-normal-1440-dark.png).
+- Mixed/exception desktop: [Light](issue-236/home-status-1440-light.png), [Dark](issue-236/home-status-1440-dark.png).
+- Ordinary phone: [Light](issue-236/home-normal-360-light.png), [Dark](issue-236/home-normal-360-dark.png).
+- Mixed/exception tablet: [Light](issue-236/home-status-768-light.png), [Dark](issue-236/home-status-768-dark.png).
+
+Agent visual review checks quiet normal cards; health mark by the name and Activity
+on the right; readable CPU/Memory/Disk columns, distinct Speed arrows, single Head
+line and three-summary/identity-only variants. Diagnostics and data failure attract
+attention without stretching unrelated rows. Unknown is not zero or Non-validator;
+Observing is not an Agent-offline verdict. This is screenshot review, not a measured
+three-second human usability study. Final user acceptance of that qualitative goal
+is explicit rather than fabricated.
+
+### Verification status
+
+Five-project ordinary/mixed-card and constrained-container regressions pass
+(10 + 5 cases, both themes inside each case). Web lint/typecheck, 991 unit tests and
+the production build pass. The complete fixed-project suite ran 1200 cases in
+34.9 minutes: 896 passed, 298 conditionally skipped and six failed. The failures
+were the summary-title selector and the pre-ResizeObserver zoom measurement in
+the two phone projects, using test modules loaded before those in-session fixes.
+The exact six failures were replayed with the final test code: **6 passed, 0 failed**
+(14.4s). The corresponding three regressions also pass in all five projects
+(**15 passed**, 40.2s). Initial failures are not erased or described as an
+unconditionally green full run. A fresh run of every affected browser spec,
+including the new constrained-container case, completes across all five projects:
+**141 passed, 4 skipped, 0 failed** (7.3 minutes).
+
+Local HTML reports (generated artifacts, not tracked design evidence):
+
+- Full initial matrix: [report](../../../platpulse-web/playwright-report/issue-236-final/index.html).
+- Exact six-failure rerun: [report](../../../platpulse-web/playwright-report/issue-236-rerun/index.html).
+- All affected specs after fixes: [report](../../../platpulse-web/playwright-report/issue-236-affected/index.html).
+
+Standards and Spec follow-up reviews have no remaining material findings. Two
+independent AI visual reviews directly inspected all 20 screenshots with no visual
+blocker. These are local working-tree results; the cleanup must be committed and
+integrated before treating the remote implementation as ready to close #236.
+
+## Second-round Home refinement acceptance (2026-10-15)
+
+Baseline: `6e4e772` ("feat(web): Home Disk、Uptime 与 Attention First 稳定排序 (#242)").
+Implementation: the same day's working tree. The recorder, fixtures and viewport
+set above are unchanged, so the two records are directly comparable.
+
+This round changed no layout rule. It shortens an exceptional Node's diagnostic to
+one line, makes the Health marker three-state, gives the Attention tile its own
+short reading and an accessible explanation, simplifies a confirmed Non-validator's
+identity line, and separates the map's Geo-database freshness from its Peer
+observation freshness.
+
+### Measured effect on the exceptional card
+
+The 40-record matrix was re-run against the same controlled fixtures. **30 of the
+40 records are identical to the #236 record**, including every `normal` mode
+(16px light/dark, 20px root text, reduced motion): 360 → 328 × 292.5, 390 →
+358 × 292.5, 768 → 362 × 292.5, 1280/1440 → 408 × 246.5, identity 69px, metadata
+16px, resources 55.5px, chain 35px, summary rows 1 at desktop and 2 below it.
+
+The ten differing records are all `status`, and inside them only the exceptional
+card changed — because the Server's multi-sentence reason now renders as one short
+line instead of wrapping across two or three:
+
+| Fixed viewport | Exceptional card height | Identity region | Ordinary cards in the same run |
+|---|---:|---:|---|
+| 360 × 800 | 364 → 331 | 140.5 → 107.5 | unchanged (224.5–292.5) |
+| 390 × 844 | 354 → 321 | 130.5 → 97.5 | unchanged (224.5–292.5) |
+| 768 × 1024 | 354 → 321 | 130.5 → 97.5 | unchanged (224.5–308.5) |
+| 1280 × 800 | 337.5 → 321 | 114 → 97.5 | unchanged (246.5) |
+| 1440 × 900 | 337.5 → 321 | 114 → 97.5 | unchanged (246.5) |
+
+The exception still grows only its own row (321px against 246.5px ordinary desktop
+cards) and the growth is now one readable line: 16.5px at desktop and 33px on
+phones, where the old wrapped diagnostic cost 71.5–73.5px. All 40 records report
+no page horizontal overflow, no clipped metric and no Validator content beyond its
+card, in both themes.
+
+### Map chip states
+
+A routed probe (not committed) drove the two freshness dimensions independently
+against the real Server payload: Geo current + Peer current shows no chip; Geo
+stale + Peer current shows `Map data stale`; Geo current + Peer stale shows
+`Peer observations stale` on its own; an expired country attribution with a
+current Geo state and current Peer observations shows `Map data stale`, because
+the retained attribution belongs to the Geo dimension; both stale names both
+dimensions. Every warning case renders the theme's warning colour with a warning
+dot, keeps exactly one visible line in the `role="status"` element, and carries
+the whole two-dimension explanation plus the last-good statement as its `title`
+and as an `sr-only` description.
+
+### Verification status
+
+Web lint, typecheck and 997 unit tests pass. The complete fixed-project suite ran
+1200 cases in 35.4 minutes: 902 passed, 298 conditionally skipped and 5 failed —
+all five were `home-card-finish.spec.ts:138` in the five projects, whose assertion
+the run had loaded before it was corrected for the simplified Non-validator line.
+Replaying that spec with the final test code passes **15 passed, 0 failed** (33.6s),
+so no browser failure remains open. The initial failure is recorded rather than
+described as an unconditionally green run. Standards and Spec reviews
+(cliproxyapi/gpt-6.1-sol, high) report no remaining findings on the final tree.
+

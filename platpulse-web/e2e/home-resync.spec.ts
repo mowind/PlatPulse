@@ -57,23 +57,35 @@ async function evidence(page: Page, testInfo: TestInfo, name: string) {
   }
 }
 
-/** The offset of every reserved region from its own card's top, so a resync
- *  chip or an empty Validator state cannot shift one card's regions relative
- *  to another's (and a phone's single column is not mistaken for a shift). */
-async function regionTops(card: Locator) {
-  return card.evaluate(el => {
-    const base = el.getBoundingClientRect().top
-    const top = (selector: string) => {
-      const node = el.querySelector(selector)
-      return node ? Math.round(node.getBoundingClientRect().top - base) : null
+// Observe content order and containment, not a reserved top offset shared with
+// other cards. Resync/diagnostics may naturally wrap the identity of this row.
+async function cardContentGeometry(cards: Locator) {
+  await expect.poll(() => cards.evaluateAll(elements => elements.every(card =>
+    Math.abs(card.getBoundingClientRect().top - card.parentElement!.getBoundingClientRect().top) <= 1,
+  ))).toBe(true)
+  const geometry = await cards.evaluateAll(elements => elements.map(card => {
+    const bounds = card.getBoundingClientRect()
+    const regions = ['identity', 'resource', 'chain', 'validator'].map(name => {
+      const region = card.querySelector('[data-node-region="' + name + '"]')!.getBoundingClientRect()
+      return { name, top: region.top, bottom: region.bottom, left: region.left, right: region.right, height: region.height }
+    })
+    return { top: bounds.top, bottom: bounds.bottom, left: bounds.left, right: bounds.right, height: bounds.height, regions }
+  }))
+  for (const card of geometry) {
+    for (const [index, region] of card.regions.entries()) {
+      expect(region.height, region.name + ' is real visible content').toBeGreaterThan(0)
+      expect(region.left).toBeGreaterThanOrEqual(card.left - 1)
+      expect(region.right).toBeLessThanOrEqual(card.right + 1)
+      expect(region.top).toBeGreaterThanOrEqual(card.top - 1)
+      expect(region.bottom).toBeLessThanOrEqual(card.bottom + 1)
+      if (index > 0) expect(region.top, 'content regions never overlap').toBeGreaterThanOrEqual(card.regions[index - 1].bottom)
     }
-    return {
-      identity: top('[data-slot="card-x-header"]'),
-      resource: top('[data-slot="node-resource-region"]'),
-      chain: top('[data-slot="node-business-metrics"]'),
-      validator: top('[data-slot="linked-validator"]'),
+    expect(card.regions[3].height, 'unknown identity is a short line, not an empty reserved panel').toBeLessThan(60)
+    for (const peer of geometry.filter(peer => Math.abs(peer.top - card.top) <= 1)) {
+      expect(Math.abs(peer.bottom - card.bottom), 'only same-row bottoms coordinate').toBeLessThanOrEqual(1)
     }
-  })
+  }
+  return geometry
 }
 
 async function statusAndGeometry(page: Page, testInfo: TestInfo) {
@@ -172,20 +184,14 @@ async function statusAndGeometry(page: Page, testInfo: TestInfo) {
   expect(healthyColor).toBe(normalColor)
   expect(resyncColor).not.toBe(healthyColor)
 
-  // Cross-row equal heights and identical region starts: the resync chip lives
-  // in the identity status row and reserves the same height in every card.
+  // A Resyncing cue is content, not a reason to equalize heights or region tops
+  // across all grid rows. Every region stays readable and contained, and only
+  // cards which actually share a row must coordinate their bottom edge.
+  await page.mouse.move(0, 0)
+  const geometry = await cardContentGeometry(page.locator('[data-slot="node-card"]'))
+  expect(geometry).toHaveLength(4)
+  console.log(`[home-resync] ${testInfo.project.name}: natural identity content includes live Resyncing and independent unhealthy diagnostic; ${JSON.stringify(geometry)}`)
   const activeBox = await box(active)
-  const normalBox = await box(normal)
-  expect(Math.abs(activeBox.height - normalBox.height), 'every Home Node card shares one height').toBeLessThanOrEqual(1)
-  if (page.viewportSize()!.width >= 640) {
-    await expect.poll(async () => Math.abs((await box(active)).y - (await box(normal)).y)).toBeLessThanOrEqual(1)
-  }
-  const activeTops = await regionTops(active)
-  const normalTops = await regionTops(normal)
-  for (const region of ['identity', 'resource', 'chain', 'validator'] as const) {
-    expect(activeTops[region], region + ' region').not.toBeNull()
-    expect(Math.abs((activeTops[region] ?? 0) - (normalTops[region] ?? 0)), region + ' region starts at the same offset').toBeLessThanOrEqual(1)
-  }
   for (const bounds of [await box(active.getByRole('heading', { name: 'A Resync', exact: true })), await box(cue), await box(active.getByLabel('Node process and host network resources', { exact: true }))]) {
     expect(bounds.x).toBeGreaterThanOrEqual(activeBox.x - 1)
     expect(bounds.x + bounds.width).toBeLessThanOrEqual(activeBox.x + activeBox.width + 1)

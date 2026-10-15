@@ -308,6 +308,12 @@ export async function setPageZoom(page: Page, factor: number) {
     width: Math.max(minimumReflowWidth, Math.floor(viewport.width / factor)),
     height: Math.max(minimumReflowWidth, Math.floor(viewport.height / factor)),
   })
+  // A canvas resizes through ResizeObserver after layout, rather than in the
+  // viewport command itself. Wait for that actual rendering cycle before the
+  // caller measures reflow; persistent overflow still fails its assertion.
+  await page.evaluate(() => new Promise<void>(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  }))
 }
 
 /** Assert the currently focused element has a visible focus indicator. */

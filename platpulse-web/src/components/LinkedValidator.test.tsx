@@ -213,7 +213,12 @@ describe('LinkedValidatorSection Home identity states', () => {
   it('states a confirmed non-Validator in one short word', () => {
     renderCard({ validator: { ...notValidator, state: 'empty', freshness: 'fresh' } })
     const line = identityLine()
-    expect(line.textContent).toBe('Non-validator — No current staking identity.')
+    // One word on the card face (#238 round 2): the reason stops repeating
+    // itself in the footer and moves to the line's own title, where it stays
+    // reachable without crowding the identity row.
+    expect(line.textContent).toBe('Non-validator')
+    expect(line.getAttribute('title')).toBe('No current staking identity.')
+    expect(line.querySelector('[data-slot="linked-validator-identity-reason"]')).toBeNull()
     expect(line.closest('[data-slot="linked-validator"]')?.getAttribute('data-identity')).toBe('not_validator')
     expect(screen.queryByRole('group', { name: 'Linked Validator metrics' })).toBeNull()
     // No six Unknown placeholders and no large empty state take the space back.

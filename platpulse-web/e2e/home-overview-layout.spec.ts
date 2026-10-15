@@ -10,6 +10,37 @@ async function box(locator: Locator) {
   return result!
 }
 
+// #236 permits coordination within a row, never a grid-wide reserved height.
+// Read the actual painted rectangles, rather than an implementation hook or a
+// viewport-derived row index (the content container determines the columns).
+async function expectPerRowCardHeights(cards: Locator) {
+  await expect.poll(() => cards.evaluateAll(elements => elements.every(card =>
+    Math.abs(card.getBoundingClientRect().top - card.parentElement!.getBoundingClientRect().top) <= 1,
+  ))).toBe(true)
+  const geometry = await cards.evaluateAll(elements => elements.map(card => {
+    const bounds = card.getBoundingClientRect()
+    const diagnostic = card.querySelector('[data-slot="node-diagnostic"]')
+    return {
+      y: bounds.y, bottom: bounds.bottom, width: bounds.width, height: bounds.height,
+      diagnosticHeight: diagnostic?.getBoundingClientRect().height ?? 0,
+    }
+  }))
+  for (const card of geometry) {
+    const row = geometry.filter(peer => Math.abs(peer.y - card.y) <= 1)
+    for (const peer of row) {
+      expect(Math.abs(peer.bottom - card.bottom), 'cards in the same row coordinate their bottoms').toBeLessThanOrEqual(1)
+    }
+  }
+  const exceptional = geometry[1]
+  expect(exceptional.diagnosticHeight, 'the long health diagnostic remains readable').toBeGreaterThan(0)
+  const unaffected = geometry.filter(card => Math.abs(card.y - exceptional.y) > 1)
+  expect(unaffected.length, 'fixture includes another independent row').toBeGreaterThan(0)
+  for (const card of unaffected) {
+    expect(card.height, 'the long diagnostic only increases its own row').toBeLessThan(exceptional.height)
+  }
+  return geometry
+}
+
 async function overviewGeometry(page: Page) {
   const width = page.viewportSize()!.width
   const home = page.getByRole('region', { name: 'Home', exact: true })
@@ -251,7 +282,10 @@ test('short and long Node names retain identity actions and per-row card heights
     // #238 removed the grid-wide equal height: cards on one row still line up
     // with their own row, while the row holding the long name and its longer
     // diagnostic grows on its own instead of stretching every other row.
-    expect(await expectPerRowCardHeights(cards)).toHaveLength(6)
+    await page.mouse.move(0, 0)
+    const geometry = await expectPerRowCardHeights(cards)
+    expect(geometry).toHaveLength(6)
+    console.log(`[home-overview-layout] ${testInfo.project.name} ${dark ? 'dark' : 'light'}: natural growth from long health diagnostic; ${JSON.stringify(geometry)}`)
     await expect(cards.nth(0).getByRole('link', { name: 'A', exact: true })).toHaveAttribute('href', '/nodes/layout-0')
     await expect(cards.nth(1).getByRole('link', { name: longName, exact: true })).toHaveAttribute('href', '/nodes/layout-1')
     const linkGeometry = await cards.nth(1).getByRole('link', { name: longName, exact: true }).evaluate(el => {

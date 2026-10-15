@@ -1,6 +1,6 @@
 # ADR 0006: Show PlatScan Validator Activity on the Home Node card
 
-**Status:** Accepted; implemented by the Home Node-card top-right status badge. Amended 2026-09-27 to show PlatScan `candidate` distinctly from `active` (see Amendment history). This reverses the Home-card decision recorded by commit `288421f` ("refit Home overview, map and Node cards to the Emerald reference"), which deliberately rendered Validator Activity nowhere on a Home card and left Node Health as the only header status cue.
+**Status:** Accepted; implemented by the Home Node-card top-right status badge. Amended 2026-09-27 to show PlatScan `candidate` distinctly from `active`, and 2026-10-15 so the Node Health marker beside the name names all three health states rather than two (see Amendment history). This reverses the Home-card decision recorded by commit `288421f` ("refit Home overview, map and Node cards to the Emerald reference"), which deliberately rendered Validator Activity nowhere on a Home card and left Node Health as the only header status cue.
 
 ## Context
 
@@ -10,7 +10,7 @@ The Server already projects Canonical last-good Validator Activity onto a Public
 
 ## Decision
 
-The Home Node-card top-right badge shows the Node's PlatScan Validator Activity: an SVG icon plus the English status name, with the source and the real update time in a keyboard-, pointer- and touch-operable explanation. The two-state Node Health marker beside the name stays an independent cue, and the local Node role stays in Node detail only.
+The Home Node-card top-right badge shows the Node's PlatScan Validator Activity: an SVG icon plus the English status name, with the source and the real update time in a keyboard-, pointer- and touch-operable explanation. The three-state Node Health marker beside the name stays an independent cue, and the local Node role stays in Node detail only.
 
 - The named states map from PlatScan's numeric `data.status`: `candidate` (1), `active` (2), `producing` (3), `verifying` (6), and `observing` (an authoritative empty staking identity). `candidate` and `active` are distinct upstream states and are never collapsed into one visible status.
 - `exiting`, `exited` and `locked` keep their own real names with the neutral treatment rather than being forced into the named states. An unlisted value keeps its own name too.
@@ -26,6 +26,7 @@ The Home Node-card top-right badge shows the Node's PlatScan Validator Activity:
 
 ## Amendment history
 
+- 2026-10-15: the Node Health marker beside the name became three-state. Healthy keeps the Emerald success colour, Unhealthy takes the error colour, and Unknown — including a never-observed Node — takes the theme's warning colour instead of the single retired grey used for "every state that is not Healthy". The marker still reflects only the Server-owned health word: no health conclusion is derived from a chain-height difference or from a resync state, and Observing remains a Validator Activity rather than an abnormal health state (see `docs/design/webui.md` §15.32).
 - 2026-09-27: split PlatScan status 1 (`candidate`) from status 2 (`active`). Both had mapped to the single canonical `active` Activity, so a Node whose upstream status was `candidate` rendered as Active on Home. `CONTEXT.md` now lists Candidate as its own Validator Activity, the Server's `platscan_status_activity` maps 1 to `candidate` and 2 to `active`, and the badge gained the `candidate` outline treatment. `classify_activity` still treats Candidate as a currently valid staking identity (`Validator`), so only the visible Activity is split, not Current Validator Status.
 
 ## Related

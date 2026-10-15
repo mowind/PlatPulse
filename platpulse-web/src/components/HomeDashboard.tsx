@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react'
 import { Link, useLocation, useSearchParams } from 'react-router'
 import type { PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
@@ -45,7 +45,7 @@ import {
   type HomeView,
 } from '../homeFilters'
 import { homeReturnState, homeReturnTab, landHomeReturn, readHomeReturn, type HomeReturn, type HomeReturnState } from '../homeReturn'
-import { LinkedValidatorSection, validatorDataStatus, type ValidatorDataStatus } from './LinkedValidator'
+import { LinkedValidatorSection, validatorDataStatus, validatorIdentityStatement, type ValidatorDataStatus } from './LinkedValidator'
 import { ValidatorTotalCard } from './ValidatorTotals'
 import { ValidatorActivityBadge } from './ValidatorActivityBadge'
 import { SURFACE_CARD_INTERACTIVE } from '../lib/surface'
@@ -398,6 +398,9 @@ export default function HomeDashboard({
     },
   } as const
 
+  // The accessible explanation of the one sort key whose name does not say what
+  // it leads with; it travels with the control that selects it.
+  const attentionSortHintId = useId()
   const scopeName = scope.network === 'all'
     ? null
     : networks.find((network) => network.networkKey === scope.network)?.displayName ?? scope.network
@@ -542,8 +545,13 @@ export default function HomeDashboard({
           <SummaryCard label="Active Nodes" value={activeNodeCount} tone="green" icon="server" emptyLabel={emptyLabel} />
           <SummaryCard label="Healthy Nodes" value={selectionHealthyCount} tone="green" icon="heart" emptyLabel={emptyLabel} />
           <ValidatorTotalCard networks={scopedNetworks} metric="blocks" scopeNote={cumulativeScopeNote} availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
+          {/* The one tile whose figure is a health verdict rather than a plain
+              count, so it is the one tile that states what it counts (#236 round
+              2). The caption names the two Server verdicts and the title states
+              the boundary: chain-height differences and Observing never enter it. */}
           <SummaryCard label="Attention" value={attentionCount}
-            tone={attentionCount === null || attentionCount === 0 ? 'green' : 'red'} icon="alert" emptyLabel={emptyLabel} />
+            tone={attentionCount === null || attentionCount === 0 ? 'green' : 'red'} icon="alert" emptyLabel={emptyLabel}
+            caption={ATTENTION_CAPTION} hint={ATTENTION_HINT} />
           <SummaryCard label="Networks" value={selectionNetworkCount} tone="green" icon="network" emptyLabel={emptyLabel} />
           <ValidatorTotalCard networks={scopedNetworks} metric="rewards" scopeNote={cumulativeScopeNote} availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
         </>}
@@ -630,6 +638,7 @@ export default function HomeDashboard({
                 Sort
                 <Select
                   aria-label="Sort"
+                  aria-describedby={filters.sort === 'attention' ? attentionSortHintId : undefined}
                   className="w-full"
                   value={filters.sort}
                   onChange={(event) => updateFilters({ sort: event.target.value as HomeSort })}
@@ -639,6 +648,16 @@ export default function HomeDashboard({
                   ))}
                 </Select>
               </label>
+              {/* Attention First is the one key whose name does not say what it
+                  leads with, so its order is described where it is chosen. The
+                  note is a sibling of the label rather than a child of it, so it
+                  never joins the control's label text; it is sr-only, so the
+                  panel's visible layout is untouched. */}
+              {filters.sort === 'attention' && (
+                <span id={attentionSortHintId} className="sr-only">
+                  Attention First leads with the Active Nodes the Server has not confirmed Healthy, Unhealthy before Unknown, and lists the Healthy ones last.
+                </span>
+              )}
               <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
                 Health
                 <Select
@@ -862,6 +881,15 @@ export default function HomeDashboard({
   )
 }
 
+/** Home Attention's visible reading (#236 round 2): the tile counts exactly the
+ * two Server verdicts that are not Healthy, so the caption names them instead
+ * of leaving the figure to be guessed at. */
+const ATTENTION_CAPTION = 'Unhealthy or Unknown'
+/** The tile's longer reading, exposed as its title: what the figure counts, and
+ * what it deliberately does not — a chain-height difference never counts, and
+ * an Observing or otherwise Unknown observation is not an abnormal state. */
+const ATTENTION_HINT = 'Home Attention counts Active Nodes the Server has not confirmed Healthy: Unhealthy or Unknown. A chain-height difference never counts, and Observing is not an abnormal state.'
+
 const SUMMARY_ICONS = {
   server: Server,
   heart: HeartPulse,
@@ -869,13 +897,18 @@ const SUMMARY_ICONS = {
   network: Network,
 } as const
 
-function SummaryCard({ label, value, tone, icon, emptyLabel }: {
+function SummaryCard({ label, value, tone, icon, emptyLabel, caption, hint }: {
   label: string; value: number | null; tone: 'green' | 'red'; icon: keyof typeof SUMMARY_ICONS
   /** Copy for an explicit empty state; without it a null value reads 'Unknown'. */
   emptyLabel?: string
+  /** Short visible reading under the value; the slot is reserved on every tile,
+   *  so adding one changes no tile's height. */
+  caption?: string
+  /** The longer reading, kept as the tile's title. */
+  hint?: string
 }) {
   return <SummaryMetricCard label={label} value={value === null ? emptyLabel ?? 'Unknown' : value.toLocaleString()}
-    tone={value !== null && value > 0 ? tone : 'green'} icon={SUMMARY_ICONS[icon]} />
+    tone={value !== null && value > 0 ? tone : 'green'} icon={SUMMARY_ICONS[icon]} caption={caption} hint={hint} />
 }
 
 /** The compact list view (stories 72, 73, 79): one row per matching Node with
@@ -978,6 +1011,10 @@ function HomeNodeCard({ network, node, linkState }: NodeRecord & { linkState: Ho
   // routine Current value stays silent; the region below owns the authoritative
   // no-live-Validator empty state.
   const dataStatus = node.validator ? validatorDataStatus(node.validator) : null
+  // The identity line the card shows when the Server does not confirm a
+  // Validator, and the same statement the identity entry keeps in full — so the
+  // short face and the explanation can never disagree (#238 round 2).
+  const identityStatement = node.validator ? validatorIdentityStatement(node.validator) : null
   return (
     <article
       data-slot="node-card"
@@ -1033,23 +1070,27 @@ function HomeNodeCard({ network, node, linkState }: NodeRecord & { linkState: Ho
             <Dialog><DialogTrigger asChild><Button variant="ghost" size="icon" className="relative z-10 -my-3.5 size-11 shrink-0" aria-label="Node identity details"><Info className="size-3.5" /></Button></DialogTrigger>
               <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm"><DialogTitle className="pr-10 [overflow-wrap:anywhere]">{homeNodeLabel(node)}</DialogTitle><DialogDescription className="[overflow-wrap:anywhere]">Network: {network.displayName} · Uptime {formatDuration(node.processUptimeMs)}. Node role describes the Node’s consensus membership, not its linked Validator’s current staking validity or the freshness of Provider data.</DialogDescription>
                 <p className="text-sm text-muted-foreground">Active Nodes are in the latest Agent Inventory, not necessarily online. Healthy reflects successful, fresh RPC, sync and consensus observations. Process errors, a stopped or Unknown process state, or Network Identity Mismatch prevent Healthy; disabled process monitoring does not. Healthy does not mean synchronization is complete; Resyncing is shown independently.</p>
-                <p className="text-sm text-muted-foreground">Home Attention counts Active Nodes that are not Healthy, including Unknown. While nothing is narrowed, these counters and the Peer map read the whole Network selection. Once search, health, or Validator status narrows the list, they read the Active Nodes that matched instead, so a Node's countries count only where that Node is listed — while the two cumulative Validator cells keep the Network selection, and the list still reports how many Nodes matched.</p>
+                <p className="text-sm text-muted-foreground">Home Attention counts Active Nodes that are not Healthy, including Unknown. It counts Active Nodes and nothing else: a chain-height difference never enters it, and Observing is not an abnormal state. While nothing is narrowed, these counters and the Peer map read the whole Network selection. Once search, health, or Validator status narrows the list, they read the Active Nodes that matched instead, so a Node's countries count only where that Node is listed — while the two cumulative Validator cells keep the Network selection, and the list still reports how many Nodes matched.</p>
                 <p data-slot="node-head-explanation" className="text-sm text-muted-foreground">Block Height: {headComparisonExplanation(node)}</p>
                 <p className="text-sm text-muted-foreground">CPU and Memory are the monitored PlatON process's own percentages, not the Host's. Disk is the Node data directory's size as a share of the capacity of the filesystem that holds it, not whole-filesystem fullness.{nodeDataBytes ? ' Node data: ' + nodeDataBytes + '.' : ''}</p>
                 {peerObservation && <p className="text-sm text-muted-foreground">Peer observation: {peerObservation}.</p>}
-                {diagnostic && <p className="text-sm text-muted-foreground">Current health diagnostic: {diagnostic.text}</p>}
+                {diagnostic && <p data-slot="node-diagnostic-explanation" className="text-sm text-muted-foreground">Current health diagnostic: {diagnostic.detail}</p>}
+                {identityStatement && <p data-slot="node-validator-identity-explanation" className="text-sm text-muted-foreground">Validator identity: {identityStatement.label} — {identityStatement.detail}</p>}
                 {dataStatus && <p className="text-sm text-muted-foreground">Validator data: {dataStatus.label}. {dataStatus.description}</p>}
               </DialogContent>
             </Dialog>
             </span>
           </div>
-          {/* Abnormal reasons remain readable; healthy cards create no empty row. */}
+          {/* Abnormal reasons remain readable in one short line, and the Server's
+              own sentence stays reachable as that line's title and in the identity
+              entry. Healthy cards create no empty row. */}
           {diagnostic && <p
             data-slot="node-diagnostic"
-            data-tone={diagnostic?.tone}
+            data-tone={diagnostic.tone}
+            title={diagnostic.detail}
             className={cn(
               'col-span-2 m-0 text-[11px] [overflow-wrap:anywhere]',
-              diagnostic?.tone === 'destructive' ? 'text-destructive' : 'text-amber-500 dark:text-amber-400',
+              diagnostic.tone === 'destructive' ? 'text-destructive' : 'text-warning-foreground dark:text-warning',
             )}
           >
             {diagnostic.text}
@@ -1354,16 +1395,52 @@ function formatRate(value: number | null | undefined): string {
   return `${amount}${units[unit]}`
 }
 
-type NodeDiagnostic = { text: string; tone: 'destructive' | 'warning' }
+type NodeDiagnostic = {
+  /** The one short line the card header shows. */
+  text: string
+  /** The Server's own reason, unshortened: the card line's title and the
+   *  identity entry carry it, so nothing the Server said is lost. */
+  detail: string
+  tone: 'destructive' | 'warning'
+}
+
+/** How long a Server reason may run before the card line shortens it; the
+ * Server's own short sentences ('RPC observation failed', 'node is retired')
+ * stay untouched below it. */
+const DIAGNOSTIC_MAX_CHARS = 40
+
+/** Server reasons whose own wording is long enough to crowd the card header,
+ * each with the shorter reading that says the same thing. */
+const DIAGNOSTIC_SHORT_FORMS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/stale or unknown/i, 'Observations stale / unknown'],
+  [/unknown or unsupported/i, 'Observations unknown or unsupported'],
+]
+
+/** The card header shows one short line, so a long Server sentence becomes its
+ * own short form or is cut at a word boundary. The full reason stays in the
+ * line's title and in the identity entry, so the compaction never hides why a
+ * Node is exceptional (#97 round 2). */
+function shortDiagnostic(detail: string): string {
+  const short = DIAGNOSTIC_SHORT_FORMS.find(([pattern]) => pattern.test(detail))?.[1]
+  if (short) return short
+  if (detail.length <= DIAGNOSTIC_MAX_CHARS) return detail
+  const cut = detail.slice(0, DIAGNOSTIC_MAX_CHARS)
+  const boundary = cut.lastIndexOf(' ')
+  return (boundary > 0 ? cut.slice(0, boundary) : cut).trimEnd() + '…'
+}
 
 /** One sanitized health diagnostic line for exceptional Nodes (issue #97).
- * Resync progress is independent and never hidden by an unhealthy diagnostic. */
+ * Resync progress is independent and never hidden by an unhealthy diagnostic.
+ * The tone follows the Server's own verdict: Unhealthy is a confirmed failure
+ * and takes the error tone, while Unknown is missing, stale, or never-observed
+ * evidence — a warning, never a confirmed failure and never Offline. */
 function exceptionalDiagnostic(node: PublicNode): NodeDiagnostic | null {
   if (node.health !== 'healthy') {
-    const reason = node.healthReason?.trim()
+    const detail = node.healthReason?.trim() || `Health ${healthLabel(node.health).toLowerCase()}`
     return {
-      text: reason || `Health ${healthLabel(node.health).toLowerCase()}`,
-      tone: 'destructive',
+      text: shortDiagnostic(detail),
+      detail,
+      tone: node.health === 'unhealthy' ? 'destructive' : 'warning',
     }
   }
   return null

@@ -561,7 +561,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
         await expect(performance.locator('header').getByText('Active', { exact: true })).toHaveCount(0)
       }
       const summary = page.getByRole('group', { name: 'Node key summary' })
-      expect(await summary.locator('[data-slot="node-summary-tile"] [data-slot="card-x-content"] > div:first-child > span').allTextContents()).toEqual(['Head', 'Sync', 'Peers', 'Uptime', 'Block interval', 'Transactions / block'])
+      expect(await summary.locator('[data-slot="node-summary-tile"] [data-slot="card-x-content"] > div:first-child > span:first-child').allTextContents()).toEqual(['Head', 'Sync', 'Peers', 'Uptime', 'Block interval', 'Transactions / block'])
       for (const name of ['Node chain state', 'PlatON process', 'Shared Host resources']) {
         await expect(page.getByRole('region', { name })).toBeVisible()
       }

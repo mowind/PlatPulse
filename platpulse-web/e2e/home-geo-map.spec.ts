@@ -118,15 +118,17 @@ function mapTooltip(page: Page) {
 }
 
 /** Home's four global statistics, read from their own card surfaces so the
- *  map can never change or reorder them. */
+ *  map can never change or reorder them. The figure is read from the value slot
+ *  rather than the card's whole text: the Attention tile now names what it
+ *  counts on the shared stat line, and that reading is not part of the number. */
 async function summaryFacts(page: Page): Promise<Array<{ label: string; value: string; box: Box }>> {
   return page.locator('[data-slot="summary-card"]').evaluateAll((elements) =>
     elements.flatMap((element) => {
-      const text = (element.textContent ?? '').trim()
-      const match = /^(Active Nodes|Healthy Nodes|Attention|Networks)(.+)$/.exec(text)
-      if (!match) return []
+      const match = /^(Active Nodes|Healthy Nodes|Attention|Networks)/.exec((element.textContent ?? '').trim())
+      const value = element.querySelector('[data-slot="summary-value"]')?.textContent?.trim()
+      if (!match || value === undefined) return []
       const rect = element.getBoundingClientRect()
-      return [{ label: match[1], value: match[2].trim(), box: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }]
+      return [{ label: match[1], value, box: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }]
     }),
   )
 }

@@ -65,7 +65,11 @@ const seCountry = { countryCode: 'SE', count: 3, staleCount: 0, centroidLat: 60.
 const deCountry = { countryCode: 'DE', count: 2, staleCount: 1, centroidLat: null, centroidLon: null }
 const xkCountry = { countryCode: 'XK', count: 1, staleCount: 0, centroidLat: null, centroidLon: null }
 
-function network(overrides: { geo?: Record<string, unknown>; nodes?: Array<{ nodeId: string; health: string }> } = {}): PublicNetwork {
+function network(overrides: {
+  geo?: Record<string, unknown>
+  nodes?: Array<{ nodeId: string; health: string }>
+  peers?: Record<string, unknown>
+} = {}): PublicNetwork {
   return {
     networkKey: 'mainnet',
     displayName: 'Mainnet',
@@ -81,7 +85,7 @@ function network(overrides: { geo?: Record<string, unknown>; nodes?: Array<{ nod
       availablePeerCount: 7,
       ...overrides.geo,
     },
-    peers: { state: 'ok', freshness: 'current' },
+    peers: { state: 'ok', freshness: 'current', ...overrides.peers },
     nodes: overrides.nodes ?? [],
     validators: [],
   } as unknown as PublicNetwork
@@ -252,6 +256,24 @@ describe('GeoWorldMap', () => {
     // Staleness keeps the notice; the Unknown count lives in the chip beside
     // the total instead of becoming a second error-looking line.
     expect(screen.getByRole('status').textContent).toBe('Map data stale')
+    // Round 2: the Geo database's own age and the Peer observations' freshness
+    // are two dimensions, so the chip names both and reads as a warning rather
+    // than an error — the map still shows the last-good countries the Server
+    // retained, and says so.
+    const chip = document.querySelector('[data-slot="map-status"]') as HTMLElement
+    expect(chip.getAttribute('data-tone')).toBe('warning')
+    expect(chip.querySelector('[data-slot="map-status-geo"]')?.textContent).toBe('Map data stale')
+    // The Geo database's own age is the dimension that raised this chip, and the
+    // Peer snapshot is current, so the second line says exactly that.
+    expect(chip.querySelector('[data-slot="map-status-observation"]')?.textContent).toBe('Peer observations current')
+    const explanation = chip.querySelector('.sr-only')?.textContent ?? ''
+    expect(explanation).toContain('Two freshness dimensions are reported separately')
+    expect(explanation).toContain('Geo database: stale')
+    // The Peer snapshot itself is current here: only the Geo database's age and
+    // the retained country attributions are stale.
+    expect(explanation).toContain('Peer observations: current')
+    expect(explanation).toContain('Some retained country attributions are stale')
+    expect(explanation).toContain('The map keeps the last-good country counts the Server retained; they are not live data.')
     const counters = screen.getByRole('note', { name: /^7 Peer records in scope for All Networks/ })
     expect(counters.querySelector('[data-slot="geo-counter"]')?.textContent).toBe('Peers: 7')
     expect(counters.querySelector('[data-slot="geo-counter-unknown"]')?.textContent).toBe('1 unknown')
@@ -263,6 +285,44 @@ describe('GeoWorldMap', () => {
     ])
     await screen.findByRole('img')
     expect(document.body.textContent).toContain('No observations yet')
+  })
+
+  it('reports stale Peer observations on their own while the Geo database is current', async () => {
+    stubBasemap()
+    // Only the Peer snapshot is stale here — no retained country attribution has
+    // expired — so the Peer dimension names itself while the Geo database keeps
+    // reading current (round 2): the two freshness readings stay apart.
+    const { container } = renderMap([
+      network({ geo: { countries: [seCountry, xkCountry] }, peers: { freshness: 'stale' } }),
+    ])
+    await screen.findByRole('img')
+    const chip = container.querySelector('[data-slot="map-status"]') as HTMLElement
+    expect(chip.getAttribute('data-tone')).toBe('warning')
+    expect(screen.getByRole('status').textContent).toBe('Peer observations stale')
+    // The Peer line is the notice itself, so it is not repeated beside itself.
+    expect(chip.querySelector('[data-slot="map-status-observation"]')).toBeNull()
+    const explanation = chip.querySelector('.sr-only')?.textContent ?? ''
+    expect(explanation).toContain('Geo database: current')
+    expect(explanation).toContain('Peer observations: stale')
+  })
+
+  it('keeps an expired country attribution in the Geo dimension, never in the Peer one', async () => {
+    stubBasemap()
+    // `staleCount` is the Geo Location Cache's own retention (the Server reads
+    // `geo_location_cache.expires_at`), so it may not be reported as stale Peer
+    // observations. The default fixture has one expired country attribution and a
+    // current Peer snapshot: the chip blames the map data and says the Peer
+    // dimension is current.
+    const { container } = renderMap()
+    await screen.findByRole('img')
+    const chip = container.querySelector('[data-slot="map-status"]') as HTMLElement
+    expect(chip.getAttribute('data-tone')).toBe('warning')
+    expect(screen.getByRole('status').textContent).toBe('Map data stale')
+    expect(chip.querySelector('[data-slot="map-status-observation"]')?.textContent).toBe('Peer observations current')
+    const explanation = chip.querySelector('.sr-only')?.textContent ?? ''
+    expect(explanation).toContain('Some retained country attributions are stale')
+    expect(explanation).toContain('Geo database: current')
+    expect(explanation).not.toContain('Peer observations: stale')
   })
 
   it('never invents a Peer total while the projection is unavailable or loading', async () => {
