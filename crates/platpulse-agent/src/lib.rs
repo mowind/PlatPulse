@@ -18,6 +18,7 @@ pub mod credential;
 pub mod data_directory;
 pub mod database;
 pub mod enroll;
+pub mod http_client;
 pub mod inventory_declaration;
 pub mod preparation;
 pub mod process;
@@ -27,6 +28,9 @@ pub mod reporting;
 pub mod rpc;
 pub mod shutdown;
 pub mod time_exchange;
+
+#[cfg(test)]
+pub(crate) mod http_test_support;
 
 pub use database::{
     AGENT_MIGRATOR, AGENT_SCHEMA_VERSION, AgentDatabaseConfig, AgentDatabaseError,

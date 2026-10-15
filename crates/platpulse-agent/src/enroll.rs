@@ -43,6 +43,8 @@ pub enum EnrollError {
         "this agent is already enrolled as {0}; enrollment is one-time per identity (Recovery handles credential loss)"
     )]
     AlreadyEnrolled(String),
+    #[error("could not prepare the Agent HTTP client: {0}")]
+    HttpClient(#[from] crate::http_client::SharedClientError),
     #[error("could not reach the server: {0}")]
     Transport(#[source] reqwest::Error),
     #[error("enrollment failed: {0}")]
@@ -175,10 +177,7 @@ pub(crate) async fn enroll_agent_with_permit(
         return Err(EnrollError::AlreadyEnrolled(agent_id));
     }
 
-    let client = reqwest::Client::builder()
-        .user_agent(format!("platpulse-agent/{}", crate::VERSION))
-        .build()
-        .map_err(EnrollError::Transport)?;
+    let client = crate::http_client::shared_client()?;
     let response = client
         .post(format!("{}/api/agent/v1/enroll", config.server_url))
         .bearer_auth(token)

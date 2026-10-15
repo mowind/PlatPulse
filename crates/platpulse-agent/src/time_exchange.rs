@@ -78,18 +78,21 @@ pub fn estimate_clock_skew(
 }
 
 /// Perform one authenticated Server time exchange.
+///
+/// The client is injected (issue #244): the Agent keeps one process-wide
+/// client, so the exchange reuses the keep-alive connection instead of
+/// building a throwaway pool per Collection tick. The round-trip budget
+/// therefore belongs to this request, not to the client.
 pub async fn exchange_server_time(
     config: &AgentConfig,
+    client: &reqwest::Client,
 ) -> Result<ClockSkewEstimate, TimeExchangeError> {
     let credential = load_credential_file(&config.credential_file)?;
-    let client = reqwest::Client::builder()
-        .user_agent(format!("platpulse-agent/{}", crate::VERSION))
-        .timeout(Duration::from_millis(MAX_ROUND_TRIP_MS))
-        .build()?;
     let before = OffsetDateTime::now_utc();
     let monotonic_before = Instant::now();
     let response = client
         .get(format!("{}/api/agent/v1/time", config.server_url))
+        .timeout(Duration::from_millis(MAX_ROUND_TRIP_MS))
         .bearer_auth(credential)
         .send()
         .await?;
@@ -112,7 +115,13 @@ pub async fn exchange_server_time(
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
+    use crate::config::BackfillConfig;
+    use crate::http_test_support::KeepAliveServer;
+
+    const SERVER_TIME_BODY: &str = r#"{"server_time":"2026-10-15T09:00:00Z"}"#;
 
     fn at(ms: i64) -> OffsetDateTime {
         OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000).unwrap()
@@ -131,5 +140,69 @@ mod tests {
         )
         .unwrap();
         assert!(bad.unreliable);
+    }
+
+    fn token() -> String {
+        format!(
+            "pp_agent_{}_{}",
+            "0195f2a1-0011-4011-8011-000000000011",
+            "a".repeat(64)
+        )
+    }
+
+    fn config_for(dir: &Path, server_url: &str) -> AgentConfig {
+        let credential_file = dir.join("credential");
+        crate::credential::write_credential_file(&credential_file, &token()).unwrap();
+        AgentConfig {
+            config_path: dir.join("agent.toml"),
+            server_url: server_url.to_owned(),
+            credential_file,
+            state_db: dir.join("agent.db"),
+            collection_interval_seconds: 5,
+            backfill: BackfillConfig::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn exchange_reuses_one_connection_across_collection_ticks() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = KeepAliveServer::start(SERVER_TIME_BODY.to_owned()).await;
+        let config = config_for(dir.path(), &server.url(""));
+        let client = crate::http_client::shared_client().unwrap();
+
+        for _ in 0..3 {
+            exchange_server_time(&config, client)
+                .await
+                .expect("the Server time exchange succeeds");
+        }
+
+        assert_eq!(server.request_count(), 3);
+        assert_eq!(server.connection_count(), 1);
+        assert_eq!(
+            server.user_agents(),
+            vec![format!("platpulse-agent/{}", crate::VERSION); 3]
+        );
+    }
+
+    #[tokio::test]
+    async fn exchange_bounds_the_round_trip_on_the_request_not_the_client() {
+        let dir = tempfile::tempdir().unwrap();
+        let delay = Duration::from_millis(MAX_ROUND_TRIP_MS * 3);
+        let server = KeepAliveServer::start_with_delay(SERVER_TIME_BODY.to_owned(), delay).await;
+        let config = config_for(dir.path(), &server.url(""));
+        // A client with no process-wide budget: the cap has to come from the request.
+        let client = reqwest::Client::new();
+
+        let started = Instant::now();
+        let error = exchange_server_time(&config, &client)
+            .await
+            .expect_err("a Server past the round-trip budget fails the exchange");
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(&error, TimeExchangeError::Transport(source) if source.is_timeout()),
+            "unexpected error: {error}"
+        );
+        assert!(elapsed < delay, "the exchange waited {elapsed:?}");
     }
 }

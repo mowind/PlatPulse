@@ -464,6 +464,24 @@ pub(crate) fn clock_skew_error(at: Rfc3339, message: &str) -> ComponentObservati
     error(at, "clock_exchange_unavailable", message)
 }
 
+/// Exchange wall-clock time with the Server over the Agent's shared HTTP
+/// client (issue #244), degrading to an explicit component error when the
+/// client or the exchange is unavailable. The Server still accepts the rest of
+/// the report.
+async fn observe_clock_skew(
+    config: &AgentConfig,
+    observed_at: Rfc3339,
+) -> ComponentObservation<i64> {
+    let client = match crate::http_client::shared_client() {
+        Ok(client) => client,
+        Err(error) => return clock_skew_error(observed_at, &error.to_string()),
+    };
+    match crate::time_exchange::exchange_server_time(config, client).await {
+        Ok(estimate) => ok(estimate.offset_ms, observed_at),
+        Err(error) => clock_skew_error(observed_at, &error.to_string()),
+    }
+}
+
 /// Collect Host metrics once for this Agent. Disk/network structures are
 /// intentionally bounded; empty disk is an authoritative snapshot, and
 /// network throughput is measured over a short local sampling interval.
@@ -1495,10 +1513,7 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
     }
     let previous = load_last_report(store).await?;
     let clock_at = timestamp();
-    let clock_skew = match crate::time_exchange::exchange_server_time(config).await {
-        Ok(estimate) => ok(estimate.offset_ms, clock_at),
-        Err(error) => clock_skew_error(clock_at, &error.to_string()),
-    };
+    let clock_skew = observe_clock_skew(config, clock_at).await;
     let data_directories = match precollected_data_directories {
         Some(current) => reconcile_precollected_directory_observations(
             current,
@@ -2109,10 +2124,7 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
         guard_inventory_declaration(&mut store, &validated.inventory).await?;
     }
     let clock_at = timestamp();
-    let clock_skew = match crate::time_exchange::exchange_server_time(config).await {
-        Ok(estimate) => ok(estimate.offset_ms, clock_at),
-        Err(error) => clock_skew_error(clock_at, &error.to_string()),
-    };
+    let clock_skew = observe_clock_skew(config, clock_at).await;
     let previous = load_last_report(&mut store).await?;
     let data_directories = collect_directory_observations(
         &validated.data_directories,

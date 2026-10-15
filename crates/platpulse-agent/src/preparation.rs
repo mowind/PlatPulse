@@ -618,14 +618,12 @@ async fn fetch_baseline(
 ) -> Result<ServerPreparationBaseline, PreparationError> {
     let credential = load_credential_file(&config.credential_file)
         .map_err(|error| PreparationError::ServerUnavailable(error.to_string()))?;
-    let client = reqwest::Client::builder()
-        .user_agent(format!("platpulse-agent/{}", crate::VERSION))
-        .timeout(PREPARATION_BASELINE_TIMEOUT)
-        .build()
+    let client = crate::http_client::shared_client()
         .map_err(|error| PreparationError::ServerUnavailable(error.to_string()))?;
     let url = format!("{}{AGENT_PREPARATION_PATH}", config.server_url);
     let response = client
         .get(url)
+        .timeout(PREPARATION_BASELINE_TIMEOUT)
         .bearer_auth(credential)
         .send()
         .await
