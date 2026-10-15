@@ -654,6 +654,52 @@ Where the Server says so: Admin → the Node's detail page → Network identity 
 2. Verify the outcome instead of assuming it: the Node's new heights must stop arriving as rejected samples and it must start producing accepted Block Summaries again, so its Blocks and Txs stop being Unknown. The History rejected diagnosis clears itself once the Server accepts a Block Summary again — it names the newest refusal only while that refusal is later than the newest accepted summary. That acceptance evidence is kept on the Node's durable history state (`block_history_state.last_accepted_summary_at`), so the diagnosis cannot come back for a Node that already recovered once raw Block Summaries age out of retention.
 3. Accept the loss: the already-refused interval stays a permanent History Gap. Those heights are never merged, re-labelled, or backfilled, and the Registry tuple is still never edited to match a stamped sample (step 4 above).
 
+### When a Node answers millisecond timestamps
+
+A third shape of "the Block history is rejected" never reaches the Server at all: the Agent cannot assemble a Report, exits non-zero, and its unit restarts it in a loop. The journal shows the same fatal line about a second after every start:
+
+```text
+Agent report collection failed: Collection("invalid persisted Agent identity: field block.block_timestamp_ms is outside its contract range")
+```
+
+The value that line names is a **millisecond** timestamp read as seconds (issue #243). PlatON native headers carry `header.Time` in milliseconds, and the `eth_*` aliases the Agent uses (`eth_getBlockByNumber`, `eth_subscribe`) divide it by 1000 only when the Node runs with `--http.ethcompatible`. A Node started without that flag hands the Agent a raw millisecond value such as `1792034712000`, which an Agent older than this fix multiplied by 1000 again and stored as `1792034712000000` — far beyond the AgentReport v1 contract limit of `4102444800000` ms (2100-01-01T00:00:00Z). Every Report assembled from that stored sample is refused, so collection can never succeed and the restart loop repeats. Current Agents refuse such a sample at the persistence boundary with an actionable message that names the limit and the flag, skip an already-stored one when loading samples, and sweep the Store once at startup, so the loop cannot start. The unit is read from the value itself: `100000000000` or more is already milliseconds (that magnitude read as seconds would be the year 5138), anything smaller is seconds.
+
+Run every PlatON Node with `--http.ethcompatible`, and confirm the flag and the unit before you touch the Agent:
+
+```bash
+# The flag must be among the Node's own arguments.
+ps -o args= -C platon | tr ' ' '\n' | grep -x -- '--http.ethcompatible'
+
+# The timestamp must be seconds: 10 hex digits, for example 0x6ad04a70
+# (1792035440), never a millisecond value such as 0x1a13d97a9c0 (1792034712000).
+curl -s -X POST -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}' \
+  http://127.0.0.1:6789 | head -c 400
+```
+
+Then repair in this order:
+
+1. Restart the Node with `--http.ethcompatible` (or with the flag its Network's Nodes are expected to carry), and confirm the timestamp above is now seconds.
+2. Restart that Host's Agent (`sudo systemctl restart platpulse-agent`, or the matching `systemctl --user` unit). On startup it sweeps its own Agent Store, removes every Block Summary whose chain timestamp is outside the contract, and declares what it removed as a History Gap. It logs one line per affected Node, followed by the number of ranges it declared:
+
+```text
+Purged 3 Block Summary sample(s) outside the AgentReport v1 contract (0195f2a1-0014-4014-8014-000000000014: 3), declared as 1 History Gap range(s). Check that every Node runs with --http.ethcompatible.
+```
+
+   The sweep is also the repair for a Store poisoned before the Agent learned to refuse such a sample, so a hand-written `DELETE` is only needed on an Agent build older than this fix. The sweep covers the Nodes this Agent declares in its Inventory: rows of a Node that is no longer declared are left for a later start, because a History Gap naming an undeclared Node is refused by the contract. Each Node's consecutive removed heights become one `unrecoverable_backfill` History Gap per contiguous range in its `history_gaps` (a run longer than the 1,000,000-height contract limit is split so the declaration itself stays inside the contract), reported to the Server so those heights are never presented as continuous history. **Nothing refills them automatically:** the Agent resumes recovery at the height recorded for that Node and never schedules a lower one again, and the Server discards a replay of heights below its own high-water mark. Treat the declared gap as the permanent record it is, and fetch those Blocks out of band from the Node while it still retains them if they matter.
+3. Verify the outcome instead of assuming it: the Agent stays up (`systemctl status platpulse-agent`) and its next Reports are accepted instead of failing validation. Read-only inspection of the Agent Store (the configured `state_db`, packaged default `/var/lib/platpulse-agent/agent.db`) needs the Agent stopped, as the Store is written under WAL with exclusive locking:
+
+```bash
+STATE_DB=/var/lib/platpulse-agent/agent.db   # the Agent config key state_db, Agent stopped
+sqlite3 "$STATE_DB" \
+  "SELECT node_id, COUNT(*) AS samples, MIN(block_timestamp_ms), MAX(block_timestamp_ms)
+     FROM block_summaries
+    WHERE block_timestamp_ms > 4102444800000
+    GROUP BY node_id;"
+```
+
+   A row that still shows up after a restart of the current Agent means the row was written after the sweep (check the Agent version), or the Agent is not reading the `state_db` you queried.
+
 Read-only verification. The packaged units keep the Server database at `/var/lib/platpulse/platpulse.db` (see the configured `db_path`). Query a **consistent snapshot**, never the live file: either the artifact written by the packaged `platpulse-server backup` command in an [Offline Backup Window](#offline-backups-no-packaged-automation) (the Server stopped, as that command requires), or a copy of `db_path` taken while the Server is stopped. The live database is written under WAL with exclusive locking, so opening it directly under the `immutable` URI bypasses that synchronisation — it can miss not-yet-checkpointed WAL content, and under concurrent writes it can even fail with `database disk image is malformed`. A live `immutable` read is a best-effort eyeball, never evidence:
 
 ```bash

@@ -18,6 +18,7 @@ use alloy::providers::{
 use platpulse_core::block::{
     BlockProductionAttribution, BlockSource, BlockSummary, ProtocolProposer, SealSignerMatch,
 };
+use platpulse_core::envelope::{MAX_BLOCK_TIMESTAMP_MS, check_block_chain_time_ms};
 use platpulse_core::hex::{Address, Hash32};
 use platpulse_core::identity::NodeId;
 use platpulse_core::network::{NetworkIdentity, RpcEndpoint, RpcScheme};
@@ -111,7 +112,9 @@ impl Default for WebSocketBlockTransport {
 
 /// PlatON `newHeads` notification payload. Fields stay as wire strings so
 /// quantity/timestamp parsing and bounds apply exactly once. The `eth_*`
-/// alias reports seconds timestamps; [`timestamp_ms`] converts to ms.
+/// aliases report seconds only while the Node runs with
+/// `--http.ethcompatible`; without that flag they report native
+/// milliseconds. [`timestamp_ms`] accepts either unit.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PlatonHead {
@@ -159,10 +162,32 @@ fn parse_address(value: Option<String>) -> Result<Address, TransportError> {
 
 /// Sentinel used when a block/header omits `miner`; never a real coinbase.
 const ZERO_COINBASE: &str = "0x0000000000000000000000000000000000000000";
+
+/// Magnitude that separates Unix milliseconds from Unix seconds (issue #243).
+///
+/// PlatON reports native milliseconds unless the Node was started with
+/// `--http.ethcompatible`, in which case the `eth_*` aliases divide by
+/// 1000 and report seconds. The Agent cannot read the flag off the RPC surface,
+/// so it decides the unit from the value itself: 1e11 ms is
+/// 1973-03-03T09:46:40Z, while the same magnitude read as seconds is the year
+/// 5138 — beyond the contract's own 2100 ceiling, so every plausible chain
+/// timestamp below the floor is seconds and everything at or above it is
+/// already milliseconds.
+const MILLISECOND_MAGNITUDE_FLOOR: u64 = 100_000_000_000;
+
+/// Convert an RPC chain timestamp to Unix milliseconds, accepting both the
+/// native millisecond form and the `--http.ethcompatible` seconds form.
 fn timestamp_ms(value: &str) -> Result<u64, TransportError> {
-    quantity(value)?
-        .checked_mul(1000)
-        .ok_or_else(|| TransportError::Failed("RPC timestamp out of range".to_owned()))
+    let raw = quantity(value)?;
+    if raw >= MILLISECOND_MAGNITUDE_FLOOR {
+        return Ok(raw);
+    }
+    // Anything below the floor is seconds, so it is smaller than 1e11 and the
+    // scaling cannot overflow. An implausible or out-of-contract timestamp is
+    // refused exactly once, at the persistence boundary
+    // ([`BlockSummaryStoreError::ChainTimeOutOfContract`]), where the
+    // operator gets the actionable message instead of a transport error.
+    Ok(raw * 1000)
 }
 
 fn method_allowed(method: &str, allowed: &[&str]) -> bool {
@@ -924,11 +949,45 @@ impl BlockResolver for ScriptedBlockResolver {
     }
 }
 
+/// Failure while persisting a Block Summary into the Agent Store.
+#[derive(Debug, Error)]
+pub enum BlockSummaryStoreError {
+    /// The local SQLite Store rejected the statement.
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+    /// The sample's chain timestamp is outside the AgentReport v1 contract, so
+    /// it must never reach the Store (issue #243). A stored out-of-contract
+    /// row is a permanent poison pill: report assembly refuses it on every
+    /// collection tick, and the row only leaves the Store once an accepted
+    /// report covers its height, which can never happen.
+    #[error(
+        "Block Summary for node {node_id} at height {block_number} carries chain timestamp {block_timestamp_ms} ms, outside the AgentReport v1 contract limit of 4102444800000 ms (2100-01-01T00:00:00Z); such a value is what a Node without --http.ethcompatible produces when its millisecond timestamp is read as seconds, so check the Node startup flags and its eth_getBlockByNumber timestamp before reporting this as an Agent defect"
+    )]
+    ChainTimeOutOfContract {
+        node_id: NodeId,
+        block_number: u64,
+        block_timestamp_ms: u64,
+    },
+}
+
+/// Refuse a sample whose chain timestamp the envelope would refuse, so the
+/// Agent Store and the wire contract can never disagree about one value.
+fn check_block_summary_chain_time(summary: &BlockSummary) -> Result<(), BlockSummaryStoreError> {
+    check_block_chain_time_ms(summary.block_timestamp_ms).map_err(|_| {
+        BlockSummaryStoreError::ChainTimeOutOfContract {
+            node_id: summary.node_id,
+            block_number: summary.block_number,
+            block_timestamp_ms: summary.block_timestamp_ms,
+        }
+    })
+}
+
 pub(crate) async fn insert_block_summary(
     connection: &mut SqliteConnection,
     summary: &BlockSummary,
     created_at: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<(), BlockSummaryStoreError> {
+    check_block_summary_chain_time(summary)?;
     sqlx::query("INSERT OR IGNORE INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_key_fingerprint, seal_signer_match, node_key_fingerprint, node_key_valid_from, node_key_valid_until, node_key_history_complete, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(summary.node_id.to_string()).bind(summary.block_number as i64).bind(summary.block_hash.to_string()).bind(summary.parent_hash.to_string())
         .bind(summary.network_identity.genesis_hash.to_string()).bind(summary.network_identity.chain_id as i64).bind(summary.network_identity.p2p_network_id as i64).bind(summary.network_identity.address_hrp.as_deref()).bind(summary.block_timestamp_ms as i64).bind(summary.observed_at.to_string()).bind(summary.transaction_count as i64).bind(summary.block_interval_ms.map(|v| v as i64)).bind(match summary.source { BlockSource::Subscription => "subscription", BlockSource::GapBackfill => "gap_backfill" }).bind(summary.attribution.coinbase.to_string()).bind(summary.attribution.seal_signer_key_fingerprint.as_ref().map(ToString::to_string)).bind(match summary.attribution.seal_signer_match { SealSignerMatch::SignerSelf => "self", SealSignerMatch::Other => "other", SealSignerMatch::Unknown => "unknown" }).bind(summary.attribution.node_key.as_ref().map(|key| key.fingerprint.to_string())).bind(summary.attribution.node_key.as_ref().and_then(|key| key.valid_from.map(|value| value.to_string()))).bind(summary.attribution.node_key.as_ref().and_then(|key| key.valid_until.map(|value| value.to_string()))).bind(summary.attribution.node_key.as_ref().is_some_and(|key| key.history_complete) as i64).bind(summary.attribution.seal_recovery_rule.as_deref()).bind(summary.attribution.seal_evidence.as_deref()).bind(match &summary.attribution.protocol_proposer { ProtocolProposer::Verified { .. } => "verified", ProtocolProposer::Unknown {} => "unknown" }).bind(match &summary.attribution.protocol_proposer { ProtocolProposer::Verified { identity } => Some(identity.as_str()), ProtocolProposer::Unknown {} => None }).bind(&summary.attribution.attribution_reason).bind(created_at).execute(&mut *connection).await?;
@@ -941,17 +1000,172 @@ pub async fn persist_block_summary(
     store: &mut AgentStore,
     summary: &BlockSummary,
     created_at: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<(), BlockSummaryStoreError> {
+    // The contract check runs before the write permit: a refused sample must
+    // not even open a write transaction.
+    check_block_summary_chain_time(summary)?;
     let _write_permit = store.acquire_write().await;
     let mut tx = store.connection().begin().await?;
     let result = insert_block_summary(&mut tx, summary, created_at).await;
     match result {
-        Ok(()) => tx.commit().await,
+        Ok(()) => tx.commit().await.map_err(BlockSummaryStoreError::from),
         Err(error) => match tx.rollback().await {
             Ok(()) => Err(error),
-            Err(rollback_error) => Err(rollback_error),
+            Err(rollback_error) => Err(rollback_error.into()),
         },
     }
+}
+
+/// Result of the startup sweep that removes Block Summaries outside the
+/// AgentReport v1 contract (issue #243).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct OutOfContractPurge {
+    /// Deleted samples per Node, ordered by Node id.
+    pub purged_by_node: Vec<(NodeId, u64)>,
+    /// Total number of deleted samples.
+    pub purged: u64,
+    /// History Gap rows declared for the discarded heights.
+    pub declared_gaps: usize,
+}
+
+impl OutOfContractPurge {
+    /// True when the Store held nothing to delete.
+    pub fn is_empty(&self) -> bool {
+        self.purged == 0
+    }
+}
+
+/// Reason recorded on every History Gap the startup sweep declares.
+const PURGED_SAMPLE_GAP_REASON: &str = "Block Summary dropped by the startup sweep: chain timestamp outside the AgentReport v1 contract";
+
+/// Delete every Block Summary of a monitored Node whose chain timestamp the v1
+/// contract refuses, and declare the History Gap the discarded heights become.
+///
+/// A stored out-of-contract sample is a permanent poison pill (issue #243):
+/// report assembly refuses it on every collection tick, and the row only
+/// leaves the Store once an accepted report covers its height, which can never
+/// happen. This sweep performs the same repair an operator would perform by
+/// hand against `agent.db` (see docs/deployment.md), before any worker
+/// starts.
+///
+/// Only Nodes the current Inventory declares are swept. A History Gap for a
+/// Node the report does not carry is itself refused by the contract
+/// (`WireError::HistoryGapForUnknownNode`), so sweeping a retired Node's rows
+/// would trade one permanent refusal for another; its rows stay in the Store
+/// until the Node is declared again.
+///
+/// The samples are dropped on purpose, so their heights become explicit
+/// `unrecoverable_backfill` History Gaps, one per Node and contiguous range:
+/// CONTEXT.md defines a History Gap as the interval for samples that were
+/// "lost or intentionally dropped", and a silent hole would let a Node's Block
+/// history read as continuous where samples were thrown away. The delete and
+/// the gap declarations share one transaction, so a Store can never end up
+/// with the rows gone and the loss undeclared.
+pub async fn purge_out_of_contract_block_summaries(
+    store: &mut AgentStore,
+    monitored_nodes: &[NodeId],
+) -> Result<OutOfContractPurge, sqlx::Error> {
+    if monitored_nodes.is_empty() {
+        return Ok(OutOfContractPurge {
+            purged_by_node: Vec::new(),
+            purged: 0,
+            declared_gaps: 0,
+        });
+    }
+    let monitored = monitored_nodes
+        .iter()
+        .map(|node_id| node_id.to_string())
+        .collect::<Vec<_>>();
+    let in_scope = vec!["?"; monitored.len()].join(", ");
+    let selection = format!(
+        "SELECT node_id, block_number FROM block_summaries WHERE block_timestamp_ms NOT BETWEEN 0 AND ? AND node_id IN ({in_scope}) ORDER BY node_id, block_number"
+    );
+    let deletion = format!(
+        "DELETE FROM block_summaries WHERE block_timestamp_ms NOT BETWEEN 0 AND ? AND node_id IN ({in_scope})"
+    );
+    let _write_permit = store.acquire_write().await;
+    let mut tx = store.connection().begin().await?;
+    let mut select =
+        sqlx::query_as::<_, (String, i64)>(&selection).bind(MAX_BLOCK_TIMESTAMP_MS as i64);
+    for node_id in &monitored {
+        select = select.bind(node_id);
+    }
+    let rows = select.fetch_all(&mut *tx).await?;
+    let mut delete = sqlx::query(&deletion).bind(MAX_BLOCK_TIMESTAMP_MS as i64);
+    for node_id in &monitored {
+        delete = delete.bind(node_id);
+    }
+    let purged = delete.execute(&mut *tx).await?.rows_affected();
+    let plan = purged_sample_plan(rows)?;
+    let recorded_at = crate::collector::timestamp();
+    for (node_id, from_height, to_height) in &plan.ranges {
+        insert_history_gap(
+            &mut tx,
+            &crate::shutdown::shutdown_gap(
+                *node_id,
+                (*from_height, *to_height),
+                recorded_at,
+                PURGED_SAMPLE_GAP_REASON,
+            ),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(OutOfContractPurge {
+        purged_by_node: plan.per_node,
+        purged,
+        declared_gaps: plan.ranges.len(),
+    })
+}
+
+/// What one sweep discarded: how many rows left the Store per Node, and the
+/// inclusive height ranges their History Gaps cover.
+struct PurgedSamplePlan {
+    per_node: Vec<(NodeId, u64)>,
+    ranges: Vec<(NodeId, u64, u64)>,
+}
+
+/// Count the discarded samples per Node and fold one Node's consecutive
+/// heights into the inclusive ranges its History Gaps cover. Heights repeat
+/// when a Node stored several samples for one block, so a height already
+/// inside a range extends nothing.
+///
+/// A run is split once it would reach beyond
+/// [`platpulse_core::protocol::MAX_HISTORY_GAP_HEIGHT_SPAN`]: a wider range
+/// violates the contract itself, and every later report would then be refused
+/// for a gap the sweep invented - the repair would become the failure it
+/// repaired.
+fn purged_sample_plan(rows: Vec<(String, i64)>) -> Result<PurgedSamplePlan, sqlx::Error> {
+    let mut per_node: Vec<(NodeId, u64)> = Vec::new();
+    let mut ranges: Vec<(NodeId, u64, u64)> = Vec::new();
+    for (node_id, height) in rows {
+        let node_id: NodeId = node_id
+            .parse()
+            .map_err(|_| sqlx::Error::Protocol("node_id".into()))?;
+        let height = height.max(0) as u64;
+        match per_node.last_mut() {
+            Some((last, count)) if *last == node_id => *count += 1,
+            _ => per_node.push((node_id, 1)),
+        }
+        if ranges
+            .last()
+            .is_some_and(|(last, _, to)| *last == node_id && height <= *to)
+        {
+            continue;
+        }
+        match ranges.last_mut() {
+            Some((last, from_height, to_height))
+                if *last == node_id
+                    && height == to_height.saturating_add(1)
+                    && height.saturating_sub(*from_height).saturating_add(1)
+                        <= platpulse_core::protocol::MAX_HISTORY_GAP_HEIGHT_SPAN =>
+            {
+                *to_height = height;
+            }
+            _ => ranges.push((node_id, height, height)),
+        }
+    }
+    Ok(PurgedSamplePlan { per_node, ranges })
 }
 
 #[derive(Debug, FromRow)]
@@ -977,15 +1191,36 @@ struct BlockRow {
     attribution_reason: String,
 }
 
+/// Load the History Gaps still pending delivery for the Nodes `monitored_nodes`
+/// names, oldest first.
+///
+/// The report only carries the Nodes its Inventory declares, so a gap that
+/// outlives its Node's declaration is filtered here: declaring it would be
+/// refused as a gap for an unknown Node, which is a failure the Agent cannot
+/// repair by itself.
 pub async fn load_history_gaps(
     store: &mut AgentStore,
+    monitored_nodes: &[NodeId],
 ) -> Result<Vec<platpulse_core::gap::HistoryGap>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, (String, i64, i64, String, String)>(
-        "SELECT g.node_id, g.from_height, g.to_height, g.kind, g.created_at FROM history_gaps g WHERE NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=g.node_id AND a.sample_kind='gap' AND a.from_height=g.from_height AND a.to_height=g.to_height) AND g.gap_id = (SELECT MIN(candidate.gap_id) FROM history_gaps candidate WHERE candidate.node_id=g.node_id AND candidate.from_height=g.from_height AND candidate.to_height=g.to_height AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=candidate.node_id AND a.sample_kind='gap' AND a.from_height=candidate.from_height AND a.to_height=candidate.to_height)) ORDER BY g.created_at, g.gap_id LIMIT ?",
-    )
-    .bind(MAX_HISTORY_GAPS as i64)
-    .fetch_all(store.connection())
-    .await?;
+    if monitored_nodes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let monitored = monitored_nodes
+        .iter()
+        .map(|node_id| node_id.to_string())
+        .collect::<Vec<_>>();
+    let in_scope = vec!["?"; monitored.len()].join(", ");
+    let query = format!(
+        "SELECT g.node_id, g.from_height, g.to_height, g.kind, g.created_at FROM history_gaps g WHERE g.node_id IN ({in_scope}) AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=g.node_id AND a.sample_kind='gap' AND a.from_height=g.from_height AND a.to_height=g.to_height) AND g.gap_id = (SELECT MIN(candidate.gap_id) FROM history_gaps candidate WHERE candidate.node_id=g.node_id AND candidate.from_height=g.from_height AND candidate.to_height=g.to_height AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=candidate.node_id AND a.sample_kind='gap' AND a.from_height=candidate.from_height AND a.to_height=candidate.to_height)) ORDER BY g.created_at, g.gap_id LIMIT ?"
+    );
+    let mut select = sqlx::query_as::<_, (String, i64, i64, String, String)>(&query);
+    for node_id in &monitored {
+        select = select.bind(node_id);
+    }
+    let rows = select
+        .bind(MAX_HISTORY_GAPS as i64)
+        .fetch_all(store.connection())
+        .await?;
     rows.into_iter()
         .map(|(node_id, from, to, kind, at)| {
             let kind = match kind.as_str() {
@@ -1010,10 +1245,18 @@ pub async fn load_history_gaps(
 }
 
 /// Load all pending block summaries in deterministic oldest-first order.
+///
+/// Samples whose chain timestamp is outside the AgentReport v1 contract are
+/// never handed to report assembly (issue #243): a single stored
+/// out-of-contract row would otherwise refuse every report forever. The bound
+/// applies to the dedup subquery too, so a good sample at the same height is
+/// still selected instead of being starved by a poisoned one.
 pub async fn load_block_summaries(
     store: &mut AgentStore,
 ) -> Result<Vec<BlockSummary>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, BlockRow>("SELECT b.node_id, b.block_number, b.block_hash, b.parent_hash, b.network_genesis_hash, b.network_chain_id, b.network_p2p_network_id, b.network_address_hrp, b.block_timestamp_ms, b.observed_at, b.transaction_count, b.block_interval_ms, b.source, b.coinbase, b.seal_signer_key_fingerprint, b.seal_signer_match, b.protocol_proposer_kind, b.protocol_proposer_identity, b.attribution_reason FROM block_summaries b WHERE NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=b.node_id AND a.sample_kind='block' AND a.from_height=b.block_number AND a.to_height=b.block_number) AND b.sample_id = (SELECT MIN(candidate.sample_id) FROM block_summaries candidate WHERE candidate.node_id=b.node_id AND candidate.block_number=b.block_number AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=candidate.node_id AND a.sample_kind='block' AND a.from_height=candidate.block_number AND a.to_height=candidate.block_number)) ORDER BY b.created_at, b.sample_id LIMIT ?")
+    let rows = sqlx::query_as::<_, BlockRow>("SELECT b.node_id, b.block_number, b.block_hash, b.parent_hash, b.network_genesis_hash, b.network_chain_id, b.network_p2p_network_id, b.network_address_hrp, b.block_timestamp_ms, b.observed_at, b.transaction_count, b.block_interval_ms, b.source, b.coinbase, b.seal_signer_key_fingerprint, b.seal_signer_match, b.protocol_proposer_kind, b.protocol_proposer_identity, b.attribution_reason FROM block_summaries b WHERE b.block_timestamp_ms BETWEEN 0 AND ? AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=b.node_id AND a.sample_kind='block' AND a.from_height=b.block_number AND a.to_height=b.block_number) AND b.sample_id = (SELECT MIN(candidate.sample_id) FROM block_summaries candidate WHERE candidate.node_id=b.node_id AND candidate.block_number=b.block_number AND candidate.block_timestamp_ms BETWEEN 0 AND ? AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=candidate.node_id AND a.sample_kind='block' AND a.from_height=candidate.block_number AND a.to_height=candidate.block_number)) ORDER BY b.created_at, b.sample_id LIMIT ?")
+        .bind(MAX_BLOCK_TIMESTAMP_MS as i64)
+        .bind(MAX_BLOCK_TIMESTAMP_MS as i64)
         .bind(MAX_BLOCK_SUMMARIES as i64)
         .fetch_all(store.connection())
         .await?;
@@ -1417,7 +1660,7 @@ mod tests {
         let baseline_acquisition_attempts = permit_observer.test_acquisition_attempts();
         let observed_at: Rfc3339 = "2026-01-01T00:00:00Z".parse().unwrap();
         let summary = BlockSummary {
-            node_id: "0195f2a1-0014-4014-8014-000000000014".parse().unwrap(),
+            node_id: test_node_id(),
             network_identity: identity(),
             block_number: 9,
             block_hash: hash('c'),
@@ -1515,7 +1758,7 @@ mod tests {
             .unwrap();
         let observed_at: Rfc3339 = "2026-01-01T00:00:00Z".parse().unwrap();
         let summary = BlockSummary {
-            node_id: "0195f2a1-0014-4014-8014-000000000014".parse().unwrap(),
+            node_id: test_node_id(),
             network_identity: identity(),
             block_number: 9,
             block_hash: hash('c'),
@@ -1547,7 +1790,7 @@ mod tests {
             .unwrap();
         let observed_at: Rfc3339 = "2026-01-01T00:00:00Z".parse().unwrap();
         let template = BlockSummary {
-            node_id: "0195f2a1-0014-4014-8014-000000000014".parse().unwrap(),
+            node_id: test_node_id(),
             network_identity: identity(),
             block_number: 0,
             block_hash: hash('c'),
@@ -1592,7 +1835,7 @@ mod tests {
             .unwrap();
         let observed_at: Rfc3339 = "2026-01-01T00:00:00Z".parse().unwrap();
         let mut first = BlockSummary {
-            node_id: "0195f2a1-0014-4014-8014-000000000014".parse().unwrap(),
+            node_id: test_node_id(),
             network_identity: identity(),
             block_number: 9,
             block_hash: hash('c'),
@@ -1629,11 +1872,616 @@ mod tests {
         persist_history_gap(&mut store, &first_gap).await.unwrap();
         first_gap.kind = platpulse_core::gap::GapKind::ServerRejected;
         persist_history_gap(&mut store, &first_gap).await.unwrap();
-        let loaded_gaps = load_history_gaps(&mut store).await.unwrap();
+        let loaded_gaps = load_history_gaps(&mut store, &[first.node_id])
+            .await
+            .unwrap();
         assert_eq!(loaded_gaps.len(), 1);
         assert_eq!(
             loaded_gaps[0].kind,
             platpulse_core::gap::GapKind::UnrecoverableBackfill
+        );
+    }
+
+    /// The Node answers in either unit (issue #243): PlatON native headers carry
+    /// milliseconds, while --http.ethcompatible makes the eth_* aliases divide by
+    /// 1000. The magnitude decides, and the two readings of one magnitude cannot
+    /// be confused because the seconds reading of a millisecond value lands far
+    /// beyond the 2100 contract ceiling.
+    #[test]
+    fn timestamp_unit_is_chosen_by_magnitude() {
+        // Seconds, as an --http.ethcompatible Node reports them (the issue tabulates
+        // this height as 2026-10-15T03:24:00Z).
+        assert_eq!(timestamp_ms("0x6ad04a70").unwrap(), 1_792_035_440_000);
+        // Native milliseconds, as a Node without the flag reports them: the header
+        // time of the very block the issue reports, 1_792_034_712_000 ms.
+        assert_eq!(timestamp_ms("0x1a13d97a9c0").unwrap(), 1_792_034_712_000);
+        // What a pre-guard build stored for that same block: the native milliseconds
+        // read as seconds and multiplied by 1000. That magnitude is already
+        // milliseconds, so it is passed through here and refused at persistence.
+        assert_eq!(
+            timestamp_ms("0x65dd8986f1600").unwrap(),
+            1_792_034_712_000_000
+        );
+        // The floor itself is already milliseconds: 1973-03-03T09:46:40Z.
+        assert_eq!(
+            timestamp_ms(&format!("0x{:x}", MILLISECOND_MAGNITUDE_FLOOR)).unwrap(),
+            MILLISECOND_MAGNITUDE_FLOOR
+        );
+        assert_eq!(
+            timestamp_ms(&format!("0x{:x}", MILLISECOND_MAGNITUDE_FLOOR - 1)).unwrap(),
+            (MILLISECOND_MAGNITUDE_FLOOR - 1) * 1_000
+        );
+    }
+
+    /// The value a real millisecond Node reports survives the whole path (issue
+    /// #243, item (c)): parsed from the RPC quantity, written past the guard, and
+    /// accepted by the wire contract - the block that used to become a poison pill.
+    #[tokio::test]
+    async fn native_millisecond_value_round_trips_through_store_and_contract() {
+        let observed_at: Rfc3339 = "2026-10-15T03:24:42Z".parse().unwrap();
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        let native_ms = timestamp_ms("0x1a13d97a9c0").unwrap();
+        assert_eq!(native_ms, 1_792_034_712_000);
+
+        let sample = summary(161_253_346, 'c', native_ms, observed_at);
+        persist_block_summary(&mut store, &sample, &observed_at.to_string())
+            .await
+            .unwrap();
+        let loaded = load_block_summaries(&mut store).await.unwrap();
+        assert_eq!(loaded, vec![sample]);
+
+        let mut report: platpulse_core::AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        report.block_summaries = loaded;
+        assert_eq!(report.validate(), Ok(()));
+    }
+
+    fn out_of_contract_timestamp() -> u64 {
+        1_792_034_712_000_000
+    }
+
+    fn test_node_id() -> NodeId {
+        "0195f2a1-0014-4014-8014-000000000014".parse().unwrap()
+    }
+
+    /// A Node the fixture Inventory does not declare, used for the rows and
+    /// gaps a sweep must leave alone.
+    fn retired_node_id() -> NodeId {
+        "0195f2a1-0015-4015-8015-000000000015".parse().unwrap()
+    }
+
+    fn gap(
+        node_id: NodeId,
+        from_height: u64,
+        to_height: u64,
+        recorded_at: Rfc3339,
+    ) -> platpulse_core::gap::HistoryGap {
+        platpulse_core::gap::HistoryGap {
+            node_id,
+            kind: platpulse_core::gap::GapKind::UnrecoverableBackfill,
+            from_height,
+            to_height,
+            reason: "test gap".to_owned(),
+            recorded_at,
+        }
+    }
+
+    /// Poison one row for `node_id`: written valid, then edited to the value a
+    /// build that predates the guard would have stored.
+    async fn poison_row(
+        store: &mut AgentStore,
+        node_id: NodeId,
+        block_number: u64,
+        observed_at: Rfc3339,
+    ) {
+        let mut sample = summary(block_number, 'c', 1_000, observed_at);
+        sample.node_id = node_id;
+        persist_block_summary(store, &sample, &observed_at.to_string())
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE block_summaries SET block_timestamp_ms = ? WHERE node_id = ? AND block_number = ?",
+        )
+        .bind(out_of_contract_timestamp() as i64)
+        .bind(node_id.to_string())
+        .bind(block_number as i64)
+        .execute(store.connection())
+        .await
+        .unwrap();
+    }
+
+    fn summary(
+        block_number: u64,
+        block_hash: char,
+        block_timestamp_ms: u64,
+        observed_at: Rfc3339,
+    ) -> BlockSummary {
+        BlockSummary {
+            node_id: test_node_id(),
+            network_identity: identity(),
+            block_number,
+            block_hash: hash(block_hash),
+            parent_hash: hash('d'),
+            block_timestamp_ms,
+            observed_at,
+            transaction_count: 2,
+            block_interval_ms: None,
+            source: BlockSource::Subscription,
+            attribution: BlockProductionAttribution::unknown_attribution(
+                address(),
+                "test attribution",
+            ),
+        }
+    }
+
+    async fn poisoned_store(block_number: u64, observed_at: Rfc3339) -> (AgentStore, BlockSummary) {
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        let mut poisoned = summary(block_number, 'c', 1_000, observed_at);
+        persist_block_summary(&mut store, &poisoned, &observed_at.to_string())
+            .await
+            .unwrap();
+        // Written behind the guard, exactly like a row left by a build that
+        // predates it: the Agent must recover instead of failing forever.
+        sqlx::query("UPDATE block_summaries SET block_timestamp_ms = ? WHERE node_id = ? AND block_number = ?")
+            .bind(out_of_contract_timestamp() as i64)
+            .bind(poisoned.node_id.to_string())
+            .bind(block_number as i64)
+            .execute(store.connection())
+            .await
+            .unwrap();
+        // The row now holds the value the pre-guard build would have stored;
+        // hand back the same sample in memory so callers can compare with it.
+        poisoned.block_timestamp_ms = out_of_contract_timestamp();
+        (store, poisoned)
+    }
+
+    /// Issue #243 regression: the sample a millisecond-only Node produced must
+    /// never reach the Store. A stored one is a permanent poison pill - every
+    /// later report is refused, and the row only leaves the Store once an
+    /// accepted report covers its height, which can never happen.
+    #[tokio::test]
+    async fn out_of_contract_sample_is_refused_before_it_reaches_the_store() {
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        let observed_at: Rfc3339 = "2026-10-15T03:24:42Z".parse().unwrap();
+        let poisoned = summary(161_253_346, 'c', out_of_contract_timestamp(), observed_at);
+
+        let error = persist_block_summary(&mut store, &poisoned, &observed_at.to_string())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            BlockSummaryStoreError::ChainTimeOutOfContract {
+                block_number: 161_253_346,
+                block_timestamp_ms: 1_792_034_712_000_000,
+                ..
+            }
+        ));
+        let message = error.to_string();
+        assert!(
+            message.contains("0195f2a1-0014-4014-8014-000000000014"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&MAX_BLOCK_TIMESTAMP_MS.to_string()),
+            "{message}"
+        );
+        assert!(message.contains("--http.ethcompatible"), "{message}");
+        assert_eq!(MAX_BLOCK_TIMESTAMP_MS, 4_102_444_800_000);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM block_summaries")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(load_block_summaries(&mut store).await.unwrap().is_empty());
+    }
+
+    /// A Store poisoned before the guard existed must not stall the Agent
+    /// (issue #243). The loader skips out-of-contract rows, and the dedup
+    /// subquery applies the same bound so a good sample at the poisoned height
+    /// is still selected instead of being starved by a smaller sample id.
+    ///
+    /// Skipping is not deleting: the row stays in the Store, so the Agent keeps
+    /// its evidence until the startup sweep removes it and declares the height
+    /// as a History Gap.
+    #[tokio::test]
+    async fn out_of_contract_rows_are_not_loaded_and_do_not_starve_a_good_sample() {
+        let observed_at: Rfc3339 = "2026-10-15T03:24:42Z".parse().unwrap();
+        let (mut store, poisoned) = poisoned_store(9, observed_at).await;
+        let good = summary(9, 'e', 1_000, observed_at);
+        persist_block_summary(&mut store, &good, &observed_at.to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(load_block_summaries(&mut store).await.unwrap(), vec![good]);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM block_summaries")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            2,
+            "the loader excludes the poisoned row instead of deleting it"
+        );
+        assert_eq!(
+            load_history_gaps(&mut store, &[poisoned.node_id])
+                .await
+                .unwrap(),
+            vec![]
+        );
+        assert_eq!(poisoned.block_timestamp_ms, out_of_contract_timestamp());
+    }
+
+    /// The startup sweep is the automatic form of the operator procedure in
+    /// docs/deployment.md: it removes the poison, reports what it removed, and
+    /// declares the affected heights as History Gaps so the loss is stated
+    /// instead of reading as continuous history. In-contract samples stay.
+    #[tokio::test]
+    async fn startup_purge_removes_out_of_contract_rows_and_declares_gaps() {
+        let observed_at: Rfc3339 = "2026-10-15T03:24:42Z".parse().unwrap();
+        let (mut store, poisoned) = poisoned_store(161_253_346, observed_at).await;
+        let good = summary(9, 'e', 1_000, observed_at);
+        persist_block_summary(&mut store, &good, &observed_at.to_string())
+            .await
+            .unwrap();
+
+        let purge = purge_out_of_contract_block_summaries(&mut store, &[poisoned.node_id])
+            .await
+            .unwrap();
+        assert!(!purge.is_empty());
+        assert_eq!(purge.purged, 1);
+        assert_eq!(purge.purged_by_node, vec![(poisoned.node_id, 1)]);
+        assert_eq!(purge.declared_gaps, 1);
+        assert_eq!(load_block_summaries(&mut store).await.unwrap(), vec![good]);
+
+        let gaps = load_history_gaps(&mut store, &[poisoned.node_id])
+            .await
+            .unwrap();
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].node_id, poisoned.node_id);
+        assert_eq!(
+            (gaps[0].from_height, gaps[0].to_height),
+            (161_253_346, 161_253_346)
+        );
+        assert_eq!(
+            gaps[0].kind,
+            platpulse_core::gap::GapKind::UnrecoverableBackfill
+        );
+        // The loader reports every locally retained gap under one reason, so the
+        // sweep wording is asserted where it is stored.
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT reason FROM history_gaps")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            PURGED_SAMPLE_GAP_REASON
+        );
+
+        let again = purge_out_of_contract_block_summaries(&mut store, &[poisoned.node_id])
+            .await
+            .unwrap();
+        assert!(again.is_empty());
+        assert_eq!(again.purged, 0);
+        assert_eq!(again.declared_gaps, 0);
+        assert!(again.purged_by_node.is_empty());
+        assert_eq!(
+            load_history_gaps(&mut store, &[poisoned.node_id])
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    /// Consecutive poisoned heights become one declared range per Node, so a
+    /// long outage does not spray one row per block into history_gaps.
+    #[tokio::test]
+    async fn purge_folds_consecutive_heights_into_one_gap_range_per_node() {
+        let observed_at: Rfc3339 = "2026-10-15T03:24:42Z".parse().unwrap();
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        for block_number in [100_u64, 101, 102, 200] {
+            let sample = summary(block_number, 'c', 1_000, observed_at);
+            persist_block_summary(&mut store, &sample, &observed_at.to_string())
+                .await
+                .unwrap();
+        }
+        sqlx::query("UPDATE block_summaries SET block_timestamp_ms = ?")
+            .bind(out_of_contract_timestamp() as i64)
+            .execute(store.connection())
+            .await
+            .unwrap();
+
+        let purge = purge_out_of_contract_block_summaries(&mut store, &[test_node_id()])
+            .await
+            .unwrap();
+        assert_eq!(purge.purged, 4);
+        assert_eq!(purge.declared_gaps, 2);
+        let gaps = load_history_gaps(&mut store, &[test_node_id()])
+            .await
+            .unwrap();
+        assert_eq!(gaps.len(), 2);
+        assert_eq!((gaps[0].from_height, gaps[0].to_height), (100, 102));
+        assert_eq!((gaps[1].from_height, gaps[1].to_height), (200, 200));
+    }
+
+    /// A Node the Inventory no longer declares is not swept (issue #243): a
+    /// History Gap for a Node the report does not carry is refused by the
+    /// contract, so deleting those rows would trade the poison pill for a
+    /// permanent gap refusal. The rows wait until the Node is declared again.
+    #[tokio::test]
+    async fn purge_leaves_the_rows_of_nodes_outside_the_inventory_alone() {
+        let observed_at: Rfc3339 = "2026-10-15T03:24:42Z".parse().unwrap();
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        poison_row(&mut store, test_node_id(), 161_253_346, observed_at).await;
+        poison_row(&mut store, retired_node_id(), 161_253_347, observed_at).await;
+
+        let purge = purge_out_of_contract_block_summaries(&mut store, &[test_node_id()])
+            .await
+            .unwrap();
+        assert_eq!(purge.purged, 1);
+        assert_eq!(purge.purged_by_node, vec![(test_node_id(), 1)]);
+        assert_eq!(purge.declared_gaps, 1);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM block_summaries WHERE node_id = ?")
+                .bind(retired_node_id().to_string())
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            1,
+            "the retired Node keeps its rows until it is declared again"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM history_gaps WHERE node_id = ?")
+                .bind(retired_node_id().to_string())
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0,
+            "no History Gap is declared for a Node outside the Inventory"
+        );
+    }
+
+    /// The gap loader reports only the Nodes the report declares: a gap that
+    /// outlives its Node's Inventory entry would otherwise make every report
+    /// fatal with a contract error the Agent cannot repair.
+    #[tokio::test]
+    async fn gaps_of_nodes_outside_the_inventory_are_never_loaded() {
+        let observed_at: Rfc3339 = "2026-10-15T03:24:42Z".parse().unwrap();
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        persist_history_gap(&mut store, &gap(test_node_id(), 20, 21, observed_at))
+            .await
+            .unwrap();
+        persist_history_gap(&mut store, &gap(retired_node_id(), 30, 31, observed_at))
+            .await
+            .unwrap();
+
+        let loaded = load_history_gaps(&mut store, &[test_node_id()])
+            .await
+            .unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].node_id, test_node_id());
+
+        let both = load_history_gaps(&mut store, &[test_node_id(), retired_node_id()])
+            .await
+            .unwrap();
+        assert_eq!(both.len(), 2);
+    }
+
+    /// The sweep must not invent a gap the contract refuses (issue #243): a run
+    /// of poisoned heights longer than the wire span limit is split, and the
+    /// ranges it declares still validate as one report.
+    #[test]
+    fn the_wire_span_limit_splits_a_long_purged_run() {
+        let observed_at: Rfc3339 = "2026-10-15T03:24:42Z".parse().unwrap();
+        let rows = (0..=1_000_000_i64)
+            .map(|height| (test_node_id().to_string(), height))
+            .collect::<Vec<_>>();
+
+        let plan = purged_sample_plan(rows).unwrap();
+        assert_eq!(plan.per_node, vec![(test_node_id(), 1_000_001)]);
+        assert_eq!(
+            plan.ranges,
+            vec![
+                (test_node_id(), 0, 999_999),
+                (test_node_id(), 1_000_000, 1_000_000),
+            ]
+        );
+        for (_, from_height, to_height) in &plan.ranges {
+            assert!(
+                to_height.saturating_sub(*from_height)
+                    < platpulse_core::protocol::MAX_HISTORY_GAP_HEIGHT_SPAN
+            );
+        }
+
+        let mut report: platpulse_core::AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        report.history_gaps = plan
+            .ranges
+            .iter()
+            .map(|(node_id, from_height, to_height)| {
+                gap(*node_id, *from_height, *to_height, observed_at)
+            })
+            .collect();
+        assert_eq!(report.validate(), Ok(()));
+    }
+
+    /// The guard, the Store loader and the wire contract must agree on one
+    /// number; the operator-facing message quotes it, so it is asserted here.
+    #[test]
+    fn the_refusal_message_quotes_the_shared_contract_limit() {
+        let refused = summary(
+            1,
+            'c',
+            out_of_contract_timestamp(),
+            "2026-01-01T00:00:00Z".parse().unwrap(),
+        );
+        let error = check_block_summary_chain_time(&refused).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&MAX_BLOCK_TIMESTAMP_MS.to_string())
+        );
+        let at_the_limit = summary(
+            1,
+            'c',
+            MAX_BLOCK_TIMESTAMP_MS,
+            "2026-01-01T00:00:00Z".parse().unwrap(),
+        );
+        assert!(check_block_summary_chain_time(&at_the_limit).is_ok());
+    }
+
+    /// The regression the issue requires to land with the fix, kept under the
+    /// name the issue uses so it is greppable:
+    /// `cargo test -p platpulse-agent --lib zz_repro_out_of_contract`.
+    ///
+    /// The issue's reproduction persisted a sample whose chain timestamp came
+    /// from a Node answering native milliseconds, loaded it into a report, and
+    /// watched every tick fail with `invalid persisted Agent identity: field
+    /// block.block_timestamp_ms is outside its contract range` until systemd
+    /// restarted the Agent forever. The assertions below follow those steps and
+    /// state what each fix changed: (a) a fresh write of the value is refused,
+    /// (b) the loader no longer selects the poisoned row so the tick validates,
+    /// and (e) the failure that remains for a hand-attached sample is named as a
+    /// stored-sample problem, not an Agent identity problem.
+    #[tokio::test]
+    async fn zz_repro_out_of_contract() {
+        let observed_at: Rfc3339 = "2026-10-15T03:24:42Z".parse().unwrap();
+        let (mut store, poisoned) = poisoned_store(161_253_346, observed_at).await;
+        let poisoned_node_id = poisoned.node_id;
+        assert_eq!(poisoned.block_timestamp_ms, out_of_contract_timestamp());
+        let mut report: platpulse_core::AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+
+        // Fix (a): the same value can no longer enter the Store at all.
+        let fresh = summary(161_253_347, 'e', out_of_contract_timestamp(), observed_at);
+        assert!(matches!(
+            persist_block_summary(&mut store, &fresh, &observed_at.to_string())
+                .await
+                .unwrap_err(),
+            BlockSummaryStoreError::ChainTimeOutOfContract {
+                block_number: 161_253_347,
+                ..
+            }
+        ));
+
+        // Fix (b): the row written behind the guard is skipped on every reload,
+        // so the tick validates instead of failing the way the issue reports.
+        for tick in 0..3 {
+            report.block_summaries = load_block_summaries(&mut store).await.unwrap();
+            assert!(report.block_summaries.is_empty(), "tick {tick}");
+            assert_eq!(report.validate(), Ok(()), "tick {tick}");
+        }
+        // Skipping is not deleting: the poison is still there for the sweep.
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM block_summaries")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            1
+        );
+
+        // The issue's own assertion, kept in the sample the issue attached by
+        // hand: the exact contract error and its exact wording.
+        report.block_summaries.push(poisoned);
+        let error = report.validate().unwrap_err();
+        assert_eq!(
+            error,
+            platpulse_core::WireError::ValueOutOfRange {
+                field: platpulse_core::envelope::BLOCK_TIMESTAMP_FIELD,
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "field block.block_timestamp_ms is outside its contract range"
+        );
+
+        // Fix (e): that failure is a stored-sample problem and it is classified
+        // as one, instead of impersonating a non-deferrable identity error.
+        let fatal = crate::collector::report_validation_error(error);
+        assert!(matches!(
+            fatal,
+            crate::collector::CollectionError::PersistedSampleOutOfContract(_)
+        ));
+        assert_eq!(
+            fatal.to_string(),
+            "persisted Agent sample is outside the AgentReport v1 contract: field block.block_timestamp_ms is outside its contract range"
+        );
+        assert!(!fatal.to_string().contains("Agent identity"));
+        assert!(!crate::collector::is_deferrable_collection(&fatal));
+
+        // The startup sweep is what removes the poison, and the height it held
+        // is declared as a History Gap so the history is not silently short.
+        let purge = purge_out_of_contract_block_summaries(&mut store, &[poisoned_node_id])
+            .await
+            .unwrap();
+        assert_eq!(purge.purged, 1);
+        assert_eq!(purge.declared_gaps, 1);
+        assert_eq!(purge.purged_by_node, vec![(poisoned_node_id, 1)]);
+        let gaps = load_history_gaps(&mut store, &[poisoned_node_id])
+            .await
+            .unwrap();
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].node_id, poisoned_node_id);
+        assert_eq!(
+            (gaps[0].from_height, gaps[0].to_height),
+            (161_253_346, 161_253_346)
+        );
+
+        report.block_summaries = load_block_summaries(&mut store).await.unwrap();
+        assert_eq!(report.validate(), Ok(()));
+    }
+
+    /// Issue #243 end to end, along the path the issue reports: a Store poisoned
+    /// behind the guard loads no sample, so report assembly validates instead of
+    /// failing on every tick; the same sample attached by hand still reproduces
+    /// the exact contract error and its wording.
+    #[tokio::test]
+    async fn a_poisoned_store_no_longer_refuses_report_assembly() {
+        let observed_at: Rfc3339 = "2026-10-15T03:24:42Z".parse().unwrap();
+        let (mut store, poisoned) = poisoned_store(161_253_346, observed_at).await;
+        let mut report: platpulse_core::AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+
+        report.block_summaries = load_block_summaries(&mut store).await.unwrap();
+        assert!(report.block_summaries.is_empty());
+        assert_eq!(report.validate(), Ok(()));
+
+        report.block_summaries.push(poisoned);
+        assert_eq!(
+            report.validate(),
+            Err(platpulse_core::WireError::ValueOutOfRange {
+                field: platpulse_core::envelope::BLOCK_TIMESTAMP_FIELD
+            })
+        );
+        assert_eq!(
+            report.validate().unwrap_err().to_string(),
+            "field block.block_timestamp_ms is outside its contract range"
         );
     }
 
@@ -1645,7 +2493,7 @@ mod tests {
     }
 
     #[test]
-    fn rpc_boundary_rejects_unsafe_methods_and_overflow_timestamps() {
+    fn rpc_boundary_rejects_unsafe_methods_and_invalid_hashes() {
         assert!(method_allowed(
             "eth_getBlockByHash",
             &["eth_getBlockByHash"]
@@ -1655,12 +2503,10 @@ mod tests {
             &["eth_getBlockByHash"]
         ));
         assert_eq!(timestamp_ms("0x1").unwrap(), 1_000);
-        assert_eq!(
-            timestamp_ms("0xffffffffffffffff"),
-            Err(TransportError::Failed(
-                "RPC timestamp out of range".to_owned()
-            ))
-        );
+        // An out-of-contract timestamp is no longer a transport failure: the
+        // unit is decided by magnitude and the value is refused once, at the
+        // persistence boundary, with an actionable message (issue #243).
+        assert_eq!(timestamp_ms("0xffffffffffffffff").unwrap(), u64::MAX);
         assert_eq!(
             parse_hash("not-a-hash").unwrap_err(),
             TransportError::Failed("invalid RPC block hash".to_owned())

@@ -534,7 +534,13 @@ async fn persist_final_closing(
     )
     .map_err(|error| PreparationError::InvalidReport(error.to_string()))?;
     report.block_summaries = crate::block::load_block_summaries(store).await?;
-    report.history_gaps = crate::block::load_history_gaps(store).await?;
+    let monitored_nodes = report
+        .inventory
+        .nodes
+        .iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    report.history_gaps = crate::block::load_history_gaps(store, &monitored_nodes).await?;
     report.host.spool = crate::collector::current_spool_diagnostics(store)
         .await
         .map(|value| crate::collector::ok(value, report.generated_at))

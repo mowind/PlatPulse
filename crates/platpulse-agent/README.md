@@ -28,9 +28,16 @@ alloy = { git = "https://github.com/mowind/alloy",
 - The Agent uses the **standard `eth_*` interfaces** (`eth_blockNumber`,
   `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_syncing`,
   `eth_chainId`, `eth_subscribe`) — never the `platon_*` namespace. PlatON's
-  `eth_*` aliases return seconds timestamps, which the transport converts to
-  Unix **milliseconds** for the wire contract (`block_timestamp_ms`), and
-  `0x`-hex addresses; no bech32 parsing is done anywhere.
+  native headers carry `header.Time` in **milliseconds**, and the `eth_*`
+  aliases divide it by 1000 (seconds) only when the Node runs with
+  `--http.ethcompatible`. The transport therefore reads the unit from the
+  value itself (`timestamp_ms` in `src/block.rs`): `100000000000` or more is
+  already milliseconds — that magnitude read as seconds would be the year
+  5138 — and anything smaller is seconds and is multiplied by 1000. The result
+  reaches the wire contract as Unix **milliseconds** (`block_timestamp_ms`); a
+  value outside the contract limit (2100-01-01T00:00:00Z) is refused at the
+  persistence boundary instead of being stored as a poison pill. `0x`-hex
+  addresses are used as given; no bech32 parsing is done anywhere.
 - Unwrapped PlatON methods go through Alloy raw requests with a **bounded
   local DTO**: the method must be in the transport allowlist, the decoded
   value is size-checked before deserialization, and every field is parsed

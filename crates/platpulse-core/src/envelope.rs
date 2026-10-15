@@ -19,6 +19,30 @@ use crate::inventory::{NodeInventory, ReportInventory};
 use crate::observation::{HostObservation, NodeChainObservation, NodeObservation, PeerSnapshot};
 use crate::time::Rfc3339;
 
+/// Envelope field name of the Block Summary chain timestamp; the single
+/// source of truth for both the wire error and every persistence guard that
+/// must refuse the same value (issue #243).
+pub const BLOCK_TIMESTAMP_FIELD: &str = "block.block_timestamp_ms";
+
+/// Latest Block Summary chain timestamp the v1 contract accepts, in Unix
+/// milliseconds.
+pub const MAX_BLOCK_TIMESTAMP_MS: u64 = crate::protocol::MAX_TIMESTAMP_UNIX_SECONDS as u64 * 1000;
+
+/// Rejects a Block Summary chain timestamp outside the v1 contract range.
+///
+/// Persistence paths call this before writing a Block Summary (issue #243):
+/// a value the envelope would reject must never reach the Agent Store,
+/// because a stored out-of-contract row is a permanent poison pill — report
+/// assembly fails identically on every collection tick.
+pub const fn check_block_chain_time_ms(block_timestamp_ms: u64) -> Result<(), WireError> {
+    if block_timestamp_ms > MAX_BLOCK_TIMESTAMP_MS {
+        return Err(WireError::ValueOutOfRange {
+            field: BLOCK_TIMESTAMP_FIELD,
+        });
+    }
+    Ok(())
+}
+
 /// How this report relates to the Agent's boot lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -376,13 +400,7 @@ impl<I: ReportInventory> AgentReport<I> {
                 });
             }
             check_timestamp("block.observed_at", block.observed_at)?;
-            if block.block_timestamp_ms
-                > (crate::protocol::MAX_TIMESTAMP_UNIX_SECONDS as u64) * 1000
-            {
-                return Err(WireError::ValueOutOfRange {
-                    field: "block.block_timestamp_ms",
-                });
-            }
+            check_block_chain_time_ms(block.block_timestamp_ms)?;
             if let Some(hrp) = &block.network_identity.address_hrp {
                 check_len("block.network_identity.address_hrp", hrp, 16)?;
             }
@@ -661,6 +679,69 @@ mod tests {
     fn minimal_report_is_valid() {
         let report = minimal_report();
         assert_eq!(report.validate(), Ok(()));
+    }
+
+    /// Issue #243: the Agent write guard, the Store loader and the wire
+    /// contract must share one bound, so it is pinned here.
+    #[test]
+    fn block_chain_time_contract_bounds_are_exact() {
+        assert_eq!(BLOCK_TIMESTAMP_FIELD, "block.block_timestamp_ms");
+        assert_eq!(MAX_BLOCK_TIMESTAMP_MS, 4_102_444_800_000);
+        assert_eq!(check_block_chain_time_ms(0), Ok(()));
+        assert_eq!(check_block_chain_time_ms(MAX_BLOCK_TIMESTAMP_MS), Ok(()));
+        assert_eq!(
+            check_block_chain_time_ms(MAX_BLOCK_TIMESTAMP_MS + 1),
+            Err(WireError::ValueOutOfRange {
+                field: BLOCK_TIMESTAMP_FIELD
+            })
+        );
+    }
+
+    /// A millisecond timestamp read as seconds (a Node without
+    /// --http.ethcompatible) must be the only thing the envelope complains
+    /// about, under the shared field name and wording operators quote.
+    #[test]
+    fn a_millisecond_block_timestamp_is_refused_under_the_shared_field_name() {
+        let mut report = minimal_report();
+        report.block_summaries.push(millisecond_summary());
+        assert_eq!(
+            report.validate(),
+            Err(WireError::ValueOutOfRange {
+                field: BLOCK_TIMESTAMP_FIELD
+            })
+        );
+        assert_eq!(
+            report.validate().unwrap_err().to_string(),
+            "field block.block_timestamp_ms is outside its contract range"
+        );
+
+        report.block_summaries[0].block_timestamp_ms = MAX_BLOCK_TIMESTAMP_MS;
+        assert_eq!(report.validate(), Ok(()));
+    }
+
+    fn millisecond_summary() -> crate::block::BlockSummary {
+        let node_id = minimal_report().nodes[0].node_id;
+        crate::block::BlockSummary {
+            node_id,
+            network_identity: crate::network::NetworkIdentity {
+                genesis_hash: format!("0x{}", "a".repeat(64)).parse().unwrap(),
+                chain_id: 210425,
+                p2p_network_id: 210425,
+                address_hrp: None,
+            },
+            block_number: 161_253_346,
+            block_hash: format!("0x{}", "c".repeat(64)).parse().unwrap(),
+            parent_hash: format!("0x{}", "d".repeat(64)).parse().unwrap(),
+            block_timestamp_ms: 1_792_034_712_000_000,
+            observed_at: "2026-10-15T03:24:42Z".parse().unwrap(),
+            transaction_count: 0,
+            block_interval_ms: None,
+            source: crate::block::BlockSource::Subscription,
+            attribution: crate::block::BlockProductionAttribution::unknown_attribution(
+                format!("0x{}", "a".repeat(40)).parse().unwrap(),
+                "issue 243 regression",
+            ),
+        }
     }
 
     #[test]

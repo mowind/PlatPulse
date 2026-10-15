@@ -104,10 +104,13 @@ async fn live_transport_resolves_genesis_and_current_head_blocks() {
     assert_eq!(genesis.block_number, 0);
     assert_eq!(genesis.network_identity, snapshot.network_identity);
     assert_eq!(genesis.block_hash, snapshot.network_identity.genesis_hash);
-    // eth_* reports seconds; the transport must convert to Unix ms.
+    // header.Time is natively milliseconds, and the eth_* aliases only divide
+    // it by 1000 when the Node runs with --http.ethcompatible. Either unit
+    // reaches the wire contract as Unix ms, so the genesis timestamp is after
+    // 2017 in milliseconds (issue #243).
     assert!(
         genesis.block_timestamp_ms > 1_500_000_000_000,
-        "genesis timestamp must be Unix ms (eth seconds -> ms), got {}",
+        "genesis timestamp must be Unix ms (seconds or ms input), got {}",
         genesis.block_timestamp_ms
     );
     let by_hash = transport

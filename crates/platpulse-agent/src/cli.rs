@@ -721,6 +721,11 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
         .iter()
         .map(|node| node.node_id)
         .collect::<Vec<_>>();
+    // Poisoned rows are dropped before any worker starts so the failure cannot
+    // recur on every collection tick (issue #243). Only the Nodes this Agent
+    // declares are swept: a History Gap for any other Node is refused by the
+    // contract, so those rows wait until the Node is declared again.
+    purge_out_of_contract_block_summaries(&config, &node_ids, write_permit.clone()).await?;
     let runtime = crate::shutdown::AgentRuntime::new();
     let cancel = runtime.cancellation_token();
 
@@ -1015,6 +1020,47 @@ async fn acquire_shutdown_write_fence(
             std::process::exit(1);
         }
     }
+}
+
+/// Remove Block Summaries whose chain timestamp is outside the AgentReport v1
+/// contract before any worker starts (issue #243). A Store poisoned while the
+/// Node answered with native millisecond timestamps would otherwise fail every
+/// collection forever, which a supervising systemd unit turns into a restart
+/// storm. This is the same repair an operator would run by hand against
+/// agent.db, plus the History Gap declaration the dropped heights need: the
+/// samples are discarded deliberately, so the loss is stated to the Server
+/// instead of leaving a hole that reads as continuous history.
+async fn purge_out_of_contract_block_summaries(
+    config: &AgentConfig,
+    monitored_nodes: &[NodeId],
+    write_permit: crate::database::AgentStoreWritePermit,
+) -> Result<(), AgentCliError> {
+    let mut store = crate::database::AgentStore::open_with_write_permit(
+        crate::database::AgentDatabaseConfig::new(&config.state_db),
+        write_permit,
+    )
+    .await
+    .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    let purge = crate::block::purge_out_of_contract_block_summaries(&mut store, monitored_nodes)
+        .await
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    if !purge.is_empty() {
+        let per_node = purge
+            .purged_by_node
+            .iter()
+            .map(|(node_id, count)| format!("{node_id}: {count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!(
+            "Purged {} Block Summary sample(s) outside the AgentReport v1 contract ({}), declared as {} History Gap range(s). Check that every Node runs with --http.ethcompatible.",
+            purge.purged, per_node, purge.declared_gaps
+        );
+    }
+    store
+        .close()
+        .await
+        .map_err(|error| AgentCliError::Collection(error.to_string()))?;
+    Ok(())
 }
 
 async fn persist_abandoned_block_worker_gaps(

@@ -9,7 +9,10 @@
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
+use platpulse_core::WireError;
+use platpulse_core::block::BlockSummary;
 use platpulse_core::component::{BoundedError, ComponentObservation, ComponentStatus};
+use platpulse_core::envelope::BLOCK_TIMESTAMP_FIELD;
 use platpulse_core::identity::{AgentId, BootId, NodeId, ReportId};
 use platpulse_core::inventory::{InventoryNode, NodeInventory};
 use platpulse_core::network::{NetworkIdentity, RpcEndpoint};
@@ -34,7 +37,8 @@ use uuid::Uuid;
 use tokio_util::sync::CancellationToken;
 
 use crate::block::{
-    HeadSubscription, NodeSubscriptions, WebSocketBlockTransport, load_block_summaries,
+    BlockSummaryStoreError, HeadSubscription, NodeSubscriptions, WebSocketBlockTransport,
+    load_block_summaries,
 };
 use crate::config::AgentConfig;
 use crate::database::{
@@ -212,6 +216,16 @@ pub enum CollectionError {
     RuntimeOwnership(String),
     #[error("invalid persisted Agent identity: {0}")]
     Identity(String),
+    /// A sample already in the Agent Store violates the AgentReport v1
+    /// contract, so every report assembled from it is refused (issue #243).
+    /// This is deliberately *not* an identity problem: nothing about the
+    /// Agent's identity changed, one stored sample is simply unusable. The
+    /// Store no longer writes such a sample and
+    /// [`crate::block::load_block_summaries`] no longer selects one, so this
+    /// variant is the fail-loud fallback for a Store that was poisoned before
+    /// the guard existed.
+    #[error("persisted Agent sample is outside the AgentReport v1 contract: {0}")]
+    PersistedSampleOutOfContract(String),
     #[error("RPC collection failed: {0}")]
     Rpc(#[from] RpcCollectError),
     #[error("report persistence failed: {0}")]
@@ -236,6 +250,64 @@ impl From<crate::inventory_declaration::InventoryGuardError> for CollectionError
             InventoryGuardError::Database(error) => Self::Database(error),
         }
     }
+}
+
+/// Map a report validation failure to the collection error an operator should
+/// see (issue #243). A chain timestamp outside the v1 contract is a stored
+/// sample problem with an actionable cause, not an Agent identity problem, and
+/// the old catch-all made it look like one forever.
+pub(crate) fn report_validation_error(error: WireError) -> CollectionError {
+    match &error {
+        WireError::ValueOutOfRange { field } if *field == BLOCK_TIMESTAMP_FIELD => {
+            CollectionError::PersistedSampleOutOfContract(error.to_string())
+        }
+        _ => CollectionError::Identity(error.to_string()),
+    }
+}
+
+/// Persist one collected Block Summary, dropping a sample the wire contract
+/// refuses instead of stalling the Agent (issue #243).
+///
+/// A contract refusal is a per-sample data problem with an actionable cause:
+/// the other samples of the same collection and the report built from them
+/// stay valuable, so the sample is dropped with an operator message and the
+/// caller continues. Store failures stay fatal for the caller.
+pub(crate) async fn persist_collected_block_summary(
+    store: &mut AgentStore,
+    summary: &BlockSummary,
+    created_at: &str,
+) -> Result<(), CollectionError> {
+    store_block_summary_result(
+        crate::block::persist_block_summary(store, summary, created_at).await,
+    )
+}
+
+/// Apply the one Block Summary persistence policy both write paths share
+/// (issue #243): a sample the v1 contract refuses is dropped with an operator
+/// message, and a Store failure stays fatal to the caller. The standalone
+/// write and the recovery transaction keep their own transaction boundaries;
+/// only the mapping from a store error to a collection outcome is shared.
+pub(crate) fn store_block_summary_result(
+    result: Result<(), BlockSummaryStoreError>,
+) -> Result<(), CollectionError> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error @ BlockSummaryStoreError::ChainTimeOutOfContract { .. }) => {
+            report_dropped_block_summary(&error);
+            Ok(())
+        }
+        Err(BlockSummaryStoreError::Database(error)) => Err(CollectionError::Database(error)),
+    }
+}
+
+/// Report a Block Summary the persistence guard refused, without failing the
+/// surrounding collection (issue #243). The sample is dropped, so its height
+/// stays a hole in the reported history; everything else keeps flowing.
+pub(crate) fn report_dropped_block_summary(error: &BlockSummaryStoreError) {
+    eprintln!(
+        "Dropped a Block Summary outside the AgentReport v1 contract: {}",
+        crate::redaction::redact_sensitive(&error.to_string())
+    );
 }
 
 /// Failure while applying a Server receipt to the Agent Store. Storage failures
@@ -1051,9 +1123,7 @@ fn collect_report_with_data_directories<A: RpcAdapter>(
         block_summaries: vec![],
         history_gaps: vec![],
     };
-    report
-        .validate()
-        .map_err(|error| CollectionError::Identity(error.to_string()))?;
+    report.validate().map_err(report_validation_error)?;
     let _ = config;
     Ok(report)
 }
@@ -1465,7 +1535,13 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
             .map_err(|error| CollectionError::Identity(error.to_string()))?;
     }
     report.block_summaries = load_block_summaries(store).await?;
-    report.history_gaps = crate::block::load_history_gaps(store).await?;
+    let monitored_nodes = report
+        .inventory
+        .nodes
+        .iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    report.history_gaps = crate::block::load_history_gaps(store, &monitored_nodes).await?;
     add_sample_capabilities(&mut report);
     report.host.spool = ok(
         spool_diagnostics_for_transition(
@@ -1474,9 +1550,7 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
         ),
         report.generated_at,
     );
-    report
-        .validate()
-        .map_err(|error| CollectionError::Identity(error.to_string()))?;
+    report.validate().map_err(report_validation_error)?;
     let body = report_body_bytes(&report, validated.server_managed_inventory)?;
     let digest = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
     let now = report.generated_at.to_string();
@@ -1623,7 +1697,9 @@ async fn persist_recovery_state(
         }
         let created_at = observed_at.to_string();
         for summary in summaries {
-            crate::block::insert_block_summary(&mut tx, summary, &created_at).await?;
+            store_block_summary_result(
+                crate::block::insert_block_summary(&mut tx, summary, &created_at).await,
+            )?;
         }
         for gap in gaps {
             crate::block::insert_history_gap(&mut tx, gap).await?;
@@ -1883,13 +1959,16 @@ pub(crate) async fn run_node_block_worker(
                     Err(_) => break 'connected,
                 };
                 let observed_at_text = observed_at.to_string();
+                // A sample the contract refuses is dropped with an operator
+                // message (issue #243); a Store failure stays fatal. Either
+                // way the head is advanced below, so a dropped sample cannot
+                // be retried forever.
                 let persist_result =
-                    crate::block::persist_block_summary(&mut store, &summary, &observed_at_text)
-                        .await;
+                    persist_collected_block_summary(&mut store, &summary, &observed_at_text).await;
                 if let Err(error) = persist_result {
                     return BlockWorkerExit {
                         subscription,
-                        error: Some(CollectionError::Database(error)),
+                        error: Some(error),
                     };
                 }
                 let _write_permit = tokio::select! {
@@ -2094,7 +2173,7 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
         match summaries_result {
             Ok(summaries) => {
                 for summary in summaries {
-                    crate::block::persist_block_summary(
+                    persist_collected_block_summary(
                         &mut store,
                         &summary,
                         &report.generated_at.to_string(),
@@ -2135,7 +2214,13 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
             .map_err(|error| CollectionError::Identity(error.to_string()))?;
     }
     report.block_summaries = load_block_summaries(&mut store).await?;
-    report.history_gaps = crate::block::load_history_gaps(&mut store).await?;
+    let monitored_nodes = report
+        .inventory
+        .nodes
+        .iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    report.history_gaps = crate::block::load_history_gaps(&mut store, &monitored_nodes).await?;
     add_sample_capabilities(&mut report);
     report.host.spool = ok(
         spool_diagnostics_for_transition(
@@ -2144,9 +2229,7 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
         ),
         report.generated_at,
     );
-    report
-        .validate()
-        .map_err(|error| CollectionError::Identity(error.to_string()))?;
+    report.validate().map_err(report_validation_error)?;
     let body = report_body_bytes(&report, validated.server_managed_inventory)?;
     let digest = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
     let now = report.generated_at.to_string();
@@ -5368,5 +5451,36 @@ mod tests {
             .await
             .unwrap();
         store.close().await.unwrap();
+    }
+
+    /// Issue #243: the reported symptom was a misleading
+    /// "invalid persisted Agent identity" prefix. A Block chain timestamp outside
+    /// the contract is a rejected sample with an actionable cause, not an
+    /// identity problem, and it must not be deferrable: retrying changes nothing.
+    #[test]
+    fn an_out_of_contract_block_timestamp_is_not_reported_as_an_identity_error() {
+        let refused = report_validation_error(WireError::ValueOutOfRange {
+            field: platpulse_core::envelope::BLOCK_TIMESTAMP_FIELD,
+        });
+        assert!(matches!(
+            refused,
+            CollectionError::PersistedSampleOutOfContract(_)
+        ));
+        assert!(!is_deferrable_collection(&refused));
+        assert!(
+            refused
+                .to_string()
+                .contains("persisted Agent sample is outside the AgentReport v1 contract")
+        );
+
+        let other = report_validation_error(WireError::ValueOutOfRange {
+            field: "block.observed_at",
+        });
+        assert!(matches!(other, CollectionError::Identity(_)));
+        assert!(
+            other
+                .to_string()
+                .starts_with("invalid persisted Agent identity:")
+        );
     }
 }

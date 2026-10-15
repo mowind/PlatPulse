@@ -582,7 +582,7 @@ pub(crate) fn build_shutdown_report(
     report.boot_transition = BootTransition::Closing;
     report
         .validate()
-        .map_err(|error| crate::collector::CollectionError::Identity(error.to_string()))?;
+        .map_err(crate::collector::report_validation_error)?;
     Ok(report)
 }
 
@@ -709,7 +709,12 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
         let result =
             drain_subscription(subscription, &resolver, identity, started, drain_until).await;
         for summary in result.summaries {
-            crate::block::persist_block_summary(&mut store, &summary, &started.to_string()).await?;
+            crate::collector::persist_collected_block_summary(
+                &mut store,
+                &summary,
+                &started.to_string(),
+            )
+            .await?;
         }
         if let Some(range) = result.unresolved_range {
             let gap = shutdown_gap(
@@ -740,7 +745,13 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
         last_good.as_ref(),
     )?;
     report.block_summaries = crate::block::load_block_summaries(&mut store).await?;
-    report.history_gaps = crate::block::load_history_gaps(&mut store).await?;
+    let monitored_nodes = report
+        .inventory
+        .nodes
+        .iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    report.history_gaps = crate::block::load_history_gaps(&mut store, &monitored_nodes).await?;
     report.host.spool = crate::collector::current_spool_diagnostics(&mut store)
         .await
         .map(|value| crate::collector::ok(value, report.generated_at))
@@ -753,7 +764,7 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
     }
     report
         .validate()
-        .map_err(|error| crate::collector::CollectionError::Identity(error.to_string()))?;
+        .map_err(crate::collector::report_validation_error)?;
     let body = serde_json::to_vec(&report)?;
     let generated = report.generated_at.to_string();
     crate::reporting::persist_closing_report(
