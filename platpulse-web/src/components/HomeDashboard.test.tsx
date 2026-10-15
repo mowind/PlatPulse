@@ -874,9 +874,15 @@ describe('Public Home dashboard', () => {
     historicalHighWatermark: number | null | undefined
     height: string
     percent: string | null
+    /** True where two decimals would print a finished 100.00% for a Node the
+     *  Server still reports as Resyncing, so the cue states ≈100% instead (#246). */
+    approximate?: boolean
   }> = [
     { currentHead: 0, historicalHighWatermark: 100, height: '0 / 100', percent: '0.00%' },
     { currentHead: 100, historicalHighWatermark: 100, height: '100 / 100', percent: '100.00%' },
+    { currentHead: 99_999_999, historicalHighWatermark: 100_000_000, height: '99,999,999 / 100,000,000', percent: '≈100%', approximate: true },
+    { currentHead: 99_990_000, historicalHighWatermark: 100_000_000, height: '99,990,000 / 100,000,000', percent: '99.99%' },
+    { currentHead: 100_000_001, historicalHighWatermark: 100_000_000, height: '100,000,001 / 100,000,000', percent: '100.00%' },
     { currentHead: 0, historicalHighWatermark: 0, height: '0 / 0', percent: null },
     { currentHead: 50, historicalHighWatermark: null, height: '50 / Unknown', percent: null },
     { currentHead: 50, historicalHighWatermark: undefined, height: '50 / Unknown', percent: null },
@@ -889,7 +895,7 @@ describe('Public Home dashboard', () => {
     { currentHead: 50, historicalHighWatermark: -1, height: '50 / Unknown', percent: null },
     { currentHead: 0.5, historicalHighWatermark: 100, height: 'Unknown / 100', percent: null },
   ]
-  it.each(resyncHeights)('renders resync heights safely: $height ($percent)', ({ currentHead, historicalHighWatermark, height, percent }) => {
+  it.each(resyncHeights)('renders resync heights safely: $height ($percent)', ({ currentHead, historicalHighWatermark, height, percent, approximate }) => {
     const node = { ...network.nodes[0], resyncState: 'resyncing', currentHead, historicalHighWatermark }
     render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [node] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
     const card = cardOf(nodeCardLink('Alpha'))
@@ -903,13 +909,111 @@ describe('Public Home dashboard', () => {
       expect(progress.getAttribute('aria-label')).not.toContain('%')
     } else {
       expect(progress.textContent).toBe('Resyncing' + percent)
-      expect(progress.getAttribute('aria-label')).toBe('Resync progress: ' + percent + ' toward the Historical High-Water Mark')
+      // The rounded share is the ordinary statement; a share that is short of the
+      // target while two decimals would print a finished 100.00% is stated as an
+      // approximation instead, so the chip never reads as a sync the Server has
+      // not reported done (#246).
+      expect(progress.getAttribute('aria-label')).toBe(approximate
+        ? 'Resync progress: approximately 100% toward the Historical High-Water Mark, short of the target; the share is stated in the dialog'
+        : 'Resync progress: ' + percent + ' toward the Historical High-Water Mark')
     }
     fireEvent.click(progress)
-    const dialog = within(screen.getByRole('dialog', { name: 'Resync progress' }))
+    const dialogElement = screen.getByRole('dialog', { name: 'Resync progress' })
+    const dialog = within(dialogElement)
     expect(dialog.getByText(height)).toBeTruthy()
+    // The dialog states the figure the cue declined to print - the closest reading
+    // this card prints, never one dressed up as the exact share - and only while
+    // the cue is the approximate one.
+    if (approximate) {
+      expect(dialogElement.textContent).toContain('the closest reading this card prints is 99.999999%')
+      expect(dialogElement.textContent).toContain('two decimal places print 100.00%')
+    } else {
+      expect(dialogElement.textContent).not.toContain('two decimal places print 100.00%')
+    }
     if (percent === null) expect(dialog.getByText(/No percentage is asserted/)).toBeTruthy()
     else expect(dialog.queryByText(/No percentage is asserted/)).toBeNull()
+  })
+
+  it('keeps a Resyncing Node short of its target readable as short, never as a finished 100% (#246)', () => {
+    const nearTarget = {
+      ...network.nodes[0],
+      resyncState: 'resyncing',
+      currentHead: 999_999_999,
+      historicalHighWatermark: 1_000_000_000,
+      resyncLastProgressAt: '2026-08-25T00:00:00Z',
+    }
+    render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [nearTarget] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    const card = cardOf(nodeCardLink('Alpha'))
+    const cue = within(card).getByRole('button', { name: /Resync progress/ })
+
+    // 99.9999999% rounds to 100.00% at two places, and a chip reading 100.00%
+    // beside the word Resyncing would claim a sync the Server has not reported as
+    // done. The cue keeps the Server's state and marks the share as approximate.
+    expect(cue.textContent).toBe('Resyncing≈100%')
+    expect(cue.getAttribute('aria-label')).not.toContain('100.00%')
+
+    fireEvent.click(cue)
+    const dialog = screen.getByRole('dialog', { name: 'Resync progress' })
+    // Both figures stay answerable: the rounded one the chip declined to print,
+    // the closest reading of the share that explains why, and the untouched
+    // retained heights.
+    expect(dialog.textContent).toContain('999,999,999 / 1,000,000,000')
+    expect(dialog.textContent).toContain('the closest reading this card prints is 99.9999999%')
+    expect(dialog.textContent).toContain('two decimal places print 100.00%')
+    expect(dialog.textContent).toContain('≈100%')
+    expect(dialog.textContent).not.toContain('No percentage is asserted')
+    // The state stays the Server's: nothing here decides the Resync has finished.
+    expect(within(card).getByText('Resyncing')).toBeTruthy()
+  })
+
+  it('keeps a Node at its exact target Resyncing while the Server still reports it (#246)', () => {
+    const atTarget = {
+      ...network.nodes[0],
+      resyncState: 'resyncing',
+      currentHead: 1_000_000_000,
+      historicalHighWatermark: 1_000_000_000,
+      resyncLastProgressAt: '2026-08-25T00:00:00Z',
+    }
+    render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [atTarget] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    const cue = within(cardOf(nodeCardLink('Alpha'))).getByRole('button', { name: 'Resync progress: 100.00% toward the Historical High-Water Mark' })
+
+    // An exact 100.00% is shown as recorded rather than replaced by an
+    // approximation, and it does not end the Resync the Server reports: no
+    // completion is inferred from the number.
+    expect(cue.textContent).toBe('Resyncing100.00%')
+    fireEvent.click(cue)
+    const dialog = screen.getByRole('dialog', { name: 'Resync progress' })
+    expect(dialog.textContent).toContain('1,000,000,000 / 1,000,000,000')
+    expect(dialog.textContent).not.toContain('two decimal places print 100.00%')
+    expect(dialog.textContent).not.toContain('No percentage is asserted')
+  })
+
+  it('states a share too close to the target to print, rather than a number reading 100% (#246)', () => {
+    const beyondAnyDecimal = {
+      ...network.nodes[0],
+      resyncState: 'resyncing',
+      currentHead: 9_007_199_254_740_990,
+      historicalHighWatermark: 9_007_199_254_740_991,
+      resyncLastProgressAt: '2026-08-25T00:00:00Z',
+    }
+    render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes: [beyondAnyDecimal] }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    const card = cardOf(nodeCardLink('Alpha'))
+    const cue = within(card).getByRole('button', { name: /Resync progress: approximately 100%/ })
+
+    // This share sits below its target and above every reading the card prints, so
+    // there is no number to set beside the word Resyncing: the cue marks the
+    // approximation, and the dialog answers in words rather than claiming a target
+    // the Server has not reported as reached.
+    expect(cue.textContent).toBe('Resyncing≈100%')
+
+    fireEvent.click(cue)
+    const dialog = screen.getByRole('dialog', { name: 'Resync progress' })
+    expect(dialog.textContent).toContain('9,007,199,254,740,990 / 9,007,199,254,740,991')
+    expect(dialog.textContent).toContain('less than any decimal this card prints')
+    expect(dialog.textContent).toContain('two decimal places print 100.00%')
+    expect(dialog.textContent).not.toContain("the closest reading this card prints is 100")
+    expect(dialog.textContent).not.toContain('No percentage is asserted')
+    expect(within(card).getByText('Resyncing')).toBeTruthy()
   })
 
   it('keeps the Resyncing state independent of an unavailable comparison and of its health diagnostic (#239)', () => {
@@ -1554,13 +1658,106 @@ describe('Public Home toolbar entries', () => {
     expect(document.getElementById('home-status-filter-count')?.textContent).toBe('0 of 2 status filters on')
 
     fireEvent.click(trigger(filterEntry))
-    expect(surface('Sort and filters')).toBeTruthy()
-    expect(screen.getByRole('combobox', { name: 'Sort' })).toBeTruthy()
-    expect(screen.getByRole('combobox', { name: 'Health filter' })).toBeTruthy()
-    expect(screen.getByRole('combobox', { name: 'Validator status filter' })).toBeTruthy()
+    const opened = surface('Sort and filters') as HTMLElement
+    expect(opened).toBeTruthy()
+    // The three controls belong to the surface, so the surface is what this reads
+    // them through rather than the whole page (§12).
+    const surfaceQueries = within(opened)
+    expect(surfaceQueries.getByRole('combobox', { name: 'Sort' })).toBeTruthy()
+    expect(surfaceQueries.getByRole('combobox', { name: 'Health filter' })).toBeTruthy()
+    expect(surfaceQueries.getByRole('combobox', { name: 'Validator status filter' })).toBeTruthy()
     expect(trigger(filterEntry).getAttribute('aria-expanded')).toBe('true')
-    // Nothing to clear while both filters are the default.
-    expect((screen.getByRole('button', { name: 'Clear filters' }) as HTMLButtonElement).disabled).toBe(true)
+    // Nothing to clear while both filters are the default, so the surface draws
+    // no footer at all: no sentence about a filter that is not on, and no action
+    // drawn disabled for a reader to wonder about (#246).
+    expect(surfaceQueries.queryByRole('button', { name: 'Clear filters' })).toBeNull()
+    expect(opened.querySelector('[data-slot="home-filter-footer"]')).toBeNull()
+  })
+
+  it('stacks the three controls as one-line rows over one shared label column (#246)', () => {
+    renderHome([network])
+    fireEvent.click(trigger(filterEntry))
+    const dialog = surface('Sort and filters') as HTMLElement
+
+    // Three rows rather than three stacked labels: every control shares its line
+    // with the word that names it, so the surface is about half the height it was
+    // and the three selects line up on one left edge.
+    const rows = Array.from(dialog.querySelectorAll('label'))
+    expect(rows.map(row => row.querySelector('span')?.textContent)).toEqual(['Sort by', 'Health', 'Validator'])
+    rows.forEach(row => {
+      expect(row.className).toContain('items-center')
+      expect(row.querySelector('span')?.className).toContain('w-[5.5rem]')
+      // The compact layout does not shrink the control itself: the 44px target
+      // and the accessible name the row already had both stay.
+      expect(row.querySelector('select')?.className).toContain('min-h-11 flex-1')
+    })
+
+    // One low-contrast rule separates the order from the two filters, and it sits
+    // between them rather than above or below the group.
+    const separator = dialog.querySelector('[data-slot="home-filter-separator"]')
+    const selects = Array.from(dialog.querySelectorAll('select'))
+    expect(selects).toHaveLength(3)
+    expect(separator).toBeTruthy()
+    expect(selects[0].compareDocumentPosition(separator as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(selects[1].compareDocumentPosition(separator as Node) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
+
+    // The surface stays the medium band's own 288px, and the names a reader
+    // reached it by did not follow the layout.
+    expect(dialog.className).toContain('w-72')
+    const surfaceQueries = within(dialog)
+    expect(surfaceQueries.getByRole('combobox', { name: 'Sort' })).toBeTruthy()
+    expect(surfaceQueries.getByRole('combobox', { name: 'Health filter' })).toBeTruthy()
+    expect(surfaceQueries.getByRole('combobox', { name: 'Validator status filter' })).toBeTruthy()
+  })
+
+  it('states the order in force only while it is not the default one (#246)', () => {
+    renderHome([network])
+    fireEvent.click(trigger(filterEntry))
+
+    // The default order is the Health order the card has always led with, so the
+    // entry states nothing about it: its one fixed-width track keeps the entry's
+    // own name, no second description is added to the control a reader reaches
+    // without opening anything, and the width that track occupies is the same
+    // width every other state occupies (#246).
+    const sortTrack = () => document.querySelector('[data-slot="home-filter-sort"]')
+    expect(sortTrack()?.textContent?.trim()).toBe('Sort & filter')
+    expect(document.querySelector('[data-slot="home-sort-state"]')).toBeNull()
+    expect(trigger(filterEntry).getAttribute('aria-describedby')).toBe('home-status-filter-count')
+
+    fireEvent.change(selectNamed('Sort'), { target: { value: 'process_cpu' } })
+    // The chip names the order where the row has the width for a word, and the
+    // description names it with the direction it sorts in at every width, so the
+    // word is never the only way to learn which order is in force.
+    expect(document.querySelector('[data-slot="home-filter-sort"]')?.textContent?.replace(/\s+/g, ' ')).toBe('Sort: CPU')
+    expect(document.getElementById('home-sort-state')?.textContent)
+      .toBe('Sort is Process CPU: highest process CPU first, never-observed Nodes last.')
+    expect(trigger(filterEntry).getAttribute('aria-describedby')).toBe('home-status-filter-count home-sort-state')
+    // The track holds one fixed width instead of the width of its own word, so
+    // changing from one order to another moves nothing (the entry states its name
+    // in the very same track), and the surface hangs from the entry's end edge —
+    // the edge the toolbar pins — so the entry stating an order cannot slide its
+    // own surface sideways (#246).
+    expect(sortTrack()?.className).toContain('w-[5.5rem]')
+    expect(sortTrack()?.className).toContain('shrink-0')
+    expect((surface('Sort and filters') as HTMLElement).className).toContain('right-0')
+    // A sort choice is not a status filter: the badge counts the two filters only.
+    expect(badge()).toBeNull()
+    expect(surface('Sort and filters')).toBeTruthy()
+
+    // Back to the default and the extra state leaves with it, while the surface
+    // the reader is working in stays open.
+    fireEvent.change(selectNamed('Sort'), { target: { value: 'health' } })
+    expect(sortTrack()?.textContent?.trim()).toBe('Sort & filter')
+    expect(document.querySelector('[data-slot="home-sort-state"]')).toBeNull()
+    expect(trigger(filterEntry).getAttribute('aria-describedby')).toBe('home-status-filter-count')
+    expect(surface('Sort and filters')).toBeTruthy()
+
+    // Anchoring belongs to the control, not to the surface: the search control
+    // states nothing inside itself, so its surface keeps hanging from the edge a
+    // reader reads from.
+    fireEvent.click(trigger('Search Active Nodes'))
+    expect(surface('Search Active Nodes')).toBeTruthy()
+    expect((surface('Search Active Nodes') as HTMLElement).className).not.toContain('right-0')
   })
 
   it('gives the row two ends: the Network group and one right-hand group of three controls', () => {
@@ -1633,6 +1830,10 @@ describe('Public Home toolbar entries', () => {
     renderHome([network, secondNetwork])
 
     fireEvent.click(trigger(filterEntry))
+    // The footer exists exactly while there is something to clear: the sentence,
+    // the action and the count all arrive together, and none of them is drawn
+    // disabled for a reader to wonder about (#246).
+    expect(document.querySelector('[data-slot="home-filter-footer"]')?.textContent).toContain('2 of 2 status filters on')
     expect(badge()?.textContent).toBe('2')
     fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
 

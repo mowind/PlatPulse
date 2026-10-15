@@ -34,6 +34,15 @@ async function fixture(page: Page) {
       // resync state and the reference comparison are three independent
       // statements, and none of them hides another.
       { ...base, nodeId: 'resync-browser-unhealthy', displayName: 'D Unhealthy', resyncState: 'resyncing', health: 'unhealthy', healthReason: 'RPC observation failed' },
+      // A Node short of its retained High-Water Mark whose two-decimal share
+      // would read as a finished 100.00% keeps the Server's Resyncing state and
+      // states the approximation instead of a completion (#246).
+      { ...base, nodeId: 'resync-browser-near', displayName: 'E Near target', resyncState: 'resyncing', currentHead: 999_999_999, historicalHighWatermark: 1_000_000_000, resyncProgress: '999999999/1000000000 (last progress 2026-08-25T00:00:00Z)' },
+      // And the closest share the card has no printable reading for — the shortest
+      // one whose every rounding at four, six, eight and ten decimals lands on 100:
+      // the dialog says that in words rather than printing a 100% beside the word
+      // Resyncing (#246).
+      { ...base, nodeId: 'resync-browser-tight', displayName: 'F Too close to print', resyncState: 'resyncing', currentHead: 9_999_999_999_999, historicalHighWatermark: 10_000_000_000_000, resyncProgress: '9999999999999/10000000000000 (last progress 2026-08-25T00:00:00Z)' },
     ]
     await route.fulfill({ response, json: [{ ...network, nodes }] })
   })
@@ -126,6 +135,37 @@ async function statusAndGeometry(page: Page, testInfo: TestInfo) {
   await expect(unknownDialog).toHaveCount(0)
   await expect(unknown).not.toContainText(/2026-08-25/)
 
+  // A share that rounds to a finished 100.00% while the Server still reports
+  // Resyncing is stated as an approximation: the cue keeps the Server's own state
+  // word and prints ≈100%, never 100.00%, and the dialog answers with the closest
+  // reading this card can print beside the figure two decimals produce (#246).
+  const near = nodeCard(page, 'E Near target')
+  const nearCue = near.getByRole('button', { name: /Resync progress: approximately 100% toward the Historical High-Water Mark, short of the target; the share is stated in the dialog/ })
+  await expect(nearCue).toBeVisible()
+  await expect(nearCue.getByText('Resyncing', { exact: true })).toBeVisible()
+  await expect(nearCue.getByText('≈100%', { exact: true })).toBeVisible()
+  await expect(nearCue, 'a rounded 100.00% never sits beside the Server state').not.toContainText('100.00%')
+  await nearCue.click()
+  const nearDialog = page.getByRole('dialog', { name: 'Resync progress' })
+  await expect(nearDialog.getByText('999,999,999 / 1,000,000,000', { exact: true })).toBeVisible()
+  await expect(nearDialog).toContainText('the closest reading this card prints is 99.9999999%')
+  await expect(nearDialog).toContainText('two decimal places print 100.00%')
+  await page.keyboard.press('Escape')
+  await expect(nearDialog).toHaveCount(0)
+
+  // The same rule where no reading is left to print: the card never sets a number
+  // beside Resyncing that would claim a target the Server has not reported reached.
+  const tight = nodeCard(page, 'F Too close to print')
+  const tightCue = tight.getByRole('button', { name: /Resync progress: approximately 100%/ })
+  await expect(tightCue.getByText('≈100%', { exact: true })).toBeVisible()
+  await tightCue.click()
+  const tightDialog = page.getByRole('dialog', { name: 'Resync progress' })
+  await expect(tightDialog.getByText('9,999,999,999,999 / 10,000,000,000,000', { exact: true })).toBeVisible()
+  await expect(tightDialog).toContainText('less than any decimal this card prints')
+  await expect(tightDialog).not.toContainText('the closest reading this card prints is 100')
+  await page.keyboard.press('Escape')
+  await expect(tightDialog).toHaveCount(0)
+
   // The unhealthy card keeps all three independent statements in their own
   // places: the Server's diagnostic, the Resyncing percentage it published, and
   // the absolute Block Height the Server is not confirming as current — which
@@ -189,7 +229,7 @@ async function statusAndGeometry(page: Page, testInfo: TestInfo) {
   // cards which actually share a row must coordinate their bottom edge.
   await page.mouse.move(0, 0)
   const geometry = await cardContentGeometry(page.locator('[data-slot="node-card"]'))
-  expect(geometry).toHaveLength(4)
+  expect(geometry).toHaveLength(6)
   console.log(`[home-resync] ${testInfo.project.name}: natural identity content includes live Resyncing and independent unhealthy diagnostic; ${JSON.stringify(geometry)}`)
   const activeBox = await box(active)
   for (const bounds of [await box(active.getByRole('heading', { name: 'A Resync', exact: true })), await box(cue), await box(active.getByLabel('Node process and host network resources', { exact: true }))]) {

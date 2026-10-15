@@ -226,17 +226,22 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
     await expect(homeFilterEntry(page)).toHaveAttribute('aria-expanded', 'true')
     expect(await rowGeometry(page), 'an open surface must not shift the toolbar row').toEqual(before)
     await expectAnchoredInside(page, homeFilterEntry(page), filterSurface, 'the Sort & filter surface')
-    await expect(clearFilters(page)).toBeVisible()
+    // Nothing is on to clear, so the surface draws no footer at all: no sentence
+    // about a filter that is not on, and no action drawn disabled for a reader to
+    // wonder about (#246).
+    await expect(clearFilters(page)).toHaveCount(0)
     await expect(await openHomeSort(page)).toBeVisible()
     await expect(await openHomeHealth(page)).toBeVisible()
     await expect(await openHomeValidator(page)).toBeVisible()
     await expectUncovered(filterSurface, 'the open Sort & filter surface')
     await expectNoHorizontalOverflow(page)
     await expectVisibleInteractiveTargets(page)
-    // The surface is taller than the room under its entry on a phone-height
-    // viewport, and nothing re-places it once it is open: its tail is reached by
-    // scrolling the page to it.
-    await expectReachable(page, clearFilters(page), filterSurface, 'Clear filters of the open Sort & filter surface')
+    // A phone-height viewport has less room under the entry than the surface is
+    // tall, and nothing re-places the surface once it is open: its tail is
+    // reached by scrolling the page to it. The tail is the last control the
+    // surface draws, which is the Validator status select while no footer is
+    // drawn beside the three of them.
+    await expectReachable(page, await openHomeValidator(page), filterSurface, 'the Validator status select of the open Sort & filter surface')
 
     // The two search shapes answer the same contract. The row's own field is
     // there to be typed in — no entry to open, no surface, nothing between the
@@ -601,16 +606,55 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
     await expect(homeFilterEntry(page)).toHaveAttribute('aria-describedby', 'home-status-filter-count')
 
     await openHomeFilters(page)
-    // Nothing to clear while both status filters sit on their default.
-    await expect(clearFilters(page)).toBeDisabled()
-
+    // Nothing to clear while both status filters sit on their default, so the
+    // surface draws no footer and no disabled action (#246).
+    await expect(clearFilters(page)).toHaveCount(0)
     await (await openHomeSort(page)).selectOption('name')
     await (await openHomeHealth(page)).selectOption('healthy')
     await expect(badge(page)).toHaveText('1')
     await expect(filterDescription(page)).toHaveText('1 of 2 status filters on')
+    // The count this chip carries is its own state of the entry — it is drawn inside
+    // the entry, so it is on screen for every measurement below — and the order's own
+    // transition is measured from one entry state: the entry's own name at rest and
+    // the order in force otherwise share one fixed track, so the default order to a
+    // named one and back moves neither the entry nor the surface hanging under it,
+    // whatever the count the entry is carrying (#246).
+    const sortChip = page.locator('[data-slot="home-filter-sort"]')
+    await (await openHomeSort(page)).selectOption('health')
+    await expect(sortChip).toHaveText('Sort & filter')
+    const entryAtDefault = await homeFilterEntry(page).boundingBox()
+    const surfaceAtDefault = await homeFilterSurface(page).boundingBox()
+    await (await openHomeSort(page)).selectOption('name')
+    await expect(sortChip).toHaveText('Sort: Name')
     // The entry still reads "Sort & filter" to a screen reader: the count reaches
-    // it as a description instead of a changed name.
-    await expect(homeFilterEntry(page)).toHaveAttribute('aria-describedby', 'home-status-filter-count')
+    // it as a description instead of a changed name — and the order in force is
+    // stated beside it the same way, so the one text track that carries the word
+    // on a wide row is never the only way to learn which order is on (#246).
+    await expect(homeFilterEntry(page)).toHaveAttribute('aria-describedby', 'home-status-filter-count home-sort-state')
+    await expect(page.locator('#home-sort-state')).toHaveText('Sort is Name: Node name, A to Z.')
+    // The word itself is drawn only where the row has room for it, and it holds a
+    // fixed track so no order change moves the row; the fact does not depend on
+    // it at any width.
+    if ((page.viewportSize()?.width ?? 0) >= 1024) await expect(sortChip).toBeVisible()
+    else await expect(sortChip).toBeHidden()
+    // One fixed track holds that word, so moving from one order to an order of
+    // another length moves neither the entry nor the surface hanging under it.
+    const entryWithSort = await homeFilterEntry(page).boundingBox()
+    const surfaceWithSort = await homeFilterSurface(page).boundingBox()
+    await (await openHomeSort(page)).selectOption('disk')
+    await expect(sortChip).toHaveText('Sort: Disk')
+    expect(await homeFilterEntry(page).boundingBox(), 'another order must not resize the entry').toEqual(entryWithSort)
+    expect(await homeFilterSurface(page).boundingBox(), 'another order must not move the open surface').toEqual(surfaceWithSort)
+    // Back to the default and to a named order again: the entry and the surface
+    // under it hold the geometry they held before either was chosen.
+    await (await openHomeSort(page)).selectOption('health')
+    await expect(sortChip).toHaveText('Sort & filter')
+    expect(await homeFilterEntry(page).boundingBox(), 'the default order must not resize the entry').toEqual(entryAtDefault)
+    expect(await homeFilterSurface(page).boundingBox(), 'the default order must not move the open surface').toEqual(surfaceAtDefault)
+    await (await openHomeSort(page)).selectOption('name')
+    await expect(sortChip).toHaveText('Sort: Name')
+    expect(await homeFilterEntry(page).boundingBox(), 'a named order must not resize the entry after a round trip').toEqual(entryAtDefault)
+    expect(await homeFilterSurface(page).boundingBox(), 'a named order must not move the open surface after a round trip').toEqual(surfaceAtDefault)
     await expect(filterDescription(page)).toHaveText('1 of 2 status filters on')
 
     await (await openHomeValidator(page)).selectOption('unknown')
@@ -618,8 +662,10 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
     // Choosing a value never closes the surface the reader is working in.
     await expect(homeFilterSurface(page)).toBeVisible()
 
+    // Clearing is offered exactly while there is something to clear.
     await expect(clearFilters(page)).toBeEnabled()
     await clearFilters(page).click()
+    await expect(clearFilters(page)).toHaveCount(0)
 
     // Clear filters resets the two status filters and nothing else: the sort
     // order and the Network selection stay where the reader put them.

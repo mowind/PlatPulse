@@ -519,6 +519,35 @@ describe('Home list selection', () => {
   })
 
 
+  it('breaks a tie on the displayed name before the Node identity, so equal values read as a name list', () => {
+    // The primary keys are equal here (one metric value, one health grade, one
+    // Node data ratio), so only the tie-break decides. It reads the displayed name
+    // first — the name a reader hunts — and only then the Node identity, so a
+    // group of Nodes that share a value reads the way a name list does instead of
+    // in deployment identity order.
+    const zebra = record({ nodeId: 'node-3', displayName: 'Zebra', processCpuPercent: 10 })
+    const alpha = record({ nodeId: 'node-9', displayName: 'Alpha', processCpuPercent: 10 })
+    const beta = record({ nodeId: 'node-1', displayName: 'beta', processCpuPercent: 10 })
+    const order = (nodes: HomeNodeRecord[], sort: HomeSort) =>
+      selectHomeRecords(nodes, filters({ sort })).matching.map((entry) => entry.node.nodeId)
+    for (const sort of HOME_SORTS) {
+      expect(order([zebra, alpha, beta], sort), sort).toEqual(['node-9', 'node-1', 'node-3'])
+      expect(order([beta, zebra, alpha], sort), sort).toEqual(['node-9', 'node-1', 'node-3'])
+    }
+  })
+
+  it('keeps the Node identity as the last word, so two Nodes of one name never swap', () => {
+    // A name tie is still total: nothing but `nodeId` remains, so the order
+    // cannot depend on the order the projection arrived in.
+    const second = record({ nodeId: 'second', displayName: 'Same Name', processCpuPercent: 10 })
+    const first = record({ nodeId: 'first', displayName: 'Same Name', processCpuPercent: 10 })
+    const order = (nodes: HomeNodeRecord[], sort: HomeSort) =>
+      selectHomeRecords(nodes, filters({ sort })).matching.map((entry) => entry.node.nodeId)
+    for (const sort of HOME_SORTS) {
+      expect(order([second, first], sort), sort).toEqual(['first', 'second'])
+    }
+  })
+
   it('reads each metric sort from its own field, so two metrics never share one rank', () => {
     // Every single-metric order above stays correct even if one metric sort read
     // another column, so these fixtures disagree with each other: Crossed leads on

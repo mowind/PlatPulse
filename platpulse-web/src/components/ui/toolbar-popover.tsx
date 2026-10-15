@@ -17,6 +17,20 @@ const VIEWPORT_MARGIN = 16
  * refuses to scroll back and is therefore a real defect rather than a cosmetic
  * one. The correction is measured after layout, so the surface never paints
  * outside the viewport in the first place.
+ *
+ * A control states which edge of itself the surface hangs from (align, #246).
+ * A trigger whose own width can change while the surface is open - the Sort &
+ * filter entry states the order in force inside itself - hangs its surface from
+ * its end edge, because that edge is the one the toolbar pins: the surface then
+ * stays exactly where it was while the trigger grows, instead of sliding out
+ * from under the control the reader is looking at. An end-anchored surface is
+ * corrected with a transform rather than an offset, so the clamp moves it
+ * without taking the end edge away.
+ *
+ * The surface floats on the same soft, emerald-tinted glow the Home cards wear
+ * (issue #246) rather than on a heavy drop shadow: the border does the
+ * defining, so the surface reads as one more light layer of the page instead of
+ * a dark slab laid over it, in either scheme.
  */
 export function ToolbarPopover({
   open,
@@ -25,6 +39,7 @@ export function ToolbarPopover({
   trigger,
   returnFocusRef,
   className,
+  align = 'start',
   children,
 }: {
   /** Whether the surface is showing. */
@@ -38,6 +53,8 @@ export function ToolbarPopover({
   /** Where Escape hands focus back: the control that opened the surface. */
   returnFocusRef?: RefObject<HTMLElement | null>
   className?: string
+  /** Which edge of the trigger the surface hangs from: its start (the default) or its end. */
+  align?: 'start' | 'end'
   children: ReactNode
 }) {
   const wrapperRef = useRef<HTMLDivElement | null>(null)
@@ -107,10 +124,11 @@ export function ToolbarPopover({
           aria-label={label}
           data-slot="toolbar-popover"
           className={cn(
-            'absolute top-full z-30 mt-2 max-w-[calc(100vw-2rem)] rounded-md border bg-popover p-3 text-popover-foreground shadow-lg',
+            'absolute top-full z-30 mt-2 max-w-[calc(100vw-2rem)] rounded-md border bg-popover p-3 text-popover-foreground shadow-[0_0_20px,0_0_0_1px] shadow-emerald-600/10 dark:shadow-emerald-500/10',
+            align === 'end' && 'right-0',
             className,
           )}
-          style={{ left: shift }}
+          style={align === 'end' ? { transform: `translateX(${shift}px)` } : { left: shift }}
         >
           {children}
         </div>

@@ -106,17 +106,21 @@ const SEARCH_FIELD_TRACK = 16 * 16
 
 /** The one sort control's keys, in `HOME_SORTS` order (#223, #242): the six the
  *  delivered toolbar already offered, then Disk, Uptime and Attention First. No
- *  direction control is added — each key's direction is the key itself. */
-const sortOptions: Array<{ value: HomeSort; label: string }> = [
-  { value: 'health', label: 'Health' },
-  { value: 'name', label: 'Name' },
-  { value: 'head', label: 'Current Head' },
-  { value: 'peers', label: 'Peers' },
-  { value: 'process_cpu', label: 'Process CPU' },
-  { value: 'process_memory', label: 'Process memory' },
-  { value: 'disk', label: 'Disk' },
-  { value: 'uptime', label: 'Uptime' },
-  { value: 'attention', label: 'Attention First' },
+ *  direction control is added — each key's direction is the key itself, stated
+ *  once in `order` so the entry's hint never restates a direction of its own.
+ *  `short` is the word the entry prints beside its own name while a key other
+ *  than the default is in force, and `label` stays the full name the select and
+ *  the description use (#246). */
+const sortOptions: Array<{ value: HomeSort; label: string; short: string; order: string }> = [
+  { value: 'health', label: 'Health', short: 'Health', order: 'Unhealthy first, then Healthy, then Unknown' },
+  { value: 'name', label: 'Name', short: 'Name', order: 'Node name, A to Z' },
+  { value: 'head', label: 'Current Head', short: 'Head', order: 'highest Block Height first, never-observed Nodes last' },
+  { value: 'peers', label: 'Peers', short: 'Peers', order: 'most Peers first, never-observed Nodes last' },
+  { value: 'process_cpu', label: 'Process CPU', short: 'CPU', order: 'highest process CPU first, never-observed Nodes last' },
+  { value: 'process_memory', label: 'Process memory', short: 'Memory', order: 'highest process memory first, never-observed Nodes last' },
+  { value: 'disk', label: 'Disk', short: 'Disk', order: 'largest Node data directory share first, never-observed Nodes last' },
+  { value: 'uptime', label: 'Uptime', short: 'Uptime', order: 'longest process uptime first, never-observed Nodes last' },
+  { value: 'attention', label: 'Attention First', short: 'Attention', order: 'Unhealthy first, then Unknown, then Healthy' },
 ]
 
 /** Emerald Home: six equal overview cards beside a proportional Peer map.
@@ -358,6 +362,19 @@ export default function HomeDashboard({
   const statusFilterCount = (filters.health === 'all' ? 0 : 1) + (filters.validator === 'all' ? 0 : 1)
   const statusFilterCountId = 'home-status-filter-count'
   const statusFilterSummary = `${statusFilterCount} of 2 status filters on`
+  // The order is the entry's second state, and it is stated twice for the same
+  // reason the count is: the entry's own text track names it while the row has the
+  // width for a word, and the description names it — with the direction the key
+  // sorts in — at every width, so a reader who sees neither the track nor the
+  // toolbar still knows what the list is ordered by. The default key is the
+  // Health order the card has always led with, so the track keeps the entry's own
+  // name and no description is added: an entry describing its own default is
+  // noise (#246).
+  const sortKey = sortOptions.find((option) => option.value === filters.sort) ?? sortOptions[0]
+  const sortStateId = 'home-sort-state'
+  const sortInForce = filters.sort !== 'health'
+  const sortDescription = `Sort is ${sortKey.label}: ${sortKey.order}.`
+  const filtersTriggerDescribedBy = sortInForce ? `${statusFilterCountId} ${sortStateId}` : statusFilterCountId
   // The search entry states its own condition twice over: a marker drawn inside
   // the control, so an active search is never read through colour alone, and a
   // description naming the text in force, so a reader who sees neither still
@@ -766,27 +783,55 @@ export default function HomeDashboard({
                   not otherwise show, and it is drawn only while there is one: a zero
                   badge would be a chip that says nothing. The count itself is still
                   stated for a reader that cannot see the chip
-                  (statusFilterCountId). */}
+                  (statusFilterCountId), and the order in force is stated the same way
+                  while it is not the default one (sortStateId, #246). */}
               <div data-slot="sort-filter-entry" className={cn('relative', filtersOpen ? 'z-30' : 'z-10')}>
                 <ToolbarPopover
                   open={filtersOpen}
                   onClose={closePanel}
                   returnFocusRef={filtersTriggerRef}
                   label="Sort and filters"
-                  className="flex w-72 flex-col gap-3"
+                  align="end"
+                  className="flex w-72 flex-col gap-2.5 p-2.5"
                   trigger={
                     <Button
                       ref={filtersTriggerRef}
                       variant="outline"
                       aria-expanded={filtersOpen}
                       aria-haspopup="dialog"
-                      aria-describedby={statusFilterCountId}
+                      aria-describedby={filtersTriggerDescribedBy}
+                      aria-label="Sort & filter"
                       data-slot="home-filter-trigger"
                       className={cn('gap-1.5 rounded-md px-2.5 text-xs shadow-none md:bg-background', SURFACE_TOOLBAR)}
                       onClick={() => togglePanel('filters')}
                     >
                       <SlidersHorizontal aria-hidden="true" className="size-3.5" />
-                      Sort &amp; filter
+                      {/* One fixed text track carries the entry's own name, and the
+                          order in force while there is one (#246), so every state of
+                          this entry is the same width: changing the order - from the
+                          default, back to it, or between two others - moves neither
+                          the entry nor the search control and the pills beside it,
+                          which is what keeps the row from jumping while the surface
+                          above it is open. The words are decorative: the entry names
+                          itself (aria-label), and the order reaches a reader who
+                          cannot see the track through the description below
+                          (sortStateId), which states the key and the direction it
+                          sorts in at every width. Below lg the track is not drawn and
+                          the entry keeps its name alone, because a row that narrow
+                          has no width to spare for a second word. The surface is
+                          anchored to this entry's end edge (align="end"), the edge
+                          the toolbar pins, so a track stating something new cannot
+                          slide the surface out from under the reader. */}
+                      <span aria-hidden="true" className="lg:hidden">Sort &amp; filter</span>
+                      <span
+                        data-slot="home-filter-sort"
+                        aria-hidden="true"
+                        className="hidden w-[5.5rem] shrink-0 truncate text-left lg:inline-block"
+                      >
+                        {sortInForce
+                          ? <span className="text-[0.6875rem] font-medium text-muted-foreground">Sort: {sortKey.short}</span>
+                          : 'Sort & filter'}
+                      </span>
                       {statusFilterCount > 0 && (
                         <span
                           data-slot="home-filter-count"
@@ -799,12 +844,22 @@ export default function HomeDashboard({
                     </Button>
                   }
                 >
-                    <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
-                      Sort
+                    {/* Three rows rather than three stacked labels (#246): a label
+                        and its select share one line, so the surface is about half
+                        its former height and hides far less of the cards below it,
+                        and the three selects share one left edge because the label
+                        column is one fixed 5.5rem track. Each select keeps its own
+                        accessible name, its 44px target and its keyboard behaviour;
+                        only the layout around them changed. The rows are written in
+                        the order a reader works in — the order the list is in, then
+                        the two filters that narrow it — and one low-contrast rule
+                        separates the two concerns. */}
+                    <label className="flex items-center gap-2.5 text-xs font-medium text-muted-foreground">
+                      <span className="w-[5.5rem] shrink-0 whitespace-nowrap">Sort by</span>
                       <Select
                         aria-label="Sort"
                         aria-describedby={filters.sort === 'attention' ? attentionSortHintId : undefined}
-                        className="w-full"
+                        className="min-h-11 flex-1 text-xs"
                         value={filters.sort}
                         onChange={(event) => updateFilters({ sort: event.target.value as HomeSort })}
                       >
@@ -823,11 +878,12 @@ export default function HomeDashboard({
                         Attention First leads with the Active Nodes the Server has not confirmed Healthy, Unhealthy before Unknown, and lists the Healthy ones last.
                       </span>
                     )}
-                    <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
-                      Health
+                    <span aria-hidden="true" data-slot="home-filter-separator" className="w-full border-t border-border/60" />
+                    <label className="flex items-center gap-2.5 text-xs font-medium text-muted-foreground">
+                      <span className="w-[5.5rem] shrink-0 whitespace-nowrap">Health</span>
                       <Select
                         aria-label="Health filter"
-                        className="w-full"
+                        className="min-h-11 flex-1 text-xs"
                         value={filters.health}
                         onChange={(event) => updateFilters({ health: event.target.value as HomeHealthFilter })}
                       >
@@ -837,11 +893,11 @@ export default function HomeDashboard({
                         <option value="unknown">Unknown</option>
                       </Select>
                     </label>
-                    <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
-                      Validator status
+                    <label className="flex items-center gap-2.5 text-xs font-medium text-muted-foreground">
+                      <span className="w-[5.5rem] shrink-0 whitespace-nowrap">Validator</span>
                       <Select
                         aria-label="Validator status filter"
-                        className="w-full"
+                        className="min-h-11 flex-1 text-xs"
                         value={filters.validator}
                         onChange={(event) => updateFilters({ validator: event.target.value as HomeValidatorFilter })}
                       >
@@ -851,22 +907,28 @@ export default function HomeDashboard({
                         <option value="unknown">Unknown</option>
                       </Select>
                     </label>
-                    <div className="flex items-center justify-between gap-2 border-t pt-3">
-                      <p className="text-xs text-muted-foreground">
-                        {statusFilterCount === 0 ? 'No status filter is on' : statusFilterSummary}
-                      </p>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="px-2 text-xs"
-                        disabled={statusFilterCount === 0}
-                        onClick={clearStatusFilters}
+                    {/* The footer exists only while it has something to do (#246):
+                        the surface prints the count and its clear action while a
+                        status filter is on, and says nothing at all while both
+                        filters are at their default — no sentence about an absent
+                        filter, and no action drawn disabled for a reader to wonder
+                        about. */}
+                    {statusFilterCount > 0 && (
+                      <div
+                        data-slot="home-filter-footer"
+                        className="flex items-center justify-between gap-2 border-t border-border/60 pt-2"
                       >
-                        Clear filters
-                      </Button>
-                    </div>
+                        <p className="text-xs text-muted-foreground">{statusFilterSummary}</p>
+                        <Button variant="ghost" size="sm" className="px-2 text-xs" onClick={clearStatusFilters}>
+                          Clear filters
+                        </Button>
+                      </div>
+                    )}
                 </ToolbarPopover>
                 <span id={statusFilterCountId} className="sr-only">{statusFilterSummary}</span>
+                {sortInForce && (
+                  <span id={sortStateId} data-slot="home-sort-state" className="sr-only">{sortDescription}</span>
+                )}
               </div>
               {/* The card/list choice is part of the same ordinary Home URL contract as
                   the filters and the sort (design §9). It is the last control of the
@@ -1156,7 +1218,7 @@ function HomeNodeCard({ network, node, linkState }: NodeRecord & { linkState: Ho
                 <p className="text-sm text-muted-foreground">Active Nodes are in the latest Agent Inventory, not necessarily online. Healthy reflects successful, fresh RPC, sync and consensus observations. Process errors, a stopped or Unknown process state, or Network Identity Mismatch prevent Healthy; disabled process monitoring does not. Healthy does not mean synchronization is complete; Resyncing is shown independently.</p>
                 <p className="text-sm text-muted-foreground">Home Attention counts Active Nodes that are not Healthy, including Unknown. It counts Active Nodes and nothing else: a chain-height difference never enters it, and Observing is not an abnormal state. While nothing is narrowed, these counters and the Peer map read the whole Network selection. Once search, health, or Validator status narrows the list, they read the Active Nodes that matched instead, so a Node's countries count only where that Node is listed — while the two cumulative Validator cells keep the Network selection, and the list still reports how many Nodes matched.</p>
                 <p data-slot="node-head-explanation" className="text-sm text-muted-foreground">Block Height: {headComparisonExplanation(node)}</p>
-                <p className="text-sm text-muted-foreground">CPU and Memory are the monitored PlatON process's own percentages, not the Host's. Disk is the Node data directory's size as a share of the capacity of the filesystem that holds it, not whole-filesystem fullness.{nodeDataBytes ? ' Node data: ' + nodeDataBytes + '.' : ''}</p>
+                <p className="text-sm text-muted-foreground">CPU and Memory are the monitored PlatON process's own percentages, not the Host's. Disk is the Node data directory's size as a share of the capacity of the filesystem that holds it, not whole-filesystem fullness. Speed is the Agent Host's own interface throughput, drawn on every Node card that Host reports for, so it is not a rate attributable to this Node alone.{nodeDataBytes ? ' Node data: ' + nodeDataBytes + '.' : ''}</p>
                 {peerObservation && <p className="text-sm text-muted-foreground">Peer observation: {peerObservation}.</p>}
                 {diagnostic && <p data-slot="node-diagnostic-explanation" className="text-sm text-muted-foreground">Current health diagnostic: {diagnostic.detail}</p>}
                 {identityStatement && <p data-slot="node-validator-identity-explanation" className="text-sm text-muted-foreground">Validator identity: {identityStatement.label} — {identityStatement.detail}</p>}
@@ -1298,6 +1360,48 @@ function headComparisonExplanation(node: PublicNode): string {
   return absolute + boundary + ' ' + OBSERVED_NETWORK_HEAD_NOTE + ' ' + tone
 }
 
+/** The share of the retained target a Resyncing Node has reached, in the forms
+ *  the cue needs. Two decimals keep the chip one width, but a Node at 99.996%
+ *  would then print `100.00%` — a finished sync the Server has not reported — so
+ *  a share that is below the target while rounding to `100.00%` is printed as
+ *  `≈100%` instead, and the dialog keeps both figures. The Server's own
+ *  `resyncState` stays the authority for the state: a share of exactly 100% is
+ *  not "rounded away" but shown as recorded beside the state that disagrees
+ *  with it, and neither number ever ends a Resync the Server still reports. */
+type ResyncProgress = {
+  /** The share with two decimals, the form the chip prints. */
+  rounded: string
+  /** True while the share is short of the target but rounds to `100.00%`. */
+  approximate: boolean
+  /** The share in a reading that stays below the target, or null where no
+   *  reading this component can print does. */
+  share: string | null
+}
+
+const APPROXIMATE_TARGET_LABEL = '≈100%'
+
+/** What the chip prints when the rounded share is short of the target but would
+ *  read as a finished sync: the approximation mark, not the misleading number. */
+function resyncProgress(current: number | null, target: number | null): ResyncProgress | null {
+  if (current === null || target === null || target <= 0) return null
+  const share = current / target * 100
+  const rounded = share.toFixed(2) + '%'
+  return { rounded, approximate: share < 100 && rounded === '100.00%', share: readableShare(share) }
+}
+
+/** The share with enough decimals to still read as short of the target: every
+ *  place two decimals drop is restored, up to a point — a share so close to the
+ *  target that ten decimals still print `100.00…` is stated as below the target
+ *  or, where no reading this helper can offer stays below it, in the dialog's
+ *  own words rather than as a number that claims it was reached. */
+function readableShare(share: number): string | null {
+  for (const digits of [4, 6, 8, 10]) {
+    const text = share.toFixed(digits).replace(/0+$/, '').replace(/\.$/, '')
+    if (Number(text) < 100) return text + '%'
+  }
+  return null
+}
+
 /** Resync targets the retained Historical High-Water Mark, not Network Head.
  * Keep it independent of health, consensus membership and Validator identity.
  * Only the live percentage stays on the identity row; the retained target, the
@@ -1314,14 +1418,11 @@ function ResyncCue({ node }: { node: PublicNode }) {
   // what the percentage reads.
   const current = validHeight(node.currentHead) ? node.currentHead : null
   const target = validHeight(node.historicalHighWatermark) ? node.historicalHighWatermark : null
-  // A percentage needs both operands: a valid current height and a valid,
-  // computable Historical High-Water Mark target. Without them the cue states
-  // the Server's own resync state alone — never an "Unknown" progress area and
-  // never a fabricated zero — while the retained target and the real last
-  // progress time stay in the same cue's explanation.
-  const percent = current !== null && target !== null && target > 0
-    ? (current / target * 100).toFixed(2) + '%'
-    : null
+  const progress = resyncProgress(current, target)
+  // The rounded share is what the chip prints, except where it would read as a
+  // finished sync the Server has not reported: there the chip prints the
+  // approximation and the dialog states both figures.
+  const percent = progress === null ? null : progress.approximate ? APPROXIMATE_TARGET_LABEL : progress.rounded
   const timestamp = node.resyncLastProgressAt
   const date = validProgressDate(timestamp)
   return (
@@ -1331,9 +1432,11 @@ function ResyncCue({ node }: { node: PublicNode }) {
             compact metadata line, matching the neighbouring information entry. */}
         <button type="button" data-slot="node-resync-cue"
           className="relative z-10 -my-3.5 inline-flex min-h-11 items-center rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label={percent === null
+          aria-label={progress === null
             ? `Resync state: ${node.resyncState || 'unknown'}; no progress percentage is asserted`
-            : `Resync progress: ${percent} toward the Historical High-Water Mark`}>
+            : progress.approximate
+              ? 'Resync progress: approximately 100% toward the Historical High-Water Mark, short of the target; the share is stated in the dialog'
+              : `Resync progress: ${percent} toward the Historical High-Water Mark`}>
           <span className="inline-flex items-center gap-1 rounded border border-amber-500/40 px-1.5 py-0.5 text-[11px] font-medium leading-4 text-amber-500 dark:text-amber-400">
             <span>Resyncing</span>{percent !== null && <span className="tabular-nums">{percent}</span>}
           </span>
@@ -1344,6 +1447,20 @@ function ResyncCue({ node }: { node: PublicNode }) {
         <DialogDescription>The last recorded advance toward the Historical High-Water Mark, not the latest report time. The target is the Node’s retained historical height, not the Network Head.</DialogDescription>
         <p className="m-0 text-sm tabular-nums">{formatNumber(current)} / {formatNumber(target)}</p>
         {percent === null && <p data-slot="resync-progress-unavailable" className="m-0 text-sm">No percentage is asserted: a percentage needs a valid current Block Height and a valid, computable Historical High-Water Mark target.</p>}
+        {/* The cue cannot print a share and its own rounding in one chip, so the
+            dialog prints both: the closest reading this card prints of a share that
+            stays below the target, the figure two decimals produce, and the reason
+            the state outranks the number. Where even that closest reading prints
+            100, the dialog says so in words rather than setting a number beside the
+            word Resyncing that claims the target was reached (#246). */}
+        {progress !== null && progress.approximate && (
+          <p data-slot="resync-progress-rounding" className="m-0 text-sm tabular-nums">
+            {progress.share === null
+              ? `Below the Historical High-Water Mark by less than any decimal this card prints, where two decimal places print ${progress.rounded}`
+              : `Below the Historical High-Water Mark: the closest reading this card prints is ${progress.share}, where two decimal places print ${progress.rounded}`}
+            {`, which is why the cue reads ${APPROXIMATE_TARGET_LABEL} rather than a finished percentage. The Resyncing state stays the Server's own: a rounded number neither reaches the target nor ends the Resync.`}
+          </p>
+        )}
         {date ? <p className="m-0 text-sm">Last progress <time dateTime={date.toISOString()}>{formatRelativeTime(date)}</time> · {formatUtcDateTime(date)}</p> : <p className="m-0 text-sm">Last progress: Unknown</p>}
         {date && timestamp && <p className="m-0 min-w-0 overflow-x-auto whitespace-nowrap font-mono text-xs text-muted-foreground" tabIndex={0} aria-label="Full source timestamp with UTC offset">{timestamp}</p>}
       </DialogContent>
@@ -1397,6 +1514,15 @@ const RESOURCE_BAR_STATUS: ProgressStatus = 'success'
  * columns. */
 const DISK_BAR_NAME = 'Disk: Node data directory size as a share of the filesystem capacity holding it, not whole-filesystem fullness'
 
+/** What the Speed line reads (#246): the rate is the Agent Host's own interface
+ *  throughput, collected once per Host and drawn on every Node card that Host
+ *  reports for, so it is a shared Host observation and never this Node's own
+ *  traffic — one Node's card cannot separate its share of it, and the label says
+ *  so rather than letting the word "Speed" imply a per-Node meter. The card keeps
+ *  its height: the same sentence is the label's tooltip, and the identity entry
+ *  repeats it beside the CPU, Memory and Disk definitions. */
+const HOST_NETWORK_SPEED_NAME = "Host network speed: this Agent Host's own interface throughput, shared with every Node the Host reports for — not a rate attributable to this Node alone"
+
 type ResourceMetric = {
   metric: 'process-cpu' | 'process-memory' | 'node-data'
   /** The short name the three-column row can hold; the full source name stays
@@ -1448,7 +1574,7 @@ function ResourceMetrics({ node }: { node: PublicNode }) {
         <ProgressThin key={metric} percentage={progress} status={RESOURCE_BAR_STATUS} label={name} />
       ))}
       <div className="col-span-3" data-slot="host-network-speed" role="group" aria-label="Host network speed">
-        <MetricRow layout="compact" label="Speed" value={<span className="flex items-center gap-2 whitespace-nowrap">
+        <MetricRow layout="compact" label="Speed" labelTitle={HOST_NETWORK_SPEED_NAME} value={<span className="flex items-center gap-2 whitespace-nowrap">
           <span aria-label={`Upload ${formatRate(node.hostNetworkTxBytesPerSec)}`} className="inline-flex items-center gap-0.5 text-green-600"><ChevronUp className="size-3 shrink-0" aria-hidden="true" />{formatRate(node.hostNetworkTxBytesPerSec)}</span>
           <span aria-label={`Download ${formatRate(node.hostNetworkRxBytesPerSec)}`} className="inline-flex items-center gap-0.5 text-blue-600"><ChevronDown className="size-3 shrink-0" aria-hidden="true" />{formatRate(node.hostNetworkRxBytesPerSec)}</span>
         </span>} />

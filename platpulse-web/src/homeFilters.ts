@@ -316,15 +316,28 @@ function compareUnknownLast(left: number | null, right: number | null): number {
  * Attention First compares the same grade in the order a reader investigates in
  * (Unhealthy, Unknown, Healthy) — a Node's health classification decides its
  * place there, and its Activity, its resources and its Resyncing state do not.
- * Equal values fall back to the Node identity, so the order is deterministic:
- * the same set sorts the same way whatever order the projection happened to
- * arrive in, and a refetch cannot make the list jump.
+ * Equal values fall back to the Node's displayed name and then to its identity,
+ * so the order is deterministic: the same set sorts the same way whatever order
+ * the projection happened to arrive in, and a refetch cannot make the list jump.
  */
 export function sortHomeRecords<T extends HomeNodeRecord>(records: readonly T[], sort: HomeSort): T[] {
   return [...records].sort((left, right) => {
     const order = compareHomeNodes(left.node, right.node, sort)
-    return order !== 0 ? order : left.node.nodeId.localeCompare(right.node.nodeId)
+    return order !== 0 ? order : compareNodeTieBreak(left.node, right.node)
   })
+}
+
+/**
+ * The tie-break every sort ends on, applied to the Nodes a key cannot separate.
+ * The displayed name comes first, because that is the name a reader hunts: a
+ * group of Nodes that share a value reads in the order they would be found in a
+ * name list, rather than in deployment identity order. The Node identity
+ * (`nodeId` ascending) stays the last word, so the order is still total and no
+ * two Nodes that share a name can swap places between refetches.
+ */
+function compareNodeTieBreak(left: PublicNode, right: PublicNode): number {
+  const byName = homeNodeLabel(left).localeCompare(homeNodeLabel(right))
+  return byName !== 0 ? byName : left.nodeId.localeCompare(right.nodeId)
 }
 
 function compareHomeNodes(left: PublicNode, right: PublicNode, sort: HomeSort): number {
