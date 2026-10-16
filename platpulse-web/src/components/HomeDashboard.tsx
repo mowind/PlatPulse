@@ -451,11 +451,6 @@ export default function HomeDashboard({
   // Node of the Network selection nothing is narrowed, and every reading stays
   // the one Home has always shown.
   const selectionNarrowed = matching.length !== scoped.length
-  // The list states a match count against the selection's own size only while
-  // a search or a status filter is in force: with neither, the two numbers are
-  // the same number, and the overview counters above already state how many
-  // Active Nodes the selection holds.
-  const listNarrowed = searchActive || statusFilterCount > 0
   const matchedNodes = useMemo(() => matching.map(({ node }) => node), [matching])
   // A narrowed list is counted by the Networks that still hold a matched Node;
   // unfiltered, the counter keeps reading the Network selection itself, so a
@@ -469,8 +464,8 @@ export default function HomeDashboard({
   // A narrowed selection that matches no Node leaves the whole band in an
   // explicit empty state (#233, decision 8): the four counters that follow the
   // list read no figure at all — never a zero, and never a failure tone — while
-  // the list keeps its "Showing 0 of N" line and the map states the reason in
-  // words. Without a projection the counters keep reading 'Unknown', which is a
+  // the list states the reason in words instead of a count. Without a
+  // projection the counters keep reading 'Unknown', which is a
   // different statement from "no Node matches". The two cumulative cells are
   // not part of the empty state: they keep their Network-level totals.
   const emptySelection = hasProjection && selectionNarrowed && matching.length === 0
@@ -964,25 +959,6 @@ export default function HomeDashboard({
               genuinely holds four. No row is equalized with another (#238). */}
           {loading || (error && !hasLastGood) ? null : (
             <>
-              {/* The list is one scope inside the Network scope: it says how many
-                  Active Nodes match, against how many the selection holds, so the
-                  overview counters and the cards can never look contradictory. */}
-              <p
-                data-slot="home-result-count"
-                  role="status"
-                  aria-live="polite"
-                  className="mb-3 text-xs text-muted-foreground"
-                >
-                  {listNarrowed ? (
-                    <>
-                      Showing <span className="tabular-nums">{matching.length.toLocaleString()}</span> of{' '}
-                      <span className="tabular-nums">{scoped.length.toLocaleString()}</span> nodes
-                      {scopeName ? <> in <span className="[overflow-wrap:anywhere]">{scopeName}</span></> : null}.
-                    </>
-                  ) : (
-                    <><span className="tabular-nums">{matching.length.toLocaleString()}</span> nodes</>
-                  )}
-                </p>
               {scoped.length === 0 ? (
                 <Empty description="No Active Nodes in this view.">
                   <span className="text-xs">Retired Nodes are not listed on Home.</span>

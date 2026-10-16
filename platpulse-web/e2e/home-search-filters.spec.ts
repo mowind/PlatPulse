@@ -38,7 +38,6 @@ const SOLO_NODE_ID = '0195f2a1-0060-4060-8060-000000000060'
 const home = (page: Page) => page.getByRole('region', { name: 'Home' })
 const summary = (page: Page) => home(page).locator('[aria-label="Home summary"]')
 const nodeGrid = (page: Page) => page.locator('[data-slot="node-grid"]')
-const resultCount = (page: Page) => page.locator('[data-slot="home-result-count"]')
 const filterNotice = (page: Page) => page.locator('[data-slot="home-filter-notice"]')
 const geoMap = (page: Page) => page.getByRole('region', { name: 'Peer countries' })
 const cumulativeNote = 'Whole Network selection, never the filtered list'
@@ -93,23 +92,6 @@ async function summaryText(page: Page, label: string): Promise<string> {
   return (await card.locator('[data-slot="summary-value"]').innerText()).trim()
 }
 
-/** Parse the list's own count line, in either of the two readings it states: a
- *  list narrowed by a search or a status filter says how many Nodes match against
- *  how many the selection holds, and an unnarrowed one states the single number
- *  it lists — the same number twice, which is why it says it once. */
-async function listCounts(page: Page): Promise<{ matching: number; scoped: number }> {
-  const text = await resultCount(page).innerText()
-  const number = (value: string) => Number(value.replace(/,/g, ''))
-  const narrowed = /Showing ([\d,]+) of ([\d,]+) nodes/.exec(text)
-  if (narrowed) return { matching: number(narrowed[1]), scoped: number(narrowed[2]) }
-  const plain = /^([\d,]+) nodes$/.exec(text.trim())
-  if (plain) {
-    const listed = number(plain[1])
-    return { matching: listed, scoped: listed }
-  }
-  throw new Error(`unexpected Home result count: ${text}`)
-}
-
 /** Wait for the list to hold exactly `count` Node cards, then read their names.
  *  Every read of the list is gated on the settled card count: a filter change
  *  commits through the URL, so React paints the new list one frame later. */
@@ -125,16 +107,16 @@ async function expectSummaryValue(page: Page, label: string, value: number) {
     .toBe(value)
 }
 
-/** Issue #233: Active Nodes counts the Nodes the filters left, the in-scope
- *  total stays the Network selection's own Active Node count, and the grid shows
- *  every matching Node — three readings that can never look contradictory.
- *  Polls until one consistent reading exists, then returns it. */
+/** Issue #233: the Active Nodes counter reads the Nodes the filters left and the
+ *  grid shows every matching Node — two readings that can never look
+ *  contradictory. Home states no list count line of its own, so the summary is
+ *  the one place a figure is read. Polls until one consistent reading exists,
+ *  then returns it. */
 async function expectListAgreesWithSummary(page: Page) {
   const reading = async () => {
-    const counts = await listCounts(page)
+    const matching = await nodeGrid(page).locator('a[href^="/nodes/"]').count()
     const activeNodes = await summaryValue(page, 'Active Nodes')
-    const cards = await nodeGrid(page).locator('a[href^="/nodes/"]').count()
-    return { ...counts, cards, activeNodes, agrees: counts.matching === activeNodes && counts.matching === cards }
+    return { matching, cards: matching, activeNodes, agrees: matching === activeNodes }
   }
   await expect
     .poll(() => reading().then((settled) => settled.agrees), {
@@ -185,8 +167,6 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expect(summary(page).getByText(cumulativeNote).first()).toBeVisible()
     const counts = await expectListAgreesWithSummary(page)
     expect(counts.matching).toBe(1)
-    expect(counts.scoped).toBe(activeNodes)
-    await expect(resultCount(page)).toContainText(`Showing 1 of ${activeNodes} nodes`)
     // The map reads the same selection: its scope basis names the Node
     // selection, not the Network.
     await expect(geoMap(page)).toHaveAttribute('data-scope-basis', 'node-selection')
@@ -217,7 +197,6 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expectConvergenceList(page)
     const counts = await expectListAgreesWithSummary(page)
     expect(counts.matching).toBe(CONVERGENCE_NODE_LETTERS.length)
-    expect(counts.scoped).toBe(activeNodes)
     await expectSummaryValue(page, 'Active Nodes', CONVERGENCE_NODE_LETTERS.length)
 
     // Clearing the search is an ordinary link again: the whole list returns.
@@ -236,7 +215,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await (await healthFilter(page)).selectOption('unknown')
     const filtered = await expectListAgreesWithSummary(page)
     expect(filtered.matching, 'the Unknown Node states the Server cannot attest remain').toBeGreaterThan(0)
-    expect(filtered.scoped).toBe(activeNodes)
+    expect(filtered.matching, 'the health filter narrows the list').toBeLessThan(activeNodes)
     const unknowns = await expectListedNodes(page, filtered.matching)
     expect(unknowns.filter((name) => name.startsWith('Node H '))).toHaveLength(0)
     // The four attributable counters read the filtered selection.
@@ -247,7 +226,6 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await (await searchBox(page)).fill('Node H')
     await expect(nodeGrid(page)).toHaveCount(0)
     await expect(page.getByText('No Active Nodes match these filters.')).toBeVisible()
-    await expect(resultCount(page)).toContainText(`Showing 0 of ${activeNodes} nodes`)
     await expect(page.getByText(/widen the filters/)).toBeVisible()
     // Issue #233: a selection that holds no Node is an empty reading, and the
     // whole band says so. The four counters that follow the list read no figure
@@ -281,18 +259,20 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
 
     await tab(page, CONVERGENCE_NETWORK_NAME).click()
 
-    // The Network selection replaces the scope, the search keeps narrowing the
-    // counters inside it, and the in-scope total is the new scope's own count.
+    // The Network selection replaces the scope and the search keeps narrowing
+    // the counters inside it.
     await expect(tab(page, CONVERGENCE_NETWORK_NAME)).toHaveAttribute('aria-selected', 'true')
-    const scoped = CONVERGENCE_NODE_LETTERS.length
-    expect(scoped).toBeLessThan(activeNodes)
     await expectSummaryValue(page, 'Active Nodes', 1)
     await expectSummaryValue(page, 'Networks', 1)
     const counts = await expectListAgreesWithSummary(page)
-    expect(counts.scoped).toBe(scoped)
     expect(counts.matching).toBe(1)
     expect(await listedNodes(page)).toEqual([expect.stringContaining('Node H')])
-    await expect(resultCount(page)).toContainText(CONVERGENCE_NETWORK_NAME)
+
+    // Clearing the search lists the new scope's own Nodes, so the Network
+    // selection really did replace the whole Registry this test started on.
+    await (await searchBox(page)).fill('')
+    const scopedNames = await expectConvergenceList(page)
+    expect(scopedNames.length, 'the Network selection is narrower than the whole Registry').toBeLessThan(activeNodes)
   })
 
   test('restores the filters, sorting, and Network selection from an ordinary Home URL', async ({ page }) => {
@@ -307,7 +287,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expect(nodeGrid(page).locator('a[href^="/nodes/"]')).toHaveCount(1)
     await expect(nodeGrid(page).locator(`a[href="/nodes/${SOLO_NODE_ID}"]`)).toHaveCount(1)
     await expect(filterNotice(page)).toHaveCount(0)
-    expect((await expectListAgreesWithSummary(page)).scoped).toBe(CONVERGENCE_NODE_LETTERS.length)
+    await expectListAgreesWithSummary(page)
 
     // An ordinary refresh restores the same view, and so does reaching the
     // address directly, without the page rewriting what it was given.
@@ -603,14 +583,12 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     const activeNodes = await summaryValue(page, 'Active Nodes')
 
     // Validator status is the Server's own Linked-Validator answer, so the Nodes
-    // it links leave the list and the counters read what is left, while the
-    // in-scope total stays the Network selection's own count.
+    // it links leave the list and the counters read what is left.
     await (await validatorFilter(page)).selectOption('not_validator')
     await expect(page).toHaveURL(/[?&]validator=not_validator$/)
     const notValidator = await expectListAgreesWithSummary(page)
     const notValidatorNames = await listedNodes(page)
     expect(notValidator.matching, 'the Validator status filter narrows the list').toBeLessThan(activeNodes)
-    expect(notValidator.scoped, 'the Validator status filter does not change the scope').toBe(activeNodes)
     await expectSummaryValue(page, 'Active Nodes', notValidator.matching)
     await expect(filterNotice(page)).toHaveCount(0)
 
@@ -620,7 +598,6 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     const unknown = await expectListAgreesWithSummary(page)
     const unknownNames = await listedNodes(page)
     expect(unknown.matching, 'an Unlinked Validator status is listed as Unknown').toBeGreaterThan(0)
-    expect(unknown.scoped).toBe(activeNodes)
     expect(unknownNames.filter((name) => notValidatorNames.includes(name))).toEqual([])
 
     // The three statuses partition the Active Node set: nothing is left outside
@@ -643,7 +620,6 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expect(await validatorFilter(page)).toHaveValue('validator')
     const dark = await expectListAgreesWithSummary(page)
     expect(dark.matching, 'Dark does not change the filtered list').toBe(validators.matching)
-    expect(dark.scoped).toBe(activeNodes)
     await expectVisibleInteractiveTargets(page)
     await expectNoHorizontalOverflow(page)
     await (await validatorFilter(page)).focus()

@@ -241,11 +241,9 @@ test.describe('Public Home Disk, Uptime and Attention First sorts (issue #242)',
     // resetting them, and the narrowed list keeps the same ranking inside itself.
     await page.goto('/?q=Directory&health=healthy&sort=disk')
     await expectCards(page, DISK.slice(0, 2))
-    await expect(page.locator('[data-slot="home-result-count"]')).toContainText('Showing 2 of 4')
     await expect(await sortSelect(page)).toHaveValue('disk')
     await page.goto('/?validator=unknown&sort=uptime')
     await expectCards(page, UPTIME)
-    await expect(page.locator('[data-slot="home-result-count"]')).toContainText('Showing 4 of 4')
     await expect(await sortSelect(page)).toHaveValue('uptime')
 
     // The one Sort control offers the nine keys in their documented order, and the

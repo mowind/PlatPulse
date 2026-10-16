@@ -1231,7 +1231,6 @@ describe('Public Home filter URLs', () => {
   // read and type into it directly rather than opening the entry that used to
   // hold the only field there was.
   const searchbox = () => inlineField()
-  const resultCount = () => document.querySelector('[data-slot="home-result-count"]') as HTMLElement
   const filterNotice = () => document.querySelector('[data-slot="home-filter-notice"]')
 
   it('restores the Network, search, and sorting an ordinary Home URL carries', () => {
@@ -1248,18 +1247,14 @@ describe('Public Home filter URLs', () => {
 
   it('narrows the list by search and reads the four counters over that selection', () => {
     renderHome([network, secondNetwork])
-    // With neither a search nor a status filter in force the list states one
-    // number — how many Nodes it lists — because the overview counters above
-    // already state that same figure; a match count against the selection's own
-    // size is a reading only a narrowed list has.
-    expect(resultCount().textContent).toBe('3 nodes')
+    // The overview counters are the one place Home states how many Nodes it
+    // holds: the list itself carries no count line.
     expect(summaryValueOf('Active Nodes').textContent).toBe('3')
     expect(document.querySelector('[data-scope-basis]')?.getAttribute('data-scope-basis')).toBe('network')
 
     fireEvent.change(searchbox(), { target: { value: 'Alpha' } })
 
     expect(nodeHrefs()).toEqual(['/nodes/node-a'])
-    expect(resultCount().textContent).toBe('Showing 1 of 3 nodes.')
     // Issue #233: the four attributable counters and the map read the list
     // selection the filters left, while the two cumulative cells keep the
     // Network selection and say so on the card.
@@ -1306,7 +1301,6 @@ describe('Public Home filter URLs', () => {
     expect(nodeHrefs()).toEqual([])
     expect(screen.getByText('No Active Nodes match these filters.')).toBeTruthy()
     expect(document.body.textContent).toContain('widen the filters')
-    expect(resultCount().textContent).toBe('Showing 0 of 2 nodes.')
     // Issue #233: a selection that holds no Node is an empty reading, not a
     // zero — the four counters that follow the list state no figure at all
     // instead of inventing a country count for the Nodes they did not find.
@@ -1349,7 +1343,8 @@ describe('Public Home filter URLs', () => {
     const view = renderHome([], { loading: true })
 
     expect(filterNotice()).toBeNull()
-    expect(document.querySelector('[data-slot="home-result-count"]')).toBeNull()
+    // Nothing is listed until the projection can judge the Network selection.
+    expect(nodeHrefs()).toEqual([])
 
     view.rerender(
       <BrowserRouter>
