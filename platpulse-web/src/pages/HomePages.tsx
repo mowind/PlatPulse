@@ -526,7 +526,7 @@ function NodeMetricCard({ label, value, readings, detail, kind = 'line', series,
   retained?: boolean
   className?: string
 }) {
-  const seconds = Number.isFinite(history?.windowSeconds) && (history?.windowSeconds ?? 0) > 0 ? Math.round(history?.windowSeconds as number) : 60
+  const seconds = metricWindowSeconds(history)
   const fromMs = history ? Date.parse(history.from) : Number.NaN
   const toMs = history ? Date.parse(history.to) : Number.NaN
   const validWindow = Number.isFinite(fromMs) && Number.isFinite(toMs) && toMs > fromMs
@@ -639,11 +639,17 @@ function DirectionChevron({ direction, color }: { direction: 'up' | 'down'; colo
 
 
 
+/** The window length the heading, every card and every chart's accessible name
+ *  share, so a retained window is never described with two different lengths. */
+function metricWindowSeconds(history: PublicNodeMetricHistory | undefined): number {
+  const seconds = history?.windowSeconds
+  return seconds !== undefined && Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds) : 60
+}
+
 /** "Latest 60 seconds" only while the window really is the latest one; a window
  *  held after a failed refresh is titled as retained, never as current. */
 function describeMetricWindow(history: PublicNodeMetricHistory | undefined, retained = false): string {
-  if (!history) return 'Latest 60 seconds'
-  const seconds = Number.isFinite(history.windowSeconds) && history.windowSeconds > 0 ? history.windowSeconds : 60
+  const seconds = metricWindowSeconds(history)
   return retained ? 'Retained ' + seconds + '-second window' : 'Latest ' + seconds + ' seconds'
 }
 

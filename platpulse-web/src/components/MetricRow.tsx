@@ -41,6 +41,9 @@ export type MetricRowProps = {
  */
 export function MetricRow({ label, shortLabel, labelTitle, labelAddon, value, detail, progress, progressStatus, className, layout = 'inline' }: MetricRowProps) {
   const compact = layout === 'compact'
+  // A label carrying a control (whose surface is block content) is a div; a
+  // plain label stays the phrasing span every other row uses.
+  const Label = labelAddon == null ? 'span' : 'div'
   return (
     <div
       data-slot="metric-row"
@@ -48,7 +51,7 @@ export function MetricRow({ label, shortLabel, labelTitle, labelAddon, value, de
       data-layout={layout}
       className={cn('grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 gap-y-1 text-xs', className)}
     >
-      <span
+      <Label
         data-slot="metric-row-label"
         title={labelTitle}
         className={cn(
@@ -65,7 +68,7 @@ export function MetricRow({ label, shortLabel, labelTitle, labelAddon, value, de
           label
         )}
         {labelAddon}
-      </span>
+      </Label>
       <strong
         data-slot="metric-row-value"
         className={cn(

@@ -66,15 +66,15 @@ const IDENTIFIER_CONTROL_CLASS = 'text-muted-foreground'
  */
 const DETAIL_METRICS_GRID = 'grid grid-cols-2 items-stretch gap-x-4 gap-y-2 lg:grid-cols-3 [&>[data-slot=metric-row]]:grid-cols-1 [&>[data-slot=metric-row]]:gap-y-0.5 [&>[data-slot=metric-row]]:content-start [&_[data-slot=metric-row-label]]:min-w-0 [&_[data-slot=metric-row-label]]:whitespace-normal [&_[data-slot=metric-row-label]]:text-[11px] [&_[data-slot=metric-row-label]]:leading-4 [&_[data-slot=metric-row-label]]:[overflow-wrap:anywhere] [&_[data-slot=metric-row-value]]:text-left [&_[data-slot=metric-row-value]]:justify-start [&_[data-slot=metric-row-value]]:before:hidden [&_[data-slot=metric-row-detail]]:col-span-1 [&_[data-slot=metric-row-detail]]:whitespace-normal [&_[data-slot=metric-row-detail]]:overflow-visible [&_[data-slot=metric-row-detail]]:[overflow-wrap:anywhere]'
 
-/** Keep normal values paired on phones; unusually long exact values get the
- * whole row before they can squeeze or overflow a column. The last-resort wrap
- * remains available even at increased text size, with every digit preserved. */
 /** The two weights of the six metrics. The lifetime totals and the rank lead at
  *  17px semibold; the three rates follow at 13px medium, so the grid reads as
  *  three headline figures over three supporting ones without new cards. */
 const PRIMARY_METRIC = '[&_[data-slot=metric-row-value]]:text-[17px] [&_[data-slot=metric-row-value]]:leading-6 [&_[data-slot=metric-row-value]]:font-semibold'
 const SECONDARY_METRIC = '[&_[data-slot=metric-row-value]]:text-[13px] [&_[data-slot=metric-row-value]]:leading-5 [&_[data-slot=metric-row-value]]:font-medium'
 
+/** Keep normal values paired on phones; unusually long exact values get the
+ * whole row before they can squeeze or overflow a column. The last-resort wrap
+ * remains available even at increased text size, with every digit preserved. */
 function detailMetricSpan(value: string): string | undefined {
   if (value.length > 24) return 'col-span-full'
   if (value.length > 15) return 'col-span-full sm:col-span-1'

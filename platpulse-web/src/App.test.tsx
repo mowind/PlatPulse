@@ -1408,7 +1408,12 @@ describe('App shell with private Home', () => {
     // Keyboard: the button is focusable, opens with Enter/Space (a click), closes with Escape.
     hint.focus()
     fireEvent.click(hint)
-    expect(screen.getByRole('dialog', { name: 'About Sync collection' }).textContent).toContain('not a chain-sync verdict')
+    const dialog = screen.getByRole('dialog', { name: 'About Sync collection' })
+    expect(dialog.textContent).toContain('not a chain-sync verdict')
+    // Opening moves focus onto the definition the button controls, so it is announced.
+    const definition = dialog.querySelector('[data-slot="info-hint-content"]')!
+    expect(hint.getAttribute('aria-controls')).toBe(definition.id)
+    await waitFor(() => expect(document.activeElement).toBe(definition))
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('dialog', { name: 'About Sync collection' })).toBeNull()
     expect(document.activeElement).toBe(hint)
@@ -1417,6 +1422,43 @@ describe('App shell with private Home', () => {
     expect(screen.getByRole('dialog', { name: 'About Sync collection' })).toBeTruthy()
     fireEvent.pointerDown(document.body)
     expect(screen.queryByRole('dialog', { name: 'About Sync collection' })).toBeNull()
+    // Focus moving on closes it, so no stale surface lingers behind the reader.
+    fireEvent.click(hint)
+    expect(screen.getByRole('dialog', { name: 'About Sync collection' })).toBeTruthy()
+    fireEvent.blur(hint, { relatedTarget: document.body })
+    expect(screen.queryByRole('dialog', { name: 'About Sync collection' })).toBeNull()
+  })
+
+  it('keeps an Unknown Sync collection reason visible while the definition stays on demand', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1': () => jsonResponse({
+        nodeId: 'node-1', displayName: 'Validator A', networkKey: 'mainnet',
+        health: 'healthy', healthReason: 'rpc reachable', freshness: '2026-08-20T00:00:00Z',
+        rpcState: 'ok', syncState: 'unknown', consensusState: 'current', processState: 'error',
+        currentHead: 123, historicalHighWatermark: 120, networkReferenceHead: 123,
+        networkReferenceConfidence: 'low', resyncState: 'idle', resyncProgress: null,
+        peers: { peerCount: 5, freshness: 'fresh', state: 'fresh' },
+      }, 200),
+      '/api/public/v1/nodes/node-1/history?limit=2': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1/metrics': () => jsonResponse({ error: { code: 'unavailable', message: 'failed' } }, 503),
+    })
+    vi.stubGlobal('EventSource', FakeEventSource)
+    window.history.replaceState({}, '', '/nodes/node-1')
+    render(<App />)
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    const summary = await screen.findByRole('group', { name: 'Node key summary' })
+    const tile = within(summary).getByText('Sync collection', { exact: true }).closest('[data-slot="node-summary-tile"]')! as HTMLElement
+    expect(within(tile).getByText('Unknown', { exact: true })).toBeTruthy()
+    // The actual condition stays on the card as visible text, not only in the hint.
+    expect(within(tile).getByText('Observed Network Head confidence low')).toBeTruthy()
+    expect(within(tile).getByRole('button', { name: 'About Sync collection' })).toBeTruthy()
+    const process = screen.getByRole('region', { name: 'PlatON process' })
+    expect(within(process).getByText('Error', { exact: true })).toBeTruthy()
   })
 
   it('shows Checking access… before authorization resolves and never renders a session flash', async () => {
