@@ -120,6 +120,13 @@ describe('metricChartOption', () => {
     expect(lone.series[0].areaStyle).toBeUndefined()
     const plain = build({ series: [{ label: 'Download', color: METRIC_SERIES_COLORS.download, segments: [gap[1]] }] })
     expect(plain.series[0].areaStyle).toBeUndefined()
+    // Memory holds one value far longer than the CPU does, so its own card asks
+    // for the fainter pair of stops: a flat window reads as a tint, not a slab.
+    const memory = build({ series: [{ label: 'Process memory', color: METRIC_SERIES_COLORS.memory, area: true, areaOpacity: [0.08, 0.01], segments: [gap[1]] }] })
+    expect((memory.series[0].areaStyle as { color: { colorStops: unknown[] } }).color.colorStops).toEqual([
+      { offset: 0, color: 'rgba(255, 107, 107, 0.08)' },
+      { offset: 1, color: 'rgba(255, 107, 107, 0.01)' },
+    ])
   })
 
   it('leaves the legend off the canvas because the card owns it', () => {
@@ -129,15 +136,28 @@ describe('metricChartOption', () => {
   it('uses a real time axis bounded by the Server window', () => {
     const option = build()
     expect(option.xAxis).toMatchObject({ type: 'time', min: FROM, max: at(60) })
-    // The relative "60s … 0s" labels are DOM text under the plot; a time axis
-    // aligned to the clock cannot promise the window's own edges.
-    expect(option.xAxis.axisLabel).toEqual({ show: false })
+    // The window is named on the axis itself, in clock time, instead of by a
+    // relative "60s … 0s" caption under the plot: the ticks are the real instants
+    // the Server's window contains, and the window is still the axis' own extent.
+    const axisLabel = option.xAxis.axisLabel as {
+      show: boolean
+      fontSize: number
+      hideOverlap: boolean
+      color: string
+      formatter: (value: number) => string
+    }
+    expect(axisLabel).toMatchObject({ show: true, fontSize: 11, hideOverlap: true })
+    expect(axisLabel.formatter(at(30))).toBe(clockOf(at(30)))
+    expect(axisLabel.color).toBe(METRIC_CHART_THEME.light.textSecondary)
     // A bar chart must not let ECharts pad the Server's window: the half-band
     // 'containShape' expansion belongs to the bar layout, not to this axis.
     expect(option.xAxis.containShape).toBeUndefined()
     expect(build({ kind: 'bar' }).xAxis.containShape).toBe(false)
     expect(option.yAxis.axisPointer).toEqual({ label: { show: false }, lineStyle: { opacity: 0 } })
-    expect(option.grid.left).toBe(METRIC_CHART_GUTTER)
+    // The plot box is the Server's window and every card shares it: one gutter on
+    // the left, and on the right the room the label centred on the last instant
+    // needs — pinned here rather than left to ECharts to shrink as it measures.
+    expect(option.grid).toEqual({ top: 12, right: 24, bottom: 26, left: METRIC_CHART_GUTTER, containLabel: false })
     expect(option.tooltip.trigger).toBe('axis')
     expect(option.tooltip.confine).toBe(true)
     expect(option.tooltip.axisPointer).toMatchObject({ type: 'cross' })
@@ -183,8 +203,17 @@ describe('metricChartOption', () => {
   })
 
   it('keeps a whole-number axis whole so no tick repeats a label', () => {
-    expect(build({ integer: true }).yAxis.minInterval).toBe(1)
-    expect(build().yAxis.minInterval).toBeUndefined()
+    // The step is stated, not left to the renderer: five bands over a ceiling of
+    // 20 would be drawn every four counts, and a ceiling of four would round two
+    // of its five bands onto the same label.
+    expect(build({ integer: true }).yAxis).toMatchObject({ max: 20, splitNumber: 4, interval: 5 })
+    expect(build({ integer: true, max: 4 }).yAxis).toMatchObject({ splitNumber: 4, interval: 1 })
+    expect(build({ integer: true, max: 10 }).yAxis).toMatchObject({ splitNumber: 5, interval: 2 })
+    // A ceiling no whole step divides still states one, so its labels cannot repeat.
+    expect(build({ integer: true, max: 7 }).yAxis).toMatchObject({ splitNumber: 3, interval: 2 })
+    // Percent and millisecond axes keep the renderer's own choice of five bands.
+    expect(build().yAxis.splitNumber).toBe(5)
+    expect(build().yAxis.interval).toBeUndefined()
     expect(build({ max: 4, integer: true }).yAxis.max).toBe(4)
   })
 
@@ -198,8 +227,21 @@ describe('metricChartOption', () => {
     expect(option.series).toHaveLength(1)
     expect(option.series[0].type).toBe('bar')
     expect(option.series[0].data).toEqual([[at(0), 10], [at(10), 10], [at(20), 10], [at(40), 10], [at(50), 10]])
-    expect(option.series[0].barMaxWidth).toBe(14)
-    expect(option.series[0].itemStyle).toEqual({ color: METRIC_SERIES_COLORS.transactions, borderRadius: 2 })
+    expect(option.series[0].barMaxWidth).toBe(12)
+    // A bar is one observation, so its colour keeps the theme's literal hex and
+    // only loses weight: at full saturation a run of bars reads as a filled area.
+    expect(option.series[0].itemStyle).toEqual({ color: METRIC_SERIES_COLORS.transactions, borderRadius: [3, 3, 0, 0], opacity: 0.75 })
+  })
+
+  it("keeps upstream's palette: one coral for the two curves, blue and violet for the network pair", () => {
+    // Memory is coral because upstream paints its RAM curve coral too; the two
+    // curves are told apart by the area gradient, never by a hue of their own.
+    expect(METRIC_SERIES_COLORS.cpu).toBe('#FF6B6B')
+    expect(METRIC_SERIES_COLORS.memory).toBe('#FF6B6B')
+    expect(METRIC_SERIES_COLORS.download).toBe('#60A5FA')
+    expect(METRIC_SERIES_COLORS.upload).toBe('#A78BFA')
+    expect(METRIC_SERIES_COLORS.blockInterval).toBe('#FFB347')
+    expect(METRIC_SERIES_COLORS.transactions).toBe('#A78BFA')
   })
 
   it('reads its ink from the theme the page is in', () => {

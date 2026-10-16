@@ -801,7 +801,10 @@ describe('App shell with private Home', () => {
     expect(screen.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeTruthy()
     expect(screen.getAllByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveLength(4)
     expect(screen.getAllByRole('img', { name: /bar chart over the last 60 seconds/ })).toHaveLength(2)
-    expect(screen.getAllByText('60s')).toHaveLength(6)
+    // The window is named on each axis now, so the relative "60s … 0s" caption
+    // under the plots is gone rather than duplicated beside it.
+    expect(screen.queryByText('60s')).toBeNull()
+    expect(screen.queryByText('0s')).toBeNull()
     // The accepted resource panels are now the only progress bars on the page,
     // and each one names the value it tracks. The removed bounded-history
     // widget's bar must stay gone.

@@ -17,15 +17,18 @@ registerEChartsModules([LineChart, BarChart, GridComponent, TooltipComponent, SV
 
 const WIDTH = 280
 const HEIGHT = 160
-const GUTTER = 56
+// The gutter the six cards reserve for their axis labels, the same on every card;
+// the longer labels a byte rate needs are why it is 60 and not 56.
+const GUTTER = 60
 const FROM = Date.parse('2026-01-01T00:00:00Z')
 const WINDOW_SECONDS = 60
 // The plot box, taken from the grid the option module asks for rather than from
 // ECharts' own mapping: an expectation that comes back out of the engine cannot
-// prove the engine kept the Server's window.
-const RIGHT_MARGIN = 6
-const GRID_TOP = 10
-const GRID_BOTTOM = 6
+// prove the engine kept the Server's window. The right margin is the room the
+// clock label centred on the window's last instant needs.
+const RIGHT_MARGIN = 24
+const GRID_TOP = 12
+const GRID_BOTTOM = 26
 const INNER_WIDTH = WIDTH - GUTTER - RIGHT_MARGIN
 const PLOT_HEIGHT = HEIGHT - GRID_TOP - GRID_BOTTOM
 function at(seconds: number): number {
@@ -90,9 +93,13 @@ function filledPaths(color: string): RegExp {
   return new RegExp('<path d="([^"]+)"[^>]*fill="' + escaped(color) + '"', 'g')
 }
 
-/** Every y-axis tick label the renderer painted. */
+/** Every y-axis tick label the renderer painted. The clock labels share the same
+ *  canvas now, so a label counts only when the axis placed it inside the gutter:
+ *  the y axis is the only text that hangs to the left of the plot box. */
 function axisLabels(svg: string): string[] {
-  return Array.from(svg.matchAll(/>([^<>]+)<\/text>/g)).map((match) => match[1])
+  return Array.from(svg.matchAll(/<text([^>]*)>([^<>]+)<\/text>/g))
+    .filter((match) => Number(/translate\((-?[\d.]+)/.exec(match[1])?.[1] ?? Number.NaN) < GUTTER)
+    .map((match) => match[2])
 }
 
 /** The symbol paths: one per drawn marker, tagged with their data index. */
@@ -292,7 +299,7 @@ describe('Node Detail metric chart geometry', () => {
     for (const line of gridlines) {
       // Dashed, low-contrast, and aligned to the gutter every card shares.
       expectNear(Math.min(...line.map((vertex) => vertex[0])), GUTTER)
-      expectNear(Math.max(...line.map((vertex) => vertex[0])), WIDTH - 6)
+      expectNear(Math.max(...line.map((vertex) => vertex[0])), WIDTH - RIGHT_MARGIN)
     }
     expect(light.svg).toContain('stroke-dasharray="4,2"')
     expect(light.svg).toContain('fill-opacity="0.55"')

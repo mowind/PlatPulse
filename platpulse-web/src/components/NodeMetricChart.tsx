@@ -19,9 +19,10 @@ import { METRIC_CHART_GUTTER, metricChartOption, type MetricChartSeriesInput } f
  * responsive size, both themes, and an accessible name and description that say
  * out loud what the curve cannot show.
  *
- * The plot is one of the pinned heights the accepted visual contract fixes:
- * 116px on phones, 148px from md, 176px from lg. The ECharts grid then spends
- * 10px above and 6px below, so the painted band is 160px on desktop.
+ * The plot is one of the pinned heights the accepted visual contract fixes: 132px
+ * on phones, 168px from md, 192px from lg — the last matching Emerald's own h-48
+ * plot box. The ECharts grid then spends 12px above and 26px below, so the painted
+ * band is 154px on desktop and the axis itself can print its clock labels.
  */
 export type NodeMetricChartProps = {
   /** Card title, used to name the chart for assistive technology. */
@@ -47,7 +48,7 @@ export type NodeMetricChartProps = {
   className?: string
 }
 
-const CHART_HEIGHT = 'h-[116px] md:h-[148px] lg:h-[176px]'
+const CHART_HEIGHT = 'h-[132px] md:h-[168px] lg:h-[192px]'
 
 export default function NodeMetricChart({
   label,
@@ -83,7 +84,7 @@ export default function NodeMetricChart({
   // Bar width follows the samples the window actually has, so sixty one-second
   // observations cannot overlap and four observations do not read as hairlines.
   const barWidth = kind === 'bar' && width > 0
-    ? Math.max(3, Math.min(14, ((width - METRIC_CHART_GUTTER - 6) / Math.max(1, points)) * 0.6))
+    ? Math.max(2, Math.min(12, ((width - METRIC_CHART_GUTTER - 10) / Math.max(1, points)) * 0.55))
     : undefined
 
   const option = useMemo(
@@ -150,14 +151,10 @@ export default function NodeMetricChart({
           : <p data-slot="node-metric-chart-empty" className="m-0 flex h-full items-center justify-center text-[13px] text-muted-foreground">{emptyMessage}</p>}
         {failed && <p data-slot="node-metric-chart-error" className="absolute inset-0 m-0 flex items-center justify-center text-[13px] text-muted-foreground">{label + ' chart unavailable'}</p>}
       </div>
-      {/* The window edges stay DOM text: a real time axis aligns its own ticks to
-          the clock, which cannot promise "60s ... 0s" for an arbitrary window. */}
-      {/* The edges line up with the plot box, not with the card: the grid
-          reserves the 56px gutter and a 6px right margin. */}
-      <div className="flex justify-between pt-1 pl-14 pr-1.5 text-[11px] tabular-nums text-muted-foreground" aria-hidden="true">
-        <span>{seconds}s</span>
-        <span>0s</span>
-      </div>
+      {/* The window edges moved into the axis, where they are real instants on the
+          Server's window instead of a relative caption that has to be kept in step
+          with it. The legend keeps its slot on every card so the six plots end on
+          the same baseline, whether or not the card has directions to name. */}
       <div data-slot="node-metric-legend" className="min-h-6 pt-1">{legend}</div>
       <p id={descriptionId} className="sr-only">{description}</p>
     </div>

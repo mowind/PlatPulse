@@ -278,14 +278,62 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           await expect(metrics.getByRole('img', { name: /bar chart over the last 60 seconds/ })).toHaveCount(2)
           expect(await metrics.locator('[data-slot="node-metric-card"] h3').allTextContents()).toEqual([...CHART_HEADINGS])
           // The plot is the ECharts container the card mounts, not a hand-drawn
-          // SVG, so the accepted heights are asserted on that container: 176px
-          // from lg, 148px from md, 116px on the phones.
+          // SVG, so the accepted heights are asserted on that container: the
+          // upstream 192px from lg, 168px from md, 132px on the phones.
           const viewportWidth = page.viewportSize()?.width ?? 0
-          const expectedPlotHeight = viewportWidth >= 1024 ? 176 : viewportWidth >= 768 ? 148 : 116
+          const expectedPlotHeight = viewportWidth >= 1024 ? 192 : viewportWidth >= 768 ? 168 : 132
           const plots = metrics.locator('[data-slot="node-metric-chart"]')
           await expect(plots).toHaveCount(6)
           expect(await plots.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-kind')))).toEqual(['line', 'line', 'line', 'line', 'bar', 'bar'])
           for (const plot of await plots.all()) await expect(plot).toHaveCSS('height', expectedPlotHeight + 'px')
+
+          // One header recipe for the six cards: the title carries the weight at
+          // 16px and the current value stays at its right in a 12px reading, so no
+          // value shouts louder than the chart's own name. The gutter the axis
+          // labels sit in is shared too, which is what keeps the six plots start
+          // and end on the same two columns.
+          const headerRecipe = await metrics.locator('[data-slot="node-metric-card"]').evaluateAll((cards) => cards.map((card) => {
+            const title = card.querySelector('h3')
+            const value = card.querySelector('[data-slot="node-metric-header"] [data-slot="node-metric-value"]')
+            const secondary = card.querySelector('[data-slot="node-metric-value-secondary"]')
+            return {
+              titleSize: title ? getComputedStyle(title).fontSize : 'missing',
+              titleWeight: title ? getComputedStyle(title).fontWeight : 'missing',
+              valueSize: value ? getComputedStyle(value).fontSize : 'missing',
+              secondarySize: secondary ? getComputedStyle(secondary).fontSize : 'none',
+              valueTop: value ? Math.round(value.getBoundingClientRect().top) : 0,
+              headerTop: Math.round((card.querySelector('[data-slot="node-metric-header"]')?.getBoundingClientRect().top) ?? 0),
+            }
+          }))
+          expect(headerRecipe, JSON.stringify(headerRecipe)).toHaveLength(6)
+          for (const recipe of headerRecipe) {
+            expect(recipe.titleSize, JSON.stringify(headerRecipe)).toBe('16px')
+            expect(Number(recipe.titleWeight), JSON.stringify(headerRecipe)).toBeGreaterThanOrEqual(600)
+            expect(recipe.valueSize, JSON.stringify(headerRecipe)).toBe('12px')
+            // The value reads from the header's own top edge, never from a footer.
+            expect(recipe.valueTop - recipe.headerTop, JSON.stringify(headerRecipe)).toBeLessThan(24)
+          }
+          // The network card's second direction is a current reading as well, so it
+          // is set at 12px rather than shrunk to a caption: one card carries it.
+          const secondaryReading = headerRecipe.filter((recipe) => recipe.secondarySize !== 'none')
+          expect(secondaryReading, JSON.stringify(headerRecipe)).toHaveLength(1)
+          expect(secondaryReading[0]?.secondarySize, JSON.stringify(headerRecipe)).toBe('12px')
+          const plotColumns = await plots.evaluateAll((nodes) => nodes.map((node) => {
+            const box = node.getBoundingClientRect()
+            return { left: Math.round(box.left), right: Math.round(box.right) }
+          }))
+          expect(new Set(plotColumns.map((column) => column.left)).size, JSON.stringify(plotColumns)).toBeLessThanOrEqual(3)
+          expect(new Set(plotColumns.map((column) => column.right)).size, JSON.stringify(plotColumns)).toBeLessThanOrEqual(3)
+          // The window is named in clock time on the axis itself; the relative
+          // "60s … 0s" caption that used to sit under each plot is gone, not
+          // duplicated beside it. A scenario with no samples mounts no chart at
+          // all — that is the empty state's own contract, asserted below — so the
+          // axis text is read from the plots that do exist, and a mounted chart
+          // that forgot its clock labels still fails here.
+          const axisTexts = await metrics.locator('[data-slot="node-metric-chart"] svg').evaluateAll((svgs) => svgs.map((svg) => svg.textContent ?? ''))
+          for (const axisText of axisTexts) expect(axisText, JSON.stringify(axisTexts)).toMatch(/\d{2}:\d{2}:\d{2}/)
+          await expect(metrics.getByText('60s', { exact: true })).toHaveCount(0)
+          await expect(metrics.getByText('0s', { exact: true })).toHaveCount(0)
 
           if (scenario === 'normal') {
             await expect(metrics.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(0)
@@ -305,6 +353,51 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             })))
             expect(drawn.filter((plot) => plot.points === 0 || (plot.svg === 1 && plot.shapes > 0))).toHaveLength(6)
             expect(drawn.some((plot) => plot.points > 0)).toBe(true)
+            // The paint recipe is read here, before any pointer reaches a plot:
+            // hovering a series lightens it (ECharts lifts the colour under the
+            // emphasis state), so the resting paint is the honest reading.
+            const cardFor = (name: string) => metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name }) })
+            // Process memory is upstream's RAM curve: the same coral the CPU uses,
+            // told apart by the fainter area gradient (0.08 -> 0.01) rather than by
+            // a hue of its own, so a steady window reads as a tint and not a slab.
+            const gradientStops = (name: string) => cardFor(name)
+              .locator('[data-slot="node-metric-chart"] svg linearGradient stop')
+              .evaluateAll((stops) => stops.map((stop) => ({
+                color: stop.getAttribute('stop-color') ?? '',
+                opacity: stop.getAttribute('stop-opacity') ?? '',
+              })))
+            const cpuStops = await gradientStops('Process CPU')
+            const memoryStops = await gradientStops('Process memory')
+            expect(cpuStops.map((stop) => stop.opacity), JSON.stringify(cpuStops)).toEqual(['0.25', '0.02'])
+            expect(memoryStops.map((stop) => stop.opacity), JSON.stringify(memoryStops)).toEqual(['0.08', '0.01'])
+            // Both curves are painted in one colour, and that colour is the coral:
+            // its red channel dominates while green and blue stay equal, which the
+            // teal the memory curve used to take (green above blue) never does. The
+            // channel values are read rather than spelled out because the renderer
+            // parses the declared colour before it writes the stop.
+            expect(memoryStops.map((stop) => stop.color), JSON.stringify(memoryStops)).toEqual(cpuStops.map((stop) => stop.color))
+            for (const stop of [...cpuStops, ...memoryStops]) {
+              const channels = (stop.color.match(/[\d.]+/g) ?? []).map(Number)
+              expect(channels, JSON.stringify(stop)).toHaveLength(3)
+              expect(channels[1], JSON.stringify(stop)).toBe(channels[2])
+              expect(channels[0] - channels[1], JSON.stringify(stop)).toBeGreaterThan(60)
+            }
+            // The orange bars keep their colour and give up their weight, so a fast
+            // cadence reads as a rhythm rather than as a slab of orange.
+            const barFills = await cardFor('Block interval')
+              .locator('[data-slot="node-metric-chart"] svg path[fill="#FFB347"]')
+              .evaluateAll((bars) => bars.map((bar) => bar.getAttribute('fill-opacity')))
+            expect(barFills.length, 'Block interval bars').toBeGreaterThan(0)
+            expect(new Set(barFills), JSON.stringify(barFills)).toEqual(new Set(['0.75']))
+            // One unit per rate axis: the ceiling the real peak produced names the
+            // unit every label is written in, so MiB/s never sits beside KiB/s.
+            const rateLabels = await cardFor('Host network')
+              .locator('[data-slot="node-metric-chart"] svg text[text-anchor="end"]')
+              .evaluateAll((labels) => labels.map((label) => (label.textContent ?? '').trim()))
+            const rateUnits = new Set(rateLabels.map((label) => label.replace(/^[\d.,]+ ?/, '')))
+            expect(rateLabels.length, 'rate axis labels').toBeGreaterThan(0)
+            expect(rateUnits.size, JSON.stringify(rateLabels)).toBe(1)
+            expect([...rateUnits][0], JSON.stringify(rateLabels)).toMatch(/^[KMGT]?i?B\/s$/)
             // The crosshair tooltip is the one place the exact retained sample is
             // stated, with its own instant rather than a rounded reading.
             const cpuPlot = metrics.getByRole("article").filter({ has: page.getByRole("heading", { level: 3, name: "Process CPU" }) }).locator('[data-slot="node-metric-chart"]')

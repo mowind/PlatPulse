@@ -8,11 +8,13 @@ import {
   formatMillisecondsSample,
   formatPercentAxis,
   formatPercentSample,
-  formatRateAxis,
+  formatRateAxisAt,
   formatRateSample,
   integerChartMax,
+  integerChartTicks,
   niceChartMax,
   percentChartMax,
+  rateChartMax,
 } from './metricChartAxis'
 
 // The ceiling is a display range, never a rescaling of the samples: these rules
@@ -111,14 +113,6 @@ describe('axis label formats', () => {
     expect(formatMillisecondsAxis(15000)).toBe('15s')
   })
 
-  it('keeps a byte rate inside the shared 56px gutter', () => {
-    expect(formatRateAxis(0)).toBe('0 B/s')
-    expect(formatRateAxis(-5)).toBe('0 B/s')
-    expect(formatRateAxis(512)).toBe('512 B/s')
-    expect(formatRateAxis(1536)).toBe('1.5 KiB/s')
-    expect(formatRateAxis(1024 * 1024 * 100)).toBe('100 MiB/s')
-  })
-
   it('states a retained byte rate at its own precision, and refuses to invent one', () => {
     expect(formatMetricRate(null)).toBe('Unknown')
     expect(formatMetricRate(undefined)).toBe('Unknown')
@@ -150,5 +144,113 @@ describe('axis label formats', () => {
     expect(formatMillisecondsSample(12480)).toBe('12480 ms')
     expect(formatMillisecondsSample(12480.5)).toBe('12480.5 ms')
     expect(formatMillisecondsSample(Number.NaN)).toBe('Unknown ms')
+  })
+})
+
+// The byte-rate ceilings are their own ladder: the decimal 1/2/5 ladder put a
+// 5 MiB/s window peak on a 9.5 MiB/s axis, which is a picture of an empty chart.
+describe('rateChartMax', () => {
+  it('puts the 5 MiB/s peak the deck actually saw on a 6 MiB/s axis', () => {
+    expect(rateChartMax(points(5 * 1024 * 1024))).toBe(6 * 1024 * 1024)
+    expect(rateChartMax(points(6 * 1024 * 1024))).toBe(7 * 1024 * 1024)
+    expect(rateChartMax(points(7.7 * 1024 * 1024))).toBe(9 * 1024 * 1024)
+    expect(rateChartMax(points(3 * 1024 * 1024))).toBe(3.5 * 1024 * 1024)
+    expect(rateChartMax(points(1024 * 1024))).toBe(1.125 * 1024 * 1024)
+    expect(rateChartMax(points(1024))).toBe(1152)
+  })
+
+  it('leaves a small headroom above the peak at every magnitude', () => {
+    const peaks = [
+      1024,
+      12_288,
+      1024 * 1024,
+      1.5 * 1024 * 1024,
+      1.6 * 1024 * 1024,
+      3 * 1024 * 1024,
+      5 * 1024 * 1024,
+      6 * 1024 * 1024,
+      9 * 1024 * 1024,
+      12 * 1024 * 1024,
+      12.7 * 1024 * 1024,
+      1024 ** 3,
+    ]
+    for (const peak of peaks) {
+      const max = rateChartMax(points(peak))
+      expect(max, String(peak)).toBeGreaterThanOrEqual(peak)
+      // The ceiling is the first rung that clears the peak by 5%, and the ladder's
+      // widest rung gap is 1.2x, so the headroom cannot leave [5%, 26%].
+      expect(max / peak, String(peak)).toBeGreaterThanOrEqual(1.05)
+      expect(max / peak, String(peak)).toBeLessThanOrEqual(1.26)
+    }
+    // The 26% end of that band: a peak just above the 2.5 x 2^15 rung, whose next
+    // rung (3 x 2^15) sits across the ladder's widest gap, so the ceiling must jump it.
+    expect(rateChartMax(points(39_010))).toBe(49_152)
+    expect(rateChartMax(points(40_960))).toBe(49_152)
+  })
+
+  it('holds that window across every magnitude, and keeps its ceiling above the peak', () => {
+    // The ladder is 128 B x 2^n, so sweep each octave in even steps instead of
+    // only the tidy peaks listed above: an off-ladder peak must still land in the
+    // window, and a peak past the ladder's last rung must never outrun its ceiling.
+    for (let index = 0; index <= 4000; index += 1) {
+      const peak = 2 ** (40 * (index / 4000)) // 1 B/s .. 1 TiB/s
+      const max = rateChartMax(points(peak))
+      expect(max, String(peak)).toBeGreaterThanOrEqual(peak)
+      if (peak >= 128) {
+        // Below 128 B/s the axis simply sits on the ladder's own floor.
+        expect(max / peak, String(peak)).toBeGreaterThanOrEqual(1.05)
+        expect(max / peak, String(peak)).toBeLessThanOrEqual(1.26)
+      }
+    }
+    for (const peak of [1024 ** 4, 10 ** 12, 10 ** 15]) {
+      const max = rateChartMax(points(peak))
+      expect(max, String(peak)).toBeGreaterThanOrEqual(peak)
+      expect(max / peak, String(peak)).toBeLessThanOrEqual(1.26)
+    }
+  })
+
+  it('reads the whole window and never returns a zero-height range', () => {
+    expect(rateChartMax(points(3, 6 * 1024 * 1024, 12))).toBe(7 * 1024 * 1024)
+    expect(rateChartMax([])).toBe(128)
+    expect(rateChartMax(points(0))).toBe(128)
+    expect(rateChartMax(points(Number.NaN))).toBe(128)
+  })
+})
+
+describe('formatRateAxisAt', () => {
+  it('states every tick in the unit the ceiling chose, never mixing KiB with MiB', () => {
+    const max = 6 * 1024 * 1024
+    expect(formatRateAxisAt(0, max)).toBe('0 MiB/s')
+    expect(formatRateAxisAt(1024 * 1024, max)).toBe('1 MiB/s')
+    expect(formatRateAxisAt(1.2 * 1024 * 1024, max)).toBe('1.2 MiB/s')
+    expect(formatRateAxisAt(3 * 1024 * 1024, max)).toBe('3 MiB/s')
+    expect(formatRateAxisAt(6 * 1024 * 1024, max)).toBe('6 MiB/s')
+  })
+
+  it('keeps the label inside the shared gutter at either end of the scale', () => {
+    expect(formatRateAxisAt(512, 1024)).toBe('0.5 KiB/s')
+    expect(formatRateAxisAt(262_144, 1.25 * 1024 * 1024)).toBe('0.25 MiB/s')
+    expect(formatRateAxisAt(128 * 1024 * 1024, 200 * 1024 * 1024)).toBe('128 MiB/s')
+    expect(formatRateAxisAt(0, 0)).toBe('0 B/s')
+    expect(formatRateAxisAt(Number.NaN, 1024)).toBe('0 KiB/s')
+  })
+})
+
+// A count axis whose ceiling does not divide by its split count is where
+// "0, 1, 1, 2" appears: the step is stated outright instead of left to the
+// renderer's rounding.
+describe('integerChartTicks', () => {
+  it('gives the count axis whole steps that cannot repeat a rounded label', () => {
+    expect(integerChartTicks(2)).toEqual({ splitNumber: 2, interval: 1 })
+    expect(integerChartTicks(4)).toEqual({ splitNumber: 4, interval: 1 })
+    expect(integerChartTicks(5)).toEqual({ splitNumber: 5, interval: 1 })
+    expect(integerChartTicks(10)).toEqual({ splitNumber: 5, interval: 2 })
+    expect(integerChartTicks(50)).toEqual({ splitNumber: 5, interval: 10 })
+  })
+
+  it('keeps a whole step for a ceiling no split count divides', () => {
+    expect(integerChartTicks(7)).toEqual({ splitNumber: 3, interval: 2 })
+    expect(integerChartTicks(0)).toEqual({ splitNumber: 5, interval: 1 })
+    expect(integerChartTicks(Number.NaN)).toEqual({ splitNumber: 5, interval: 1 })
   })
 })

@@ -206,7 +206,13 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(metrics.getByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveCount(4)
     await expect(metrics.getByRole('img', { name: /bar chart over the last 60 seconds/ })).toHaveCount(2)
     await expect(metrics.locator('[data-slot="node-metric-chart"][data-kind="bar"]')).toHaveCount(2)
-    await expect(metrics.getByText('60s', { exact: true })).toHaveCount(6)
+    // The Server's window is named on the axis itself -- clock labels on the real
+    // time axis -- rather than in the relative "60s … 0s" caption that used to sit
+    // under each plot.
+    expect(await metrics.locator('[data-slot="node-metric-chart"] svg').first()
+      .evaluate((svg) => /\d{2}:\d{2}:\d{2}/.test(svg.textContent ?? ''))).toBe(true)
+    await expect(metrics.getByText('60s', { exact: true })).toHaveCount(0)
+    await expect(metrics.getByText('0s', { exact: true })).toHaveCount(0)
     const cardSizes = await metrics.locator('[data-slot="node-metric-card"]').evaluateAll((cards) => cards.map((card) => {
       const box = card.getBoundingClientRect()
       return { width: Math.round(box.width), height: Math.round(box.height) }
@@ -214,7 +220,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     expect(cardSizes).toHaveLength(6)
     expect(new Set(cardSizes.map(({ width }) => width)).size).toBe(1)
     expect(new Set(cardSizes.map(({ height }) => height)).size, JSON.stringify(cardSizes)).toBe(1)
-    // Phones carry the shortest plot (116px) and lg the tallest (176px), so
+    // Phones carry the shortest plot (132px) and lg the tallest (192px), so
     // the bound is width-dependent; the desktop ceiling rose from 270px when
     // the deck was still drawn as 100px hand-rolled SVG (#242 deviation).
     const maxCardHeight = (page.viewportSize()?.width ?? 0) >= 1024 ? 340 : 360

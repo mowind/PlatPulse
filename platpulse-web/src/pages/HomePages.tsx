@@ -1,5 +1,5 @@
-import { ArrowLeft, Check, Copy } from 'lucide-react'
-import { useState } from 'react'
+import { ArrowDown, ArrowLeft, ArrowUp, Check, Copy } from 'lucide-react'
+import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link, useLocation, useParams } from 'react-router'
 import {
@@ -30,11 +30,12 @@ import {
   formatMillisecondsSample,
   formatPercentAxis,
   formatPercentSample,
-  formatRateAxis,
+  formatRateAxisAt,
   formatRateSample,
   integerChartMax,
   niceChartMax,
   percentChartMax,
+  rateChartMax,
 } from '../components/metricChartAxis'
 import { MetricRow } from '../components/MetricRow'
 import { ValidatorActivityBadge } from '../components/ValidatorActivityBadge'
@@ -50,6 +51,11 @@ import { SURFACE_CARD_STATIC } from '../lib/surface'
 import { DataTooltip } from '../components/ui/data-tooltip'
 import { Button } from '../components/ui/button'
 import { cn } from '../lib/utils'
+
+/** Byte-rate axis labels pinned to the card's own ceiling, so every tick on one
+ *  network axis is stated in the same unit. Module-level: the formatter's identity
+ *  has to survive a render or the chart would rebuild its option. */
+const rateAxisFormatAt = (axisMax: number) => (value: number) => formatRateAxisAt(value, axisMax)
 
 const PAGE = 'min-w-0 p-4'
 // Info/chart tier; the summary tiles sit one step brighter, the disclosures one step dimmer.
@@ -165,7 +171,7 @@ export function NodePage() {
           unit="%"
           value={formatPercent(node.processMemoryPercent)}
           detail={processStatusDetail(node.processState)}
-          series={[{ key: 'memory', label: 'Process memory', points: metricHistory?.processMemoryPercent ?? [], coverage: metricCoverage(metricHistory, 'processMemoryPercent'), area: true }]}
+          series={[{ key: 'memory', label: 'Process memory', points: metricHistory?.processMemoryPercent ?? [], coverage: metricCoverage(metricHistory, 'processMemoryPercent'), area: true, areaOpacity: MEMORY_AREA_OPACITY }]}
           history={metricHistory}
           max={percentChartMax(metricHistory?.processMemoryPercent ?? [])}
           axisFormat={formatPercentAxis}
@@ -182,7 +188,16 @@ export function NodePage() {
           ]}
           showLegend
           history={metricHistory}
-          axisFormat={formatRateAxis}
+          // Both directions share one ceiling, taken from the higher of the two
+          // peaks: several megabytes per second must not be read against an axis
+          // the decimal ladder rounded up to 9.5 MiB/s. The upload is named first
+          // because it is the value in the corner; the download sits beside it in
+          // its own colour, and the legend under the plot repeats both.
+          max={rateChartMax([...(metricHistory?.networkTxBytesPerSec ?? []), ...(metricHistory?.networkRxBytesPerSec ?? [])])}
+          direction="up"
+          directionColor={METRIC_SERIES_COLORS.upload}
+          secondary={[{ label: 'Download', value: formatMetricRate(node.hostNetworkRxBytesPerSec), direction: 'down', color: METRIC_SERIES_COLORS.download }]}
+          axisFormatAt={rateAxisFormatAt}
           valueFormat={formatRateSample}
           historyMessage={metricHistoryMessage}
         />
@@ -443,7 +458,16 @@ type MetricSeries = {
   /** Emerald's transparent vertical gradient, for the single-direction CPU and
    *  memory curves only. */
   area?: boolean
+  /** The gradient's two stops, when one curve needs a fainter pair than Emerald's
+   *  own recipe: memory can hold one value across the whole window, and a steady
+   *  reading must not be painted as a slab. */
+  areaOpacity?: readonly [number, number]
 }
+
+/** Memory holds far longer than the CPU does, so its fill is the fainter pair
+ *  (Emerald's own 0.25 → 0.02 stays on the CPU curve): a flat 3% window then reads
+ *  as a light tint instead of a solid teal-or-coral block behind the line. */
+const MEMORY_AREA_OPACITY = [0.08, 0.01] as const
 
 type MetricChartKind = 'line' | 'bar'
 
@@ -452,11 +476,18 @@ type MetricChartKind = 'line' | 'bar'
  *  keeps the page's display formatting. The formatters are module-level so the
  *  option is not rebuilt on every render. */
 
-function NodeMetricCard({ label, unit, value, valueLabel, detail, kind = 'line', series, showLegend = false, history, max: fixedMax, axisFormat, valueFormat, integer = false, historyMessage, className = '' }: {
+function NodeMetricCard({ label, unit, value, valueLabel, direction, directionColor, secondary, detail, kind = 'line', series, showLegend = false, history, max: fixedMax, axisFormat, axisFormatAt, valueFormat, integer = false, historyMessage, className = '' }: {
   label: string
   unit?: string
   value: string
   valueLabel?: string
+  /** The way the current value is travelling, marked in the series' own colour so
+   *  a two-direction card cannot be read in the wrong order. */
+  direction?: 'up' | 'down'
+  directionColor?: string
+  /** The other direction of a two-direction card: named and measured beside the
+   *  value, never moved down to the foot of the card. */
+  secondary?: { label: string; value: string; direction: 'up' | 'down'; color: string }[]
   detail?: string
   kind?: MetricChartKind
   series: MetricSeries[]
@@ -464,7 +495,12 @@ function NodeMetricCard({ label, unit, value, valueLabel, detail, kind = 'line',
   history?: PublicNodeMetricHistory
   /** Display ceiling; without one the window's own observations set a nice ceiling. */
   max?: number
-  axisFormat: (value: number) => string
+  /** Axis label formatter, for labels that do not depend on the ceiling. */
+  axisFormat?: (value: number) => string
+  /** Axis labels that need the card's own ceiling, taking precedence over
+   *  `axisFormat`: a byte rate is stated in the unit that ceiling chose, so one
+   *  axis never mixes MiB/s with KiB/s. */
+  axisFormatAt?: (axisMax: number) => (value: number) => string
   valueFormat: (value: number) => string
   integer?: boolean
   historyMessage?: string
@@ -490,11 +526,18 @@ function NodeMetricCard({ label, unit, value, valueLabel, detail, kind = 'line',
     label: item.label,
     color: METRIC_SERIES_COLORS[item.key],
     area: item.area,
+    areaOpacity: item.areaOpacity,
     segments: segments[index] ?? [],
   }))
   const observations = segments.flat(2)
   const observedMax = observations.length > 0 ? Math.max(...observations.map((item) => item.value)) : 0
   const max = fixedMax ?? (integer ? integerChartMax(observedMax) : niceChartMax(observedMax))
+  // The label formatter may have to know the ceiling it is labelling, and the
+  // option is only rebuilt when the formatter's identity changes.
+  const axisFormatter = useMemo(
+    () => axisFormatAt?.(max) ?? axisFormat ?? formatCountAxis,
+    [axisFormatAt, axisFormat, max],
+  )
   // Multi-direction cards explain their curves under the plot, never under the
   // title, so the header stays title-left / current-value-right on every card.
   const legend = showLegend ? <MetricSeriesLegend label={label} series={series} /> : undefined
@@ -505,18 +548,47 @@ function NodeMetricCard({ label, unit, value, valueLabel, detail, kind = 'line',
     : label + ': ' + (historyMessage ?? 'No samples in the last minute'))
     + (coverageText ? '. ' + coverageText : '')
   return (
-    <CardX bordered={false} role="article" data-slot="node-metric-card" className={cn('min-w-0', CARD, className)} contentClassName="flex h-full min-w-0 flex-col gap-1.5">
-      <div data-slot="node-metric-header" className="flex min-h-10 min-w-0 items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="m-0 text-sm font-medium">{label}</h3>
-          {unit && <p className="m-0 mt-0.5 text-[11px] leading-4 text-muted-foreground">{unit}</p>}
+    // Emerald's card, with its own header used for the header: `size="small"` gives
+    // the same 12px inset to the title and to the plot, so the six plots start on
+    // one column and the titles share a baseline. The title is the card's largest
+    // type (16px, bold) and the readings sit beside it at 12px — the current value
+    // never becomes the headline, and it never moves to the foot of the card.
+    <CardX
+      bordered={false}
+      role="article"
+      data-slot="node-metric-card"
+      size="small"
+      className={cn('min-w-0', CARD, className)}
+      contentClassName="flex h-full min-w-0 flex-col gap-1.5"
+      header={(
+        <div data-slot="node-metric-header" className="flex w-full min-w-0 items-start justify-between gap-2">
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+            <h3 className="m-0 min-w-0 truncate text-base font-bold">{label}</h3>
+            {unit && <span className="shrink-0 text-[10px] font-normal leading-4 text-muted-foreground">{unit}</span>}
+          </div>
+          <div className="flex shrink-0 flex-col items-end gap-0.5">
+            <div className="flex items-baseline gap-1">
+              {direction && directionColor && <DirectionArrow direction={direction} color={directionColor} />}
+              <strong data-slot="node-metric-value" className="text-right text-xs font-semibold leading-none tabular-nums">{value}</strong>
+            </div>
+            {valueLabel && <span className="text-[10px] leading-none text-muted-foreground">{valueLabel}</span>}
+            {secondary?.map((item) => (
+              <span key={item.label} className="flex items-baseline gap-1 leading-none text-muted-foreground">
+                <DirectionArrow direction={item.direction} color={item.color} />
+                {/* The other direction is a current reading too, so its number keeps
+                    the same 12px as the value beside the title; only its name shrinks. */}
+                <span data-slot="node-metric-value-secondary" className="text-xs tabular-nums">{item.value}</span>
+                <span className="text-[10px]">{item.label}</span>
+              </span>
+            ))}
+          </div>
         </div>
-        <div className="flex shrink-0 flex-col items-end gap-0.5">
-          <strong data-slot="node-metric-value" className="text-right text-xl font-bold leading-none tracking-tight tabular-nums">{value}</strong>
-          {valueLabel && <span className="text-[10px] leading-none text-muted-foreground">{valueLabel}</span>}
-        </div>
-      </div>
-      <div className="min-h-8 flex-1">
+      )}
+    >
+      {/* Facts and coverage notes own this block: it is what grows when one card is
+          taller than its neighbours, which is what lets the plot below stay pinned
+          to the bottom of every card without a spacer propping it there. */}
+      <div className="min-w-0">
         {detail && <p className="m-0 break-words text-[11px] leading-4 text-muted-foreground">{detail}</p>}
         {missingDirections.length > 0 && <p className="m-0 text-[11px] italic text-muted-foreground">{missingDirections.join(' and ')} unavailable in this window</p>}
         {coverageText && <p data-slot="node-metric-coverage" className="m-0 text-[11px] leading-4 text-muted-foreground">{coverageText}</p>}
@@ -529,7 +601,7 @@ function NodeMetricCard({ label, unit, value, valueLabel, detail, kind = 'line',
         max={max}
         series={plots}
         integer={integer}
-        axisFormat={axisFormat}
+        axisFormat={axisFormatter}
         valueFormat={valueFormat}
         seconds={seconds}
         message={historyMessage}
@@ -538,6 +610,14 @@ function NodeMetricCard({ label, unit, value, valueLabel, detail, kind = 'line',
       />
     </CardX>
   )
+}
+
+/** The compact direction mark beside a reading, drawn in that series' own colour:
+ *  the blue download and the purple upload are told apart by more than their
+ *  order, and the legend under the plot repeats both. */
+function DirectionArrow({ direction, color }: { direction: 'up' | 'down'; color: string }) {
+  const Icon = direction === 'up' ? ArrowUp : ArrowDown
+  return <Icon aria-hidden="true" className="size-3 shrink-0" style={{ color }} />
 }
 
 function MetricSeriesLegend({ label, series }: { label: string; series: MetricSeries[] }) {

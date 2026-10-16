@@ -1,5 +1,6 @@
 import type { EChartsOption } from 'echarts'
 import type { MetricObservation } from '../metricCoverage'
+import { integerChartTicks } from './metricChartAxis'
 
 /**
  * The Node Detail six-chart option, ported from komari-theme-emerald's
@@ -17,12 +18,14 @@ import type { MetricObservation } from '../metricCoverage'
  *      baseline; PlatPulse breaks the curve instead.
  *   2. Every chart is a real time axis with real timestamps, not a category axis
  *      over preformatted strings, so a tooltip can state the sample's exact
- *      instant and value.
+ *      instant and value — and so the axis can name its own window edges on the
+ *      clock instead of waiting for a DOM caption underneath.
  */
 
-/** Emerald's series palette (LoadChart.vue:47-59). CPU is the theme's coral,
- *  which PlatPulse adopts as a data-series colour: status red stays
- *  `--destructive`, so an error is never mistaken for a CPU curve. */
+/** Emerald's series palette (LoadChart.vue:47-59). CPU and memory are both the
+ *  theme's coral, exactly as upstream paints its CPU and RAM curves; PlatPulse
+ *  adopts coral as a data-series colour, so status red stays `--destructive` and
+ *  an error is never mistaken for a curve. */
 export type MetricSeriesKey =
   | 'cpu'
   | 'memory'
@@ -35,7 +38,7 @@ export type MetricSeriesKey =
 
 export const METRIC_SERIES_COLORS: Record<MetricSeriesKey, string> = {
   cpu: '#FF6B6B',
-  memory: '#4ECDC4',
+  memory: '#FF6B6B',
   blockInterval: '#FFB347',
   transactions: '#A78BFA',
   download: '#60A5FA',
@@ -92,6 +95,10 @@ export type MetricChartSeriesInput = {
   /** Emerald's vertical transparent gradient, for the single-direction CPU and
    *  memory curves only. */
   area?: boolean
+  /** The gradient's two stops. Emerald's own recipe (0.25 → 0.02) is the default
+   *  and stays on the CPU curve; memory, which can hold one value across the whole
+   *  window, is given a fainter pair so a steady reading is not painted as a slab. */
+  areaOpacity?: readonly [number, number]
 }
 
 /** The composed option's series array. A chart mixes one entry per drawn run,
@@ -116,8 +123,14 @@ export type MetricChartOptionInput = {
   barWidth?: number
 }
 
-/** The gutter every card shares, so all six plots start on the same column. */
-export const METRIC_CHART_GUTTER = 56
+/** The gutter every card shares, so all six plots start on the same column. It is
+ *  wide enough for the longest label the deck prints: a byte rate stated in the
+ *  unit its own ceiling chose, up to "1.25 MiB/s". */
+export const METRIC_CHART_GUTTER = 60
+
+/** The room the axis labels need on the right of the plot box, so the label
+ *  centred on the window's last instant is painted whole. */
+export const METRIC_CHART_RIGHT_MARGIN = 24
 
 function withAlpha(color: string, alpha: number): string {
   const hex = color.replace('#', '')
@@ -129,7 +142,9 @@ function withAlpha(color: string, alpha: number): string {
 }
 
 /** Emerald's area recipe, verbatim: 25% at the curve down to 2% at the axis. */
-function areaGradient(color: string) {
+const EMERALD_AREA_STOPS = [0.25, 0.02] as const
+
+function areaGradient(color: string, stops: readonly [number, number] = EMERALD_AREA_STOPS) {
   return {
     type: 'linear' as const,
     x: 0,
@@ -137,8 +152,8 @@ function areaGradient(color: string) {
     x2: 0,
     y2: 1,
     colorStops: [
-      { offset: 0, color: withAlpha(color, 0.25) },
-      { offset: 1, color: withAlpha(color, 0.02) },
+      { offset: 0, color: withAlpha(color, stops[0]) },
+      { offset: 1, color: withAlpha(color, stops[1]) },
     ],
   }
 }
@@ -198,9 +213,14 @@ export function metricChartOption(input: MetricChartOptionInput): EChartsOption 
         type: 'bar' as const,
         name: entry.label,
         data: entry.segments.flat().map((point) => [point.sampledAt, point.value]),
-        barMaxWidth: 14,
+        barMaxWidth: 12,
         ...(input.barWidth !== undefined ? { barWidth: input.barWidth } : {}),
-        itemStyle: { color: entry.color, borderRadius: 2 },
+        // A bar is one observation and its height is the only thing worth
+        // reading: at full saturation a row of bars reads as a filled area rather
+        // than as discrete samples. Emerald has no bar chart to copy, so the
+        // softening is ours — the palette colour stays literal, only its weight
+        // drops, and the rounded cap keeps a tall bar from ending in a hard edge.
+        itemStyle: { color: entry.color, borderRadius: [3, 3, 0, 0], opacity: 0.75 },
         emphasis: { focus: 'none' as const },
         animation: false,
       }]
@@ -227,17 +247,28 @@ export function metricChartOption(input: MetricChartOptionInput): EChartsOption 
         smooth: false,
         z: 2,
         emphasis: { focus: 'none' as const },
-        ...(entry.area === true && segment.length > 1 ? { areaStyle: { color: areaGradient(entry.color) } } : {}),
+        ...(entry.area === true && segment.length > 1
+          ? { areaStyle: { color: areaGradient(entry.color, entry.areaOpacity) } }
+          : {}),
         animation: false,
       }))
   })
 
+  // A whole-number axis is given its own step: without one the renderer divides
+  // whatever ceiling it was handed into five and rounds each label, so a
+  // four-connection window can print "0, 1, 1, 2" — two labels for one count.
+  const ticks = input.integer === true ? integerChartTicks(input.max) : undefined
+
   return {
     animation: false,
-    grid: { top: 10, right: 6, bottom: 6, left: METRIC_CHART_GUTTER, containLabel: false },
-    // The relative seconds ("60s" … "0s") stay DOM text under the plot: a real
-    // time axis aligns its ticks to the clock, so its own labels cannot promise
-    // the window's edges.
+    // Emerald's own margin recipe, kept for its reason: the axis labels hang
+    // outside the plot box, so the 24px on the right reserve room for the label
+    // centred on the window's last instant instead of letting ECharts shrink the
+    // grid by whatever that label happens to measure.
+    grid: { top: 12, right: METRIC_CHART_RIGHT_MARGIN, bottom: 26, left: METRIC_CHART_GUTTER, containLabel: false },
+    // The window's own clock labels the axis, the way Emerald prints its sampled
+    // times, and the axis states the Server's window edges because min/max are
+    // that window: two readable instants plus whatever fits between them.
     xAxis: {
       type: 'time',
       min: input.from,
@@ -250,7 +281,14 @@ export function metricChartOption(input: MetricChartOptionInput): EChartsOption 
       // centred exactly on an edge is then clipped to the plot box, which is the
       // honest reading of an observation that sits on the window's boundary.
       ...(input.kind === 'bar' ? { containShape: false } : {}),
-      axisLabel: { show: false },
+      axisLabel: {
+        show: true,
+        fontSize: 11,
+        color: theme.textSecondary,
+        margin: 8,
+        hideOverlap: true,
+        formatter: (value: number) => clockTime(value),
+      },
       axisTick: { show: false },
       axisLine: { show: true, lineStyle: { color: theme.axisLine, width: 1 } },
       axisPointer: { label: { show: false } },
@@ -259,8 +297,8 @@ export function metricChartOption(input: MetricChartOptionInput): EChartsOption 
       type: 'value',
       min: 0,
       max: input.max,
-      splitNumber: 5,
-      ...(input.integer === true ? { minInterval: 1 } : {}),
+      splitNumber: ticks ? ticks.splitNumber : 5,
+      ...(ticks ? { interval: ticks.interval } : {}),
       axisLabel: { fontSize: 11, color: theme.textSecondary, margin: 6, formatter: input.axisFormat },
       axisLine: { show: false },
       axisTick: { show: false },
