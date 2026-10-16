@@ -26,8 +26,8 @@ export function metricCoverage(
  * silence.
  *
  * This is the single seam every Node Detail chart reads: the real-valued runs
- * go straight onto a time axis, and the sentence above the card is written from
- * the same coverage the runs were cut with.
+ * go straight onto a time axis, and the chart's accessible description is
+ * written from the same coverage the runs were cut with.
  */
 export function coverageSegments(
   points: PublicMetricPoint[],
@@ -89,11 +89,12 @@ export function coverageNote(coverage: PublicMetricSeriesCoverage | undefined): 
 }
 
 /**
- * Card-level notice: one sentence only when every direction has the same one to
- * give, labelled directions otherwise, and nothing at all when there is nothing
- * to say. One silent direction beside a healthy one must never read as the whole
- * card going quiet, and neither must a direction whose answer carries no
- * coverage at all: both keep the label of the direction that does report.
+ * Card-level sentence for the chart's accessible description: one sentence only
+ * when every direction has the same one to give, labelled directions otherwise,
+ * and nothing at all when there is nothing to say. One silent direction beside a
+ * healthy one must never read as the whole card going quiet, and neither must a
+ * direction whose answer carries no coverage at all: both keep the label of the
+ * direction that does report.
  */
 export function coverageNotes(series: { label: string; coverage?: PublicMetricSeriesCoverage }[]): string | undefined {
   const noted = series

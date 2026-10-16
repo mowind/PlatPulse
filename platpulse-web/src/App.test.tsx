@@ -907,7 +907,9 @@ describe('App shell with private Home', () => {
     const plot = cpuCard.querySelector('[data-slot="node-metric-chart"]')
     expect(plot?.getAttribute('data-points')).toBe('6')
     expect(plot?.getAttribute('data-runs')).toBe('2')
-    expect(cpuCard.querySelector('[data-slot="node-metric-coverage"]')?.textContent).toBe('1 gap in this window')
+    // The silence is not printed under the title any more: the card draws no
+    // small print for it, and the chart's accessible description carries it.
+    expect(cpuCard.querySelector('[data-slot="node-metric-coverage"]')).toBeNull()
     const description = cpuCard.querySelector('[id^="node-metric-chart-desc-"]')
     expect(description?.className).toBe('sr-only')
     expect(description?.textContent).toContain('1 gap in this window')
@@ -915,14 +917,17 @@ describe('App shell with private Home', () => {
 
     const memoryCard = within(metricsSection).getByRole('heading', { level: 3, name: 'Process memory' }).closest('[data-slot="node-metric-card"]')
     if (!memoryCard) throw new Error('Process memory card is missing')
-    // A series the Server never observed says so instead of holding a flat line.
-    expect(memoryCard.querySelector('[data-slot="node-metric-coverage"]')?.textContent).toBe('No samples reported yet')
+    // A series the Server never observed says so instead of holding a flat line,
+    // in the chart's own accessible description rather than as visible small print.
+    expect(memoryCard.querySelector('[data-slot="node-metric-coverage"]')).toBeNull()
+    expect(memoryCard.querySelector('[id^="node-metric-chart-desc-"]')?.textContent).toContain('No samples reported yet')
 
     const transactionCard = within(metricsSection).getByRole('heading', { level: 3, name: 'Transactions / block' }).closest('[data-slot="node-metric-card"]')
     if (!transactionCard) throw new Error('Transactions / block card is missing')
     // An absence the Server cannot prove is an unknown, not a claim that nobody
     // ever reported the series: the card says what the evidence supports.
-    expect(transactionCard.querySelector('[data-slot="node-metric-coverage"]')?.textContent).toBe('No retained observations')
+    expect(transactionCard.querySelector('[data-slot="node-metric-coverage"]')).toBeNull()
+    expect(transactionCard.querySelector('[id^="node-metric-chart-desc-"]')?.textContent).toContain('No retained observations')
     expect(transactionCard.querySelector('[data-slot="node-metric-chart-empty"]')?.textContent).toBe('No samples in the last minute')
     expect(transactionCard.querySelectorAll('[data-slot="node-metric-chart-bar"]')).toHaveLength(0)
   })

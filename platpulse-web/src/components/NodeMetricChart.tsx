@@ -116,9 +116,10 @@ export default function NodeMetricChart({
         setWidth(Math.round(container.current.clientWidth))
       })
       .catch(() => {
-        // A chart that cannot load leaves the card's value, coverage sentence
-        // and legend in place — the evidence is never replaced by a blank box —
-        // and marks the plot so the gap is visible instead of silent.
+        // A chart that cannot load leaves the card's value, its accessible
+        // description and the legend in place — the evidence is never replaced
+        // by a blank box — and marks the plot so the gap is visible instead of
+        // silent.
         if (!disposed) setFailed(true)
       })
     return () => {

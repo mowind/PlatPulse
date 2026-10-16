@@ -515,8 +515,10 @@ function NodeMetricCard({ label, unit, value, valueLabel, direction, directionCo
   const missingDirections = series.length > 1 && series.some((item) => item.points.length > 0)
     ? series.filter((item) => item.points.length === 0).map((item) => item.label)
     : []
-  // Gaps, an unobserved tail and a never-observed direction are stated beside
-  // the value: the reader must not have to infer absence from a straight line.
+  // Gaps, an unobserved tail and a never-observed direction are stated to the
+  // chart's accessible description instead of as a line of small print under the
+  // title: the reader must not have to infer absence from a straight line, and a
+  // card that has nothing to say draws no extra line above its plot.
   const coverageText = coverageNotes(series)
   // The window is the evidence: observations outside it are dropped and the
   // Server's own silence list decides where a run ends, so nothing is joined
@@ -543,6 +545,8 @@ function NodeMetricCard({ label, unit, value, valueLabel, direction, directionCo
   const legend = showLegend ? <MetricSeriesLegend label={label} series={series} /> : undefined
   // The accessible description states the same thing the curve does: which
   // directions, over which real window, and what the Server measured missing.
+  // It is also the only place the coverage sentence is written down now: the
+  // card draws no small print for it, but a screen reader still hears it.
   const description = (observations.length > 0
     ? series.map((item) => item.label).join(' and ') + ' values from ' + seconds + ' seconds ago to now'
     : label + ': ' + (historyMessage ?? 'No samples in the last minute'))
@@ -585,13 +589,14 @@ function NodeMetricCard({ label, unit, value, valueLabel, direction, directionCo
         </div>
       )}
     >
-      {/* Facts and coverage notes own this block: it is what grows when one card is
-          taller than its neighbours, which is what lets the plot below stay pinned
-          to the bottom of every card without a spacer propping it there. */}
+      {/* Facts and the direction note own this block: it is what grows when one card
+          is taller than its neighbours, which is what lets the plot below stay pinned
+          to the bottom of every card without a spacer propping it there. The coverage
+          sentence is deliberately absent: it rides the chart's accessible description,
+          so the deck stays as quiet as the Emerald cards it is ported from. */}
       <div className="min-w-0">
         {detail && <p className="m-0 break-words text-[11px] leading-4 text-muted-foreground">{detail}</p>}
         {missingDirections.length > 0 && <p className="m-0 text-[11px] italic text-muted-foreground">{missingDirections.join(' and ')} unavailable in this window</p>}
-        {coverageText && <p data-slot="node-metric-coverage" className="m-0 text-[11px] leading-4 text-muted-foreground">{coverageText}</p>}
       </div>
       <NodeMetricChart
         label={label}

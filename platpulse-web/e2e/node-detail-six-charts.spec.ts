@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { expectNoHorizontalOverflow, expectVisibleInteractiveTargets, loginAs } from './helpers'
 
 /**
@@ -49,6 +49,21 @@ async function forceFragileHeaderFont(page: Page) {
     if (document.documentElement) apply()
     else document.addEventListener('DOMContentLoaded', apply)
   }, FRAGILE_HEADER_FONTS)
+}
+
+/**
+ * No card writes the coverage verdict as small print under its title any more:
+ * the sentence is written into the chart's own sr-only description, which every
+ * plot points at through `aria-describedby`. Read the six sentences back by id,
+ * in card order, so a scenario can still assert what each card states.
+ */
+async function chartDescriptions(metrics: Locator) {
+  return metrics.locator('[data-slot="node-metric-chart"]').evaluateAll((plots) =>
+    plots.map((plot) => {
+      const id = plot.getAttribute('aria-describedby')
+      return id ? (document.getElementById(id)?.textContent ?? '') : ''
+    }),
+  )
 }
 
 /** Cycle the production theme control to the requested explicit theme. */
@@ -439,7 +454,10 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             // against their own 35s cadence, so their verdict depends on how
             // long this run has been going and is asserted as a shape only.
             const blockCard = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: 'Block interval' }) })
-            await expect(blockCard.locator('[data-slot="node-metric-coverage"]')).toHaveText(/^No samples for the last /)
+            // No card writes the verdict as small print under its title any more:
+            // the sentence rides the chart's accessible description instead, and
+            // every card states it there in its own words.
+            await expect(metrics.locator('[data-slot="node-metric-coverage"]')).toHaveCount(0)
             await expect(blockCard.locator('[data-slot="node-metric-chart"]')).toHaveAccessibleDescription(/No samples for the last /)
             for (const heading of ['Process CPU', 'Process memory', 'Peer connections']) {
               const card = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: heading }) })
@@ -479,7 +497,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             // drops to the baseline inside the hole, is proven on the real
             // renderer in src/components/nodeMetricChart.test.ts.
             await expect(cpuPlot).toHaveAttribute('data-points', '6')
-            await expect(cpuCard.locator('[data-slot="node-metric-coverage"]')).toHaveText('1 gap in this window')
+            await expect(cpuCard.locator('[data-slot="node-metric-coverage"]')).toHaveCount(0)
             await expect(cpuPlot).toHaveAccessibleDescription(/1 gap in this window/)
           }
           if (scenario === 'never-observed') {
@@ -487,14 +505,13 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             await expect(metrics.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(6)
             await expect(metrics.locator('[data-slot="node-metric-chart"][data-points="0"]')).toHaveCount(6)
             await expect(metrics.locator('[data-slot="node-metric-chart"][data-runs="0"]')).toHaveCount(6)
-            const notices = metrics.locator('[data-slot="node-metric-coverage"]')
-            await expect(notices).toHaveCount(6)
-            const emptyTexts = await notices.allTextContents()
+            await expect(metrics.locator('[data-slot="node-metric-coverage"]')).toHaveCount(0)
+            const emptyTexts = await chartDescriptions(metrics)
             // Four cards hold ledgered series, where an absence is proof that
             // nobody ever reported them. The two block cards have no ledger, so
             // their absence is an unknown the Server states as such.
-            expect(emptyTexts.filter((text) => text === 'No samples reported yet'), JSON.stringify(emptyTexts)).toHaveLength(4)
-            expect(emptyTexts.filter((text) => text === 'No retained observations'), JSON.stringify(emptyTexts)).toHaveLength(2)
+            expect(emptyTexts.filter((text) => text.includes('No samples reported yet')), JSON.stringify(emptyTexts)).toHaveLength(4)
+            expect(emptyTexts.filter((text) => text.includes('No retained observations')), JSON.stringify(emptyTexts)).toHaveLength(2)
           }
           if (scenario === 'expired') {
             // Samples retention removed are not evidence that nobody ever
@@ -503,15 +520,14 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             await expect(metrics.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(6)
             await expect(metrics.locator('[data-slot="node-metric-chart"][data-points="0"]')).toHaveCount(6)
             await expect(metrics.locator('[data-slot="node-metric-chart"][data-runs="0"]')).toHaveCount(6)
-            const notices = metrics.locator('[data-slot="node-metric-coverage"]')
-            await expect(notices).toHaveCount(6)
-            const texts = await notices.allTextContents()
+            await expect(metrics.locator('[data-slot="node-metric-coverage"]')).toHaveCount(0)
+            const texts = await chartDescriptions(metrics)
             // Four cards hold ledgered series: their last observation is dated
             // 40 days back and the window holds none of them. The two block
             // cards have no ledger, so their expiry is not dated at all and is
             // answered as an unknown rather than as never observed.
-            expect(texts.filter((text) => text === 'Last observation 40 days ago'), JSON.stringify(texts)).toHaveLength(4)
-            expect(texts.filter((text) => text === 'No retained observations'), JSON.stringify(texts)).toHaveLength(2)
+            expect(texts.filter((text) => text.includes('Last observation 40 days ago')), JSON.stringify(texts)).toHaveLength(4)
+            expect(texts.filter((text) => text.includes('No retained observations')), JSON.stringify(texts)).toHaveLength(2)
           }
 
           // The remaining disclosure is keyboard-operable in both directions, and
