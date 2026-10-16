@@ -364,7 +364,11 @@ describe('LinkedValidatorSection Node detail', () => {
     expect(row('PlatScan 24h rate').className).toContain('col-span-full')
     expect(metricValue('Cumulative blocks')).toBe(Number.MAX_SAFE_INTEGER.toLocaleString())
     expect(metricValue('Cumulative rewards')).toBe('123,456,789,012,345,678,901,234,567,890.1234')
-    expect(metricValue('PlatScan 24h rate')).toBe(rate + '%')
+    // The overview rounds to two decimals on the source digits; the exact
+    // source value stays in the title and the diagnostics' full-precision area.
+    expect(metricValue('PlatScan 24h rate')).toBe('123456789012345678901234567890.12%')
+    expect(screen.getByTitle(rate + '%')).toBeTruthy()
+    expect(screen.getByText('PlatScan 24h rate (full precision)').nextElementSibling?.textContent).toBe(rate + '%')
     expect(screen.getByText('Cumulative rewards (full precision)').nextElementSibling?.textContent).toBe('123,456,789,012,345,678,901,234,567,890.123456789')
   })
 
@@ -424,10 +428,66 @@ describe('LinkedValidatorSection Node detail', () => {
     const exactReward = screen.getByText('Cumulative rewards (full precision)').nextElementSibling
     expect(exactReward?.textContent).toBe('1,234,567.890123456789')
     expect(exactReward?.closest('details')).toBe(diagnosticsRegion())
-    expect(metricValue('Production rate')).toBe('125.123456%')
-    expect(metricValue('PlatScan 24h rate')).toBe('135.987654%')
-    expect(metricValue('Delegation reward share')).toBe('20.123456%')
+    // Rates read at two decimals at most; a rate above 100% is never capped.
+    expect(metricValue('Production rate')).toBe('125.12%')
+    expect(metricValue('PlatScan 24h rate')).toBe('135.99%')
+    expect(metricValue('Delegation reward share')).toBe('20.12%')
+    const exact = (label: string) => screen.getByText(label + ' (full precision)').nextElementSibling
+    expect(exact('Production rate')?.textContent).toBe('125.123456%')
+    expect(exact('PlatScan 24h rate')?.textContent).toBe('135.987654%')
+    expect(exact('Delegation reward share')?.textContent).toBe('20.123456%')
+    expect(exact('Production rate')?.className).toContain('select-text')
+    expect(exact('Production rate')?.closest('details')).toBe(diagnosticsRegion())
+    expect(screen.getByTitle('125.123456%').textContent).toBe('125.12%')
     expect(screen.getByText(/Network native unit/)).toBeTruthy()
+  })
+
+  it('rounds the rate overview without merging zero, tiny, unknown and not-applicable rates', () => {
+    renderDetail({ validator: { ...insight, blockRate: '100.047221', genBlocksRate: '0', delegationRewardPercentage: '0.004' } })
+    expect(metricValue('Production rate')).toBe('100.05%')
+    expect(metricValue('PlatScan 24h rate')).toBe('0%')
+    expect(metricValue('Delegation reward share')).toBe('<0.01%')
+    expect(screen.getByText('Delegation reward share (full precision)').nextElementSibling?.textContent).toBe('0.004%')
+    cleanup()
+    renderDetail({ validator: { ...insight, blockRate: null, blockRateState: 'not_applicable', genBlocksRate: null, delegationRewardPercentage: null } })
+    expect(metricValue('Production rate')).toBe('Not applicable')
+    expect(metricValue('PlatScan 24h rate')).toBe('Unknown')
+    expect(metricValue('Delegation reward share')).toBe('Unknown')
+  })
+
+  it('gives the lifetime totals and rank a heavier tier than the three rates', () => {
+    renderDetail()
+    const row = (label: string) => screen.getByText(label, { exact: true }).closest('[data-slot="metric-row"]')!.className
+    for (const label of ['Cumulative blocks', 'Cumulative rewards', 'Network rank']) expect(row(label)).toContain('text-[17px]')
+    for (const label of ['Production rate', 'PlatScan 24h rate', 'Delegation reward share']) {
+      expect(row(label)).toContain('text-[13px]')
+      expect(row(label)).not.toContain('text-[17px]')
+    }
+  })
+
+  it('groups expanded diagnostics into three labelled key/value groups without dropping a state', () => {
+    renderDetail({ validator: { ...insight, currentValidatorStatusQualifier: null, rankCohortSize: null, providerTimestamp: null } })
+    const diagnostics = diagnosticsRegion()
+    const groups = [...diagnostics.querySelectorAll('[data-slot="validator-diagnostics-group"]')]
+    expect(groups.map(group => group.querySelector('h3')?.textContent)).toEqual(['Identity & activity', 'Source & freshness', 'Ranking & counters'])
+    const labels = (index: number) => [...groups[index].querySelectorAll('dt')].map(dt => dt.textContent)
+    expect(labels(0)).toEqual(expect.arrayContaining(['Current staking status', 'Staking status state', 'Staking qualifier', 'Identity state', 'Activity', 'Activity state']))
+    expect(labels(1)).toEqual(['Provider state', 'Data freshness', 'Last success', 'Source', 'Source cutoff'])
+    expect(labels(2)).toEqual(['Rank state', 'Rank freshness', 'Rank last success', 'Rank cohort', 'Counter state', 'Production rate state'])
+    // Absent values keep their own wording rather than becoming a verdict.
+    expect(within(groups[0] as HTMLElement).getByText('Staking qualifier').nextElementSibling?.textContent).toBe('Not provided')
+    expect(within(groups[1] as HTMLElement).getByText('Source cutoff').nextElementSibling?.textContent).toBe('Not provided by the source')
+    expect(within(groups[2] as HTMLElement).getByText('Rank cohort').nextElementSibling?.textContent).toBe('Unknown')
+    expect(diagnostics.textContent).not.toMatch(/All healthy/i)
+    // Responsive columns: one on phones, two on tablets, three on desktop.
+    const grid = diagnostics.querySelector('[data-slot="validator-diagnostics-groups"]')!
+    expect(grid.className).toContain('grid-cols-1')
+    expect(grid.className).toContain('sm:grid-cols-2')
+    expect(grid.className).toContain('lg:grid-cols-3')
+    // The full-precision reward sits in its own footer after the groups.
+    const footer = diagnostics.querySelector('[data-slot="validator-full-precision"]')!
+    expect(grid.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(within(footer as HTMLElement).getByText('Cumulative rewards (full precision)')).toBeTruthy()
   })
 
   it('shows the source, independent success times and cutoff', () => {

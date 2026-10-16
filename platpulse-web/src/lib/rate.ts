@@ -35,6 +35,21 @@ export function formatRatePercent2(value: string | null | undefined): string {
   return `${whole}.${String(kept).padStart(2, '0')}%`
 }
 
+/**
+ * Node detail's display form: at most two decimals, rounded half-up on the
+ * source digits, without meaningless trailing zeros (`100.047221` → `100.05%`,
+ * `75.50` → `75.5%`, `20` → `20%`). A value above 100 stays above 100. A
+ * non-zero rate too small for two decimals reads `<0.01%`, so it can never be
+ * mistaken for a real zero; only a source zero reads `0%`.
+ */
+export function formatRatePercentCompact(value: string | null | undefined): string {
+  const rounded = formatRatePercent2(value)
+  if (rounded === 'Unknown') return rounded
+  const trimmed = rounded.slice(0, -1).replace(/0+$/, '').replace(/\.$/, '')
+  if (trimmed === '0' && /[1-9]/.test(value ?? '')) return '<0.01%'
+  return trimmed + '%'
+}
+
 /** The rate exactly as provided, with a single `%` and no added precision. */
 export function formatRatePercentExact(value: string | null | undefined): string {
   if (!isNonnegativeDecimal(value)) return 'Unknown'

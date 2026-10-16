@@ -15,6 +15,9 @@ export type MetricRowProps = {
    *  row that gives `shortLabel` already carries the full name as the short
    *  label's own title, so it does not need this. */
   labelTitle?: string
+  /** A control beside the label, such as an InfoHint carrying the label's
+   *  definition for touch and keyboard readers as well as pointer readers. */
+  labelAddon?: ReactNode
   value: ReactNode
   detail?: ReactNode
   progress?: number | null
@@ -36,7 +39,7 @@ export type MetricRowProps = {
  * a known progress value reserves unpainted space, never a zero-like track.
  *
  */
-export function MetricRow({ label, shortLabel, labelTitle, value, detail, progress, progressStatus, className, layout = 'inline' }: MetricRowProps) {
+export function MetricRow({ label, shortLabel, labelTitle, labelAddon, value, detail, progress, progressStatus, className, layout = 'inline' }: MetricRowProps) {
   const compact = layout === 'compact'
   return (
     <div
@@ -61,6 +64,7 @@ export function MetricRow({ label, shortLabel, labelTitle, value, detail, progre
         ) : (
           label
         )}
+        {labelAddon}
       </span>
       <strong
         data-slot="metric-row-value"

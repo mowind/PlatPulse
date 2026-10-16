@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatRatePercent2, formatRatePercentExact } from './rate'
+import { formatRatePercent2, formatRatePercentCompact, formatRatePercentExact } from './rate'
 
 /**
  * Issue #156: both Validator production rates cross the Public API as
@@ -31,6 +31,33 @@ describe('formatRatePercent2', () => {
     expect(formatRatePercent2('12abc')).toBe('Unknown')
     expect(formatRatePercent2('-5')).toBe('Unknown')
     expect(formatRatePercent2('1.2.3')).toBe('Unknown')
+  })
+})
+
+describe('formatRatePercentCompact', () => {
+  it('rounds half-up to at most two decimals and drops meaningless trailing zeros', () => {
+    expect(formatRatePercentCompact('100.047221')).toBe('100.05%')
+    expect(formatRatePercentCompact('90.909091')).toBe('90.91%')
+    expect(formatRatePercentCompact('75.5')).toBe('75.5%')
+    expect(formatRatePercentCompact('75.50')).toBe('75.5%')
+    expect(formatRatePercentCompact('20')).toBe('20%')
+    expect(formatRatePercentCompact('100.027322')).toBe('100.03%')
+    expect(formatRatePercentCompact('99.999')).toBe('100%')
+    expect(formatRatePercentCompact('12.')).toBe('12%')
+  })
+
+  it('never caps a rate above 100 and keeps huge source integers exact', () => {
+    expect(formatRatePercentCompact('135.987654')).toBe('135.99%')
+    expect(formatRatePercentCompact('123456789012345678901234567890.125')).toBe('123456789012345678901234567890.13%')
+  })
+
+  it('keeps zero, a tiny non-zero rate and unknown apart', () => {
+    expect(formatRatePercentCompact('0')).toBe('0%')
+    expect(formatRatePercentCompact('0.000')).toBe('0%')
+    expect(formatRatePercentCompact('0.004')).toBe('<0.01%')
+    expect(formatRatePercentCompact('0.005')).toBe('0.01%')
+    expect(formatRatePercentCompact(null)).toBe('Unknown')
+    expect(formatRatePercentCompact('abc')).toBe('Unknown')
   })
 })
 

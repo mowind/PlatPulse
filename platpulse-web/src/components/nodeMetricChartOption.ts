@@ -217,6 +217,26 @@ function tooltipFormatter(input: MetricChartOptionInput) {
   }
 }
 
+/** Which directions the reader has hidden or shown through the native legend,
+ *  keyed by direction label. A label that is absent stays visible. */
+export type MetricLegendSelection = Readonly<Record<string, boolean>>
+
+/**
+ * Carries the reader's legend choices into a freshly composed option.
+ *
+ * Every update replaces the whole option (`notMerge`), because a line chart is
+ * one ECharts series per uninterrupted run and a merge would keep runs the new
+ * window no longer has. A replacement also forgets the legend's state, so the
+ * choices are restated here: every run of a direction shares its label, and one
+ * entry therefore hides or shows all of them. A direction with no samples right
+ * now keeps its entry, so its choice is still there when samples return.
+ */
+export function withLegendSelection(option: EChartsOption, selected: MetricLegendSelection): EChartsOption {
+  const legend = option.legend
+  if (!legend || Array.isArray(legend) || Object.keys(selected).length === 0) return option
+  return { ...option, legend: { ...legend, selected: { ...selected } } }
+}
+
 export function metricChartOption(input: MetricChartOptionInput): EChartsOption {
   const theme = input.dark ? METRIC_CHART_THEME.dark : METRIC_CHART_THEME.light
   const series: MetricChartSeries = input.series.flatMap((entry, direction): MetricChartSeries => {

@@ -21,8 +21,10 @@ const PUBLIC_NODE_NAME = 'Node A'
 const PUBLIC_NODE_ID = '0195f2a1-0014-4014-8014-000000000014'
 const LINKED_BLOCK_COUNT = '100'
 const LINKED_REWARD = '10'
-// 100 actual / 110 scheduled = 90.909091%; Node detail keeps the source digits.
-const LINKED_BLOCK_RATE_DETAIL = '90.909091%'
+// 100 actual / 110 scheduled = 90.909091%. The overview reads two decimals at
+// most; the diagnostics' full-precision area keeps the source digits.
+const LINKED_BLOCK_RATE_DETAIL = '90.91%'
+const LINKED_BLOCK_RATE_EXACT = '90.909091%'
 const LINKED_GEN_BLOCKS_RATE_DETAIL = '75.5%'
 // Source rewardPer 20 is 20%; detail preserves the source digits.
 const LINKED_DELEGATION_SHARE_DETAIL = '20%'
@@ -95,6 +97,36 @@ async function expectCardLabels(scope: Locator) {
   }
   expect(new Set(labels.map(label => label.paintsFull)).size, 'the three cells paint one label vocabulary').toBe(1)
   return labels.map(label => label.paintsFull ? label.full! : label.short!)
+}
+
+/** Expanded diagnostics: three key/value groups in one, two or three columns by
+ *  width, each value beside its label and nothing clipped or scrolled. */
+async function expectDiagnosticsGroups(diagnostics: Locator) {
+  const groups = diagnostics.locator('[data-slot="validator-diagnostics-group"]')
+  await expect(groups.locator('h3')).toHaveText(['Identity & activity', 'Source & freshness', 'Ranking & counters'])
+  const layout = await diagnostics.locator('[data-slot="validator-diagnostics-groups"]').evaluate(element => ({
+    tracks: getComputedStyle(element).gridTemplateColumns.split(' ').length,
+    width: window.innerWidth,
+    tops: [...element.querySelectorAll(':scope > [data-slot="validator-diagnostics-group"]')].map(group => group.getBoundingClientRect().top),
+    rows: [...element.querySelectorAll('dt')].map(dt => {
+      const dd = dt.nextElementSibling!.getBoundingClientRect()
+      const label = dt.getBoundingClientRect()
+      return { labelRight: label.right, valueLeft: dd.left, top: label.top, valueTop: dd.top }
+    }),
+  }))
+  expect(layout.tracks, 'three groups on desktop, two on tablets, one on phones').toBe(layout.width >= 1024 ? 3 : layout.width >= 640 ? 2 : 1)
+  if (layout.tracks === 3) {
+    expect(layout.tops[1]).toBeCloseTo(layout.tops[0], 0)
+    expect(layout.tops[2]).toBeCloseTo(layout.tops[0], 0)
+  }
+  for (const row of layout.rows) {
+    expect(row.valueLeft, 'each value sits beside its label, not on a line of its own').toBeGreaterThanOrEqual(row.labelRight - 1)
+    expect(row.valueTop).toBeCloseTo(row.top, 0)
+  }
+  const overflowing = await diagnostics.locator('*').evaluateAll(elements => elements
+    .filter(element => element.scrollWidth > element.clientWidth + 1 || ['auto', 'scroll'].includes(getComputedStyle(element).overflowY))
+    .map(element => element.outerHTML.slice(0, 120)))
+  expect(overflowing, 'diagnostics wrap within their groups without nested scrolling').toEqual([])
 }
 
 /** Six independent metrics: two columns on phones and tablets, strict desktop 3×2.
@@ -203,6 +235,8 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await expect(metricValue(detail, 'Cumulative rewards')).toHaveText(LINKED_REWARD)
     await expect(diagnostics.getByLabel('Public Validator states').getByText('Current staking status', { exact: true })).toBeVisible()
     await expect(diagnostics.getByText('Last success', { exact: true })).toBeVisible()
+    await expectDiagnosticsGroups(diagnostics)
+    await expect(diagnostics.getByText('Production rate (full precision)', { exact: true }).locator('xpath=following-sibling::dd')).toHaveText(LINKED_BLOCK_RATE_EXACT)
     await expect(metricValue(detail, 'Network rank')).toHaveText(LINKED_RANK)
     await expect(metricValue(detail, 'Production rate')).toHaveText(LINKED_BLOCK_RATE_DETAIL)
     await expect(metricValue(detail, 'PlatScan 24h rate')).toHaveText(LINKED_GEN_BLOCKS_RATE_DETAIL)
@@ -307,6 +341,10 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
         }
       }
       await expect(metricValue(detail, 'Cumulative rewards')).toHaveText(reward === '10' ? '10' : '305,614.7756')
+      // Rates above 100% stay above 100%, a source zero stays 0%.
+      await expect(metricValue(detail, 'Production rate')).toHaveText('100.03%')
+      await expect(metricValue(detail, 'PlatScan 24h rate')).toHaveText('100%')
+      await expect(metricValue(detail, 'Delegation reward share')).toHaveText('0%')
       await expect(detail.getByTitle(reward === '10' ? '10' : '305,614.775625389856', { exact: true })).toBeVisible()
       await expectDetailMetrics(detail)
       const width = page.viewportSize()!.width
@@ -349,6 +387,8 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
       await expect(detail.getByLabel(/Validator identifier:/)).toBeVisible()
       await expect(disclosures.getByText('Cumulative rewards (full precision)', { exact: true })).toBeVisible()
       await expect(fullReward).toBeVisible()
+      await expectDiagnosticsGroups(disclosures)
+      await expect(disclosures.getByText('Production rate (full precision)', { exact: true }).locator('xpath=following-sibling::dd')).toHaveText('100.027322%')
       await testInfo.attach('Overview layout measurements', {
         body: JSON.stringify({ viewport: page.viewportSize(), collapsedHeight, collapsedHistoryY, expandedHistoryY: await documentY() }),
         contentType: 'application/json',

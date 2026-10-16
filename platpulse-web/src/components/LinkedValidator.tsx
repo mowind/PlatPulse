@@ -1,9 +1,9 @@
-import { useId, useState } from 'react'
+import { Fragment, useId, useState, type ReactNode } from 'react'
 import { Copy, Eye, EyeOff, Info } from 'lucide-react'
 import type { PublicNode, PublicValidatorInsight } from '../api/generated'
 import { Button } from './ui/button'
 import { formatAmountCompact, formatAmountExact } from '../lib/amount'
-import { formatRatePercentExact } from '../lib/rate'
+import { formatRatePercentCompact, formatRatePercentExact } from '../lib/rate'
 import { MetricRow } from './MetricRow'
 import { ExactAmount } from './ExactAmount'
 import { CardX } from './ui/card-x'
@@ -64,11 +64,17 @@ const IDENTIFIER_CONTROL_CLASS = 'text-muted-foreground'
  * content-start keeps each cell's own rows at their natural height instead of
  * letting the stretch reopen the caption/value gap the tests bound.
  */
-const DETAIL_METRICS_GRID = 'grid grid-cols-2 items-stretch gap-x-4 gap-y-2 lg:grid-cols-3 [&>[data-slot=metric-row]]:grid-cols-1 [&>[data-slot=metric-row]]:gap-y-0.5 [&>[data-slot=metric-row]]:content-start [&_[data-slot=metric-row-label]]:min-w-0 [&_[data-slot=metric-row-label]]:whitespace-normal [&_[data-slot=metric-row-label]]:text-[11px] [&_[data-slot=metric-row-label]]:leading-4 [&_[data-slot=metric-row-label]]:[overflow-wrap:anywhere] [&_[data-slot=metric-row-value]]:text-left [&_[data-slot=metric-row-value]]:text-sm [&_[data-slot=metric-row-value]]:font-semibold [&_[data-slot=metric-row-value]]:justify-start [&_[data-slot=metric-row-value]]:before:hidden [&_[data-slot=metric-row-detail]]:col-span-1 [&_[data-slot=metric-row-detail]]:whitespace-normal [&_[data-slot=metric-row-detail]]:overflow-visible [&_[data-slot=metric-row-detail]]:[overflow-wrap:anywhere]'
+const DETAIL_METRICS_GRID = 'grid grid-cols-2 items-stretch gap-x-4 gap-y-2 lg:grid-cols-3 [&>[data-slot=metric-row]]:grid-cols-1 [&>[data-slot=metric-row]]:gap-y-0.5 [&>[data-slot=metric-row]]:content-start [&_[data-slot=metric-row-label]]:min-w-0 [&_[data-slot=metric-row-label]]:whitespace-normal [&_[data-slot=metric-row-label]]:text-[11px] [&_[data-slot=metric-row-label]]:leading-4 [&_[data-slot=metric-row-label]]:[overflow-wrap:anywhere] [&_[data-slot=metric-row-value]]:text-left [&_[data-slot=metric-row-value]]:justify-start [&_[data-slot=metric-row-value]]:before:hidden [&_[data-slot=metric-row-detail]]:col-span-1 [&_[data-slot=metric-row-detail]]:whitespace-normal [&_[data-slot=metric-row-detail]]:overflow-visible [&_[data-slot=metric-row-detail]]:[overflow-wrap:anywhere]'
 
 /** Keep normal values paired on phones; unusually long exact values get the
  * whole row before they can squeeze or overflow a column. The last-resort wrap
  * remains available even at increased text size, with every digit preserved. */
+/** The two weights of the six metrics. The lifetime totals and the rank lead at
+ *  17px semibold; the three rates follow at 13px medium, so the grid reads as
+ *  three headline figures over three supporting ones without new cards. */
+const PRIMARY_METRIC = '[&_[data-slot=metric-row-value]]:text-[17px] [&_[data-slot=metric-row-value]]:leading-6 [&_[data-slot=metric-row-value]]:font-semibold'
+const SECONDARY_METRIC = '[&_[data-slot=metric-row-value]]:text-[13px] [&_[data-slot=metric-row-value]]:leading-5 [&_[data-slot=metric-row-value]]:font-medium'
+
 function detailMetricSpan(value: string): string | undefined {
   if (value.length > 24) return 'col-span-full'
   if (value.length > 15) return 'col-span-full sm:col-span-1'
@@ -185,19 +191,26 @@ function blockCountLabel(blockCount: number | null | undefined): string {
  * denominator is Not applicable (no scheduled duties), an incomplete pair is
  * Unknown, and only `ok` carries a rate (#156).
  */
-function formatRate(value: string | null | undefined): string {
-  return value == null ? 'Unknown' : formatRatePercentExact(value)
+function formatRate(value: string | null | undefined, precision: RatePrecision = 'display'): string {
+  if (value == null) return 'Unknown'
+  return precision === 'exact' ? formatRatePercentExact(value) : formatRatePercentCompact(value)
 }
 
-function blockRateLabel(validator: PublicValidatorInsight): string {
+/** Node detail shows a rate at two decimals at most (`display`); the source
+ *  digits (`exact`) stay in the diagnostics' full-precision area and in the
+ *  value's own title. Only the presentation differs: the source string is never
+ *  recomputed, converted to a float or capped at 100%. */
+type RatePrecision = 'display' | 'exact'
+
+function blockRateLabel(validator: PublicValidatorInsight, precision: RatePrecision = 'display'): string {
   if (validator.blockRateState === 'not_applicable') return 'Not applicable'
   if (validator.blockRateState !== 'ok') return 'Unknown'
-  return formatRate(validator.blockRate)
+  return formatRate(validator.blockRate, precision)
 }
 
 /** PlatScan's own source-reported 24-hour rate; never locally reconstructed. */
-function genBlocksRateLabel(validator: PublicValidatorInsight): string {
-  return formatRate(validator.genBlocksRate)
+function genBlocksRateLabel(validator: PublicValidatorInsight, precision: RatePrecision = 'display'): string {
+  return formatRate(validator.genBlocksRate, precision)
 }
 
 /**
@@ -207,8 +220,8 @@ function genBlocksRateLabel(validator: PublicValidatorInsight): string {
  * a fabricated 0. It is deliberately kept apart from the annualized
  * `rewardRate` and never labelled with a yield or commission meaning (#157).
  */
-function delegationRewardShareLabel(validator: PublicValidatorInsight): string {
-  return formatRate(validator.delegationRewardPercentage)
+function delegationRewardShareLabel(validator: PublicValidatorInsight, precision: RatePrecision = 'display'): string {
+  return formatRate(validator.delegationRewardPercentage, precision)
 }
 
 /**
@@ -396,6 +409,9 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
   const production = blockRateLabel(validator)
   const platscanRate = genBlocksRateLabel(validator)
   const rewardShare = delegationRewardShareLabel(validator)
+  // A rounded rate keeps its source digits as the value's title; the
+  // diagnostics' full-precision area carries them for touch and keyboard.
+  const rateValue = (display: string, exact: string) => display === exact ? display : <span title={exact}>{display}</span>
   const metricColumnRules = detailMetricColumnRules([blocks, overviewRewards, rank, production, platscanRate, rewardShare])
   const identifier = validator.validatorNodeId
   const identifierId = useId()
@@ -466,12 +482,12 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
       </DataTooltip>
     </p>}
     <div data-slot="validator-performance-metrics" className={DETAIL_METRICS_GRID} role="group" aria-label="Validator performance metrics">
-      <MetricRow label="Cumulative blocks" className={cn(detailMetricSpan(blocks), metricColumnRules[0])} value={<ExactAmount value={blocks} />} detail={metricNote(counterWarning)} />
-      <MetricRow label="Cumulative rewards" className={cn(detailMetricSpan(overviewRewards), metricColumnRules[1])} value={<span title={rewards}><ExactAmount value={overviewRewards} muteFraction /></span>} />
-      <MetricRow label="Network rank" className={cn(detailMetricSpan(rank), metricColumnRules[2])} value={rank} detail={metricNote(rankWarning)} />
-      <MetricRow label="Production rate" className={cn(detailMetricSpan(production), metricColumnRules[3])} value={production} detail={metricNote(rateWarning)} />
-      <MetricRow label="PlatScan 24h rate" className={cn(detailMetricSpan(platscanRate), metricColumnRules[4])} value={platscanRate} />
-      <MetricRow label="Delegation reward share" className={cn(detailMetricSpan(rewardShare), metricColumnRules[5])} value={rewardShare} />
+      <MetricRow label="Cumulative blocks" className={cn(PRIMARY_METRIC, detailMetricSpan(blocks), metricColumnRules[0])} value={<ExactAmount value={blocks} />} detail={metricNote(counterWarning)} />
+      <MetricRow label="Cumulative rewards" className={cn(PRIMARY_METRIC, detailMetricSpan(overviewRewards), metricColumnRules[1])} value={<span title={rewards}><ExactAmount value={overviewRewards} muteFraction /></span>} />
+      <MetricRow label="Network rank" className={cn(PRIMARY_METRIC, detailMetricSpan(rank), metricColumnRules[2])} value={rank} detail={metricNote(rankWarning)} />
+      <MetricRow label="Production rate" className={cn(SECONDARY_METRIC, detailMetricSpan(production), metricColumnRules[3])} value={rateValue(production, blockRateLabel(validator, 'exact'))} detail={metricNote(rateWarning)} />
+      <MetricRow label="PlatScan 24h rate" className={cn(SECONDARY_METRIC, detailMetricSpan(platscanRate), metricColumnRules[4])} value={rateValue(platscanRate, genBlocksRateLabel(validator, 'exact'))} />
+      <MetricRow label="Delegation reward share" className={cn(SECONDARY_METRIC, detailMetricSpan(rewardShare), metricColumnRules[5])} value={rateValue(rewardShare, delegationRewardShareLabel(validator, 'exact'))} />
     </div>
     {emptyNote && <p className="m-0 text-xs text-muted-foreground" role="status">{emptyNote}</p>}
     <div className="flex min-w-0 flex-col gap-1">
@@ -509,24 +525,85 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
 export function LinkedValidatorDiagnostics({ node, validator }: { node: PublicNode; validator: PublicValidatorInsight }) {
   const qualifierLabel = currentValidatorStatusQualifierLabel(validator.currentValidatorStatusQualifier)
   const rewards = formatAmountExact(validator.rewardAmount)
+  const state = (value: string | null | undefined) => value ?? 'Not provided'
+  const time = (value: string | null | undefined, missing: string) => value ? formatUtcDateTime(value) : missing
   return <Disclosure
     title="Validator diagnostics"
     description="Provider, freshness, ranking and source details"
     className="min-w-0"
   >
-    {validator.displayName && <dl className="m-0 text-xs">
-      <dt className="text-muted-foreground">PlatScan identity name</dt>
-      <dd className="m-0 [overflow-wrap:anywhere]">{validator.displayName}</dd>
-    </dl>}
-    {qualifierLabel && <p className="m-0 text-[11px] text-muted-foreground">This identity has a confirmed-valid staking identity but is {qualifierLabel.toLowerCase()}, not normally producing.</p>}
-    <ValidatorPublicStates node={node} validator={validator} />
-    <Provenance validator={validator} />
-    {validator.rewardAmount != null && <p className="m-0 text-[11px] text-muted-foreground">Amounts use the Network native unit; the exact source reward precision is preserved below.</p>}
-    <dl className="m-0 min-w-0 text-xs">
-      <dt className="text-muted-foreground">Cumulative rewards (full precision)</dt>
-      <dd className="m-0 select-text tabular-nums [overflow-wrap:anywhere]"><ExactAmount value={rewards} /></dd>
-    </dl>
+    {/* Three compact key/value groups instead of one long label-over-value
+        list. Every independent state keeps its own row and its own wording:
+        nothing is merged into a summary verdict. */}
+    <div data-slot="validator-diagnostics-groups" role="group" aria-label="Public Validator states" className="grid min-w-0 grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
+      <DiagnosticsGroup group="identity" title="Identity & activity" facts={[
+        ...(validator.displayName ? [['PlatScan identity name', validator.displayName] as const] : []),
+        ['Current staking status', state(validator.currentValidatorStatus)],
+        ['Staking status state', state(validator.currentValidatorStatusState)],
+        ['Staking qualifier', state(validator.currentValidatorStatusQualifier)],
+        ['Identity state', state(node.validatorIdentityState)],
+        ['Activity', state(validator.activity)],
+        ['Activity state', state(validator.activityState)],
+      ]}>
+        {qualifierLabel && <p className="m-0 mt-1 text-[11px] leading-4 text-muted-foreground">This identity has a confirmed-valid staking identity but is {qualifierLabel.toLowerCase()}, not normally producing.</p>}
+      </DiagnosticsGroup>
+      <DiagnosticsGroup group="source" title="Source & freshness" facts={[
+        ['Provider state', state(validator.state)],
+        ['Data freshness', state(validator.freshness)],
+        ['Last success', time(validator.receivedAt, 'Never observed')],
+        ['Source', validator.source ?? 'Unknown'],
+        ['Source cutoff', time(validator.providerTimestamp, 'Not provided by the source')],
+      ]} />
+      {/* The ranking list is fetched independently, so it has its own success time. */}
+      <DiagnosticsGroup group="ranking" title="Ranking & counters" facts={[
+        ['Rank state', state(validator.rankState)],
+        ['Rank freshness', state(validator.rankFreshness)],
+        ['Rank last success', time(validator.rankReceivedAt, 'Never observed')],
+        ['Rank cohort', validator.rankCohortSize != null ? String(validator.rankCohortSize) : 'Unknown'],
+        ['Counter state', state(validator.counterState)],
+        ['Production rate state', state(validator.blockRateState)],
+      ]} />
+    </div>
+    {/* The source digits the overview rounds, in one quiet footer: selectable,
+        copyable and never re-derived. */}
+    <div data-slot="validator-full-precision" className="min-w-0 border-t border-dashed border-border/60 pt-2">
+      <dl className="m-0 grid min-w-0 grid-cols-1 gap-x-6 gap-y-1.5 text-xs sm:grid-cols-2 lg:grid-cols-4" aria-label="Full-precision source values">
+        <FullPrecisionFact label="Cumulative rewards (full precision)"><ExactAmount value={rewards} /></FullPrecisionFact>
+        <FullPrecisionFact label="Production rate (full precision)">{blockRateLabel(validator, 'exact')}</FullPrecisionFact>
+        <FullPrecisionFact label="PlatScan 24h rate (full precision)">{genBlocksRateLabel(validator, 'exact')}</FullPrecisionFact>
+        <FullPrecisionFact label="Delegation reward share (full precision)">{delegationRewardShareLabel(validator, 'exact')}</FullPrecisionFact>
+      </dl>
+      {validator.rewardAmount != null && <p className="m-0 mt-1.5 text-[11px] leading-4 text-muted-foreground">Amounts use the Network native unit.</p>}
+    </div>
   </Disclosure>
+}
+
+/** One diagnostics group: a small heading over left-label/right-value rows. A
+ *  long timestamp or source name wraps inside its own value cell. */
+function DiagnosticsGroup({ group, title, facts, children }: {
+  group: 'identity' | 'source' | 'ranking'
+  title: string
+  facts: ReadonlyArray<readonly [string, string]>
+  children?: ReactNode
+}) {
+  const headingId = useId()
+  return <section data-slot="validator-diagnostics-group" data-group={group} aria-labelledby={headingId} className="min-w-0">
+    <h3 id={headingId} className="m-0 pb-1 text-xs font-medium text-foreground">{title}</h3>
+    <dl className="m-0 grid min-w-0 grid-cols-[minmax(0,max-content)_minmax(0,1fr)] text-xs">
+      {facts.map(([label, value]) => <Fragment key={label}>
+        <dt className="min-w-0 border-t border-border/60 py-1 text-muted-foreground">{label}</dt>
+        <dd className="m-0 min-w-0 border-t border-border/60 py-1 pl-3 text-right tabular-nums [overflow-wrap:anywhere]">{value}</dd>
+      </Fragment>)}
+    </dl>
+    {children}
+  </section>
+}
+
+function FullPrecisionFact({ label, children }: { label: string; children: ReactNode }) {
+  return <div className="min-w-0">
+    <dt className="text-[11px] leading-4 text-muted-foreground">{label}</dt>
+    <dd className="m-0 select-text tabular-nums [overflow-wrap:anywhere]">{children}</dd>
+  </div>
 }
 
 /**
@@ -687,39 +764,4 @@ function ValidatorSummaryCell({ metric, label, shortLabel, value, title, reason 
       </strong>
     </div>
   )
-}
-
-/** The full accessible status vocabulary for the Node detail region. */
-function ValidatorPublicStates({ node, validator }: { node: PublicNode; validator: PublicValidatorInsight }) {
-  const states = [
-    ['Current staking status', validator.currentValidatorStatus],
-    ['Staking status state', validator.currentValidatorStatusState],
-    ['Staking qualifier', validator.currentValidatorStatusQualifier],
-    ['Provider state', validator.state], ['Data freshness', validator.freshness],
-    ['Rank state', validator.rankState], ['Rank freshness', validator.rankFreshness],
-    ['Production rate state', validator.blockRateState], ['Counter state', validator.counterState],
-    ['Activity', validator.activity], ['Activity state', validator.activityState],
-    ['Identity state', node.validatorIdentityState],
-  ]
-  return <dl className="m-0 grid grid-cols-2 gap-x-3 gap-y-2 border-t border-border pt-2" aria-label="Public Validator states">
-    {states.map(([label, value]) => <div key={label} className="min-w-0">
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="m-0 break-words text-xs">{value ?? 'Not provided'}</dd>
-    </div>)}
-  </dl>
-}
-
-function Provenance({ validator }: { validator: PublicValidatorInsight }) {
-  const fact = (label: string, value: string) => <div key={label} className="min-w-0">
-    <dt className="text-[11px] font-medium tracking-wider text-muted-foreground">{label}</dt>
-    <dd className="m-0 break-words text-xs">{value}</dd>
-  </div>
-  return <dl className="m-0 grid grid-cols-[repeat(auto-fit,minmax(9rem,1fr))] gap-x-4 gap-y-1.5 border-t border-dashed border-border/60 pt-2">
-    {fact('Last success', validator.receivedAt ? formatUtcDateTime(validator.receivedAt) : 'Never observed')}
-    {/* The ranking list is fetched independently, so it has its own success time. */}
-    {fact('Rank last success', validator.rankReceivedAt ? formatUtcDateTime(validator.rankReceivedAt) : 'Never observed')}
-    {fact('Rank cohort', validator.rankCohortSize != null ? `${validator.rankCohortSize}` : 'Unknown')}
-    {fact('Source', validator.source ?? 'Unknown')}
-    {fact('Source cutoff', validator.providerTimestamp ? formatUtcDateTime(validator.providerTimestamp) : 'Not provided by the source')}
-  </dl>
 }

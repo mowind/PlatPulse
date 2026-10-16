@@ -7,7 +7,9 @@ import { metricChartMaxBands, type MetricAxisRule } from './metricChartAxis'
 import {
   METRIC_CHART_GUTTER,
   metricChartOption,
+  withLegendSelection,
   type MetricChartSeriesInput,
+  type MetricLegendSelection,
 } from './nodeMetricChartOption'
 
 /**
@@ -29,6 +31,11 @@ import {
  * plot box. The ECharts grid keeps Emerald's margins inside it, so the painted
  * band shrinks on a phone; the value axis is told how many tick bands that band
  * can space apart, so its labels never sit on top of each other.
+ *
+ * Directions the reader hides through the legend stay hidden for as long as this
+ * chart is mounted: across refetches, resizes, theme switches and a window in
+ * which the direction has no samples. A different Node mounts a different chart
+ * (the page keys the deck by Node), so choices never travel between Nodes.
  */
 export type NodeMetricChartProps = {
   /** Card title, used to name the chart for assistive technology. */
@@ -52,6 +59,9 @@ export type NodeMetricChartProps = {
   description: string
   /** ECharts native legend displayed at bottom: 4, matching Emerald. */
   showLegend?: boolean
+  /** The window is the last successful one, held after a failed refresh; the
+   *  accessible name then stops calling it "the last N seconds". */
+  retained?: boolean
   className?: string
 }
 
@@ -69,11 +79,15 @@ export default function NodeMetricChart({
   message,
   description,
   showLegend = false,
+  retained = false,
   className,
 }: NodeMetricChartProps) {
   const container = useRef<HTMLDivElement>(null)
   const chart = useRef<ECharts | null>(null)
   const optionRef = useRef<ReturnType<typeof metricChartOption> | null>(null)
+  // Kept outside React state: a legend click is already painted by ECharts, so it
+  // only needs remembering for the next full option replacement.
+  const legendSelection = useRef<MetricLegendSelection>({})
   const [width, setWidth] = useState(0)
   const [height, setHeight] = useState(0)
   // A chart that could not load says so. Leaving the plot silently blank would
@@ -118,7 +132,11 @@ export default function NodeMetricChart({
         if (disposed || !container.current) return
         instance = core.init(container.current, undefined, { renderer: 'svg' })
         chart.current = instance
-        if (optionRef.current) instance.setOption(optionRef.current)
+        if (optionRef.current) instance.setOption(withLegendSelection(optionRef.current, legendSelection.current), { notMerge: true })
+        instance.on('legendselectchanged', (event) => {
+          const selected = (event as { selected?: Record<string, boolean> }).selected
+          if (selected) legendSelection.current = { ...selected }
+        })
         observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver((entries) => {
           const box = entries[0]?.contentRect
           if (box) {
@@ -141,13 +159,14 @@ export default function NodeMetricChart({
     return () => {
       disposed = true
       observer?.disconnect()
+      instance?.off('legendselectchanged')
       instance?.dispose()
       chart.current = null
     }
   }, [hasSamples])
 
   useEffect(() => {
-    chart.current?.setOption(option, { notMerge: true })
+    chart.current?.setOption(withLegendSelection(option, legendSelection.current), { notMerge: true })
   }, [option])
 
   return (
@@ -159,7 +178,7 @@ export default function NodeMetricChart({
         data-points={points}
         data-chart-error={failed ? 'load' : undefined}
         role="img"
-        aria-label={label + ' ' + kind + ' chart over the last ' + seconds + ' seconds'}
+        aria-label={label + ' ' + kind + ' chart over ' + (retained ? 'a retained ' + seconds + '-second window' : 'the last ' + seconds + ' seconds')}
         aria-describedby={descriptionId}
         className={cn('relative min-w-0 w-full', CHART_HEIGHT)}
       >

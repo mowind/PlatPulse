@@ -35,6 +35,7 @@ import {
   type MetricAxisRule,
 } from '../components/metricChartAxis'
 import { MetricRow } from '../components/MetricRow'
+import { InfoHint } from '../components/InfoHint'
 import { ValidatorActivityBadge } from '../components/ValidatorActivityBadge'
 import { HEAD_COMPARISON_TONE_CLASS, LastReportAge, networkHeadComparison, networkHeadOffset, validHeight } from '../components/NodeDetailObservations'
 import { SummaryMetricCard } from '../components/SummaryMetricCard'
@@ -89,8 +90,17 @@ export function NodePage() {
   const nodeGeo = nodeGeoOverview(node)
   const nodeGeoStatus = geoMapStatus(nodeGeo, { loading: false, hasProjection: true })
   const health = nodeHealthPresentation(node.health)
-  const blockInterval = latestBlockInterval(historyQuery.data)
+  // The three queries fail independently: a failed history refresh is stated
+  // beside the history it concerns, never as a failure of the whole page.
+  const blockInterval = historyQuery.data
+    ? latestBlockInterval(historyQuery.data)
+    : { value: 'Unknown', detail: historyQuery.isPending ? 'Loading block history…' : 'Block history unavailable' }
+  const blockIntervalDetail = historyQuery.isRefetchError ? blockInterval.detail + ' · Block history update failed' : blockInterval.detail
   const metricHistory = metricsQuery.data
+  // A background refresh failed but the last successful window is still held:
+  // it keeps its own from/to and samples, and the page says it is retained
+  // rather than letting it pass for the latest window.
+  const metricHistoryRetained = metricsQuery.isRefetchError && metricHistory != null
   const metricHistoryMessage = metricHistory
     ? undefined
     : metricsQuery.isPending
@@ -102,7 +112,7 @@ export function NodePage() {
   // the Home card's Disk column and the Home Disk sort read (#242) instead of
   // guarding the same two fields a second time.
   const nodeDataProgressValue = nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
-  const metricWindowTitle = describeMetricWindow(metricHistory)
+  const metricWindowTitle = describeMetricWindow(metricHistory, metricHistoryRetained)
   const validatorNode = nodeUsesValidatorComposition(node)
 
   return <section className={PAGE}>
@@ -132,7 +142,10 @@ export function NodePage() {
       metricsLabel="Node key summary"
       metrics={<>
         <SummaryTile label="Head" value={formatNumber(node.currentHead)} detail={headLagDetail(node)} />
-        <SummaryTile label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={syncStateDetail(node)} />
+        <SummaryTile label="Sync collection" value={nodeComponentStateLabel(node.syncState)} detail={syncStateDetail(node)} action={<InfoHint inline={false} align="end" label="About Sync collection">
+          <p className="m-0">The state of this Node's latest sync-data collection: Current, Error, Unknown and so on.</p>
+          <p className="m-0">It is not a chain-sync verdict. Current means the data was collected, not that the Node is fully synced; the Head tile carries the head lag.</p>
+        </InfoHint>} />
         <SummaryTile label="Peers" value={peerCount(node.peers)} detail={peerDirectionSummary(node.peers)} />
         <SummaryTile label="Uptime" value={formatDuration(node.processUptimeMs)} />
         <SummaryTile label="Block interval" value={blockInterval.value} detail={blockInterval.value === 'Unknown' ? blockInterval.detail : undefined} />
@@ -152,10 +165,19 @@ export function NodePage() {
     {validatorNode && <LinkedValidatorSection node={node} variant="detail" />}
 
     <section data-slot="node-metrics-section" className="mt-4" aria-labelledby="node-metrics-title">
-      <header className="mb-2">
+      <header className="mb-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
         <h2 id="node-metrics-title" className="m-0 text-lg font-semibold">{metricWindowTitle}</h2>
+        {metricHistoryRetained && metricHistory && <div className="flex min-w-0 items-center">
+          <span role="status" data-slot="node-metrics-refresh-error" className="text-xs text-warning-foreground dark:text-warning">History update failed · Showing previous window</span>
+          <InfoHint label="Retained window times">
+            <p className="m-0">The charts show the last window that loaded successfully, not the latest 60 seconds.</p>
+            <p className="m-0" data-slot="node-metrics-retained-window">From {formatUtcDateTime(metricHistory.from)} to {formatUtcDateTime(metricHistory.to)}</p>
+          </InfoHint>
+        </div>}
       </header>
-      <div className="grid auto-rows-fr grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+      {/* Keyed by Node: legend choices belong to one Node's charts and never
+          travel to the next Node opened on the same route. */}
+      <div key={nodeId} className="grid auto-rows-fr grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         <NodeMetricCard
           label="Process CPU"
           value={formatPercent(node.processCpuPercent)}
@@ -165,6 +187,7 @@ export function NodePage() {
           axis={CPU_AXIS}
           valueFormat={formatPercentSample}
           historyMessage={metricHistoryMessage}
+          retained={metricHistoryRetained}
         />
         <NodeMetricCard
           label="Process memory"
@@ -175,6 +198,7 @@ export function NodePage() {
           axis={MEMORY_AXIS}
           valueFormat={formatPercentSample}
           historyMessage={metricHistoryMessage}
+          retained={metricHistoryRetained}
         />
         <NodeMetricCard
           label="Host network"
@@ -194,6 +218,7 @@ export function NodePage() {
           axis={NETWORK_AXIS}
           valueFormat={formatRateSample}
           historyMessage={metricHistoryMessage}
+          retained={metricHistoryRetained}
         />
         <NodeMetricCard
           label="Peer connections"
@@ -208,17 +233,19 @@ export function NodePage() {
           axis={PEER_AXIS}
           valueFormat={formatCountSample}
           historyMessage={metricHistoryMessage}
+          retained={metricHistoryRetained}
         />
         <NodeMetricCard
           label="Block interval"
           kind="bar"
           value={blockInterval.value}
-          detail={historyQuery.error ? 'History unavailable' : blockInterval.detail}
+          detail={blockIntervalDetail}
           series={[{ key: 'blockInterval', label: 'Block interval', points: metricHistory?.blockIntervalMs ?? [], coverage: metricCoverage(metricHistory, 'blockIntervalMs') }]}
           history={metricHistory}
           axis={BLOCK_INTERVAL_AXIS}
           valueFormat={formatMillisecondsSample}
           historyMessage={metricHistoryMessage}
+          retained={metricHistoryRetained}
         />
         <NodeMetricCard
           label="Transactions / block"
@@ -229,6 +256,7 @@ export function NodePage() {
           axis={TRANSACTION_AXIS}
           valueFormat={formatCountSample}
           historyMessage={metricHistoryMessage}
+          retained={metricHistoryRetained}
         />
       </div>
     </section>
@@ -243,13 +271,15 @@ export function NodePage() {
 
 /** Node Detail's six key metrics: Home's exact summary card, read-only (no
  *  hover ring) and keeping its own `node-summary-tile` slot. */
-function SummaryTile({ label, value, detail }: { label: string; value: ReactNode; detail?: ReactNode }) {
-  return <SummaryMetricCard label={label} value={value} caption={detail} hoverable={false} dataSlot="node-summary-tile" />
+function SummaryTile({ label, value, detail, action }: { label: string; value: ReactNode; detail?: ReactNode; action?: ReactNode }) {
+  return <SummaryMetricCard label={label} value={value} caption={detail} action={action} hoverable={false} dataSlot="node-summary-tile" />
 }
 
-/** `dense` tightens the row rhythm only: the card, its title line and its note
- *  stay the shared Node Detail card, so the three panels keep one geometry. */
-function NodeInfoGroup({ title, label, note, dense = false, children }: { title: string; label: string; note?: string; dense?: boolean; children: ReactNode }) {
+/** `dense` tightens the row rhythm only: the card and its title line stay the
+ *  shared Node Detail card, so the three panels keep one geometry. A static
+ *  definition of the whole card rides `hint` beside the title instead of a
+ *  permanent footer line. */
+function NodeInfoGroup({ title, label, hint, dense = false, children }: { title: string; label: string; hint?: ReactNode; dense?: boolean; children: ReactNode }) {
   return (
     <CardX
       bordered={false}
@@ -259,11 +289,13 @@ function NodeInfoGroup({ title, label, note, dense = false, children }: { title:
       className={CARD}
       contentClassName={cn('flex h-full min-w-0 flex-col', dense ? 'gap-1' : 'gap-1.5')}
     >
-      <h2 className="m-0 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm font-medium leading-5">
-        {title}
-      </h2>
+      <div className="flex min-w-0 items-center">
+        <h2 className="m-0 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm font-medium leading-5">
+          {title}
+        </h2>
+        {hint}
+      </div>
       <div className={cn('grid grid-cols-1', dense ? 'gap-1' : 'gap-1.5')}>{children}</div>
-      {note && <div className="mt-auto border-t border-border/60 pt-2"><p className="m-0 text-[11px] leading-4 text-muted-foreground">{note}</p></div>}
     </CardX>
   )
 }
@@ -287,14 +319,14 @@ function nodeSyncStateLabel(node: PublicNode): string | null {
   return label === 'Unknown' ? null : label
 }
 
-/** The Sync tile names the Report's component state, and says so: the Head tile
- *  already carries the head lag, and repeating it here read as a chain verdict
- *  the evidence does not support. An unnamed state keeps the comparison's own
- *  reason, so the tile never reads as "fully synced" by omission. */
+/** The Sync collection tile names the Report's sync-data collection state, and
+ *  its title says so; the full definition sits behind the tile's info control
+ *  instead of a permanent caption. The Head tile already carries the head lag,
+ *  and repeating it here would read as a chain verdict the evidence does not
+ *  support. An unnamed state keeps the comparison's own reason visible, so the
+ *  tile never reads as "fully synced" by omission. */
 function syncStateDetail(node: PublicNode): string | undefined {
-  return nodeSyncStateLabel(node) === null
-    ? networkHeadComparison(node).reason
-    : 'Data collection state; not chain sync'
+  return nodeSyncStateLabel(node) === null ? networkHeadComparison(node).reason : undefined
 }
 
 type HeadLagPresentation = { label: string; toneClass: string }
@@ -415,12 +447,16 @@ function processCollectionLabel(state: string | null | undefined): string {
 function ProcessGroup({ node, nodeDataProgressValue }: { node: PublicNode; nodeDataProgressValue: number | null }) {
   const bytes = formatNodeDataBytes(finiteNonNegative(node.nodeDataDirectorySizeBytes) ? node.nodeDataDirectorySizeBytes : null, finiteNonNegative(node.nodeDataDirectoryCapacityBytes) ? node.nodeDataDirectoryCapacityBytes : null)
   const started = formatUtcDateTime(node.processStartedAt)
-  return <NodeInfoGroup dense title="Process" label="PlatON process" note="Last collection result; not a live process status">
-    <MetricRow label="Collection" value={<span className="inline-flex items-center gap-1.5"><span className={cn('inline-block size-2 shrink-0 rounded-full', processStateDot(node.processState))} aria-hidden="true" />{processCollectionLabel(node.processState)}</span>} />
+  return <NodeInfoGroup dense title="Process" label="PlatON process">
+    <MetricRow label="Collection" labelAddon={<InfoHint label="About Collection">
+      <p className="m-0">The result of the most recent process collection. It is not a live Running or Stopped process status.</p>
+    </InfoHint>} value={<span className="inline-flex items-center gap-1.5"><span className={cn('inline-block size-2 shrink-0 rounded-full', processStateDot(node.processState))} aria-hidden="true" />{processCollectionLabel(node.processState)}</span>} />
     {started !== 'Unknown' && <MetricRow label="Started" value={started} />}
     {(bytes != null || nodeDataProgressValue != null) && <div className="grid grid-cols-1 gap-1.5" role="group" aria-label="Node data directory">
-      {bytes != null && <MetricRow label="Storage" value={bytes} />}
-      {nodeDataProgressValue != null && <MetricRow label="Data usage" value={formatPercent(nodeDataProgressValue)} detail="Directory size against its filesystem capacity, not whole-Host disk usage" />}
+      {bytes != null && <MetricRow label="Data directory" value={bytes} />}
+      {nodeDataProgressValue != null && <MetricRow label="Data usage" labelAddon={<InfoHint label="About Data usage">
+        <p className="m-0">The Node data directory's size against the capacity of the filesystem it lives on. It is not whole-Host disk usage.</p>
+      </InfoHint>} value={formatPercent(nodeDataProgressValue)} />}
     </div>}
   </NodeInfoGroup>
 }
@@ -433,7 +469,9 @@ function HostResourcesGroup({ node }: { node: PublicNode }) {
   const resources = [['CPU', node.hostCpuPercent], ['Memory', node.hostMemoryPercent], ['Storage', node.hostStoragePercent]] as const
   const upload = finiteNonNegative(node.hostNetworkTxBytesPerSec)
   const download = finiteNonNegative(node.hostNetworkRxBytesPerSec)
-  return <NodeInfoGroup dense title="Host resources" label="Shared Host resources" note="Collected once per Agent; shared by every Node it monitors">
+  return <NodeInfoGroup dense title="Host resources" label="Shared Host resources" hint={<InfoHint label="About Host resources">
+    <p className="m-0">Collected once per Agent and shared by every Node that Agent monitors, so these values describe the whole Host rather than this Node alone.</p>
+  </InfoHint>}>
     {resources.map(([label, value]) => finiteNonNegative(value) ? <MetricRow key={label} label={label} value={formatPercent(value)} progress={value} progressStatus="info" /> : null)}
     {(upload || download) && <MetricRow label="Network" value={<span className="inline-flex flex-wrap items-center justify-end gap-x-2 tabular-nums">{upload && <span>↑ {formatMetricRate(node.hostNetworkTxBytesPerSec)}</span>}{download && <span>↓ {formatMetricRate(node.hostNetworkRxBytesPerSec)}</span>}</span>} />}
     {!resources.some(([, value]) => finiteNonNegative(value)) && !upload && !download && <p className="m-0 text-[11px] text-muted-foreground">Host resources have not been observed yet.</p>}
@@ -466,7 +504,7 @@ type MetricChartKind = 'line' | 'bar'
 /** One current reading of a two-direction card. */
 type MetricReading = { label: string; value: string; direction: 'up' | 'down'; color: string }
 
-function NodeMetricCard({ label, value, readings, detail, kind = 'line', series, showLegend = false, history, axis, valueFormat, historyMessage, className = '' }: {
+function NodeMetricCard({ label, value, readings, detail, kind = 'line', series, showLegend = false, history, axis, valueFormat, historyMessage, retained = false, className = '' }: {
   label: string
   /** The current value beside the title; its unit is part of the value
    *  ("12.3%"), so the title never repeats it. */
@@ -484,6 +522,8 @@ function NodeMetricCard({ label, value, readings, detail, kind = 'line', series,
   axis: MetricAxisRule
   valueFormat: (value: number) => string
   historyMessage?: string
+  /** The window is the last successful one, held after a failed refresh. */
+  retained?: boolean
   className?: string
 }) {
   const seconds = Number.isFinite(history?.windowSeconds) && (history?.windowSeconds ?? 0) > 0 ? Math.round(history?.windowSeconds as number) : 60
@@ -517,7 +557,9 @@ function NodeMetricCard({ label, value, readings, detail, kind = 'line', series,
   // It is also the only place the coverage sentence is written down now: the
   // card draws no small print for it, but a screen reader still hears it.
   const description = (observations.length > 0
-    ? series.map((item) => item.label).join(' and ') + ' values from ' + seconds + ' seconds ago to now'
+    ? series.map((item) => item.label).join(' and ') + (retained
+      ? ' values from a retained ' + seconds + '-second window, ' + formatUtcDateTime(history?.from) + ' to ' + formatUtcDateTime(history?.to) + '; the latest history update failed'
+      : ' values from ' + seconds + ' seconds ago to now')
     : label + ': ' + (historyMessage ?? 'No samples in the last minute'))
     + (coverageText ? '. ' + coverageText : '')
   return (
@@ -574,6 +616,7 @@ function NodeMetricCard({ label, value, readings, detail, kind = 'line', series,
         seconds={seconds}
         message={historyMessage}
         description={description}
+        retained={retained}
         showLegend={showLegend}
       />
     </CardX>
@@ -596,15 +639,17 @@ function DirectionChevron({ direction, color }: { direction: 'up' | 'down'; colo
 
 
 
-function describeMetricWindow(history: PublicNodeMetricHistory | undefined): string {
+/** "Latest 60 seconds" only while the window really is the latest one; a window
+ *  held after a failed refresh is titled as retained, never as current. */
+function describeMetricWindow(history: PublicNodeMetricHistory | undefined, retained = false): string {
   if (!history) return 'Latest 60 seconds'
   const seconds = Number.isFinite(history.windowSeconds) && history.windowSeconds > 0 ? history.windowSeconds : 60
-  return 'Latest ' + seconds + ' seconds'
+  return retained ? 'Retained ' + seconds + '-second window' : 'Latest ' + seconds + ' seconds'
 }
 
 
-function latestBlockInterval(history: ReturnType<typeof usePublicNodeHistory>['data']): { value: string; detail: string } {
-  const blocks = history?.filter((item) => item.height != null && item.blockTimeMs != null).slice(0, 2) ?? []
+function latestBlockInterval(history: NonNullable<ReturnType<typeof usePublicNodeHistory>['data']>): { value: string; detail: string } {
+  const blocks = history.filter((item) => item.height != null && item.blockTimeMs != null).slice(0, 2)
   if (blocks.length < 2) return { value: 'Unknown', detail: 'Two Block Summaries are required' }
   const [latest, previous] = blocks
   if (latest.height == null || previous.height == null || latest.blockTimeMs == null || previous.blockTimeMs == null || latest.height - previous.height !== 1) {

@@ -255,7 +255,7 @@ describe('App shell with private Home', () => {
       expect(process.textContent).not.toMatch(/undefined|NaN/)
       expect(within(process).queryByText('Started', { exact: true })).toBeNull()
       if (bytes === 'Unknown') {
-        expect(within(process).queryByText('Storage', { exact: true })).toBeNull()
+        expect(within(process).queryByText('Data directory', { exact: true })).toBeNull()
       } else {
         expect(within(process).getByText(bytes, { exact: true })).toBeTruthy()
       }
@@ -402,7 +402,7 @@ describe('App shell with private Home', () => {
     expect(within(header).queryByText('Validator')).toBeNull()
 
     const summary = screen.getByRole('group', { name: 'Node key summary' })
-    for (const label of ['Head', 'Sync', 'Peers', 'Uptime', 'Block interval', 'Transactions / block']) {
+    for (const label of ['Head', 'Sync collection', 'Peers', 'Uptime', 'Block interval', 'Transactions / block']) {
       expect(within(summary).getByText(label)).toBeTruthy()
     }
     expect(summary.querySelectorAll('[data-slot="node-summary-tile"]')).toHaveLength(6)
@@ -423,8 +423,12 @@ describe('App shell with private Home', () => {
     expect(within(process).queryByText('Running')).toBeNull()
     expect(process.textContent).toContain('UTC')
     expect(process.textContent).not.toContain('ago')
-    expect(within(process).getByText('Storage')).toBeTruthy()
+    // The data directory keeps its own name; its definition is on demand.
+    expect(within(process).getByText('Data directory')).toBeTruthy()
+    expect(within(process).queryByText('Storage')).toBeNull()
     expect(within(process).getByText('Data usage')).toBeTruthy()
+    expect(process.textContent).not.toContain('not whole-Host disk usage')
+    expect(process.textContent).not.toContain('not a live process status')
     expect(within(process).queryByText('CPU')).toBeNull()
 
     const host = screen.getByRole('region', { name: 'Shared Host resources' })
@@ -695,7 +699,7 @@ describe('App shell with private Home', () => {
     expect(diagnostics.closest('[data-slot="linked-validator"]')).toBeNull()
     expect(performance.contains(diagnostics)).toBe(false)
     const summary = screen.getByLabelText('Node key summary')
-    for (const label of ['Head', 'Sync', 'Peers', 'Uptime', 'Block interval', 'Transactions / block']) {
+    for (const label of ['Head', 'Sync collection', 'Peers', 'Uptime', 'Block interval', 'Transactions / block']) {
       expect(within(summary).getByText(label)).toBeTruthy()
     }
     const peerTile = within(summary).getByText('Peers', { exact: true }).closest('[data-slot="node-summary-tile"]')!
@@ -722,7 +726,16 @@ describe('App shell with private Home', () => {
     expect(within(hostGroup).getByText('Network')).toBeTruthy()
     expect(hostGroup.textContent).toContain('↑ 2.00 KiB/s')
     expect(hostGroup.textContent).toContain('↓ 4.00 KiB/s')
-    expect(hostGroup.textContent).toContain('shared by every Node')
+    // The Agent-scope definition is an on-demand hint, not a standing note.
+    expect(hostGroup.textContent).not.toContain('shared by every Node')
+    const hostHint = within(hostGroup).getByRole('button', { name: 'About Host resources' })
+    expect(hostHint.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(hostHint)
+    expect(hostHint.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByRole('dialog', { name: 'About Host resources' }).textContent).toContain('shared by every Node')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'About Host resources' })).toBeNull()
+    expect(hostHint.getAttribute('aria-expanded')).toBe('false')
 
     // The container contract is the accepted A calibration rather than the
     // earlier single-hero-card composition: an uncarded identity block, six
@@ -1237,6 +1250,173 @@ describe('App shell with private Home', () => {
     expect(await screen.findByText('You are offline')).toBeTruthy()
     expect(screen.getByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
     expect(screen.getByText(/last successful Node data/i)).toBeTruthy()
+  })
+
+  it('retains the last metric window with a light notice when a history refresh fails, then clears it', async () => {
+    const sample = (from: string, to: string, values: [number, number]) => [{ sampledAt: from, value: values[0] }, { sampledAt: to, value: values[1] }]
+    const metricWindow = (from: string, to: string) => ({
+      from, to, windowSeconds: 60,
+      processCpuPercent: sample(from, to, [10, 12]), processMemoryPercent: sample(from, to, [20, 25]), dataDirectoryPercent: [],
+      networkRxBytesPerSec: sample(from, to, [2048, 4096]), networkTxBytesPerSec: [],
+      peerInboundCount: sample(from, to, [7, 8]), peerOutboundCount: sample(from, to, [3, 4]),
+      blockIntervalMs: sample(from, to, [1800, 2000]), transactionCount: sample(from, to, [3, 4]),
+    })
+    let metricsCalls = 0
+    let historyCalls = 0
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1': () => jsonResponse({
+        nodeId: 'node-1', displayName: 'Validator A', networkKey: 'mainnet',
+        health: 'healthy', healthReason: 'rpc reachable', freshness: 'current',
+        rpcState: 'ok', syncState: 'ok', consensusState: 'current', processState: 'running',
+        currentHead: 123, historicalHighWatermark: 120, networkReferenceHead: 123,
+        networkReferenceConfidence: 'high', resyncState: 'idle', resyncProgress: null,
+        hostCpuPercent: 42.5, peers: { peerCount: 5, freshness: 'fresh', state: 'fresh' },
+      }, 200),
+      '/api/public/v1/nodes/node-1/history?limit=2': () => {
+        historyCalls += 1
+        return historyCalls === 2
+          ? jsonResponse({ error: { code: 'unavailable', message: 'refresh failed' } }, 503)
+          : jsonResponse([
+              { nodeId: 'node-1', height: 123, blockTimeMs: 1_755_638_400_000, transactionCount: 4, observedAt: '2026-08-20T00:00:00Z' },
+              { nodeId: 'node-1', height: 122, blockTimeMs: 1_755_638_398_000, transactionCount: 3, observedAt: '2026-08-19T23:59:58Z' },
+            ], 200)
+      },
+      '/api/public/v1/nodes/node-1/metrics': () => {
+        metricsCalls += 1
+        if (metricsCalls === 2) return jsonResponse({ error: { code: 'unavailable', message: 'refresh failed' } }, 503)
+        return metricsCalls === 1
+          ? jsonResponse(metricWindow('2026-08-19T23:59:00Z', '2026-08-20T00:00:00Z'), 200)
+          : jsonResponse(metricWindow('2026-08-20T00:01:00Z', '2026-08-20T00:02:00Z'), 200)
+      },
+    })
+    vi.stubGlobal('EventSource', FakeEventSource)
+    window.history.replaceState({}, '', '/nodes/node-1')
+    render(<App />)
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    expect(await screen.findByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeTruthy()
+    // Normal state: no standing status line beside the window title.
+    expect(document.querySelector('[data-slot="node-metrics-refresh-error"]')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Retained window times' })).toBeNull()
+    const invalidate = async (eventId: number) => {
+      await act(async () => {
+        FakeEventSource.latest?.emit('invalidation', JSON.stringify({ version: 1, eventId, resource: 'collection', revision: eventId }))
+        await Promise.resolve()
+      })
+    }
+
+    await invalidate(3)
+    await waitFor(() => expect(metricsCalls).toBe(2))
+    // The failed refresh keeps the last window and says so: the title no longer
+    // claims "Latest", and the charts keep their own window.
+    expect(await screen.findByText('History update failed · Showing previous window')).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 2, name: 'Retained 60-second window' })).toBeTruthy()
+    expect(screen.queryByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeNull()
+    expect(screen.getAllByRole('img', { name: /chart over a retained 60-second window/ })).toHaveLength(6)
+    expect(screen.queryAllByRole('img', { name: /over the last 60 seconds/ })).toHaveLength(0)
+    expect(screen.queryByText('Metric history unavailable')).toBeNull()
+    // The retained window keeps its own missing-direction semantics.
+    expect(screen.getByText(/Upload unavailable in this window/)).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
+    expect(screen.queryByText(/Node refresh failed/)).toBeNull()
+    // The block history failure is stated beside the block history only.
+    await waitFor(() => expect(historyCalls).toBe(2))
+    expect(await screen.findByText(/Block history update failed/)).toBeTruthy()
+    const windowHint = screen.getByRole('button', { name: 'Retained window times' })
+    fireEvent.click(windowHint)
+    const retained = screen.getByRole('dialog', { name: 'Retained window times' })
+    expect(retained.querySelector('[data-slot="node-metrics-retained-window"]')?.textContent).toBe('From 19 Aug 2026, 23:59:00 UTC to 20 Aug 2026, 00:00:00 UTC')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(document.activeElement).toBe(windowHint)
+
+    await invalidate(4)
+    await waitFor(() => expect(metricsCalls).toBe(3))
+    // Recovery clears the notice and the title reads Latest again.
+    await waitFor(() => expect(screen.queryByText('History update failed · Showing previous window')).toBeNull())
+    expect(screen.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeTruthy()
+    await waitFor(() => expect(screen.queryByText(/Block history update failed/)).toBeNull())
+  })
+
+  it('keeps a first metric-history failure as the empty state rather than a retained window', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1': () => jsonResponse({
+        nodeId: 'node-1', displayName: 'Validator A', networkKey: 'mainnet',
+        health: 'healthy', healthReason: 'rpc reachable', freshness: 'current',
+        rpcState: 'ok', syncState: 'ok', consensusState: 'current', processState: 'running',
+        currentHead: 123, historicalHighWatermark: 120, networkReferenceHead: 123,
+        networkReferenceConfidence: 'high', resyncState: 'idle', resyncProgress: null,
+        hostCpuPercent: 42.5, peers: { peerCount: 5, freshness: 'fresh', state: 'fresh' },
+      }, 200),
+      '/api/public/v1/nodes/node-1/history?limit=2': () => jsonResponse({ error: { code: 'unavailable', message: 'failed' } }, 503),
+      '/api/public/v1/nodes/node-1/metrics': () => jsonResponse({ error: { code: 'unavailable', message: 'failed' } }, 503),
+    })
+    vi.stubGlobal('EventSource', FakeEventSource)
+    window.history.replaceState({}, '', '/nodes/node-1')
+    render(<App />)
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    expect(await screen.findByRole('heading', { level: 1, name: 'Validator A' })).toBeTruthy()
+    await waitFor(() => expect(screen.getAllByText('Metric history unavailable')).toHaveLength(6))
+    expect(screen.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeTruthy()
+    expect(screen.queryByText('History update failed · Showing previous window')).toBeNull()
+    // Without a block history the interval is Unknown and says why, instead of
+    // claiming two Block Summaries are missing.
+    const summary = screen.getByRole('group', { name: 'Node key summary' })
+    const intervalTile = within(summary).getByText('Block interval', { exact: true }).closest('[data-slot="node-summary-tile"]')!
+    expect(intervalTile.textContent).toContain('Unknown')
+    expect(intervalTile.textContent).toContain('Block history unavailable')
+    expect(screen.queryByText(/Node refresh failed/)).toBeNull()
+  })
+
+  it('names the Sync collection tile and keeps its definition one tap or key away', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1': () => jsonResponse({
+        nodeId: 'node-1', displayName: 'Validator A', networkKey: 'mainnet',
+        health: 'healthy', healthReason: 'rpc reachable', freshness: 'current',
+        rpcState: 'ok', syncState: 'ok', consensusState: 'current', processState: 'running',
+        currentHead: 123, historicalHighWatermark: 120, networkReferenceHead: 123,
+        networkReferenceConfidence: 'high', resyncState: 'idle', resyncProgress: null,
+        hostCpuPercent: 42.5, peers: { peerCount: 5, freshness: 'fresh', state: 'fresh' },
+      }, 200),
+      '/api/public/v1/nodes/node-1/history?limit=2': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1/metrics': () => jsonResponse({ error: { code: 'unavailable', message: 'failed' } }, 503),
+    })
+    vi.stubGlobal('EventSource', FakeEventSource)
+    window.history.replaceState({}, '', '/nodes/node-1')
+    render(<App />)
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    const summary = await screen.findByRole('group', { name: 'Node key summary' })
+    const tile = within(summary).getByText('Sync collection', { exact: true }).closest('[data-slot="node-summary-tile"]')! as HTMLElement
+    // The value stays the collection state; it is never renamed Synced.
+    expect(within(tile).getByText('Current', { exact: true })).toBeTruthy()
+    expect(tile.textContent).not.toMatch(/Synced|not chain sync/)
+    const hint = within(tile).getByRole('button', { name: 'About Sync collection' })
+    expect(hint.getAttribute('aria-expanded')).toBe('false')
+    // Keyboard: the button is focusable, opens with Enter/Space (a click), closes with Escape.
+    hint.focus()
+    fireEvent.click(hint)
+    expect(screen.getByRole('dialog', { name: 'About Sync collection' }).textContent).toContain('not a chain-sync verdict')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'About Sync collection' })).toBeNull()
+    expect(document.activeElement).toBe(hint)
+    // Touch: a tap opens it, a press outside closes it.
+    fireEvent.click(hint)
+    expect(screen.getByRole('dialog', { name: 'About Sync collection' })).toBeTruthy()
+    fireEvent.pointerDown(document.body)
+    expect(screen.queryByRole('dialog', { name: 'About Sync collection' })).toBeNull()
   })
 
   it('shows Checking access… before authorization resolves and never renders a session flash', async () => {
