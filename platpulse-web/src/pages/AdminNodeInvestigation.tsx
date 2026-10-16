@@ -446,7 +446,7 @@ function OccurrenceCard({
         <table
           data-stack
           data-slot="investigation-occurrence-table"
-          className="w-full min-w-[44rem] text-sm"
+          className="w-full text-sm md:min-w-[44rem]"
         >
           <caption className="sr-only">
             Each evidence family and what it says about the located instant
@@ -613,7 +613,7 @@ function BoundaryTable({ source }: { source: InvestigationSourceResponse }) {
       <table
         data-stack
         data-slot="investigation-boundaries"
-        className="w-full min-w-[44rem] text-sm"
+        className="w-full text-sm md:min-w-[44rem]"
       >
         <caption className="sr-only">
           Stretches of the window this family cannot answer
@@ -685,7 +685,7 @@ function RelatedSubjectTable({
       <table
         data-stack
         data-slot="investigation-related-subjects"
-        className="w-full min-w-[44rem] text-sm"
+        className="w-full text-sm md:min-w-[44rem]"
       >
         <caption className="sr-only">
           Subjects this family's evidence is attributed to, and the recorded

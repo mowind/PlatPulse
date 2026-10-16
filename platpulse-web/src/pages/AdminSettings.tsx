@@ -542,7 +542,7 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
                   {' '}{candidate.label}
                 </label>
                 {candidate.sends_peer_addresses && (
-                  <small className="pl-7 text-xs text-warning-foreground dark:text-warning"> Sends observed Peer public IPs to a third party.</small>
+                  <small className="pl-7 text-xs text-foreground">{/* pl-7 aligns under the label text, past the radio */}<strong className="font-semibold text-warning-foreground dark:text-warning">Privacy:</strong> Sends observed Peer public IPs to a third party.</small>
                 )}
                 {candidate.unavailable_reason && (
                   <small className="pl-7 text-xs text-muted-foreground"> {candidate.unavailable_reason}</small>

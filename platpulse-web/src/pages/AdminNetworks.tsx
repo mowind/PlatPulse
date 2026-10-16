@@ -183,7 +183,7 @@ function NetworkRow({ network }: { network: AdminNetwork }) {
       </td>
       <td data-label="HRP" className={cn(ADMIN_TD, 'min-w-0')}>{network.address_hrp}</td>
       <td data-label="Genesis" className={cn(ADMIN_TD, 'min-w-0')}>
-        <code className="font-mono text-xs text-muted-foreground" aria-hidden="true">
+        <code className="font-mono text-xs text-muted-foreground" aria-hidden="true" title={network.genesis_hash}>
           {shortId(network.genesis_hash)}
         </code>
         <span className="sr-only">Genesis hash {network.genesis_hash}</span>
@@ -652,20 +652,20 @@ function NetworkNodesPanel({
         <Empty description="No Nodes declared on this Network yet." />
       )}
       {nodes.length > 0 && (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto max-md:px-3 max-md:pt-3">
           <table data-stack data-slot="network-nodes-table" className="w-full text-sm">
             <caption className="sr-only">
               Nodes on {networkKey} with per-Node identity dispositions
             </caption>
             <thead>
-              <tr className="border-b">
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Node</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Health</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Freshness</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Identity</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Visibility</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Lifecycle</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Head</th>
+              <tr className="border-b border-border/60">
+                <th scope="col" className={ADMIN_TH}>Node</th>
+                <th scope="col" className={ADMIN_TH}>Health</th>
+                <th scope="col" className={ADMIN_TH}>Freshness</th>
+                <th scope="col" className={ADMIN_TH}>Identity</th>
+                <th scope="col" className={ADMIN_TH}>Visibility</th>
+                <th scope="col" className={ADMIN_TH}>Lifecycle</th>
+                <th scope="col" className={ADMIN_TH}>Head</th>
               </tr>
             </thead>
             <tbody>
@@ -686,26 +686,26 @@ function NetworkNodeRow({ node }: { node: AdminNetworkNode }) {
   const freshness =
     node.freshness === 'current' ? 'ok' : node.freshness === 'stale' ? 'warning' : 'neutral'
   return (
-    <tr className="border-b border-border/60 align-top">
-      <th scope="row" data-label="Node" className="min-w-0 px-3 py-3 text-left">
+    <tr className={ADMIN_ROW}>
+      <th scope="row" data-label="Node" className={cn(ADMIN_TD, 'min-w-0 text-left font-normal')}>
         <Link
           className="inline-flex min-h-11 min-w-11 items-center break-words font-medium underline-offset-4 hover:underline"
           to={'/admin/nodes/' + node.node_id}
         >
           {node.display_name ?? node.node_id}
         </Link>
-        <small className="block font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+        <small className="block font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]" title={'Full Node ID: ' + node.node_id}>
           {shortId(node.node_id)}
         </small>
       </th>
-      <td data-label="Health" className="min-w-0 px-3 py-3">
+      <td data-label="Health" className={cn(ADMIN_TD, 'min-w-0')}>
         <StatusBadge status={node.health} tone={health} />
         <small className="mt-0.5 block text-xs text-muted-foreground break-words">{node.health_reason}</small>
       </td>
-      <td data-label="Freshness" className="min-w-0 px-3 py-3">
+      <td data-label="Freshness" className={cn(ADMIN_TD, 'min-w-0')}>
         <StatusBadge status={freshnessLabel(node.freshness)} tone={freshness} />
       </td>
-      <td data-label="Identity" className="min-w-0 px-3 py-3">
+      <td data-label="Identity" className={cn(ADMIN_TD, 'min-w-0')}>
         <StatusBadge status={identity.label} tone={identity.tone} />
         {node.identity.mismatched_fields.length > 0 && (
           <>
@@ -724,9 +724,9 @@ function NetworkNodeRow({ node }: { node: AdminNetworkNode }) {
           </>
         )}
       </td>
-      <td data-label="Visibility" className="min-w-0 px-3 py-3">{visibilityBadge(node.visibility).label}</td>
-      <td data-label="Lifecycle" className="min-w-0 px-3 py-3">{lifecycleLabel(node.lifecycle).label}</td>
-      <td data-label="Head" className="min-w-0 px-3 py-3">
+      <td data-label="Visibility" className={cn(ADMIN_TD, 'min-w-0')}>{visibilityBadge(node.visibility).label}</td>
+      <td data-label="Lifecycle" className={cn(ADMIN_TD, 'min-w-0')}>{lifecycleLabel(node.lifecycle).label}</td>
+      <td data-label="Head" className={cn(ADMIN_TD, 'min-w-0')}>
         <span className="font-medium tabular-nums">{node.current_head ?? 'Unknown'}</span>
       </td>
     </tr>

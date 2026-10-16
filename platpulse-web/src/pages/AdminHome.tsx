@@ -32,7 +32,7 @@ import type {
   AdminNodeListItem,
   NodeDiagnostic,
 } from '../api/generated'
-import { ADMIN_PAGE_TITLE, ADMIN_SECTION_TITLE } from '../components/AdminPage'
+import { ADMIN_PAGE_TITLE, ADMIN_SECTION_TITLE, ADMIN_TD, ADMIN_TH } from '../components/AdminPage'
 
 /** The read-only Overview panels are static: they carry the working surface
  * tier and no hover glow, opacity change, or lift, so a non-clickable panel
@@ -46,8 +46,8 @@ const PANEL_HEADING = 'flex min-w-0 items-center justify-between gap-3 border-b 
 const PANEL_TITLE = ADMIN_SECTION_TITLE
 const EYEBROW = 'text-xs font-medium tracking-wider text-muted-foreground uppercase'
 const PANEL_STATE = 'flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground'
-const TABLE_HEAD = 'whitespace-nowrap border-b px-3 py-2 text-left text-xs font-medium text-muted-foreground'
-const TABLE_CELL = 'min-w-0 border-b border-border/60 px-3 py-2.5 align-top text-sm [overflow-wrap:anywhere] max-md:in-[table[data-stack]]:px-0'
+const TABLE_HEAD = cn('whitespace-nowrap border-b', ADMIN_TH)
+const TABLE_CELL = cn('min-w-0 border-b border-border/60 text-sm [overflow-wrap:anywhere]', ADMIN_TD)
 const MUTED_SMALL = 'mt-1 block text-xs text-muted-foreground'
 const TEXT_LINK = 'inline-flex min-h-11 min-w-11 items-center font-medium text-primary hover:underline'
 
@@ -702,7 +702,8 @@ function NodeRows({
             <Link className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-sm text-primary hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring" aria-label="View Node" title="View Node" to={`/admin/nodes/${encodeURIComponent(node.node_id)}`}><ArrowUpRight size={18} aria-hidden="true" /></Link>
           </div>
           <small className={MUTED_SMALL} title={node.node_id}>
-            Node ID · {formatIdentifier(node.node_id)}
+            Node ID · <span aria-hidden="true">{formatIdentifier(node.node_id)}</span>
+            <span className="sr-only">{node.node_id}</span>
           </small>
         </th>
         <td data-label="Network" className={TABLE_CELL}>

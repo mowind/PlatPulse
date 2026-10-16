@@ -387,7 +387,7 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     })
     try {
       fireEvent.click(within(row).getByRole('button', { name: 'Copy Agent ID' }))
-      expect(await within(row).findByText('Copy unavailable; select the full Agent ID above.')).toBeTruthy()
+      expect(await within(row).findByText('Copy unavailable; select the full Agent ID shown here.')).toBeTruthy()
       expect(within(row).queryByText('Copied to clipboard.')).toBeNull()
     } finally {
       if (previousClipboard) Object.defineProperty(navigator, 'clipboard', previousClipboard)

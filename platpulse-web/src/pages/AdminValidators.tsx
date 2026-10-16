@@ -276,8 +276,13 @@ function IdentityRow({ identity }: { identity: AdminNodeValidatorIdentity }) {
         </small>
       </td>
       <td data-label="Observed P2P key" className={cn(ADMIN_TD, 'min-w-0')}>
-        <code className="break-all text-xs" title={identity.observedValidatorNodeKey ?? undefined}>
-          {validatorKeyLabel(identity.observedValidatorNodeKey)}
+        <code className="text-xs [overflow-wrap:anywhere]" title={identity.observedValidatorNodeKey ?? undefined}>
+          <span aria-hidden={identity.observedValidatorNodeKey ? true : undefined}>
+            {validatorKeyLabel(identity.observedValidatorNodeKey)}
+          </span>
+          {identity.observedValidatorNodeKey && (
+            <span className="sr-only">{identity.observedValidatorNodeKey}</span>
+          )}
         </code>
       </td>
       <td data-label="Validator" className={cn(ADMIN_TD, 'min-w-0')}>
@@ -760,7 +765,7 @@ function LinksPanel({ validator }: { validator: ValidatorDetail }) {
             </thead>
             <tbody>
               {validator.links.map((link) => (
-                <tr key={link.linkId} className="border-b border-border/60 align-top">
+                <tr key={link.linkId} className={ADMIN_ROW}>
                   <th scope="row" data-label="Node" className={cn(ADMIN_TD, 'min-w-0 py-1 text-left font-normal')}>
                     <Link
                       className="inline-flex min-h-11 min-w-11 items-center break-words font-medium underline-offset-4 hover:underline"

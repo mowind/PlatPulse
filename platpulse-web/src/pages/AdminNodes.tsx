@@ -41,7 +41,6 @@ import { Input, Select } from '../components/ui/input'
 import { cn } from '../lib/utils'
 import { stateHistoryComponent, type StateHistoryComponent } from '../stateHistory'
 import { validatorIdentityNotice, validatorKeyLabel } from '../validators'
-import { SURFACE_CARD_STATIC } from '../lib/surface'
 import {
   HOST_METRIC_SERIES,
   NODE_METRIC_SERIES,
@@ -65,6 +64,7 @@ import {
   ADMIN_DETAIL_BODY,
   ADMIN_DETAIL_ROW,
   ADMIN_PAGE_TITLE,
+  ADMIN_PANEL_SURFACE,
   ADMIN_ROW,
   ADMIN_SECONDARY,
   ADMIN_SECTION_TITLE,
@@ -87,7 +87,7 @@ import {
  * Home's full observation view.
  */
 
-const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD_STATIC)
+const CARD_SURFACE = ADMIN_PANEL_SURFACE
 
 function shortId(value: string): string {
   return value.length > 12 ? value.slice(0, 8) + '…' + value.slice(-4) : value
@@ -210,9 +210,9 @@ export default function AdminNodesList() {
         count={
           query.data ? (
             <span className="text-xs text-muted-foreground tabular-nums">
-              {nodes.length === (query.data ?? []).length
+              {nodes.length === query.data.length
                 ? nodes.length + ' Node' + (nodes.length === 1 ? '' : 's')
-                : nodes.length + ' of ' + (query.data ?? []).length + ' Nodes'}
+                : nodes.length + ' of ' + query.data.length + ' Nodes'}
             </span>
           ) : undefined
         }
@@ -445,14 +445,14 @@ function NodeListRow({
                 {node.display_name ?? node.node_id}
               </Link>
               <small className={cn('-mt-1 block [overflow-wrap:anywhere]', ADMIN_SECONDARY)}>
-                <span className="font-mono">{shortId(node.node_id)}</span> · {node.rpc_endpoint}
+                <span className="font-mono" title={'Full Node ID: ' + node.node_id}>{shortId(node.node_id)}</span> · {node.rpc_endpoint}
               </small>
             </div>
           </div>
         </th>
         <td data-label="Network" className={cn(ADMIN_TD, 'min-w-0')}>
           <Link
-            className="-my-2.5 inline-flex min-h-11 min-w-11 items-center break-words underline-offset-4 hover:underline"
+            className="inline-flex min-h-11 min-w-11 items-center break-words md:-my-2.5 underline-offset-4 hover:underline"
             to={'/admin/networks/' + node.network_key}
           >
             {node.network_display_name}
@@ -1345,10 +1345,17 @@ function ValidatorIdentityPanel({ node }: { node: AdminNodeDetailDto }) {
           <DetailItem label="State">
             {identity ? notice.label : 'Not evaluated'}
           </DetailItem>
-          <DetailItem label="Observed P2P public key">
-            <code className="break-all text-[11px]" title={identity?.observedValidatorNodeKey ?? undefined}>
-              {validatorKeyLabel(identity?.observedValidatorNodeKey)}
-            </code>
+          <DetailItem label="Observed P2P public key" wide>
+            {identity?.observedValidatorNodeKey ? (
+              <code
+                className="select-all font-mono text-xs [overflow-wrap:anywhere]"
+                title={identity.observedValidatorNodeKey}
+              >
+                {identity.observedValidatorNodeKey}
+              </code>
+            ) : (
+              <code className="text-xs">{validatorKeyLabel(identity?.observedValidatorNodeKey)}</code>
+            )}
           </DetailItem>
           <DetailItem label="Chain Validator">
             {identity?.validatorId ? (

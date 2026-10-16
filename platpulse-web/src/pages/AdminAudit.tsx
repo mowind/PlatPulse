@@ -331,7 +331,7 @@ function AuditRow({
           {target ? (
             <Link
               to={target.to}
-              className="-my-2.5 inline-flex min-h-11 min-w-11 max-w-full items-center underline-offset-4 [overflow-wrap:anywhere] hover:underline"
+              className="inline-flex min-h-11 md:-my-2.5 min-w-11 max-w-full items-center underline-offset-4 [overflow-wrap:anywhere] hover:underline"
             >
               {target.label}
             </Link>
@@ -346,7 +346,7 @@ function AuditRow({
           <Button
             variant="ghost"
             size="sm"
-            className="-my-1.5 -ml-3 max-md:ml-0"
+            className="md:-my-1.5 md:-ml-3"
             data-slot="audit-details-toggle"
             onClick={onToggle}
             onKeyDown={collapseOnEscape}

@@ -217,7 +217,7 @@
  * identity, reporting and receipt, evidence, inventory, credentials.
  * ------------------------------------------------------------------------- */
 @layer components {
-  @media (max-width: 47.9rem) {
+  @media (width < 48rem) {
     /* Stacked, the table and its body are plain blocks that fill the
      * container: a desktop min-width (md:min-w-* only) or a fixed column share
      * must never keep the card stack at desktop width inside a scroller. */

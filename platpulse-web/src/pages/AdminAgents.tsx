@@ -58,6 +58,7 @@ import {
   ADMIN_DETAIL_BODY,
   ADMIN_DETAIL_ROW,
   ADMIN_PAGE_TITLE,
+  ADMIN_PANEL_SURFACE,
   ADMIN_ROW,
   ADMIN_SECONDARY,
   ADMIN_SECTION_TITLE,
@@ -77,7 +78,7 @@ import {
  * and are gone when the view is left — never in URLs, history, or Audit.
  */
 
-const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD_STATIC)
+const CARD_SURFACE = ADMIN_PANEL_SURFACE
 
 function shortId(id: string): string {
   return id.length > 14 ? id.slice(0, 8) + '…' + id.slice(-4) : id
@@ -111,7 +112,7 @@ function credentialSummaryText(credentials: AgentCredentialSummary[]): string {
   return String(active) + ' active · ' + revoked + ' revoked · ' + inactive + ' inactive (not revoked) · ' + credentials.length + ' total'
 }
 
-/** Emerald dimension label: uppercase micro-caption, colourless. */
+/** Emerald dimension label: a 12px muted caption, colourless. */
 function DimensionLabel({ children }: { children: ReactNode }) {
   return (
     <span className="text-xs text-muted-foreground">
@@ -148,7 +149,7 @@ function AgentIdCopyControl({ agentId }: { agentId: string }) {
       )}
       {copyState === 'failed' && (
         <span className="text-xs text-destructive" role="status">
-          Copy unavailable; select the full Agent ID above.
+          Copy unavailable; select the full Agent ID shown here.
         </span>
       )}
     </span>
@@ -713,7 +714,7 @@ export function AdminAgentDetail() {
           />
           <section className="space-y-3" aria-labelledby="agent-profile-heading">
             <div className="space-y-1">
-              <span className="text-[11px] font-medium text-muted-foreground">01</span>
+              <span className="text-xs font-medium text-muted-foreground">01</span>
               <h2 id="agent-metadata-heading" className={ADMIN_SECTION_TITLE}>Server-owned metadata</h2>
               <p className="text-sm text-muted-foreground">Server-owned display name and notes. The Agent ID, Host identity, liveness, Epoch, and collection configuration stay read-only.</p>
             </div>
@@ -721,7 +722,7 @@ export function AdminAgentDetail() {
           </section>
           <section className="space-y-3" aria-labelledby="agent-overview-heading">
             <div className="space-y-1">
-              <span className="text-[11px] font-medium text-muted-foreground">02</span>
+              <span className="text-xs font-medium text-muted-foreground">02</span>
               <h2 id="agent-overview-heading" className={ADMIN_SECTION_TITLE}>Overview</h2>
               <p className="text-sm text-muted-foreground">Identity and the Agent-declared Node Inventory.</p>
             </div>
@@ -732,7 +733,7 @@ export function AdminAgentDetail() {
           </section>
           <section className="space-y-3" aria-labelledby="agent-runtime-heading">
             <div className="space-y-1">
-              <span className="text-[11px] font-medium text-muted-foreground">03</span>
+              <span className="text-xs font-medium text-muted-foreground">03</span>
               <h2 id="agent-runtime-heading" className={ADMIN_SECTION_TITLE}>Runtime and reporting</h2>
               <p className="text-sm text-muted-foreground">Server liveness remains separate from boot and report lifecycle.</p>
             </div>
@@ -743,7 +744,7 @@ export function AdminAgentDetail() {
           </section>
           <section className="space-y-3" aria-labelledby="agent-credentials-heading">
             <div className="space-y-1">
-              <span className="text-[11px] font-medium text-muted-foreground">04</span>
+              <span className="text-xs font-medium text-muted-foreground">04</span>
               <h2 id="agent-credentials-heading" className={ADMIN_SECTION_TITLE}>Credentials</h2>
               <p className="text-sm text-muted-foreground">Server-owned credential validity and explicit revocation.</p>
             </div>
@@ -751,21 +752,21 @@ export function AdminAgentDetail() {
           </section>
           <section className="space-y-3" aria-labelledby="agent-diagnostics-heading">
             <div className="space-y-1">
-              <span className="text-[11px] font-medium text-muted-foreground">05</span>
+              <span className="text-xs font-medium text-muted-foreground">05</span>
               <h2 id="agent-diagnostics-heading" className={ADMIN_SECTION_TITLE}>Diagnostics</h2>
               <p className="text-sm text-muted-foreground">Recorded evidence is shown without inferring current recovery or failure.</p>
             </div>
             <DiagnosticsPanel agent={agent.data} />
           </section>
           <section className="space-y-3" aria-label="Host resource history">
-            <span className="text-[11px] font-medium text-muted-foreground">
+            <span className="text-xs font-medium text-muted-foreground">
               06
             </span>
             <AgentHostHistorySection agent={agent.data} />
           </section>
           <section className="space-y-3" aria-labelledby="agent-audit-heading">
             <div className="space-y-1">
-              <span className="text-[11px] font-medium text-muted-foreground">
+              <span className="text-xs font-medium text-muted-foreground">
                 07
               </span>
               <h2 id="agent-audit-heading" className={ADMIN_SECTION_TITLE}>
@@ -779,7 +780,7 @@ export function AdminAgentDetail() {
           </section>
           <section className="space-y-3" aria-labelledby="agent-removal-heading">
             <div className="space-y-1">
-              <span className="text-[11px] font-medium text-muted-foreground">
+              <span className="text-xs font-medium text-muted-foreground">
                 08
               </span>
               <h2 id="agent-removal-heading" className={ADMIN_SECTION_TITLE}>
@@ -862,12 +863,12 @@ function AgentDetailSummary({
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
-          <span className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase">Agent summary</span>
+          <span className="text-xs font-medium tracking-wider text-muted-foreground uppercase">Agent summary</span>
           <h2 id="agent-summary-heading" className={cn(ADMIN_SECTION_TITLE, 'break-all')}>
             {shortId(agent.agent_id)}
           </h2>
           <p className="flex min-w-0 flex-wrap items-center gap-2">
-            <code className="break-all text-[11px]" title={agent.agent_id}>{formatIdentifier(agent.agent_id)}</code>
+            <code className="break-all text-xs" title={agent.agent_id}>{formatIdentifier(agent.agent_id)}</code>
             <span className="sr-only">Full Agent ID: {agent.agent_id}</span>
             <AgentIdCopyControl agentId={agent.agent_id} />
           </p>
@@ -971,7 +972,7 @@ function AgentDetailSummary({
               >
                 <strong
                   className={cn(
-                    'text-[11px] font-medium tracking-wider uppercase',
+                    'text-xs font-medium tracking-wider uppercase',
                     warning.kind === 'current'
                       ? 'text-warning'
                       : warning.kind === 'recorded'
@@ -1022,7 +1023,7 @@ function IdentityPanel({ agent }: { agent: AgentDiagnostic }) {
     <CardX size="medium" className={CARD_SURFACE} header={<h3 className="text-sm font-medium">Identity</h3>}>
       <DetailList>
         <DetailItem label="Agent ID">
-          <code className="break-all text-[11px]">{agent.agent_id}</code>
+          <code className="break-all text-xs">{agent.agent_id}</code>
         </DetailItem>
         <DetailItem label="Agent Epoch">{agent.agent_epoch}</DetailItem>
         <DetailItem label="Capabilities">
@@ -1105,7 +1106,7 @@ function MetadataPanel({ agent, onSaved }: { agent: AgentDiagnostic; onSaved: ()
             placeholder="Unnamed Agent (identified by the stable ID)"
             onChange={(event) => setDisplayName(event.target.value)}
           />
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             Optional, at most 128 characters. Clear it to identify the Agent by its stable ID.
           </p>
         </div>
@@ -1124,7 +1125,7 @@ function MetadataPanel({ agent, onSaved }: { agent: AgentDiagnostic; onSaved: ()
             placeholder="Optional operational context"
             onChange={(event) => setNotes(event.target.value)}
           />
-          <p className="text-[11px] text-muted-foreground">Optional, at most 2000 characters.</p>
+          <p className="text-xs text-muted-foreground">Optional, at most 2000 characters.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <Button type="submit" disabled={busy}>
@@ -1154,7 +1155,7 @@ function MetadataPanel({ agent, onSaved }: { agent: AgentDiagnostic; onSaved: ()
             {error}
           </p>
         )}
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           Saved through the Owner-only, CSRF-guarded Admin route and recorded in the Audit
           trail as <code>agent_metadata_changed</code>. The Agent ID,
           Host identity, Server liveness, Agent Epoch, and collection configuration are
@@ -1185,13 +1186,13 @@ function BootReportPanel({ agent }: { agent: AgentDiagnostic }) {
       <DetailList>
         <DetailItem label="Boot status">{agent.boot_status}</DetailItem>
         <DetailItem label="Full active boot ID">
-          <code className="break-all text-[11px]">{agent.active_boot_id ?? 'Unknown'}</code>
+          <code className="break-all text-xs">{agent.active_boot_id ?? 'Unknown'}</code>
         </DetailItem>
         <DetailItem label="Previous boot ID">
-          <code className="break-all text-[11px]">{agent.previous_boot_id ?? 'None'}</code>
+          <code className="break-all text-xs">{agent.previous_boot_id ?? 'None'}</code>
         </DetailItem>
         <DetailItem label="Close report ID">
-          <code className="break-all text-[11px]">{agent.close_report_id ?? 'None'}</code>
+          <code className="break-all text-xs">{agent.close_report_id ?? 'None'}</code>
         </DetailItem>
         <DetailItem label="Report sequence">
           {agent.last_report_sequence == null ? 'Never received' : 'sequence #' + agent.last_report_sequence}
@@ -1202,7 +1203,7 @@ function BootReportPanel({ agent }: { agent: AgentDiagnostic }) {
           {agent.shutdown_last_error ? ' · ' + agent.shutdown_last_error : ''}
         </DetailItem>
         <DetailItem label="Shutdown report ID">
-          <code className="break-all text-[11px]">{agent.shutdown_report_id ?? 'None'}</code>
+          <code className="break-all text-xs">{agent.shutdown_report_id ?? 'None'}</code>
         </DetailItem>
         <DetailItem label="Shutdown report sequence">{agent.shutdown_report_sequence ?? 'None'}</DetailItem>
         <DetailItem label="Shutdown started">{formatObservedAt(agent.shutdown_started_at)}</DetailItem>
@@ -1248,10 +1249,15 @@ function InventoryPanel({ agent }: { agent: AgentDiagnostic }) {
             <>
               {revisionSourceLabel(accepted_declaration)} {accepted_revision}{' '}
               <small
-                className="text-[11px] text-muted-foreground"
+                className="text-xs text-muted-foreground"
                 title={accepted_sha256 ? acceptedHashLabel(accepted_declaration) + ': ' + accepted_sha256 : undefined}
               >
-                {accepted_sha256 ? shortHash(accepted_sha256) : 'content hash not recorded'}
+                <span aria-hidden={accepted_sha256 ? true : undefined}>
+                  {accepted_sha256 ? shortHash(accepted_sha256) : 'content hash not recorded'}
+                </span>
+                {accepted_sha256 && (
+                  <span className="sr-only">{acceptedHashLabel(accepted_declaration) + ': ' + accepted_sha256}</span>
+                )}
               </small>
             </>
           )}
@@ -1268,13 +1274,13 @@ function InventoryPanel({ agent }: { agent: AgentDiagnostic }) {
             <li key={node.node_id} className="flex flex-wrap items-center gap-3 text-sm">
               <span className="min-w-0">
                 <strong className="break-words">{node.display_name ?? node.node_id}</strong>{' '}
-                <small className="text-[11px] text-muted-foreground" title={'Full Node ID: ' + node.node_id}>
+                <small className="text-xs text-muted-foreground" title={'Full Node ID: ' + node.node_id}>
                   <span aria-hidden="true">{shortId(node.node_id)}</span>
                   <span className="sr-only">Full Node ID: {node.node_id}</span>
                 </small>
               </span>
-              <span className="text-[11px] text-muted-foreground">{node.network_key}</span>
-              <span className="text-[11px]">{node.lifecycle}</span>
+              <span className="text-xs text-muted-foreground">{node.network_key}</span>
+              <span className="text-xs">{node.lifecycle}</span>
               <StatusBadge status={node.visibility} tone="neutral" />
             </li>
           ))}
@@ -1358,15 +1364,15 @@ function CredentialsPanel({
             return (
               <li key={credential.credential_id} data-slot="credential-item" className="space-y-1 rounded-sm border border-border/60 p-2">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="break-all text-[11px]">{credential.credential_id}</span>
+                  <span className="break-all text-xs">{credential.credential_id}</span>
                   <StatusBadge status={state.label} tone={state.tone} />
                   {credential.revoke_after && credential.active && (
-                    <small className="text-[11px] text-muted-foreground">
+                    <small className="text-xs text-muted-foreground">
                       Overlap expires {formatObservedAt(credential.revoke_after)}
                     </small>
                   )}
                 </div>
-                <small className="block text-[11px] text-muted-foreground">
+                <small className="block text-xs text-muted-foreground">
                   Issued {formatObservedAt(credential.created_at)}
                   {credential.revoked_at ? ' · revoked ' + formatObservedAt(credential.revoked_at) : ''}
                 </small>
@@ -1374,7 +1380,7 @@ function CredentialsPanel({
                   <div className="flex flex-wrap items-center gap-2">
                     {confirmingId === credential.credential_id ? (
                       <>
-                        <span className="text-[11px] text-muted-foreground">
+                        <span className="text-xs text-muted-foreground">
                           Revoke now? The Agent stops authenticating immediately.
                         </span>
                         <Button
@@ -1554,7 +1560,7 @@ function AgentRemovalPanel({
                   {impact.data.owned_nodes.map((node) => (
                     <li key={node.node_id} className="break-all">
                       {node.display_name ?? node.node_id}{' '}
-                      <span className="text-[11px]">
+                      <span className="text-xs">
                         ({node.network_display_name} · {node.lifecycle})
                       </span>
                     </li>
@@ -1730,7 +1736,7 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
                     ? ' · server-managed declaration'
                     : ''}
                 </div>
-                <small className="block text-[11px] text-muted-foreground">
+                <small className="block text-xs text-muted-foreground">
                   {agent.inventory.last_rejection.declaration === 'server_managed'
                     ? 'Declared fingerprint ' +
                       (agent.inventory.last_rejection.reported_sha256
@@ -1743,14 +1749,14 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
                         ? shortHash(agent.inventory.last_rejection.reported_sha256)
                         : 'content hash not recorded')}
                 </small>
-                <small className="block text-[11px] text-muted-foreground">
+                <small className="block text-xs text-muted-foreground">
                   {revisionSourceLabel(agent.inventory.accepted_declaration)}{' '}
                   {agent.inventory.accepted_revision ?? 'Unknown'} ·{' '}
                   {agent.inventory.accepted_sha256
                     ? shortHash(agent.inventory.accepted_sha256)
                     : 'content hash not recorded'}
                 </small>
-                <small className="block text-[11px] text-muted-foreground">
+                <small className="block text-xs text-muted-foreground">
                   Received {formatObservedAt(agent.inventory.last_rejection.received_at)}
                 </small>
               </div>
@@ -1782,7 +1788,7 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
                         <strong>{component.component}</strong>: {component.state}
                         {component.error_code ? ' · ' + component.error_code : ''}
                         {component.error_message ? ' · ' + component.error_message : ''}
-                        <small className="mt-0.5 block text-[11px] text-muted-foreground">
+                        <small className="mt-0.5 block text-xs text-muted-foreground">
                           attempted {formatObservedAt(component.attempted_at)} · observed {formatObservedAt(component.observed_at)} · received {formatObservedAt(component.received_at)} · state revision {component.state_revision} · value revision {component.value_revision}
                         </small>
                       </li>
@@ -1891,7 +1897,7 @@ function AuditItemRow({ item, agentId }: { item: AgentAuditItem; agentId: string
     <li className="space-y-1 rounded-sm border border-border/60 p-2">
       <div className="flex flex-col gap-0.5">
         <strong className="break-words">{item.event_kind}</strong>
-        <small className="text-[11px] text-muted-foreground">
+        <small className="text-xs text-muted-foreground">
           {formatObservedAt(item.created_at)} · {item.actor_username ?? 'local-cli'} · event #
           {item.audit_event_id}
         </small>
@@ -1915,7 +1921,7 @@ function AuditContextLink({
   requestId?: string
 }) {
   return (
-    <p className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+    <p className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
       Recorded in the redacted Audit trail
       {agentId ? (
         <>
@@ -1961,12 +1967,12 @@ function OneTimeSecret({ secret, label }: { secret: string; label: string }) {
       <p>
         <strong>{label}</strong>
       </p>
-      <code className="block break-all rounded-sm bg-muted p-2 text-[11px]">{secret}</code>
+      <code className="block break-all rounded-sm bg-muted p-2 text-xs">{secret}</code>
       <Button type="button" onClick={() => void copySecret()}>
         Copy secret
       </Button>
       {copied && <p className="text-sm text-success">Copied to clipboard.</p>}
-      <p className="text-[11px] text-muted-foreground">
+      <p className="text-xs text-muted-foreground">
         This secret is shown exactly once and cannot be recovered. It never appears in URLs,
         browser history, logs, or the Audit trail. Copy it now and store it with the Agent
         configuration.
@@ -1997,7 +2003,7 @@ function LifetimeField({
         <option value={72}>72 hours</option>
         <option value={168}>7 days</option>
       </Select>
-      <p className="text-[11px] text-muted-foreground">Single use; expires after the selected window.</p>
+      <p className="text-xs text-muted-foreground">Single use; expires after the selected window.</p>
     </div>
   )
 }
@@ -2033,7 +2039,7 @@ function EnrollmentGuidance() {
           Agent detail page.
         </li>
       </ol>
-      <p className="mt-3 text-[11px] text-muted-foreground">
+      <p className="mt-3 text-xs text-muted-foreground">
         Generating a token does not create an Agent and leaves no offline placeholder. Only a
         successful enrollment adds the Agent to the list. The token is short-lived, single-use,
         and shown exactly once.
@@ -2358,7 +2364,7 @@ export function AdminAgentRotate() {
                 <option value={72}>72 hours</option>
                 <option value={168}>7 days</option>
               </Select>
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 The previous credential stays valid for this long after rotation, then stops
                 authenticating automatically.
               </p>
@@ -2372,7 +2378,7 @@ export function AdminAgentRotate() {
                 />
                 Revoke the previous credential immediately
               </label>
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 Choose this only when the previous credential is compromised or already
                 installed on the replacement configuration. Immediate revocation cannot be
                 undone.

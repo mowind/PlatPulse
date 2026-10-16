@@ -110,19 +110,19 @@ export function AdminToolbarField({
   size?: keyof typeof FIELD_WIDTH
   children: ReactNode
 }) {
-  const caption = <span className="text-xs font-medium text-muted-foreground">{label}</span>
+  const captionClass = 'text-xs font-medium text-muted-foreground'
   const className = cn('flex min-w-0 flex-col gap-1', FIELD_WIDTH[size])
   if (htmlFor) {
     return (
       <div className={className} data-slot="admin-toolbar-field">
-        <label htmlFor={htmlFor} className="text-xs font-medium text-muted-foreground">{label}</label>
+        <label htmlFor={htmlFor} className={captionClass}>{label}</label>
         {children}
       </div>
     )
   }
   return (
     <label className={className} data-slot="admin-toolbar-field">
-      {caption}
+      <span className={captionClass}>{label}</span>
       {children}
     </label>
   )
@@ -149,6 +149,8 @@ export function AdminPanel({
   flush?: boolean
   className?: string
   children: ReactNode
+  /** Page-specific data-slot hook kept from before the shared panel existed;
+   * defaults to `admin-panel`. */
   slot?: string
 }) {
   return (
@@ -177,25 +179,18 @@ export function AdminPanel({
   )
 }
 
-/** Key/value grid for expanded details: two columns on tablets, optionally
- * three on wide screens, one on phones. */
+/** Key/value grid for expanded details: two columns from tablets up, one on phones. */
 export function AdminKeyValueList({
-  columns = 2,
   className,
   children,
 }: {
-  columns?: 2 | 3
   className?: string
   children: ReactNode
 }) {
   return (
     <dl
       data-slot="admin-key-values"
-      className={cn(
-        'grid grid-cols-1 gap-x-6 gap-y-2.5 sm:grid-cols-2',
-        columns === 3 && 'xl:grid-cols-3',
-        className,
-      )}
+      className={cn('grid grid-cols-1 gap-x-6 gap-y-2.5 sm:grid-cols-2', className)}
     >
       {children}
     </dl>
@@ -218,19 +213,5 @@ export function AdminKeyValue({
       <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
       <dd className="mt-0.5 min-w-0 text-sm [overflow-wrap:anywhere]">{children}</dd>
     </div>
-  )
-}
-
-/** A titled group of key/values (identity, observation, credentials,
- * diagnostics). Groups are separated by a hairline, never nested cards. */
-export function AdminKeyValueGroup({ title, children, className }: { title: ReactNode; children: ReactNode; className?: string }) {
-  return (
-    <section
-      data-slot="admin-key-value-group"
-      className={cn('min-w-0 space-y-2 border-t border-border/60 pt-3 first:border-t-0 first:pt-0', className)}
-    >
-      <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{title}</h3>
-      {children}
-    </section>
   )
 }
