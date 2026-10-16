@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PublicNode, PublicValidatorInsight } from '../api/generated'
-import { LinkedValidatorSection, currentValidatorStatusLabel, validatorDataStatus, validatorStateLabel } from './LinkedValidator'
+import { LinkedValidatorDiagnostics, LinkedValidatorSection, currentValidatorStatusLabel, validatorDataStatus, validatorStateLabel } from './LinkedValidator'
 
 const node: PublicNode = {
   nodeId: 'node-1',
@@ -57,8 +57,17 @@ afterEach(() => {
 })
 
 const renderCard = (value: Partial<PublicNode> = {}) => render(<LinkedValidatorSection node={{ ...node, validator: insight, ...value }} />)
-const renderDetail = (value: Partial<PublicNode> = {}) => render(<LinkedValidatorSection node={{ ...node, validator: insight, ...value }} variant="detail" />)
+/** Node detail renders the performance card and, below the chart deck, the
+ *  advanced diagnostics as its own region — the same split the page uses. */
+const renderDetail = (value: Partial<PublicNode> = {}) => {
+  const merged = { ...node, validator: insight, ...value }
+  return render(<>
+    <LinkedValidatorSection node={merged} variant="detail" />
+    {merged.validator && <LinkedValidatorDiagnostics node={merged} validator={merged.validator} />}
+  </>)
+}
 const detailRegion = () => screen.getByRole('region', { name: 'Validator performance' })
+const diagnosticsRegion = () => screen.getByText('Validator diagnostics', { exact: true }).closest('details')!
 
 /** The rendered value of a Linked Validator summary cell or Node detail metric. */
 const metricValue = (label: string) => {
@@ -301,11 +310,14 @@ describe('LinkedValidatorSection Node detail', () => {
     renderDetail({ validator: { ...insight, validatorNodeId: identifier } })
     const region = detailRegion()
     expect(within(region).getByRole('heading', { name: 'Validator performance' })).toBeTruthy()
-    expect(within(region).getByText('Validator One').closest('details')).toBe(region.querySelector('details'))
+    // The diagnostics are no longer nested in the performance card, so the
+    // card carries no disclosure at all and the identity name renders below it.
+    expect(region.querySelector('details')).toBeNull()
+    expect(diagnosticsRegion().contains(screen.getByText('Validator One'))).toBe(true)
     expect(within(region).queryByText(identifier, { exact: true })).toBeNull()
     fireEvent.click(within(region).getByRole('button', { name: 'Show full ID' }))
     expect(within(region).getByText(identifier, { exact: true })).toBeTruthy()
-    expect(region.querySelector('details')?.open).toBe(false)
+    expect(diagnosticsRegion().open).toBe(false)
     expect(region.querySelectorAll('[data-slot="metric-row"]')).toHaveLength(6)
     fireEvent.click(within(region).getByRole('button', { name: 'Copy full Validator identifier' }))
     await waitFor(() => expect(within(region).getByRole('status', { name: 'Identifier copy status' }).textContent).toBe('Validator identifier copied.'))
@@ -336,7 +348,7 @@ describe('LinkedValidatorSection Node detail', () => {
     expect(metrics.className).toContain('lg:grid-cols-3')
     expect(metrics.querySelectorAll('[data-slot="metric-row"]')).toHaveLength(6)
     expect(region.querySelectorAll('[data-slot="card"]')).toHaveLength(0)
-    const diagnostics = region.querySelector('details')!
+    const diagnostics = diagnosticsRegion()
     expect(within(diagnostics).getByText('Staking qualifier').nextElementSibling?.textContent).toBe('locked')
     expect(within(diagnostics).getByText('Activity').nextElementSibling?.textContent).toBe('verifying')
   })
@@ -358,7 +370,7 @@ describe('LinkedValidatorSection Node detail', () => {
 
   it('defaults diagnostics closed and toggles the full ID independently', () => {
     renderDetail({ validator: { ...insight, validatorNodeId: '0x' + 'a'.repeat(128) } })
-    const diagnostics = detailRegion().querySelector('details')!
+    const diagnostics = diagnosticsRegion()
     expect(diagnostics.open).toBe(false)
     expect(diagnostics.querySelector('summary')?.textContent).toContain('Validator diagnostics')
     expect(diagnostics.querySelector('summary')?.textContent).toContain('Provider, freshness, ranking and source details')
@@ -389,7 +401,7 @@ describe('LinkedValidatorSection Node detail', () => {
     expect(screen.getByText(/last successful rank is retained/).closest('[data-slot=metric-row]')?.textContent).toContain('Network rank')
     expect(screen.getByText(/production rate is unknown/).closest('[data-slot=metric-row]')?.textContent).toContain('Production rate')
     expect(screen.getByText(/prior value was not treated as normal growth/).closest('[data-slot=metric-row]')?.textContent).toContain('Cumulative blocks')
-    expect(detailRegion().querySelector('details')?.open).toBe(false)
+    expect(diagnosticsRegion().open).toBe(false)
   })
 
   it.each(['not_configured', 'unsupported', 'not_found', 'empty'])('labels retained metrics with unavailable Provider state %s outside diagnostics', state => {
@@ -411,7 +423,7 @@ describe('LinkedValidatorSection Node detail', () => {
     expect(screen.getByTitle('1,234,567.890123456789')).toBeTruthy()
     const exactReward = screen.getByText('Cumulative rewards (full precision)').nextElementSibling
     expect(exactReward?.textContent).toBe('1,234,567.890123456789')
-    expect(exactReward?.closest('details')).toBe(detailRegion().querySelector('details'))
+    expect(exactReward?.closest('details')).toBe(diagnosticsRegion())
     expect(metricValue('Production rate')).toBe('125.123456%')
     expect(metricValue('PlatScan 24h rate')).toBe('135.987654%')
     expect(metricValue('Delegation reward share')).toBe('20.123456%')
@@ -420,12 +432,12 @@ describe('LinkedValidatorSection Node detail', () => {
 
   it('shows the source, independent success times and cutoff', () => {
     renderDetail()
-    const region = detailRegion()
-    expect(within(region).getByText('Last success')).toBeTruthy()
-    expect(within(region).getByText('Rank last success')).toBeTruthy()
-    expect(within(region).getByText('Rank cohort')).toBeTruthy()
-    expect(within(region).getByText('platscan')).toBeTruthy()
-    expect(within(region).getByText('Source cutoff')).toBeTruthy()
+    const diagnostics = diagnosticsRegion()
+    expect(within(diagnostics).getByText('Last success')).toBeTruthy()
+    expect(within(diagnostics).getByText('Rank last success')).toBeTruthy()
+    expect(within(diagnostics).getByText('Rank cohort')).toBeTruthy()
+    expect(within(diagnostics).getByText('platscan')).toBeTruthy()
+    expect(within(diagnostics).getByText('Source cutoff')).toBeTruthy()
     // The raw provider timestamp is never rendered as text.
     expect(screen.queryByText('2026-08-25T00:00:00Z')).toBeNull()
   })
@@ -453,10 +465,25 @@ describe('LinkedValidatorSection Node detail', () => {
   it('keeps the locked qualifier and the unknown-staking explanation', () => {
     renderDetail({ validator: { ...insight, currentValidatorStatus: 'validator', currentValidatorStatusQualifier: 'locked' } })
     expect(screen.queryByText('Locked')).toBeNull()
-    expect(screen.getByText(/confirmed-valid staking identity but is locked/).closest('details')).toBe(detailRegion().querySelector('details'))
+    expect(screen.getByText(/confirmed-valid staking identity but is locked/).closest('details')).toBe(diagnosticsRegion())
     cleanup()
     renderDetail({ validator: { ...insight, currentValidatorStatus: 'unknown', currentValidatorStatusState: 'unknown', currentValidatorStatusQualifier: null } })
     expect(screen.getByText(/not a negative conclusion/)).toBeTruthy()
+  })
+
+  it('renders diagnostics as their own collapsed region after the performance card', () => {
+    renderDetail()
+    const region = detailRegion()
+    const diagnostics = diagnosticsRegion()
+    // Collapsed on first load, and no longer inside the card that owns the six
+    // metrics: expanding the diagnostics must not displace the chart deck that
+    // follows the Validator region.
+    expect(diagnostics.open).toBe(false)
+    expect(region.contains(diagnostics)).toBe(false)
+    expect(region.compareDocumentPosition(diagnostics) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(diagnostics.getAttribute('data-slot')).toBe('disclosure')
+    expect(within(diagnostics).getByLabelText('Public Validator states')).toBeTruthy()
+    expect(within(diagnostics).getByText('Last success')).toBeTruthy()
   })
 
   it('keeps the sanitized identity explanation when no Link is established', () => {

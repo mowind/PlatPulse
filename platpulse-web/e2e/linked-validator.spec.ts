@@ -187,18 +187,22 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await detail.getByRole('button', { name: 'Show full ID' }).click()
     await expect(detail.getByLabel(/Validator identifier: 0x/)).toBeVisible()
     // Diagnostics starts closed and is independent of the identity disclosure.
-    await expect(detail.locator('details')).not.toHaveAttribute('open')
-    await expect(detail.getByLabel('Public Validator states')).toBeHidden()
-    await detail.locator('summary').click()
+    // #225 moved it out of the performance card to sit after the chart deck, so
+    // the page's own disclosure is what these assertions address.
+    const diagnostics = page.locator('details[data-slot="disclosure"]', { hasText: 'Validator diagnostics' })
+    await expect(diagnostics).toHaveCount(1)
+    await expect(diagnostics).not.toHaveAttribute('open')
+    await expect(diagnostics.getByLabel('Public Validator states')).toBeHidden()
+    await diagnostics.locator('summary').click()
     // The public state vocabulary and provenance remain available on demand.
-    await expect(detail.getByLabel('Public Validator states')).toBeVisible()
-    await expect(detail.getByText('E2E Validator', { exact: true })).toBeVisible()
-    await expect(detail.getByText('Data freshness', { exact: true })).toBeVisible()
+    await expect(diagnostics.getByLabel('Public Validator states')).toBeVisible()
+    await expect(diagnostics.getByText('E2E Validator', { exact: true })).toBeVisible()
+    await expect(diagnostics.getByText('Data freshness', { exact: true })).toBeVisible()
     await expect(detail.getByText('Cumulative blocks')).toBeVisible()
     await expect(detail.getByText('Cumulative rewards', { exact: true })).toBeVisible()
     await expect(metricValue(detail, 'Cumulative rewards')).toHaveText(LINKED_REWARD)
-    await expect(detail.getByLabel('Public Validator states').getByText('Current staking status', { exact: true })).toBeVisible()
-    await expect(detail.getByText('Last success', { exact: true })).toBeVisible()
+    await expect(diagnostics.getByLabel('Public Validator states').getByText('Current staking status', { exact: true })).toBeVisible()
+    await expect(diagnostics.getByText('Last success', { exact: true })).toBeVisible()
     await expect(metricValue(detail, 'Network rank')).toHaveText(LINKED_RANK)
     await expect(metricValue(detail, 'Production rate')).toHaveText(LINKED_BLOCK_RATE_DETAIL)
     await expect(metricValue(detail, 'PlatScan 24h rate')).toHaveText(LINKED_GEN_BLOCKS_RATE_DETAIL)
@@ -273,7 +277,9 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
       const summaries = page.locator('summary').filter({ hasText: 'Validator diagnostics' })
       await expect(summaries).toHaveCount(1)
       const disclosures = summaries.locator('..')
-      const fullReward = detail.locator('details').getByText('Cumulative rewards (full precision)', { exact: true }).locator('xpath=following-sibling::dd')
+      // The diagnostics sits outside the performance card since #225, so the
+      // full-precision reward is read from the page-level disclosure.
+      const fullReward = disclosures.getByText('Cumulative rewards (full precision)', { exact: true }).locator('xpath=following-sibling::dd')
       await expect(fullReward).toHaveText(reward === '10' ? '10' : '305,614.775625389856')
       const expectClosed = async () => {
         for (const disclosure of await disclosures.all()) {
@@ -341,7 +347,7 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
         await expect(disclosure.locator(':scope > div')).toBeVisible()
       }
       await expect(detail.getByLabel(/Validator identifier:/)).toBeVisible()
-      await expect(detail.getByText('Cumulative rewards (full precision)', { exact: true })).toBeVisible()
+      await expect(disclosures.getByText('Cumulative rewards (full precision)', { exact: true })).toBeVisible()
       await expect(fullReward).toBeVisible()
       await testInfo.attach('Overview layout measurements', {
         body: JSON.stringify({ viewport: page.viewportSize(), collapsedHeight, collapsedHistoryY, expandedHistoryY: await documentY() }),
@@ -381,14 +387,15 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     await loginAs(page)
     await page.goto('/nodes/' + PUBLIC_NODE_ID)
     const detail = page.getByRole('region', { name: 'Validator performance' })
-    const summary = detail.locator('summary')
+    // The diagnostics disclosure lives after the chart deck since #225.
+    const summary = page.locator('summary').filter({ hasText: 'Validator diagnostics' })
     const touch = Boolean(testInfo.project.use.hasTouch || isMobile)
     await expect(detail.getByText(identity, { exact: true })).toHaveCount(0)
     const show = detail.getByRole('button', { name: 'Show full ID' })
     if (touch) await show.tap()
     else { await show.focus(); await page.keyboard.press('Enter') }
     await expect(detail.getByText(identity, { exact: true })).toBeVisible()
-    await expect(detail.locator('details')).not.toHaveAttribute('open')
+    await expect(summary.locator('..')).not.toHaveAttribute('open')
     const hide = detail.getByRole('button', { name: 'Hide full ID' })
     if (touch) await hide.tap()
     else { await hide.focus(); await page.keyboard.press('Space') }
@@ -401,14 +408,14 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
       /last successful rank is retained/, /zero scheduled-block denominator/, /prior value was not treated as normal growth/]) {
       await expect(detail.getByText(reason)).toBeVisible()
     }
-    await expect(detail.getByLabel('Public Validator states')).toBeHidden()
+    await expect(page.getByLabel('Public Validator states')).toBeHidden()
     if (touch) await summary.tap()
     else { await summary.focus(); await page.keyboard.press('Enter') }
-    await expect(detail.getByLabel('Public Validator states')).toBeVisible()
-    await expect(detail.getByText('Last success', { exact: true })).toBeVisible()
+    await expect(page.getByLabel('Public Validator states')).toBeVisible()
+    await expect(page.getByText('Last success', { exact: true })).toBeVisible()
     if (touch) await summary.tap()
     else await page.keyboard.press('Space')
-    await expect(detail.getByLabel('Public Validator states')).toBeHidden()
+    await expect(page.getByLabel('Public Validator states')).toBeHidden()
     await expect(detail.getByText(identity, { exact: true })).toBeVisible()
     await expectDetailMetrics(detail)
     await expectNoHorizontalOverflow(page)

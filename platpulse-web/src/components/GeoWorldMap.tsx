@@ -12,33 +12,8 @@ import {
   geoUnknownReasons,
 } from './geoPresentation'
 import { cn } from '../lib/utils'
-
-/**
- * ECharts is loaded on demand rather than imported at module scope: only Home
- * and the Node Detail Peer Country View draw a map, and the library is around
- * 530 KiB minified. Keeping it out of the entry chunk means Login, Admin and
- * the rest of Node Detail never pay for it.
- */
-type EChartsCore = typeof import('echarts/core')
-let echartsPromise: Promise<EChartsCore> | null = null
-function loadECharts() {
-  echartsPromise ??= Promise.all([
-    import('echarts/core'),
-    import('echarts/charts'),
-    import('echarts/components'),
-    import('echarts/renderers'),
-  ]).then(([core, charts, components, renderers]) => {
-    core.use([
-      charts.MapChart,
-      charts.ScatterChart,
-      components.GeoComponent,
-      components.TooltipComponent,
-      renderers.CanvasRenderer,
-    ])
-    return core
-  })
-  return echartsPromise
-}
+import { useIsDark } from '../lib/useIsDark'
+import { loadECharts } from './echartsCore'
 
 /**
  * Peer country map for Home (#133) and the Node Detail Node Peer Country View
@@ -152,20 +127,6 @@ function ensureWorldMap() {
 function prefersReducedMotion() {
   return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-}
-
-/** The theme is applied as the dark class on the root element (theme.ts). */
-function useIsDark() {
-  const [dark, setDark] = useState(
-    () => typeof document !== 'undefined' && document.documentElement.classList.contains('dark'),
-  )
-  useEffect(() => {
-    const root = document.documentElement
-    const observer = new MutationObserver(() => setDark(root.classList.contains('dark')))
-    observer.observe(root, { attributes: true, attributeFilter: ['class'] })
-    return () => observer.disconnect()
-  }, [])
-  return dark
 }
 
 export default function GeoWorldMap({ overview, status, heading = PEER_COUNTRIES_HEADING, selectionBasis }: GeoWorldMapProps) {

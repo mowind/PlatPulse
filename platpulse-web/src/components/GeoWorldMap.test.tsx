@@ -24,10 +24,12 @@ const mocks = vi.hoisted(() => ({
   on: vi.fn(),
 }))
 
+// The shared on-demand loader (./echartsCore) registers every chart type the
+// app draws: a mock that omits one makes the loader's dynamic import reject.
 vi.mock('echarts/core', () => ({ init: mocks.init, registerMap: mocks.registerMap, use: mocks.use }))
-vi.mock('echarts/charts', () => ({ MapChart: {}, ScatterChart: {} }))
-vi.mock('echarts/components', () => ({ GeoComponent: {}, TooltipComponent: {} }))
-vi.mock('echarts/renderers', () => ({ CanvasRenderer: {} }))
+vi.mock('echarts/charts', () => ({ MapChart: {}, ScatterChart: {}, LineChart: {}, BarChart: {} }))
+vi.mock('echarts/components', () => ({ GeoComponent: {}, TooltipComponent: {}, GridComponent: {}, AxisPointerComponent: {} }))
+vi.mock('echarts/renderers', () => ({ CanvasRenderer: {}, SVGRenderer: {} }))
 
 import GeoWorldMap from './GeoWorldMap'
 

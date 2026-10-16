@@ -1,5 +1,5 @@
 import { ArrowLeft, Check, Copy } from 'lucide-react'
-import { useId, useState } from 'react'
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link, useLocation, useParams } from 'react-router'
 import {
@@ -12,15 +12,30 @@ import { useHomeRealtimeContext } from '../layouts/HomeLayout'
 import { homeReturnHref, homeReturnTab, readHomeReturn } from '../homeReturn'
 import { peerInsightCollectionStatus, peerInsightFreshnessStatus, peerInsightValueStatus } from '../components/PeerInsight'
 import { formatUtcDateTime, NodeHealthMarker } from '../components/StatusBadge'
-import { LinkedValidatorSection } from '../components/LinkedValidator'
+import { LinkedValidatorDiagnostics, LinkedValidatorSection } from '../components/LinkedValidator'
 import GeoMapBoundary from '../components/GeoMapBoundary'
 import GeoWorldMap from '../components/GeoWorldMap'
 import { RealtimeNotice } from '../components/RealtimeNotice'
 import { formatNodeDataBytes } from '../formatBytes'
 import { formatDuration } from '../formatDuration'
 import { nodeDataProgress } from '../nodeData'
-import { coverageNotes, coverageRuns, metricCoverage } from '../metricCoverage'
-import type { ChartCoordinate } from '../metricCoverage'
+import { coverageNotes, coverageSegments, metricCoverage } from '../metricCoverage'
+import NodeMetricChart from '../components/NodeMetricChart'
+import { METRIC_SERIES_COLORS, type MetricChartSeriesInput, type MetricSeriesKey } from '../components/nodeMetricChartOption'
+import {
+  formatCountAxis,
+  formatCountSample,
+  formatMetricRate,
+  formatMillisecondsAxis,
+  formatMillisecondsSample,
+  formatPercentAxis,
+  formatPercentSample,
+  formatRateAxis,
+  formatRateSample,
+  integerChartMax,
+  niceChartMax,
+  percentChartMax,
+} from '../components/metricChartAxis'
 import { MetricRow } from '../components/MetricRow'
 import { ValidatorActivityBadge } from '../components/ValidatorActivityBadge'
 import { HEAD_COMPARISON_TONE_CLASS, LastReportAge, networkHeadComparison, networkHeadOffset, validHeight } from '../components/NodeDetailObservations'
@@ -109,7 +124,7 @@ export function NodePage() {
       metricsLabel="Node key summary"
       metrics={<>
         <SummaryTile label="Head" value={formatNumber(node.currentHead)} detail={headLagDetail(node)} />
-        <SummaryTile label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={headLagDetail(node)} />
+        <SummaryTile label="Sync" value={nodeComponentStateLabel(node.syncState)} detail={syncStateDetail(node)} />
         <SummaryTile label="Peers" value={peerCount(node.peers)} detail={peerDirectionSummary(node.peers)} />
         <SummaryTile label="Uptime" value={formatDuration(node.processUptimeMs)} />
         <SummaryTile label="Block interval" value={blockInterval.value} detail={blockInterval.value === 'Unknown' ? blockInterval.detail : undefined} />
@@ -138,13 +153,11 @@ export function NodePage() {
           unit="%"
           value={formatPercent(node.processCpuPercent)}
           detail={processStatusDetail(node.processState)}
-          tone="blue"
-          fixedMax={percentChartMax(metricHistory?.processCpuPercent ?? [])}
-          series={[{ label: 'Process CPU', points: metricHistory?.processCpuPercent ?? [], coverage: metricCoverage(metricHistory, 'processCpuPercent') }]}
-          from={metricHistory?.from}
-          to={metricHistory?.to}
-          windowSeconds={metricHistory?.windowSeconds}
+          series={[{ key: 'cpu', label: 'Process CPU', points: metricHistory?.processCpuPercent ?? [], coverage: metricCoverage(metricHistory, 'processCpuPercent'), area: true }]}
+          history={metricHistory}
+          max={percentChartMax(metricHistory?.processCpuPercent ?? [])}
           axisFormat={formatPercentAxis}
+          valueFormat={formatPercentSample}
           historyMessage={metricHistoryMessage}
         />
         <NodeMetricCard
@@ -152,74 +165,71 @@ export function NodePage() {
           unit="%"
           value={formatPercent(node.processMemoryPercent)}
           detail={processStatusDetail(node.processState)}
-          tone="cyan"
-          fixedMax={percentChartMax(metricHistory?.processMemoryPercent ?? [])}
-          series={[{ label: 'Process memory', points: metricHistory?.processMemoryPercent ?? [], coverage: metricCoverage(metricHistory, 'processMemoryPercent') }]}
-          from={metricHistory?.from}
-          to={metricHistory?.to}
-          windowSeconds={metricHistory?.windowSeconds}
+          series={[{ key: 'memory', label: 'Process memory', points: metricHistory?.processMemoryPercent ?? [], coverage: metricCoverage(metricHistory, 'processMemoryPercent'), area: true }]}
+          history={metricHistory}
+          max={percentChartMax(metricHistory?.processMemoryPercent ?? [])}
           axisFormat={formatPercentAxis}
+          valueFormat={formatPercentSample}
           historyMessage={metricHistoryMessage}
         />
         <NodeMetricCard
           label="Host network"
-          value={formatRate(node.hostNetworkTxBytesPerSec)}
+          value={formatMetricRate(node.hostNetworkTxBytesPerSec)}
           valueLabel="Upload"
-          tone="blue"
           series={[
-            { label: 'Upload', points: metricHistory?.networkTxBytesPerSec ?? [], coverage: metricCoverage(metricHistory, 'networkTxBytesPerSec') },
-            { label: 'Download', points: metricHistory?.networkRxBytesPerSec ?? [], secondary: true, coverage: metricCoverage(metricHistory, 'networkRxBytesPerSec') },
+            { key: 'upload', label: 'Upload', points: metricHistory?.networkTxBytesPerSec ?? [], coverage: metricCoverage(metricHistory, 'networkTxBytesPerSec') },
+            { key: 'download', label: 'Download', points: metricHistory?.networkRxBytesPerSec ?? [], coverage: metricCoverage(metricHistory, 'networkRxBytesPerSec') },
           ]}
           showLegend
-          from={metricHistory?.from}
-          to={metricHistory?.to}
-          windowSeconds={metricHistory?.windowSeconds}
-          axisFormat={formatRate}
+          history={metricHistory}
+          axisFormat={formatRateAxis}
+          valueFormat={formatRateSample}
           historyMessage={metricHistoryMessage}
         />
         <NodeMetricCard
           label="Peer connections"
           value={peerCount(node.peers)}
           detail={peerBreakdown(node.peers)}
-          tone="blue"
+          integer
           series={[
-            { label: 'Inbound', points: metricHistory?.peerInboundCount ?? [], coverage: metricCoverage(metricHistory, 'peerInboundCount') },
-            { label: 'Outbound', points: metricHistory?.peerOutboundCount ?? [], secondary: true, coverage: metricCoverage(metricHistory, 'peerOutboundCount') },
+            { key: 'inbound', label: 'Inbound', points: metricHistory?.peerInboundCount ?? [], coverage: metricCoverage(metricHistory, 'peerInboundCount') },
+            { key: 'outbound', label: 'Outbound', points: metricHistory?.peerOutboundCount ?? [], coverage: metricCoverage(metricHistory, 'peerOutboundCount') },
           ]}
           showLegend
-          from={metricHistory?.from}
-          to={metricHistory?.to}
-          windowSeconds={metricHistory?.windowSeconds}
+          history={metricHistory}
           axisFormat={formatCountAxis}
+          valueFormat={formatCountSample}
           historyMessage={metricHistoryMessage}
         />
         <NodeMetricCard
           label="Block interval"
+          kind="bar"
           value={blockInterval.value}
           detail={historyQuery.error ? 'History unavailable' : blockInterval.detail}
-          tone="amber"
-          series={[{ label: 'Block interval', points: metricHistory?.blockIntervalMs ?? [], coverage: metricCoverage(metricHistory, 'blockIntervalMs') }]}
-          from={metricHistory?.from}
-          to={metricHistory?.to}
-          windowSeconds={metricHistory?.windowSeconds}
+          series={[{ key: 'blockInterval', label: 'Block interval', points: metricHistory?.blockIntervalMs ?? [], coverage: metricCoverage(metricHistory, 'blockIntervalMs') }]}
+          history={metricHistory}
           axisFormat={formatMillisecondsAxis}
+          valueFormat={formatMillisecondsSample}
           historyMessage={metricHistoryMessage}
-          chartKind="bar"
         />
         <NodeMetricCard
           label="Transactions / block"
+          kind="bar"
+          integer
           value={formatNumber(node.latestBlockTransactionCount)}
-          tone="violet"
-          series={[{ label: 'Transactions / block', points: metricHistory?.transactionCount ?? [], coverage: metricCoverage(metricHistory, 'transactionCount') }]}
-          from={metricHistory?.from}
-          to={metricHistory?.to}
-          windowSeconds={metricHistory?.windowSeconds}
+          series={[{ key: 'transactions', label: 'Transactions / block', points: metricHistory?.transactionCount ?? [], coverage: metricCoverage(metricHistory, 'transactionCount') }]}
+          history={metricHistory}
           axisFormat={formatCountAxis}
+          valueFormat={formatCountSample}
           historyMessage={metricHistoryMessage}
-          chartKind="bar"
         />
       </div>
     </section>
+
+    {/* Advanced diagnostics, after the deck rather than inside the performance
+        card, so expanding them never hides the monitoring charts. Only a
+        confirmed Validator has them at all. */}
+    {validatorNode && node.validator && <LinkedValidatorDiagnostics node={node} validator={node.validator} />}
 
   </section>
 }
@@ -230,7 +240,9 @@ function SummaryTile({ label, value, detail }: { label: string; value: ReactNode
   return <SummaryMetricCard label={label} value={value} caption={detail} hoverable={false} dataSlot="node-summary-tile" />
 }
 
-function NodeInfoGroup({ title, label, note, children }: { title: string; label: string; note?: string; children: ReactNode }) {
+/** `dense` tightens the row rhythm only: the card, its title line and its note
+ *  stay the shared Node Detail card, so the three panels keep one geometry. */
+function NodeInfoGroup({ title, label, note, dense = false, children }: { title: string; label: string; note?: string; dense?: boolean; children: ReactNode }) {
   return (
     <CardX
       bordered={false}
@@ -238,12 +250,12 @@ function NodeInfoGroup({ title, label, note, children }: { title: string; label:
       aria-label={label}
       data-slot="node-info-group"
       className={CARD}
-      contentClassName="flex h-full min-w-0 flex-col gap-1.5"
+      contentClassName={cn('flex h-full min-w-0 flex-col', dense ? 'gap-1' : 'gap-1.5')}
     >
       <h2 className="m-0 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm font-medium leading-5">
         {title}
       </h2>
-      <div className="grid grid-cols-1 gap-1.5">{children}</div>
+      <div className={cn('grid grid-cols-1', dense ? 'gap-1' : 'gap-1.5')}>{children}</div>
       {note && <div className="mt-auto border-t border-border/60 pt-2"><p className="m-0 text-[11px] leading-4 text-muted-foreground">{note}</p></div>}
     </CardX>
   )
@@ -266,6 +278,16 @@ function nodeRoleLabel(node: PublicNode): string | null {
 function nodeSyncStateLabel(node: PublicNode): string | null {
   const label = nodeComponentStateLabel(node.syncState)
   return label === 'Unknown' ? null : label
+}
+
+/** The Sync tile names the Report's component state, and says so: the Head tile
+ *  already carries the head lag, and repeating it here read as a chain verdict
+ *  the evidence does not support. An unnamed state keeps the comparison's own
+ *  reason, so the tile never reads as "fully synced" by omission. */
+function syncStateDetail(node: PublicNode): string | undefined {
+  return nodeSyncStateLabel(node) === null
+    ? networkHeadComparison(node).reason
+    : 'Data collection state; not chain sync'
 }
 
 type HeadLagPresentation = { label: string; toneClass: string }
@@ -291,15 +313,6 @@ function peerDirectionSummary(insight: PublicNode['peers']): string {
   return peerBreakdown(insight)
 }
 
-/** CPU/Memory curves are read against the bucket the window actually reached; a
- *  fixed 0–100% axis flattens a low-utilisation Node onto the baseline. The
- *  samples themselves are never rescaled, only the displayed range. */
-function percentChartMax(points: PublicMetricPoint[]): number {
-  const values = points.map((point) => point.value).filter(Number.isFinite)
-  const max = values.length > 0 ? Math.max(...values) : 0
-  for (const bucket of [5, 10, 25, 50]) if (max <= bucket) return bucket
-  return 100
-}
 
 function processStateDot(state: string | null | undefined): string {
   const value = typeof state === 'string' ? state.trim().toLowerCase() : ''
@@ -371,10 +384,15 @@ function ChainStateGroup({ node }: { node: PublicNode }) {
     typeof consensus?.freshness === 'string' && consensus.freshness !== 'current' ? 'freshness ' + consensus.freshness : null,
     typeof consensus?.state === 'string' && consensus.state !== 'ok' ? 'collection ' + consensus.state : null,
   ].filter((part): part is string => part != null)
-  return <NodeInfoGroup title="Chain state" label="Node chain state">
-    {qc != null && <MetricRow label="QC Head" value={qc.toLocaleString()} />}
-    {locked != null && <MetricRow label="Locked Head" value={locked.toLocaleString()} />}
-    {committed != null && <MetricRow label="Committed Head" value={committed.toLocaleString()} />}
+  // Three heights that agree in the healthy case are noise repeated three
+  // times; Observed Head, Network Head and the lag are what the reader compares.
+  // The labels stay exactly as they were — only weight and rhythm change.
+  return <NodeInfoGroup dense title="Chain state" label="Node chain state">
+    {(qc != null || locked != null || committed != null) && <div className="grid grid-cols-1 gap-1 border-b border-border/60 pb-1.5" role="group" aria-label="Consensus heads">
+      {qc != null && <MetricRow layout="compact" label="QC Head" value={qc.toLocaleString()} />}
+      {locked != null && <MetricRow layout="compact" label="Locked Head" value={locked.toLocaleString()} />}
+      {committed != null && <MetricRow layout="compact" label="Committed Head" value={committed.toLocaleString()} />}
+    </div>}
     {observed != null && <MetricRow label="Observed Head" value={observed.toLocaleString()} />}
     {network != null && <MetricRow label="Network Head" value={network.toLocaleString()} />}
     {lag != null && <MetricRow label="Head lag" value={<span className={lag.toneClass}>{lag.label}</span>} />}
@@ -390,7 +408,7 @@ function processCollectionLabel(state: string | null | undefined): string {
 function ProcessGroup({ node, nodeDataProgressValue }: { node: PublicNode; nodeDataProgressValue: number | null }) {
   const bytes = formatNodeDataBytes(finiteNonNegative(node.nodeDataDirectorySizeBytes) ? node.nodeDataDirectorySizeBytes : null, finiteNonNegative(node.nodeDataDirectoryCapacityBytes) ? node.nodeDataDirectoryCapacityBytes : null)
   const started = formatUtcDateTime(node.processStartedAt)
-  return <NodeInfoGroup title="Process" label="PlatON process" note="Last collection result; not a live process status">
+  return <NodeInfoGroup dense title="Process" label="PlatON process" note="Last collection result; not a live process status">
     <MetricRow label="Collection" value={<span className="inline-flex items-center gap-1.5"><span className={cn('inline-block size-2 shrink-0 rounded-full', processStateDot(node.processState))} aria-hidden="true" />{processCollectionLabel(node.processState)}</span>} />
     {started !== 'Unknown' && <MetricRow label="Started" value={started} />}
     {(bytes != null || nodeDataProgressValue != null) && <div className="grid grid-cols-1 gap-1.5" role="group" aria-label="Node data directory">
@@ -408,64 +426,54 @@ function HostResourcesGroup({ node }: { node: PublicNode }) {
   const resources = [['CPU', node.hostCpuPercent], ['Memory', node.hostMemoryPercent], ['Storage', node.hostStoragePercent]] as const
   const upload = finiteNonNegative(node.hostNetworkTxBytesPerSec)
   const download = finiteNonNegative(node.hostNetworkRxBytesPerSec)
-  return <NodeInfoGroup title="Host resources" label="Shared Host resources" note="Collected once per Agent; shared by every Node it monitors">
-    {resources.map(([label, value]) => finiteNonNegative(value) ? <MetricRow key={label} label={label} value={formatPercent(value)} progress={value} /> : null)}
-    {(upload || download) && <MetricRow label="Network" value={<span className="inline-flex flex-wrap items-center justify-end gap-x-2 tabular-nums">{upload && <span>↑ {formatRate(node.hostNetworkTxBytesPerSec)}</span>}{download && <span>↓ {formatRate(node.hostNetworkRxBytesPerSec)}</span>}</span>} />}
+  return <NodeInfoGroup dense title="Host resources" label="Shared Host resources" note="Collected once per Agent; shared by every Node it monitors">
+    {resources.map(([label, value]) => finiteNonNegative(value) ? <MetricRow key={label} label={label} value={formatPercent(value)} progress={value} progressStatus="info" /> : null)}
+    {(upload || download) && <MetricRow label="Network" value={<span className="inline-flex flex-wrap items-center justify-end gap-x-2 tabular-nums">{upload && <span>↑ {formatMetricRate(node.hostNetworkTxBytesPerSec)}</span>}{download && <span>↓ {formatMetricRate(node.hostNetworkRxBytesPerSec)}</span>}</span>} />}
     {!resources.some(([, value]) => finiteNonNegative(value)) && !upload && !download && <p className="m-0 text-[11px] text-muted-foreground">Host resources have not been observed yet.</p>}
   </NodeInfoGroup>
 }
 
 type MetricSeries = {
+  /** Emerald series colour slot; the card, the curve and the legend read it once. */
+  key: MetricSeriesKey
   label: string
   points: PublicMetricPoint[]
-  secondary?: boolean
   /** Server-answered observation/coverage evidence for this direction. */
   coverage?: PublicMetricSeriesCoverage
+  /** Emerald's transparent vertical gradient, for the single-direction CPU and
+   *  memory curves only. */
+  area?: boolean
 }
 
 type MetricChartKind = 'line' | 'bar'
 
-type MetricTone = 'blue' | 'cyan' | 'violet' | 'amber'
+/** The chart's tooltip states each retained sample as the Server reported it —
+ *  unrounded percent, unscaled byte rate — while the card's own top-right value
+ *  keeps the page's display formatting. The formatters are module-level so the
+ *  option is not rebuilt on every render. */
 
-const TONE_TEXT: Record<MetricTone, string> = {
-  blue: 'text-blue-600 dark:text-blue-400',
-  cyan: 'text-cyan-600 dark:text-cyan-400',
-  violet: 'text-violet-600 dark:text-violet-400',
-  amber: 'text-amber-500 dark:text-amber-400',
-}
-
-type MetricChartProps = {
-  label: string
-  series: MetricSeries[]
-  from?: string
-  to?: string
-  fixedMax?: number
-  axisFormat: (value: number) => string
-  message?: string
-  kind?: MetricChartKind
-  windowSeconds?: number
-  toneClass: string
-  legend?: ReactNode
-}
-
-function NodeMetricCard({ label, unit, value, valueLabel, detail, tone, series, showLegend = false, from, to, fixedMax, axisFormat, historyMessage, chartKind = 'line', windowSeconds, className = '' }: {
+function NodeMetricCard({ label, unit, value, valueLabel, detail, kind = 'line', series, showLegend = false, history, max: fixedMax, axisFormat, valueFormat, integer = false, historyMessage, className = '' }: {
   label: string
   unit?: string
   value: string
   valueLabel?: string
   detail?: string
-  tone: MetricTone
+  kind?: MetricChartKind
   series: MetricSeries[]
   showLegend?: boolean
-  from?: string
-  to?: string
-  fixedMax?: number
+  history?: PublicNodeMetricHistory
+  /** Display ceiling; without one the window's own observations set a nice ceiling. */
+  max?: number
   axisFormat: (value: number) => string
+  valueFormat: (value: number) => string
+  integer?: boolean
   historyMessage?: string
-  chartKind?: MetricChartKind
-  windowSeconds?: number
   className?: string
 }) {
+  const seconds = Number.isFinite(history?.windowSeconds) && (history?.windowSeconds ?? 0) > 0 ? Math.round(history?.windowSeconds as number) : 60
+  const fromMs = history ? Date.parse(history.from) : Number.NaN
+  const toMs = history ? Date.parse(history.to) : Number.NaN
+  const validWindow = Number.isFinite(fromMs) && Number.isFinite(toMs) && toMs > fromMs
   // A direction series that has no retained sample must not disappear behind
   // its available partner: name it explicitly while the partner keeps plotting.
   const missingDirections = series.length > 1 && series.some((item) => item.points.length > 0)
@@ -474,10 +482,28 @@ function NodeMetricCard({ label, unit, value, valueLabel, detail, tone, series, 
   // Gaps, an unobserved tail and a never-observed direction are stated beside
   // the value: the reader must not have to infer absence from a straight line.
   const coverageText = coverageNotes(series)
-  const toneClass = TONE_TEXT[tone]
+  // The window is the evidence: observations outside it are dropped and the
+  // Server's own silence list decides where a run ends, so nothing is joined
+  // across a stretch nobody observed and nothing is filled with a zero.
+  const segments = series.map((item) => (validWindow ? coverageSegments(item.points, fromMs, toMs, item.coverage?.gaps) : []))
+  const plots: MetricChartSeriesInput[] = series.map((item, index) => ({
+    label: item.label,
+    color: METRIC_SERIES_COLORS[item.key],
+    area: item.area,
+    segments: segments[index] ?? [],
+  }))
+  const observations = segments.flat(2)
+  const observedMax = observations.length > 0 ? Math.max(...observations.map((item) => item.value)) : 0
+  const max = fixedMax ?? (integer ? integerChartMax(observedMax) : niceChartMax(observedMax))
   // Multi-direction cards explain their curves under the plot, never under the
   // title, so the header stays title-left / current-value-right on every card.
-  const legend = showLegend ? <MetricSeriesLegend label={label} series={series} toneClass={toneClass} /> : undefined
+  const legend = showLegend ? <MetricSeriesLegend label={label} series={series} /> : undefined
+  // The accessible description states the same thing the curve does: which
+  // directions, over which real window, and what the Server measured missing.
+  const description = (observations.length > 0
+    ? series.map((item) => item.label).join(' and ') + ' values from ' + seconds + ' seconds ago to now'
+    : label + ': ' + (historyMessage ?? 'No samples in the last minute'))
+    + (coverageText ? '. ' + coverageText : '')
   return (
     <CardX bordered={false} role="article" data-slot="node-metric-card" className={cn('min-w-0', CARD, className)} contentClassName="flex h-full min-w-0 flex-col gap-1.5">
       <div data-slot="node-metric-header" className="flex min-h-10 min-w-0 items-start justify-between gap-3">
@@ -495,17 +521,31 @@ function NodeMetricCard({ label, unit, value, valueLabel, detail, tone, series, 
         {missingDirections.length > 0 && <p className="m-0 text-[11px] italic text-muted-foreground">{missingDirections.join(' and ')} unavailable in this window</p>}
         {coverageText && <p data-slot="node-metric-coverage" className="m-0 text-[11px] leading-4 text-muted-foreground">{coverageText}</p>}
       </div>
-      <MetricChart label={label} series={series} from={from} to={to} fixedMax={fixedMax} axisFormat={axisFormat} message={historyMessage} kind={chartKind} windowSeconds={windowSeconds} toneClass={toneClass} legend={legend} />
+      <NodeMetricChart
+        label={label}
+        kind={kind}
+        from={fromMs}
+        to={toMs}
+        max={max}
+        series={plots}
+        integer={integer}
+        axisFormat={axisFormat}
+        valueFormat={valueFormat}
+        seconds={seconds}
+        message={historyMessage}
+        description={description}
+        legend={legend}
+      />
     </CardX>
   )
 }
 
-function MetricSeriesLegend({ label, series, toneClass }: { label: string; series: MetricSeries[]; toneClass: string }) {
+function MetricSeriesLegend({ label, series }: { label: string; series: MetricSeries[] }) {
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1" aria-label={label + ' chart legend'}>
+    <div role="group" className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1" aria-label={label + ' chart legend'}>
       {series.map((item) => (
         <span key={item.label} className="inline-flex min-w-0 items-center gap-1.5 text-[10px] text-muted-foreground">
-          <i className={cn('inline-block size-2 shrink-0 rounded-full', item.secondary ? 'bg-cyan-500' : cn('bg-current', toneClass))} aria-hidden="true" />
+          <i className="inline-block size-2 shrink-0 rounded-full" style={{ backgroundColor: METRIC_SERIES_COLORS[item.key] }} aria-hidden="true" />
           {item.label}
         </span>
       ))}
@@ -513,151 +553,20 @@ function MetricSeriesLegend({ label, series, toneClass }: { label: string; serie
   )
 }
 
-function MetricChart({ label, series, from, to, fixedMax, axisFormat, message, kind = 'line', windowSeconds, toneClass, legend }: MetricChartProps) {
-  const seconds = Number.isFinite(windowSeconds) && (windowSeconds ?? 0) > 0 ? Math.round(windowSeconds as number) : 60
-  const gradientId = 'node-metric-fill-' + useId().replaceAll(':', '')
-  const fromMs = from ? Date.parse(from) : Number.NaN
-  const toMs = to ? Date.parse(to) : Number.NaN
-  const validWindow = Number.isFinite(fromMs) && Number.isFinite(toMs) && toMs > fromMs
-  const values = series.flatMap((item) => item.points.map((point) => point.value)).filter(Number.isFinite)
-  const max = fixedMax ?? niceChartMax(values.length > 0 ? Math.max(...values) : 0)
-  const plots = validWindow
-    ? series.map((item) => ({
-        ...item,
-        runs: kind === 'bar'
-          ? [chartBarCoordinates(item.points, fromMs, toMs, max)]
-          : coverageRuns(item.points, fromMs, toMs, max, item.coverage?.gaps),
-      }))
-    : []
-  const hasPoints = plots.some((item) => item.runs.some((run) => run.length > 0))
-  const chartMessage = message ?? (hasPoints ? undefined : 'No samples in the last minute')
-  const coverageText = coverageNotes(series)
-  const windowLabel = 'over the last ' + seconds + ' seconds'
 
-  return <div className="mt-auto grid min-w-0 grid-cols-[3rem_minmax(0,1fr)] grid-rows-[7.25rem_auto_auto] lg:grid-rows-[6.25rem_auto_auto] gap-x-2">
-    <div className="flex flex-col justify-between pr-1 text-right text-[11px] tabular-nums text-muted-foreground" aria-hidden="true">
-      <span>{axisFormat(max)}</span>
-      <span>{axisFormat(max / 2)}</span>
-      <span>{axisFormat(0)}</span>
-    </div>
-    <svg viewBox="0 0 600 150" preserveAspectRatio="none" role="img" aria-label={label + ' ' + kind + ' chart ' + windowLabel} className={cn('col-start-2 row-start-1 h-[7.25rem] lg:h-[6.25rem] w-full overflow-visible', toneClass)}>
-      <title>{label} {kind} chart {windowLabel}</title>
-      <desc>{(chartMessage ? label + ': ' + chartMessage : series.map((item) => item.label).join(' and ') + ' values from ' + seconds + ' seconds ago to now') + (coverageText ? '. ' + coverageText : '')}</desc>
-      <defs>
-        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="currentColor" stopOpacity="0.34" />
-          <stop offset="100%" stopColor="currentColor" stopOpacity="0.02" />
-        </linearGradient>
-      </defs>
-      <g aria-hidden="true">
-        <line x1="0" y1="8" x2="600" y2="8" className="stroke-border [vector-effect:non-scaling-stroke]" />
-        <line x1="0" y1="75" x2="600" y2="75" className="stroke-border [vector-effect:non-scaling-stroke]" />
-        <line x1="0" y1="142" x2="600" y2="142" className="stroke-border [vector-effect:non-scaling-stroke]" />
-      </g>
-      {!chartMessage && kind === 'line' && plots.map((item, index) => (
-        <g key={item.label}>
-          {item.runs.map((run, runIndex) => {
-            const first = run[0]
-            // Each uninterrupted stretch is its own path: the curve stops where
-            // the observations stop instead of inventing the missing evidence.
-            const line = run.length > 1 ? chartLinePath(run) : ''
-            const area = plots.length === 1 && run.length > 1 ? chartAreaPath(run) : ''
-            return <g key={item.label + '-' + runIndex}>
-              {area && <path d={area} fill={'url(#' + gradientId + ')'} />}
-              {line && <path data-slot="node-metric-chart-line" className={cn('[vector-effect:non-scaling-stroke]', item.secondary ? 'fill-none stroke-cyan-500' : 'fill-none stroke-current')} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" d={line} />}
-              {run.length === 1 && first && <circle className={cn('[vector-effect:non-scaling-stroke]', item.secondary ? 'fill-cyan-500 stroke-background' : 'fill-current stroke-background')} strokeWidth={1.5} cx={first.x} cy={first.y} r={index === 0 ? 4 : 3.5} />}
-            </g>
-          })}
-        </g>
-      ))}
-      {!chartMessage && kind === 'bar' && plots.flatMap((item) => {
-        const bars = item.runs[0] ?? []
-        const width = chartBarWidth(bars.length)
-        return bars.map((point, index) => {
-          const height = Math.max(1, 142 - point.y)
-          const x = Math.max(0, Math.min(600 - width, point.x - width / 2))
-          return <rect key={item.label + '-' + index} data-slot="node-metric-chart-bar" className={cn('opacity-75', item.secondary ? 'fill-cyan-500' : 'fill-current')} x={x} y={142 - height} width={width} height={height} rx={Math.min(2.5, width / 3)} />
-        })
-      })}
-      {chartMessage && <text data-slot="node-metric-chart-empty" className="fill-muted-foreground text-[22px]" x="300" y="78" textAnchor="middle">{chartMessage}</text>}
-    </svg>
-    <div className="col-start-2 row-start-2 flex justify-between pt-1 text-[11px] tabular-nums text-muted-foreground" aria-hidden="true"><span>{seconds}s</span><span>0s</span></div>
-    <div data-slot="node-metric-legend" className="col-start-2 row-start-3 min-h-6 pt-1">{legend}</div>
-  </div>
-}
 
-function chartBarCoordinates(points: PublicMetricPoint[], from: number, to: number, max: number): ChartCoordinate[] {
-  return points
-    .map((point) => ({ sampledAt: Date.parse(point.sampledAt), value: point.value }))
-    .filter((point) => Number.isFinite(point.sampledAt) && Number.isFinite(point.value) && point.sampledAt >= from && point.sampledAt <= to)
-    .sort((left, right) => left.sampledAt - right.sampledAt)
-    .map((point) => ({
-      x: ((point.sampledAt - from) / (to - from)) * 600,
-      y: 142 - (Math.max(0, Math.min(max, point.value)) / max) * 134,
-    }))
-}
 
-function chartBarWidth(count: number): number {
-  if (count <= 0) return 0
-  return Math.max(2, Math.min(18, (600 / count) * 0.64))
-}
 
-function chartLinePath(points: ChartCoordinate[]): string {
-  return points.map((point, index) => (index === 0 ? 'M' : 'L') + ' ' + point.x.toFixed(2) + ' ' + point.y.toFixed(2)).join(' ')
-}
 
-function chartAreaPath(points: ChartCoordinate[]): string {
-  if (points.length < 2) return ''
-  const first = points[0]
-  const last = points.at(-1)
-  if (!last) return ''
-  return chartLinePath(points) + ' L ' + last.x.toFixed(2) + ' 142 L ' + first.x.toFixed(2) + ' 142 Z'
-}
 
-function niceChartMax(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return 1
-  const magnitude = 10 ** Math.floor(Math.log10(value))
-  const normalized = value / magnitude
-  const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10
-  return step * magnitude
-}
 
-function formatRate(value: number | null | undefined): string {
-  if (!finiteNonNegative(value)) return 'Unknown'
-  const units = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s']
-  let scaled = value
-  let unit = 0
-  while (scaled >= 1024 && unit < units.length - 1) {
-    scaled /= 1024
-    unit += 1
-  }
-  const digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2
-  return scaled.toFixed(digits) + ' ' + units[unit]
-}
 
-function formatCountAxis(value: number): string {
-  return Math.round(value).toLocaleString()
-}
-
-function formatMillisecondsAxis(value: number): string {
-  if (value >= 1000) return Number((value / 1000).toFixed(value >= 10_000 ? 0 : 1)) + 's'
-  return Math.round(value) + 'ms'
-}
-
-/** The fixed public metrics response owns the window; the section label reads the
- *  real windowSeconds instead of inventing a range. The retained-sample explanation
- *  that used to sit opposite the label is deliberately gone. */
 function describeMetricWindow(history: PublicNodeMetricHistory | undefined): string {
   if (!history) return 'Latest 60 seconds'
   const seconds = Number.isFinite(history.windowSeconds) && history.windowSeconds > 0 ? history.windowSeconds : 60
   return 'Latest ' + seconds + ' seconds'
 }
 
-function formatPercentAxis(value: number): string {
-  if (value >= 100) return '100%'
-  if (value <= 0) return '0%'
-  return value.toFixed(value < 10 ? 1 : 0) + '%'
-}
 
 function latestBlockInterval(history: ReturnType<typeof usePublicNodeHistory>['data']): { value: string; detail: string } {
   const blocks = history?.filter((item) => item.height != null && item.blockTimeMs != null).slice(0, 2) ?? []

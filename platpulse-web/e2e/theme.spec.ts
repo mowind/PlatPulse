@@ -387,6 +387,9 @@ for (const theme of ['light', 'dark'] as const) {
     // Node Detail's two reading tiers: 60% summary, 50% info/chart.
     const background50 = await normalizedStyle(page, 'background-color', theme === 'light'
       ? 'rgba(255, 255, 255, 0.5)' : 'oklch(0.141 0.005 285.823 / 0.5)')
+    // The disclosure tier: 40%, one step beneath the chart surfaces.
+    const background40 = await normalizedStyle(page, 'background-color', theme === 'light'
+      ? 'rgba(255, 255, 255, 0.4)' : 'oklch(0.141 0.005 285.823 / 0.4)')
     const font = await normalizedStyle(page, 'font-family', PUBLIC_FONT)
     const glow = await normalizedStyle(page, 'box-shadow',
       '0 0 20px oklch(0.596 0.145 163.225 / 10%), 0 0 0 1px oklch(0.596 0.145 163.225 / 10%)')
@@ -449,11 +452,15 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(page.locator('[data-slot="home-shell"]')).toHaveCSS('font-family', font)
     // Cover every rendered information group, summary tile, and chart card,
     // rather than letting one passing representative hide a stale override.
-    // The Validator diagnostics borrow the shared disclosure presentation but
-    // must not paint a second card inside the Linked Validator card.
-    const nestedDisclosure = page.locator('[data-slot="home-shell"] details[data-surface="none"]')
-    await expect(nestedDisclosure).toHaveCount(1)
-    await expect(nestedDisclosure).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+    // The Validator diagnostics used to close the performance card as a
+    // surface-less disclosure; they are their own advanced region below the
+    // six-chart deck now, so they paint the disclosure tier and are provably
+    // not nested inside the Linked Validator card any more.
+    const diagnostics = page.locator('[data-slot="home-shell"] details[data-slot="disclosure"]', { hasText: 'Validator diagnostics' })
+    await expect(diagnostics).toHaveCount(1)
+    await expect(diagnostics).toHaveAttribute('data-surface', 'card')
+    expect(await diagnostics.evaluate((element) => element.closest('[data-slot="linked-validator"]') !== null), 'the diagnostics are not nested in the performance card').toBe(false)
+    await expectComputedColor(diagnostics, 'background-color', background40)
 
     for (const [selector, resting] of [
       ['[data-slot="node-summary-tile"]', background],

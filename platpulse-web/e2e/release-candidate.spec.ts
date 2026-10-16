@@ -205,7 +205,7 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     await expect(metrics.getByText('2.00 s', { exact: true })).toBeVisible()
     await expect(metrics.getByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveCount(4)
     await expect(metrics.getByRole('img', { name: /bar chart over the last 60 seconds/ })).toHaveCount(2)
-    await expect(metrics.locator('[data-slot="node-metric-chart-bar"]')).not.toHaveCount(0)
+    await expect(metrics.locator('[data-slot="node-metric-chart"][data-kind="bar"]')).toHaveCount(2)
     await expect(metrics.getByText('60s', { exact: true })).toHaveCount(6)
     const cardSizes = await metrics.locator('[data-slot="node-metric-card"]').evaluateAll((cards) => cards.map((card) => {
       const box = card.getBoundingClientRect()
@@ -214,9 +214,10 @@ test.describe('Phase 1 release-candidate vertical slice', () => {
     expect(cardSizes).toHaveLength(6)
     expect(new Set(cardSizes.map(({ width }) => width)).size).toBe(1)
     expect(new Set(cardSizes.map(({ height }) => height)).size, JSON.stringify(cardSizes)).toBe(1)
-    // Small screens carry the taller 7.25rem chart; lg shortens it to 6.25rem,
-    // so the compact bound is width-dependent.
-    const maxCardHeight = (page.viewportSize()?.width ?? 0) >= 1024 ? 270 : 290
+    // Phones carry the shortest plot (116px) and lg the tallest (176px), so
+    // the bound is width-dependent; the desktop ceiling rose from 270px when
+    // the deck was still drawn as 100px hand-rolled SVG (#242 deviation).
+    const maxCardHeight = (page.viewportSize()?.width ?? 0) >= 1024 ? 340 : 360
     expect(Math.max(...cardSizes.map(({ height }) => height))).toBeLessThanOrEqual(maxCardHeight)
     await expect(metrics.getByText('No samples in the last minute', { exact: true })).toHaveCount(0)
     await expect.poll(() => metrics.locator('[data-slot="node-metric-card"]').first().evaluate((card) => getComputedStyle(card, '::before').content)).toBe('none')

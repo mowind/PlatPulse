@@ -1,7 +1,8 @@
 import type { PublicMetricGap, PublicMetricPoint, PublicMetricSeriesCoverage } from './api/generated'
 import { formatHistoryDuration } from './metricHistory'
 
-export type ChartCoordinate = { x: number; y: number }
+/** One observed sample, in the Server's own units and the Server's own instant. */
+export type MetricObservation = { sampledAt: number; value: number }
 
 /**
  * Observation/coverage evidence the Server answered for one plotted direction.
@@ -15,29 +16,29 @@ export function metricCoverage(
   return history?.series?.find((entry) => entry.metric === metric)
 }
 
-function chartY(value: number, max: number): number {
-  const ceiling = max > 0 ? max : 1
-  return 142 - (Math.max(0, Math.min(ceiling, value)) / ceiling) * 134
-}
-
 /**
- * One polyline run per uninterrupted stretch of the window. A gap is silence,
- * not a line: the run ends at the last observation before the silence and
- * resumes at the first observation after it, so the curve can never be drawn
- * across a stretch nobody observed. Points outside the window are dropped
- * instead of being clamped onto its edges — the window is the evidence.
+ * The window's observations cut into runs at the silence the Server measured:
+ * the run ends at the last observation before the gap and resumes at the first
+ * one after it, so a chart built from these can never join two stretches nobody
+ * observed into one curve. Observations outside [from, to] are dropped rather
+ * than clamped onto the edges — the window is the evidence — and nothing is ever
+ * synthesised, so a measured zero stays a measurement while a silence stays a
+ * silence.
+ *
+ * This is the single seam every Node Detail chart reads: the real-valued runs
+ * go straight onto a time axis, and the sentence above the card is written from
+ * the same coverage the runs were cut with.
  */
-export function coverageRuns(
+export function coverageSegments(
   points: PublicMetricPoint[],
   from: number,
   to: number,
-  max: number,
   gaps: PublicMetricGap[] = [],
-): ChartCoordinate[][] {
+): MetricObservation[][] {
   const silence = gaps
     .map((gap) => ({ from: Date.parse(gap.from), to: Date.parse(gap.to) }))
     .filter((gap) => Number.isFinite(gap.from) && Number.isFinite(gap.to))
-  const runs: ChartCoordinate[][] = []
+  const segments: MetricObservation[][] = []
   let previous: number | undefined
   const ordered = points
     .map((point) => ({ sampledAt: Date.parse(point.sampledAt), value: point.value }))
@@ -48,14 +49,11 @@ export function coverageRuns(
     // last observation before a gap and the segment starting at the first one
     // after it both survive.
     const separated = previous !== undefined && silence.some((gap) => gap.from < point.sampledAt && gap.to > (previous as number))
-    if (previous === undefined || separated) runs.push([])
-    runs.at(-1)?.push({
-      x: Math.max(0, Math.min(600, ((point.sampledAt - from) / (to - from)) * 600)),
-      y: chartY(point.value, max),
-    })
+    if (previous === undefined || separated) segments.push([])
+    segments.at(-1)?.push(point)
     previous = point.sampledAt
   }
-  return runs
+  return segments
 }
 
 /**

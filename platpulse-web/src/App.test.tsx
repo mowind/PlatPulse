@@ -8,6 +8,30 @@ import { resetRealtimeCursors } from './api/transport'
 import { client } from './api/generated/client.gen'
 import type { PublicNode, PublicValidatorInsight } from './api/generated/types.gen'
 
+/**
+ * ECharts paints through canvas text measurement and needs a laid-out box, so
+ * the shell suite stubs it: what these tests read is the page's own chart
+ * contract (container slot, runs, points, headings, legends, and the six-card
+ * grid). The real chart geometry and tooltip text are asserted against real
+ * ECharts in src/components/nodeMetricChart.test.ts, and the option encoding in
+ * src/components/nodeMetricChartOption.test.ts.
+ */
+const chartMocks = vi.hoisted(() => ({
+  init: vi.fn(),
+  registerMap: vi.fn(),
+  use: vi.fn(),
+  setOption: vi.fn(),
+  resize: vi.fn(),
+  dispose: vi.fn(),
+  dispatchAction: vi.fn(),
+  on: vi.fn(),
+}))
+
+vi.mock('echarts/core', () => ({ init: chartMocks.init, registerMap: chartMocks.registerMap, use: chartMocks.use }))
+vi.mock('echarts/charts', () => ({ MapChart: {}, ScatterChart: {}, LineChart: {}, BarChart: {} }))
+vi.mock('echarts/components', () => ({ GeoComponent: {}, TooltipComponent: {}, GridComponent: {}, AxisPointerComponent: {} }))
+vi.mock('echarts/renderers', () => ({ CanvasRenderer: {}, SVGRenderer: {} }))
+
 const OWNER_SESSION = {
   session: {
     userId: 'u1',
@@ -657,7 +681,11 @@ describe('App shell with private Home', () => {
     const performance = screen.getByRole('region', { name: 'Validator performance' })
     expect(within(performance.querySelector('header')!).queryByText('Producing')).toBeNull()
     expect(within(performance.querySelector('header')!).queryByText('Current', { exact: true })).toBeNull()
-    expect(within(performance).getByText('Validator diagnostics')).toBeTruthy()
+    // The diagnostics are their own region after the chart deck now, so
+    // expanding them cannot displace the six monitoring charts.
+    const diagnostics = screen.getByText('Validator diagnostics').closest('details')!
+    expect(diagnostics.closest('[data-slot="linked-validator"]')).toBeNull()
+    expect(performance.contains(diagnostics)).toBe(false)
     const summary = screen.getByLabelText('Node key summary')
     for (const label of ['Head', 'Sync', 'Peers', 'Uptime', 'Block interval', 'Transactions / block']) {
       expect(within(summary).getByText(label)).toBeTruthy()
@@ -764,9 +792,9 @@ describe('App shell with private Home', () => {
       expect(card.querySelector('[data-slot="node-metric-header"] [aria-label="' + name + '"]')).toBeNull()
       const slot = card.querySelector('[data-slot="node-metric-legend"]')
       expect(slot?.contains(legend)).toBe(true)
-      const svg = card.querySelector('svg[role="img"]')
-      if (!svg) throw new Error(name + ' chart svg is missing')
-      expect(svg.compareDocumentPosition(legend) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      const plot = card.querySelector('[data-slot="node-metric-chart"]')
+      if (!plot) throw new Error(name + ' chart plot is missing')
+      expect(plot.compareDocumentPosition(legend) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     }
     expect(screen.getAllByText('12.5%').length).toBeGreaterThan(0)
     expect(within(summary).getByText('2.00 s')).toBeTruthy()
@@ -869,13 +897,18 @@ describe('App shell with private Home', () => {
     // them (crates/platpulse-server/src/http/public.rs,
     // public_metric_coverage_names_the_silence_of_a_recovered_series): five
     // second cadence, fifteen second threshold, and two more observations after
-    // the gap that settle the rhythm again.
-    expect(Array.from(cpuCard.querySelectorAll('[data-slot="node-metric-chart-line"]')).map((line) => line.getAttribute('d'))).toEqual([
-      'M 50.00 34.80 L 100.00 34.80 L 150.00 34.80',
-      'M 450.00 34.80 L 500.00 34.80 L 550.00 34.80',
-    ])
+    // the gap that settle the rhythm again. The plot counts what it was handed
+    // — six in-window observations, drawn as two runs — and the exact geometry
+    // of those runs is asserted against real ECharts in
+    // src/components/nodeMetricChart.test.ts.
+    const plot = cpuCard.querySelector('[data-slot="node-metric-chart"]')
+    expect(plot?.getAttribute('data-points')).toBe('6')
+    expect(plot?.getAttribute('data-runs')).toBe('2')
     expect(cpuCard.querySelector('[data-slot="node-metric-coverage"]')?.textContent).toBe('1 gap in this window')
-    expect(cpuCard.querySelector('svg[role="img"] desc')?.textContent).toContain('1 gap in this window')
+    const description = cpuCard.querySelector('[id^="node-metric-chart-desc-"]')
+    expect(description?.className).toBe('sr-only')
+    expect(description?.textContent).toContain('1 gap in this window')
+    expect(plot?.getAttribute('aria-describedby')).toBe(description?.getAttribute('id'))
 
     const memoryCard = within(metricsSection).getByRole('heading', { level: 3, name: 'Process memory' }).closest('[data-slot="node-metric-card"]')
     if (!memoryCard) throw new Error('Process memory card is missing')

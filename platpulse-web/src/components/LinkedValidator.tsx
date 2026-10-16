@@ -388,7 +388,6 @@ function ValidatorIdentityAbsent({ node, variant }: { node: PublicNode; variant:
 function ValidatorDetail({ node, validator }: { node: PublicNode; validator: PublicValidatorInsight }) {
   const statusLabel = currentValidatorStatusLabel(validator.currentValidatorStatus)
   const stakingUnknown = statusLabel === UNKNOWN_STATUS_LABEL
-  const qualifierLabel = currentValidatorStatusQualifierLabel(validator.currentValidatorStatusQualifier)
   const rewards = formatAmountExact(validator.rewardAmount)
   // Truncate only the overview, using source digits rather than floating point.
   const overviewRewards = rewards.replace(/([.][0-9]{4})[0-9]+$/, '$1')
@@ -495,29 +494,39 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
       {identifierOpen && <code id={identifierId} className="min-w-0 select-text rounded-md border border-border bg-background p-2 font-mono text-xs [overflow-wrap:anywhere]" aria-label={'Validator identifier: ' + identifier}>{identifier}</code>}
       <p role="status" aria-label="Identifier copy status" className={cn('m-0 text-xs text-muted-foreground', !copyStatus && 'sr-only')}>{copyStatus}</p>
     </div>
-    {/* Diagnostics stays collapsed on first load and keeps the shared
-        disclosure presentation. Only its own state/provenance rows and group
-        padding tighten; the primitive stays unaware of the Validator variant. */}
-    <Disclosure
-      surface="none"
-      className="-mx-4 border-t border-border/60"
-      title="Validator diagnostics"
-      description="Provider, freshness, ranking and source details"
-    >
-      {validator.displayName && <dl className="m-0 text-xs">
-        <dt className="text-muted-foreground">PlatScan identity name</dt>
-        <dd className="m-0 [overflow-wrap:anywhere]">{validator.displayName}</dd>
-      </dl>}
-      {qualifierLabel && <p className="m-0 text-[11px] text-muted-foreground">This identity has a confirmed-valid staking identity but is {qualifierLabel.toLowerCase()}, not normally producing.</p>}
-      <ValidatorPublicStates node={node} validator={validator} />
-      <Provenance validator={validator} />
-      {validator.rewardAmount != null && <p className="m-0 text-[11px] text-muted-foreground">Amounts use the Network native unit; the exact source reward precision is preserved below.</p>}
-      <dl className="m-0 min-w-0 text-xs">
-        <dt className="text-muted-foreground">Cumulative rewards (full precision)</dt>
-        <dd className="m-0 select-text tabular-nums [overflow-wrap:anywhere]"><ExactAmount value={rewards} /></dd>
-      </dl>
-    </Disclosure>
   </CardX>
+}
+
+/**
+ * The Validator diagnostics, in their own region after the monitoring deck
+ * (#242 follow-up). They used to close the performance card, where expanding
+ * them pushed the six charts off the screen; as an advanced region below the
+ * deck the charts keep their place while every Provider, ranking, freshness,
+ * source and full-precision reward fact stays exactly where a reader looks for
+ * it. Collapsed on first load, and absent entirely for a Node that is not a
+ * confirmed Validator — the same gate as the performance card itself.
+ */
+export function LinkedValidatorDiagnostics({ node, validator }: { node: PublicNode; validator: PublicValidatorInsight }) {
+  const qualifierLabel = currentValidatorStatusQualifierLabel(validator.currentValidatorStatusQualifier)
+  const rewards = formatAmountExact(validator.rewardAmount)
+  return <Disclosure
+    title="Validator diagnostics"
+    description="Provider, freshness, ranking and source details"
+    className="min-w-0"
+  >
+    {validator.displayName && <dl className="m-0 text-xs">
+      <dt className="text-muted-foreground">PlatScan identity name</dt>
+      <dd className="m-0 [overflow-wrap:anywhere]">{validator.displayName}</dd>
+    </dl>}
+    {qualifierLabel && <p className="m-0 text-[11px] text-muted-foreground">This identity has a confirmed-valid staking identity but is {qualifierLabel.toLowerCase()}, not normally producing.</p>}
+    <ValidatorPublicStates node={node} validator={validator} />
+    <Provenance validator={validator} />
+    {validator.rewardAmount != null && <p className="m-0 text-[11px] text-muted-foreground">Amounts use the Network native unit; the exact source reward precision is preserved below.</p>}
+    <dl className="m-0 min-w-0 text-xs">
+      <dt className="text-muted-foreground">Cumulative rewards (full precision)</dt>
+      <dd className="m-0 select-text tabular-nums [overflow-wrap:anywhere]"><ExactAmount value={rewards} /></dd>
+    </dl>
+  </Disclosure>
 }
 
 /**

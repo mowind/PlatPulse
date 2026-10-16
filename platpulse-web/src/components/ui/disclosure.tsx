@@ -11,9 +11,9 @@ import { SURFACE_CARD_DISCLOSURE } from '../../lib/surface'
  * chevron, the read-only disclosure surface, and the title/description tiers.
  *
  * `surface="none"` borrows that presentation without painting a second card
- * inside an existing one. The Validator diagnostics need it: they describe the
- * Linked Validator card they sit in, so they must read as the same disclosure
- * as the page-level ones without nesting a card in a card.
+ * inside an existing one, for a disclosure that has to sit inside another card.
+ * The page-level disclosures — the Validator diagnostics below the Node Detail
+ * chart deck among them — use the default card surface instead.
  *
  * Emerald ships no disclosure component; this is PlatPulse's own, built from
  * Emerald's own tokens and its existing summary anatomy (see

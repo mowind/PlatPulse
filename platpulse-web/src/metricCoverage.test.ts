@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { PublicMetricPoint, PublicMetricSeriesCoverage } from './api/generated'
-import { coverageNote, coverageNotes, coverageRuns, metricCoverage } from './metricCoverage'
+import { coverageNote, coverageNotes, coverageSegments, metricCoverage } from './metricCoverage'
 
 const FROM = Date.parse('2026-01-01T00:00:00Z')
 const TO = FROM + 60_000
@@ -26,40 +26,49 @@ function coverage(overrides: Partial<PublicMetricSeriesCoverage> = {}): PublicMe
   }
 }
 
-describe('coverageRuns', () => {
-  it('draws only the window it was given', () => {
-    const runs = coverageRuns([point(-5, 5), point(0, 0), point(10, 5), point(70, 5)], FROM, TO, 10, [])
-    expect(runs).toHaveLength(1)
-    expect(runs[0]).toEqual([
-      { x: 0, y: 142 },
-      { x: 100, y: 75 },
-    ])
+describe('coverageSegments', () => {
+  it('keeps only the window it was given and keeps the order it arrived in', () => {
+    const segments = coverageSegments([point(-5, 5), point(10, 5), point(0, 0), point(70, 5)], FROM, TO, [])
+    expect(segments).toEqual([[
+      { sampledAt: FROM, value: 0 },
+      { sampledAt: FROM + 10_000, value: 5 },
+    ]])
   })
 
   it('keeps a measured zero as evidence', () => {
-    const runs = coverageRuns([point(30, 0)], FROM, TO, 10, [])
-    expect(runs).toEqual([[{ x: 300, y: 142 }]])
+    const segments = coverageSegments([point(30, 0)], FROM, TO, [])
+    expect(segments).toEqual([[{ sampledAt: FROM + 30_000, value: 0 }]])
   })
 
   it('breaks the line across a silence and resumes at the observation after it', () => {
-    const runs = coverageRuns(
+    const segments = coverageSegments(
       [point(0, 10), point(10, 10), point(40, 10), point(50, 10)],
-      FROM, TO, 10,
+      FROM, TO,
       [{ from: instant(10), to: instant(40), seconds: 30, kind: 'collection_gap' }],
     )
-    expect(runs).toHaveLength(2)
-    expect(runs[0]?.map((item) => item.x)).toEqual([0, 100])
-    expect(runs[1]?.map((item) => item.x)).toEqual([400, 500])
+    expect(segments.map((segment) => segment.map((item) => item.sampledAt - FROM)))
+      .toEqual([[0, 10_000], [40_000, 50_000]])
+  })
+
+  it('never invents a sample for the silence it cut at', () => {
+    // The gap is 30 seconds wide and the Server reported no observation inside
+    // it: nothing is resampled, interpolated or filled with a zero to bridge it.
+    const segments = coverageSegments(
+      [point(0, 10), point(10, 10), point(40, 10), point(50, 10)],
+      FROM, TO,
+      [{ from: instant(10), to: instant(40), seconds: 30, kind: 'collection_gap' }],
+    )
+    expect(segments.flat()).toHaveLength(4)
   })
 
   it('keeps an isolated observation as its own run so it stays visible', () => {
-    const runs = coverageRuns(
+    const segments = coverageSegments(
       [point(0, 10), point(10, 10), point(20, 10), point(55, 10)],
-      FROM, TO, 10,
+      FROM, TO,
       [{ from: instant(20), to: instant(55), seconds: 35, kind: 'collection_gap' }],
     )
-    expect(runs.map((run) => run.length)).toEqual([3, 1])
-    expect(runs[1]?.[0]).toEqual({ x: 550, y: 8 })
+    expect(segments.map((segment) => segment.length)).toEqual([3, 1])
+    expect(segments[1]?.[0]).toEqual({ sampledAt: FROM + 55_000, value: 10 })
   })
 })
 

@@ -277,17 +277,57 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           await expect(metrics.getByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveCount(4)
           await expect(metrics.getByRole('img', { name: /bar chart over the last 60 seconds/ })).toHaveCount(2)
           expect(await metrics.locator('[data-slot="node-metric-card"] h3').allTextContents()).toEqual([...CHART_HEADINGS])
-          const expectedPlotHeight = (page.viewportSize()?.width ?? 0) >= 1024 ? 100 : 116
-          for (const svg of await metrics.locator('svg[role="img"]').all()) {
-            await expect(svg).toHaveCSS('height', expectedPlotHeight + 'px')
-            const plotRow = await svg.evaluate((element) => getComputedStyle(element.parentElement!).gridTemplateRows.split(' ')[0])
-            expect(plotRow).toBe(expectedPlotHeight + 'px')
-          }
+          // The plot is the ECharts container the card mounts, not a hand-drawn
+          // SVG, so the accepted heights are asserted on that container: 176px
+          // from lg, 148px from md, 116px on the phones.
+          const viewportWidth = page.viewportSize()?.width ?? 0
+          const expectedPlotHeight = viewportWidth >= 1024 ? 176 : viewportWidth >= 768 ? 148 : 116
+          const plots = metrics.locator('[data-slot="node-metric-chart"]')
+          await expect(plots).toHaveCount(6)
+          expect(await plots.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-kind')))).toEqual(['line', 'line', 'line', 'line', 'bar', 'bar'])
+          for (const plot of await plots.all()) await expect(plot).toHaveCSS('height', expectedPlotHeight + 'px')
 
           if (scenario === 'normal') {
             await expect(metrics.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(0)
-            // Process CPU + process memory + two direction pairs = six lines.
-            await expect(metrics.locator('[data-slot="node-metric-chart-line"]')).toHaveCount(6)
+            // Process CPU + process memory + two direction pairs = six runs,
+            // each drawn as its own series so no silence can be joined.
+            expect(await metrics.locator('[data-slot="node-metric-chart"][data-kind="line"]')
+              .evaluateAll((nodes) => nodes.reduce((total, node) => total + Number(node.getAttribute('data-runs') ?? 0), 0))).toBe(6)
+            // A plot that only claims to be drawn is not drawn: every card with
+            // samples must hold a live ECharts SVG with real curve geometry, and
+            // none of the six may report a failed load. The data-runs/data-points
+            // attributes above are inputs; this is the picture.
+            await expect(metrics.locator("[data-chart-error]")).toHaveCount(0)
+            const drawn = await plots.evaluateAll((nodes) => nodes.map((node) => ({
+              points: Number(node.getAttribute('data-points') ?? 0),
+              svg: node.querySelectorAll('svg').length,
+              shapes: Array.from(node.querySelectorAll("svg path")).filter((path) => (path.getAttribute("d") ?? "").startsWith("M")).length,
+            })))
+            expect(drawn.filter((plot) => plot.points === 0 || (plot.svg === 1 && plot.shapes > 0))).toHaveLength(6)
+            expect(drawn.some((plot) => plot.points > 0)).toBe(true)
+            // The crosshair tooltip is the one place the exact retained sample is
+            // stated, with its own instant rather than a rounded reading.
+            const cpuPlot = metrics.getByRole("article").filter({ has: page.getByRole("heading", { level: 3, name: "Process CPU" }) }).locator('[data-slot="node-metric-chart"]')
+            // A real pointer gesture: centre the plot, leave it, then cross into
+            // it. The plot is centred rather than merely brought into view because
+            // on the phones the sticky shell header would otherwise sit over the
+            // point the pointer is sent to, and a bare jump can resolve before the
+            // deck has stopped moving: either way the crosshair stays untriggered.
+            await cpuPlot.evaluate((node) => node.scrollIntoView({ block: 'center' }))
+            const cpuBox = await cpuPlot.boundingBox()
+            if (!cpuBox) throw new Error('the Process CPU plot has no box')
+            const cpuPoint = { x: cpuBox.x + cpuBox.width / 2, y: cpuBox.y + cpuBox.height / 2 }
+            const cpuHit = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-slot="node-metric-chart"]') !== null, cpuPoint)
+            expect(cpuHit).toBe(true)
+            await page.mouse.move(2, 2)
+            await page.mouse.move(cpuPoint.x, cpuPoint.y, { steps: 4 })
+            // Scoped to this card: every mounted chart owns a tooltip element, and
+            // only the hovered one is shown.
+            const tooltip = cpuPlot.locator(".node-metric-chart-tooltip")
+            await expect(tooltip).toBeVisible()
+            await expect(tooltip).toContainText(/\d{2}:\d{2}:\d{2}/)
+            await expect(tooltip).toContainText("Process CPU")
+            await expect(tooltip).toContainText(/%/)
             // The retained-sample explanation opposite the section label is gone.
             await expect(page.getByText(/Real retained samples/)).toHaveCount(0)
             // Curve legends sit under their plots, never in the header, so the
@@ -307,7 +347,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             // long this run has been going and is asserted as a shape only.
             const blockCard = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: 'Block interval' }) })
             await expect(blockCard.locator('[data-slot="node-metric-coverage"]')).toHaveText(/^No samples for the last /)
-            await expect(blockCard.locator('svg[role="img"] desc')).toHaveText(/No samples for the last /)
+            await expect(blockCard.locator('[data-slot="node-metric-chart"]')).toHaveAccessibleDescription(/No samples for the last /)
             for (const heading of ['Process CPU', 'Process memory', 'Peer connections']) {
               const card = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: heading }) })
               await expect(card.locator('[data-slot="node-metric-coverage"]')).toHaveCount(0)
@@ -325,11 +365,11 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
           if (scenario === 'single-cpu-failure') {
             const cpuCard = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: 'Process CPU' }) })
             await expect(cpuCard.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(1)
-            await expect(cpuCard.locator('[data-slot="node-metric-chart-line"]')).toHaveCount(0)
+            await expect(cpuCard.locator('[data-slot="node-metric-chart"]')).toHaveAttribute('data-runs', '0')
             await expect(cpuCard.locator('[data-slot="node-metric-value"]')).toHaveText(/%$/)
             await expect(cpuCard.getByText(/last-good value retained/)).toBeVisible()
             const hostCard = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: 'Host network' }) })
-            await expect(hostCard.locator('[data-slot="node-metric-chart-line"]')).toHaveCount(2)
+            await expect(hostCard.locator('[data-slot="node-metric-chart"]')).toHaveAttribute('data-runs', '2')
             await expect(hostCard.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(0)
           }
           if (scenario === 'gap') {
@@ -338,24 +378,22 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             // so the right edge of the window stays blank.
             const cpuCard = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: 'Process CPU' }) })
             await expect(cpuCard.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(0)
-            await expect(cpuCard.locator('[data-slot="node-metric-chart-line"]')).toHaveCount(2)
-            expect(
-              await cpuCard.locator('[data-slot="node-metric-chart-line"]').evaluateAll((paths) => paths.map((path) => path.getAttribute('d'))),
-              'each uninterrupted stretch is drawn where its own observations are',
-            ).toEqual([
-              'M 50.00 34.80 L 100.00 34.80 L 150.00 34.80',
-              'M 450.00 34.80 L 500.00 34.80 L 550.00 34.80',
-            ])
+            const cpuPlot = cpuCard.locator('[data-slot="node-metric-chart"]')
+            await expect(cpuPlot).toHaveAttribute('data-runs', '2')
+            // Every one of the six observations is handed to the renderer, none
+            // across the silence and none into the unobserved tail. That each
+            // run lands exactly on its own sample instants, and that no vertex
+            // drops to the baseline inside the hole, is proven on the real
+            // renderer in src/components/nodeMetricChart.test.ts.
+            await expect(cpuPlot).toHaveAttribute('data-points', '6')
             await expect(cpuCard.locator('[data-slot="node-metric-coverage"]')).toHaveText('1 gap in this window')
-            await expect(cpuCard.locator('svg[role="img"] desc')).toHaveText(/1 gap in this window/)
-            const drawn = await metrics.locator('[data-slot="node-metric-chart-line"], [data-slot="node-metric-chart-bar"]').evaluateAll((marks) => marks.map((mark) => mark.getAttribute('d') ?? mark.getAttribute('x') ?? ''))
-            expect(drawn.some((mark) => mark.includes(' 600.00 ')), JSON.stringify(drawn)).toBe(false)
+            await expect(cpuPlot).toHaveAccessibleDescription(/1 gap in this window/)
           }
           if (scenario === 'never-observed') {
             // Never observed is its own statement, never a flat line at zero.
             await expect(metrics.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(6)
-            await expect(metrics.locator('[data-slot="node-metric-chart-line"]')).toHaveCount(0)
-            await expect(metrics.locator('[data-slot="node-metric-chart-bar"]')).toHaveCount(0)
+            await expect(metrics.locator('[data-slot="node-metric-chart"][data-points="0"]')).toHaveCount(6)
+            await expect(metrics.locator('[data-slot="node-metric-chart"][data-runs="0"]')).toHaveCount(6)
             const notices = metrics.locator('[data-slot="node-metric-coverage"]')
             await expect(notices).toHaveCount(6)
             const emptyTexts = await notices.allTextContents()
@@ -370,8 +408,8 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             // observed the series: the ledger still dates it, so the card names
             // the age of the last observation and the chart stays empty.
             await expect(metrics.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(6)
-            await expect(metrics.locator('[data-slot="node-metric-chart-line"]')).toHaveCount(0)
-            await expect(metrics.locator('[data-slot="node-metric-chart-bar"]')).toHaveCount(0)
+            await expect(metrics.locator('[data-slot="node-metric-chart"][data-points="0"]')).toHaveCount(6)
+            await expect(metrics.locator('[data-slot="node-metric-chart"][data-runs="0"]')).toHaveCount(6)
             const notices = metrics.locator('[data-slot="node-metric-coverage"]')
             await expect(notices).toHaveCount(6)
             const texts = await notices.allTextContents()
@@ -445,7 +483,6 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
 
 
           // Desktop 1280 lays the six charts out three columns by two rows.
-          const viewportWidth = page.viewportSize()?.width ?? 0
           if (viewportWidth >= 1280) {
             const rows = await metrics.locator('[data-slot="node-metric-card"]').evaluateAll((cards) => cards.map((card) => {
               const box = card.getBoundingClientRect()
@@ -574,7 +611,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
       expect(await metrics.locator('[data-slot="node-metric-card"] h3').allTextContents()).toEqual([...CHART_HEADINGS])
       for (const heading of ['Process CPU', 'Process memory']) {
         const card = metrics.getByRole('article').filter({ has: page.getByRole('heading', { name: heading, exact: true }) })
-        await expect(card.locator('[data-slot="node-metric-chart-line"]')).toHaveCount(1)
+        await expect(card.locator('[data-slot="node-metric-chart"]')).toHaveAttribute('data-runs', '1')
         await expect(card.getByText('5.0%', { exact: true })).toBeVisible()
         await expect(card.getByText('100%', { exact: true })).toHaveCount(0)
       }
