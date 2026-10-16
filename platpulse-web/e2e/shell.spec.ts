@@ -276,8 +276,9 @@ test.describe('Authenticated shell', () => {
     await expect(page.locator('[data-slot="background-decoration"]')).toHaveAttribute('aria-hidden', 'true')
     await expect(page.locator('[data-slot="background-decoration"]')).toHaveCSS('pointer-events', 'none')
     const expectedPadding = metrics.viewport >= 1024 ? 24 : 16
-    expect(metrics.headingFontSize).toBeGreaterThanOrEqual(24)
-    expect(metrics.headingFontSize).toBeLessThanOrEqual(28)
+    // Admin page titles share one ~20px semibold scale (Admin consistency refinement).
+    expect(metrics.headingFontSize).toBeGreaterThanOrEqual(19)
+    expect(metrics.headingFontSize).toBeLessThanOrEqual(22)
     expect(metrics.heading.x - metrics.main.x).toBeGreaterThanOrEqual(expectedPadding - 1)
     expect(metrics.heading.x - metrics.main.x).toBeLessThanOrEqual(expectedPadding + 1)
 
@@ -324,9 +325,10 @@ test.describe('Authenticated shell', () => {
     await expect(page.getByRole('link', { name: /Admin overview/ })).toBeVisible()
 
     const geometry = await page.evaluate(() => {
-      const heading = document.querySelector('[data-slot="settings-page"] > h1')
+      // The back link now shares the page-header row with the title.
+      const heading = document.querySelector('[data-slot="settings-page"] [data-slot="admin-page-header"] h1')
       const sections = document.querySelector('[data-slot="settings-sections"]')
-      const breadcrumb = document.querySelector('[data-slot="settings-page"] > p:first-child a')
+      const breadcrumb = document.querySelector('[data-slot="settings-page"] [data-slot="admin-page-actions"] a')
       if (!heading || !sections || !breadcrumb) throw new Error('Settings geometry surfaces are missing')
       const headingBox = heading.getBoundingClientRect()
       const sectionsBox = sections.getBoundingClientRect()

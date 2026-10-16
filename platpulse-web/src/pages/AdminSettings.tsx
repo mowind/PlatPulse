@@ -31,6 +31,7 @@ import {
 import { Input, Radio } from '../components/ui/input'
 import { SURFACE_CARD_STATIC } from '../lib/surface'
 import { cn } from '../lib/utils'
+import { ADMIN_SECTION_TITLE, AdminPageHeader } from '../components/AdminPage'
 
 /** The ordered Settings cards are read-only containers: the working surface
  * tier with no hover glow, opacity change, or lift (webui.md §11.1). The form
@@ -40,16 +41,24 @@ const CARD = cn(
   SURFACE_CARD_STATIC,
 )
 const CARD_HEADER = 'flex min-w-0 flex-1 flex-wrap items-start justify-between gap-2'
-const LABEL = 'text-xs font-medium tracking-wider text-muted-foreground'
+const LABEL = 'text-xs font-medium text-muted-foreground'
+/** Neutral, boxed context (impact preview). */
 const CONSEQUENCE = 'min-w-0 rounded-md border bg-muted/40 p-3 text-xs break-words text-muted-foreground'
-const TEXT_LINK = 'inline-flex min-h-11 min-w-11 items-center font-medium text-primary hover:underline'
+/** A real consequence or privacy risk: kept visible, set apart from ordinary
+ * help text by the warning tone, never hidden behind an info control. */
+const RISK = 'min-w-0 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs break-words text-foreground'
+const HELP = 'text-xs text-muted-foreground'
+const TEXT_LINK = 'inline-flex min-h-11 min-w-11 items-center text-sm font-medium text-primary hover:underline'
 const FIELD = 'flex flex-col gap-1'
 const NOTICE = 'rounded-md border border-success/30 bg-success/10 p-3 text-sm text-success'
 const ERROR = 'rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive'
-const DETAIL_LIST = 'grid grid-cols-1 gap-2 sm:grid-cols-2'
+/** Compact metadata field group: two columns on phones, four on wider
+ * screens; long values take a double-width cell. */
+const DETAIL_LIST = 'grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4'
 const DETAIL_ROW = 'min-w-0'
-const DETAIL_DD = 'm-0 text-sm break-words'
-const INLINE_CODE = 'rounded-sm border bg-muted px-1 py-0.5 text-[11px]'
+const DETAIL_ROW_WIDE = 'col-span-2 min-w-0'
+const DETAIL_DD = 'm-0 mt-0.5 text-sm tabular-nums [overflow-wrap:anywhere]'
+const INLINE_CODE = 'rounded-sm border bg-muted px-1 py-0.5 font-mono text-xs'
 
 /** PAGE-ADMIN-SETTINGS: concise Owner-only server-wide configuration. */
 export default function AdminSettings() {
@@ -58,10 +67,16 @@ export default function AdminSettings() {
 
   return (
     <section data-slot="settings-page" className="flex w-full min-w-0 flex-col gap-4 pb-12">
-      <p className="m-0">
-        <Link className={TEXT_LINK} to="/admin"><ArrowLeft className="inline" size={16} aria-hidden="true" /> Admin overview</Link>
-      </p>
-      <h1 className="text-lg font-semibold break-words">Settings</h1>
+      <AdminPageHeader
+        className="max-w-[58rem]"
+        title="Settings"
+        description="Server-wide configuration. Each setting saves on its own."
+        actions={
+          <Link className={TEXT_LINK} to="/admin">
+            <ArrowLeft className="mr-1 inline" size={16} aria-hidden="true" /> Admin overview
+          </Link>
+        }
+      />
       <div data-slot="settings-sections" className="grid min-w-0 max-w-[58rem] gap-3">
         <HistoryWindowSettings generation={generation} csrfToken={csrfToken} />
         <SiteAccessSettings generation={generation} csrfToken={csrfToken} />
@@ -144,8 +159,8 @@ function HistoryWindowSettings({ generation, csrfToken }: SettingsSectionProps) 
       header={
         <div className={CARD_HEADER}>
           <div className="min-w-0">
-            <h2 id="history-window-heading" className="text-sm font-medium">History Window</h2>
-            <p className="mt-1 text-xs text-muted-foreground">Bounded retention for Block Summaries.</p>
+            <h2 id="history-window-heading" className={ADMIN_SECTION_TITLE}>History Window</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">Bounded retention for Block Summaries.</p>
           </div>
         </div>
       }
@@ -175,7 +190,7 @@ function HistoryWindowSettings({ generation, csrfToken }: SettingsSectionProps) 
                 <span>{formatDayCount(currentWindow.minDays)}</span>–<span>{formatDayCount(currentWindow.maxDays)}</span>
               </dd>
             </div>
-            <div className={DETAIL_ROW}>
+            <div className={DETAIL_ROW_WIDE}>
               <dt className={LABEL}>Last updated</dt>
               <dd className={DETAIL_DD}>
                 {currentWindow.updatedAt}
@@ -184,7 +199,7 @@ function HistoryWindowSettings({ generation, csrfToken }: SettingsSectionProps) 
             </div>
           </dl>
 
-          <p className={CONSEQUENCE}>
+          <p className={RISK} role="note">
             Shortening removes expired history asynchronously. Lengthening cannot recover deleted or missed history.
           </p>
 
@@ -217,7 +232,7 @@ function HistoryWindowSettings({ generation, csrfToken }: SettingsSectionProps) 
 
           {days !== null && !boundsError && (
             <div className={CONSEQUENCE} aria-live="polite">
-              <h3 className="text-sm font-medium">Impact preview</h3>
+              <h3 className="text-sm font-semibold text-foreground">Impact preview</h3>
               {impact.isFetching && <p className="text-xs text-muted-foreground">Estimating affected rows…</p>}
               {impact.isError && (
                 <p className="text-xs text-destructive" role="alert">
@@ -245,7 +260,7 @@ function HistoryWindowSettings({ generation, csrfToken }: SettingsSectionProps) 
               aria-invalid={confirmation.length > 0 && !confirmationMatches}
               onChange={(event) => setConfirmation(event.target.value)}
             />
-            <small className="text-[11px] text-muted-foreground">
+            <small className={HELP}>
               Type <code className={INLINE_CODE}>{confirmationTarget}</code> to confirm.
             </small>
           </div>
@@ -309,8 +324,8 @@ function SiteAccessSettings({ generation, csrfToken }: SettingsSectionProps) {
       header={
         <div className={CARD_HEADER}>
           <div className="min-w-0">
-            <h2 id="site-access-heading" className="text-sm font-medium">Site Access Mode</h2>
-            <p className="mt-1 text-xs text-muted-foreground">Public permits anonymous Home reads. Private requires Owner login.</p>
+            <h2 id="site-access-heading" className={ADMIN_SECTION_TITLE}>Site Access Mode</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">Public permits anonymous Home reads. Private requires Owner login.</p>
           </div>
           {query.data && (
             <StatusBadge
@@ -342,7 +357,7 @@ function SiteAccessSettings({ generation, csrfToken }: SettingsSectionProps) {
               ? 'Anonymous visitors can read the Home Public Projection.'
               : 'Home is private and requires Owner login.'}
           </p>
-          <p className="text-xs text-muted-foreground">
+          <p className={HELP}>
             A change closes affected streams, clears sensitive caches, discards older responses, and reloads authoritative state.
           </p>
           <Button type="button" className="justify-self-start" disabled={busy} onClick={requestChange}>
@@ -458,8 +473,8 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
       header={
         <div className={CARD_HEADER}>
           <div className="min-w-0">
-            <h2 id="geo-provider-heading" className="text-sm font-medium">Geo provider</h2>
-            <p className="mt-1 text-xs text-muted-foreground">
+            <h2 id="geo-provider-heading" className={ADMIN_SECTION_TITLE}>Geo provider</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
               Country resolution for the Peer addresses the Server already observes.
             </p>
           </div>
@@ -491,7 +506,7 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
             </Alert>
           )}
 
-          <p className={CONSEQUENCE}>
+          <p className={HELP}>
             Country resolution runs in the Server's background path and never blocks report
             ingestion. Local MMDB resolves countries from the operator-provided GeoLite2 Country
             database on this Server. Disabled schedules no lookups at all. Peer addresses never
@@ -500,7 +515,7 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
           </p>
 
           {externalProviders.map((candidate) => (
-            <p className={CONSEQUENCE} key={candidate.provider} role="note">
+            <p className={RISK} key={candidate.provider} role="note">
               <strong>{candidate.label}.</strong>{' '}
               {candidate.disclosure ?? GENERIC_EXTERNAL_GEO_NOTICE}{' '}
               Only the Owner can select it, and it is never enabled by an upgrade.
@@ -527,10 +542,10 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
                   {' '}{candidate.label}
                 </label>
                 {candidate.sends_peer_addresses && (
-                  <small className="text-[11px] text-muted-foreground"> Sends observed Peer public IPs to a third party.</small>
+                  <small className="pl-7 text-xs text-warning-foreground dark:text-warning"> Sends observed Peer public IPs to a third party.</small>
                 )}
                 {candidate.unavailable_reason && (
-                  <small className="text-[11px] text-muted-foreground"> {candidate.unavailable_reason}</small>
+                  <small className="pl-7 text-xs text-muted-foreground"> {candidate.unavailable_reason}</small>
                 )}
               </div>
             ))}
@@ -563,12 +578,12 @@ function GeoProviderSettings({ generation, csrfToken }: SettingsSectionProps) {
                   : current.pending_lookup_count}
               </dd>
             </div>
-            <div className={DETAIL_ROW}>
+            <div className={DETAIL_ROW_WIDE}>
               <dt className={LABEL}>Last success</dt>
               <dd className={DETAIL_DD}>{current.last_success_at ?? 'None yet'}</dd>
             </div>
             {current.rate_limited_until && (
-              <div className={DETAIL_ROW}>
+              <div className={DETAIL_ROW_WIDE}>
                 <dt className={LABEL}>Rate limited until</dt>
                 <dd className={DETAIL_DD}>{current.rate_limited_until}</dd>
               </div>
@@ -635,8 +650,8 @@ function GeoRefreshControl({
 
   return (
     <section className="mt-4 grid gap-3 border-t pt-4" aria-labelledby="geo-refresh-heading">
-      <h3 id="geo-refresh-heading" className="text-sm font-medium">Refresh Peer geolocation</h3>
-      <p className="text-xs text-muted-foreground">
+      <h3 id="geo-refresh-heading" className={ADMIN_SECTION_TITLE}>Refresh Peer geolocation</h3>
+      <p className={HELP}>
         Re-resolves every public Peer IP any Network currently references, even when a cached
         country result is still valid. One lookup per distinct IP address; the Peer country map
         counts Peer records per Node.
@@ -709,7 +724,7 @@ function GeoRefreshRunStatus({
         {refresh.rate_limited_lookups > 0 && (
           <div className={DETAIL_ROW}><dt className={LABEL}>Rate limited</dt><dd className={DETAIL_DD}>{refresh.rate_limited_lookups}</dd></div>
         )}
-        <div className={DETAIL_ROW}>
+        <div className={DETAIL_ROW_WIDE}>
           <dt className={LABEL}>Peer records referencing them</dt>
           <dd className={DETAIL_DD}>{refresh.peer_records_in_scope}</dd>
         </div>

@@ -29,6 +29,7 @@ import {
   recordedAge,
   shortId,
 } from './operationsShared'
+import { ADMIN_PAGE_TITLE, ADMIN_SECTION_TITLE } from '../components/AdminPage'
 
 /**
  * PAGE-ADMIN-RETENTION (issue #210). The Server owns retention: the catalogue,
@@ -175,7 +176,7 @@ export default function AdminRetention() {
   return (
     <section data-slot="retention-page" className="w-full min-w-0 space-y-4 pb-12">
       <div className="space-y-3">
-        <h1 className="text-xl font-semibold tracking-tight">Retention</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Retention</h1>
         <p className="text-sm text-muted-foreground">
           The Server owns retention. This page reads the bound each family is kept under, changes one value at a
           time, composes the impact preview a run is bound to, and queues that run. No count here is a promise
@@ -497,7 +498,7 @@ function PolicyEditor({
       header={
         <div className="flex min-w-0 flex-1 flex-wrap items-start justify-between gap-2">
           <div className="min-w-0">
-            <h2 id="retention-edit-heading" className="text-sm font-medium">
+            <h2 id="retention-edit-heading" className={ADMIN_SECTION_TITLE}>
               Edit {policy.label} retention
             </h2>
             <p className="mt-1 text-xs text-muted-foreground">

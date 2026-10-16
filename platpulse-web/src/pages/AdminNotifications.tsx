@@ -14,6 +14,7 @@ import {
   NotificationSectionNav,
   errorMessage,
 } from './notificationShared'
+import { ADMIN_PAGE_TITLE } from '../components/AdminPage'
 
 const SECTIONS = [
   {
@@ -41,7 +42,7 @@ export default function AdminNotifications() {
   return (
     <div className="space-y-6">
       <div className="space-y-3">
-        <h1 className="text-xl font-semibold tracking-tight">Notifications</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Notifications</h1>
         <p className="text-sm text-muted-foreground">
           Inspect notification events, deliveries, and channel status, and run a controlled Telegram test. Channel
           credentials and destinations stay operator configuration; this surface never edits them.

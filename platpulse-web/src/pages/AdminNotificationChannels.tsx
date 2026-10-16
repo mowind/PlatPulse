@@ -27,6 +27,7 @@ import {
   shortId,
   type FormFeedback,
 } from './notificationShared'
+import { ADMIN_PAGE_TITLE } from '../components/AdminPage'
 
 export default function AdminNotificationChannels() {
   const { generation, status } = useAuth()
@@ -81,7 +82,7 @@ export default function AdminNotificationChannels() {
   return (
     <div className="space-y-6">
       <div className="space-y-3">
-        <h1 className="text-xl font-semibold tracking-tight">Notification Channels</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Notification Channels</h1>
         <p className="text-sm text-muted-foreground">
           Masked channel status and the controlled test command. The Server redacts the destination and the provider
           reference; channel enablement, the chat id, and the token file remain operator configuration.

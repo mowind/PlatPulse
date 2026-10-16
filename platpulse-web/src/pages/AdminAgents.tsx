@@ -53,6 +53,19 @@ import type {
   AgentRemovalResponse,
   HostDiagnostic,
 } from '../api/generated'
+import { DetailItem, DetailList } from '../components/DetailList'
+import {
+  ADMIN_DETAIL_BODY,
+  ADMIN_DETAIL_ROW,
+  ADMIN_PAGE_TITLE,
+  ADMIN_ROW,
+  ADMIN_SECONDARY,
+  ADMIN_SECTION_TITLE,
+  ADMIN_TD,
+  ADMIN_TH,
+  AdminPageHeader,
+  AdminPanel,
+} from '../components/AdminPage'
 
 /**
  * PAGE-ADMIN-AGENTS, PAGE-ADMIN-AGENT-DETAIL, PAGE-ADMIN-ENROLL,
@@ -98,24 +111,10 @@ function credentialSummaryText(credentials: AgentCredentialSummary[]): string {
   return String(active) + ' active · ' + revoked + ' revoked · ' + inactive + ' inactive (not revoked) · ' + credentials.length + ' total'
 }
 
-/** Emerald detail grid: label above its value, stacked on narrow viewports. */
-function DetailList({ children }: { children: ReactNode }) {
-  return <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</dl>
-}
-
-function DetailItem({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-xs font-medium tracking-wider text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 min-w-0 break-words text-sm">{children}</dd>
-    </div>
-  )
-}
-
 /** Emerald dimension label: uppercase micro-caption, colourless. */
 function DimensionLabel({ children }: { children: ReactNode }) {
   return (
-    <span className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
+    <span className="text-xs text-muted-foreground">
       {children}
     </span>
   )
@@ -139,16 +138,16 @@ function AgentIdCopyControl({ agentId }: { agentId: string }) {
 
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
-      <Button variant="link" size="sm" onClick={() => void copyAgentId()}>
+      <Button variant="link" size="xs" className="px-0 text-xs" onClick={() => void copyAgentId()}>
         Copy Agent ID
       </Button>
       {copyState === 'copied' && (
-        <span className="text-[11px] text-success" role="status">
+        <span className="text-xs text-success" role="status">
           Copied to clipboard.
         </span>
       )}
       {copyState === 'failed' && (
-        <span className="text-[11px] text-muted-foreground" role="status">
+        <span className="text-xs text-destructive" role="status">
           Copy unavailable; select the full Agent ID above.
         </span>
       )}
@@ -166,34 +165,33 @@ function AgentIdentityAccess({
   const [revealed, setRevealed] = useState(false)
   const fullIdPanelId = useId()
   return (
-    <div className="flex min-w-0 flex-col items-start gap-1">
+    <div className="flex min-w-0 flex-col items-start">
       <Link
-        className="flex min-h-11 w-full min-w-0 items-center break-all font-medium underline-offset-4 hover:underline"
+        className="flex min-h-11 w-full min-w-0 items-center py-1 leading-snug break-words font-medium underline-offset-4 hover:underline"
         to={'/admin/agents/' + encodeURIComponent(agentId)}
       >
         {displayName ?? shortId(agentId)}
       </Link>
-      {displayName && (
-        <small
-          className="min-w-0 break-all text-[11px] text-muted-foreground"
-          title={'Full Agent ID: ' + agentId}
+      <div className="-mt-1 flex min-w-0 flex-wrap items-center gap-x-2">
+        {displayName && (
+          <small className="min-w-0 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+            {shortId(agentId)}
+          </small>
+        )}
+        <Button
+          variant="link"
+          size="xs"
+          className="max-w-full whitespace-normal px-0 text-xs"
+          aria-expanded={revealed}
+          aria-controls={fullIdPanelId}
+          onClick={() => setRevealed((value) => !value)}
         >
-          {shortId(agentId)}
-        </small>
-      )}
-      <Button
-        variant="link"
-        size="sm"
-        className="max-w-full whitespace-normal"
-        aria-expanded={revealed}
-        aria-controls={fullIdPanelId}
-        onClick={() => setRevealed((value) => !value)}
-      >
-        {revealed ? 'Hide full Agent ID' : 'Show full Agent ID'}
-      </Button>
+          {revealed ? 'Hide full Agent ID' : 'Show full Agent ID'}
+        </Button>
+      </div>
       {revealed && (
-        <div id={fullIdPanelId} className="flex min-w-0 flex-col items-start gap-2">
-          <code data-slot="agent-full-id" className="break-all text-[11px]">{agentId}</code>
+        <div id={fullIdPanelId} className="flex min-w-0 flex-wrap items-center gap-x-2">
+          <code data-slot="agent-full-id" className="min-w-0 select-all font-mono text-xs [overflow-wrap:anywhere]">{agentId}</code>
           <AgentIdCopyControl agentId={agentId} />
         </div>
       )}
@@ -357,19 +355,25 @@ export default function AdminAgentsList() {
 
   return (
     <section className="w-full min-w-0 space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold break-words">Agents</h1>
-          <p className="text-sm text-muted-foreground">
-            Server reporting status, receipt time, retained Node inventory, credential validity,
-            and diagnostics stay separate dimensions. Detailed boot/report state remains on each
-            Agent detail page; Agent Offline is not Node Retired.
-          </p>
-        </div>
-        <Link className={cn(buttonVariants(), 'shrink-0')} to="/admin/agents/enroll">
-          Add Agent
-        </Link>
-      </div>
+      <AdminPageHeader
+        title="Agents"
+        description="Reporting status, receipt time, Node inventory, credentials, and diagnostics are separate dimensions."
+        info={{
+          label: 'About Agent dimensions',
+          content: (
+            <p>
+              Server reporting status, receipt time, retained Node inventory, credential validity,
+              and diagnostics stay separate dimensions. Detailed boot/report state remains on each
+              Agent detail page; Agent Offline is not Node Retired.
+            </p>
+          ),
+        }}
+        actions={
+          <Link className={cn(buttonVariants(), 'shrink-0')} to="/admin/agents/enroll">
+            Add Agent
+          </Link>
+        }
+      />
       {!query.data && query.isPending && (
         <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
           <StatusBadge status="Starting" tone="neutral" /> Loading Agent inventory…
@@ -408,27 +412,30 @@ export default function AdminAgentsList() {
         </CardX>
       )}
       {query.data && agents.length > 0 && (
-        <CardX
-          size="medium"
-          className={CARD_SURFACE}
-          contentClassName="p-0"
-          segmented
+        <AdminPanel
+          slot="agent-inventory"
+          flush
           title="Agent inventory"
+          count={
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {agents.length} Agent{agents.length === 1 ? '' : 's'}
+            </span>
+          }
         >
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto max-md:px-3 max-md:pt-3">
             <table data-stack data-slot="agent-table" className="w-full text-sm">
               <caption className="sr-only">
                 Agent, Server reporting status, receipt time, retained Node inventory, credential validity,
                 and diagnostic evidence
               </caption>
               <thead>
-                <tr className="border-b">
-                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Agent</th>
-                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Reporting status</th>
-                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Last received</th>
-                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Node Inventory</th>
-                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Credentials</th>
-                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Diagnostics</th>
+                <tr className="border-b border-border/60">
+                  <th scope="col" className={ADMIN_TH}>Agent</th>
+                  <th scope="col" className={ADMIN_TH}>Reporting status</th>
+                  <th scope="col" className={ADMIN_TH}>Last received</th>
+                  <th scope="col" className={ADMIN_TH}>Node Inventory</th>
+                  <th scope="col" className={ADMIN_TH}>Credentials</th>
+                  <th scope="col" className={ADMIN_TH}>Diagnostics</th>
                 </tr>
               </thead>
               <tbody>
@@ -438,7 +445,7 @@ export default function AdminAgentsList() {
               </tbody>
             </table>
           </div>
-        </CardX>
+        </AdminPanel>
       )}
     </section>
   )
@@ -491,53 +498,54 @@ function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
   }
   return (
     <>
-      <tr className="border-b border-border/60 align-top">
-        <th scope="row" data-label="Agent" className="min-w-0 px-3 py-3 text-left">
+      <tr className={ADMIN_ROW}>
+        <th scope="row" data-label="Agent" className={cn(ADMIN_TD, 'min-w-0 py-1 text-left font-normal')}>
           <AgentIdentityAccess agentId={agent.agent_id} displayName={agent.display_name} />
         </th>
-        <td data-label="Reporting status" className="min-w-0 px-3 py-3">
-          <div className="flex flex-col gap-1">
+        <td data-label="Reporting status" className={cn(ADMIN_TD, 'min-w-0')}>
+          <div className="flex flex-col items-start gap-1">
             <DimensionLabel>Server liveness</DimensionLabel>
             <StatusBadge status={liveness} tone={livenessTone(agent.liveness)} />
           </div>
         </td>
-        <td data-label="Last received" className="min-w-0 px-3 py-3">
+        <td data-label="Last received" className={cn(ADMIN_TD, 'min-w-0')}>
           <div className="flex flex-col gap-1">
             <DimensionLabel>Server receipt time</DimensionLabel>
-            <span className="text-sm">{receiptTimeText(agent.last_received_at)}</span>
+            <span className="tabular-nums">{receiptTimeText(agent.last_received_at)}</span>
           </div>
         </td>
-        <td data-label="Node Inventory" className="min-w-0 px-3 py-3">
+        <td data-label="Node Inventory" className={cn(ADMIN_TD, 'min-w-0')}>
           <div className="flex flex-col gap-1">
-            <strong className="text-sm">{agent.nodes.length} retained Node{agent.nodes.length === 1 ? '' : 's'}</strong>
-            <small className="text-[11px] text-muted-foreground">Active + Retired</small>
+            <span className="font-medium tabular-nums">{agent.nodes.length} retained Node{agent.nodes.length === 1 ? '' : 's'}</span>
+            <small className={ADMIN_SECONDARY}>Active + Retired</small>
           </div>
         </td>
-        <td data-label="Credentials" className="min-w-0 px-3 py-3">
+        <td data-label="Credentials" className={cn(ADMIN_TD, 'min-w-0')}>
           <div className="flex flex-col gap-1">
             <DimensionLabel>Server validity</DimensionLabel>
-            <span className="text-sm">{credentialSummaryText(agent.credentials)}</span>
+            <span className="tabular-nums">{credentialSummaryText(agent.credentials)}</span>
           </div>
         </td>
-        <td data-label="Diagnostics" className="flex min-w-0 flex-col px-3 py-3">
-          <div className="flex flex-col gap-2">
+        <td data-label="Diagnostics" className={cn(ADMIN_TD, 'min-w-0')}>
+          <div className="flex flex-col gap-1.5">
             <dl className="grid grid-cols-1 gap-1">
-              <div>
-                <dt className="text-[11px] text-muted-foreground">Recorded gap intervals</dt>
-                <dd className="text-sm font-bold leading-none tracking-tight">{agent.sequence_gap_count}</dd>
+              <div className="flex items-baseline justify-between gap-2">
+                <dt className={ADMIN_SECONDARY}>Recorded gap intervals</dt>
+                <dd className="font-medium tabular-nums">{agent.sequence_gap_count}</dd>
               </div>
-              <div>
-                <dt className="text-[11px] text-muted-foreground">Accumulated recorded security events</dt>
-                <dd className="text-sm font-bold leading-none tracking-tight">{agent.security_event_count}</dd>
+              <div className="flex items-baseline justify-between gap-2">
+                <dt className={ADMIN_SECONDARY}>Accumulated recorded security events</dt>
+                <dd className="font-medium tabular-nums">{agent.security_event_count}</dd>
               </div>
             </dl>
-            <p className="text-[11px] text-muted-foreground">
+            <p className={ADMIN_SECONDARY}>
               <DimensionLabel>Recorded evidence</DimensionLabel>{' '}
-              <span>{diagnosticBrief(agent.host)}</span>
+              <span className="text-foreground">{diagnosticBrief(agent.host)}</span>
             </p>
             <Button
               variant="link"
-              size="sm"
+              size="xs"
+              className="self-start px-0 text-xs"
               aria-expanded={diagnosticsOpen}
               aria-controls={detailId}
               onClick={() => setDiagnosticsOpen((value) => !value)}
@@ -549,24 +557,27 @@ function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
         </td>
       </tr>
       {diagnosticsOpen && (
-        <tr data-slot="detail-row" className="border-b border-border/60 bg-muted/30">
+        <tr data-slot="detail-row" className={ADMIN_DETAIL_ROW}>
           <td colSpan={6} id={detailId} onKeyDown={collapseOnEscape} className="p-0">
-            <div className="space-y-3 p-3">
+            <div className={ADMIN_DETAIL_BODY}>
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <strong className="text-sm">Recorded diagnostic evidence</strong>
-                <Button variant="link" size="sm" onClick={() => setDiagnosticsOpen(false)}>
+                <h3 className={ADMIN_SECTION_TITLE}>Recorded diagnostic evidence</h3>
+                <Button variant="link" size="sm" className="-my-1.5" onClick={() => setDiagnosticsOpen(false)}>
                   Collapse diagnostics <ChevronUp size={16} aria-hidden="true" />
                 </Button>
               </div>
-              <ul className="space-y-1" aria-label="Recorded diagnostic evidence">
+              <ul
+                className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2 xl:grid-cols-3"
+                aria-label="Recorded diagnostic evidence"
+              >
                 {diagnosticFindings(agent.host).map((finding) => (
-                  <li key={finding.key} className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
-                    <span className="text-[11px] font-medium text-muted-foreground">{finding.label}</span>
-                    <span className="min-w-0 break-words">{finding.value}</span>
+                  <li key={finding.key} className="flex min-w-0 flex-col">
+                    <span className={cn('font-medium', ADMIN_SECONDARY)}>{finding.label}</span>
+                    <span className="min-w-0 [overflow-wrap:anywhere]">{finding.value}</span>
                   </li>
                 ))}
               </ul>
-              <p className="text-[11px] text-muted-foreground">
+              <p className={ADMIN_SECONDARY}>
                 Recorded evidence; Server liveness remains separate.
                 {agent.host ? ' Host snapshot: ' + formatObservedAt(agent.host.updated_at) : ' No Host snapshot.'}
               </p>
@@ -594,7 +605,7 @@ export function AdminAgentDetail() {
     return (
       <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
-          <h1 className="text-lg font-semibold break-words">Agent removed</h1>
+          <h1 className={ADMIN_PAGE_TITLE}>Agent removed</h1>
           <p className="text-sm text-muted-foreground">
             Agent {shortId(agentId)} was permanently removed at{' '}
             {formatObservedAt(removed.deleted_at)}.
@@ -630,7 +641,7 @@ export function AdminAgentDetail() {
     return (
       <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
-          <h1 className="text-lg font-semibold">Agent unavailable</h1>
+          <h1 className={ADMIN_PAGE_TITLE}>Agent unavailable</h1>
           <p className="text-sm text-muted-foreground">This Agent is no longer available.</p>
         </div>
       </section>
@@ -639,7 +650,7 @@ export function AdminAgentDetail() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
-        <h1 className="text-lg font-semibold break-words">
+        <h1 className={ADMIN_PAGE_TITLE}>
           {agent.data?.display_name ?? 'Agent ' + shortId(agentId)}
           <span className="mt-0.5 block text-xs font-medium text-muted-foreground break-all">{agentId}</span>
         </h1>
@@ -703,7 +714,7 @@ export function AdminAgentDetail() {
           <section className="space-y-3" aria-labelledby="agent-profile-heading">
             <div className="space-y-1">
               <span className="text-[11px] font-medium text-muted-foreground">01</span>
-              <h2 id="agent-metadata-heading" className="text-lg font-semibold">Server-owned metadata</h2>
+              <h2 id="agent-metadata-heading" className={ADMIN_SECTION_TITLE}>Server-owned metadata</h2>
               <p className="text-sm text-muted-foreground">Server-owned display name and notes. The Agent ID, Host identity, liveness, Epoch, and collection configuration stay read-only.</p>
             </div>
             <MetadataPanel agent={agent.data} onSaved={() => void agent.refetch()} />
@@ -711,7 +722,7 @@ export function AdminAgentDetail() {
           <section className="space-y-3" aria-labelledby="agent-overview-heading">
             <div className="space-y-1">
               <span className="text-[11px] font-medium text-muted-foreground">02</span>
-              <h2 id="agent-overview-heading" className="text-lg font-semibold">Overview</h2>
+              <h2 id="agent-overview-heading" className={ADMIN_SECTION_TITLE}>Overview</h2>
               <p className="text-sm text-muted-foreground">Identity and the Agent-declared Node Inventory.</p>
             </div>
             <div className="grid gap-3 lg:grid-cols-2">
@@ -722,7 +733,7 @@ export function AdminAgentDetail() {
           <section className="space-y-3" aria-labelledby="agent-runtime-heading">
             <div className="space-y-1">
               <span className="text-[11px] font-medium text-muted-foreground">03</span>
-              <h2 id="agent-runtime-heading" className="text-lg font-semibold">Runtime and reporting</h2>
+              <h2 id="agent-runtime-heading" className={ADMIN_SECTION_TITLE}>Runtime and reporting</h2>
               <p className="text-sm text-muted-foreground">Server liveness remains separate from boot and report lifecycle.</p>
             </div>
             <div className="grid gap-3 lg:grid-cols-2">
@@ -733,7 +744,7 @@ export function AdminAgentDetail() {
           <section className="space-y-3" aria-labelledby="agent-credentials-heading">
             <div className="space-y-1">
               <span className="text-[11px] font-medium text-muted-foreground">04</span>
-              <h2 id="agent-credentials-heading" className="text-lg font-semibold">Credentials</h2>
+              <h2 id="agent-credentials-heading" className={ADMIN_SECTION_TITLE}>Credentials</h2>
               <p className="text-sm text-muted-foreground">Server-owned credential validity and explicit revocation.</p>
             </div>
             <CredentialsPanel agent={agent.data} onConflictReload={() => void agent.refetch()} />
@@ -741,7 +752,7 @@ export function AdminAgentDetail() {
           <section className="space-y-3" aria-labelledby="agent-diagnostics-heading">
             <div className="space-y-1">
               <span className="text-[11px] font-medium text-muted-foreground">05</span>
-              <h2 id="agent-diagnostics-heading" className="text-lg font-semibold">Diagnostics</h2>
+              <h2 id="agent-diagnostics-heading" className={ADMIN_SECTION_TITLE}>Diagnostics</h2>
               <p className="text-sm text-muted-foreground">Recorded evidence is shown without inferring current recovery or failure.</p>
             </div>
             <DiagnosticsPanel agent={agent.data} />
@@ -757,7 +768,7 @@ export function AdminAgentDetail() {
               <span className="text-[11px] font-medium text-muted-foreground">
                 07
               </span>
-              <h2 id="agent-audit-heading" className="text-lg font-semibold">
+              <h2 id="agent-audit-heading" className={ADMIN_SECTION_TITLE}>
                 Audit
               </h2>
               <p className="text-sm text-muted-foreground">
@@ -771,7 +782,7 @@ export function AdminAgentDetail() {
               <span className="text-[11px] font-medium text-muted-foreground">
                 08
               </span>
-              <h2 id="agent-removal-heading" className="text-lg font-semibold">
+              <h2 id="agent-removal-heading" className={ADMIN_SECTION_TITLE}>
                 Danger zone
               </h2>
               <p className="text-sm text-muted-foreground">
@@ -852,7 +863,7 @@ function AgentDetailSummary({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
           <span className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase">Agent summary</span>
-          <h2 id="agent-summary-heading" className="text-lg font-semibold break-all">
+          <h2 id="agent-summary-heading" className={cn(ADMIN_SECTION_TITLE, 'break-all')}>
             {shortId(agent.agent_id)}
           </h2>
           <p className="flex min-w-0 flex-wrap items-center gap-2">
@@ -1999,7 +2010,7 @@ function EnrollmentGuidance() {
     <CardX
       size="medium"
       className={CARD_SURFACE}
-      header={<h2 className="text-lg font-semibold">Local enrollment instructions</h2>}
+      header={<h2 className={ADMIN_SECTION_TITLE}>Local enrollment instructions</h2>}
     >
       <ol className="list-decimal space-y-2 pl-5 text-sm">
         <li>
@@ -2058,7 +2069,7 @@ export function AdminAgentEnroll() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
-        <h1 className="text-lg font-semibold break-words">Enroll a new Agent</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Enroll a new Agent</h1>
         <p className="text-sm text-muted-foreground">
           <Link
             className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
@@ -2071,7 +2082,7 @@ export function AdminAgentEnroll() {
         </p>
       </div>
       {result ? (
-        <CardX size="medium" className={CARD_SURFACE} header={<h2 className="text-lg font-semibold">Enrollment token created</h2>}>
+        <CardX size="medium" className={CARD_SURFACE} header={<h2 className={ADMIN_SECTION_TITLE}>Enrollment token created</h2>}>
           <OneTimeSecret secret={result.token} label="One-time Enrollment Token" />
           <p className="mt-3 text-sm text-muted-foreground">
             Token id {result.token_id} · expires {formatObservedAt(result.expires_at)} · shown
@@ -2088,7 +2099,7 @@ export function AdminAgentEnroll() {
           </Link>
         </CardX>
       ) : (
-        <CardX size="medium" className={CARD_SURFACE} header={<h2 className="text-lg font-semibold">Token lifetime</h2>}>
+        <CardX size="medium" className={CARD_SURFACE} header={<h2 className={ADMIN_SECTION_TITLE}>Token lifetime</h2>}>
           <form onSubmit={submit} className="grid max-w-xl gap-3">
             <LifetimeField
               id="enroll-lifetime"
@@ -2148,7 +2159,7 @@ export function AdminAgentRecover() {
     return (
       <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
-          <h1 className="text-lg font-semibold">Agent unavailable</h1>
+          <h1 className={ADMIN_PAGE_TITLE}>Agent unavailable</h1>
           <p className="text-sm text-muted-foreground">This Agent is no longer available.</p>
         </div>
       </section>
@@ -2158,7 +2169,7 @@ export function AdminAgentRecover() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
-        <h1 className="text-lg font-semibold break-words">Recover Agent {agentId ? shortId(agentId) : ''}</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Recover Agent {agentId ? shortId(agentId) : ''}</h1>
         <p className="text-sm text-muted-foreground">
           <Link
             className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
@@ -2181,7 +2192,7 @@ export function AdminAgentRecover() {
         </p>
       )}
       {result ? (
-        <CardX size="medium" className={CARD_SURFACE} header={<h2 className="text-lg font-semibold">Recovery token created</h2>}>
+        <CardX size="medium" className={CARD_SURFACE} header={<h2 className={ADMIN_SECTION_TITLE}>Recovery token created</h2>}>
           <OneTimeSecret secret={result.token} label="One-time Recovery Token" />
           <p className="mt-3 text-sm text-muted-foreground">
             Token id {result.token_id} · expires {formatObservedAt(result.expires_at)}.
@@ -2199,7 +2210,7 @@ export function AdminAgentRecover() {
           </Link>
         </CardX>
       ) : (
-        <CardX size="medium" className={CARD_SURFACE} header={<h2 className="text-lg font-semibold">Create a recovery token</h2>}>
+        <CardX size="medium" className={CARD_SURFACE} header={<h2 className={ADMIN_SECTION_TITLE}>Create a recovery token</h2>}>
           <form onSubmit={submit} className="grid max-w-xl gap-3">
             <div className="text-sm text-warning">
               <strong>What recovery does:</strong> advances the Agent Epoch, revokes every
@@ -2276,7 +2287,7 @@ export function AdminAgentRotate() {
     return (
       <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
-          <h1 className="text-lg font-semibold">Agent unavailable</h1>
+          <h1 className={ADMIN_PAGE_TITLE}>Agent unavailable</h1>
           <p className="text-sm text-muted-foreground">This Agent is no longer available.</p>
         </div>
       </section>
@@ -2286,7 +2297,7 @@ export function AdminAgentRotate() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
-        <h1 className="text-lg font-semibold break-words">Rotate credential {agentId ? 'for Agent ' + shortId(agentId) : ''}</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Rotate credential {agentId ? 'for Agent ' + shortId(agentId) : ''}</h1>
         <p className="text-sm text-muted-foreground">
           <Link
             className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
@@ -2297,7 +2308,7 @@ export function AdminAgentRotate() {
         </p>
       </div>
       {result ? (
-        <CardX size="medium" className={CARD_SURFACE} header={<h2 className="text-lg font-semibold">Credential rotated</h2>}>
+        <CardX size="medium" className={CARD_SURFACE} header={<h2 className={ADMIN_SECTION_TITLE}>Credential rotated</h2>}>
           <OneTimeSecret secret={result.credential} label="New Agent Credential" />
           <p className="mt-3 text-sm text-muted-foreground">
             Credential id {result.credential_id} · overlap {result.overlap_hours} hour
@@ -2326,7 +2337,7 @@ export function AdminAgentRotate() {
           </Link>
         </CardX>
       ) : (
-        <CardX size="medium" className={CARD_SURFACE} header={<h2 className="text-lg font-semibold">Rotate the Agent credential</h2>}>
+        <CardX size="medium" className={CARD_SURFACE} header={<h2 className={ADMIN_SECTION_TITLE}>Rotate the Agent credential</h2>}>
           <form onSubmit={submit} className="grid max-w-xl gap-3">
             <div className="text-sm text-warning">
               <strong>What rotation does:</strong> issues a fresh credential and keeps the

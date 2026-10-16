@@ -76,6 +76,7 @@ import type {
   InvestigationSourceResponse,
   InvestigationWindowResponse,
 } from "../api/generated";
+import { ADMIN_PAGE_TITLE, ADMIN_SECTION_TITLE } from '../components/AdminPage'
 
 const CARD_SURFACE = cn("rounded-md border-none", SURFACE_CARD_STATIC);
 const TH = "px-3 py-2 text-left text-xs font-medium text-muted-foreground";
@@ -201,7 +202,7 @@ function WindowControl({
     <CardX
       size="medium"
       className={CARD_SURFACE}
-      header={<h2 className="text-lg font-semibold">Window</h2>}
+      header={<h2 className={ADMIN_SECTION_TITLE}>Window</h2>}
     >
       <p className="text-sm text-muted-foreground">
         One window answers every family below. The window is held in this link,
@@ -335,7 +336,7 @@ function NodeFactsCard({ answer }: { answer: AdminInvestigation }) {
       className={CARD_SURFACE}
       header={
         <>
-          <h2 className="text-lg font-semibold">
+          <h2 className={ADMIN_SECTION_TITLE}>
             {answer.displayName || "This Node"}
           </h2>
           <StatusBadge status={answer.lifecycle} tone="neutral" />
@@ -403,7 +404,7 @@ function OccurrenceCard({
       className={CARD_SURFACE}
       header={
         <>
-          <h2 className="text-lg font-semibold">The located occurrence</h2>
+          <h2 className={ADMIN_SECTION_TITLE}>The located occurrence</h2>
           <StatusBadge status="Located" tone="neutral" />
         </>
       }
@@ -1065,7 +1066,7 @@ function CoverageCard({ answer }: { answer: AdminInvestigation }) {
       className={CARD_SURFACE}
       header={
         <>
-          <h2 className="text-lg font-semibold">Coverage of this window</h2>
+          <h2 className={ADMIN_SECTION_TITLE}>Coverage of this window</h2>
           <StatusBadge
             status={answer.sources.length + " families"}
             tone="neutral"
@@ -1321,7 +1322,7 @@ function PeerReceiptPanel({
       className={CARD_SURFACE}
       header={
         <>
-          <h2 className="text-lg font-semibold">Peer receipt evidence</h2>
+          <h2 className={ADMIN_SECTION_TITLE}>Peer receipt evidence</h2>
           {range && (
             <StatusBadge
               status={range.coverage}
@@ -1710,7 +1711,7 @@ export default function AdminNodeInvestigation() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
-        <h1 className="text-lg font-semibold break-words">
+        <h1 className={ADMIN_PAGE_TITLE}>
           {answer?.displayName
             ? "Investigation of " + answer.displayName
             : "Node investigation"}

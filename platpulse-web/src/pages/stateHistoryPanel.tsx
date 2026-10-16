@@ -8,7 +8,6 @@
  * a retained value shows the age it really has, and a flag the collection could not read is
  * unknown rather than false.
  */
-import type { ReactNode } from 'react'
 import type { AdminStateHistory } from '../api/admin'
 import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
@@ -23,6 +22,8 @@ import {
   stateHistoryView,
 } from '../stateHistory'
 import type { MetricHistoryWindow } from './metricHistoryPanel'
+import { DetailItem, DetailList } from '../components/DetailList'
+import { ADMIN_SECTION_TITLE } from '../components/AdminPage'
 
 const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD_STATIC)
 
@@ -45,19 +46,6 @@ export type StateHistoryBodyProps = {
   onComponent: (component: string) => void
   view: MetricHistoryWindow
   answer: StateHistoryAnswer
-}
-
-function DetailList({ children }: { children: ReactNode }) {
-  return <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</dl>
-}
-
-function DetailItem({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-xs font-medium tracking-wider text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 min-w-0 break-words text-sm">{children}</dd>
-    </div>
-  )
 }
 
 /** A count of recorded deliveries, or the honest absence of one. */
@@ -98,7 +86,7 @@ export function StateHistoryBody({
         className={CARD_SURFACE}
         header={
           <>
-            <h2 className="text-lg font-semibold">{title}</h2>
+            <h2 className={ADMIN_SECTION_TITLE}>{title}</h2>
             <StatusBadge status={state} tone={stateTone} />
           </>
         }

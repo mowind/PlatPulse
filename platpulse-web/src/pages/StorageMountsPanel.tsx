@@ -7,6 +7,7 @@ import { StatusBadge } from '../components/StatusBadge'
 import { cn } from '../lib/utils'
 import { SURFACE_CARD_STATIC } from '../lib/surface'
 import { storageMountsView, type StorageSeriesSummary } from '../storageMounts'
+import { ADMIN_SECTION_TITLE } from '../components/AdminPage'
 
 const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD_STATIC)
 
@@ -76,7 +77,7 @@ export function StorageMountsPanel({
       className={CARD_SURFACE}
       header={
         <>
-          <h2 className="text-lg font-semibold">Storage by mount path</h2>
+          <h2 className={ADMIN_SECTION_TITLE}>Storage by mount path</h2>
           <StatusBadge status={state} tone={tone} />
         </>
       }

@@ -8,6 +8,18 @@ import {
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
 import { DetailItem, DetailList } from '../components/DetailList'
+import {
+  ADMIN_PAGE_TITLE,
+  ADMIN_PANEL_SURFACE,
+  ADMIN_ROW,
+  ADMIN_SECONDARY,
+  ADMIN_SECTION_TITLE,
+  ADMIN_TD,
+  ADMIN_TH,
+  AdminPageHeader,
+  AdminToolbar,
+  AdminToolbarField,
+} from '../components/AdminPage'
 import { StatusBadge, formatObservedAt, freshnessLabel } from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
 import { CardX } from '../components/ui/card-x'
@@ -15,7 +27,6 @@ import { Empty } from '../components/ui/empty'
 import { Input } from '../components/ui/input'
 import { formatAmountExact } from '../lib/amount'
 import { formatRatePercentExact } from '../lib/rate'
-import { SURFACE_CARD_STATIC } from '../lib/surface'
 import { cn } from '../lib/utils'
 import {
   sortValidators,
@@ -56,8 +67,6 @@ import { ValidatorTrendPanel } from './validatorTrendPanel'
  * association are different facts.
  */
 
-const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD_STATIC)
-
 function Unavailable({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
     <div
@@ -96,27 +105,32 @@ export default function AdminValidatorsList() {
 
   return (
     <section className="w-full min-w-0 space-y-4">
-      <div className="space-y-1">
-        <h1 className="text-lg font-semibold break-words">Validators</h1>
-        <p className="text-sm text-muted-foreground">
-          A Validator is resolved automatically from the Network plus the full P2P public key an
-          Agent observed. The correspondence is a chain identity: this surface never claims
-          ownership, consensus membership, or a manual role, and a PlatScan deployment that cannot
-          be read leaves the last successful verdict in place instead of reporting an absence.
-        </p>
-      </div>
-      <div className="flex flex-col gap-1 sm:max-w-md">
-        <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="validator-search">
-          Search Validators and Nodes
-        </label>
-        <Input
-          id="validator-search"
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Display name, Node ID, or identity key"
-        />
-      </div>
+      <AdminPageHeader
+        title="Validators"
+        description="Resolved automatically from the Network plus the full P2P public key an Agent observed."
+        info={{
+          label: 'About Validator identity',
+          content: (
+            <p>
+              A Validator is resolved automatically from the Network plus the full P2P public key an
+              Agent observed. The correspondence is a chain identity: this surface never claims
+              ownership, consensus membership, or a manual role, and a PlatScan deployment that cannot
+              be read leaves the last successful verdict in place instead of reporting an absence.
+            </p>
+          ),
+        }}
+      />
+      <AdminToolbar label="Validator search">
+        <AdminToolbarField label="Search Validators and Nodes" htmlFor="validator-search" size="lg">
+          <Input
+            id="validator-search"
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Display name, Node ID, or identity key"
+          />
+        </AdminToolbarField>
+      </AdminToolbar>
       <AutomaticIdentitySection
         query={identities}
         coverage={coverage}
@@ -150,15 +164,16 @@ function AutomaticIdentitySection({
   return (
     <CardX
       size="medium"
-      className={CARD_SURFACE}
+      bordered={false}
+      className={ADMIN_PANEL_SURFACE}
       segmented
       header={
         <>
-          <h2 className="text-lg font-semibold">Automatic Validator identity</h2>
+          <h2 className={ADMIN_SECTION_TITLE}>Automatic Validator identity</h2>
           {query.data && (
             <span className="flex flex-wrap items-center gap-2">
               <StatusBadge status={badge.status} tone={badge.tone} />
-              <span className="text-[11px] text-muted-foreground">
+              <span className="text-xs text-muted-foreground">
                 {coverage.total} {coverage.total === 1 ? 'Node' : 'Nodes'} ·{' '}
                 {coverage.evaluated} evaluated · {coverage.identified} identified
               </span>
@@ -167,7 +182,7 @@ function AutomaticIdentitySection({
         </>
       }
     >
-      <p className="text-sm text-muted-foreground">
+      <p className={ADMIN_SECONDARY}>
         Coverage is counted per Node, not per Agent: one Agent can observe several Nodes, and an
         unresolved state says the evaluation did not establish an identity rather than that the Node
         does not stake.
@@ -217,13 +232,13 @@ function AutomaticIdentitySection({
               used
             </caption>
             <thead>
-              <tr className="border-b">
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Node</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Identity state</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Observed P2P key</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Validator</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Public association</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Evaluated</th>
+              <tr className="border-b border-border/60">
+                <th scope="col" className={ADMIN_TH}>Node</th>
+                <th scope="col" className={ADMIN_TH}>Identity state</th>
+                <th scope="col" className={ADMIN_TH}>Observed P2P key</th>
+                <th scope="col" className={ADMIN_TH}>Validator</th>
+                <th scope="col" className={ADMIN_TH}>Public association</th>
+                <th scope="col" className={ADMIN_TH}>Evaluated</th>
               </tr>
             </thead>
             <tbody>
@@ -242,30 +257,30 @@ function IdentityRow({ identity }: { identity: AdminNodeValidatorIdentity }) {
   const notice = validatorIdentityNotice(identity)
   const association = validatorPublicAssociation(identity)
   return (
-    <tr className="border-b border-border/60 align-top">
-      <th scope="row" data-label="Node" className="min-w-0 px-3 py-3 text-left">
+    <tr className={ADMIN_ROW}>
+      <th scope="row" data-label="Node" className={cn(ADMIN_TD, 'min-w-0 py-1 text-left font-normal')}>
         <Link
-          className="inline-flex min-h-11 min-w-11 items-center break-all font-medium underline-offset-4 hover:underline"
+          className="inline-flex min-h-11 min-w-11 items-center break-words font-medium underline-offset-4 hover:underline"
           to={'/admin/nodes/' + identity.nodeId}
         >
           {validatorIdentityNodeLabel(identity)}
         </Link>
-        <small className="mt-0.5 block text-[11px] text-muted-foreground break-all">
+        <small className="mt-0.5 block text-xs text-muted-foreground break-all">
           {identity.networkKey}
         </small>
       </th>
-      <td data-label="Identity state" className="min-w-0 px-3 py-3">
+      <td data-label="Identity state" className={cn(ADMIN_TD, 'min-w-0')}>
         <StatusBadge status={notice.label} tone={notice.tone} />
-        <small className="mt-1 block text-[11px] text-muted-foreground break-words">
+        <small className="mt-1 block text-xs text-muted-foreground break-words">
           {notice.description}
         </small>
       </td>
-      <td data-label="Observed P2P key" className="min-w-0 px-3 py-3">
-        <code className="break-all text-[11px]" title={identity.observedValidatorNodeKey ?? undefined}>
+      <td data-label="Observed P2P key" className={cn(ADMIN_TD, 'min-w-0')}>
+        <code className="break-all text-xs" title={identity.observedValidatorNodeKey ?? undefined}>
           {validatorKeyLabel(identity.observedValidatorNodeKey)}
         </code>
       </td>
-      <td data-label="Validator" className="min-w-0 px-3 py-3">
+      <td data-label="Validator" className={cn(ADMIN_TD, 'min-w-0')}>
         {identity.validatorId ? (
           <Link
             className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
@@ -274,24 +289,24 @@ function IdentityRow({ identity }: { identity: AdminNodeValidatorIdentity }) {
             {validatorKeyLabel(identity.validatorNodeKey)}
           </Link>
         ) : (
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             Not established
           </span>
         )}
       </td>
-      <td data-label="Public association" className="min-w-0 px-3 py-3">
+      <td data-label="Public association" className={cn(ADMIN_TD, 'min-w-0')}>
         {association ? (
           <span className="flex flex-wrap items-center gap-2">
             <StatusBadge status={association.label} tone={association.tone} />
-            <span className="text-[11px] text-muted-foreground">{association.description}</span>
+            <span className="text-xs text-muted-foreground">{association.description}</span>
           </span>
         ) : (
-          <span className="text-[11px] text-muted-foreground">No Link to project</span>
+          <span className="text-xs text-muted-foreground">No Link to project</span>
         )}
       </td>
-      <td data-label="Evaluated" className="min-w-0 px-3 py-3">
+      <td data-label="Evaluated" className={cn(ADMIN_TD, 'min-w-0')}>
         {identity.evaluatedAt ? formatObservedAt(identity.evaluatedAt) : 'Never evaluated'}
-        <small className="mt-0.5 block text-[11px] text-muted-foreground">
+        <small className="mt-0.5 block text-xs text-muted-foreground">
           Lifecycle {identity.lifecycle}
         </small>
       </td>
@@ -311,10 +326,11 @@ function ValidatorRegistrySection({
   return (
     <CardX
       size="medium"
-      className={CARD_SURFACE}
+      bordered={false}
+      className={ADMIN_PANEL_SURFACE}
       contentClassName="p-0"
       segmented
-      title="Validator registry"
+      header={<h2 className={ADMIN_SECTION_TITLE}>Validator registry</h2>}
     >
       {!query.data && query.isPending && (
         <p className="flex flex-wrap items-center gap-2 p-3 text-sm text-muted-foreground" role="status">
@@ -356,15 +372,15 @@ function ValidatorRegistrySection({
               Resolved Validators with independent verdict, rank, and staking-metric evidence
             </caption>
             <thead>
-              <tr className="border-b">
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Validator</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Current status</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Last confirmed at</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Rank</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Stake</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Delegators</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Metrics evidence</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Nodes</th>
+              <tr className="border-b border-border/60">
+                <th scope="col" className={ADMIN_TH}>Validator</th>
+                <th scope="col" className={ADMIN_TH}>Current status</th>
+                <th scope="col" className={ADMIN_TH}>Last confirmed at</th>
+                <th scope="col" className={ADMIN_TH}>Rank</th>
+                <th scope="col" className={ADMIN_TH}>Stake</th>
+                <th scope="col" className={ADMIN_TH}>Delegators</th>
+                <th scope="col" className={ADMIN_TH}>Metrics evidence</th>
+                <th scope="col" className={ADMIN_TH}>Nodes</th>
               </tr>
             </thead>
             <tbody>
@@ -382,58 +398,58 @@ function ValidatorRegistrySection({
 function ValidatorRow({ validator }: { validator: Validator }) {
   const insight = validator.insight ?? null
   return (
-    <tr className="border-b border-border/60 align-top">
-      <th scope="row" data-label="Validator" className="min-w-0 px-3 py-3 text-left">
+    <tr className={ADMIN_ROW}>
+      <th scope="row" data-label="Validator" className={cn(ADMIN_TD, 'min-w-0 py-1 text-left font-normal')}>
         <Link
-          className="inline-flex min-h-11 min-w-11 items-center break-all font-medium underline-offset-4 hover:underline"
+          className="inline-flex min-h-11 min-w-11 items-center break-words font-medium underline-offset-4 hover:underline"
           to={'/admin/validators/' + validator.validatorId}
         >
           {validatorDisplayName(validator)}
         </Link>
-        <small className="mt-0.5 block text-[11px] text-muted-foreground break-all">
+        <small className="mt-0.5 block text-xs text-muted-foreground break-all">
           {validator.networkKey}
         </small>
       </th>
-      <td data-label="Current status" className="min-w-0 px-3 py-3">
+      <td data-label="Current status" className={cn(ADMIN_TD, 'min-w-0')}>
         <span className="flex flex-wrap items-center gap-2">
           <StatusBadge status={validatorStatusLabel(insight)} tone={validatorStatusTone(insight)} />
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             {validatorStatusEvidence(insight)}
           </span>
         </span>
-        <small className="mt-0.5 block text-[11px] text-muted-foreground">
+        <small className="mt-0.5 block text-xs text-muted-foreground">
           Activity {validatorActivity(insight)} · {validatorActivityEvidence(insight)}
         </small>
       </td>
-      <td data-label="Last confirmed at" className="min-w-0 px-3 py-3">
+      <td data-label="Last confirmed at" className={cn(ADMIN_TD, 'min-w-0')}>
         {insight?.activityReceivedAt
           ? formatObservedAt(insight.activityReceivedAt)
           : 'No confirmed verdict'}
       </td>
-      <td data-label="Rank" className="min-w-0 px-3 py-3">
+      <td data-label="Rank" className={cn(ADMIN_TD, 'min-w-0')}>
         {validatorRank(insight)}
-        <small className="mt-0.5 block text-[11px] text-muted-foreground">
+        <small className="mt-0.5 block text-xs text-muted-foreground">
           {validatorRankEvidence(insight)} · {validatorRankOutcome(insight)}
         </small>
-        <small className="mt-0.5 block break-words text-[11px] text-muted-foreground">
+        <small className="mt-0.5 block break-words text-xs text-muted-foreground">
           {insight?.rankLastGoodReceivedAt
             ? 'Rank confirmed at ' + formatObservedAt(insight.rankLastGoodReceivedAt)
             : 'Rank never observed'}
         </small>
         {insight?.rankDiagnostic && (
-          <small className="mt-0.5 block break-words text-[11px] text-muted-foreground">
+          <small className="mt-0.5 block break-words text-xs text-muted-foreground">
             {insight.rankDiagnostic}
           </small>
         )}
       </td>
-      <td data-label="Stake" className="min-w-0 px-3 py-3">
+      <td data-label="Stake" className={cn(ADMIN_TD, 'min-w-0')}>
         {formatAmountExact(insight?.stakeAmount)}
       </td>
-      <td data-label="Delegators" className="min-w-0 px-3 py-3">
+      <td data-label="Delegators" className={cn(ADMIN_TD, 'min-w-0')}>
         {insight?.delegatorCount ?? 'Unknown'}
       </td>
-      <td data-label="Metrics evidence" className="min-w-0 px-3 py-3">
-        <span className="block text-[11px] text-muted-foreground">
+      <td data-label="Metrics evidence" className={cn(ADMIN_TD, 'min-w-0')}>
+        <span className="block text-xs text-muted-foreground">
           {!insight?.lastGoodReceivedAt
             ? 'Metrics not established'
             : insight.freshness === 'fresh'
@@ -442,28 +458,28 @@ function ValidatorRow({ validator }: { validator: Validator }) {
                 ? 'Retained metrics (stale)'
                 : 'Metrics freshness unknown'}
         </span>
-        <small className="mt-0.5 block text-[11px] text-muted-foreground">
+        <small className="mt-0.5 block text-xs text-muted-foreground">
           Latest detail refresh {insight?.outcome ?? 'unknown'}
           {insight?.outcome === 'error' && insight.lastGoodReceivedAt && ' · Retained last-good metrics'}
           {insight?.outcome === 'empty' && ' · No metric sample'}
         </small>
         {insight?.diagnostic && (
-          <small className="mt-0.5 block break-words text-[11px] text-muted-foreground">
+          <small className="mt-0.5 block break-words text-xs text-muted-foreground">
             {insight.diagnostic}
           </small>
         )}
         {insight?.lastGoodReceivedAt && (
-          <small className="mt-0.5 block text-[11px] text-muted-foreground">
+          <small className="mt-0.5 block text-xs text-muted-foreground">
             Last-good metric age {validatorLastGoodAge(insight.lastGoodAgeSeconds)}
           </small>
         )}
-        <small className="mt-0.5 block break-words text-[11px] text-muted-foreground">
+        <small className="mt-0.5 block break-words text-xs text-muted-foreground">
           {insight?.lastGoodReceivedAt
             ? 'Last-good metric received at ' + formatObservedAt(insight.lastGoodReceivedAt)
             : 'Metrics never observed'}
         </small>
       </td>
-      <td data-label="Nodes" className="min-w-0 px-3 py-3">
+      <td data-label="Nodes" className={cn(ADMIN_TD, 'min-w-0')}>
         {validator.linkCount}
       </td>
     </tr>
@@ -483,7 +499,7 @@ export function AdminValidatorDetail() {
     return (
       <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
-          <h1 className="text-lg font-semibold">Validator unavailable</h1>
+          <h1 className={ADMIN_PAGE_TITLE}>Validator unavailable</h1>
           <p className="text-sm text-muted-foreground">
             No Validator is resolved under this identity on this Server.
           </p>
@@ -504,7 +520,7 @@ export function AdminValidatorDetail() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
-        <h1 className="text-lg font-semibold break-words">
+        <h1 className={ADMIN_PAGE_TITLE}>
           {query.data ? validatorDisplayName(query.data) : validatorKeyLabel(validatorId)}
           <span className="mt-0.5 block text-xs font-medium text-muted-foreground break-all">
             {validatorId}
@@ -567,10 +583,10 @@ function StatusPanel({ validator }: { validator: ValidatorDetail }) {
   return (
     <CardX
       size="medium"
-      className={CARD_SURFACE}
+      className={ADMIN_PANEL_SURFACE}
       header={
         <>
-          <h2 className="text-lg font-semibold">Current Validator status</h2>
+          <h2 className={ADMIN_SECTION_TITLE}>Current Validator status</h2>
           <StatusBadge status={validatorStatusLabel(insight)} tone={validatorStatusTone(insight)} />
         </>
       }
@@ -593,7 +609,7 @@ function StatusPanel({ validator }: { validator: ValidatorDetail }) {
             <span className="text-muted-foreground">· {validatorActivityEvidence(insight)}</span>
           </DetailItem>
           <DetailItem label="Validator key">
-            <code className="break-all text-[11px]" title={validator.validatorNodeId}>
+            <code className="break-all text-xs" title={validator.validatorNodeId}>
               {validator.validatorNodeId}
             </code>
           </DetailItem>
@@ -617,8 +633,8 @@ function RankPanel({ validator }: { validator: ValidatorDetail }) {
   return (
     <CardX
       size="medium"
-      className={CARD_SURFACE}
-      header={<h2 className="text-lg font-semibold">Rank evidence</h2>}
+      className={ADMIN_PANEL_SURFACE}
+      header={<h2 className={ADMIN_SECTION_TITLE}>Rank evidence</h2>}
     >
       <p className="text-sm text-muted-foreground">
         The Network ranking list refreshes independently of Validator detail. A failed refresh keeps
@@ -655,8 +671,8 @@ function EvidencePanel({ validator }: { validator: ValidatorDetail }) {
   return (
     <CardX
       size="medium"
-      className={CARD_SURFACE}
-      header={<h2 className="text-lg font-semibold">Provider evidence</h2>}
+      className={ADMIN_PANEL_SURFACE}
+      header={<h2 className={ADMIN_SECTION_TITLE}>Provider evidence</h2>}
     >
       <p className="text-sm text-muted-foreground">
         Source, freshness, and diagnostics of the last observation. A Provider failure is reported
@@ -691,8 +707,8 @@ function StakingPanel({ validator }: { validator: ValidatorDetail }) {
   return (
     <CardX
       size="medium"
-      className={CARD_SURFACE}
-      header={<h2 className="text-lg font-semibold">Staking metrics</h2>}
+      className={ADMIN_PANEL_SURFACE}
+      header={<h2 className={ADMIN_SECTION_TITLE}>Staking metrics</h2>}
     >
       <p className="text-sm text-muted-foreground">
         Values come from the last-good Provider observation for this identity. A metric that was
@@ -717,8 +733,8 @@ function LinksPanel({ validator }: { validator: ValidatorDetail }) {
   return (
     <CardX
       size="medium"
-      className={CARD_SURFACE}
-      header={<h2 className="text-lg font-semibold">Node associations</h2>}
+      className={ADMIN_PANEL_SURFACE}
+      header={<h2 className={ADMIN_SECTION_TITLE}>Node associations</h2>}
     >
       <p className="text-sm text-muted-foreground">
         Every Node the Server associates with this identity. A key change ends an interval and keeps
@@ -735,32 +751,32 @@ function LinksPanel({ validator }: { validator: ValidatorDetail }) {
           <table data-stack data-slot="validator-links-table" className="w-full text-sm">
             <caption className="sr-only">Node associations recorded for this Validator</caption>
             <thead>
-              <tr className="border-b">
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Node</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Valid from</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Valid until</th>
-                <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">Role</th>
+              <tr className="border-b border-border/60">
+                <th scope="col" className={ADMIN_TH}>Node</th>
+                <th scope="col" className={ADMIN_TH}>Valid from</th>
+                <th scope="col" className={ADMIN_TH}>Valid until</th>
+                <th scope="col" className={ADMIN_TH}>Role</th>
               </tr>
             </thead>
             <tbody>
               {validator.links.map((link) => (
                 <tr key={link.linkId} className="border-b border-border/60 align-top">
-                  <th scope="row" data-label="Node" className="min-w-0 px-3 py-3 text-left">
+                  <th scope="row" data-label="Node" className={cn(ADMIN_TD, 'min-w-0 py-1 text-left font-normal')}>
                     <Link
-                      className="inline-flex min-h-11 min-w-11 items-center break-all font-medium underline-offset-4 hover:underline"
+                      className="inline-flex min-h-11 min-w-11 items-center break-words font-medium underline-offset-4 hover:underline"
                       to={'/admin/nodes/' + link.nodeId}
                     >
                       {link.nodeDisplayName ?? link.nodeId}
                     </Link>
                   </th>
-                  <td data-label="Valid from" className="min-w-0 px-3 py-3">
+                  <td data-label="Valid from" className={cn(ADMIN_TD, 'min-w-0')}>
                     {formatObservedAt(link.validFrom)}
                   </td>
-                  <td data-label="Valid until" className="min-w-0 px-3 py-3">
+                  <td data-label="Valid until" className={cn(ADMIN_TD, 'min-w-0')}>
                     {link.validUntil ? (
                       <span className="flex flex-wrap items-center gap-2">
                         <StatusBadge status="Ended" tone="neutral" />
-                        <span className="text-[11px] text-muted-foreground">
+                        <span className="text-xs text-muted-foreground">
                           {formatObservedAt(link.validUntil)}
                         </span>
                       </span>
@@ -768,11 +784,11 @@ function LinksPanel({ validator }: { validator: ValidatorDetail }) {
                       <StatusBadge status="Open" tone="ok" />
                     )}
                   </td>
-                  <td data-label="Role" className="min-w-0 px-3 py-3">
+                  <td data-label="Role" className={cn(ADMIN_TD, 'min-w-0')}>
                     {link.role ? (
                       link.role
                     ) : (
-                      <span className="text-[11px] text-muted-foreground">
+                      <span className="text-xs text-muted-foreground">
                         Automatic identity, no manual role
                       </span>
                     )}

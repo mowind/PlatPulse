@@ -30,6 +30,7 @@ import {
   shortId,
   type FormFeedback,
 } from './notificationShared'
+import { ADMIN_PAGE_TITLE } from '../components/AdminPage'
 
 /** The Server's fixed delivery-state vocabulary (design §17.4). */
 const DELIVERY_STATES = [
@@ -239,7 +240,7 @@ export default function AdminNotificationDeliveries() {
   return (
     <div className="space-y-6">
       <div className="space-y-3">
-        <h1 className="text-xl font-semibold tracking-tight">Notification Deliveries</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Notification Deliveries</h1>
         <p className="text-sm text-muted-foreground">
           The Server's per-channel delivery rows are the only record of what happened after a notification was
           accepted. Provider results and accumulated attempts are preserved; suppressed and cancelled rows are
@@ -418,7 +419,7 @@ export function AdminNotificationDeliveryDetailPage() {
   if (notFound) {
     return (
       <div className="space-y-6">
-        <h1 className="text-xl font-semibold tracking-tight">Notification Delivery not found</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Notification Delivery not found</h1>
         <p className="text-sm text-muted-foreground">
           The Server has no notification delivery with this id. It may have been pruned, or the link is stale.
         </p>
@@ -436,7 +437,7 @@ export function AdminNotificationDeliveryDetailPage() {
   return (
     <div className="space-y-6">
       <div className="space-y-3">
-        <h1 className="text-xl font-semibold tracking-tight">
+        <h1 className={ADMIN_PAGE_TITLE}>
           Notification Delivery {shortId(deliveryId)}
         </h1>
         <Link

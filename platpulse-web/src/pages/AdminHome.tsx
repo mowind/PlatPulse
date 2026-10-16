@@ -32,6 +32,7 @@ import type {
   AdminNodeListItem,
   NodeDiagnostic,
 } from '../api/generated'
+import { ADMIN_PAGE_TITLE, ADMIN_SECTION_TITLE } from '../components/AdminPage'
 
 /** The read-only Overview panels are static: they carry the working surface
  * tier and no hover glow, opacity change, or lift, so a non-clickable panel
@@ -41,12 +42,12 @@ const PANEL = cn(
   'min-w-0 rounded-md border-none p-4 text-foreground',
   SURFACE_CARD_STATIC,
 )
-const PANEL_HEADING = 'flex min-w-0 items-start justify-between gap-3 border-b pb-3'
-const PANEL_TITLE = 'text-sm font-medium'
+const PANEL_HEADING = 'flex min-w-0 items-center justify-between gap-3 border-b pb-3'
+const PANEL_TITLE = ADMIN_SECTION_TITLE
 const EYEBROW = 'text-xs font-medium tracking-wider text-muted-foreground uppercase'
 const PANEL_STATE = 'flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground'
 const TABLE_HEAD = 'whitespace-nowrap border-b px-3 py-2 text-left text-xs font-medium text-muted-foreground'
-const TABLE_CELL = 'min-w-0 border-b border-border/60 px-3 py-3 align-top text-sm [overflow-wrap:anywhere]'
+const TABLE_CELL = 'min-w-0 border-b border-border/60 px-3 py-2.5 align-top text-sm [overflow-wrap:anywhere] max-md:in-[table[data-stack]]:px-0'
 const MUTED_SMALL = 'mt-1 block text-xs text-muted-foreground'
 const TEXT_LINK = 'inline-flex min-h-11 min-w-11 items-center font-medium text-primary hover:underline'
 
@@ -107,14 +108,14 @@ function OverviewHeader({
   return (
     <header
       data-slot="overview-header"
-      className="flex min-w-0 flex-col gap-3 border-b pb-4 md:flex-row md:items-end md:justify-between md:gap-x-8"
+      className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2"
     >
       <div className="min-w-0">
-        <h1 className="text-2xl font-semibold break-words">Overview</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Overview</h1>
       </div>
       <div
         data-slot="header-status"
-        className="flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground md:justify-end md:text-right"
+        className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground md:justify-end md:text-right"
       >
         {snapshot ? (
           <>
@@ -235,7 +236,7 @@ function SummaryCards({ summary }: { summary: AdminOverview['summary'] }) {
           data-slot="summary-card"
           to={card.href}
           className={cn(
-            'flex min-h-[7.5rem] min-w-0 flex-col justify-between gap-2 rounded-md p-3 text-foreground no-underline transition-all',
+            'flex min-h-[6.5rem] min-w-0 flex-col justify-between gap-2 rounded-md p-3 text-foreground no-underline transition-all',
             SURFACE_CARD,
             'hover:-translate-y-0.5 hover:shadow-[0_0_20px,0_0_0_1px] hover:shadow-emerald-600/10',
           )}
@@ -306,11 +307,17 @@ function AttentionPanel({ query }: { query: OverviewQuery }) {
       setPending(null)
     }
   }
+  // With nothing to act on, the queue collapses to one line; errors, refresh
+  // failures and acknowledgment feedback still render below it in full.
+  const quiet = Boolean(data && data.attention.length === 0)
   return (
-    <article data-slot="overview-panel" className={PANEL}>
-      <div className={PANEL_HEADING}>
-        <div className="min-w-0">
+    <article data-slot="overview-panel" className={cn(PANEL, quiet && 'py-3')}>
+      <div className={cn(PANEL_HEADING, quiet && 'border-b-0 pb-0')}>
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5">
           <h2 className={PANEL_TITLE}>Attention queue</h2>
+          {quiet && (
+            <p className="text-sm text-muted-foreground">No attention items. Nothing needs an Owner right now.</p>
+          )}
         </div>
         {data && <Badge variant="secondary" className="tabular-nums">{data.attention.length} items</Badge>}
       </div>
@@ -345,9 +352,6 @@ function AttentionPanel({ query }: { query: OverviewQuery }) {
             {feedback.message}
           </AlertDescription>
         </Alert>
-      )}
-      {data && data.attention.length === 0 && (
-        <p className="mt-3 text-sm text-muted-foreground">No attention items. Nothing needs an Owner right now.</p>
       )}
       {data && data.attention.length > 0 && (
         <>
@@ -687,7 +691,7 @@ function NodeRows({
               ref={toggleRef}
               variant="link"
               size="sm"
-              className="h-auto min-w-11 max-w-full justify-start px-0 text-left font-semibold whitespace-normal md:max-w-[14rem]"
+              className="h-auto min-w-11 max-w-full justify-start px-0 text-left font-medium whitespace-normal md:max-w-[14rem]"
               aria-expanded={expanded}
               aria-controls={detailId}
               onClick={onToggle}
@@ -901,12 +905,7 @@ function AgentPanel({ query, nodeQuery }: { query: DiagnosticsQuery; nodeQuery: 
   return (
     <article data-slot="overview-panel" className={PANEL}>
       <div className={PANEL_HEADING}>
-        <div className="min-w-0">
-          <h2 className={PANEL_TITLE}>Agent inventory</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Compact Server-owned reporting, host, evidence, and retained Node summaries.
-          </p>
-        </div>
+        <h2 className={PANEL_TITLE}>Agent inventory</h2>
         {agents.length > 0 && <Badge variant="secondary" className="tabular-nums">{agents.length}</Badge>}
       </div>
       {!query.data && query.isPending && (

@@ -38,6 +38,7 @@ import {
   shortId,
   type FormFeedback,
 } from './operationsShared'
+import { ADMIN_PAGE_TITLE, ADMIN_SECTION_TITLE } from '../components/AdminPage'
 
 /**
  * PAGE-ADMIN-OPERATIONS / PAGE-ADMIN-OPERATION-DETAIL (webui.md §15.11,
@@ -348,7 +349,7 @@ export default function AdminOperations() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-3">
-        <h1 className="text-xl font-semibold tracking-tight">Operations</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Operations</h1>
         <p className="text-sm text-muted-foreground">
           Every server-side task is recorded here: retention runs, backup verification, restores, and Doctor
           runs. The Server owns the ledger, so a task stays Queued or Running until its worker records the
@@ -648,7 +649,7 @@ export function AdminOperationDetailPage() {
   if (notFound) {
     return (
       <section className="w-full min-w-0 space-y-3">
-        <h1 className="text-xl font-semibold tracking-tight">Operation not found</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Operation not found</h1>
         <p className="text-sm text-muted-foreground">
           The Server has no Operation with this id. It may never have existed, or the ledger may have been
           trimmed by retention.
@@ -663,7 +664,7 @@ export function AdminOperationDetailPage() {
   if (!operation.data) {
     return (
       <section className="w-full min-w-0 space-y-3">
-        <h1 className="text-xl font-semibold tracking-tight">Operation detail</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Operation detail</h1>
         <p role={operation.isError ? 'alert' : 'status'} className="flex flex-wrap items-center gap-2 text-sm">
           <StatusBadge status={operation.isError ? 'Error' : 'Starting'} tone={operation.isError ? 'error' : 'neutral'} />
           {/* A pending read has no error to report, so it never borrows the
@@ -687,7 +688,7 @@ export function AdminOperationDetailPage() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-3">
-        <h1 className="text-xl font-semibold tracking-tight">Operation detail</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Operation detail</h1>
         <p className="text-sm text-muted-foreground">
           The recorded task, its progress, and the outcome the Server wrote. This page is read-and-command
           only: it never deletes the task, its history, or anything the task touched.
@@ -752,15 +753,15 @@ export function AdminOperationDetailPage() {
       <CardX size="medium" className={CARD_SURFACE} title="Recorded outcome">
         <div className="space-y-3">
           <div className="space-y-2">
-            <h2 className="text-sm font-medium">Warnings</h2>
+            <h2 className={ADMIN_SECTION_TITLE}>Warnings</h2>
             <IssueList issues={detail.warnings} label="warnings" />
           </div>
           <div className="space-y-2">
-            <h2 className="text-sm font-medium">Errors</h2>
+            <h2 className={ADMIN_SECTION_TITLE}>Errors</h2>
             <IssueList issues={detail.errors} label="errors" />
           </div>
           <div className="space-y-2">
-            <h2 className="text-sm font-medium">Result</h2>
+            <h2 className={ADMIN_SECTION_TITLE}>Result</h2>
             {/* A cancelled cleanup carries its own recorded shape: work already
                 released, work stopped at the checkpoint (issue #211). */}
             <CancellationSummary result={detail.result} />

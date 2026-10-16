@@ -27,6 +27,7 @@ import {
   shortId,
   type FormFeedback,
 } from './operationsShared'
+import { ADMIN_PAGE_TITLE } from '../components/AdminPage'
 
 /**
  * PAGE-ADMIN-DOCTOR (webui.md §15.11, issue #208). Doctor diagnoses and
@@ -119,7 +120,7 @@ export default function AdminDoctor() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-3">
-        <h1 className="text-xl font-semibold tracking-tight">Doctor</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Doctor</h1>
         <p className="text-sm text-muted-foreground">
           Doctor diagnoses the Server and reports what it finds. It never repairs anything, so a failing check
           is information to act on from the page that owns the setting — not a fix this page performs.

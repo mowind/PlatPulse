@@ -15,6 +15,7 @@ import {
   errorMessage,
   shortId,
 } from './notificationShared'
+import { ADMIN_PAGE_TITLE } from '../components/AdminPage'
 
 const EVENT_KINDS = ['all', 'incident', 'test'] as const
 
@@ -73,7 +74,7 @@ export default function AdminNotificationEvents() {
   return (
     <div className="space-y-6">
       <div className="space-y-3">
-        <h1 className="text-xl font-semibold tracking-tight">Notification Events</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Notification Events</h1>
         <p className="text-sm text-muted-foreground">
           Every event the Server recorded, including the suppression decision and the Delivery rows it produced. A
           suppressed delivery is terminal and never retryable.
@@ -235,7 +236,7 @@ export function AdminNotificationEventDetailPage() {
   if (notFound) {
     return (
       <div className="space-y-6">
-        <h1 className="text-xl font-semibold tracking-tight">Notification Event not found</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Notification Event not found</h1>
         <p className="text-sm text-muted-foreground">
           The Server has no notification event with this id. It may have been pruned, or the link is stale.
         </p>
@@ -253,7 +254,7 @@ export function AdminNotificationEventDetailPage() {
   return (
     <div className="space-y-6">
       <div className="space-y-3">
-        <h1 className="text-xl font-semibold tracking-tight">
+        <h1 className={ADMIN_PAGE_TITLE}>
           Notification Event {shortId(eventId)}
         </h1>
         <Link

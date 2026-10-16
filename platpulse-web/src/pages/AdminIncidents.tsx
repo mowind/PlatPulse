@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { ChevronRight, ChevronUp } from 'lucide-react'
 import {
@@ -22,6 +22,8 @@ import type {
   IncidentDetail,
   IncidentListItem,
 } from '../api/generated'
+import { DetailItem, DetailList } from '../components/DetailList'
+import { ADMIN_PAGE_TITLE } from '../components/AdminPage'
 
 /**
  * PAGE-ADMIN-INCIDENTS and PAGE-ADMIN-INCIDENT-DETAIL (parent #202, issue
@@ -148,19 +150,6 @@ function readFilters(search: URLSearchParams): IncidentFilterState {
     to: search.get('to') ?? '',
     before: search.get('before') ?? '',
   }
-}
-
-function DetailList({ children }: { children: ReactNode }) {
-  return <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</dl>
-}
-
-function DetailItem({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-xs font-medium tracking-wider text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 min-w-0 break-words text-sm">{children}</dd>
-    </div>
-  )
 }
 
 /** Server-owned evidence (design §15.4): the JSON is presented unchanged; the
@@ -560,7 +549,7 @@ export default function AdminIncidentsList() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
-        <h1 className="text-lg font-semibold break-words">Incidents</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Incidents</h1>
         <p className="text-sm text-muted-foreground">
           Each row is one Incident occurrence. State, severity, subject, evidence, and the durable
           Owner acknowledgment are Server-owned; acknowledging never resolves an Incident or
@@ -959,7 +948,7 @@ export function AdminIncidentDetailPage() {
     return (
       <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
-          <h1 className="text-lg font-semibold break-words">Incident not found</h1>
+          <h1 className={ADMIN_PAGE_TITLE}>Incident not found</h1>
           <p className="text-sm text-muted-foreground">
             No Incident matches {incidentId}. Incidents are never hand-created, and a recovered
             occurrence keeps its own record.
@@ -979,7 +968,7 @@ export function AdminIncidentDetailPage() {
     return (
       <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
-          <h1 className="text-lg font-semibold break-words">Incident detail</h1>
+          <h1 className={ADMIN_PAGE_TITLE}>Incident detail</h1>
           <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
             <StatusBadge status={query.isError ? 'Error' : 'Starting'} tone={query.isError ? 'error' : 'neutral'} />{' '}
             {query.isError
@@ -1017,7 +1006,7 @@ export function AdminIncidentDetailPage() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
-        <h1 className="text-lg font-semibold break-words">Incident {shortId(incident.incidentId)}</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Incident {shortId(incident.incidentId)}</h1>
         <p className="text-xs text-muted-foreground break-all">{incident.incidentId}</p>
         <p className="text-sm text-muted-foreground">
           One Incident occurrence for {subjectKindLabel(incident.subjectKind)} {incident.subjectKey} on

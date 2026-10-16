@@ -28,6 +28,7 @@ import type {
   RulePreviewSubject,
   RuleStateDto,
 } from '../api/generated'
+import { ADMIN_PAGE_TITLE } from '../components/AdminPage'
 
 /**
  * PAGE-ADMIN-RULES and PAGE-ADMIN-RULE-DETAIL (parent #202, issue #204;
@@ -163,7 +164,7 @@ export default function AdminRulesList() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
-        <h1 className="text-lg font-semibold break-words">Alert Rules</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Alert Rules</h1>
         <p className="text-sm text-muted-foreground">
           The typed Rule catalog. Open a Rule to read its effective inherited configuration and its
           Network/Node overrides, preview a change, or save a typed edit under version safety.
@@ -788,7 +789,7 @@ export function AdminRuleDetailPage() {
     return (
       <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
-          <h1 className="text-lg font-semibold break-words">Alert Rule not found</h1>
+          <h1 className={ADMIN_PAGE_TITLE}>Alert Rule not found</h1>
           <p className="text-sm text-muted-foreground">
             No typed Rule matches {ruleKey}. Rules are the fixed catalog the Server build ships;
             arbitrary DSL is never accepted.
@@ -808,7 +809,7 @@ export function AdminRuleDetailPage() {
     return (
       <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
-          <h1 className="text-lg font-semibold break-words">Alert Rule detail</h1>
+          <h1 className={ADMIN_PAGE_TITLE}>Alert Rule detail</h1>
           <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
             <StatusBadge status={query.isError ? 'Error' : 'Starting'} tone={query.isError ? 'error' : 'neutral'} />{' '}
             {query.isError
@@ -882,7 +883,7 @@ export function AdminRuleDetailPage() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
-        <h1 className="text-lg font-semibold break-words">Alert Rule {rule.ruleKey}</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Alert Rule {rule.ruleKey}</h1>
         <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
           <StatusBadge status={rule.enabled ? 'Enabled' : 'Disabled'} tone={rule.enabled ? 'ok' : 'neutral'} />
           <StatusBadge status={severityLabel(rule.severity)} tone={severityTone(rule.severity)} />

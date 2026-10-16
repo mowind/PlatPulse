@@ -2,19 +2,25 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link, useLocation } from 'react-router'
 import { useAdminAudit, type AuditFilters } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
+import {
+  ADMIN_DETAIL_BODY,
+  ADMIN_DETAIL_ROW,
+  ADMIN_ROW,
+  ADMIN_SECONDARY,
+  ADMIN_TD,
+  ADMIN_TH,
+  AdminPageHeader,
+  AdminPanel,
+  AdminToolbar,
+  AdminToolbarField,
+} from '../components/AdminPage'
 import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
-import { CardX } from '../components/ui/card-x'
-import { DataTooltip } from '../components/ui/data-tooltip'
 import { Empty } from '../components/ui/empty'
 import { Select } from '../components/ui/input'
 import { cn } from '../lib/utils'
-import { SURFACE_CARD_STATIC } from '../lib/surface'
 import type { AuditItem } from '../api/generated'
-
-const TH = 'px-3 py-2 text-left text-xs font-medium text-muted-foreground'
-const TD = 'px-3 py-2 align-top'
 
 /** `#event-13` deep link used by the recorded Operation pages (issue #208). */
 function deepLinkEventId(hash: string): number | null {
@@ -105,111 +111,98 @@ export default function AdminAudit() {
   }
 
   return (
-    <section className="w-full" data-slot="audit-page">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold">Audit log</h1>
-        <p className="text-sm text-muted-foreground">
-          Immutable, redacted record of administrative and security mutations.
-          Events cannot be edited or deleted from the UI.
-        </p>
-      </header>
+    <section className="w-full min-w-0 space-y-4" data-slot="audit-page">
+      <AdminPageHeader
+        title="Audit log"
+        description="Immutable, redacted record of administrative and security mutations."
+        info={{
+          label: 'About redacted Audit details',
+          content: (
+            <>
+              <p>Events are append-only and cannot be edited or deleted from the UI.</p>
+              <p>
+                Detail bodies are the stored redacted after-bodies: ids, instants, and counts only.
+              </p>
+            </>
+          ),
+        }}
+      />
       {error && (
         <p
           role="alert"
-          className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
         >
           {error}
         </p>
       )}
-      <div className="mt-4 grid gap-3 sm:max-w-xl sm:grid-cols-2" data-slot="audit-filters">
-        <div className="flex flex-col gap-1.5">
-          <label
-            htmlFor="audit-event-kind"
-            className="text-xs font-medium tracking-wider text-muted-foreground"
-          >
-            Event kind
-          </label>
-          <Select
-            id="audit-event-kind"
-            value={eventKind}
-            onChange={(event) => {
-              setEventKind(event.target.value)
-              setBefore(undefined)
-              setError(null)
-            }}
-          >
-            <option value="">All kinds</option>
-            {EVENT_KINDS.map((kind) => (
-              <option key={kind} value={kind}>
-                {kind}
-              </option>
-            ))}
-          </Select>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <label
-            htmlFor="audit-target-kind"
-            className="text-xs font-medium tracking-wider text-muted-foreground"
-          >
-            Target
-          </label>
-          <Select
-            id="audit-target-kind"
-            value={targetKind}
-            onChange={(event) => {
-              setTargetKind(event.target.value)
-              setBefore(undefined)
-              setError(null)
-            }}
-          >
-            <option value="">All targets</option>
-            <option value="user">User</option>
-            <option value="agent">Agent</option>
-            <option value="node">Node</option>
-            <option value="network">Network</option>
-            <option value="session">Session</option>
-            <option value="access">Access</option>
-          </Select>
-        </div>
-      </div>
-      <CardX
-        size="medium"
-        bordered={false}
-        segmented
-        data-slot="audit-panel"
-        className={cn('mt-4 rounded-md', SURFACE_CARD_STATIC)}
-        header={
-          <div className="flex w-full items-center gap-2">
-            <h2 className="min-w-0 flex-1 truncate text-sm font-medium">Events</h2>
-            <DataTooltip
-              placement="left"
-              content="Detail bodies are the stored redacted after-bodies: ids, instants, and counts only. Events are append-only and can never be edited or deleted from the UI."
-            >
-              <Button variant="ghost" size="icon-sm" aria-label="About redacted Audit details">
-                ?
-              </Button>
-            </DataTooltip>
-            {query.data && (
-              <Badge variant="secondary" data-slot="audit-count">
-                {items.length}
-              </Badge>
-            )}
-          </div>
+      <AdminPanel
+        slot="audit-panel"
+        flush
+        title="Events"
+        count={
+          query.data ? (
+            <Badge variant="secondary" data-slot="audit-count" className="tabular-nums">
+              {items.length} loaded
+            </Badge>
+          ) : undefined
         }
       >
+        <div className="border-b border-border/60 px-4 py-3">
+          <AdminToolbar label="Audit filters" className="sm:flex-nowrap">
+            <div data-slot="audit-filters" className="contents">
+              <AdminToolbarField label="Event kind" htmlFor="audit-event-kind" size="md">
+                <Select
+                  id="audit-event-kind"
+                  value={eventKind}
+                  onChange={(event) => {
+                    setEventKind(event.target.value)
+                    setBefore(undefined)
+                    setError(null)
+                  }}
+                >
+                  <option value="">All kinds</option>
+                  {EVENT_KINDS.map((kind) => (
+                    <option key={kind} value={kind}>
+                      {kind}
+                    </option>
+                  ))}
+                </Select>
+              </AdminToolbarField>
+              <AdminToolbarField label="Target" htmlFor="audit-target-kind" size="sm">
+                <Select
+                  id="audit-target-kind"
+                  value={targetKind}
+                  onChange={(event) => {
+                    setTargetKind(event.target.value)
+                    setBefore(undefined)
+                    setError(null)
+                  }}
+                >
+                  <option value="">All targets</option>
+                  <option value="user">User</option>
+                  <option value="agent">Agent</option>
+                  <option value="node">Node</option>
+                  <option value="network">Network</option>
+                  <option value="session">Session</option>
+                  <option value="access">Access</option>
+                </Select>
+              </AdminToolbarField>
+            </div>
+          </AdminToolbar>
+        </div>
         {deepLinkMissing && deepLinkId != null && (
-          <p role="status" className="px-3 py-2 text-sm text-muted-foreground">
+          <p role="status" className="border-b border-border/60 px-4 py-2 text-sm text-muted-foreground">
             Event {deepLinkId} is older than the events loaded here. Load older events until it appears; the
             Audit log is append-only and never trimmed by this page.
           </p>
         )}
         {!query.data && query.isPending && (
-          <div role="status" className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+          <div role="status" className="flex items-center gap-2 px-4 py-6 text-sm text-muted-foreground">
             <StatusBadge status="Starting" tone="neutral" /> Loading the Audit log…
           </div>
         )}
         {!query.data && query.isError && (
-          <div role="alert" className="flex flex-wrap items-center gap-2 py-6 text-sm">
+          <div role="alert" className="flex flex-wrap items-center gap-2 px-4 py-6 text-sm">
             <StatusBadge status="Error" tone="error" />
             <span className="text-destructive">
               {query.error instanceof Error ? query.error.message : 'Unable to load the Audit log'}
@@ -221,26 +214,26 @@ export default function AdminAudit() {
         )}
         {query.data && items.length === 0 && <Empty description="No matching Audit events." />}
         {items.length > 0 && (
-          <div data-slot="audit-list" className="overflow-x-auto">
-            <table data-stack data-slot="audit-table" className="w-full min-w-[44rem] text-sm">
+          <div data-slot="audit-list" className="overflow-x-auto max-md:px-3 max-md:pt-3">
+            <table data-stack data-slot="audit-table" className="w-full text-sm md:min-w-[44rem]">
               <caption className="sr-only">
                 Immutable redacted Audit events with time, event, actor, target, and details
               </caption>
               <thead>
-                <tr className="border-b border-border">
-                  <th scope="col" className={TH}>
+                <tr className="border-b border-border/60">
+                  <th scope="col" className={ADMIN_TH}>
                     Time
                   </th>
-                  <th scope="col" className={TH}>
+                  <th scope="col" className={ADMIN_TH}>
                     Event
                   </th>
-                  <th scope="col" className={TH}>
+                  <th scope="col" className={ADMIN_TH}>
                     Actor
                   </th>
-                  <th scope="col" className={TH}>
+                  <th scope="col" className={ADMIN_TH}>
                     Target
                   </th>
-                  <th scope="col" className={TH}>
+                  <th scope="col" className={ADMIN_TH}>
                     Details
                   </th>
                 </tr>
@@ -259,11 +252,13 @@ export default function AdminAudit() {
           </div>
         )}
         {query.data?.nextBefore != null && (
-          <Button variant="ghost" size="sm" className="mt-3" onClick={loadOlder}>
-            Load older events
-          </Button>
+          <div className="px-4 py-2">
+            <Button variant="ghost" size="sm" onClick={loadOlder}>
+              Load older events
+            </Button>
+          </div>
         )}
-      </CardX>
+      </AdminPanel>
     </section>
   )
 }
@@ -317,40 +312,41 @@ function AuditRow({
   }
   return (
     <>
-      <tr id={'event-' + item.auditEventId} className="border-b border-border/60 align-top">
-        <td className={cn(TD, 'whitespace-nowrap')} data-label="Time">
+      <tr id={'event-' + item.auditEventId} className={ADMIN_ROW}>
+        <td className={cn(ADMIN_TD, 'tabular-nums md:whitespace-nowrap')} data-label="Time">
           <time dateTime={item.createdAt}>{formatObservedAt(item.createdAt)}</time>
         </td>
-        <th scope="row" className={cn(TD, 'text-left font-medium')} data-label="Event">
+        <th scope="row" className={cn(ADMIN_TD, 'text-left font-normal')} data-label="Event">
           <Badge variant="secondary" className="font-mono">
             {item.eventKind}
           </Badge>
-          <small className="mt-0.5 block text-[11px] text-muted-foreground">
+          <small className={cn('mt-0.5 block tabular-nums', ADMIN_SECONDARY)}>
             event #{item.auditEventId}
           </small>
         </th>
-        <td className={TD} data-label="Actor">
+        <td className={ADMIN_TD} data-label="Actor">
           {item.actorUsername ?? 'local-cli'}
         </td>
-        <td className={TD} data-label="Target">
+        <td className={ADMIN_TD} data-label="Target">
           {target ? (
             <Link
               to={target.to}
-              className="inline-flex min-h-11 min-w-11 max-w-full items-center break-words"
+              className="-my-2.5 inline-flex min-h-11 min-w-11 max-w-full items-center underline-offset-4 [overflow-wrap:anywhere] hover:underline"
             >
               {target.label}
             </Link>
           ) : (
             item.targetId
           )}
-          <small className="mt-0.5 block text-[11px] text-muted-foreground">
+          <small className={cn('block', ADMIN_SECONDARY)}>
             {item.targetKind}
           </small>
         </td>
-        <td className={TD} data-label="Details">
+        <td className={ADMIN_TD} data-label="Details">
           <Button
             variant="ghost"
             size="sm"
+            className="-my-1.5 -ml-3 max-md:ml-0"
             data-slot="audit-details-toggle"
             onClick={onToggle}
             onKeyDown={collapseOnEscape}
@@ -362,11 +358,11 @@ function AuditRow({
         </td>
       </tr>
       {expanded && (
-        <tr data-slot="audit-detail-row" className="border-b border-border/60">
+        <tr data-slot="audit-detail-row" className={ADMIN_DETAIL_ROW}>
           <td colSpan={5} id={detailsId} className="p-0" onKeyDown={collapseOnEscape}>
             <div
               data-slot="audit-details"
-              className="p-3"
+              className={ADMIN_DETAIL_BODY}
               role="region"
               aria-label={'Redacted details for Audit event ' + item.auditEventId}
             >
@@ -395,7 +391,7 @@ function RedactedDetails({ details }: { details: unknown }) {
     <dl className="grid gap-1">
       {Object.entries(details as Record<string, unknown>).map(([key, value]) => (
         <div key={key} className="grid gap-0.5 sm:grid-cols-[minmax(8rem,auto)_minmax(0,1fr)] sm:gap-2">
-          <dt className="text-xs font-medium tracking-wider text-muted-foreground [overflow-wrap:anywhere]">
+          <dt className="text-xs font-medium text-muted-foreground [overflow-wrap:anywhere]">
             {key}
           </dt>
           <dd className="min-w-0 text-sm [overflow-wrap:anywhere]">

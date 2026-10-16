@@ -15,6 +15,7 @@ import { Empty } from '../components/ui/empty'
 import { cn } from '../lib/utils'
 import { SURFACE_CARD_STATIC } from '../lib/surface'
 import type { SessionItem } from '../api/generated'
+import { ADMIN_PAGE_TITLE } from '../components/AdminPage'
 
 const TH =
   'px-3 py-2 text-left text-xs font-medium text-muted-foreground'
@@ -85,7 +86,7 @@ export default function AdminSessions() {
   return (
     <section className="w-full" data-slot="sessions-page">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold">Sessions</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Sessions</h1>
         <p className="text-sm text-muted-foreground">
           Coarse Session metadata only: creation, last activity, expiry, and a
           coarse client hint. Tokens, full User-Agents, and raw IPs are never

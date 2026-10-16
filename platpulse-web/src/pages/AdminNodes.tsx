@@ -6,7 +6,6 @@ import {
   useState,
   type FormEvent,
   type KeyboardEvent,
-  type ReactNode,
 } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import {
@@ -42,7 +41,7 @@ import { Input, Select } from '../components/ui/input'
 import { cn } from '../lib/utils'
 import { stateHistoryComponent, type StateHistoryComponent } from '../stateHistory'
 import { validatorIdentityNotice, validatorKeyLabel } from '../validators'
-import { SURFACE_CARD_STATIC, SURFACE_TOOLBAR } from '../lib/surface'
+import { SURFACE_CARD_STATIC } from '../lib/surface'
 import {
   HOST_METRIC_SERIES,
   NODE_METRIC_SERIES,
@@ -61,6 +60,21 @@ import type {
   AdminNodeListItem,
   NodePurgeResponse,
 } from '../api/generated'
+import { DetailItem, DetailList } from '../components/DetailList'
+import {
+  ADMIN_DETAIL_BODY,
+  ADMIN_DETAIL_ROW,
+  ADMIN_PAGE_TITLE,
+  ADMIN_ROW,
+  ADMIN_SECONDARY,
+  ADMIN_SECTION_TITLE,
+  ADMIN_TD,
+  ADMIN_TH,
+  AdminPageHeader,
+  AdminPanel,
+  AdminToolbar,
+  AdminToolbarField,
+} from '../components/AdminPage'
 
 /**
  * PAGE-ADMIN-NODES and PAGE-ADMIN-NODE-DETAIL (design §4.3, §8.2; webui.md
@@ -94,20 +108,6 @@ function readFilters(search: URLSearchParams): NodeFilters {
     network: search.get('network') ?? 'all',
     health: search.get('health') ?? 'all',
   }
-}
-
-/** Emerald detail grid: label above its value, stacked on narrow viewports. */
-function DetailList({ children }: { children: ReactNode }) {
-  return <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</dl>
-}
-
-function DetailItem({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-xs font-medium tracking-wider text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 min-w-0 break-words text-sm">{children}</dd>
-    </div>
-  )
 }
 
 /** PAGE-ADMIN-NODES: per-Node inventory with filters, sorting, freshness,
@@ -181,39 +181,19 @@ export default function AdminNodesList() {
 
   return (
     <section className="w-full min-w-0 space-y-4">
-      <div className="space-y-1">
-        <h1 className="text-lg font-semibold break-words">Nodes</h1>
-        <p className="text-sm text-muted-foreground">
-          Each row is one Node. Health, freshness, identity, visibility, and lifecycle are
-          separate Server-owned dimensions; lifecycle follows the latest Agent Inventory.
-        </p>
-      </div>
-      <NodeFiltersBar
-        filters={filters}
-        networks={networks}
-        onChange={setFilter}
-        sort={sort}
-        onSort={setSort}
+      <AdminPageHeader
+        title="Nodes"
+        description="Each row is one Node; every status column is a separate Server-owned dimension."
+        info={{
+          label: 'About Node dimensions',
+          content: (
+            <p>
+              Health, freshness, identity, visibility, and lifecycle are separate Server-owned
+              dimensions; lifecycle follows the latest Agent Inventory.
+            </p>
+          ),
+        }}
       />
-      {!query.data && query.isPending && (
-        <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
-          <StatusBadge status="Starting" tone="neutral" /> Loading the Node inventory…
-        </p>
-      )}
-      {!query.data && query.isError && (
-        <div
-          className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
-          role="alert"
-        >
-          <StatusBadge status="Error" tone="error" />{' '}
-          <span className="min-w-0 break-words">
-            {query.error instanceof Error ? query.error.message : 'Unable to load Nodes'}
-          </span>
-          <Button variant="link" size="sm" onClick={() => void query.refetch()}>
-            Try again
-          </Button>
-        </div>
-      )}
       {query.data && query.isRefetchError && (
         <div
           className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
@@ -223,64 +203,97 @@ export default function AdminNodesList() {
           successful Node values.
         </div>
       )}
-      {query.data && nodes.length === 0 && (
-        <CardX size="medium" className={CARD_SURFACE}>
-          <Empty description="No Nodes match these filters." />
-        </CardX>
-      )}
-      {query.data && nodes.length > 0 && (
-        <CardX
-          size="medium"
-          className={CARD_SURFACE}
-          contentClassName="p-0"
-          segmented
-          title="Node inventory"
-        >
-          <div className="overflow-x-auto">
+      <AdminPanel
+        slot="node-inventory"
+        flush
+        title="Node inventory"
+        count={
+          query.data ? (
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {nodes.length === (query.data ?? []).length
+                ? nodes.length + ' Node' + (nodes.length === 1 ? '' : 's')
+                : nodes.length + ' of ' + (query.data ?? []).length + ' Nodes'}
+            </span>
+          ) : undefined
+        }
+      >
+        <div className="border-b border-border/60 px-4 py-3">
+          <NodeFiltersBar
+            filters={filters}
+            networks={networks}
+            onChange={setFilter}
+            sort={sort}
+            onSort={setSort}
+          />
+        </div>
+        {!query.data && query.isPending && (
+          <p className="flex flex-wrap items-center gap-2 px-4 py-6 text-sm text-muted-foreground" role="status">
+            <StatusBadge status="Starting" tone="neutral" /> Loading the Node inventory…
+          </p>
+        )}
+        {!query.data && query.isError && (
+          <div className="px-4 py-4">
+            <div
+              className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
+              role="alert"
+            >
+              <StatusBadge status="Error" tone="error" />{' '}
+              <span className="min-w-0 break-words">
+                {query.error instanceof Error ? query.error.message : 'Unable to load Nodes'}
+              </span>
+              <Button variant="link" size="sm" onClick={() => void query.refetch()}>
+                Try again
+              </Button>
+            </div>
+          </div>
+        )}
+        {query.data && nodes.length === 0 && <Empty description="No Nodes match these filters." />}
+        {query.data && nodes.length > 0 && (
+          <div className="overflow-x-auto max-md:px-3 max-md:pt-3">
             <table data-stack data-slot="node-table" className="w-full text-sm">
               <caption className="sr-only">
                 Node inventory: identity, health, freshness, visibility, and lifecycle
               </caption>
               <thead>
-                <tr className="border-b">
+                <tr className="border-b border-border/60">
                   <th
                     scope="col"
-                    className="px-3 py-2 text-left text-xs font-medium text-muted-foreground"
+                    className={ADMIN_TH}
                     aria-sort={sort === 'name' ? 'ascending' : 'none'}
                   >
                     <SortButton label="Node" column="name" sort={sort} onSort={setSort} />
                   </th>
                   <th
                     scope="col"
-                    className="px-3 py-2 text-left text-xs font-medium text-muted-foreground"
+                    className={ADMIN_TH}
                     aria-sort={sort === 'network' ? 'ascending' : 'none'}
                   >
                     <SortButton label="Network" column="network" sort={sort} onSort={setSort} />
                   </th>
                   <th
                     scope="col"
-                    className="px-3 py-2 text-left text-xs font-medium text-muted-foreground"
+                    className={ADMIN_TH}
                     aria-sort={sort === 'health' ? 'ascending' : 'none'}
                   >
                     <SortButton label="Health" column="health" sort={sort} onSort={setSort} />
                   </th>
                   <th
                     scope="col"
-                    className="px-3 py-2 text-left text-xs font-medium text-muted-foreground"
+                    className={ADMIN_TH}
                     aria-sort={sort === 'freshness' ? 'ascending' : 'none'}
                   >
                     <SortButton label="Freshness" column="freshness" sort={sort} onSort={setSort} />
                   </th>
-                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                  <th scope="col" className={ADMIN_TH}>
                     Identity
                   </th>
-                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                  <th scope="col" className={ADMIN_TH}>
                     Visibility
                   </th>
-                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                  <th scope="col" className={ADMIN_TH}>
                     Lifecycle
                   </th>
-                  <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                  <th scope="col" className={ADMIN_TH}>
                     Head / Sync
                   </th>
                 </tr>
@@ -297,8 +310,8 @@ export default function AdminNodesList() {
               </tbody>
             </table>
           </div>
-        </CardX>
-      )}
+        )}
+      </AdminPanel>
     </section>
   )
 }
@@ -319,7 +332,7 @@ function SortButton({
     <Button
       variant="ghost"
       size="xs"
-      className="justify-start gap-1 px-0 text-xs font-medium text-muted-foreground hover:bg-transparent"
+      className="-my-2.5 justify-start gap-1 px-0 text-xs font-medium text-muted-foreground hover:bg-transparent aria-pressed:text-foreground"
       aria-pressed={active}
       onClick={() => onSort(column)}
     >
@@ -342,18 +355,9 @@ function NodeFiltersBar({
   onSort: (column: 'name' | 'network' | 'health' | 'freshness') => void
 }) {
   return (
-    <div
-      className={cn(
-        'flex flex-wrap items-end gap-3 rounded-md border-none p-3',
-        SURFACE_TOOLBAR,
-      )}
-      role="group"
-      aria-label="Node filters"
-    >
-      <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
-        Sort by
+    <AdminToolbar label="Node filters">
+      <AdminToolbarField label="Sort by">
         <Select
-          className="w-auto min-w-36"
           value={sort}
           onChange={(event) => onSort(event.target.value as 'name' | 'network' | 'health' | 'freshness')}
         >
@@ -362,14 +366,9 @@ function NodeFiltersBar({
           <option value="network">Network</option>
           <option value="freshness">Freshness</option>
         </Select>
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
-        Network
-        <Select
-          className="w-auto min-w-36"
-          value={filters.network}
-          onChange={(event) => onChange('network', event.target.value)}
-        >
+      </AdminToolbarField>
+      <AdminToolbarField label="Network" size="lg">
+        <Select value={filters.network} onChange={(event) => onChange('network', event.target.value)}>
           <option value="all">All</option>
           {networks.map((network) => (
             <option key={network} value={network}>
@@ -377,45 +376,30 @@ function NodeFiltersBar({
             </option>
           ))}
         </Select>
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
-        Visibility
-        <Select
-          className="w-auto min-w-36"
-          value={filters.visibility}
-          onChange={(event) => onChange('visibility', event.target.value)}
-        >
+      </AdminToolbarField>
+      <AdminToolbarField label="Visibility">
+        <Select value={filters.visibility} onChange={(event) => onChange('visibility', event.target.value)}>
           <option value="all">All</option>
           <option value="public">Public</option>
           <option value="private">Private</option>
         </Select>
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
-        Lifecycle
-        <Select
-          className="w-auto min-w-36"
-          value={filters.lifecycle}
-          onChange={(event) => onChange('lifecycle', event.target.value)}
-        >
+      </AdminToolbarField>
+      <AdminToolbarField label="Lifecycle">
+        <Select value={filters.lifecycle} onChange={(event) => onChange('lifecycle', event.target.value)}>
           <option value="all">All</option>
           <option value="active">Active</option>
           <option value="retired">Retired</option>
         </Select>
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-medium tracking-wider text-muted-foreground">
-        Health
-        <Select
-          className="w-auto min-w-36"
-          value={filters.health}
-          onChange={(event) => onChange('health', event.target.value)}
-        >
+      </AdminToolbarField>
+      <AdminToolbarField label="Health">
+        <Select value={filters.health} onChange={(event) => onChange('health', event.target.value)}>
           <option value="all">All</option>
           <option value="healthy">Healthy</option>
           <option value="unhealthy">Unhealthy</option>
           <option value="unknown">Unknown</option>
         </Select>
-      </label>
-    </div>
+      </AdminToolbarField>
+    </AdminToolbar>
   )
 }
 
@@ -438,81 +422,87 @@ function NodeListRow({
   }
   return (
     <>
-      <tr className="border-b border-border/60 align-top">
-        <th scope="row" data-label="Node" className="min-w-0 px-3 py-3 text-left">
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            className="align-middle"
-            aria-label={(expanded ? 'Collapse ' : 'Expand ') + (node.display_name ?? node.node_id)}
-            aria-expanded={expanded}
-            aria-controls={detailId}
-            onClick={onToggle}
-            onKeyDown={collapseOnEscape}
-          >
-            <ChevronRight size={16} aria-hidden="true" className={expanded ? "rotate-90" : ""} />
-          </Button>{' '}
-          <Link
-            className="inline-flex min-h-11 min-w-11 items-center break-all font-medium underline-offset-4 hover:underline"
-            to={'/admin/nodes/' + node.node_id}
-          >
-            {node.display_name ?? node.node_id}
-          </Link>
-          <small className="mt-0.5 block text-[11px] text-muted-foreground break-all" title={node.node_id}>
-            Node ID · {shortId(node.node_id)} · {node.rpc_endpoint}
-          </small>
+      <tr className={ADMIN_ROW}>
+        <th scope="row" data-label="Node" className={cn(ADMIN_TD, 'min-w-0 text-left font-normal')}>
+          <div className="flex min-w-0 items-start gap-1">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="-ml-2 shrink-0"
+              aria-label={(expanded ? 'Collapse ' : 'Expand ') + (node.display_name ?? node.node_id)}
+              aria-expanded={expanded}
+              aria-controls={detailId}
+              onClick={onToggle}
+              onKeyDown={collapseOnEscape}
+            >
+              <ChevronRight size={16} aria-hidden="true" className={expanded ? 'rotate-90' : ''} />
+            </Button>
+            <div className="min-w-0">
+              <Link
+                className="flex min-h-11 w-fit min-w-11 max-w-full items-center py-1 leading-snug break-words font-medium underline-offset-4 hover:underline"
+                to={'/admin/nodes/' + node.node_id}
+              >
+                {node.display_name ?? node.node_id}
+              </Link>
+              <small className={cn('-mt-1 block [overflow-wrap:anywhere]', ADMIN_SECONDARY)}>
+                <span className="font-mono">{shortId(node.node_id)}</span> · {node.rpc_endpoint}
+              </small>
+            </div>
+          </div>
         </th>
-        <td data-label="Network" className="min-w-0 px-3 py-3">
+        <td data-label="Network" className={cn(ADMIN_TD, 'min-w-0')}>
           <Link
-            className="inline-flex min-h-11 min-w-11 items-center break-all font-medium underline-offset-4 hover:underline"
+            className="-my-2.5 inline-flex min-h-11 min-w-11 items-center break-words underline-offset-4 hover:underline"
             to={'/admin/networks/' + node.network_key}
           >
             {node.network_display_name}
           </Link>
         </td>
-        <td data-label="Health" className="min-w-0 px-3 py-3">
+        <td data-label="Health" className={cn(ADMIN_TD, 'min-w-0')}>
           <StatusBadge status={node.health} tone={health} />
-          <small className="mt-0.5 block text-[11px] text-muted-foreground break-words">
+          <small className={cn('mt-1 block break-words', ADMIN_SECONDARY)}>
             {node.health_reason}
           </small>
         </td>
-        <td data-label="Freshness" className="min-w-0 px-3 py-3">
+        <td data-label="Freshness" className={cn(ADMIN_TD, 'min-w-0')}>
           <StatusBadge status={freshnessLabel(node.freshness)} tone={freshness} />
-          <small className="mt-0.5 block text-[11px] text-muted-foreground">
+          <small className={cn('mt-1 block', ADMIN_SECONDARY)}>
             {node.freshness === 'current' ? 'Reporting now' : 'Check age on detail'}
           </small>
         </td>
-        <td data-label="Identity" className="min-w-0 px-3 py-3">
+        <td data-label="Identity" className={cn(ADMIN_TD, 'min-w-0')}>
           <StatusBadge status={identity.label} tone={identity.tone} />
           {node.identity.mismatched_fields.length > 0 && (
-            <small className="mt-0.5 block text-[11px] text-muted-foreground">
+            <small className={cn('mt-1 block break-words', ADMIN_SECONDARY)}>
               {node.identity.mismatched_fields.join(', ')}
             </small>
           )}
         </td>
-        <td data-label="Visibility" className="min-w-0 px-3 py-3">
+        <td data-label="Visibility" className={cn(ADMIN_TD, 'min-w-0')}>
           <StatusBadge status={visibility.label} tone={visibility.tone} />
         </td>
-        <td data-label="Lifecycle" className="min-w-0 px-3 py-3">
-          <span className="text-sm">{lifecycleLabel(node.lifecycle).label}</span>
-          <small className="mt-0.5 block text-[11px] text-muted-foreground">
+        <td data-label="Lifecycle" className={cn(ADMIN_TD, 'min-w-0')}>
+          <span>{lifecycleLabel(node.lifecycle).label}</span>
+          <small className={cn('mt-0.5 block tabular-nums', ADMIN_SECONDARY)}>
             rev {node.inventory_revision}
           </small>
         </td>
-        <td data-label="Head / Sync" className="min-w-0 px-3 py-3">
-          <span className="font-bold leading-none tracking-tight">{node.current_head ?? 'Unknown'}</span>
-          <small className="mt-0.5 block text-[11px] text-muted-foreground">{node.resync_state}</small>
+        <td data-label="Head / Sync" className={cn(ADMIN_TD, 'min-w-0')}>
+          <span className="font-medium tabular-nums">{node.current_head ?? 'Unknown'}</span>
+          <small className={cn('mt-0.5 block', ADMIN_SECONDARY)}>{node.resync_state}</small>
         </td>
       </tr>
       {expanded && (
-        <tr data-slot="detail-row" className="border-b border-border/60 bg-muted/30">
+        <tr data-slot="detail-row" className={ADMIN_DETAIL_ROW}>
           <td colSpan={8} id={detailId} onKeyDown={collapseOnEscape} className="p-0">
-            <div className="space-y-3 p-3">
-              <Button variant="link" size="sm" onClick={onToggle}>
-                Collapse details <ChevronUp size={16} aria-hidden="true" />
-              </Button>
+            <div className={ADMIN_DETAIL_BODY}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className={ADMIN_SECTION_TITLE}>Node details</h3>
+                <Button variant="link" size="sm" className="-my-1.5" onClick={onToggle}>
+                  Collapse details <ChevronUp size={16} aria-hidden="true" />
+                </Button>
+              </div>
               <DetailList>
-                <DetailItem label="Lifecycle guidance">{node.lifecycle_guidance}</DetailItem>
                 <DetailItem label="Identity disposition">
                   {identity.label}
                   {node.identity.mismatched_fields.length > 0
@@ -521,6 +511,10 @@ function NodeListRow({
                 </DetailItem>
                 <DetailItem label="Health reason">{node.health_reason}</DetailItem>
                 <DetailItem label="Resync state">{node.resync_state}</DetailItem>
+                <DetailItem label="Node ID">
+                  <code className="font-mono text-xs">{node.node_id}</code>
+                </DetailItem>
+                <DetailItem label="Lifecycle guidance" wide>{node.lifecycle_guidance}</DetailItem>
               </DetailList>
             </div>
           </td>
@@ -548,7 +542,7 @@ export function AdminNodeDetail() {
     return (
       <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
-          <h1 className="text-lg font-semibold">Node permanently deleted</h1>
+          <h1 className={ADMIN_PAGE_TITLE}>Node permanently deleted</h1>
           <p className="text-sm text-muted-foreground">
             {purged.node_id} was permanently deleted at {formatObservedAt(purged.deleted_at)}.{' '}
             {purged.removed.total_owned_rows} Node-owned rows were removed. The same Node ID
@@ -578,7 +572,7 @@ export function AdminNodeDetail() {
     return (
       <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
-          <h1 className="text-lg font-semibold">Node unavailable</h1>
+          <h1 className={ADMIN_PAGE_TITLE}>Node unavailable</h1>
           <p className="text-sm text-muted-foreground">This Node is no longer available.</p>
         </div>
       </section>
@@ -587,7 +581,7 @@ export function AdminNodeDetail() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
-        <h1 className="text-lg font-semibold break-words">
+        <h1 className={ADMIN_PAGE_TITLE}>
           {query.data?.display_name ?? shortId(nodeId)}
           <span className="mt-0.5 block text-xs font-medium text-muted-foreground break-all">
             {nodeId}
@@ -704,7 +698,7 @@ function MetadataPanel({
     <CardX
       size="medium"
       className={CARD_SURFACE}
-      header={<h2 className="text-lg font-semibold">Server-owned metadata</h2>}
+      header={<h2 className={ADMIN_SECTION_TITLE}>Server-owned metadata</h2>}
     >
       <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="min-w-0">
@@ -816,7 +810,7 @@ function LifecyclePanel({ node }: { node: AdminNodeDetailDto }) {
       className={CARD_SURFACE}
       header={
         <>
-          <h2 className="text-lg font-semibold">Node Inventory &amp; lifecycle</h2>
+          <h2 className={ADMIN_SECTION_TITLE}>Node Inventory &amp; lifecycle</h2>
           <StatusBadge status={lifecycle.label} tone={lifecycle.tone} />
         </>
       }
@@ -849,7 +843,7 @@ function HealthPanel({ node }: { node: AdminNodeDetailDto }) {
       className={CARD_SURFACE}
       header={
         <>
-          <h2 className="text-lg font-semibold">Health and freshness</h2>
+          <h2 className={ADMIN_SECTION_TITLE}>Health and freshness</h2>
           <StatusBadge status={node.health} tone={healthTone(node.health)} />
         </>
       }
@@ -1062,7 +1056,7 @@ function IdentityPanel({ node }: { node: AdminNodeDetailDto }) {
       className={CARD_SURFACE}
       header={
         <>
-          <h2 className="text-lg font-semibold">Network identity</h2>
+          <h2 className={ADMIN_SECTION_TITLE}>Network identity</h2>
           <StatusBadge status={identity.label} tone={identity.tone} />
         </>
       }
@@ -1201,7 +1195,7 @@ function PurgePanel({
     <CardX
       size="medium"
       className={CARD_SURFACE}
-      header={<h2 className="text-lg font-semibold">Permanent deletion</h2>}
+      header={<h2 className={ADMIN_SECTION_TITLE}>Permanent deletion</h2>}
     >
       <p className="text-sm text-muted-foreground">
         Permanently delete this Node to remove it from Home and current monitoring and to
@@ -1331,7 +1325,7 @@ function ValidatorIdentityPanel({ node }: { node: AdminNodeDetailDto }) {
       className={CARD_SURFACE}
       header={
         <>
-          <h2 className="text-lg font-semibold">Validator identity</h2>
+          <h2 className={ADMIN_SECTION_TITLE}>Validator identity</h2>
           <StatusBadge status={notice.label} tone={notice.tone} />
         </>
       }
@@ -1399,7 +1393,7 @@ function RpcDiagnosticsPanel({ node }: { node: AdminNodeDetailDto }) {
       className={CARD_SURFACE}
       header={
         <>
-          <h2 className="text-lg font-semibold">RPC diagnostics</h2>
+          <h2 className={ADMIN_SECTION_TITLE}>RPC diagnostics</h2>
           <StatusBadge status={state} tone={tone} />
         </>
       }

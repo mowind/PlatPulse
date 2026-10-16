@@ -53,6 +53,7 @@ import type {
   AdminValidatorTrendPoint,
   AdminValidatorTrendResponse,
 } from '../api/generated'
+import { ADMIN_SECTION_TITLE } from '../components/AdminPage'
 
 const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD_STATIC)
 
@@ -322,7 +323,7 @@ export function ValidatorTrendPanel({ validatorId }: { validatorId: string }) {
         className={CARD_SURFACE}
         header={
           <>
-            <h2 className="text-lg font-semibold">Daily trend</h2>
+            <h2 className={ADMIN_SECTION_TITLE}>Daily trend</h2>
             <StatusBadge status={coverage.label} tone={coverage.tone} />
           </>
         }

@@ -36,22 +36,10 @@ import {
   metricTierNotice,
   type MetricDefinition,
 } from '../metricHistory'
+import { DetailItem, DetailList } from '../components/DetailList'
+import { ADMIN_SECTION_TITLE } from '../components/AdminPage'
 
 const CARD_SURFACE = cn('rounded-md border-none', SURFACE_CARD_STATIC)
-
-/** Emerald detail grid: label above its value, stacked on narrow viewports. */
-function DetailList({ children }: { children: ReactNode }) {
-  return <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</dl>
-}
-
-function DetailItem({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-xs font-medium tracking-wider text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 min-w-0 break-words text-sm">{children}</dd>
-    </div>
-  )
-}
 
 /** The window an Operator is looking at, and the two ways it moves. */
 export type MetricHistoryWindow = {
@@ -220,7 +208,7 @@ export function MetricHistoryBody({
         className={CARD_SURFACE}
         header={
           <>
-            <h2 className="text-lg font-semibold">{title}</h2>
+            <h2 className={ADMIN_SECTION_TITLE}>{title}</h2>
             <StatusBadge status={state} tone={stateTone} />
           </>
         }

@@ -16,6 +16,7 @@ import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
 import { cn } from '../lib/utils'
 import { SURFACE_CARD_STATIC, SURFACE_TOOLBAR } from '../lib/surface'
 import type { MaintenanceDto } from '../api/generated'
+import { ADMIN_PAGE_TITLE } from '../components/AdminPage'
 
 /**
  * PAGE-ADMIN-MAINTENANCE (issue #205; webui.md §15.8). Owners list every
@@ -256,7 +257,7 @@ export default function AdminMaintenanceList() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-1">
-        <h1 ref={headingRef} tabIndex={-1} className="text-lg font-semibold break-words">Maintenance</h1>
+        <h1 ref={headingRef} tabIndex={-1} className={ADMIN_PAGE_TITLE}>Maintenance</h1>
         <p className="text-sm text-muted-foreground">
           Each row is one time-bounded Maintenance Window with the Server-owned status and the
           recorded authorship. Creating or cancelling one is an audited Owner action.

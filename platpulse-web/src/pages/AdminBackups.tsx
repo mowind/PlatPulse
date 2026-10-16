@@ -41,6 +41,8 @@ import {
   shortId,
   type FormFeedback,
 } from './operationsShared'
+import { ADMIN_PAGE_TITLE } from '../components/AdminPage'
+import { cn } from '../lib/utils'
 
 /**
  * PAGE-ADMIN-BACKUPS / PAGE-ADMIN-BACKUP-DETAIL (webui.md §15.12, issue #209).
@@ -62,7 +64,7 @@ export default function AdminBackupsList() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-3">
-        <h1 className="text-xl font-semibold tracking-tight">Backups</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Backups</h1>
         <p className="text-sm text-muted-foreground">
           Every backup artifact the Server has recorded, with the manifest metadata and verification state it
           wrote. Backups are created offline; nothing on this page creates, restores, or deletes one.
@@ -219,7 +221,7 @@ export function AdminBackupDetailPage() {
   if (notFound) {
     return (
       <section className="w-full min-w-0 space-y-3">
-        <h1 className="text-xl font-semibold tracking-tight">Backup artifact not found</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Backup artifact not found</h1>
         <p className="text-sm text-muted-foreground">
           The Server has no recorded artifact with this id. Artifacts are recorded when an offline backup run
           writes one into the configured backup directory, and this page never creates one.
@@ -234,7 +236,7 @@ export function AdminBackupDetailPage() {
   if (!backup.data) {
     return (
       <section className="w-full min-w-0 space-y-3">
-        <h1 className="text-xl font-semibold tracking-tight">Backup artifact</h1>
+        <h1 className={ADMIN_PAGE_TITLE}>Backup artifact</h1>
         <p
           role={backup.isError ? 'alert' : 'status'}
           className="flex flex-wrap items-center gap-2 text-sm"
@@ -261,7 +263,7 @@ export function AdminBackupDetailPage() {
   return (
     <section className="w-full min-w-0 space-y-4">
       <div className="space-y-3">
-        <h1 className="text-xl font-semibold tracking-tight break-all font-mono">{artifact.filename}</h1>
+        <h1 className={cn(ADMIN_PAGE_TITLE, 'break-all font-mono')}>{artifact.filename}</h1>
         <p className="text-sm text-muted-foreground">
           The manifest metadata the Server recorded for this artifact, and the outcome of the last verification
           that ran against it. Restoring is a separate, deliberate operation that this page does not perform.
