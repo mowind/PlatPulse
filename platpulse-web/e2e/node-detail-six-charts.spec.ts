@@ -55,15 +55,47 @@ async function forceFragileHeaderFont(page: Page) {
  * No card writes the coverage verdict as small print under its title any more:
  * the sentence is written into the chart's own sr-only description, which every
  * plot points at through `aria-describedby`. Read the six sentences back by id,
- * in card order, so a scenario can still assert what each card states.
+ * each paired with the title of the card it belongs to, so a scenario can assert
+ * what every individual card states rather than only how many said what.
  */
 async function chartDescriptions(metrics: Locator) {
   return metrics.locator('[data-slot="node-metric-chart"]').evaluateAll((plots) =>
     plots.map((plot) => {
       const id = plot.getAttribute('aria-describedby')
-      return id ? (document.getElementById(id)?.textContent ?? '') : ''
+      return {
+        heading: plot.closest('[data-slot="node-metric-card"]')?.querySelector('h3')?.textContent?.trim() ?? '',
+        text: id ? (document.getElementById(id)?.textContent ?? '') : '',
+      }
     }),
   )
+}
+
+/**
+ * Assert what each individual card states, by title, rather than how many cards
+ * said what. A count alone cannot tell the cards apart: four cards saying
+ * `No samples reported yet` is also what a deck would produce where one card
+ * said it twice, another said nothing at all, and a fifth carried both sentences.
+ * Every card must carry exactly one of the three absence verdicts, and the one
+ * its own series has earned.
+ */
+type AbsenceVerdict = 'never-observed' | 'no-ledger' | 'dated'
+type ChartHeading = (typeof CHART_HEADINGS)[number]
+
+async function expectAbsenceVerdicts(
+  metrics: Locator,
+  verdicts: Record<ChartHeading, AbsenceVerdict>,
+) {
+  const descriptions = await chartDescriptions(metrics)
+  expect(descriptions.map((entry) => entry.heading).sort(), JSON.stringify(descriptions)).toEqual([...CHART_HEADINGS].sort())
+  for (const entry of descriptions) {
+    const neverObserved = entry.text.includes('No samples reported yet')
+    const unledgered = entry.text.includes('No retained observations')
+    const dated = /Last observation [0-9]/.test(entry.text)
+    // Exactly one verdict per card, never two and never none.
+    expect(Number(neverObserved) + Number(unledgered) + Number(dated), JSON.stringify(entry)).toBe(1)
+    const stated: AbsenceVerdict = neverObserved ? 'never-observed' : unledgered ? 'no-ledger' : 'dated'
+    expect(stated, JSON.stringify(entry)).toBe(verdicts[entry.heading as ChartHeading])
+  }
 }
 
 /** Cycle the production theme control to the requested explicit theme. */
@@ -454,15 +486,10 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             // against their own 35s cadence, so their verdict depends on how
             // long this run has been going and is asserted as a shape only.
             const blockCard = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: 'Block interval' }) })
-            // No card writes the verdict as small print under its title any more:
-            // the sentence rides the chart's accessible description instead, and
-            // every card states it there in its own words.
-            await expect(metrics.locator('[data-slot="node-metric-coverage"]')).toHaveCount(0)
+            // No card writes the verdict as small print under its title any more
+            // — asserted once for every scenario below the scenario chain — so the
+            // sentence is read here from the chart's accessible description.
             await expect(blockCard.locator('[data-slot="node-metric-chart"]')).toHaveAccessibleDescription(/No samples for the last /)
-            for (const heading of ['Process CPU', 'Process memory', 'Peer connections']) {
-              const card = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: heading }) })
-              await expect(card.locator('[data-slot="node-metric-coverage"]')).toHaveCount(0)
-            }
           }
           if (scenario === 'unknown') {
             await expect(page.getByLabel('Node key summary').getByText('Unknown').first()).toBeVisible()
@@ -497,7 +524,6 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             // drops to the baseline inside the hole, is proven on the real
             // renderer in src/components/nodeMetricChart.test.ts.
             await expect(cpuPlot).toHaveAttribute('data-points', '6')
-            await expect(cpuCard.locator('[data-slot="node-metric-coverage"]')).toHaveCount(0)
             await expect(cpuPlot).toHaveAccessibleDescription(/1 gap in this window/)
           }
           if (scenario === 'never-observed') {
@@ -505,13 +531,18 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             await expect(metrics.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(6)
             await expect(metrics.locator('[data-slot="node-metric-chart"][data-points="0"]')).toHaveCount(6)
             await expect(metrics.locator('[data-slot="node-metric-chart"][data-runs="0"]')).toHaveCount(6)
-            await expect(metrics.locator('[data-slot="node-metric-coverage"]')).toHaveCount(0)
-            const emptyTexts = await chartDescriptions(metrics)
             // Four cards hold ledgered series, where an absence is proof that
             // nobody ever reported them. The two block cards have no ledger, so
-            // their absence is an unknown the Server states as such.
-            expect(emptyTexts.filter((text) => text.includes('No samples reported yet')), JSON.stringify(emptyTexts)).toHaveLength(4)
-            expect(emptyTexts.filter((text) => text.includes('No retained observations')), JSON.stringify(emptyTexts)).toHaveLength(2)
+            // their absence is an unknown the Server states as such — asserted
+            // card by card, so no card can drop the sentence or carry both.
+            await expectAbsenceVerdicts(metrics, {
+              'Process CPU': 'never-observed',
+              'Process memory': 'never-observed',
+              'Host network': 'never-observed',
+              'Peer connections': 'never-observed',
+              'Block interval': 'no-ledger',
+              'Transactions / block': 'no-ledger',
+            })
           }
           if (scenario === 'expired') {
             // Samples retention removed are not evidence that nobody ever
@@ -520,15 +551,25 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             await expect(metrics.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(6)
             await expect(metrics.locator('[data-slot="node-metric-chart"][data-points="0"]')).toHaveCount(6)
             await expect(metrics.locator('[data-slot="node-metric-chart"][data-runs="0"]')).toHaveCount(6)
-            await expect(metrics.locator('[data-slot="node-metric-coverage"]')).toHaveCount(0)
-            const texts = await chartDescriptions(metrics)
             // Four cards hold ledgered series: their last observation is dated
             // 40 days back and the window holds none of them. The two block
             // cards have no ledger, so their expiry is not dated at all and is
             // answered as an unknown rather than as never observed.
-            expect(texts.filter((text) => text.includes('Last observation 40 days ago')), JSON.stringify(texts)).toHaveLength(4)
-            expect(texts.filter((text) => text.includes('No retained observations')), JSON.stringify(texts)).toHaveLength(2)
+            await expectAbsenceVerdicts(metrics, {
+              'Process CPU': 'dated',
+              'Process memory': 'dated',
+              'Host network': 'dated',
+              'Peer connections': 'dated',
+              'Block interval': 'no-ledger',
+              'Transactions / block': 'no-ledger',
+            })
           }
+
+          // The coverage verdict is not visible small print on any of the six
+          // cards any more, in any scenario. It is still a sentence: it rides the
+          // chart's accessible description, which the never-observed and expired
+          // scenarios above read back one card at a time.
+          await expect(metrics.locator('[data-slot="node-metric-coverage"]')).toHaveCount(0)
 
           // The remaining disclosure is keyboard-operable in both directions, and
           // the retired Peer diagnostics region no longer renders.
