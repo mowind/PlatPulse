@@ -43,13 +43,14 @@ export const METRIC_SERIES_COLORS: Record<MetricSeriesKey, string> = {
   transactions: '#A78BFA',
   download: '#60A5FA',
   upload: '#A78BFA',
-  inbound: '#60A5FA',
+  inbound: '#FF6B6B',
   outbound: '#4ECDC4',
 }
 
 export type MetricChartTheme = {
   text: string
   textSecondary: string
+  textTertiary: string
   axisLine: string
   splitLine: string
   markerBorder: string
@@ -65,6 +66,7 @@ export const METRIC_CHART_THEME: { light: MetricChartTheme; dark: MetricChartThe
   light: {
     text: 'rgba(0, 0, 0, 0.85)',
     textSecondary: 'rgba(0, 0, 0, 0.55)',
+    textTertiary: 'rgba(0, 0, 0, 0.35)',
     axisLine: 'rgba(0, 0, 0, 0.1)',
     splitLine: 'rgba(0, 0, 0, 0.06)',
     markerBorder: '#ffffff',
@@ -76,6 +78,7 @@ export const METRIC_CHART_THEME: { light: MetricChartTheme; dark: MetricChartThe
   dark: {
     text: 'rgba(255, 255, 255, 0.85)',
     textSecondary: 'rgba(255, 255, 255, 0.55)',
+    textTertiary: 'rgba(255, 255, 255, 0.35)',
     axisLine: 'rgba(255, 255, 255, 0.1)',
     splitLine: 'rgba(255, 255, 255, 0.06)',
     markerBorder: '#0a0a0a',
@@ -121,16 +124,19 @@ export type MetricChartOptionInput = {
   valueFormat: (value: number) => string
   /** Bar width in pixels, measured from the container the chart was given. */
   barWidth?: number
+  /** ECharts native legend displayed at bottom: 4, matching Emerald. */
+  showLegend?: boolean
+  /** Y-axis title / unit, placed above the y-axis, matching Emerald. */
+  yAxisName?: string
 }
 
-/** The gutter every card shares, so all six plots start on the same column. It is
- *  wide enough for the longest label the deck prints: a byte rate stated in the
- *  unit its own ceiling chose, up to "1.25 MiB/s". */
-export const METRIC_CHART_GUTTER = 60
-
-/** The room the axis labels need on the right of the plot box, so the label
- *  centred on the window's last instant is painted whole. */
+/** Emerald's exact grid margins (LoadChart.vue:73-82). */
+export const METRIC_CHART_LEFT_MARGIN = 56
+export const METRIC_CHART_GUTTER = METRIC_CHART_LEFT_MARGIN
 export const METRIC_CHART_RIGHT_MARGIN = 24
+export const METRIC_CHART_TOP_MARGIN = 30
+export const METRIC_CHART_BOTTOM_MARGIN = 32
+export const METRIC_CHART_BOTTOM_MARGIN_WITH_LEGEND = 52
 
 function withAlpha(color: string, alpha: number): string {
   const hex = color.replace('#', '')
@@ -193,13 +199,13 @@ function tooltipFormatter(input: MetricChartOptionInput) {
       const value = typeof data[1] === 'number' ? data[1] : Number.NaN
       const color = typeof entry.color === 'string' ? entry.color : 'currentColor'
       if (!Number.isFinite(value)) return ''
-      return '<div style="display:flex;align-items:center;gap:6px;line-height:20px">'
-        + '<span style="width:8px;height:8px;border-radius:9999px;flex:none;background:' + color + '"></span>'
+      return '<div style="display:flex;align-items:center;line-height:20px">'
+        + '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + color + ';margin-right:8px;flex-shrink:0"></span>'
         + '<span style="flex:1 1 auto;white-space:nowrap">' + escapeText(seriesName) + '</span>'
-        + '<span style="margin-left:16px;font-weight:600;font-variant-numeric:tabular-nums">' + escapeText(input.valueFormat(value)) + '</span>'
+        + '<span style="margin-left:auto;font-weight:600;padding-left:16px;font-variant-numeric:tabular-nums">' + escapeText(input.valueFormat(value)) + '</span>'
         + '</div>'
     })
-    return header + rows.join('')
+    return header + '<div style="display:flex;flex-direction:column;gap:4px">' + rows.join('') + '</div>'
   }
 }
 
@@ -215,43 +221,48 @@ export function metricChartOption(input: MetricChartOptionInput): EChartsOption 
         data: entry.segments.flat().map((point) => [point.sampledAt, point.value]),
         barMaxWidth: 12,
         ...(input.barWidth !== undefined ? { barWidth: input.barWidth } : {}),
-        // A bar is one observation and its height is the only thing worth
-        // reading: at full saturation a row of bars reads as a filled area rather
-        // than as discrete samples. Emerald has no bar chart to copy, so the
-        // softening is ours — the palette colour stays literal, only its weight
-        // drops, and the rounded cap keeps a tall bar from ending in a hard edge.
         itemStyle: { color: entry.color, borderRadius: [3, 3, 0, 0], opacity: 0.75 },
         emphasis: { focus: 'none' as const },
         animation: false,
       }]
     }
-    return entry.segments
-      .filter((segment) => segment.length > 0)
-      .map((segment) => ({
+    const validSegments = entry.segments.filter((segment) => segment.length > 0)
+    if (validSegments.length === 0 && input.showLegend) {
+      // Retain the series name in the chart so ECharts' native legend has a target.
+      return [{
         type: 'line' as const,
         name: entry.label,
-        data: segment.map((point) => [point.sampledAt, point.value]),
-        // An isolated observation is still evidence: it is drawn as its own
-        // marker instead of disappearing as a zero-length polyline.
-        showSymbol: segment.length === 1,
-        symbol: 'circle',
-        // r4 for the card's first direction, r3.5 for the others, so two
-        // directions whose only observation is the same instant stay readable
-        // instead of one marker covering the other.
-        symbolSize: direction === 0 ? 8 : 7,
-        itemStyle: { color: entry.color, borderColor: theme.markerBorder, borderWidth: segment.length === 1 ? 1.5 : 0 },
+        data: [],
+        showSymbol: false,
         lineStyle: { width: 1.5, color: entry.color, cap: 'round' as const },
-        // A break is a break: the segment before a silence and the segment after
-        // it are separate series, and nothing is interpolated between them.
-        connectNulls: false,
-        smooth: false,
-        z: 2,
-        emphasis: { focus: 'none' as const },
-        ...(entry.area === true && segment.length > 1
-          ? { areaStyle: { color: areaGradient(entry.color, entry.areaOpacity) } }
-          : {}),
         animation: false,
-      }))
+      }]
+    }
+    return validSegments.map((segment) => ({
+      type: 'line' as const,
+      name: entry.label,
+      data: segment.map((point) => [point.sampledAt, point.value]),
+      // An isolated observation is still evidence: it is drawn as its own
+      // marker instead of disappearing as a zero-length polyline.
+      showSymbol: segment.length === 1,
+      symbol: 'circle',
+      // r4 for the card's first direction, r3.5 for the others, so two
+      // directions whose only observation is the same instant stay readable
+      // instead of one marker covering the other.
+      symbolSize: direction === 0 ? 8 : 7,
+      itemStyle: { color: entry.color, borderColor: theme.markerBorder, borderWidth: segment.length === 1 ? 1.5 : 0 },
+      lineStyle: { width: 1.5, color: entry.color, cap: 'round' as const },
+      // A break is a break: the segment before a silence and the segment after
+      // it are separate series, and nothing is interpolated between them.
+      connectNulls: false,
+      smooth: false,
+      z: 2,
+      emphasis: { focus: 'none' as const },
+      ...(entry.area === true && segment.length > 1
+        ? { areaStyle: { color: areaGradient(entry.color, entry.areaOpacity) } }
+        : {}),
+      animation: false,
+    }))
   })
 
   // A whole-number axis is given its own step: without one the renderer divides
@@ -261,31 +272,45 @@ export function metricChartOption(input: MetricChartOptionInput): EChartsOption 
 
   return {
     animation: false,
-    // Emerald's own margin recipe, kept for its reason: the axis labels hang
-    // outside the plot box, so the 24px on the right reserve room for the label
-    // centred on the window's last instant instead of letting ECharts shrink the
-    // grid by whatever that label happens to measure.
-    grid: { top: 12, right: METRIC_CHART_RIGHT_MARGIN, bottom: 26, left: METRIC_CHART_GUTTER, containLabel: false },
-    // The window's own clock labels the axis, the way Emerald prints its sampled
-    // times, and the axis states the Server's window edges because min/max are
-    // that window: two readable instants plus whatever fits between them.
+    color: input.series.map((s) => s.color),
+    ...(input.showLegend
+      ? {
+          legend: {
+            data: input.series.map((s) => s.label),
+            bottom: 4,
+            itemWidth: 12,
+            itemHeight: 12,
+            itemGap: 20,
+            icon: 'roundRect',
+            textStyle: { fontSize: 11, color: theme.textSecondary },
+          },
+        }
+      : {}),
+    // Emerald's own grid configuration:
+    // normal: { top: 30, right: 24, bottom: 32, left: 56 }
+    // with legend: { top: 30, right: 24, bottom: 52, left: 56 }
+    grid: {
+      top: METRIC_CHART_TOP_MARGIN,
+      right: METRIC_CHART_RIGHT_MARGIN,
+      bottom: input.showLegend ? METRIC_CHART_BOTTOM_MARGIN_WITH_LEGEND : METRIC_CHART_BOTTOM_MARGIN,
+      left: METRIC_CHART_LEFT_MARGIN,
+      containLabel: false,
+      outerBoundsMode: 'none',
+    },
+    // The window's own clock labels the axis, matching Emerald's baseXAxisConfig
+    // with ~4–5 evenly distributed time labels (splitNumber: 3 on 60s window).
     xAxis: {
       type: 'time',
       min: input.from,
       max: input.to,
-      // ECharts 6 registers a bar-series 'containShape' handler that expands the
-      // scale by half a bar width (chart/helper/axisSnippets.js, "Simply expand
-      // Scale extent by half bandWidth"), which would pad the two bar charts and
-      // let them disagree with the four line charts over the same 60 seconds.
-      // The window is the Server's, so the expansion is switched off; a bar
-      // centred exactly on an edge is then clipped to the plot box, which is the
-      // honest reading of an observation that sits on the window's boundary.
+      splitNumber: 3,
+      boundaryGap: [0, 0],
       ...(input.kind === 'bar' ? { containShape: false } : {}),
       axisLabel: {
         show: true,
         fontSize: 11,
         color: theme.textSecondary,
-        margin: 8,
+        margin: 12,
         hideOverlap: true,
         formatter: (value: number) => clockTime(value),
       },
@@ -299,19 +324,27 @@ export function metricChartOption(input: MetricChartOptionInput): EChartsOption 
       max: input.max,
       splitNumber: ticks ? ticks.splitNumber : 5,
       ...(ticks ? { interval: ticks.interval } : {}),
+      ...(input.yAxisName
+        ? {
+            name: input.yAxisName,
+            nameTextStyle: {
+              color: theme.textSecondary,
+              fontSize: 11,
+              padding: [0, 40, 0, 0],
+            },
+          }
+        : {}),
       axisLabel: { fontSize: 11, color: theme.textSecondary, margin: 6, formatter: input.axisFormat },
       axisLine: { show: false },
       axisTick: { show: false },
       splitLine: { lineStyle: { color: theme.splitLine, type: 'dashed' as const } },
-      // The crosshair's second label is noise: Emerald suppresses it the same way.
-      axisPointer: { label: { show: false }, lineStyle: { opacity: 0 } },
+      axisPointer: {
+        lineStyle: { opacity: 0 },
+        label: { show: false },
+      },
     },
     tooltip: {
       trigger: 'axis',
-      // Confined, unlike Emerald's `confine: false`: an unconfined panel is 162px
-      // wide, so on a 360px phone it lands at a negative x and scrolls the whole
-      // page sideways (the suite's no-horizontal-overflow acceptance catches it).
-      // Confined, the same panel stays inside the plot box it describes.
       confine: true,
       className: 'node-metric-chart-tooltip',
       backgroundColor: theme.tooltipBackground,
@@ -323,7 +356,7 @@ export function metricChartOption(input: MetricChartOptionInput): EChartsOption 
       extraCssText: 'z-index: 9; border-radius: 6px; box-shadow: 0 0 0 1px ' + theme.tooltipShadow + ', 0 0 16px ' + theme.tooltipShadow + ';',
       axisPointer: {
         type: 'cross',
-        crossStyle: { color: theme.crosshairLine },
+        crossStyle: { color: theme.textTertiary },
         lineStyle: { color: theme.crosshairLine, width: 1, type: 'dashed' as const },
         shadowStyle: { color: theme.crosshair },
       },

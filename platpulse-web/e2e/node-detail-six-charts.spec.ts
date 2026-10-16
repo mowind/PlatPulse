@@ -404,9 +404,8 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             // hovering a series lightens it (ECharts lifts the colour under the
             // emphasis state), so the resting paint is the honest reading.
             const cardFor = (name: string) => metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name }) })
-            // Process memory is upstream's RAM curve: the same coral the CPU uses,
-            // told apart by the fainter area gradient (0.08 -> 0.01) rather than by
-            // a hue of its own, so a steady window reads as a tint and not a slab.
+            // Process memory matches Emerald's RAM curve: the same coral the CPU uses,
+            // sharing the 0.25 -> 0.02 area gradient with Process CPU.
             const gradientStops = (name: string) => cardFor(name)
               .locator('[data-slot="node-metric-chart"] svg linearGradient stop')
               .evaluateAll((stops) => stops.map((stop) => ({
@@ -416,7 +415,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             const cpuStops = await gradientStops('Process CPU')
             const memoryStops = await gradientStops('Process memory')
             expect(cpuStops.map((stop) => stop.opacity), JSON.stringify(cpuStops)).toEqual(['0.25', '0.02'])
-            expect(memoryStops.map((stop) => stop.opacity), JSON.stringify(memoryStops)).toEqual(['0.08', '0.01'])
+            expect(memoryStops.map((stop) => stop.opacity), JSON.stringify(memoryStops)).toEqual(['0.25', '0.02'])
             // Both curves are painted in one colour, and that colour is the coral:
             // its red channel dominates while green and blue stay equal, which the
             // teal the memory curve used to take (green above blue) never does. The
@@ -470,15 +469,18 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             await expect(tooltip).toContainText(/%/)
             // The retained-sample explanation opposite the section label is gone.
             await expect(page.getByText(/Real retained samples/)).toHaveCount(0)
-            // Curve legends sit under their plots, never in the header, so the
-            // header keeps title-left / current-value-right on every card.
-            for (const [heading, legend] of [
-              ['Host network', 'Host network chart legend'],
-              ['Peer connections', 'Peer connections chart legend'],
+            // Multi-series cards embed native ECharts legends matching Emerald specifications,
+            // centered at the bottom of the canvas with roundRect icons and no separate DOM legend slot.
+            for (const [heading, labels] of [
+              ['Host network', ['Download', 'Upload']],
+              ['Peer connections', ['Inbound', 'Outbound']],
             ] as const) {
               const card = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: heading }) })
-              await expect(card.locator('[data-slot="node-metric-header"] [data-slot="node-metric-legend"]')).toHaveCount(0)
-              await expect(card.locator('[data-slot="node-metric-legend"] [aria-label="' + legend + '"]')).toHaveCount(1)
+              await expect(card.locator('[data-slot="node-metric-legend"]')).toHaveCount(0)
+              const chartSvg = card.locator('[data-slot="node-metric-chart"] svg')
+              for (const label of labels) {
+                await expect(chartSvg.locator('text').filter({ hasText: label }).first()).toBeVisible()
+              }
             }
             // The seeded Node's newest block observation is 20s old against a
             // 2s cadence, so the two bar cards name the unobserved tail instead

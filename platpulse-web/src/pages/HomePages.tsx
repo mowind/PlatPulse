@@ -157,6 +157,7 @@ export function NodePage() {
         <NodeMetricCard
           label="Process CPU"
           unit="%"
+          yAxisName="CPU %"
           value={formatPercent(node.processCpuPercent)}
           detail={processStatusDetail(node.processState)}
           series={[{ key: 'cpu', label: 'Process CPU', points: metricHistory?.processCpuPercent ?? [], coverage: metricCoverage(metricHistory, 'processCpuPercent'), area: true }]}
@@ -169,9 +170,10 @@ export function NodePage() {
         <NodeMetricCard
           label="Process memory"
           unit="%"
+          yAxisName="Memory %"
           value={formatPercent(node.processMemoryPercent)}
           detail={processStatusDetail(node.processState)}
-          series={[{ key: 'memory', label: 'Process memory', points: metricHistory?.processMemoryPercent ?? [], coverage: metricCoverage(metricHistory, 'processMemoryPercent'), area: true, areaOpacity: MEMORY_AREA_OPACITY }]}
+          series={[{ key: 'memory', label: 'Process memory', points: metricHistory?.processMemoryPercent ?? [], coverage: metricCoverage(metricHistory, 'processMemoryPercent'), area: true }]}
           history={metricHistory}
           max={percentChartMax(metricHistory?.processMemoryPercent ?? [])}
           axisFormat={formatPercentAxis}
@@ -180,11 +182,12 @@ export function NodePage() {
         />
         <NodeMetricCard
           label="Host network"
+          yAxisName="Speed"
           value={formatMetricRate(node.hostNetworkTxBytesPerSec)}
           valueLabel="Upload"
           series={[
-            { key: 'upload', label: 'Upload', points: metricHistory?.networkTxBytesPerSec ?? [], coverage: metricCoverage(metricHistory, 'networkTxBytesPerSec') },
             { key: 'download', label: 'Download', points: metricHistory?.networkRxBytesPerSec ?? [], coverage: metricCoverage(metricHistory, 'networkRxBytesPerSec') },
+            { key: 'upload', label: 'Upload', points: metricHistory?.networkTxBytesPerSec ?? [], coverage: metricCoverage(metricHistory, 'networkTxBytesPerSec') },
           ]}
           showLegend
           history={metricHistory}
@@ -203,6 +206,7 @@ export function NodePage() {
         />
         <NodeMetricCard
           label="Peer connections"
+          yAxisName="Connections"
           value={peerCount(node.peers)}
           detail={peerBreakdown(node.peers)}
           integer
@@ -218,6 +222,7 @@ export function NodePage() {
         />
         <NodeMetricCard
           label="Block interval"
+          yAxisName="ms"
           kind="bar"
           value={blockInterval.value}
           detail={historyQuery.error ? 'History unavailable' : blockInterval.detail}
@@ -229,6 +234,7 @@ export function NodePage() {
         />
         <NodeMetricCard
           label="Transactions / block"
+          yAxisName="Txs"
           kind="bar"
           integer
           value={formatNumber(node.latestBlockTransactionCount)}
@@ -464,11 +470,6 @@ type MetricSeries = {
   areaOpacity?: readonly [number, number]
 }
 
-/** Memory holds far longer than the CPU does, so its fill is the fainter pair
- *  (Emerald's own 0.25 → 0.02 stays on the CPU curve): a flat 3% window then reads
- *  as a light tint instead of a solid teal-or-coral block behind the line. */
-const MEMORY_AREA_OPACITY = [0.08, 0.01] as const
-
 type MetricChartKind = 'line' | 'bar'
 
 /** The chart's tooltip states each retained sample as the Server reported it —
@@ -476,7 +477,7 @@ type MetricChartKind = 'line' | 'bar'
  *  keeps the page's display formatting. The formatters are module-level so the
  *  option is not rebuilt on every render. */
 
-function NodeMetricCard({ label, unit, value, valueLabel, direction, directionColor, secondary, detail, kind = 'line', series, showLegend = false, history, max: fixedMax, axisFormat, axisFormatAt, valueFormat, integer = false, historyMessage, className = '' }: {
+function NodeMetricCard({ label, unit, value, valueLabel, direction, directionColor, secondary, detail, kind = 'line', series, showLegend = false, yAxisName, history, max: fixedMax, axisFormat, axisFormatAt, valueFormat, integer = false, historyMessage, className = '' }: {
   label: string
   unit?: string
   value: string
@@ -492,6 +493,7 @@ function NodeMetricCard({ label, unit, value, valueLabel, direction, directionCo
   kind?: MetricChartKind
   series: MetricSeries[]
   showLegend?: boolean
+  yAxisName?: string
   history?: PublicNodeMetricHistory
   /** Display ceiling; without one the window's own observations set a nice ceiling. */
   max?: number
@@ -540,9 +542,6 @@ function NodeMetricCard({ label, unit, value, valueLabel, direction, directionCo
     () => axisFormatAt?.(max) ?? axisFormat ?? formatCountAxis,
     [axisFormatAt, axisFormat, max],
   )
-  // Multi-direction cards explain their curves under the plot, never under the
-  // title, so the header stays title-left / current-value-right on every card.
-  const legend = showLegend ? <MetricSeriesLegend label={label} series={series} /> : undefined
   // The accessible description states the same thing the curve does: which
   // directions, over which real window, and what the Server measured missing.
   // It is also the only place the coverage sentence is written down now: the
@@ -611,7 +610,8 @@ function NodeMetricCard({ label, unit, value, valueLabel, direction, directionCo
         seconds={seconds}
         message={historyMessage}
         description={description}
-        legend={legend}
+        showLegend={showLegend}
+        yAxisName={yAxisName}
       />
     </CardX>
   )
@@ -623,19 +623,6 @@ function NodeMetricCard({ label, unit, value, valueLabel, direction, directionCo
 function DirectionArrow({ direction, color }: { direction: 'up' | 'down'; color: string }) {
   const Icon = direction === 'up' ? ArrowUp : ArrowDown
   return <Icon aria-hidden="true" className="size-3 shrink-0" style={{ color }} />
-}
-
-function MetricSeriesLegend({ label, series }: { label: string; series: MetricSeries[] }) {
-  return (
-    <div role="group" className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1" aria-label={label + ' chart legend'}>
-      {series.map((item) => (
-        <span key={item.label} className="inline-flex min-w-0 items-center gap-1.5 text-[10px] text-muted-foreground">
-          <i className="inline-block size-2 shrink-0 rounded-full" style={{ backgroundColor: METRIC_SERIES_COLORS[item.key] }} aria-hidden="true" />
-          {item.label}
-        </span>
-      ))}
-    </div>
-  )
 }
 
 

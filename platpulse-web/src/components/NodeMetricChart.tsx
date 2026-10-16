@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ECharts } from 'echarts/core'
 import { cn } from '../lib/utils'
 import { useIsDark } from '../lib/useIsDark'
@@ -44,7 +44,10 @@ export type NodeMetricChartProps = {
   message?: string
   /** What the curve cannot show, read out by assistive technology. */
   description: string
-  legend?: ReactNode
+  /** ECharts native legend displayed at bottom: 4, matching Emerald. */
+  showLegend?: boolean
+  /** Y-axis title / unit, placed above the y-axis, matching Emerald. */
+  yAxisName?: string
   className?: string
 }
 
@@ -63,7 +66,8 @@ export default function NodeMetricChart({
   seconds,
   message,
   description,
-  legend,
+  showLegend = false,
+  yAxisName,
   className,
 }: NodeMetricChartProps) {
   const container = useRef<HTMLDivElement>(null)
@@ -88,8 +92,8 @@ export default function NodeMetricChart({
     : undefined
 
   const option = useMemo(
-    () => metricChartOption({ kind, from, to, max, series, dark, integer, axisFormat, valueFormat, barWidth }),
-    [kind, from, to, max, series, dark, integer, axisFormat, valueFormat, barWidth],
+    () => metricChartOption({ kind, from, to, max, series, dark, integer, axisFormat, valueFormat, barWidth, showLegend, yAxisName }),
+    [kind, from, to, max, series, dark, integer, axisFormat, valueFormat, barWidth, showLegend, yAxisName],
   )
   optionRef.current = option
 
@@ -152,11 +156,6 @@ export default function NodeMetricChart({
           : <p data-slot="node-metric-chart-empty" className="m-0 flex h-full items-center justify-center text-[13px] text-muted-foreground">{emptyMessage}</p>}
         {failed && <p data-slot="node-metric-chart-error" className="absolute inset-0 m-0 flex items-center justify-center text-[13px] text-muted-foreground">{label + ' chart unavailable'}</p>}
       </div>
-      {/* The window edges moved into the axis, where they are real instants on the
-          Server's window instead of a relative caption that has to be kept in step
-          with it. The legend keeps its slot on every card so the six plots end on
-          the same baseline, whether or not the card has directions to name. */}
-      <div data-slot="node-metric-legend" className="min-h-6 pt-1">{legend}</div>
       <p id={descriptionId} className="sr-only">{description}</p>
     </div>
   )

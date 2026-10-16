@@ -29,7 +29,7 @@ const chartMocks = vi.hoisted(() => ({
 
 vi.mock('echarts/core', () => ({ init: chartMocks.init, registerMap: chartMocks.registerMap, use: chartMocks.use }))
 vi.mock('echarts/charts', () => ({ MapChart: {}, ScatterChart: {}, LineChart: {}, BarChart: {} }))
-vi.mock('echarts/components', () => ({ GeoComponent: {}, TooltipComponent: {}, GridComponent: {}, AxisPointerComponent: {} }))
+vi.mock('echarts/components', () => ({ GeoComponent: {}, TooltipComponent: {}, GridComponent: {}, AxisPointerComponent: {}, LegendComponent: {} }))
 vi.mock('echarts/renderers', () => ({ CanvasRenderer: {}, SVGRenderer: {} }))
 
 const OWNER_SESSION = {
@@ -765,12 +765,6 @@ describe('App shell with private Home', () => {
     expect(within(metricsSection).queryByText('tx/block')).toBeNull()
     expect(screen.getAllByText('2.00 KiB/s').length).toBeGreaterThan(0)
     expect(within(hostGroup).getByText('↓ 4.00 KiB/s')).toBeTruthy()
-    const networkLegend = screen.getByLabelText('Host network chart legend')
-    expect(networkLegend.textContent).toContain('Upload')
-    expect(networkLegend.textContent).toContain('Download')
-    const connectionsLegend = screen.getByLabelText('Peer connections chart legend')
-    expect(connectionsLegend.textContent).toContain('Inbound')
-    expect(connectionsLegend.textContent).toContain('Outbound')
     // The retained-sample explanation opposite the section label is gone; the
     // label row carries nothing but "Latest 60 seconds".
     expect(within(metricsSection).queryByText(/Real retained samples/)).toBeNull()
@@ -783,18 +777,12 @@ describe('App shell with private Home', () => {
     expect(hostNetworkCard.querySelector('[data-slot="node-metric-header"]')?.textContent).toContain('Upload')
     const peerCard = within(metricsSection).getByRole('heading', { level: 3, name: 'Peer connections' }).closest('[data-slot="node-metric-card"]')
     if (!peerCard) throw new Error('Peer connections card is missing')
-    // Curve legends sit under the plot, never in the header, so the header keeps
-    // title-left / current-value-right and the chart stays the visual subject.
-    for (const [card, legend, name] of [
-      [hostNetworkCard, networkLegend, 'Host network chart legend'],
-      [peerCard, connectionsLegend, 'Peer connections chart legend'],
-    ] as const) {
-      expect(card.querySelector('[data-slot="node-metric-header"] [aria-label="' + name + '"]')).toBeNull()
-      const slot = card.querySelector('[data-slot="node-metric-legend"]')
-      expect(slot?.contains(legend)).toBe(true)
+    // Multi-series cards embed native ECharts legends inside the canvas matching Emerald,
+    // so no separate DOM legend slots are rendered.
+    for (const card of [hostNetworkCard, peerCard]) {
       const plot = card.querySelector('[data-slot="node-metric-chart"]')
-      if (!plot) throw new Error(name + ' chart plot is missing')
-      expect(plot.compareDocumentPosition(legend) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      if (!plot) throw new Error('chart plot is missing')
+      expect(card.querySelector('[data-slot="node-metric-legend"]')).toBeNull()
     }
     expect(screen.getAllByText('12.5%').length).toBeGreaterThan(0)
     expect(within(summary).getByText('2.00 s')).toBeTruthy()

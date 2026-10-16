@@ -16,19 +16,17 @@ import { formatPercentSample } from './metricChartAxis'
 registerEChartsModules([LineChart, BarChart, GridComponent, TooltipComponent, SVGRenderer])
 
 const WIDTH = 280
-const HEIGHT = 160
-// The gutter the six cards reserve for their axis labels, the same on every card;
-// the longer labels a byte rate needs are why it is 60 and not 56.
-const GUTTER = 60
+const HEIGHT = 192
+// Emerald's left margin is 56px across all cards.
+const GUTTER = 56
 const FROM = Date.parse('2026-01-01T00:00:00Z')
 const WINDOW_SECONDS = 60
-// The plot box, taken from the grid the option module asks for rather than from
-// ECharts' own mapping: an expectation that comes back out of the engine cannot
-// prove the engine kept the Server's window. The right margin is the room the
-// clock label centred on the window's last instant needs.
+// Emerald's grid specifications:
+// normal chart: { top: 30, right: 24, bottom: 32, left: 56 }
+// with legend:  { top: 30, right: 24, bottom: 52, left: 56 }
 const RIGHT_MARGIN = 24
-const GRID_TOP = 12
-const GRID_BOTTOM = 26
+const GRID_TOP = 30
+const GRID_BOTTOM = 32
 const INNER_WIDTH = WIDTH - GUTTER - RIGHT_MARGIN
 const PLOT_HEIGHT = HEIGHT - GRID_TOP - GRID_BOTTOM
 function at(seconds: number): number {
@@ -98,7 +96,7 @@ function filledPaths(color: string): RegExp {
  *  the y axis is the only text that hangs to the left of the plot box. */
 function axisLabels(svg: string): string[] {
   return Array.from(svg.matchAll(/<text([^>]*)>([^<>]+)<\/text>/g))
-    .filter((match) => Number(/translate\((-?[\d.]+)/.exec(match[1])?.[1] ?? Number.NaN) < GUTTER)
+    .filter((match) => Number(/translate\((-?[\d.]+)/.exec(match[1])?.[1] ?? Number.NaN) < GUTTER - 1)
     .map((match) => match[2])
 }
 

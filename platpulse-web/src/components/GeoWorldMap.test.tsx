@@ -28,7 +28,7 @@ const mocks = vi.hoisted(() => ({
 // app draws: a mock that omits one makes the loader's dynamic import reject.
 vi.mock('echarts/core', () => ({ init: mocks.init, registerMap: mocks.registerMap, use: mocks.use }))
 vi.mock('echarts/charts', () => ({ MapChart: {}, ScatterChart: {}, LineChart: {}, BarChart: {} }))
-vi.mock('echarts/components', () => ({ GeoComponent: {}, TooltipComponent: {}, GridComponent: {}, AxisPointerComponent: {} }))
+vi.mock('echarts/components', () => ({ GeoComponent: {}, TooltipComponent: {}, GridComponent: {}, AxisPointerComponent: {}, LegendComponent: {} }))
 vi.mock('echarts/renderers', () => ({ CanvasRenderer: {}, SVGRenderer: {} }))
 
 import GeoWorldMap from './GeoWorldMap'

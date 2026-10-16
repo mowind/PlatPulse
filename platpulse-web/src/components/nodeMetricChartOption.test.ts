@@ -129,8 +129,22 @@ describe('metricChartOption', () => {
     ])
   })
 
-  it('leaves the legend off the canvas because the card owns it', () => {
+  it('leaves the legend off the canvas when not requested, and configures Emerald native legend when requested', () => {
     expect(build().legend).toBeUndefined()
+    const withLegend = build({ showLegend: true })
+    expect(withLegend.legend).toEqual({
+      data: ['Process CPU'],
+      bottom: 4,
+      itemWidth: 12,
+      itemHeight: 12,
+      itemGap: 20,
+      icon: 'roundRect',
+      textStyle: {
+        fontSize: 11,
+        color: METRIC_CHART_THEME.light.textSecondary,
+      },
+    })
+    expect(withLegend.grid.bottom).toBe(52)
   })
 
   it('uses a real time axis bounded by the Server window', () => {
@@ -156,8 +170,8 @@ describe('metricChartOption', () => {
     expect(option.yAxis.axisPointer).toEqual({ label: { show: false }, lineStyle: { opacity: 0 } })
     // The plot box is the Server's window and every card shares it: one gutter on
     // the left, and on the right the room the label centred on the last instant
-    // needs — pinned here rather than left to ECharts to shrink as it measures.
-    expect(option.grid).toEqual({ top: 12, right: 24, bottom: 26, left: METRIC_CHART_GUTTER, containLabel: false })
+    // needs — matching Emerald's grid specifications.
+    expect(option.grid).toEqual({ top: 30, right: 24, bottom: 32, left: METRIC_CHART_GUTTER, containLabel: false, outerBoundsMode: 'none' })
     expect(option.tooltip.trigger).toBe('axis')
     expect(option.tooltip.confine).toBe(true)
     expect(option.tooltip.axisPointer).toMatchObject({ type: 'cross' })
@@ -242,6 +256,8 @@ describe('metricChartOption', () => {
     expect(METRIC_SERIES_COLORS.upload).toBe('#A78BFA')
     expect(METRIC_SERIES_COLORS.blockInterval).toBe('#FFB347')
     expect(METRIC_SERIES_COLORS.transactions).toBe('#A78BFA')
+    expect(METRIC_SERIES_COLORS.inbound).toBe('#FF6B6B')
+    expect(METRIC_SERIES_COLORS.outbound).toBe('#4ECDC4')
   })
 
   it('reads its ink from the theme the page is in', () => {

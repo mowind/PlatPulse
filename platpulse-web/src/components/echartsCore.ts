@@ -48,6 +48,7 @@ async function importECharts(): Promise<EChartsCore> {
     components.GeoComponent,
     components.TooltipComponent,
     components.AxisPointerComponent,
+    components.LegendComponent,
     renderers.CanvasRenderer,
     renderers.SVGRenderer,
   ])
