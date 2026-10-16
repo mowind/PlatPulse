@@ -216,26 +216,30 @@ describe('metricChartOption', () => {
     expect(escaped).not.toContain('<Upload')
   })
 
-  it('keeps a whole-number axis whole so no tick repeats a label', () => {
-    // The step is stated, not left to the renderer: five bands over a ceiling of
-    // 20 would be drawn every four counts, and a ceiling of four would round two
-    // of its five bands onto the same label.
-    expect(build({ integer: true }).yAxis).toMatchObject({ max: 20, splitNumber: 4, interval: 5 })
-    expect(build({ integer: true, max: 4 }).yAxis).toMatchObject({ splitNumber: 4, interval: 1 })
-    expect(build({ integer: true, max: 10 }).yAxis).toMatchObject({ splitNumber: 5, interval: 2 })
-    // A ceiling no whole step divides still states one, so its labels cannot repeat.
-    expect(build({ integer: true, max: 7 }).yAxis).toMatchObject({ splitNumber: 3, interval: 2 })
-    // Percent and millisecond axes keep the renderer's own choice of five bands.
+  it('states the tick step the axis rule chose instead of letting the renderer round', () => {
+    // A stated step over a ceiling that is a whole number of steps: the renderer
+    // can neither round two bands onto one label nor append the ceiling as an
+    // extra label crowding the last tick.
+    expect(build({ max: 4, interval: 1 }).yAxis).toMatchObject({ min: 0, max: 4, interval: 1 })
+    expect(build({ max: 120, interval: 30 }).yAxis).toMatchObject({ max: 120, interval: 30 })
     expect(build().yAxis.splitNumber).toBe(5)
     expect(build().yAxis.interval).toBeUndefined()
-    expect(build({ max: 4, integer: true }).yAxis.max).toBe(4)
+  })
+
+  it('anchors a unit-bearing axis title at a fixed inset instead of centring it over the gutter', () => {
+    // "Speed (MiB/s)" is wider than the 56px tick gutter; centred over it, its
+    // first letters were drawn left of the chart.
+    const yAxis = build({ yAxisName: 'Speed (MiB/s)' }).yAxis
+    expect(yAxis.name).toBe('Speed (MiB/s)')
+    expect(yAxis.nameTextStyle).toMatchObject({ align: 'left', fontSize: 11, padding: [0, 0, 0, 4 - METRIC_CHART_GUTTER] })
+    expect(build().yAxis.name).toBeUndefined()
   })
 
   it('draws an integer metric as bars that stay inside their own sample', () => {
     const option = build({
       kind: 'bar',
       max: 4,
-      integer: true,
+      interval: 1,
       series: [{ label: 'Transactions / block', color: METRIC_SERIES_COLORS.transactions, segments: gap }],
     })
     expect(option.series).toHaveLength(1)

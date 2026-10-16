@@ -436,14 +436,17 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             expect(barFills.length, 'Block interval bars').toBeGreaterThan(0)
             expect(new Set(barFills), JSON.stringify(barFills)).toEqual(new Set(['0.75']))
             // One unit per rate axis: the ceiling the real peak produced names the
-            // unit every label is written in, so MiB/s never sits beside KiB/s.
-            const rateLabels = await cardFor('Host network')
-              .locator('[data-slot="node-metric-chart"] svg text[text-anchor="end"]')
+            // unit once, in the axis title, and every label under it is a bare
+            // number — so MiB/s never sits beside KiB/s and no unit is repeated
+            // down the gutter until it is clipped.
+            const rateCard = cardFor('Host network').locator('[data-slot="node-metric-chart"]')
+            const rateLabels = await rateCard
+              .locator('svg text[text-anchor="end"]')
               .evaluateAll((labels) => labels.map((label) => (label.textContent ?? '').trim()))
-            const rateUnits = new Set(rateLabels.map((label) => label.replace(/^[\d.,]+ ?/, '')))
-            expect(rateLabels.length, 'rate axis labels').toBeGreaterThan(0)
-            expect(rateUnits.size, JSON.stringify(rateLabels)).toBe(1)
-            expect([...rateUnits][0], JSON.stringify(rateLabels)).toMatch(/^[KMGT]?i?B\/s$/)
+            expect(rateLabels.length, 'rate axis labels').toBeGreaterThan(1)
+            expect(rateLabels.every((label) => /^\d+(\.\d+)?$/.test(label)), JSON.stringify(rateLabels)).toBe(true)
+            const rateTitle = (await rateCard.locator('svg text[text-anchor="start"]').first().textContent())?.trim() ?? ''
+            expect(rateTitle, JSON.stringify(rateLabels)).toMatch(/^Speed \([KMGT]?i?B\/s\)$/)
             // The crosshair tooltip is the one place the exact retained sample is
             // stated, with its own instant rather than a rounded reading.
             const cpuPlot = metrics.getByRole("article").filter({ has: page.getByRole("heading", { level: 3, name: "Process CPU" }) }).locator('[data-slot="node-metric-chart"]')
@@ -761,11 +764,17 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
       await expect(process.getByText('Running', { exact: true })).toHaveCount(0)
       const metrics = page.locator('[data-slot="node-metrics-section"]')
       expect(await metrics.locator('[data-slot="node-metric-card"] h3').allTextContents()).toEqual([...CHART_HEADINGS])
-      for (const heading of ['Process CPU', 'Process memory']) {
+      for (const [heading, axisTitle] of [['Process CPU', 'CPU (%)'], ['Process memory', 'Memory (%)']] as const) {
         const card = metrics.getByRole('article').filter({ has: page.getByRole('heading', { name: heading, exact: true }) })
-        await expect(card.locator('[data-slot="node-metric-chart"]')).toHaveAttribute('data-runs', '1')
-        await expect(card.getByText('5.0%', { exact: true })).toBeVisible()
-        await expect(card.getByText('100%', { exact: true })).toHaveCount(0)
+        const chart = card.locator('[data-slot="node-metric-chart"]')
+        await expect(chart).toHaveAttribute('data-runs', '1')
+        // The ceiling still comes from the window's own peak (5 for these
+        // samples), but it is printed as a bare tick under a title that states
+        // the unit, not as a second '%' the header already carries. Both are
+        // read through retrying locator assertions: sampling the SVG once can
+        // run before ECharts has painted the axis on a slower project.
+        await expect(chart.locator('svg text[text-anchor="end"]'), heading).toHaveText(['0', '1', '2', '3', '4', '5'])
+        await expect(chart.locator('svg text[text-anchor="start"]').first(), heading).toHaveText(axisTitle)
       }
       const current = await geometry()
       if (baseline) expect(current, role + ' keeps the same shared layout geometry').toEqual(baseline)

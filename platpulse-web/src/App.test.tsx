@@ -7,6 +7,7 @@ import { applySiteAccessSettings, resetPublicCache } from './api/public'
 import { resetRealtimeCursors } from './api/transport'
 import { client } from './api/generated/client.gen'
 import type { PublicNode, PublicValidatorInsight } from './api/generated/types.gen'
+import { METRIC_SERIES_COLORS } from './components/nodeMetricChartOption'
 
 /**
  * ECharts paints through canvas text measurement and needs a laid-out box, so
@@ -31,6 +32,13 @@ vi.mock('echarts/core', () => ({ init: chartMocks.init, registerMap: chartMocks.
 vi.mock('echarts/charts', () => ({ MapChart: {}, ScatterChart: {}, LineChart: {}, BarChart: {} }))
 vi.mock('echarts/components', () => ({ GeoComponent: {}, TooltipComponent: {}, GridComponent: {}, AxisPointerComponent: {}, LegendComponent: {} }))
 vi.mock('echarts/renderers', () => ({ CanvasRenderer: {}, SVGRenderer: {} }))
+
+/** A palette entry as the browser reports it back, so a colour assertion names
+ *  the same constant the chart paints with instead of copying its digits. */
+function paletteRgb(hex: string): string {
+  const value = Number.parseInt(hex.replace('#', ''), 16)
+  return `rgb(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255})`
+}
 
 const OWNER_SESSION = {
   session: {
@@ -756,8 +764,10 @@ describe('App shell with private Home', () => {
       expect(value?.textContent?.trim(), heading).toBeTruthy()
     }
     // Copy is cut to the unit and the necessary legends: the repeated
-    // explanation sentences and the redundant unit words are gone.
-    expect(within(metricsSection).getAllByText('%', { exact: true })).toHaveLength(2)
+    // explanation sentences and the redundant unit words are gone. The percent
+    // cards' value already ends in "%" and the axis title names the unit, so no
+    // separate "%" chip repeats it beside the title.
+    expect(within(metricsSection).queryAllByText('%', { exact: true })).toHaveLength(0)
     expect(within(metricsSection).queryByText('PlatON process · current observation')).toBeNull()
     expect(within(metricsSection).queryByText('Transactions in each Block Summary')).toBeNull()
     expect(within(metricsSection).queryByText(/Host upload · download/)).toBeNull()
@@ -769,12 +779,22 @@ describe('App shell with private Home', () => {
     // label row carries nothing but "Latest 60 seconds".
     expect(within(metricsSection).queryByText(/Real retained samples/)).toBeNull()
     expect(metricsSection.querySelector('header')?.textContent).toBe('Latest 60 seconds')
-    // The Host network current value is the Upload (tx) rate, not Download, and
-    // it names that direction weakly under the right-aligned number.
+    // The Host network header is Emerald's: upload then download on one row,
+    // each behind a direction chevron in its curve's colour. The direction names
+    // are spoken, not printed as small text under the numbers.
     const hostNetworkCard = within(metricsSection).getByRole('heading', { level: 3, name: 'Host network' }).closest('[data-slot="node-metric-card"]')
     if (!hostNetworkCard) throw new Error('Host network card is missing')
     expect(hostNetworkCard.querySelector('[data-slot="node-metric-header"] [data-slot="node-metric-value"]')?.textContent).toBe('2.00 KiB/s')
-    expect(hostNetworkCard.querySelector('[data-slot="node-metric-header"]')?.textContent).toContain('Upload')
+    expect(hostNetworkCard.querySelector('[data-slot="node-metric-header"] [data-slot="node-metric-value-secondary"]')?.textContent).toBe('4.00 KiB/s')
+    const readings = Array.from(hostNetworkCard.querySelectorAll('[data-slot="node-metric-readings"] > [data-slot="node-metric-reading"]'))
+    expect(readings.map((reading) => reading.getAttribute('data-direction'))).toEqual(['up', 'down'])
+    expect(readings.map((reading) => reading.textContent)).toEqual(['Upload 2.00 KiB/s', 'Download 4.00 KiB/s'])
+    for (const reading of readings) {
+      expect(reading.querySelector('.sr-only')?.textContent?.trim()).toMatch(/^(Upload|Download)$/)
+      const chevron = reading.querySelector('[data-slot="node-metric-direction"]') as SVGElement | null
+      const expected = reading.getAttribute('data-direction') === 'up' ? METRIC_SERIES_COLORS.upload : METRIC_SERIES_COLORS.download
+      expect(chevron?.style.color).toBe(paletteRgb(expected))
+    }
     const peerCard = within(metricsSection).getByRole('heading', { level: 3, name: 'Peer connections' }).closest('[data-slot="node-metric-card"]')
     if (!peerCard) throw new Error('Peer connections card is missing')
     // Multi-series cards embed native ECharts legends inside the canvas matching Emerald,

@@ -5,7 +5,7 @@ import { BarChart, LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent } from 'echarts/components'
 import { SVGRenderer } from 'echarts/renderers'
 import { METRIC_SERIES_COLORS, metricChartOption, type MetricChartOptionInput } from './nodeMetricChartOption'
-import { formatPercentSample } from './metricChartAxis'
+import { durationAxis, formatPercentSample, percentAxis, rateAxis } from './metricChartAxis'
 
 // Exercise ECharts' real layout, not a mocked option. The SVG SSR renderer runs
 // the same axis and series geometry the browser draws, so this file is the
@@ -182,13 +182,62 @@ describe('Node Detail metric chart geometry', () => {
     const { svg } = render({
       kind: 'bar',
       max: 2,
-      integer: true,
+      interval: 1,
       axisFormat: (value) => String(Math.round(value)),
       series: [{ label: 'Transactions / block', color: METRIC_SERIES_COLORS.transactions, segments: [[{ sampledAt: at(10), value: 1 }, { sampledAt: at(20), value: 2 }]] }],
     })
     const labels = axisLabels(svg)
     expect(labels).toEqual(['0', '1', '2'])
     expect(new Set(labels).size).toBe(labels.length)
+  })
+
+  it('prints a byte-rate axis as bare numbers in the unit its title names, starting inside the chart', () => {
+    const axis = rateAxis('Speed')(110 * 1024 * 1024, 5)
+    const { svg } = render({
+      max: axis.max,
+      interval: axis.interval,
+      axisFormat: axis.format,
+      yAxisName: axis.name,
+      series: [{ label: 'Download', color: METRIC_SERIES_COLORS.download, segments: [[{ sampledAt: at(0), value: 110 * 1024 * 1024 }, { sampledAt: at(30), value: 60 * 1024 * 1024 }]] }],
+    })
+    // No extra ceiling label crowds the last tick, and no tick repeats the unit.
+    expect(axisLabels(svg).filter((label) => label !== axis.name)).toEqual(['0', '30', '60', '90', '120'])
+    const name = new RegExp('<text([^>]*)>' + escaped(axis.name) + '</text>').exec(svg)?.[1] ?? ''
+    expect(name).toContain('text-anchor="start"')
+    const left = Number(/translate\((-?[\d.]+)/.exec(name)?.[1]) + Number(/ x="(-?[\d.]+)"/.exec(name)?.[1] ?? 0)
+    expectNear(left, 4, 0.05)
+  })
+
+  it('steps a CPU ceiling the percent ladder cannot divide into countable bands', () => {
+    // 620% is over the 400% rung, so the ladder asks for 700% — which divides
+    // into no step a reader counts in (700/5 = 140, and 175 is not a step
+    // either). The axis walks past that rung instead of collapsing to "0, 700".
+    const axis = percentAxis('CPU')(620, 5)
+    expect(axis.max).toBe(750)
+    expect(axis.interval).toBe(150)
+    const { svg } = render({
+      max: axis.max,
+      interval: axis.interval,
+      axisFormat: axis.format,
+      yAxisName: axis.name,
+      series: [{ label: 'Process CPU', color: METRIC_SERIES_COLORS.cpu, segments: [[{ sampledAt: at(0), value: 620 }]] }],
+    })
+    expect(svg).toContain('>CPU (%)</text>')
+    expect(axisLabels(svg).filter((label) => label !== axis.name)).toEqual(['0', '150', '300', '450', '600', '750'])
+  })
+
+  it('keeps every block-interval tick in the unit the axis title names', () => {
+    const axis = durationAxis('Duration')(11_000, 5)
+    const { svg } = render({
+      kind: 'bar',
+      max: axis.max,
+      interval: axis.interval,
+      axisFormat: axis.format,
+      yAxisName: axis.name,
+      series: [{ label: 'Block interval', color: METRIC_SERIES_COLORS.blockInterval, segments: [[{ sampledAt: at(10), value: 1000 }, { sampledAt: at(20), value: 11_000 }]] }],
+    })
+    expect(svg).toContain('>Duration (s)</text>')
+    expect(axisLabels(svg).filter((label) => label !== axis.name)).toEqual(['0', '3', '6', '9', '12'])
   })
 
   it('never truncates a Process CPU sample above 100%', () => {
@@ -209,7 +258,7 @@ describe('Node Detail metric chart geometry', () => {
     const { svg } = render({
       kind: 'bar',
       max: 4,
-      integer: true,
+      interval: 1,
       barWidth: 10,
       axisFormat: (value) => String(Math.round(value)),
       series: [{ label: 'Peer connections', color: METRIC_SERIES_COLORS.inbound, segments: [[{ sampledAt: at(10), value: 1 }, { sampledAt: at(40), value: 3 }]] }],
@@ -243,7 +292,7 @@ describe('Node Detail metric chart geometry', () => {
       const { svg } = render({
         kind: 'bar',
         max: 4,
-        integer: true,
+        interval: 1,
         barWidth: 10,
         axisFormat: (value) => String(Math.round(value)),
         series: [{ label: 'Transactions / block', color: METRIC_SERIES_COLORS.transactions, segments: [samples.map((seconds) => ({ sampledAt: at(seconds), value: 2 }))] }],
@@ -261,7 +310,7 @@ describe('Node Detail metric chart geometry', () => {
     const boundary = render({
       kind: 'bar',
       max: 4,
-      integer: true,
+      interval: 1,
       barWidth: 10,
       axisFormat: (value) => String(Math.round(value)),
       series: [{ label: 'Transactions / block', color: METRIC_SERIES_COLORS.transactions, segments: [[{ sampledAt: at(0), value: 2 }, { sampledAt: at(60), value: 2 }]] }],

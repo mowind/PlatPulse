@@ -1,6 +1,5 @@
 import type { EChartsOption } from 'echarts'
 import type { MetricObservation } from '../metricCoverage'
-import { integerChartTicks } from './metricChartAxis'
 
 /**
  * The Node Detail six-chart option, ported from komari-theme-emerald's
@@ -117,8 +116,10 @@ export type MetricChartOptionInput = {
   max: number
   series: MetricChartSeriesInput[]
   dark: boolean
-  /** Whole-number axis: no tick may repeat a rounded label. */
-  integer?: boolean
+  /** Tick step. The ceiling is a whole number of steps (see MetricAxis), so the
+   *  renderer never appends the ceiling as an extra, off-rhythm label. */
+  interval?: number
+  /** Bare tick label; the unit lives in `yAxisName`. */
   axisFormat: (value: number) => string
   /** Exact value, as the tooltip states it. */
   valueFormat: (value: number) => string
@@ -126,9 +127,16 @@ export type MetricChartOptionInput = {
   barWidth?: number
   /** ECharts native legend displayed at bottom: 4, matching Emerald. */
   showLegend?: boolean
-  /** Y-axis title / unit, placed above the y-axis, matching Emerald. */
+  /** Y-axis title carrying the unit ("Speed (MiB/s)"), placed above the tick
+   *  column like Emerald's "CPU %". */
   yAxisName?: string
 }
+
+/** Where the axis title starts, measured from the chart's left edge. Emerald
+ *  centres its short titles over the tick column; a title carrying its unit can
+ *  be wider than that 56px column, so it is anchored at a fixed inset instead and
+ *  grows to the right, above the plot, where nothing else is drawn. */
+export const METRIC_CHART_AXIS_NAME_INSET = 4
 
 /** Emerald's exact grid margins (LoadChart.vue:73-82). */
 export const METRIC_CHART_LEFT_MARGIN = 56
@@ -265,11 +273,6 @@ export function metricChartOption(input: MetricChartOptionInput): EChartsOption 
     }))
   })
 
-  // A whole-number axis is given its own step: without one the renderer divides
-  // whatever ceiling it was handed into five and rounds each label, so a
-  // four-connection window can print "0, 1, 1, 2" — two labels for one count.
-  const ticks = input.integer === true ? integerChartTicks(input.max) : undefined
-
   return {
     animation: false,
     color: input.series.map((s) => s.color),
@@ -322,15 +325,22 @@ export function metricChartOption(input: MetricChartOptionInput): EChartsOption 
       type: 'value',
       min: 0,
       max: input.max,
-      splitNumber: ticks ? ticks.splitNumber : 5,
-      ...(ticks ? { interval: ticks.interval } : {}),
+      // An explicit step: without one the renderer divides whatever ceiling it
+      // was handed into five, rounds each label (a four-connection window printed
+      // "0, 1, 1, 2") and adds the ceiling as one more label that crowds the last
+      // tick.
+      ...(input.interval && input.interval > 0 ? { interval: input.interval } : { splitNumber: 5 }),
       ...(input.yAxisName
         ? {
             name: input.yAxisName,
+            nameLocation: 'end' as const,
             nameTextStyle: {
               color: theme.textSecondary,
               fontSize: 11,
-              padding: [0, 40, 0, 0],
+              align: 'left' as const,
+              // The name is laid out from the grid's left edge; the negative left
+              // padding moves its start back to the fixed inset.
+              padding: [0, 0, 0, METRIC_CHART_AXIS_NAME_INSET - METRIC_CHART_LEFT_MARGIN],
             },
           }
         : {}),

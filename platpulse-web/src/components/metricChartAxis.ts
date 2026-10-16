@@ -1,5 +1,3 @@
-import type { PublicMetricPoint } from '../api/generated'
-
 /**
  * Axis scales and label formats shared by the Node Detail six-chart deck.
  *
@@ -8,6 +6,7 @@ import type { PublicMetricPoint } from '../api/generated'
  * much room they get. Kept out of the page so the pure scale rules can be
  * unit-tested without a browser.
  */
+import { METRIC_CHART_BOTTOM_MARGIN, METRIC_CHART_BOTTOM_MARGIN_WITH_LEGEND, METRIC_CHART_TOP_MARGIN } from './nodeMetricChartOption'
 
 /**
  * CPU and memory curves are read against the ceiling the window actually
@@ -16,140 +15,164 @@ import type { PublicMetricPoint } from '../api/generated'
  * a process share and is not capped at one core: a 130% sample belongs on a
  * 150% axis, not truncated onto a 100% one.
  */
-export function percentChartMax(points: PublicMetricPoint[]): number {
-  const values = points.map((point) => point.value).filter(Number.isFinite)
-  const max = values.length > 0 ? Math.max(...values) : 0
+export function percentChartMax(peak: number): number {
+  const max = Number.isFinite(peak) ? peak : 0
   for (const bucket of [5, 10, 25, 50, 100, 150, 200, 250, 400]) {
     if (max <= bucket) return bucket
   }
   return Math.ceil(max / 100) * 100
 }
 
-export function niceChartMax(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return 1
-  const magnitude = 10 ** Math.floor(Math.log10(value))
-  const normalized = value / magnitude
-  const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10
-  return step * magnitude
+/**
+ * One chart's value axis, resolved for the room it has: the ceiling, the tick
+ * step, the axis title and the bare tick label. The title carries the unit, so a
+ * tick is only a number — "Speed (MiB/s)" over "0 · 30 · 60", never a column of
+ * "28.6 MiB/s" labels wider than the gutter Emerald gives the axis. One axis
+ * never mixes units: the rule picks the unit once from the window's peak.
+ *
+ * The ceiling is always a whole number of steps, so the renderer never has to
+ * add the ceiling as an extra off-rhythm label crowding the last tick.
+ */
+export type MetricAxis = {
+  max: number
+  interval: number
+  name: string
+  format: (value: number) => string
 }
 
 /**
- * Counts are integers, so the axis is asked for whole ticks and given a
- * five-step ceiling: at most five whole numbers fit under it, which is what
- * stops "0, 1, 1, 2, 2" from appearing under a two-connection window without
- * inflating the reported values.
+ * Resolves a {@link MetricAxis} from the highest observation the window actually
+ * plots and the most tick bands the plot height can space apart. Rules are built
+ * once at module level, so their identity survives a render.
  */
-export function integerChartMax(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return 4
-  return value <= 4 ? 4 : niceChartMax(value)
-}
+export type MetricAxisRule = (peak: number, maxBands: number) => MetricAxis
 
-/** Steps a count axis is willing to print, in the order a reader would choose
- *  them: whole numbers first, then the steps one counts by. */
-const INTEGER_TICK_INTERVALS = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000]
+/** Tick steps a reader counts by, per decade. 1.5, 6 and 8 keep the worst
+ *  ceiling within about 31% of the target even with only five bands. */
+const NICE_STEP_MULTIPLES = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8]
 
-/**
- * The tick step a whole-number ceiling has to be given explicitly. Without one
- * the renderer divides whatever ceiling it was handed into five and rounds each
- * label, so a four-connection window can print "0, 1, 1, 2" — two labels for one
- * observation count. The first readable step that divides the ceiling into two to
- * five bands wins (20 counts are read in fives, not in fours), and a ceiling no
- * step divides falls back to the smallest whole step that still fits five bands.
- */
-export function integerChartTicks(max: number): { splitNumber: number; interval: number } {
-  if (!Number.isFinite(max) || max <= 0) return { splitNumber: 5, interval: 1 }
-  for (const interval of INTEGER_TICK_INTERVALS) {
-    if (interval > max) break
-    const splits = max / interval
-    if (Number.isInteger(splits) && splits >= 2 && splits <= 5) return { splitNumber: splits, interval }
+function niceSteps(minimum: number, integer: boolean): number[] {
+  const exponent = Math.floor(Math.log10(minimum))
+  const steps: number[] = []
+  for (let power = exponent - 1; power <= exponent + 2; power += 1) {
+    for (const multiple of NICE_STEP_MULTIPLES) {
+      const step = Number((multiple * 10 ** power).toPrecision(12))
+      if (step >= minimum * (1 - 1e-9) && (!integer || Number.isInteger(step))) steps.push(step)
+    }
   }
-  const interval = Math.max(1, Math.ceil(max / 5))
-  return { splitNumber: Math.max(1, Math.floor(max / interval)), interval }
+  return steps
+}
+
+function clampBands(maxBands: number): number {
+  return Number.isFinite(maxBands) ? Math.min(5, Math.max(1, Math.floor(maxBands))) : 5
 }
 
 /**
- * Byte rates get their own ladder. `niceChartMax` normalises in decimal steps —
- * a 5 MiB/s window peak (5 242 880 B/s) sits between 5 and 10 × 10^6 — so the
- * network axis climbed to 9.5 MiB/s and the curve lived in the lower half of an
- * empty box. This ladder steps in the units a rate is read in (1, 1.125, 1.25, 1.5,
- * 1.75, 2, 2.25, 2.5, 3, 3.5, 4, 4.5, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18 × 2^n ×
- * 128 B), and the ceiling is the first rung clearing the peak by at least 5%: the
- * plot keeps a sliver of headroom and never spends a quarter of its height on
- * empty axis. The half-step rungs (1.125, 2.25, 4.5, 9, 18) cap the ladder's
- * widest gap at 1.2x, which is what holds that promise: without them the gap
- * between rungs is 1.25x, so a peak landing just above a rung — a real 7.7 MiB/s
- * window, between the 8 and 10 MiB/s rungs — was handed a 30% ceiling either way.
+ * The lowest ceiling at or above `target` that a nice step divides into at most
+ * `maxBands` bands. An integer scale only uses whole steps, so a two-connection
+ * window can never print "0, 1, 1, 2".
  */
-const RATE_CHART_MULTIPLES = [
-  1, 1.125, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 3, 3.5, 4, 4.5, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18,
-]
+export function niceAxisScale(target: number, maxBands: number, integer = false): { max: number; interval: number } {
+  const bands = clampBands(maxBands)
+  const value = Number.isFinite(target) && target > 0 ? target : 1
+  let best: { max: number; interval: number } | undefined
+  for (const step of niceSteps(Math.max(value / bands, integer ? 1 : 0), integer)) {
+    const count = Math.max(1, Math.ceil(value / step - 1e-9))
+    if (count > bands) continue
+    const max = Number((count * step).toPrecision(12))
+    if (!best || max < best.max) best = { max, interval: step }
+  }
+  return best ?? { max: value, interval: value }
+}
+
+/** A tick label without a unit: the axis title states it. Float noise from the
+ *  step arithmetic is dropped, never a real digit. */
+function bareNumber(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0'
+  return String(Number(value.toPrecision(6)))
+}
+
+/** Vertical room one value-axis label needs: an 11px label is 12px tall, and two
+ *  more pixels keep neighbouring ticks apart. */
+const MIN_TICK_SPACING = 14
+
+/** How many tick bands a plot of this height can label without overlap; up to
+ *  Emerald's five. Before the first measurement the desktop answer is used. */
+export function metricChartMaxBands(height: number, showLegend: boolean): number {
+  if (!(height > 0)) return 5
+  const plot = height - METRIC_CHART_TOP_MARGIN - (showLegend ? METRIC_CHART_BOTTOM_MARGIN_WITH_LEGEND : METRIC_CHART_BOTTOM_MARGIN)
+  return Math.max(1, Math.min(5, Math.floor(plot / MIN_TICK_SPACING)))
+}
+
+/**
+ * CPU and memory: the percent ladder above, stepped evenly.
+ *
+ * The ladder rung is a target for the same nice-step search the other axes use,
+ * never the ceiling itself: a ladder rung is not always divisible into a
+ * countable number of bands (700% divides by no step a reader counts in), and an
+ * axis whose ceiling cannot be stepped prints its floor and its ceiling and
+ * nothing between them.
+ */
+export function percentAxis(name: string): MetricAxisRule {
+  const format = bareNumber
+  return (peak, maxBands) => ({
+    ...niceAxisScale(percentChartMax(peak), maxBands),
+    name: name + ' (%)',
+    format,
+  })
+}
+
+/**
+ * Counts are whole numbers on whole steps. A window that never reached four is
+ * still drawn against four, so a steady two-connection line is not pinned to the
+ * top of its box.
+ */
+export function countAxis(name: string): MetricAxisRule {
+  const format = (value: number) => Math.round(value).toLocaleString()
+  return (peak, maxBands) => ({ ...niceAxisScale(Math.max(peak, 4), maxBands, true), name, format })
+}
+
+/**
+ * Block intervals are measured in milliseconds; an axis whose ceiling reaches
+ * five seconds is read in seconds instead. The whole axis then uses that one
+ * unit — never "0ms" under "5s" — and the tooltip keeps the exact millisecond
+ * sample.
+ */
+export function durationAxis(name: string): MetricAxisRule {
+  const milliseconds = (value: number) => bareNumber(value)
+  const seconds = (value: number) => bareNumber(value / 1000)
+  return (peak, maxBands) => {
+    const value = Number.isFinite(peak) && peak > 0 ? peak : 1
+    if (value < 5000) return { ...niceAxisScale(value, maxBands, true), name: name + ' (ms)', format: milliseconds }
+    const scale = niceAxisScale(value / 1000, maxBands)
+    return { max: scale.max * 1000, interval: scale.interval * 1000, name: name + ' (s)', format: seconds }
+  }
+}
+
+const RATE_UNITS = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s', 'TiB/s']
 
 /** The ceiling clears the window's peak by at least this much, so the measured
  *  curve never runs into the top of its box. */
 const RATE_CHART_MIN_HEADROOM = 1.05
 
-/** The smallest step on the rate ladder at or above the given value. The scale
- *  keeps doubling instead of stopping at a fixed bound: a peak beyond the
- *  ladder's usual range (a nonsense rate, but a real number) still gets a
- *  ceiling above it rather than a ceiling it has already passed. */
-function rateChartStep(value: number): number {
-  if (!(value > 0)) return 128
-  for (let scale = 128; ; scale *= 2) {
-    for (const multiple of RATE_CHART_MULTIPLES) {
-      const step = multiple * scale
-      if (step >= value) return step
-    }
-  }
-}
-
-export function rateChartMax(points: ReadonlyArray<{ value: number }>): number {
-  const values = points.map((point) => point.value).filter(Number.isFinite)
-  const peak = values.length > 0 ? Math.max(...values) : 0
-  if (!(peak > 0)) return 128
-  // The first rung that clears the peak by the minimum headroom. The widest rung
-  // gap is 1.2x, so the ceiling lands between 5% and 26% above the real peak.
-  return rateChartStep(peak * RATE_CHART_MIN_HEADROOM)
-}
-
-/** Emerald's axis label size and rhythm: whole percents stay whole, and a
- *  narrow range keeps one decimal so 2.5% is not rounded onto 2%. */
-export function formatPercentAxis(value: number): string {
-  if (value <= 0) return '0%'
-  return value.toFixed(value < 10 ? 1 : 0) + '%'
-}
-
-export function formatCountAxis(value: number): string {
-  return Math.round(value).toLocaleString()
-}
-
-export function formatMillisecondsAxis(value: number): string {
-  if (value >= 1000) return Number((value / 1000).toFixed(value >= 10_000 ? 0 : 1)) + 's'
-  return Math.round(value) + 'ms'
-}
-
 /**
- * A byte-rate tick, stated in the unit the ceiling chose: one network axis never
- * mixes "1.2 MiB/s" with "600 KiB/s", because a mixed axis cannot be compared
- * down a column. The decimals are capped where they would push the label out of
- * the shared gutter the six cards all reserve — whole numbers stay whole, and
- * only a value below ten keeps the two decimals it needs to stay distinct. The
- * card's own current value and the tooltip keep the full precision of
- * `formatMetricRate`.
+ * Byte rates are stepped in the binary unit they are read in: the unit is picked
+ * from the window's peak, and the steps are nice numbers *of that unit* (0, 30,
+ * 60, 90, 120 MiB/s) rather than decimal-byte steps printed as 28.6 MiB/s. The
+ * ceiling clears the peak by at least 5%.
  */
-export function formatRateAxisAt(value: number, axisMax: number): string {
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
-  let unit = 0
-  let scale = 1
-  const ceiling = Number.isFinite(axisMax) && axisMax > 0 ? axisMax : 0
-  while (ceiling >= scale * 1024 && unit < units.length - 1) {
-    scale *= 1024
-    unit += 1
+export function rateAxis(name: string): MetricAxisRule {
+  const formats = RATE_UNITS.map((_, unit) => (value: number) => bareNumber(value / 1024 ** unit))
+  return (peak, maxBands) => {
+    const target = (Number.isFinite(peak) && peak > 0 ? peak : 1) * RATE_CHART_MIN_HEADROOM
+    let unit = 0
+    while (target >= 1024 ** (unit + 1) && unit < RATE_UNITS.length - 1) unit += 1
+    const scale = 1024 ** unit
+    const { max, interval } = niceAxisScale(target / scale, maxBands)
+    return { max: max * scale, interval: interval * scale, name: name + ' (' + RATE_UNITS[unit] + ')', format: formats[unit] as (value: number) => string }
   }
-  if (!Number.isFinite(value) || value <= 0) return '0 ' + units[unit] + '/s'
-  const scaled = value / scale
-  const digits = scaled >= 100 ? 0 : scaled >= 10 ? (Number.isInteger(scaled) ? 0 : 1) : 2
-  return Number(scaled.toFixed(digits)) + ' ' + units[unit] + '/s'
 }
+
 
 /**
  * The tooltip states the sample itself, not a reading of it: byte rates keep

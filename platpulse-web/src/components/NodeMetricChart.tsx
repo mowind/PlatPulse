@@ -3,7 +3,12 @@ import type { ECharts } from 'echarts/core'
 import { cn } from '../lib/utils'
 import { useIsDark } from '../lib/useIsDark'
 import { loadECharts } from './echartsCore'
-import { METRIC_CHART_GUTTER, metricChartOption, type MetricChartSeriesInput } from './nodeMetricChartOption'
+import { metricChartMaxBands, type MetricAxisRule } from './metricChartAxis'
+import {
+  METRIC_CHART_GUTTER,
+  metricChartOption,
+  type MetricChartSeriesInput,
+} from './nodeMetricChartOption'
 
 /**
  * One Node Detail monitoring chart: a 60-second window, the Server's real
@@ -21,8 +26,9 @@ import { METRIC_CHART_GUTTER, metricChartOption, type MetricChartSeriesInput } f
  *
  * The plot is one of the pinned heights the accepted visual contract fixes: 132px
  * on phones, 168px from md, 192px from lg — the last matching Emerald's own h-48
- * plot box. The ECharts grid then spends 12px above and 26px below, so the painted
- * band is 154px on desktop and the axis itself can print its clock labels.
+ * plot box. The ECharts grid keeps Emerald's margins inside it, so the painted
+ * band shrinks on a phone; the value axis is told how many tick bands that band
+ * can space apart, so its labels never sit on top of each other.
  */
 export type NodeMetricChartProps = {
   /** Card title, used to name the chart for assistive technology. */
@@ -30,12 +36,12 @@ export type NodeMetricChartProps = {
   kind: 'line' | 'bar'
   from: number
   to: number
-  /** Display ceiling; samples are drawn unscaled against it. */
-  max: number
   series: MetricChartSeriesInput[]
-  /** Whole-number metric: the axis asks for whole ticks. */
-  integer?: boolean
-  axisFormat: (value: number) => string
+  /** Ceiling, tick step, unit-bearing title and bare tick label, resolved from
+   *  the highest plotted observation and the room the plot has. Samples are
+   *  drawn unscaled against the ceiling. Module-level identity keeps the option
+   *  stable across renders. */
+  axis: MetricAxisRule
   /** Exact value as the tooltip states it. Module-level function identity keeps
    *  the option stable across renders. */
   valueFormat: (value: number) => string
@@ -46,8 +52,6 @@ export type NodeMetricChartProps = {
   description: string
   /** ECharts native legend displayed at bottom: 4, matching Emerald. */
   showLegend?: boolean
-  /** Y-axis title / unit, placed above the y-axis, matching Emerald. */
-  yAxisName?: string
   className?: string
 }
 
@@ -58,22 +62,20 @@ export default function NodeMetricChart({
   kind,
   from,
   to,
-  max,
   series,
-  integer = false,
-  axisFormat,
+  axis,
   valueFormat,
   seconds,
   message,
   description,
   showLegend = false,
-  yAxisName,
   className,
 }: NodeMetricChartProps) {
   const container = useRef<HTMLDivElement>(null)
   const chart = useRef<ECharts | null>(null)
   const optionRef = useRef<ReturnType<typeof metricChartOption> | null>(null)
   const [width, setWidth] = useState(0)
+  const [height, setHeight] = useState(0)
   // A chart that could not load says so. Leaving the plot silently blank would
   // let the card look intact while the picture is missing.
   const [failed, setFailed] = useState(false)
@@ -91,9 +93,15 @@ export default function NodeMetricChart({
     ? Math.max(2, Math.min(12, ((width - METRIC_CHART_GUTTER - 10) / Math.max(1, points)) * 0.55))
     : undefined
 
+  // The axis is scaled to what is drawn: only observations inside the window
+  // reach the plot, so only they decide the ceiling.
+  const peak = series.reduce((highest, entry) => entry.segments.reduce((top, segment) => segment.reduce((value, item) => (Number.isFinite(item.value) && item.value > value ? item.value : value), top), highest), 0)
+  const maxBands = metricChartMaxBands(height, showLegend)
+  const scale = useMemo(() => axis(peak, maxBands), [axis, peak, maxBands])
+
   const option = useMemo(
-    () => metricChartOption({ kind, from, to, max, series, dark, integer, axisFormat, valueFormat, barWidth, showLegend, yAxisName }),
-    [kind, from, to, max, series, dark, integer, axisFormat, valueFormat, barWidth, showLegend, yAxisName],
+    () => metricChartOption({ kind, from, to, max: scale.max, interval: scale.interval, series, dark, axisFormat: scale.format, valueFormat, barWidth, showLegend, yAxisName: scale.name }),
+    [kind, from, to, scale, series, dark, valueFormat, barWidth, showLegend],
   )
   optionRef.current = option
 
@@ -113,11 +121,15 @@ export default function NodeMetricChart({
         if (optionRef.current) instance.setOption(optionRef.current)
         observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver((entries) => {
           const box = entries[0]?.contentRect
-          if (box) setWidth(Math.round(box.width))
+          if (box) {
+            setWidth(Math.round(box.width))
+            setHeight(Math.round(box.height))
+          }
           instance?.resize()
         })
         observer?.observe(container.current)
         setWidth(Math.round(container.current.clientWidth))
+        setHeight(Math.round(container.current.clientHeight))
       })
       .catch(() => {
         // A chart that cannot load leaves the card's value, its accessible
