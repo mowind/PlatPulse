@@ -1,0 +1,72 @@
+{
+  "audit-360-light": {
+    "table": 704,
+    "container": 296,
+    "scroll": 704,
+    "doc": 360,
+    "viewport": 360
+  },
+  "audit-390-light": {
+    "table": 704,
+    "container": 326,
+    "scroll": 704,
+    "doc": 390,
+    "viewport": 390
+  },
+  "audit-768-light": {
+    "table": 704,
+    "container": 704,
+    "scroll": 704,
+    "doc": 768,
+    "viewport": 768
+  },
+  "audit-1280-light": {
+    "table": 984,
+    "container": 984,
+    "scroll": 984,
+    "doc": 1280,
+    "viewport": 1280
+  },
+  "audit-1440-light": {
+    "table": 1144,
+    "container": 1144,
+    "scroll": 1144,
+    "doc": 1440,
+    "viewport": 1440
+  },
+  "audit-360-dark": {
+    "table": 704,
+    "container": 296,
+    "scroll": 704,
+    "doc": 360,
+    "viewport": 360
+  },
+  "audit-390-dark": {
+    "table": 704,
+    "container": 326,
+    "scroll": 704,
+    "doc": 390,
+    "viewport": 390
+  },
+  "audit-768-dark": {
+    "table": 704,
+    "container": 704,
+    "scroll": 704,
+    "doc": 768,
+    "viewport": 768
+  },
+  "audit-1280-dark": {
+    "table": 984,
+    "container": 984,
+    "scroll": 984,
+    "doc": 1280,
+    "viewport": 1280
+  },
+  "audit-1440-dark": {
+    "table": 1144,
+    "container": 1144,
+    "scroll": 1144,
+    "doc": 1440,
+    "viewport": 1440
+  }
+}
