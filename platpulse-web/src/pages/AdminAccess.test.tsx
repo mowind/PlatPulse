@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { adminQueryClient } from '../api/admin'
@@ -166,8 +166,10 @@ describe('PAGE-ACCESS-SESSIONS (Human Sessions)', () => {
     const viewerRow = await screen.findByRole('row', { name: /viewer/ })
     fireEvent.click(withinRowButton(viewerRow, 'Revoke'))
     fireEvent.click(withinRowButton(viewerRow, 'Confirm revoke'))
-    await screen.findByText(/Session for viewer revoked/)
+    const outcome = await screen.findByText(/Session for viewer revoked/)
     expect(revoked).toBe(true)
+    // The confirmation that held focus is gone; focus lands on the outcome.
+    await waitFor(() => expect(document.activeElement).toBe(outcome))
   })
 
   it('keeps the current session when revoking all others', async () => {
@@ -198,7 +200,51 @@ describe('PAGE-ACCESS-SESSIONS (Human Sessions)', () => {
     const viewerRow = await screen.findByRole('row', { name: /viewer/ })
     fireEvent.click(withinRowButton(viewerRow, 'Revoke'))
     fireEvent.click(withinRowButton(viewerRow, 'Confirm revoke'))
-    expect(await screen.findByText(/already_revoked/)).toBeTruthy()
+    const alert = await screen.findByText(/already_revoked/)
+    await waitFor(() => expect(document.activeElement).toBe(alert))
+  })
+
+  it('uses the shared Admin header and labels every stacked cell for phones', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/sessions': () => jsonResponse(SESSIONS, 200),
+    })
+    renderAt('/admin/access/sessions')
+
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Sessions' })
+    const page = heading.closest('[data-slot="sessions-page"]') as HTMLElement
+    expect(heading.closest('[data-slot="admin-page-header"]')).toBeTruthy()
+    // The privacy note stays reachable from one place, not repeated in header and panel.
+    expect(within(page).getAllByRole('button', { name: 'About Session metadata' })).toHaveLength(1)
+    const viewerRow = await screen.findByRole('row', { name: /viewer/ })
+    const panel = page.querySelector('[data-slot="sessions-panel"]') as HTMLElement
+    expect(within(panel).getByRole('heading', { level: 2, name: 'Active Sessions' })).toBeTruthy()
+    expect(panel.querySelector('[data-slot="sessions-count"]')?.textContent).toBe('2 Sessions')
+
+    const table = panel.querySelector('[data-slot="sessions-table"] table') as HTMLElement
+    expect(table.hasAttribute('data-stack')).toBe(true)
+    expect(
+      Array.from(viewerRow.querySelectorAll('[data-label]')).map((cell) => cell.getAttribute('data-label')),
+    ).toEqual(['User', 'Client', 'Created', 'Last active', 'Expires', 'Action'])
+  })
+
+  it('returns focus to the row Revoke action when its confirmation is cancelled', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/sessions': () => jsonResponse(SESSIONS, 200),
+    })
+    renderAt('/admin/access/sessions')
+
+    const viewerRow = await screen.findByRole('row', { name: /viewer/ })
+    fireEvent.click(withinRowButton(viewerRow, 'Revoke'))
+    expect(viewerRow.textContent).toContain("Revoke now? The user's streams close immediately.")
+    fireEvent.click(withinRowButton(viewerRow, 'Cancel'))
+    expect(document.activeElement).toBe(withinRowButton(viewerRow, 'Revoke'))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Revoke all other Sessions' }))
+    expect(screen.getByText(/The current Session stays active/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Revoke all other Sessions' }))
   })
 })
 

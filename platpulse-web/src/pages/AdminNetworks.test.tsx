@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { adminQueryClient } from '../api/admin'
@@ -153,6 +153,67 @@ describe('PAGE-ADMIN-NETWORKS (Network Registry)', () => {
     const row = await screen.findByRole('row', { name: /PlatON E2E Network/ })
     expect(row.textContent).toContain('No mismatch reported')
     expect(row.textContent).not.toContain('Current')
+  })
+
+  it('opens the complete Genesis hash on demand, copies it, and keeps it selectable when copy fails', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/networks': () => jsonResponse([NETWORK], 200),
+    })
+    renderAt('/admin/networks')
+
+    const row = await screen.findByRole('row', { name: /PlatON E2E Network/ })
+    // Short by default: the complete hash is not laid out in the list.
+    expect(within(row).getByText('0x111111…1111')).toBeTruthy()
+    expect(within(row).queryByText(NETWORK.genesis_hash, { exact: true })).toBeNull()
+
+    const toggle = within(row).getByRole('button', { name: 'Show full Genesis hash' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    const panelId = toggle.getAttribute('aria-controls')
+    expect(panelId).toBeTruthy()
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(toggle.textContent).toBe('Hide full Genesis hash')
+    const panel = document.getElementById(panelId ?? '')
+    expect(panel).toBeTruthy()
+    expect(within(panel as HTMLElement).getByText(NETWORK.genesis_hash, { exact: true })).toBeTruthy()
+
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const previousClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    try {
+      fireEvent.click(within(panel as HTMLElement).getByRole('button', { name: 'Copy Genesis hash' }))
+      expect(await within(panel as HTMLElement).findByText('Copied to clipboard.')).toBeTruthy()
+      expect(writeText).toHaveBeenCalledWith(NETWORK.genesis_hash)
+
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+      })
+      fireEvent.click(within(panel as HTMLElement).getByRole('button', { name: 'Copy Genesis hash' }))
+      expect(
+        await within(panel as HTMLElement).findByText('Copy unavailable; select the full Genesis hash shown here.'),
+      ).toBeTruthy()
+      expect(within(panel as HTMLElement).queryByText('Copied to clipboard.')).toBeNull()
+      expect(within(panel as HTMLElement).getByText(NETWORK.genesis_hash, { exact: true })).toBeTruthy()
+
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+      fireEvent.click(within(panel as HTMLElement).getByRole('button', { name: 'Copy Genesis hash' }))
+      expect(
+        await within(panel as HTMLElement).findByText('Copy unavailable; select the full Genesis hash shown here.'),
+      ).toBeTruthy()
+    } finally {
+      if (previousClipboard) Object.defineProperty(navigator, 'clipboard', previousClipboard)
+      else delete (navigator as unknown as { clipboard?: unknown }).clipboard
+    }
+
+    // Escape inside the opened value collapses it and returns focus to the toggle.
+    const copy = within(panel as HTMLElement).getByRole('button', { name: 'Copy Genesis hash' })
+    copy.focus()
+    fireEvent.keyDown(copy, { key: 'Escape' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(document.getElementById(panelId ?? '')).toBeNull()
+    expect(document.activeElement).toBe(toggle)
   })
 
   it('registers a Network only through the explicit Owner workflow with the full tuple', async () => {

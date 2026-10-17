@@ -303,6 +303,31 @@ describe('PAGE-ADMIN-VALIDATORS (automatic identity and registry)', () => {
     expect(nodeD.textContent).toContain('Never evaluated')
   })
 
+  it('opens the complete Observed P2P key on demand and keeps an unobserved key Unknown without a copy control', async () => {
+    mockFetch(registryRoutes())
+    renderAt('/admin/validators')
+
+    const nodeA = await screen.findByRole('row', { name: /Node A/ })
+    const keyCell = nodeA.querySelector('td[data-label="Observed P2P key"]') as HTMLElement
+    expect(within(keyCell).queryByText(KEY_A, { exact: true })).toBeNull()
+    const toggle = within(keyCell).getByRole('button', { name: 'Show full Observed P2P key' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    const panel = document.getElementById(toggle.getAttribute('aria-controls') ?? '') as HTMLElement
+    expect(within(panel).getByText(KEY_A, { exact: true })).toBeTruthy()
+    expect(within(panel).getByRole('button', { name: 'Copy Observed P2P key' })).toBeTruthy()
+    toggle.focus()
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(toggle)
+
+    const nodeD = screen.getByRole('row', { name: /Node D/ })
+    const missingCell = nodeD.querySelector('td[data-label="Observed P2P key"]') as HTMLElement
+    expect(missingCell.textContent).toContain('Unknown')
+    expect(within(missingCell).queryByRole('button')).toBeNull()
+  })
+
   it('reports the verdict with its currency, the staking metrics, and Unknown instead of a fresh zero', async () => {
     mockFetch(registryRoutes())
     renderAt('/admin/validators')

@@ -8,6 +8,7 @@ import {
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
 import { DetailItem, DetailList } from '../components/DetailList'
+import { AdminIdentifier } from '../components/AdminIdentifier'
 import {
   ADMIN_PAGE_TITLE,
   ADMIN_PANEL_SURFACE,
@@ -276,14 +277,10 @@ function IdentityRow({ identity }: { identity: AdminNodeValidatorIdentity }) {
         </small>
       </td>
       <td data-label="Observed P2P key" className={cn(ADMIN_TD, 'min-w-0')}>
-        <code className="text-xs [overflow-wrap:anywhere]" title={identity.observedValidatorNodeKey ?? undefined}>
-          <span aria-hidden={identity.observedValidatorNodeKey ? true : undefined}>
-            {validatorKeyLabel(identity.observedValidatorNodeKey)}
-          </span>
-          {identity.observedValidatorNodeKey && (
-            <span className="sr-only">{identity.observedValidatorNodeKey}</span>
-          )}
-        </code>
+        <AdminIdentifier
+          value={identity.observedValidatorNodeKey}
+          label="Observed P2P key"
+        />
       </td>
       <td data-label="Validator" className={cn(ADMIN_TD, 'min-w-0')}>
         {identity.validatorId ? (

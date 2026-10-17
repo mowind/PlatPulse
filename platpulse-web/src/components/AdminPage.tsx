@@ -139,12 +139,16 @@ export function AdminPanel({
   className,
   children,
   slot,
+  footer,
 }: {
   title: ReactNode
   count?: ReactNode
   info?: ReactNode
   actions?: ReactNode
   description?: ReactNode
+  /** Panel-wide action row under the content (e.g. a bulk action and its
+   * confirmation); omitted when undefined. */
+  footer?: ReactNode
   /** Content runs edge to edge (tables). */
   flush?: boolean
   className?: string
@@ -162,6 +166,7 @@ export function AdminPanel({
       className={cn(ADMIN_PANEL_SURFACE, className)}
       headerClassName="flex-wrap gap-y-1"
       contentClassName={flush ? 'p-0' : 'p-4'}
+      footer={footer}
       header={
         <>
           <div className="flex min-w-0 flex-1 items-center gap-2">

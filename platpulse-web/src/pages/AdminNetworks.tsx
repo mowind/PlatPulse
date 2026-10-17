@@ -18,6 +18,7 @@ import { Input } from '../components/ui/input'
 import { cn } from '../lib/utils'
 import type { AdminNetwork, AdminNetworkNode } from '../api/generated'
 import { DetailItem, DetailList } from '../components/DetailList'
+import { AdminIdentifier } from '../components/AdminIdentifier'
 import {
   ADMIN_PAGE_TITLE,
   ADMIN_PANEL_SURFACE,
@@ -183,10 +184,7 @@ function NetworkRow({ network }: { network: AdminNetwork }) {
       </td>
       <td data-label="HRP" className={cn(ADMIN_TD, 'min-w-0')}>{network.address_hrp}</td>
       <td data-label="Genesis" className={cn(ADMIN_TD, 'min-w-0')}>
-        <code className="font-mono text-xs text-muted-foreground" aria-hidden="true" title={network.genesis_hash}>
-          {shortId(network.genesis_hash)}
-        </code>
-        <span className="sr-only">Genesis hash {network.genesis_hash}</span>
+        <AdminIdentifier value={network.genesis_hash} label="Genesis hash" />
       </td>
       <td data-label="Nodes" className={cn(ADMIN_TD, 'min-w-0 tabular-nums')}>
         {network.active_node_count} active · {network.retired_node_count} retired

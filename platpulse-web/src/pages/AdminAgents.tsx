@@ -1,5 +1,5 @@
 import { ChevronUp } from 'lucide-react'
-import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import {
   AdminApiError,
@@ -53,6 +53,7 @@ import type {
   AgentRemovalResponse,
   HostDiagnostic,
 } from '../api/generated'
+import { AdminIdentifier } from '../components/AdminIdentifier'
 import { DetailItem, DetailList } from '../components/DetailList'
 import {
   ADMIN_DETAIL_BODY,
@@ -163,40 +164,37 @@ function AgentIdentityAccess({
   agentId: string
   displayName?: string | null
 }) {
-  const [revealed, setRevealed] = useState(false)
-  const fullIdPanelId = useId()
+  const link = (
+    <Link
+      className="inline-flex min-h-11 min-w-0 max-w-full items-center py-1 leading-snug break-words font-medium underline-offset-4 hover:underline"
+      to={'/admin/agents/' + encodeURIComponent(agentId)}
+    >
+      {displayName ?? shortId(agentId)}
+    </Link>
+  )
+  // A named Agent keeps its name on its own line and the short ID beside the
+  // full-ID toggle; an unnamed Agent's link already is the short ID, so the
+  // toggle shares that line instead of adding one.
   return (
-    <div className="flex min-w-0 flex-col items-start">
-      <Link
-        className="flex min-h-11 w-full min-w-0 items-center py-1 leading-snug break-words font-medium underline-offset-4 hover:underline"
-        to={'/admin/agents/' + encodeURIComponent(agentId)}
-      >
-        {displayName ?? shortId(agentId)}
-      </Link>
-      <div className="-mt-1 flex min-w-0 flex-wrap items-center gap-x-2">
-        {displayName && (
-          <small className="min-w-0 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+    <AdminIdentifier
+      value={agentId}
+      label="Agent ID"
+      fullSlot="agent-full-id"
+      heading={displayName ? link : undefined}
+      lead={
+        displayName ? (
+          <small
+            aria-hidden="true"
+            title={agentId}
+            className="min-w-0 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]"
+          >
             {shortId(agentId)}
           </small>
-        )}
-        <Button
-          variant="link"
-          size="xs"
-          className="max-w-full whitespace-normal px-0 text-xs"
-          aria-expanded={revealed}
-          aria-controls={fullIdPanelId}
-          onClick={() => setRevealed((value) => !value)}
-        >
-          {revealed ? 'Hide full Agent ID' : 'Show full Agent ID'}
-        </Button>
-      </div>
-      {revealed && (
-        <div id={fullIdPanelId} className="flex min-w-0 flex-wrap items-center gap-x-2">
-          <code data-slot="agent-full-id" className="min-w-0 select-all font-mono text-xs [overflow-wrap:anywhere]">{agentId}</code>
-          <AgentIdCopyControl agentId={agentId} />
-        </div>
-      )}
-    </div>
+        ) : (
+          link
+        )
+      }
+    />
   )
 }
 

@@ -1,0 +1,130 @@
+{
+  "agents-360-light": {
+    "doc": 360,
+    "viewport": 360
+  },
+  "networks-360-light": {
+    "doc": 360,
+    "viewport": 360
+  },
+  "validators-360-light": {
+    "doc": 360,
+    "viewport": 360
+  },
+  "sessions-360-light": {
+    "doc": 360,
+    "viewport": 360
+  },
+  "agents-390-light": {
+    "doc": 390,
+    "viewport": 390
+  },
+  "networks-390-light": {
+    "doc": 390,
+    "viewport": 390
+  },
+  "validators-390-light": {
+    "doc": 390,
+    "viewport": 390
+  },
+  "sessions-390-light": {
+    "doc": 390,
+    "viewport": 390
+  },
+  "agents-768-light": {
+    "doc": 768,
+    "viewport": 768
+  },
+  "networks-768-light": {
+    "doc": 768,
+    "viewport": 768
+  },
+  "validators-768-light": {
+    "doc": 768,
+    "viewport": 768
+  },
+  "sessions-768-light": {
+    "doc": 768,
+    "viewport": 768
+  },
+  "agents-1280-light": {
+    "doc": 1280,
+    "viewport": 1280
+  },
+  "networks-1280-light": {
+    "doc": 1280,
+    "viewport": 1280
+  },
+  "validators-1280-light": {
+    "doc": 1280,
+    "viewport": 1280
+  },
+  "sessions-1280-light": {
+    "doc": 1280,
+    "viewport": 1280
+  },
+  "agents-360-dark": {
+    "doc": 360,
+    "viewport": 360
+  },
+  "networks-360-dark": {
+    "doc": 360,
+    "viewport": 360
+  },
+  "validators-360-dark": {
+    "doc": 360,
+    "viewport": 360
+  },
+  "sessions-360-dark": {
+    "doc": 360,
+    "viewport": 360
+  },
+  "agents-390-dark": {
+    "doc": 390,
+    "viewport": 390
+  },
+  "networks-390-dark": {
+    "doc": 390,
+    "viewport": 390
+  },
+  "validators-390-dark": {
+    "doc": 390,
+    "viewport": 390
+  },
+  "sessions-390-dark": {
+    "doc": 390,
+    "viewport": 390
+  },
+  "agents-768-dark": {
+    "doc": 768,
+    "viewport": 768
+  },
+  "networks-768-dark": {
+    "doc": 768,
+    "viewport": 768
+  },
+  "validators-768-dark": {
+    "doc": 768,
+    "viewport": 768
+  },
+  "sessions-768-dark": {
+    "doc": 768,
+    "viewport": 768
+  },
+  "agents-1280-dark": {
+    "doc": 1280,
+    "viewport": 1280
+  },
+  "networks-1280-dark": {
+    "doc": 1280,
+    "viewport": 1280
+  },
+  "validators-1280-dark": {
+    "doc": 1280,
+    "viewport": 1280
+  },
+  "sessions-1280-dark": {
+    "doc": 1280,
+    "viewport": 1280
+  }
+}

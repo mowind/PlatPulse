@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import {
   AdminApiError,
   revokeOtherSessionsEntry,
@@ -7,19 +7,25 @@ import {
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
 import { StatusBadge, formatObservedAt } from '../components/StatusBadge'
-import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
-import { CardX } from '../components/ui/card-x'
-import { DataTooltip } from '../components/ui/data-tooltip'
 import { Empty } from '../components/ui/empty'
 import { cn } from '../lib/utils'
-import { SURFACE_CARD_STATIC } from '../lib/surface'
 import type { SessionItem } from '../api/generated'
-import { ADMIN_PAGE_TITLE } from '../components/AdminPage'
+import {
+  ADMIN_ROW,
+  ADMIN_SECONDARY,
+  ADMIN_TD,
+  ADMIN_TH,
+  AdminPageHeader,
+  AdminPanel,
+} from '../components/AdminPage'
 
-const TH =
-  'px-3 py-2 text-left text-xs font-medium text-muted-foreground'
-const TD = 'px-3 py-2 align-top'
+const SESSION_PRIVACY_NOTE =
+  'Only coarse Session metadata is shown: creation, last activity, expiry, and a coarse client hint. Tokens, full User-Agents, and raw IPs are never stored or displayed.'
+
+/** Time cells keep one line on wide desktops (xl); narrower tables and the
+ * stacked phone cards wrap them instead of overflowing. */
+const TIME_TD = cn(ADMIN_TD, 'min-w-0 tabular-nums xl:whitespace-nowrap')
 
 /**
  * PAGE-ACCESS-SESSIONS (design §12.3, issue #47): coarse, non-sensitive
@@ -36,13 +42,22 @@ export default function AdminSessions() {
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
-  const [confirmingAll, setConfirmingAll] = useState(false)
   const [busy, setBusy] = useState(false)
+  // A finished revoke removes or collapses the control that had focus; move
+  // focus to the outcome message instead of dropping it on the page body.
+  const feedbackRef = useRef<HTMLParagraphElement>(null)
+  const focusFeedback = useRef(false)
+  useEffect(() => {
+    if (!focusFeedback.current || (!message && !error)) return
+    focusFeedback.current = false
+    feedbackRef.current?.focus()
+  }, [message, error])
 
   async function revoke(session: SessionItem) {
     setMessage(null)
     setError(null)
     setBusy(true)
+    focusFeedback.current = true
     try {
       const result = await revokeSessionEntry(session.sessionId, csrfToken)
       setMessage(
@@ -62,19 +77,18 @@ export default function AdminSessions() {
     }
   }
 
-  async function revokeAll() {
+  async function revokeAll(): Promise<void> {
     setMessage(null)
     setError(null)
     setBusy(true)
+    focusFeedback.current = true
     try {
       const result = await revokeOtherSessionsEntry(csrfToken)
       setMessage(
         `${result.revokedCount} other session${result.revokedCount === 1 ? '' : 's'} revoked. This session stays active.`,
       )
-      setConfirmingAll(false)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to revoke the other sessions')
-      setConfirmingAll(false)
     } finally {
       setBusy(false)
     }
@@ -84,94 +98,58 @@ export default function AdminSessions() {
   const currentSession = sessions.find((session) => session.current)
 
   return (
-    <section className="w-full" data-slot="sessions-page">
-      <header className="flex flex-col gap-1">
-        <h1 className={ADMIN_PAGE_TITLE}>Sessions</h1>
-        <p className="text-sm text-muted-foreground">
-          Coarse Session metadata only: creation, last activity, expiry, and a
-          coarse client hint. Tokens, full User-Agents, and raw IPs are never
-          stored or displayed.
-        </p>
-      </header>
+    <section className="w-full space-y-4" data-slot="sessions-page">
+      <AdminPageHeader
+        title="Sessions"
+        description="Signed-in human Sessions; revoke one, or every Session except your current one."
+        info={{ label: 'About Session metadata', content: <p>{SESSION_PRIVACY_NOTE}</p> }}
+      />
       {message && (
         <p
+          ref={feedbackRef}
           role="status"
-          className="mt-4 rounded-md border border-success/30 bg-success/10 px-4 py-3 text-sm text-success"
+          tabIndex={-1}
+          className="rounded-md outline-none border border-success/30 bg-success/10 px-4 py-3 text-sm text-success [overflow-wrap:anywhere]"
         >
           {message}
         </p>
       )}
       {error && (
         <p
+          ref={feedbackRef}
           role="alert"
-          className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+          tabIndex={-1}
+          className="rounded-md outline-none border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive [overflow-wrap:anywhere]"
         >
           {error}
         </p>
       )}
-      <CardX
-        size="medium"
-        bordered={false}
-        segmented
-        data-slot="sessions-panel"
-        className={cn('mt-4 rounded-md', SURFACE_CARD_STATIC)}
-        header={
-          <div className="flex w-full items-center gap-2">
-            <h2 className="min-w-0 flex-1 truncate text-sm font-medium">Active Sessions</h2>
-            <DataTooltip
-              placement="left"
-              content="Only coarse Session metadata is shown: creation, last activity, expiry, and a client hint. Tokens, full User-Agents, and raw IPs are never stored or displayed."
-            >
-              <Button variant="ghost" size="icon-sm" aria-label="About Session metadata">
-                ?
-              </Button>
-            </DataTooltip>
-            {query.data && (
-              <Badge variant="secondary" data-slot="sessions-count">
-                {sessions.length}
-              </Badge>
-            )}
-          </div>
+      <AdminPanel
+        slot="sessions-panel"
+        flush
+        title="Active Sessions"
+        count={
+          query.data && (
+            <span data-slot="sessions-count" className="text-xs text-muted-foreground tabular-nums">
+              {sessions.length} Session{sessions.length === 1 ? '' : 's'}
+            </span>
+          )
         }
         footer={
           currentSession && sessions.length > 1 ? (
-            <div className="flex flex-wrap items-center gap-3" data-slot="sessions-others-actions">
-              {confirmingAll ? (
-                <>
-                  <span className="text-xs text-muted-foreground">
-                    Revoke every other Session of your account? The current
-                    Session stays active.
-                  </span>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => void revokeAll()}
-                  >
-                    Confirm revoke all others
-                  </Button>
-                  <Button variant="ghost" size="sm" onClick={() => setConfirmingAll(false)}>
-                    Cancel
-                  </Button>
-                </>
-              ) : (
-                <Button variant="outline" size="sm" onClick={() => setConfirmingAll(true)}>
-                  Revoke all other Sessions
-                </Button>
-              )}
-            </div>
+            <RevokeOthersAction busy={busy} onConfirm={revokeAll} />
           ) : undefined
         }
       >
         {!query.data && query.isPending && (
-          <div role="status" className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+          <div role="status" className="flex items-center gap-2 px-4 py-6 text-sm text-muted-foreground">
             <StatusBadge status="Starting" tone="neutral" /> Loading Sessions…
           </div>
         )}
         {!query.data && query.isError && (
-          <div role="alert" className="flex flex-wrap items-center gap-2 py-6 text-sm">
+          <div role="alert" className="flex flex-wrap items-center gap-2 px-4 py-6 text-sm">
             <StatusBadge status="Error" tone="error" />
-            <span className="text-destructive">
+            <span className="min-w-0 text-destructive [overflow-wrap:anywhere]">
               {query.error instanceof Error ? query.error.message : 'Unable to load Sessions'}
             </span>
             <Button variant="ghost" size="sm" onClick={() => void query.refetch()}>
@@ -181,92 +159,192 @@ export default function AdminSessions() {
         )}
         {query.data && sessions.length === 0 && <Empty description="No active Sessions." />}
         {query.data && sessions.length > 0 && (
-          <div data-slot="sessions-table" className="overflow-x-auto">
-            <table className="w-full min-w-[44rem] text-sm">
+          <div data-slot="sessions-table" className="overflow-x-auto max-md:px-3 max-md:pt-3">
+            <table data-stack className="w-full text-sm">
               <caption className="sr-only">Active human Sessions</caption>
               <thead>
-                <tr className="border-b border-border">
-                  <th scope="col" className={TH}>
-                    User
-                  </th>
-                  <th scope="col" className={TH}>
-                    Client
-                  </th>
-                  <th scope="col" className={TH}>
-                    Created
-                  </th>
-                  <th scope="col" className={TH}>
-                    Last active
-                  </th>
-                  <th scope="col" className={TH}>
-                    Expires
-                  </th>
-                  <th scope="col" className={TH}>
-                    Action
-                  </th>
+                <tr className="border-b border-border/60">
+                  <th scope="col" className={ADMIN_TH}>User</th>
+                  <th scope="col" className={ADMIN_TH}>Client</th>
+                  <th scope="col" className={ADMIN_TH}>Created</th>
+                  <th scope="col" className={ADMIN_TH}>Last active</th>
+                  <th scope="col" className={ADMIN_TH}>Expires</th>
+                  <th scope="col" className={ADMIN_TH}>Action</th>
                 </tr>
               </thead>
               <tbody>
                 {sessions.map((session) => (
-                  <tr key={session.sessionId} className="border-b border-border/60 align-top">
-                    <th scope="row" className={cn(TD, 'text-left font-medium')}>
-                      <span className="flex flex-wrap items-center gap-2">
-                        <span className="min-w-0 break-words">{session.username}</span>
-                        <span className="text-[11px] font-normal text-muted-foreground">
-                          · {session.role}
-                        </span>
-                        {session.current && <StatusBadge status="Current" tone="ok" />}
-                      </span>
-                    </th>
-                    <td className={TD}>{session.clientHint}</td>
-                    <td className={cn(TD, 'whitespace-nowrap')}>
-                      {formatObservedAt(session.createdAt)}
-                    </td>
-                    <td className={cn(TD, 'whitespace-nowrap')}>
-                      {formatObservedAt(session.lastSeenAt)}
-                    </td>
-                    <td className={cn(TD, 'whitespace-nowrap')}>
-                      {formatObservedAt(session.expiresAt)}
-                    </td>
-                    <td className={TD}>
-                      {session.current ? (
-                        <span className="text-[11px] text-muted-foreground">This session</span>
-                      ) : confirmingId === session.sessionId ? (
-                        <div className="flex min-w-[14rem] flex-col gap-2">
-                          <span className="text-xs text-muted-foreground">
-                            Revoke now? The user's streams close immediately.
-                          </span>
-                          <div className="flex flex-wrap gap-2">
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              disabled={busy}
-                              onClick={() => void revoke(session)}
-                            >
-                              Confirm revoke
-                            </Button>
-                            <Button variant="ghost" size="sm" onClick={() => setConfirmingId(null)}>
-                              Cancel
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setConfirmingId(session.sessionId)}
-                        >
-                          Revoke
-                        </Button>
-                      )}
-                    </td>
-                  </tr>
+                  <SessionRow
+                    key={session.sessionId}
+                    session={session}
+                    confirming={confirmingId === session.sessionId}
+                    busy={busy}
+                    onRequest={() => setConfirmingId(session.sessionId)}
+                    onCancel={() => setConfirmingId(null)}
+                    onConfirm={() => void revoke(session)}
+                  />
                 ))}
               </tbody>
             </table>
           </div>
         )}
-      </CardX>
+      </AdminPanel>
     </section>
+  )
+}
+
+/** Moves focus to the confirmation's Cancel on open and back to the opening
+ * action on cancel, so the toggle never drops focus onto the page body. */
+function useConfirmFocus(confirming: boolean) {
+  const opener = useRef<HTMLButtonElement>(null)
+  const cancel = useRef<HTMLButtonElement>(null)
+  const pending = useRef<'opener' | 'cancel' | null>(null)
+  useEffect(() => {
+    const target = pending.current === 'opener' ? opener.current : pending.current === 'cancel' ? cancel.current : null
+    pending.current = null
+    target?.focus()
+  }, [confirming])
+  return {
+    opener,
+    cancel,
+    focusCancelNext: () => {
+      pending.current = 'cancel'
+    },
+    focusOpenerNext: () => {
+      pending.current = 'opener'
+    },
+  }
+}
+
+function SessionRow({
+  session,
+  confirming,
+  busy,
+  onRequest,
+  onCancel,
+  onConfirm,
+}: {
+  session: SessionItem
+  confirming: boolean
+  busy: boolean
+  onRequest: () => void
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const focus = useConfirmFocus(confirming)
+  const promptId = useId()
+  return (
+    <tr className={ADMIN_ROW}>
+      <th scope="row" data-label="User" className={cn(ADMIN_TD, 'min-w-0 text-left font-normal')}>
+        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{session.username}</span>
+          <span className={ADMIN_SECONDARY}>{session.role}</span>
+          {session.current && <StatusBadge status="Current" tone="ok" />}
+        </span>
+      </th>
+      <td data-label="Client" className={cn(ADMIN_TD, 'min-w-0 [overflow-wrap:anywhere]')}>
+        {session.clientHint}
+      </td>
+      <td data-label="Created" className={TIME_TD}>{formatObservedAt(session.createdAt)}</td>
+      <td data-label="Last active" className={TIME_TD}>{formatObservedAt(session.lastSeenAt)}</td>
+      <td data-label="Expires" className={TIME_TD}>{formatObservedAt(session.expiresAt)}</td>
+      <td data-label="Action" className={cn(ADMIN_TD, 'min-w-0 py-1 max-md:w-full')}>
+        {session.current ? (
+          <span className={cn(ADMIN_SECONDARY, 'inline-flex items-center md:min-h-11')}>This session</span>
+        ) : confirming ? (
+          <div
+            role="group"
+            aria-labelledby={promptId}
+            data-slot="session-revoke-confirm"
+            className="flex w-full min-w-0 flex-col gap-1 py-1.5 md:w-56"
+          >
+            <span id={promptId} className={ADMIN_SECONDARY}>
+              Revoke now? The user's streams close immediately.
+            </span>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="destructive" size="sm" disabled={busy} onClick={onConfirm}>
+                Confirm revoke
+              </Button>
+              <Button
+                ref={focus.cancel}
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  focus.focusOpenerNext()
+                  onCancel()
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Button
+            ref={focus.opener}
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              focus.focusCancelNext()
+              onRequest()
+            }}
+          >
+            Revoke
+          </Button>
+        )}
+      </td>
+    </tr>
+  )
+}
+
+/** "Revoke all other Sessions": the current Session always stays active —
+ * distinct from revoking any single row. */
+function RevokeOthersAction({ busy, onConfirm }: { busy: boolean; onConfirm: () => Promise<void> }) {
+  const [confirming, setConfirming] = useState(false)
+  const focus = useConfirmFocus(confirming)
+  const promptId = useId()
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2" data-slot="sessions-others-actions">
+      {confirming ? (
+        <div role="group" aria-labelledby={promptId} className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+          <span id={promptId} className={cn(ADMIN_SECONDARY, 'min-w-0 basis-full sm:basis-auto')}>
+            Revoke every other Session of your account? The current Session stays active.
+          </span>
+          <Button
+            variant="destructive"
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              // The page moves focus to the outcome message once it settles.
+              void onConfirm().finally(() => setConfirming(false))
+            }}
+          >
+            Confirm revoke all others
+          </Button>
+          <Button
+            ref={focus.cancel}
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              focus.focusOpenerNext()
+              setConfirming(false)
+            }}
+          >
+            Cancel
+          </Button>
+        </div>
+      ) : (
+        <Button
+          ref={focus.opener}
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            focus.focusCancelNext()
+            setConfirming(true)
+          }}
+        >
+          Revoke all other Sessions
+        </Button>
+      )}
+    </div>
   )
 }
