@@ -39,6 +39,7 @@ import {
   diagnosticRangeText,
   foldedText,
   hasSpoolObservation,
+  plural,
   summarizeEvidence,
   type EvidenceSummary,
 } from '../agentEvidence'
@@ -433,7 +434,7 @@ function AgentRowDetails({
     <div className={ADMIN_DETAIL_BODY}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className={ADMIN_SECTION_TITLE}>Agent details</h3>
-        <Button variant="link" size="sm" className="-my-1.5" onClick={onCollapse}>
+        <Button variant="link" size="sm" className="min-h-11" onClick={onCollapse}>
           Collapse details <ChevronUp size={16} aria-hidden="true" />
         </Button>
       </div>
@@ -662,7 +663,7 @@ export function AdminAgentDetail() {
                   marker: diagnosticCount > 0 ? diagnosticCount : undefined,
                   markerLabel:
                     diagnosticCount > 0
-                      ? diagnosticCount + ' current or unobserved item' + (diagnosticCount === 1 ? '' : 's')
+                      ? diagnosticCount + ' current or not-observed item' + (diagnosticCount === 1 ? '' : 's')
                       : undefined,
                   content: (
                     <>
@@ -898,10 +899,6 @@ function AgentDetailHeader({
   )
 }
 
-function plural(count: number, noun: string): string {
-  return count + ' ' + noun + (count === 1 ? '' : 's')
-}
-
 /** Overview: reporting and the necessary running summary. Boot IDs, the
  *  complete Spool, clock and component evidence stay in Diagnostics; the
  *  credential summary and its single Manage entry are in the header above. */
@@ -915,12 +912,15 @@ function AgentRuntimeSummaryPanel({
   const host = agent.host
   const summary = summarizeEvidence(agentEvidence(agent))
   const recordedCount = summary.counts.recorded
+  const errorLevel = summary.ordered.recorded.filter((item) => item.tone === 'error').length
   const lead = summary.recordedLead
   // Host and Spool history can only be known once observed: without an
-  // observation an empty list is Unknown, not "nothing recorded".
-  const unobserved = !host
+  // observation an empty list is Unknown, not "nothing recorded". The same
+  // not-observed items the summary already holds say which.
+  const unobservedKeys = new Set(summary.ordered.unknown.map((item) => item.key))
+  const unobserved = unobservedKeys.has('host-not-observed')
     ? 'Host not observed yet, so Host and Spool history is Unknown'
-    : !hasSpoolObservation(host)
+    : unobservedKeys.has('spool-not-observed')
       ? 'Spool not observed yet, so Spool history is Unknown'
       : null
   return (
@@ -948,11 +948,12 @@ function AgentRuntimeSummaryPanel({
                 ? unobserved
                   ? 'No recorded history known'
                   : 'Nothing recorded'
-                : plural(recordedCount, 'recorded history item')}
+                : plural(recordedCount, 'recorded history item') +
+                  (errorLevel > 0 ? ' (' + errorLevel + ' error-level)' : '')}
             </span>
             {lead && (
               <span className={cn('text-xs [overflow-wrap:anywhere]', EVIDENCE_TONE[lead.tone])} data-group="recorded">
-                <span className="text-muted-foreground">{recordedCount > 1 ? 'Highest · ' : 'Recorded · '}</span>
+                <span className="text-muted-foreground">{recordedCount > 1 ? 'Most severe recorded · ' : 'Recorded · '}</span>
                 {lead.text}
               </span>
             )}

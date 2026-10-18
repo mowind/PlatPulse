@@ -18,29 +18,37 @@ Files: `<page>-<width>-<theme>.png` at 390/768/1280/1440 in light and dark for `
 
 | Page | Width | Height (CSS px) | Visible text | Page overflow |
 |---|---|---|---|---|
-| overview | 390 | 3060 → 3004 (-2%) | 2744 → 2770 (+1%) | 0 / 0 |
+| overview | 390 | 3060 → 3060 (+0%) | 2744 → 2780 (+1%) | 0 / 0 |
 | nodes | 390 | 5775 → 4034 (-30%) | 3054 → 3054 (+0%) | 0 / 0 |
 | agents | 390 | 1471 → 1471 (+0%) | 1054 → 1100 (+4%) | 0 / 0 |
+| validators | 390 | 3003 → 3003 (+0%) | 1916 → 1916 (+0%) | 0 / 0 |
+| networks | 390 | 1010 → 1010 (+0%) | 587 → 587 (+0%) | 0 / 0 |
 | node-detail | 390 | 1376 → 1376 (+0%) | 1061 → 1061 (+0%) | 0 / 0 |
-| agent-detail | 390 | 1723 → 1635 (-5%) | 1614 → 1473 (-9%) | 0 / 0 |
+| agent-detail | 390 | 1723 → 1635 (-5%) | 1614 → 1502 (-7%) | 0 / 0 |
 | agent-diagnostics | 390 | 3189 → 3213 (+1%) | 2344 → 2363 (+1%) | 0 / 0 |
-| overview | 768 | 2225 → 2225 (+0%) | 2744 → 2779 (+1%) | 0 / 0 |
+| overview | 768 | 2225 → 2225 (+0%) | 2744 → 2780 (+1%) | 0 / 0 |
 | nodes | 768 | 1561 → 1920 (+23%) | 3157 → 3157 (+0%) | 0 / 0 |
 | agents | 768 | 900 → 900 (+0%) | 1072 → 1118 (+4%) | 0 / 0 |
+| validators | 768 | 1366 → 1366 (+0%) | 1940 → 1940 (+0%) | 0 / 0 |
+| networks | 768 | 900 → 900 (+0%) | 594 → 594 (+0%) | 0 / 0 |
 | node-detail | 768 | 933 → 933 (+0%) | 1061 → 1061 (+0%) | 0 / 0 |
-| agent-detail | 768 | 1185 → 1116 (-6%) | 1614 → 1473 (-9%) | 0 / 0 |
+| agent-detail | 768 | 1185 → 1116 (-6%) | 1614 → 1502 (-7%) | 0 / 0 |
 | agent-diagnostics | 768 | 1987 → 2010 (+1%) | 2344 → 2363 (+1%) | 0 / 0 |
-| overview | 1280 | 1716 → 1716 (+0%) | 2744 → 2779 (+1%) | 0 / 0 |
+| overview | 1280 | 1716 → 1716 (+0%) | 2744 → 2780 (+1%) | 0 / 0 |
 | nodes | 1280 | 1387 → 1676 (+21%) | 3157 → 3157 (+0%) | 0 / 0 |
 | agents | 1280 | 901 → 901 (+0%) | 1072 → 1118 (+4%) | 0 / 0 |
+| validators | 1280 | 918 → 918 (+0%) | 1940 → 1940 (+0%) | 0 / 0 |
+| networks | 1280 | 901 → 901 (+0%) | 594 → 594 (+0%) | 0 / 0 |
 | node-detail | 1280 | 901 → 901 (+0%) | 1061 → 1061 (+0%) | 0 / 0 |
-| agent-detail | 1280 | 1117 → 1088 (-3%) | 1614 → 1473 (-9%) | 0 / 0 |
+| agent-detail | 1280 | 1117 → 1088 (-3%) | 1614 → 1502 (-7%) | 0 / 0 |
 | agent-diagnostics | 1280 | 1737 → 1760 (+1%) | 2344 → 2363 (+1%) | 0 / 0 |
-| overview | 1440 | 1716 → 1716 (+0%) | 2744 → 2770 (+1%) | 0 / 0 |
+| overview | 1440 | 1716 → 1716 (+0%) | 2744 → 2780 (+1%) | 0 / 0 |
 | nodes | 1440 | 1306 → 1506 (+15%) | 3157 → 3157 (+0%) | 0 / 0 |
 | agents | 1440 | 901 → 901 (+0%) | 1072 → 1118 (+4%) | 0 / 0 |
+| validators | 1440 | 918 → 918 (+0%) | 1940 → 1940 (+0%) | 0 / 0 |
+| networks | 1440 | 901 → 901 (+0%) | 594 → 594 (+0%) | 0 / 0 |
 | node-detail | 1440 | 901 → 901 (+0%) | 1061 → 1061 (+0%) | 0 / 0 |
-| agent-detail | 1440 | 1117 → 1088 (-3%) | 1614 → 1473 (-9%) | 0 / 0 |
+| agent-detail | 1440 | 1117 → 1088 (-3%) | 1614 → 1502 (-7%) | 0 / 0 |
 | agent-diagnostics | 1440 | 1737 → 1760 (+1%) | 2344 → 2363 (+1%) | 0 / 0 |
 
 Reading the numbers:
@@ -55,6 +63,8 @@ Reading the numbers:
   item and `Open Diagnostics`; the Overview no longer repeats the credential validity counts (the header
   keeps `N active · M total` with the single `Manage credentials` entry). `agent-diagnostics` keeps
   every finding; none was removed (its ~1% difference is time-dependent text between the two captures).
+- **Validators / Networks**: no code in this round touches them; the small Validators differences are
+  time-dependent text (relative ages, live identity results) between the two captures.
 - **Agents / Overview**: a few more characters, because the summary now says `Critical ·` /
   `Not observed ·` in words and the folded counts name criticals per group.
 

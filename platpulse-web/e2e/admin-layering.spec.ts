@@ -165,6 +165,13 @@ test('Nodes phone cards group name, Network, Health beside Freshness, and Head b
       expect(text).toBe('"' + label + '"')
     }
   }
+  // The grid card is still the table row: one row header (the Node) and
+  // four cells, so the meaning never rests on visual position alone.
+  const table = page.getByRole('table', { name: /Node inventory/ })
+  const semanticRow = table.getByRole('row').filter({ has: page.getByRole('rowheader', { name: /^Node A\b/ }) })
+  await expect(semanticRow).toHaveCount(1)
+  await expect(semanticRow.getByRole('cell')).toHaveCount(4)
+  await expect(table.getByRole('columnheader')).toHaveCount(5)
   // Exceptions keep their reasons; normal rows stay short.
   const rowB = nodeRow(page, NODE_B)
   await expect(rowB.locator('[data-slot="node-identity-summary"]')).toContainText('Mismatched')

@@ -768,8 +768,9 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     const evidence = summary.querySelector('[data-slot="recorded-evidence-summary"]') as HTMLElement
     // A count named as recorded history, never as current faults, and one
     // highest item instead of every sentence joined together.
-    expect(evidence.querySelector('[data-slot="recorded-count"]')?.textContent).toBe('8 recorded history items')
-    expect(evidence.querySelector('[data-group="recorded"]')?.textContent).toBe('Highest · Spool store error recorded')
+    // Folded error-level history is counted by name, as on the Agents row.
+    expect(evidence.querySelector('[data-slot="recorded-count"]')?.textContent).toBe('8 recorded history items (3 error-level)')
+    expect(evidence.querySelector('[data-group="recorded"]')?.textContent).toBe('Most severe recorded · Spool store error recorded')
     expect(evidence.textContent).not.toMatch(/gap intervals recorded|security events recorded|Forced shutdown recorded|·.*·.*·/)
     expect(evidence.textContent).not.toMatch(/current fault|failure/i)
     // Credentials: the header keeps the active summary and the one entry; the

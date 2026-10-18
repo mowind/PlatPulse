@@ -18,8 +18,8 @@ import { hasSpoolRisk } from './agentDiagnostics'
  */
 export type EvidenceTone = 'error' | 'warning' | 'neutral'
 /** A severity that already exists in the data: the Server's own Attention
- *  severity, or the fixed level of a current-state item mirroring a Server
- *  Attention kind. Never computed from browser time or message text. */
+ *  severity, or, for the Spool store fatal flag only, the level the Server
+ *  gives that same flag. Never computed from browser time or message text. */
 export type EvidenceSeverity = 'critical' | 'warning'
 /** `text` is the complete sentence; `short` is the wording for a line that
  *  already says "Recorded". */
@@ -59,7 +59,7 @@ export function hasSpoolObservation(spool: HostDiagnostic): boolean {
   ].some((value) => value != null)
 }
 
-function plural(count: number, noun: string): string {
+export function plural(count: number, noun: string): string {
   return count + ' ' + noun + (count === 1 ? '' : 's')
 }
 
@@ -80,7 +80,8 @@ export function agentEvidence(agent: AgentDiagnostic): AgentEvidence {
       key: 'credentials',
       text: agent.credentials.length === 0 ? 'No credential issued' : 'No active credential',
       tone: 'warning',
-      severity: 'warning',
+      // No severity: the Server assigns none to credential state, and the
+      // browser never invents one.
     })
   }
 
@@ -95,7 +96,10 @@ export function agentEvidence(agent: AgentDiagnostic): AgentEvidence {
       key: 'store-fatal',
       text: 'Spool store fatal in the latest Host observation',
       tone: 'error',
-      // The level the Server gives the same flag (agent_spool_fatal).
+      // Not a browser rule: the Server-reported `spool_store_fatal` flag is
+      // the exact predicate the Server raises as its Critical
+      // `agent_spool_fatal` item, so it keeps that Server level while the
+      // Host still reports it (also after that item is acknowledged).
       severity: 'critical',
     })
   }

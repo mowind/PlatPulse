@@ -1,8 +1,8 @@
 {
   "overview-390-light": {
-    "height": 3004,
+    "height": 3060,
     "columnHeaders": 0,
-    "visibleTextLength": 2770,
+    "visibleTextLength": 2780,
     "overflow": 0
   },
   "nodes-390-light": {
@@ -20,7 +20,7 @@
   "validators-390-light": {
     "height": 3003,
     "columnHeaders": 8,
-    "visibleTextLength": 1987,
+    "visibleTextLength": 1916,
     "overflow": 0
   },
   "networks-390-light": {
@@ -38,7 +38,7 @@
   "agent-detail-390-light": {
     "height": 1635,
     "columnHeaders": 0,
-    "visibleTextLength": 1473,
+    "visibleTextLength": 1502,
     "overflow": 0
   },
   "agent-diagnostics-390-light": {
@@ -50,7 +50,7 @@
   "overview-768-light": {
     "height": 2225,
     "columnHeaders": 0,
-    "visibleTextLength": 2779,
+    "visibleTextLength": 2780,
     "overflow": 0
   },
   "nodes-768-light": {
@@ -66,9 +66,9 @@
     "overflow": 0
   },
   "validators-768-light": {
-    "height": 1430,
+    "height": 1366,
     "columnHeaders": 8,
-    "visibleTextLength": 2011,
+    "visibleTextLength": 1940,
     "overflow": 0
   },
   "networks-768-light": {
@@ -86,7 +86,7 @@
   "agent-detail-768-light": {
     "height": 1116,
     "columnHeaders": 0,
-    "visibleTextLength": 1473,
+    "visibleTextLength": 1502,
     "overflow": 0
   },
   "agent-diagnostics-768-light": {
@@ -98,7 +98,7 @@
   "overview-1280-light": {
     "height": 1716,
     "columnHeaders": 0,
-    "visibleTextLength": 2779,
+    "visibleTextLength": 2780,
     "overflow": 0
   },
   "nodes-1280-light": {
@@ -116,7 +116,7 @@
   "validators-1280-light": {
     "height": 918,
     "columnHeaders": 8,
-    "visibleTextLength": 2011,
+    "visibleTextLength": 1940,
     "overflow": 0
   },
   "networks-1280-light": {
@@ -134,7 +134,7 @@
   "agent-detail-1280-light": {
     "height": 1088,
     "columnHeaders": 0,
-    "visibleTextLength": 1473,
+    "visibleTextLength": 1502,
     "overflow": 0
   },
   "agent-diagnostics-1280-light": {
@@ -146,7 +146,7 @@
   "overview-1440-light": {
     "height": 1716,
     "columnHeaders": 0,
-    "visibleTextLength": 2770,
+    "visibleTextLength": 2780,
     "overflow": 0
   },
   "nodes-1440-light": {
@@ -164,7 +164,7 @@
   "validators-1440-light": {
     "height": 918,
     "columnHeaders": 8,
-    "visibleTextLength": 2011,
+    "visibleTextLength": 1940,
     "overflow": 0
   },
   "networks-1440-light": {
@@ -182,7 +182,7 @@
   "agent-detail-1440-light": {
     "height": 1088,
     "columnHeaders": 0,
-    "visibleTextLength": 1473,
+    "visibleTextLength": 1502,
     "overflow": 0
   },
   "agent-diagnostics-1440-light": {
@@ -192,9 +192,9 @@
     "overflow": 0
   },
   "overview-390-dark": {
-    "height": 3040,
+    "height": 3060,
     "columnHeaders": 0,
-    "visibleTextLength": 2779,
+    "visibleTextLength": 2780,
     "overflow": 0
   },
   "nodes-390-dark": {
@@ -212,7 +212,7 @@
   "validators-390-dark": {
     "height": 3003,
     "columnHeaders": 8,
-    "visibleTextLength": 1987,
+    "visibleTextLength": 1916,
     "overflow": 0
   },
   "networks-390-dark": {
@@ -230,7 +230,7 @@
   "agent-detail-390-dark": {
     "height": 1635,
     "columnHeaders": 0,
-    "visibleTextLength": 1473,
+    "visibleTextLength": 1502,
     "overflow": 0
   },
   "agent-diagnostics-390-dark": {
@@ -242,7 +242,7 @@
   "overview-768-dark": {
     "height": 2225,
     "columnHeaders": 0,
-    "visibleTextLength": 2770,
+    "visibleTextLength": 2769,
     "overflow": 0
   },
   "nodes-768-dark": {
@@ -258,9 +258,9 @@
     "overflow": 0
   },
   "validators-768-dark": {
-    "height": 1430,
+    "height": 1366,
     "columnHeaders": 8,
-    "visibleTextLength": 2011,
+    "visibleTextLength": 1938,
     "overflow": 0
   },
   "networks-768-dark": {
@@ -278,7 +278,7 @@
   "agent-detail-768-dark": {
     "height": 1116,
     "columnHeaders": 0,
-    "visibleTextLength": 1473,
+    "visibleTextLength": 1502,
     "overflow": 0
   },
   "agent-diagnostics-768-dark": {
@@ -290,7 +290,7 @@
   "overview-1280-dark": {
     "height": 1716,
     "columnHeaders": 0,
-    "visibleTextLength": 2770,
+    "visibleTextLength": 2769,
     "overflow": 0
   },
   "nodes-1280-dark": {
@@ -308,7 +308,7 @@
   "validators-1280-dark": {
     "height": 918,
     "columnHeaders": 8,
-    "visibleTextLength": 2011,
+    "visibleTextLength": 1938,
     "overflow": 0
   },
   "networks-1280-dark": {
@@ -326,7 +326,7 @@
   "agent-detail-1280-dark": {
     "height": 1088,
     "columnHeaders": 0,
-    "visibleTextLength": 1473,
+    "visibleTextLength": 1502,
     "overflow": 0
   },
   "agent-diagnostics-1280-dark": {
@@ -338,7 +338,7 @@
   "overview-1440-dark": {
     "height": 1716,
     "columnHeaders": 0,
-    "visibleTextLength": 2779,
+    "visibleTextLength": 2778,
     "overflow": 0
   },
   "nodes-1440-dark": {
@@ -356,7 +356,7 @@
   "validators-1440-dark": {
     "height": 918,
     "columnHeaders": 8,
-    "visibleTextLength": 2011,
+    "visibleTextLength": 1938,
     "overflow": 0
   },
   "networks-1440-dark": {
@@ -374,7 +374,7 @@
   "agent-detail-1440-dark": {
     "height": 1088,
     "columnHeaders": 0,
-    "visibleTextLength": 1473,
+    "visibleTextLength": 1502,
     "overflow": 0
   },
   "agent-diagnostics-1440-dark": {

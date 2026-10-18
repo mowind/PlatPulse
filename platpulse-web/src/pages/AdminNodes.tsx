@@ -649,7 +649,7 @@ function NodeListRow({
             <div className={ADMIN_DETAIL_BODY}>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className={ADMIN_SECTION_TITLE}>Node details</h3>
-                <Button variant="link" size="sm" className="-my-1.5" onClick={onToggle}>
+                <Button variant="link" size="sm" className="min-h-11" onClick={onToggle}>
                   Collapse details <ChevronUp size={16} aria-hidden="true" />
                 </Button>
               </div>
