@@ -279,6 +279,43 @@
     table[data-slot='agent-table'] tr > [data-label='Last received'] { order: 2; }
     table[data-slot='agent-table'] tr > [data-label='Nodes'] { order: 3; }
     table[data-slot='agent-table'] tr > [data-label='Diagnostics'] { order: 4; }
+
+    /* Nodes (webui.md §8.7): one grid card per Node instead of five stacked
+     * sections. The same cells and IDs as the desktop table, regrouped:
+     *   Node (name + Retired, then Network + Identity exception)
+     *   Health | Freshness   — side by side, each keeping its own label
+     *   Head / Sync | Details
+     * Rows grow with their content (no fixed height, no clipping); the
+     * expanded detail row keeps the generic stacked card below. */
+    table[data-slot='node-table'] tbody tr:not([data-slot='detail-row']) {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-areas:
+        'node node'
+        'health freshness'
+        'head details';
+      column-gap: 0.75rem;
+      align-items: start;
+    }
+    table[data-slot='node-table'] tr > [data-label='Node'] { grid-area: node; gap: 0; }
+    table[data-slot='node-table'] tr > [data-label='Health'] { grid-area: health; }
+    table[data-slot='node-table'] tr > [data-label='Freshness'] { grid-area: freshness; }
+    table[data-slot='node-table'] tr > [data-label='Head / Sync'] { grid-area: head; }
+    table[data-slot='node-table'] tr > [data-label='Details'] {
+      grid-area: details;
+      align-items: flex-end;
+      align-self: end;
+    }
+    /* The Node cell is the row header and the Details button names itself;
+     * their visual labels would only repeat what is already on screen. */
+    table[data-slot='node-table'] tr > [data-label='Node']::before,
+    table[data-slot='node-table'] tr > [data-label='Details']::before {
+      content: none;
+    }
+    table[data-slot='node-table'] tr > [data-label='Health'],
+    table[data-slot='node-table'] tr > [data-label='Freshness'] {
+      border-top: 1px solid var(--border);
+    }
   }
 }
 

@@ -17,9 +17,19 @@ import { hasSpoolRisk } from './agentDiagnostics'
  * Nothing here reads browser time or infers recovery from liveness.
  */
 export type EvidenceTone = 'error' | 'warning' | 'neutral'
+/** A severity that already exists in the data: the Server's own Attention
+ *  severity, or the fixed level of a current-state item mirroring a Server
+ *  Attention kind. Never computed from browser time or message text. */
+export type EvidenceSeverity = 'critical' | 'warning'
 /** `text` is the complete sentence; `short` is the wording for a line that
  *  already says "Recorded". */
-export type EvidenceItem = { key: string; text: string; short?: string; tone: EvidenceTone }
+export type EvidenceItem = {
+  key: string
+  text: string
+  short?: string
+  tone: EvidenceTone
+  severity?: EvidenceSeverity
+}
 export type AgentEvidence = {
   current: EvidenceItem[]
   unknown: EvidenceItem[]
@@ -56,10 +66,12 @@ function plural(count: number, noun: string): string {
 export function agentEvidence(agent: AgentDiagnostic): AgentEvidence {
   // Partial projections (older fixtures, degraded handlers) omit some lists;
   // an omitted list is not evidence of absence and adds no item.
-  const current: EvidenceItem[] = (agent.attention ?? []).map((item) => ({
+  const attention = agent.attention ?? []
+  const current: EvidenceItem[] = attention.map((item) => ({
     key: 'attention-' + item.id,
     text: item.message,
     tone: item.severity === 'critical' ? 'error' : 'warning',
+    severity: item.severity,
   }))
   // Server-computed validity only; reporting status never implies a valid
   // credential.
@@ -68,14 +80,24 @@ export function agentEvidence(agent: AgentDiagnostic): AgentEvidence {
       key: 'credentials',
       text: agent.credentials.length === 0 ? 'No credential issued' : 'No active credential',
       tone: 'warning',
+      severity: 'warning',
     })
   }
 
   const host = agent.host
   // The fatal flag is the state the latest Host observation reports, not a
-  // retained message, so it is current rather than history.
-  if (host?.spool_store_fatal === true) {
-    current.push({ key: 'store-fatal', text: 'Spool store fatal in the latest Host observation', tone: 'error' })
+  // retained message, so it is current rather than history. When the Server
+  // already raises its own `agent_spool_fatal` Attention Item for the same
+  // flag, that item stands for it (matched by kind, never by message text);
+  // the raw flag stays in the Diagnostics evidence either way.
+  if (host?.spool_store_fatal === true && !attention.some((item) => item.kind === 'agent_spool_fatal')) {
+    current.push({
+      key: 'store-fatal',
+      text: 'Spool store fatal in the latest Host observation',
+      tone: 'error',
+      // The level the Server gives the same flag (agent_spool_fatal).
+      severity: 'critical',
+    })
   }
 
   const unknown: EvidenceItem[] = []
@@ -126,6 +148,120 @@ export function agentEvidence(agent: AgentDiagnostic): AgentEvidence {
     recorded.push({ key: 'forced-shutdown', text: 'Forced shutdown recorded', short: 'Forced shutdown', tone: 'neutral' })
   }
   return { current, unknown, recorded }
+}
+
+const SEVERITY_RANK: Record<EvidenceSeverity, number> = { critical: 0, warning: 1 }
+const TONE_RANK: Record<EvidenceTone, number> = { error: 0, warning: 1, neutral: 2 }
+
+function severityRank(item: EvidenceItem): number {
+  return item.severity ? SEVERITY_RANK[item.severity] : 2
+}
+
+/** Stable ordering by an existing key: equal items keep the Server/builder
+ *  order (Array.prototype.sort is stable). */
+function stableBy(items: EvidenceItem[], rank: (item: EvidenceItem) => number): EvidenceItem[] {
+  return [...items].sort((left, right) => rank(left) - rank(right))
+}
+
+/**
+ * The one summary rule every Agent surface uses (Agents rows, the Overview
+ * preview, the Agent detail Overview), so they never disagree:
+ *
+ * - each group is counted on its own: Current, Not observed, Recorded;
+ * - the headline is the most severe Current item (Server severity first,
+ *   original order among equals), and only without any Current item the first
+ *   Not observed item, which is then labelled as such, never as Current;
+ * - the Recorded headline is the highest-tone recorded item, still history;
+ * - what is folded is counted per group, and folded Critical (Current) and
+ *   error-level (Recorded) items are counted by name, never a bare "+N more".
+ */
+export type EvidenceSummary = {
+  counts: { current: number; unknown: number; recorded: number }
+  lead: { group: 'current' | 'unknown'; item: EvidenceItem } | null
+  recordedLead: EvidenceItem | null
+  folded: {
+    current: number
+    currentCritical: number
+    unknown: number
+    recorded: number
+    recordedError: number
+  }
+  /** Every item in summary order, for a complete expanded list. */
+  ordered: { current: EvidenceItem[]; unknown: EvidenceItem[]; recorded: EvidenceItem[] }
+}
+
+export function summarizeEvidence(evidence: AgentEvidence): EvidenceSummary {
+  const current = stableBy(evidence.current, severityRank)
+  const unknown = [...evidence.unknown]
+  const recorded = stableBy(evidence.recorded, (item) => TONE_RANK[item.tone])
+  const lead = current[0]
+    ? { group: 'current' as const, item: current[0] }
+    : unknown[0]
+      ? { group: 'unknown' as const, item: unknown[0] }
+      : null
+  const foldedCurrent = current.slice(lead?.group === 'current' ? 1 : 0)
+  const foldedUnknown = unknown.slice(lead?.group === 'unknown' ? 1 : 0)
+  const foldedRecorded = recorded.slice(1)
+  return {
+    counts: { current: current.length, unknown: unknown.length, recorded: recorded.length },
+    lead,
+    recordedLead: recorded[0] ?? null,
+    folded: {
+      current: foldedCurrent.length,
+      currentCritical: foldedCurrent.filter((item) => item.severity === 'critical').length,
+      unknown: foldedUnknown.length,
+      recorded: foldedRecorded.length,
+      recordedError: foldedRecorded.filter((item) => item.tone === 'error').length,
+    },
+    ordered: { current, unknown, recorded },
+  }
+}
+
+/** The folded Current and Not observed remainder, e.g.
+ *  "+2 current (1 critical) · +1 not observed"; empty when nothing is folded. */
+export function foldedAttentionText(summary: EvidenceSummary): string {
+  const { folded } = summary
+  return [
+    folded.current > 0
+      ? '+' + folded.current + ' current' + (folded.currentCritical > 0 ? ' (' + folded.currentCritical + ' critical)' : '')
+      : null,
+    folded.unknown > 0 ? '+' + folded.unknown + ' not observed' : null,
+  ].filter(Boolean).join(' · ')
+}
+
+/** The folded Recorded remainder, e.g. "+3 recorded (1 error)". */
+export function foldedRecordedText(summary: EvidenceSummary): string {
+  const { folded } = summary
+  if (folded.recorded === 0) return ''
+  return '+' + folded.recorded + ' recorded' + (folded.recordedError > 0 ? ' (' + folded.recordedError + ' error)' : '')
+}
+
+/** Every folded group, for a single details toggle. */
+export function foldedText(summary: EvidenceSummary): string {
+  return [foldedAttentionText(summary), foldedRecordedText(summary)].filter(Boolean).join(' · ')
+}
+
+/**
+ * Overview preview priority (webui.md §8.4.4). Presentation only: it orders
+ * and buckets the five-item preview and changes no Server state, history or
+ * acknowledgment. Current evidence ranks by its existing severity; accumulated
+ * counters (security events, gap intervals) and retained Spool evidence are
+ * Recorded history and never outrank a current state. The Server's own
+ * Attention Items leave this ranking once the Owner acknowledges them.
+ */
+export type AgentPreviewTier = { rank: number; bucket: string | null }
+
+export function agentPreviewTier(agent: AgentDiagnostic): AgentPreviewTier {
+  const evidence = agentEvidence(agent)
+  if (evidence.current.some((item) => item.severity === 'critical')) {
+    return { rank: 0, bucket: 'with critical current attention' }
+  }
+  if (agent.liveness === 'offline') return { rank: 1, bucket: 'offline' }
+  if (agent.liveness !== 'online') return { rank: 2, bucket: 'unknown reporting' }
+  if (evidence.current.length > 0) return { rank: 3, bucket: 'with current attention' }
+  if (evidence.unknown.length > 0) return { rank: 4, bucket: 'not fully observed' }
+  if (evidence.recorded.length > 0) return { rank: 5, bucket: 'with recorded history' }
+  return { rank: 6, bucket: null }
 }
 
 export type DiagnosticFinding = { key: string; label: string; value: string }

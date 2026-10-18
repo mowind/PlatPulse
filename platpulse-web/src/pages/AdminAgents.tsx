@@ -37,10 +37,12 @@ import {
   agentEvidence,
   diagnosticFindings,
   diagnosticRangeText,
+  foldedText,
   hasSpoolObservation,
-  type EvidenceItem,
-  type EvidenceTone,
+  summarizeEvidence,
+  type EvidenceSummary,
 } from '../agentEvidence'
+import { EVIDENCE_TONE, EvidenceLead } from '../components/AgentEvidenceLead'
 import { InfoHint } from '../components/InfoHint'
 import {
   AdminDetailSections,
@@ -336,33 +338,22 @@ export default function AdminAgentsList() {
   )
 }
 
-const EVIDENCE_TONE: Record<EvidenceTone, string> = {
-  error: 'font-medium text-destructive',
-  warning: 'text-foreground',
-  neutral: 'text-muted-foreground',
-}
-
-/** PAGE-ADMIN-AGENTS row: an inventory summary. The Diagnostics cell names the
- * first current or unobserved item and the first recorded item, then counts
- * the rest; the row's details show every item, the credential counts, the
- * Active/Retired split and the complete recorded findings. Known-zero
- * counters take no space on the row. */
+/** PAGE-ADMIN-AGENTS row: an inventory summary. The Diagnostics cell uses the
+ * shared summary rule (summarizeEvidence): the most severe current item (or a
+ * labelled not-observed one), the highest recorded item, and the folded
+ * remainder counted per group with criticals named; the row's details show
+ * every item, the credential counts, the Active/Retired split and the
+ * complete recorded findings. Known-zero counters take no space on the row. */
 function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
   const liveness = livenessLabel(agent.liveness)
   const [open, setOpen] = useState(false)
   const toggleRef = useRef<HTMLButtonElement>(null)
   const detailId = 'agent-diagnostics-' + agent.agent_id
   const evidence = agentEvidence(agent)
-  const attention = [...evidence.current, ...evidence.unknown]
-  const shown = [attention[0], evidence.recorded[0]].filter((item): item is EvidenceItem => Boolean(item))
-  // Current and recorded remainders are counted apart, so another current
-  // item never reads as more history.
-  const moreCurrent = Math.max(0, attention.length - 1)
-  const moreRecorded = Math.max(0, evidence.recorded.length - 1)
-  const more = [
-    moreCurrent > 0 ? '+' + moreCurrent + ' current' : null,
-    moreRecorded > 0 ? '+' + moreRecorded + ' recorded' : null,
-  ].filter(Boolean).join(' · ')
+  const summary = summarizeEvidence(evidence)
+  // Current, not-observed and recorded remainders are counted apart, so
+  // another current item never reads as more history or vice versa.
+  const more = foldedText(summary)
   const name = agent.display_name ?? shortId(agent.agent_id)
   const collapseOnEscape = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key !== 'Escape' || !open) return
@@ -385,24 +376,22 @@ function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
           <span className="tabular-nums">{agent.nodes.length} retained</span>
         </td>
         <td data-label="Diagnostics" className={cn(ADMIN_TD, 'min-w-0')}>
+          {/* Plain stacked lines with the toggle as the last item: its 44px
+              target sits below the text, never over it. */}
           <div className="flex min-w-0 flex-col items-start gap-0.5" data-slot="agent-evidence-summary">
-            {shown.length === 0 && <span className="text-muted-foreground">Nothing recorded</span>}
-            {attention[0] && (
-              <span className={cn('[overflow-wrap:anywhere]', EVIDENCE_TONE[attention[0].tone])} data-group="current">
-                {attention[0].text}
-              </span>
-            )}
-            {evidence.recorded[0] && (
-              <span className={cn('text-xs [overflow-wrap:anywhere]', EVIDENCE_TONE[evidence.recorded[0].tone])} data-group="recorded">
+            {!summary.lead && !summary.recordedLead && <span className="text-muted-foreground">Nothing recorded</span>}
+            <EvidenceLead summary={summary} />
+            {summary.recordedLead && (
+              <span className={cn('text-xs [overflow-wrap:anywhere]', EVIDENCE_TONE[summary.recordedLead.tone])} data-group="recorded">
                 <span className="text-muted-foreground">Recorded · </span>
-                {evidence.recorded[0].short ?? evidence.recorded[0].text}
+                {summary.recordedLead.short ?? summary.recordedLead.text}
               </span>
             )}
             <Button
               ref={toggleRef}
               variant="link"
               size="xs"
-              className="min-h-11 px-0 text-xs md:-my-2"
+              className="h-auto min-h-11 max-w-full justify-start px-0 text-left text-xs whitespace-normal"
               aria-expanded={open}
               aria-controls={detailId}
               onClick={() => setOpen((value) => !value)}
@@ -417,7 +406,7 @@ function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
       {open && (
         <tr data-slot="detail-row" className={ADMIN_DETAIL_ROW}>
           <td colSpan={5} id={detailId} onKeyDown={collapseOnEscape} className="p-0">
-            <AgentRowDetails agent={agent} evidence={evidence} onCollapse={() => setOpen(false)} />
+            <AgentRowDetails agent={agent} summary={summary} onCollapse={() => setOpen(false)} />
           </td>
         </tr>
       )}
@@ -429,17 +418,17 @@ const GROUP_TITLE = 'text-xs font-semibold text-foreground'
 
 function AgentRowDetails({
   agent,
-  evidence,
+  summary,
   onCollapse,
 }: {
   agent: AgentDiagnostic
-  evidence: ReturnType<typeof agentEvidence>
+  summary: EvidenceSummary
   onCollapse: () => void
 }) {
   const active = agent.nodes.filter((node) => node.lifecycle === 'active').length
   const retired = agent.nodes.filter((node) => node.lifecycle === 'retired').length
   const other = agent.nodes.length - active - retired
-  const attention = [...evidence.current, ...evidence.unknown]
+  const { current, unknown } = summary.ordered
   return (
     <div className={ADMIN_DETAIL_BODY}>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -451,12 +440,21 @@ function AgentRowDetails({
       <div className="grid min-w-0 gap-x-8 gap-y-4 sm:grid-cols-2 xl:grid-cols-3">
         <section aria-label="Current and not observed" className="min-w-0 space-y-1.5">
           <h4 className={GROUP_TITLE}>Current and not observed</h4>
-          {attention.length === 0 ? (
+          {current.length === 0 && unknown.length === 0 ? (
             <p className={ADMIN_SECONDARY}>No current Server attention item; Host and spool observed.</p>
           ) : (
             <ul className="space-y-1">
-              {attention.map((item) => (
-                <li key={item.key} className={cn('[overflow-wrap:anywhere]', EVIDENCE_TONE[item.tone])}>{item.text}</li>
+              {current.map((item) => (
+                <li key={item.key} data-group="current" className={cn('[overflow-wrap:anywhere]', EVIDENCE_TONE[item.tone])}>
+                  {item.severity === 'critical' && <span>Critical · </span>}
+                  {item.text}
+                </li>
+              ))}
+              {unknown.map((item) => (
+                <li key={item.key} data-group="unknown" className={cn('[overflow-wrap:anywhere]', EVIDENCE_TONE[item.tone])}>
+                  <span className="text-muted-foreground">Not observed · </span>
+                  {item.text}
+                </li>
               ))}
             </ul>
           )}
@@ -664,7 +662,7 @@ export function AdminAgentDetail() {
                   marker: diagnosticCount > 0 ? diagnosticCount : undefined,
                   markerLabel:
                     diagnosticCount > 0
-                      ? diagnosticCount + ' recorded or unobserved item' + (diagnosticCount === 1 ? '' : 's')
+                      ? diagnosticCount + ' current or unobserved item' + (diagnosticCount === 1 ? '' : 's')
                       : undefined,
                   content: (
                     <>
@@ -820,7 +818,20 @@ function AgentDetailHeader({
           <span className="tabular-nums">{agent.nodes.length} retained</span>
         </DetailDimension>
         <DetailDimension label="Active credentials">
-          <span className="tabular-nums">{activeCredentials} active · {agent.credentials.length} total</span>
+          {/* The current summary only; active / revoked / inactive records and
+              revocation live in Manage, reached from this one entry. */}
+          <span className="inline-flex flex-wrap items-center gap-x-3">
+            <span className="tabular-nums">{activeCredentials} active · {agent.credentials.length} total</span>
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto min-h-11 px-0"
+              data-slot="manage-credentials"
+              onClick={() => onSection('manage')}
+            >
+              Manage credentials
+            </Button>
+          </span>
         </DetailDimension>
       </DetailDimensions>
       {agent.attention.length > 0 && (
@@ -887,8 +898,13 @@ function AgentDetailHeader({
   )
 }
 
+function plural(count: number, noun: string): string {
+  return count + ' ' + noun + (count === 1 ? '' : 's')
+}
+
 /** Overview: reporting and the necessary running summary. Boot IDs, the
- *  complete Spool, clock and component evidence stay in Diagnostics. */
+ *  complete Spool, clock and component evidence stay in Diagnostics; the
+ *  credential summary and its single Manage entry are in the header above. */
 function AgentRuntimeSummaryPanel({
   agent,
   onSection,
@@ -897,7 +913,16 @@ function AgentRuntimeSummaryPanel({
   onSection: (next: DetailSection) => void
 }) {
   const host = agent.host
-  const evidence = agentEvidence(agent)
+  const summary = summarizeEvidence(agentEvidence(agent))
+  const recordedCount = summary.counts.recorded
+  const lead = summary.recordedLead
+  // Host and Spool history can only be known once observed: without an
+  // observation an empty list is Unknown, not "nothing recorded".
+  const unobserved = !host
+    ? 'Host not observed yet, so Host and Spool history is Unknown'
+    : !hasSpoolObservation(host)
+      ? 'Spool not observed yet, so Spool history is Unknown'
+      : null
   return (
     <CardX size="medium" className={CARD_SURFACE} header={<h2 className={ADMIN_SECTION_TITLE}>Reporting and runtime</h2>}>
       {/* Liveness, receipt time and boot status are in the header above. */}
@@ -913,19 +938,35 @@ function AgentRuntimeSummaryPanel({
             ? formatPercent(host.cpu_percent) + ' · ' + formatBytesUnknown(host.memory_used_bytes) + ' / ' + formatBytesUnknown(host.memory_total_bytes)
             : 'Unknown'}
         </DetailItem>
-        <DetailItem label="Credentials">
-          {credentialSummaryText(agent.credentials)}{' '}
-          <Button variant="link" size="sm" className="h-auto min-h-11 px-0" onClick={() => onSection('manage')}>
-            Manage credentials
-          </Button>
-        </DetailItem>
         <DetailItem label="Recorded evidence">
-          {evidence.recorded.length === 0
-            ? 'Nothing recorded'
-            : evidence.recorded.map((item) => item.text).join(' · ')}{' '}
-          <Button variant="link" size="sm" className="h-auto min-h-11 px-0" onClick={() => onSection('diagnostics')}>
-            Open Diagnostics
-          </Button>
+          {/* A count of recorded history items and the highest one, not every
+              finding: the complete evidence is in Diagnostics. Recorded is
+              history, never a count of current faults. */}
+          <span className="grid min-w-0 gap-0.5" data-slot="recorded-evidence-summary">
+            <span className="tabular-nums" data-slot="recorded-count">
+              {recordedCount === 0
+                ? unobserved
+                  ? 'No recorded history known'
+                  : 'Nothing recorded'
+                : plural(recordedCount, 'recorded history item')}
+            </span>
+            {lead && (
+              <span className={cn('text-xs [overflow-wrap:anywhere]', EVIDENCE_TONE[lead.tone])} data-group="recorded">
+                <span className="text-muted-foreground">{recordedCount > 1 ? 'Highest · ' : 'Recorded · '}</span>
+                {lead.text}
+              </span>
+            )}
+            {unobserved && (
+              <span className="text-xs text-muted-foreground [overflow-wrap:anywhere]" data-group="unknown">
+                Not observed · {unobserved}
+              </span>
+            )}
+            <span>
+              <Button variant="link" size="sm" className="h-auto min-h-11 px-0" onClick={() => onSection('diagnostics')}>
+                Open Diagnostics
+              </Button>
+            </span>
+          </span>
         </DetailItem>
       </DetailList>
     </CardX>
@@ -1273,6 +1314,13 @@ function CredentialsPanel({
         Only non-sensitive credential ids and lifecycle instants are shown; secrets are
         never stored or displayed again.
       </p>
+      {agent.credentials.length > 0 && (
+        // The complete Server validity counts; the detail header keeps only
+        // the active count.
+        <p className="mt-2 text-sm tabular-nums" data-slot="credential-counts">
+          {credentialSummaryText(agent.credentials)}
+        </p>
+      )}
       {message && (
         <p className="mt-2 text-sm text-success" role="status">
           {message}

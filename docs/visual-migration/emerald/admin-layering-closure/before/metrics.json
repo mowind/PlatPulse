@@ -1,0 +1,386 @@
+{
+  "overview-390-light": {
+    "height": 3060,
+    "columnHeaders": 0,
+    "visibleTextLength": 2744,
+    "overflow": 0
+  },
+  "nodes-390-light": {
+    "height": 5775,
+    "columnHeaders": 5,
+    "visibleTextLength": 3054,
+    "overflow": 0
+  },
+  "agents-390-light": {
+    "height": 1471,
+    "columnHeaders": 5,
+    "visibleTextLength": 1054,
+    "overflow": 0
+  },
+  "validators-390-light": {
+    "height": 3003,
+    "columnHeaders": 8,
+    "visibleTextLength": 1916,
+    "overflow": 0
+  },
+  "networks-390-light": {
+    "height": 1010,
+    "columnHeaders": 5,
+    "visibleTextLength": 587,
+    "overflow": 0
+  },
+  "node-detail-390-light": {
+    "height": 1376,
+    "columnHeaders": 0,
+    "visibleTextLength": 1061,
+    "overflow": 0
+  },
+  "agent-detail-390-light": {
+    "height": 1723,
+    "columnHeaders": 0,
+    "visibleTextLength": 1614,
+    "overflow": 0
+  },
+  "agent-diagnostics-390-light": {
+    "height": 3189,
+    "columnHeaders": 0,
+    "visibleTextLength": 2344,
+    "overflow": 0
+  },
+  "overview-768-light": {
+    "height": 2225,
+    "columnHeaders": 0,
+    "visibleTextLength": 2744,
+    "overflow": 0
+  },
+  "nodes-768-light": {
+    "height": 1561,
+    "columnHeaders": 5,
+    "visibleTextLength": 3157,
+    "overflow": 0
+  },
+  "agents-768-light": {
+    "height": 900,
+    "columnHeaders": 5,
+    "visibleTextLength": 1072,
+    "overflow": 0
+  },
+  "validators-768-light": {
+    "height": 1366,
+    "columnHeaders": 8,
+    "visibleTextLength": 1940,
+    "overflow": 0
+  },
+  "networks-768-light": {
+    "height": 900,
+    "columnHeaders": 5,
+    "visibleTextLength": 594,
+    "overflow": 0
+  },
+  "node-detail-768-light": {
+    "height": 933,
+    "columnHeaders": 0,
+    "visibleTextLength": 1061,
+    "overflow": 0
+  },
+  "agent-detail-768-light": {
+    "height": 1185,
+    "columnHeaders": 0,
+    "visibleTextLength": 1614,
+    "overflow": 0
+  },
+  "agent-diagnostics-768-light": {
+    "height": 1987,
+    "columnHeaders": 0,
+    "visibleTextLength": 2344,
+    "overflow": 0
+  },
+  "overview-1280-light": {
+    "height": 1716,
+    "columnHeaders": 0,
+    "visibleTextLength": 2744,
+    "overflow": 0
+  },
+  "nodes-1280-light": {
+    "height": 1387,
+    "columnHeaders": 5,
+    "visibleTextLength": 3157,
+    "overflow": 0
+  },
+  "agents-1280-light": {
+    "height": 901,
+    "columnHeaders": 5,
+    "visibleTextLength": 1072,
+    "overflow": 0
+  },
+  "validators-1280-light": {
+    "height": 918,
+    "columnHeaders": 8,
+    "visibleTextLength": 1940,
+    "overflow": 0
+  },
+  "networks-1280-light": {
+    "height": 901,
+    "columnHeaders": 5,
+    "visibleTextLength": 594,
+    "overflow": 0
+  },
+  "node-detail-1280-light": {
+    "height": 901,
+    "columnHeaders": 0,
+    "visibleTextLength": 1061,
+    "overflow": 0
+  },
+  "agent-detail-1280-light": {
+    "height": 1117,
+    "columnHeaders": 0,
+    "visibleTextLength": 1614,
+    "overflow": 0
+  },
+  "agent-diagnostics-1280-light": {
+    "height": 1737,
+    "columnHeaders": 0,
+    "visibleTextLength": 2344,
+    "overflow": 0
+  },
+  "overview-1440-light": {
+    "height": 1716,
+    "columnHeaders": 0,
+    "visibleTextLength": 2744,
+    "overflow": 0
+  },
+  "nodes-1440-light": {
+    "height": 1306,
+    "columnHeaders": 5,
+    "visibleTextLength": 3157,
+    "overflow": 0
+  },
+  "agents-1440-light": {
+    "height": 901,
+    "columnHeaders": 5,
+    "visibleTextLength": 1072,
+    "overflow": 0
+  },
+  "validators-1440-light": {
+    "height": 918,
+    "columnHeaders": 8,
+    "visibleTextLength": 1940,
+    "overflow": 0
+  },
+  "networks-1440-light": {
+    "height": 901,
+    "columnHeaders": 5,
+    "visibleTextLength": 594,
+    "overflow": 0
+  },
+  "node-detail-1440-light": {
+    "height": 901,
+    "columnHeaders": 0,
+    "visibleTextLength": 1061,
+    "overflow": 0
+  },
+  "agent-detail-1440-light": {
+    "height": 1117,
+    "columnHeaders": 0,
+    "visibleTextLength": 1614,
+    "overflow": 0
+  },
+  "agent-diagnostics-1440-light": {
+    "height": 1737,
+    "columnHeaders": 0,
+    "visibleTextLength": 2344,
+    "overflow": 0
+  },
+  "overview-390-dark": {
+    "height": 3040,
+    "columnHeaders": 0,
+    "visibleTextLength": 2742,
+    "overflow": 0
+  },
+  "nodes-390-dark": {
+    "height": 5775,
+    "columnHeaders": 5,
+    "visibleTextLength": 3054,
+    "overflow": 0
+  },
+  "agents-390-dark": {
+    "height": 1471,
+    "columnHeaders": 5,
+    "visibleTextLength": 1054,
+    "overflow": 0
+  },
+  "validators-390-dark": {
+    "height": 3003,
+    "columnHeaders": 8,
+    "visibleTextLength": 1914,
+    "overflow": 0
+  },
+  "networks-390-dark": {
+    "height": 1010,
+    "columnHeaders": 5,
+    "visibleTextLength": 587,
+    "overflow": 0
+  },
+  "node-detail-390-dark": {
+    "height": 1376,
+    "columnHeaders": 0,
+    "visibleTextLength": 1061,
+    "overflow": 0
+  },
+  "agent-detail-390-dark": {
+    "height": 1723,
+    "columnHeaders": 0,
+    "visibleTextLength": 1614,
+    "overflow": 0
+  },
+  "agent-diagnostics-390-dark": {
+    "height": 3189,
+    "columnHeaders": 0,
+    "visibleTextLength": 2344,
+    "overflow": 0
+  },
+  "overview-768-dark": {
+    "height": 2225,
+    "columnHeaders": 0,
+    "visibleTextLength": 2742,
+    "overflow": 0
+  },
+  "nodes-768-dark": {
+    "height": 1561,
+    "columnHeaders": 5,
+    "visibleTextLength": 3157,
+    "overflow": 0
+  },
+  "agents-768-dark": {
+    "height": 900,
+    "columnHeaders": 5,
+    "visibleTextLength": 1072,
+    "overflow": 0
+  },
+  "validators-768-dark": {
+    "height": 1366,
+    "columnHeaders": 8,
+    "visibleTextLength": 1938,
+    "overflow": 0
+  },
+  "networks-768-dark": {
+    "height": 900,
+    "columnHeaders": 5,
+    "visibleTextLength": 594,
+    "overflow": 0
+  },
+  "node-detail-768-dark": {
+    "height": 933,
+    "columnHeaders": 0,
+    "visibleTextLength": 1061,
+    "overflow": 0
+  },
+  "agent-detail-768-dark": {
+    "height": 1185,
+    "columnHeaders": 0,
+    "visibleTextLength": 1614,
+    "overflow": 0
+  },
+  "agent-diagnostics-768-dark": {
+    "height": 1987,
+    "columnHeaders": 0,
+    "visibleTextLength": 2344,
+    "overflow": 0
+  },
+  "overview-1280-dark": {
+    "height": 1716,
+    "columnHeaders": 0,
+    "visibleTextLength": 2742,
+    "overflow": 0
+  },
+  "nodes-1280-dark": {
+    "height": 1387,
+    "columnHeaders": 5,
+    "visibleTextLength": 3157,
+    "overflow": 0
+  },
+  "agents-1280-dark": {
+    "height": 901,
+    "columnHeaders": 5,
+    "visibleTextLength": 1072,
+    "overflow": 0
+  },
+  "validators-1280-dark": {
+    "height": 918,
+    "columnHeaders": 8,
+    "visibleTextLength": 1938,
+    "overflow": 0
+  },
+  "networks-1280-dark": {
+    "height": 901,
+    "columnHeaders": 5,
+    "visibleTextLength": 594,
+    "overflow": 0
+  },
+  "node-detail-1280-dark": {
+    "height": 901,
+    "columnHeaders": 0,
+    "visibleTextLength": 1061,
+    "overflow": 0
+  },
+  "agent-detail-1280-dark": {
+    "height": 1117,
+    "columnHeaders": 0,
+    "visibleTextLength": 1614,
+    "overflow": 0
+  },
+  "agent-diagnostics-1280-dark": {
+    "height": 1737,
+    "columnHeaders": 0,
+    "visibleTextLength": 2344,
+    "overflow": 0
+  },
+  "overview-1440-dark": {
+    "height": 1716,
+    "columnHeaders": 0,
+    "visibleTextLength": 2742,
+    "overflow": 0
+  },
+  "nodes-1440-dark": {
+    "height": 1306,
+    "columnHeaders": 5,
+    "visibleTextLength": 3157,
+    "overflow": 0
+  },
+  "agents-1440-dark": {
+    "height": 901,
+    "columnHeaders": 5,
+    "visibleTextLength": 1072,
+    "overflow": 0
+  },
+  "validators-1440-dark": {
+    "height": 918,
+    "columnHeaders": 8,
+    "visibleTextLength": 1938,
+    "overflow": 0
+  },
+  "networks-1440-dark": {
+    "height": 901,
+    "columnHeaders": 5,
+    "visibleTextLength": 594,
+    "overflow": 0
+  },
+  "node-detail-1440-dark": {
+    "height": 901,
+    "columnHeaders": 0,
+    "visibleTextLength": 1061,
+    "overflow": 0
+  },
+  "agent-detail-1440-dark": {
+    "height": 1117,
+    "columnHeaders": 0,
+    "visibleTextLength": 1614,
+    "overflow": 0
+  },
+  "agent-diagnostics-1440-dark": {
+    "height": 1737,
+    "columnHeaders": 0,
+    "visibleTextLength": 2344,
+    "overflow": 0
+  }
+}

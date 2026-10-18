@@ -112,6 +112,21 @@ const AGENT = {
   attention: [],
 }
 
+/** A Server-raised critical Agent Attention Item (its severity is the Server's). */
+function criticalAttention(agentId: string) {
+  return {
+    id: 'agent_spool_overflow:agent:' + agentId,
+    kind: 'agent_spool_overflow',
+    severity: 'critical',
+    subject_kind: 'agent',
+    subject_id: agentId,
+    subject_label: agentId,
+    message: 'the Agent spool overflowed and discarded queued reports',
+    observed_at: '2026-08-12T08:00:00Z',
+    evidence_key: 'agent_spool_overflow:dropped_to=12',
+  }
+}
+
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -425,7 +440,7 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     ]
     const active = [{ credential_id: 'c1', active: true, created_at: '2026-08-12T08:00:00Z', revoked_at: null, revoke_after: null }]
     const agents = [
-      ...Array.from({ length: 5 }, (_, index) => ({ ...AGENT, agent_id: 'risk-' + index, security_event_count: 1, credentials: active })),
+      ...Array.from({ length: 5 }, (_, index) => ({ ...AGENT, agent_id: 'risk-' + index, credentials: active, attention: [criticalAttention('risk-' + index)] })),
       { ...AGENT, agent_id: 'offline-agent', liveness: 'offline', credentials: active },
       { ...AGENT, agent_id: 'unknown-agent', liveness: 'unknown', credentials: active },
     ]
@@ -750,21 +765,27 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
 })
 
 describe('Agent inventory risk ordering and evidence', () => {
-  it('sorts critical, offline, unknown, and online Agents before limiting to six', () => {
+  it('sorts current critical, offline, unknown, current, unobserved, recorded and quiet Agents', () => {
+    const observed: HostDiagnostic = { components: [], updated_at: '2026-08-12T08:00:00Z', spool_queued_reports: 0 }
+    const active = [{ credential_id: 'c1', active: true, created_at: '2026-08-12T08:00:00Z', revoked_at: null, revoke_after: null }]
     const agent = (id: string, liveness: string, extra: Partial<AgentDiagnostic> = {}): AgentDiagnostic => ({
-      ...AGENT, agent_id: id, liveness, ...extra,
+      ...AGENT, agent_id: id, liveness, host: observed, credentials: active, ...extra,
     }) as AgentDiagnostic
-    const criticalHost: HostDiagnostic = { components: [], updated_at: '2026-08-12T08:00:00Z', spool_store_fatal: true }
     const ordered = prioritizeAgents([
       agent('online-z', 'online'),
+      agent('history-security', 'online', { security_event_count: 4, sequence_gap_count: 2 }),
       agent('offline', 'offline'),
-      agent('critical', 'online', { security_event_count: 1 }),
+      agent('no-credential', 'online', { credentials: [] }),
       agent('unknown', 'unknown'),
-      agent('critical-spool', 'online', { host: criticalHost }),
+      agent('critical-spool', 'online', { host: { ...observed, spool_store_fatal: true } }),
+      agent('critical-attention', 'online', { attention: [criticalAttention('critical-attention')] as AgentDiagnostic['attention'] }),
+      agent('no-host', 'online', { host: null }),
       agent('online-a', 'online'),
     ])
+    // Accumulated security events are recorded history: they never outrank a
+    // current state, offline or unknown reporting.
     expect(ordered.map((entry) => entry.agent_id)).toEqual([
-      'critical', 'critical-spool', 'offline', 'unknown', 'online-a', 'online-z',
+      'critical-attention', 'critical-spool', 'offline', 'unknown', 'no-credential', 'no-host', 'history-security', 'online-a', 'online-z',
     ])
   })
 
@@ -773,7 +794,9 @@ describe('Agent inventory risk ordering and evidence', () => {
       ...Array.from({ length: 4 }, (_, index) => ({ ...AGENT, agent_id: 'online-' + index, liveness: 'online' })),
       { ...AGENT, agent_id: 'offline-a', liveness: 'offline' },
       { ...AGENT, agent_id: 'unknown-a', liveness: 'unknown' },
-      { ...AGENT, agent_id: 'critical-a', security_event_count: 1 },
+      { ...AGENT, agent_id: 'critical-a', attention: [criticalAttention('critical-a')] },
+      // Only accumulated history: no longer pulled ahead of current states.
+      { ...AGENT, agent_id: 'h-only', security_event_count: 9 },
     ]
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
@@ -790,11 +813,15 @@ describe('Agent inventory risk ordering and evidence', () => {
       expect.stringContaining('critical-a'),
       expect.stringContaining('offline-a'),
       expect.stringContaining('unknown-a'),
+      // The history-only Agent ties with the online Agents (all lack a
+      // credential) and keeps its id order instead of jumping to the top.
+      expect.stringContaining('h-only'),
       expect.stringContaining('online-0'),
-      expect.stringContaining('online-1'),
     ])
-    expect(screen.queryByText('online-2', { exact: true })).toBeNull()
-    expect(within(agentPanel).getByText(/Showing 5 of 7 Agents/)).toBeTruthy()
+    expect(items[3].textContent).toContain('Recorded history: 9 security events')
+    expect(items[3].querySelector('[data-slot="agent-preview-current"]')?.textContent).not.toContain('security')
+    expect(screen.queryByText('online-1', { exact: true })).toBeNull()
+    expect(within(agentPanel).getByText(/Showing 5 of 8 Agents/)).toBeTruthy()
     expect(screen.getByRole('link', { name: 'View all Agents' }).getAttribute('href')).toBe('/admin/agents')
   })
 
@@ -821,10 +848,11 @@ describe('Agent inventory risk ordering and evidence', () => {
     expect(link.getAttribute('href')).toBe('/admin/agents/agent-1')
     const item = link.closest('li') as HTMLElement
     expect(item.querySelector('[data-slot="agent-preview-current"]')?.textContent).toBe(
-      'the Agent spool overflowed and discarded queued reports',
+      'Critical · the Agent spool overflowed and discarded queued reports',
     )
+    // One recorded item (the highest tone) and a per-group count of the rest.
     expect(item.querySelector('[data-slot="agent-preview-recorded"]')?.textContent).toBe(
-      'Recorded history: 1 gap interval · 2 security events · +2 more on the Agent',
+      'Recorded history: Discarded reports · +3 recorded on the Agent',
     )
     expect(item.textContent).toContain('1 retained Node')
     expect(item.textContent).toContain('1 unhealthy')

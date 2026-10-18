@@ -326,10 +326,21 @@ test.describe('SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix', () => {
           }
         }
         const agentIndex = Number(row.id.slice(-12))
-        // The first recorded item is the non-zero gap-interval counter;
+        // The recorded headline is the highest-tone recorded item (webui.md
+        // §8.7): an error-level Spool store error or discarded range, then a
+        // warning-level Host component issue, otherwise this Agent's own
+        // non-zero gap counter;
         // zero counters and credential detail stay off the row.
-        const gaps = row.text.match(/Recorded · (\d+) gap intervals?/)
-        expect(gaps ? Number(gaps[1]) : Number.NaN).toBe(agentIndex)
+        const observedSpool = agentIndex % 7 !== 0 && agentIndex % 4 !== 0
+        const headline =
+          observedSpool && agentIndex % 5 === 0
+            ? 'Spool store error'
+            : observedSpool && agentIndex % 3 === 0
+              ? 'Discarded reports'
+              : agentIndex % 7 !== 0 && agentIndex % 6 === 0
+                ? '1 Host component issue'
+                : agentIndex + ' gap interval' + (agentIndex === 1 ? '' : 's')
+        expect(row.text).toContain('Recorded · ' + headline)
         const retained = row.text.match(/(\d+) retained/)
         expect(retained ? Number(retained[1]) : Number.NaN).toBe(agentIndex % 5)
         if (agentIndex % 4 === 0) expect(row.text).toContain('No credential issued')
@@ -354,7 +365,7 @@ test.describe('SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix', () => {
       const riskyRow = firstRow
       await expect(riskyRow).not.toContainText('Host snapshot')
       const toggle = riskyRow.locator('button[aria-controls^="agent-diagnostics-"]')
-      await expect(toggle).toHaveText(/^\+\d+ (current|recorded)/)
+      await expect(toggle).toHaveText(/^\+\d+ (current|not observed|recorded)/)
       await toggle.click()
       await expect(toggle).toHaveAttribute('aria-expanded', 'true')
       const detailRow = riskyRow.locator('xpath=following-sibling::tr[1]')

@@ -17,7 +17,14 @@ import { findRepoRoot } from './repo-root'
 const phase = process.env.ADMIN_LAYERING_EVIDENCE
 test.skip(!phase, 'Set ADMIN_LAYERING_EVIDENCE=before or after for matched captures')
 
-const ROOT = join(findRepoRoot(), 'docs/visual-migration/emerald/admin-layering')
+// Each layering round keeps its own matched pair; the first round's captures
+// stay in admin-layering/, later rounds name theirs (for example
+// ADMIN_LAYERING_EVIDENCE_DIR=admin-layering-closure).
+const ROOT = join(
+  findRepoRoot(),
+  'docs/visual-migration/emerald',
+  process.env.ADMIN_LAYERING_EVIDENCE_DIR ?? 'admin-layering',
+)
 const NODE_A = '0195f2a1-0014-4014-8014-000000000014'
 const NODE_C = '0195f2a1-0016-4016-8016-000000000016'
 const AGENT = '0195f2a1-0011-4011-8011-000000000011'
@@ -34,6 +41,8 @@ const PAGES = [
   { name: 'networks', path: '/admin/networks' },
   { name: 'node-detail', path: '/admin/nodes/' + NODE_A },
   { name: 'agent-detail', path: '/admin/agents/' + AGENT },
+  // Where the complete recorded evidence lives once the Overview summarizes it.
+  { name: 'agent-diagnostics', path: '/admin/agents/' + AGENT + '?section=diagnostics' },
 ]
 const WIDTHS = [390, 768, 1280, 1440]
 const THEMES = ['light', 'dark'] as const

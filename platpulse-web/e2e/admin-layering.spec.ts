@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Locator, type Page } from '@playwright/test'
 import { expectNoHorizontalOverflow, loginAs } from './helpers'
 
 // Admin information layering (webui.md §8.7) against the seeded local e2e
@@ -45,6 +45,165 @@ test('Nodes shows five columns and opens identity, endpoint and lifecycle in one
   // Node B keeps its identity mismatch visible without expanding.
   const rowB = table.locator('tbody tr').filter({ has: page.locator('a[href="/admin/nodes/' + NODE_B + '"]') })
   await expect(rowB.locator('[data-slot="node-identity-summary"]')).toContainText('Mismatched')
+  await expectNoHorizontalOverflow(page)
+})
+
+const NODE_C = '0195f2a1-0016-4016-8016-000000000016'
+const NODE_D = '0195f2a1-0017-4017-8017-000000000017'
+const NODE_E = '0195f2a1-0018-4018-8018-000000000018'
+const LONG_NODE_NAME =
+  'Archival validator sentinel with an unusually long operator-assigned display name for layout review'
+
+/** The real Server response with Node C's display name lengthened (the same
+ *  local fixture the layering evidence uses); no Server state changes. */
+async function lengthenNodeC(page: Page) {
+  await page.route(/\/api\/admin\/v1\/nodes(\?|$)/, async (route) => {
+    const response = await route.fetch()
+    const body = (await response.json()) as Array<Record<string, unknown>>
+    for (const node of body) if (node.node_id === NODE_C) node.display_name = LONG_NODE_NAME
+    await route.fulfill({ response, json: body })
+  })
+}
+
+function nodeRow(page: Page, nodeId: string) {
+  return page
+    .locator('[data-slot="node-table"] tbody tr:not([data-slot="detail-row"])')
+    .filter({ has: page.locator('a[href="/admin/nodes/' + nodeId + '"]') })
+}
+
+type Box = { x: number; y: number; width: number; height: number }
+const overlaps = (a: Box, b: Box) =>
+  a.x < b.x + b.width - 0.5 && b.x < a.x + a.width - 0.5 && a.y < b.y + b.height - 0.5 && b.y < a.y + a.height - 0.5
+
+/** Every point near the edges of a control hits that control itself, so no
+ *  neighbour's target is drawn over it (and it over no neighbour). */
+async function expectOwnHitArea(control: Locator) {
+  // Centre it so the sticky Admin header never covers the probe points.
+  await control.evaluate((element) => element.scrollIntoView({ block: 'center' }))
+  const misses = await control.evaluate((element) => {
+    const rect = element.getBoundingClientRect()
+    const points = [
+      [rect.left + rect.width / 2, rect.top + 2],
+      [rect.left + rect.width / 2, rect.bottom - 2],
+      [rect.left + 2, rect.top + rect.height / 2],
+      [rect.right - 2, rect.top + rect.height / 2],
+    ]
+    return points
+      .filter(([x, y]) => !element.contains(document.elementFromPoint(x, y)))
+      .map(([x, y]) => `${Math.round(x)},${Math.round(y)} -> ${document.elementFromPoint(x, y)?.outerHTML.slice(0, 80)}`)
+  })
+  expect(misses, 'points inside the control hit it').toEqual([])
+}
+
+test('Node and Network links keep separate 44px targets without overlapping hit areas', async ({ page }) => {
+  await lengthenNodeC(page)
+  await page.goto('/admin/nodes')
+  await expect(page.locator('[data-slot="node-table"]')).toBeVisible({ timeout: 20_000 })
+  for (const nodeId of [NODE_A, NODE_B, NODE_C, NODE_D]) {
+    const row = nodeRow(page, nodeId)
+    const name = row.locator('[data-slot="node-name-link"]')
+    const network = row.locator('[data-slot="node-network-link"]')
+    const details = row.getByRole('button', { name: /^Details for / })
+    const [nameBox, networkBox, detailsBox] = [await name.boundingBox(), await network.boundingBox(), await details.boundingBox()]
+    for (const box of [nameBox!, networkBox!, detailsBox!]) {
+      expect(Math.round(box.height)).toBeGreaterThanOrEqual(44)
+      expect(Math.round(box.width)).toBeGreaterThanOrEqual(44)
+    }
+    // Stacked groups, not pulled over each other.
+    expect(networkBox!.y).toBeGreaterThanOrEqual(nameBox!.y + nameBox!.height - 0.5)
+    expect(overlaps(nameBox!, networkBox!)).toBe(false)
+    expect(overlaps(nameBox!, detailsBox!)).toBe(false)
+    expect(overlaps(networkBox!, detailsBox!)).toBe(false)
+    await expectOwnHitArea(name)
+    await expectOwnHitArea(network)
+    await expectOwnHitArea(details)
+  }
+  // The long name wraps inside its cell (a taller target), never clipped.
+  const longName = nodeRow(page, NODE_C).locator('[data-slot="node-name-link"]')
+  const longBox = (await longName.boundingBox())!
+  const cellBox = (await nodeRow(page, NODE_C).locator('[data-label="Node"]').boundingBox())!
+  expect(longBox.x + longBox.width).toBeLessThanOrEqual(cellBox.x + cellBox.width + 1)
+  expect(await longName.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
+  // A click on the Network link opens the Network, not the Node above it.
+  await nodeRow(page, NODE_A).locator('[data-slot="node-network-link"]').click()
+  await expect(page).toHaveURL(/\/admin\/networks\/platon-e2e$/)
+  await expectNoHorizontalOverflow(page)
+})
+
+test('Nodes phone cards group name, Network, Health beside Freshness, and Head beside Details', async ({ page }) => {
+  await lengthenNodeC(page)
+  await page.goto('/admin/nodes')
+  await expect(page.locator('[data-slot="node-table"]')).toBeVisible({ timeout: 20_000 })
+  const width = page.viewportSize()!.width
+  const rowA = nodeRow(page, NODE_A)
+  if (width >= 768) {
+    // Tablet and desktop keep the five-column table.
+    await expect(page.locator('[data-slot="node-table"] thead th')).toHaveCount(5)
+    expect(await rowA.evaluate((row) => getComputedStyle(row).display)).toBe('table-row')
+    await expectNoHorizontalOverflow(page)
+    return
+  }
+  for (const nodeId of [NODE_A, NODE_B, NODE_C, NODE_D, NODE_E]) {
+    const row = nodeRow(page, nodeId)
+    const box = async (label: string) => (await row.locator('[data-label="' + label + '"]').boundingBox())!
+    const [rowBox, node, health, freshness, head, details] = [
+      (await row.boundingBox())!, await box('Node'), await box('Health'), await box('Freshness'), await box('Head / Sync'), await box('Details'),
+    ]
+    // Group 1/2: the Node cell spans the card.
+    expect(node.width).toBeGreaterThan(rowBox.width * 0.8)
+    // Group 3: Health and Freshness side by side.
+    expect(Math.abs(health.y - freshness.y)).toBeLessThanOrEqual(1)
+    expect(health.x + health.width).toBeLessThanOrEqual(freshness.x + 0.5)
+    expect(health.y).toBeGreaterThanOrEqual(node.y + node.height - 0.5)
+    // Group 4: Head / Sync and Details share the last line.
+    expect(head.y).toBeGreaterThanOrEqual(Math.max(health.y + health.height, freshness.y + freshness.height) - 0.5)
+    expect(details.y).toBeLessThan(head.y + head.height)
+    expect(head.x + head.width).toBeLessThanOrEqual(details.x + 0.5)
+    // Each dimension keeps its own visible label.
+    for (const label of ['Health', 'Freshness', 'Head / Sync']) {
+      const text = await row.locator('[data-label="' + label + '"]').evaluate((cell) => getComputedStyle(cell, '::before').content)
+      expect(text).toBe('"' + label + '"')
+    }
+  }
+  // Exceptions keep their reasons; normal rows stay short.
+  const rowB = nodeRow(page, NODE_B)
+  await expect(rowB.locator('[data-slot="node-identity-summary"]')).toContainText('Mismatched')
+  await expect(rowB.locator('[data-label="Freshness"]')).toContainText('Stale')
+  await expect(rowB.locator('[data-label="Freshness"]')).toContainText('Last good values')
+  await expect(rowB.locator('[data-label="Health"] small')).not.toHaveText('')
+  await expect(rowA.locator('[data-label="Health"] small')).toHaveCount(0)
+  await expect(nodeRow(page, NODE_E).locator('[data-label="Health"]')).toContainText(/unknown/i)
+  await expect(nodeRow(page, NODE_E).locator('[data-slot="node-identity-summary"]')).toContainText('Identity')
+  await expect(nodeRow(page, NODE_D).locator('[data-slot="node-lifecycle-marker"]')).toHaveText('Retired')
+  // Expanding keeps every field, the ID disclosure and copy.
+  const toggle = nodeRow(page, NODE_B).getByRole('button', { name: /^Details for / })
+  await toggle.click()
+  const region = page.locator('[id="' + (await toggle.getAttribute('aria-controls')) + '"]')
+  for (const field of ['Node ID', 'Redacted RPC Endpoint', 'Identity disposition', 'Visibility', 'Lifecycle', 'Resync state', 'Health reason', 'Lifecycle guidance']) {
+    await expect(region).toContainText(field)
+  }
+  await region.getByRole('button', { name: /Show full\s*Node ID/ }).click()
+  await expect(region.getByRole('button', { name: 'Copy Node ID' })).toBeVisible()
+  await expectNoHorizontalOverflow(page)
+})
+
+test('the Agent Details toggle sits below its summary text without covering it', async ({ page }) => {
+  await page.goto('/admin/agents')
+  const row = page
+    .locator('[data-slot="agent-table"] tbody tr:not([data-slot="detail-row"])')
+    .filter({ has: page.locator('a[href="/admin/agents/' + AGENT + '"]') })
+  await expect(row).toBeVisible({ timeout: 20_000 })
+  const summary = row.locator('[data-slot="agent-evidence-summary"]')
+  const toggle = row.locator('button[aria-controls^="agent-diagnostics-"]')
+  const toggleBox = (await toggle.boundingBox())!
+  expect(Math.round(toggleBox.height)).toBeGreaterThanOrEqual(44)
+  for (const text of await summary.locator(':scope > span').all()) {
+    const box = (await text.boundingBox())!
+    expect(overlaps(box, toggleBox)).toBe(false)
+  }
+  await expectOwnHitArea(toggle)
+  const identity = row.locator('a[href="/admin/agents/' + AGENT + '"]')
+  await expectOwnHitArea(identity)
   await expectNoHorizontalOverflow(page)
 })
 

@@ -554,10 +554,15 @@ function NodeListRow({
   return (
     <>
       <tr className={cn(ADMIN_ROW, node.lifecycle === 'retired' && 'text-muted-foreground')}>
-        <th scope="row" data-label="Node" className={cn(ADMIN_TD, 'min-w-0 text-left font-normal')}>
-          <div className="flex min-w-0 flex-wrap items-center gap-x-2">
+        {/* Two stacked groups, each a plain flex line whose 44px link targets
+            sit side by side or one below the other — never pulled over a
+            neighbour with negative margins. The cell's own vertical padding
+            is dropped on desktop because the targets already provide it. */}
+        <th scope="row" data-label="Node" className={cn(ADMIN_TD, 'min-w-0 text-left font-normal md:py-0')}>
+          <div data-slot="node-name-group" className="flex min-w-0 flex-wrap items-center gap-x-2">
             <Link
-              className="flex min-h-11 w-fit min-w-11 max-w-full items-center py-1 leading-snug font-medium text-foreground [overflow-wrap:anywhere] underline-offset-4 hover:underline md:-my-2"
+              data-slot="node-name-link"
+              className="flex min-h-11 w-fit min-w-11 max-w-full items-center py-1 leading-snug font-medium text-foreground [overflow-wrap:anywhere] underline-offset-4 hover:underline"
               to={'/admin/nodes/' + node.node_id}
             >
               {name}
@@ -572,16 +577,19 @@ function NodeListRow({
             )}
           </div>
           {/* Network and, when it is not matched, the separate Identity
-              dimension share the secondary line. */}
-          <div className="flex min-w-0 flex-wrap items-center gap-x-2">
+              dimension share the secondary group. */}
+          {/* The secondary line's text sits at the top of its own 44px target,
+              close under the name, instead of centred in it. */}
+          <div data-slot="node-network-group" className="flex min-w-0 flex-wrap items-start gap-x-2">
             <Link
-              className={cn('inline-flex min-h-11 items-center [overflow-wrap:anywhere] underline-offset-4 hover:underline md:-my-3', ADMIN_SECONDARY)}
+              data-slot="node-network-link"
+              className={cn('inline-flex min-h-11 w-fit max-w-full items-start pt-1 pb-2 [overflow-wrap:anywhere] underline-offset-4 hover:underline', ADMIN_SECONDARY)}
               to={'/admin/networks/' + node.network_key}
             >
               {node.network_display_name}
             </Link>
             {node.identity.state === 'mismatched' && (
-              <span data-slot="node-identity-summary" className="flex flex-wrap items-center gap-1.5 text-xs">
+              <span data-slot="node-identity-summary" className="flex flex-wrap items-center gap-1.5 pt-0.5 pb-2 text-xs">
                 <span className="text-muted-foreground">Identity</span>
                 <StatusBadge status={identity.label} tone={identity.tone} />
                 {node.identity.mismatched_fields.length > 0 && (
@@ -591,7 +599,7 @@ function NodeListRow({
             )}
             {node.identity.state !== 'matched' && node.identity.state !== 'mismatched' && (
               // Not established is its own dimension, never folded into Health.
-              <span data-slot="node-identity-summary" className={ADMIN_SECONDARY}>
+              <span data-slot="node-identity-summary" className={cn('pt-1 pb-2', ADMIN_SECONDARY)}>
                 · Identity {identity.label === 'Unknown' ? 'not reported yet' : identity.label}
               </span>
             )}
@@ -617,12 +625,14 @@ function NodeListRow({
             <small className={cn('mt-0.5 block', ADMIN_SECONDARY)}>Resync {node.resync_state}</small>
           )}
         </td>
-        <td data-label="Details" className={cn(ADMIN_TD, 'min-w-0 md:w-px md:whitespace-nowrap')}>
+        {/* No desktop padding: the 44px button already spans it, so its label
+            lines up with the Node name. */}
+        <td data-label="Details" className={cn(ADMIN_TD, 'min-w-0 md:w-px md:py-0 md:whitespace-nowrap')}>
           <Button
             ref={toggleRef}
             variant="ghost"
             size="sm"
-            className="min-h-11 gap-1 px-2 md:-my-2.5"
+            className="min-h-11 gap-1 px-2"
             aria-expanded={expanded}
             aria-controls={detailId}
             onClick={onToggle}

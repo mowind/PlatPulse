@@ -344,10 +344,13 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     renderAt('/admin/agents')
     const row = await screen.findByRole('row', { name: /0195f2a1/ })
     const diagnostics = cell(row as HTMLElement, 'Diagnostics')
+    // The Server's Critical severity is named in words, not only in colour.
     expect(diagnostics.querySelector('[data-group="current"]')?.textContent).toBe(
-      'the Agent spool overflowed and discarded queued reports',
+      'Critical · the Agent spool overflowed and discarded queued reports',
     )
-    expect(diagnostics.querySelector('[data-group="recorded"]')?.textContent).toBe('Recorded · 2 gap intervals')
+    // The retained dropped range is error-level history, so it leads Recorded.
+    expect(diagnostics.querySelector('[data-group="recorded"]')?.textContent).toBe('Recorded · Discarded reports')
+    expect(within(diagnostics).getByRole('button', { name: '+1 current · +2 recorded for 0195f2a1…0011' })).toBeTruthy()
     // Reporting Current never implies a valid credential.
     expect(cell(row as HTMLElement, 'Reporting').textContent).toBe('Current')
     const detail = expandDiagnostics(row as HTMLElement)
@@ -474,13 +477,14 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     const row = await screen.findByRole('row', { name: /0195f2a1/ })
     expect(cell(row as HTMLElement, 'Reporting').textContent).toBe('Current')
     const diagnostics = cell(row as HTMLElement, 'Diagnostics')
-    // One recorded item and a count of the rest: no run-on sentence, no clamp.
-    expect(diagnostics.querySelector('[data-group="recorded"]')?.textContent).toBe('Recorded · 2 gap intervals')
+    // One recorded item (the highest tone) and a count of the rest, with the
+    // folded error-level history named: no run-on sentence, no clamp.
+    expect(diagnostics.querySelector('[data-group="recorded"]')?.textContent).toBe('Recorded · Spool store error')
     // A fatal store in the latest Host observation is current, not history.
     expect(diagnostics.querySelector('[data-group="current"]')?.textContent).toBe(
-      'Spool store fatal in the latest Host observation',
+      'Critical · Spool store fatal in the latest Host observation',
     )
-    expect(within(diagnostics).getByRole('button', { name: '+6 recorded for 0195f2a1…0011' })).toBeTruthy()
+    expect(within(diagnostics).getByRole('button', { name: '+6 recorded (2 error) for 0195f2a1…0011' })).toBeTruthy()
     expect(row.textContent).not.toContain(longDeliveryError)
     const detail = expandDiagnostics(row as HTMLElement)
     expect(within(detail).getByText('Accumulated recorded security events', { exact: true }).parentElement?.textContent).toContain('3')
@@ -493,6 +497,76 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     expect(detail.textContent).toContain('Host snapshot')
     expect(detail.textContent).not.toContain(longDeliveryError)
     expect(detail.textContent).not.toContain('store error retained for detail')
+  })
+
+  it('surfaces a fatal Spool store appended after ordinary current items and counts the rest as current', async () => {
+    const offline = {
+      id: 'agent_offline:agent:' + AGENT_ID,
+      kind: 'agent_offline',
+      severity: 'warning',
+      subject_kind: 'agent',
+      subject_id: AGENT_ID,
+      subject_label: AGENT_ID,
+      message: 'the Agent has not reported within the liveness window',
+      observed_at: '2026-08-12T08:00:00Z',
+      evidence_key: 'offline-1',
+    }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/agents': () =>
+        jsonResponse([
+          {
+            ...AGENT_DIAGNOSTIC,
+            liveness: 'offline',
+            attention: [offline],
+            credentials: [{ ...AGENT_DIAGNOSTIC.credentials[1] }],
+            host: { ...AGENT_DIAGNOSTIC.host, spool_dropped_sequence_from: null, spool_dropped_sequence_to: null, spool_store_fatal: true },
+          },
+        ], 200),
+    })
+    renderAt('/admin/agents')
+    const row = await screen.findByRole('row', { name: /0195f2a1/ })
+    const diagnostics = cell(row as HTMLElement, 'Diagnostics')
+    expect(diagnostics.querySelector('[data-group="current"]')?.textContent).toBe(
+      'Critical · Spool store fatal in the latest Host observation',
+    )
+    expect(within(diagnostics).getByRole('button', { name: '+2 current for 0195f2a1…0011' })).toBeTruthy()
+    const detail = expandDiagnostics(row as HTMLElement)
+    const current = within(detail).getByRole('region', { name: 'Current and not observed' })
+    // The complete list, most severe first, original order among the rest.
+    expect(Array.from(current.querySelectorAll('li')).map((item) => item.textContent)).toEqual([
+      'Critical · Spool store fatal in the latest Host observation',
+      'the Agent has not reported within the liveness window',
+      'No active credential',
+    ])
+  })
+
+  it('counts Current and Not observed apart on the row', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/agents': () => jsonResponse([{ ...AGENT_DIAGNOSTIC, credentials: [], host: null }], 200),
+    })
+    renderAt('/admin/agents')
+    const row = await screen.findByRole('row', { name: /0195f2a1/ })
+    const diagnostics = cell(row as HTMLElement, 'Diagnostics')
+    expect(diagnostics.querySelector('[data-group="current"]')?.textContent).toBe('No credential issued')
+    expect(diagnostics.querySelector('[data-group="unknown"]')).toBeNull()
+    // Not "+1 current": the folded item is a not-observed one.
+    expect(within(diagnostics).getByRole('button', { name: '+1 not observed for 0195f2a1…0011' })).toBeTruthy()
+    const detail = expandDiagnostics(row as HTMLElement)
+    expect(detail.querySelector('[data-group="unknown"]')?.textContent).toBe('Not observed · Host not observed yet')
+  })
+
+  it('labels a lone not-observed item as Not observed, never as current', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/agents': () => jsonResponse([{ ...AGENT_DIAGNOSTIC, host: { components: [], updated_at: '2026-08-12T08:00:00Z' } }], 200),
+    })
+    renderAt('/admin/agents')
+    const row = await screen.findByRole('row', { name: /0195f2a1/ })
+    const diagnostics = cell(row as HTMLElement, 'Diagnostics')
+    expect(diagnostics.querySelector('[data-group="current"]')).toBeNull()
+    expect(diagnostics.querySelector('[data-group="unknown"]')?.textContent).toBe('Not observed · Spool not observed yet')
   })
 
   it('distinguishes no Host observation from an unobserved spool', async () => {
@@ -664,6 +738,87 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     // Actions are offered as links, not executed remotely.
     expect(screen.queryByRole('link', { name: 'Rotate credential' })).toBeNull()
     expect(screen.queryByRole('link', { name: 'Recover agent' })).toBeNull()
+  })
+
+  it('summarizes many recorded findings as a count on Overview and keeps every one in Diagnostics', async () => {
+    const longDeliveryError =
+      'delivery attempt retained after a bounded retry exhausted the configured server timeout while the Server was unreachable'
+    const detailRoutes = (agent: unknown) => ({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () => jsonResponse(agent, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () => jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/storage-mounts`]: () => new Promise<Response>(() => {}),
+      [`/api/admin/v1/agents/${AGENT_ID}/host-metrics/*`]: () => new Promise<Response>(() => {}),
+    })
+    mockFetch(detailRoutes({
+      ...AGENT_DIAGNOSTIC,
+      sequence_gap_count: 2,
+      security_event_count: 3,
+      shutdown_forced: true,
+      host: {
+        ...AGENT_DIAGNOSTIC.host,
+        spool_store_error: 'store error retained for detail',
+        spool_report_too_large: true,
+        spool_pending_history_gaps: 4,
+        spool_last_delivery_error: longDeliveryError,
+      },
+    }))
+    renderAt(`/admin/agents/${AGENT_ID}`)
+    const summary = (await screen.findByText('Recorded evidence', { exact: true })).parentElement as HTMLElement
+    const evidence = summary.querySelector('[data-slot="recorded-evidence-summary"]') as HTMLElement
+    // A count named as recorded history, never as current faults, and one
+    // highest item instead of every sentence joined together.
+    expect(evidence.querySelector('[data-slot="recorded-count"]')?.textContent).toBe('8 recorded history items')
+    expect(evidence.querySelector('[data-group="recorded"]')?.textContent).toBe('Highest · Spool store error recorded')
+    expect(evidence.textContent).not.toMatch(/gap intervals recorded|security events recorded|Forced shutdown recorded|·.*·.*·/)
+    expect(evidence.textContent).not.toMatch(/current fault|failure/i)
+    // Credentials: the header keeps the active summary and the one entry; the
+    // full validity counts are in Manage, not repeated on Overview.
+    const overview = document.querySelector('[data-section="overview"]') as HTMLElement
+    expect(overview.textContent).not.toContain('revoked')
+    expect(overview.textContent).not.toContain('inactive (not revoked)')
+    expect(screen.getAllByRole('button', { name: 'Manage credentials' })).toHaveLength(1)
+    expect(screen.getByLabelText('Current Agent dimensions').textContent).toContain('1 active · 2 total')
+
+    fireEvent.click(within(evidence).getByRole('button', { name: 'Open Diagnostics' }))
+    const diagnostics = document.querySelector('[data-section="diagnostics"]') as HTMLElement
+    await waitFor(() => expect(diagnostics.hidden).toBe(false))
+    // The complete safe evidence, including the full long error text.
+    expect(within(diagnostics).getByText('Last delivery error', { exact: true }).parentElement?.textContent).toContain(longDeliveryError)
+    expect(within(diagnostics).getByText('Recorded gap intervals', { exact: true }).parentElement?.textContent).toContain('2')
+    expect(diagnostics.textContent).toContain('store error retained for detail')
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /^Manage/ }), { button: 0 })
+    const manage = document.querySelector('[data-section="manage"]') as HTMLElement
+    expect(manage.querySelector('[data-slot="credential-counts"]')?.textContent).toBe(
+      '1 active · 0 revoked · 1 inactive (not revoked) · 2 total',
+    )
+  })
+
+  it('tells known-empty recorded history apart from unobserved Host evidence', async () => {
+    const routes = (agent: unknown) => ({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () => jsonResponse(agent, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () => jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/storage-mounts`]: () => new Promise<Response>(() => {}),
+      [`/api/admin/v1/agents/${AGENT_ID}/host-metrics/*`]: () => new Promise<Response>(() => {}),
+    })
+    mockFetch(routes({ ...AGENT_DIAGNOSTIC, host: { components: [], updated_at: '2026-08-12T08:00:00Z', spool_queued_reports: 0, spool_in_flight: false } }))
+    renderAt(`/admin/agents/${AGENT_ID}`)
+    let evidence = (await screen.findByText('Recorded evidence', { exact: true })).parentElement!.querySelector('[data-slot="recorded-evidence-summary"]') as HTMLElement
+    expect(evidence.querySelector('[data-slot="recorded-count"]')?.textContent).toBe('Nothing recorded')
+    expect(evidence.querySelector('[data-group="unknown"]')).toBeNull()
+
+    cleanup()
+    adminQueryClient.clear()
+    mockFetch(routes({ ...AGENT_DIAGNOSTIC, host: null }))
+    await renderAt(`/admin/agents/${AGENT_ID}`)
+    evidence = (await screen.findByText('Recorded evidence', { exact: true })).parentElement!.querySelector('[data-slot="recorded-evidence-summary"]') as HTMLElement
+    expect(evidence.querySelector('[data-slot="recorded-count"]')?.textContent).toBe('No recorded history known')
+    expect(evidence.querySelector('[data-group="unknown"]')?.textContent).toBe(
+      'Not observed · Host not observed yet, so Host and Spool history is Unknown',
+    )
+    expect(evidence.textContent).not.toMatch(/Nothing recorded|Healthy|normal/)
   })
 
   it('opens the section an older in-page anchor points at', async () => {

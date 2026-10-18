@@ -9,8 +9,15 @@ import {
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
 import { formatIdentifier } from '../formatBytes'
-import { hasSpoolRisk, livenessTone, receiptTimeText } from '../agentDiagnostics'
-import { agentEvidence } from '../agentEvidence'
+import { livenessTone, receiptTimeText } from '../agentDiagnostics'
+import {
+  agentEvidence,
+  agentPreviewTier,
+  foldedAttentionText,
+  foldedRecordedText,
+  summarizeEvidence,
+} from '../agentEvidence'
+import { EVIDENCE_TONE, EvidenceLead } from '../components/AgentEvidenceLead'
 import { freshnessTone, healthTone } from '../nodeLabels'
 import {
   StatusBadge,
@@ -715,22 +722,11 @@ function AgentPanel({ query, nodeQuery }: { query: DiagnosticsQuery; nodeQuery: 
   const prioritized = prioritizeAgents(agents)
   const visibleAgents = prioritized.slice(0, PREVIEW_LIMIT)
   const hiddenAgents = prioritized.slice(PREVIEW_LIMIT)
-  // Each left-out Agent is counted once, under its most pressing bucket, so
-  // the line never reads as more Agents than were left out.
+  // Each left-out Agent is counted once, under the same tier that ordered it,
+  // so the line never reads as more Agents than were left out.
   const buckets = new Map<string, number>()
   for (const agent of hiddenAgents) {
-    const evidence = agentEvidence(agent)
-    const bucket = evidence.current.length > 0
-      ? 'with current attention'
-      : agent.liveness === 'offline'
-        ? 'offline'
-        : agent.liveness !== 'online'
-          ? 'unknown reporting'
-          : evidence.unknown.length > 0
-            ? 'not fully observed'
-            : evidence.recorded.length > 0
-              ? 'with recorded history'
-              : null
+    const { bucket } = agentPreviewTier(agent)
     if (bucket) buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1)
   }
   const hidden = [...buckets].map(([noun, count]) => ({ noun, count }))
@@ -770,23 +766,22 @@ function AgentPanel({ query, nodeQuery }: { query: DiagnosticsQuery; nodeQuery: 
   )
 }
 
+/** Presentation order of the preview (agentPreviewTier): current critical
+ *  evidence, offline, unknown reporting, other current evidence, unobserved,
+ *  then recorded history. Accumulated counters such as security events are
+ *  history and never rank an Agent as critical on their own. */
 export function prioritizeAgents(agents: AgentDiagnostic[]): AgentDiagnostic[] {
-  const rank = (agent: AgentDiagnostic) => {
-    const host = agent.host
-    const critical = hasSpoolRisk(host) || agent.security_event_count > 0
-    if (critical) return 0
-    if (agent.liveness === 'offline') return 1
-    if (agent.liveness !== 'online') return 2
-    return 3
-  }
+  const ranks = new Map(agents.map((agent) => [agent.agent_id, agentPreviewTier(agent).rank]))
+  const rank = (agent: AgentDiagnostic) => ranks.get(agent.agent_id) ?? 6
   return [...agents].sort((left, right) => rank(left) - rank(right) || left.agent_id.localeCompare(right.agent_id, 'en-US'))
 }
 
 function AgentPreviewItem({ agent, unhealthyNodes }: { agent: AgentDiagnostic; unhealthyNodes: number | null }) {
-  const evidence = agentEvidence(agent)
-  const notes = [...evidence.current, ...evidence.unknown]
-  const recorded = evidence.recorded
-  const shownRecorded = recorded.slice(0, 2)
+  // The same summary rule as the Agents row (summarizeEvidence).
+  const summary = summarizeEvidence(agentEvidence(agent))
+  const foldedAttention = foldedAttentionText(summary)
+  const foldedRecorded = foldedRecordedText(summary)
+  const recordedLead = summary.recordedLead
   const retained = agent.nodes.length
   return (
     <li data-slot="agent-preview-item" className={PREVIEW_ITEM}>
@@ -813,26 +808,22 @@ function AgentPreviewItem({ agent, unhealthyNodes }: { agent: AgentDiagnostic; u
         {plural(retained, 'retained Node')}
         {unhealthyNodes ? <span className="text-destructive"> · {unhealthyNodes} unhealthy</span> : null}
       </p>
-      {notes.length > 0 && (
-        // The first current or unobserved item, and how many more: the full
-        // list is the Attention queue above and the Agent's own page.
+      {summary.lead && (
+        // The most severe current item (or a labelled not-observed one) and
+        // the folded rest counted per group: the full list is the Attention
+        // queue above and the Agent's own page.
         <p className="min-w-0 text-xs [overflow-wrap:anywhere]" data-slot="agent-preview-current">
-          <span className={cn(notes[0].tone === 'error' ? 'font-medium text-destructive' : notes[0].tone === 'warning' ? 'text-foreground' : 'text-muted-foreground')}>
-            {notes[0].text}
-          </span>
-          {notes.length > 1 && <span className="text-muted-foreground"> · +{notes.length - 1} more</span>}
+          <EvidenceLead summary={summary} />
+          {foldedAttention && <span className="text-muted-foreground"> · {foldedAttention}</span>}
         </p>
       )}
-      {recorded.length > 0 && (
+      {recordedLead && (
         <p className="min-w-0 text-xs text-muted-foreground [overflow-wrap:anywhere]" data-slot="agent-preview-recorded">
           <span className="font-medium">Recorded history:</span>{' '}
-          {shownRecorded.map((item, index) => (
-            <span key={item.key} className={cn(item.tone === 'error' && 'font-medium text-destructive')}>
-              {index > 0 && ' · '}
-              {item.short ?? item.text}
-            </span>
-          ))}
-          {recorded.length > shownRecorded.length && ' · +' + (recorded.length - shownRecorded.length) + ' more on the Agent'}
+          <span className={cn(recordedLead.tone === 'error' && EVIDENCE_TONE.error)}>
+            {recordedLead.short ?? recordedLead.text}
+          </span>
+          {foldedRecorded && ' · ' + foldedRecorded + ' on the Agent'}
         </p>
       )}
     </li>
