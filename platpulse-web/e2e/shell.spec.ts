@@ -282,9 +282,8 @@ test.describe('Authenticated shell', () => {
     expect(metrics.heading.x - metrics.main.x).toBeGreaterThanOrEqual(expectedPadding - 1)
     expect(metrics.heading.x - metrics.main.x).toBeLessThanOrEqual(expectedPadding + 1)
 
-    if (metrics.viewport >= 768) {
-      await expect(page.getByRole('columnheader', { name: 'Node', exact: true })).toBeVisible()
-    }
+    // The Overview's Node preview is a list, not a table (webui.md §8.7).
+    await expect(page.getByRole('list', { name: 'Highest-priority Active Nodes' })).toBeVisible()
 
     if (metrics.viewport >= 1024) {
       expect(metrics.nav.width).toBeGreaterThanOrEqual(208)

@@ -181,23 +181,29 @@ function HistoryWindowSettings({ generation, csrfToken }: SettingsSectionProps) 
               </AlertDescription>
             </Alert>
           )}
-          <dl className={DETAIL_LIST}>
-            <div className={DETAIL_ROW}><dt className={LABEL}>Current</dt><dd className={DETAIL_DD}>{formatDayCount(currentWindow.windowDays)}</dd></div>
-            <div className={DETAIL_ROW}><dt className={LABEL}>Default</dt><dd className={DETAIL_DD}>{formatDayCount(currentWindow.defaultDays)}</dd></div>
-            <div className={DETAIL_ROW}>
-              <dt className={LABEL}>Allowed range</dt>
-              <dd className={DETAIL_DD}>
-                <span>{formatDayCount(currentWindow.minDays)}</span>–<span>{formatDayCount(currentWindow.maxDays)}</span>
-              </dd>
-            </div>
-            <div className={DETAIL_ROW_WIDE}>
-              <dt className={LABEL}>Last updated</dt>
-              <dd className={DETAIL_DD}>
-                {currentWindow.updatedAt}
-                {currentWindow.updatedBy ? ' by ' + currentWindow.updatedBy : ''}
-              </dd>
-            </div>
-          </dl>
+          <div className="grid gap-1">
+            <dl className={DETAIL_LIST}>
+              <div className={DETAIL_ROW}><dt className={LABEL}>Current</dt><dd className={cn(DETAIL_DD, 'font-semibold')}>{formatDayCount(currentWindow.windowDays)}</dd></div>
+              <div className={DETAIL_ROW}>
+                <dt className={LABEL}>Allowed range</dt>
+                <dd className={DETAIL_DD}>
+                  <span>{formatDayCount(currentWindow.minDays)}</span>–<span>{formatDayCount(currentWindow.maxDays)}</span>
+                </dd>
+              </div>
+            </dl>
+            {/* Secondary metadata: one quiet line under the current value and
+                bounds, never as prominent as the value being changed. */}
+            <dl data-slot="history-window-meta" className={cn('flex flex-wrap gap-x-3 gap-y-0.5', HELP)}>
+              <div className="flex gap-1"><dt>Default</dt><dd className="m-0 tabular-nums">{formatDayCount(currentWindow.defaultDays)}</dd></div>
+              <div className="flex min-w-0 gap-1">
+                <dt className="shrink-0">Last updated</dt>
+                <dd className="m-0 min-w-0 tabular-nums [overflow-wrap:anywhere]">
+                  {currentWindow.updatedAt}
+                  {currentWindow.updatedBy ? ' by ' + currentWindow.updatedBy : ''}
+                </dd>
+              </div>
+            </dl>
+          </div>
 
           <p className={RISK} role="note">
             Shortening removes expired history asynchronously. Lengthening cannot recover deleted or missed history.

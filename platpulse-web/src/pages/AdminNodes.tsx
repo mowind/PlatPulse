@@ -1,4 +1,4 @@
-import { ArrowUp, ArrowUpDown, ChevronUp, ChevronRight } from 'lucide-react'
+import { ArrowUp, ArrowUpDown, ChevronDown, ChevronUp, ChevronRight, X } from 'lucide-react'
 import {
   useEffect,
   useMemo,
@@ -40,7 +40,11 @@ import { Empty } from '../components/ui/empty'
 import { Input, Select } from '../components/ui/input'
 import { cn } from '../lib/utils'
 import { stateHistoryComponent, type StateHistoryComponent } from '../stateHistory'
-import { validatorIdentityNotice, validatorKeyLabel } from '../validators'
+import {
+  validatorIdentityNeedsAttention,
+  validatorIdentityNotice,
+  validatorKeyLabel,
+} from '../validators'
 import {
   HOST_METRIC_SERIES,
   NODE_METRIC_SERIES,
@@ -60,6 +64,22 @@ import type {
   NodePurgeResponse,
 } from '../api/generated'
 import { DetailItem, DetailList } from '../components/DetailList'
+import { AdminIdentifier } from '../components/AdminIdentifier'
+import {
+  AdminDetailSections,
+  DETAIL_LINK,
+  DetailBackLink,
+  DetailDimension,
+  DetailDimensions,
+  DetailDraftProvider,
+  DetailNotices,
+  draftMarker,
+  useDetailDrafts,
+  useDetailSection,
+  useReportDraft,
+  type DetailNotice,
+  type DetailSection,
+} from '../components/AdminDetailSections'
 import {
   ADMIN_DETAIL_BODY,
   ADMIN_DETAIL_ROW,
@@ -70,6 +90,8 @@ import {
   ADMIN_SECTION_TITLE,
   ADMIN_TD,
   ADMIN_TH,
+  AdminKeyValue,
+  AdminKeyValueList,
   AdminPageHeader,
   AdminPanel,
   AdminToolbar,
@@ -117,7 +139,7 @@ export default function AdminNodesList() {
   const query = useAdminNodes(generation)
   const [search, setSearch] = useSearchParams()
   const filters = readFilters(search)
-  const [sort, setSort] = useState<'name' | 'network' | 'health' | 'freshness'>('health')
+  const [sort, setSort] = useState<NodeSort>('health')
 
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
@@ -173,6 +195,11 @@ export default function AdminNodesList() {
     else next.set(key, value)
     setSearch(next, { replace: false })
   }
+  const clearFilters = (keys: (keyof NodeFilters)[]) => {
+    const next = new URLSearchParams(search)
+    for (const key of keys) next.delete(key)
+    setSearch(next, { replace: false })
+  }
 
   const networks = useMemo(() => {
     const keys = new Set((query.data ?? []).map((node) => node.network_key))
@@ -183,7 +210,7 @@ export default function AdminNodesList() {
     <section className="w-full min-w-0 space-y-4">
       <AdminPageHeader
         title="Nodes"
-        description="Each row is one Node; every status column is a separate Server-owned dimension."
+        description="Each row is one Node; Health, Freshness and Identity stay separate Server-owned dimensions."
         info={{
           label: 'About Node dimensions',
           content: (
@@ -222,6 +249,7 @@ export default function AdminNodesList() {
             filters={filters}
             networks={networks}
             onChange={setFilter}
+            onClear={clearFilters}
             sort={sort}
             onSort={setSort}
           />
@@ -252,7 +280,9 @@ export default function AdminNodesList() {
           <div className="overflow-x-auto max-md:px-3 max-md:pt-3">
             <table data-stack data-slot="node-table" className="w-full text-sm">
               <caption className="sr-only">
-                Node inventory: identity, health, freshness, visibility, and lifecycle
+                Node inventory: Node and Network, health, freshness, head and sync; identity,
+                visibility, lifecycle and endpoint details open per row. Sorted by{' '}
+                {sort === 'name' ? 'Node name' : sort === 'network' ? 'Network' : sort === 'freshness' ? 'Freshness' : 'Health'}.
               </caption>
               <thead>
                 <tr className="border-b border-border/60">
@@ -262,13 +292,6 @@ export default function AdminNodesList() {
                     aria-sort={sort === 'name' ? 'ascending' : 'none'}
                   >
                     <SortButton label="Node" column="name" sort={sort} onSort={setSort} />
-                  </th>
-                  <th
-                    scope="col"
-                    className={ADMIN_TH}
-                    aria-sort={sort === 'network' ? 'ascending' : 'none'}
-                  >
-                    <SortButton label="Network" column="network" sort={sort} onSort={setSort} />
                   </th>
                   <th
                     scope="col"
@@ -284,17 +307,11 @@ export default function AdminNodesList() {
                   >
                     <SortButton label="Freshness" column="freshness" sort={sort} onSort={setSort} />
                   </th>
-                  <th scope="col" className={ADMIN_TH}>
-                    Identity
-                  </th>
-                  <th scope="col" className={ADMIN_TH}>
-                    Visibility
-                  </th>
-                  <th scope="col" className={ADMIN_TH}>
-                    Lifecycle
-                  </th>
-                  <th scope="col" className={ADMIN_TH}>
+                  <th scope="col" className={cn(ADMIN_TH, 'whitespace-nowrap')}>
                     Head / Sync
+                  </th>
+                  <th scope="col" className={cn(ADMIN_TH, 'w-px whitespace-nowrap')}>
+                    <span className="sr-only">Row </span>Details
                   </th>
                 </tr>
               </thead>
@@ -316,6 +333,8 @@ export default function AdminNodesList() {
   )
 }
 
+type NodeSort = 'name' | 'network' | 'health' | 'freshness'
+
 function SortButton({
   label,
   column,
@@ -323,9 +342,9 @@ function SortButton({
   onSort,
 }: {
   label: string
-  column: 'name' | 'network' | 'health' | 'freshness'
+  column: NodeSort
   sort: string
-  onSort: (column: 'name' | 'network' | 'health' | 'freshness') => void
+  onSort: (column: NodeSort) => void
 }) {
   const active = sort === column
   return (
@@ -341,68 +360,175 @@ function SortButton({
   )
 }
 
+const VISIBILITY_OPTIONS = [
+  { value: 'public', label: 'Public' },
+  { value: 'private', label: 'Private' },
+]
+const LIFECYCLE_OPTIONS = [
+  { value: 'active', label: 'Active' },
+  { value: 'retired', label: 'Retired' },
+]
+
+/** The low-frequency filters, named with their current value, for the
+ *  collapsed "More filters" summary. */
+function secondaryFilters(filters: NodeFilters): { key: 'visibility' | 'lifecycle'; label: string }[] {
+  const active: { key: 'visibility' | 'lifecycle'; label: string }[] = []
+  if (filters.visibility !== 'all') {
+    const option = VISIBILITY_OPTIONS.find((entry) => entry.value === filters.visibility)
+    active.push({ key: 'visibility', label: 'Visibility: ' + (option?.label ?? filters.visibility) })
+  }
+  if (filters.lifecycle !== 'all') {
+    const option = LIFECYCLE_OPTIONS.find((entry) => entry.value === filters.lifecycle)
+    active.push({ key: 'lifecycle', label: 'Lifecycle: ' + (option?.label ?? filters.lifecycle) })
+  }
+  return active
+}
+
 function NodeFiltersBar({
   filters,
   networks,
   onChange,
+  onClear,
   sort,
   onSort,
 }: {
   filters: NodeFilters
   networks: string[]
   onChange: (key: keyof NodeFilters, value: string) => void
+  onClear: (keys: (keyof NodeFilters)[]) => void
   sort: string
-  onSort: (column: 'name' | 'network' | 'health' | 'freshness') => void
+  onSort: (column: NodeSort) => void
 }) {
+  // Presentation only: the filters themselves live in the URL, so opening or
+  // closing this group never changes the list.
+  const [moreOpen, setMoreOpen] = useState(false)
+  const secondary = secondaryFilters(filters)
+  const anyFilter =
+    filters.network !== 'all' || filters.health !== 'all' || secondary.length > 0
   return (
-    <AdminToolbar label="Node filters">
-      <AdminToolbarField label="Sort by">
-        <Select
-          value={sort}
-          onChange={(event) => onSort(event.target.value as 'name' | 'network' | 'health' | 'freshness')}
+    <div className="grid min-w-0 gap-2">
+      <AdminToolbar label="Node filters">
+        <AdminToolbarField label="Network" size="lg">
+          <Select value={filters.network} onChange={(event) => onChange('network', event.target.value)}>
+            <option value="all">All</option>
+            {networks.map((network) => (
+              <option key={network} value={network}>
+                {network}
+              </option>
+            ))}
+          </Select>
+        </AdminToolbarField>
+        <AdminToolbarField label="Health">
+          <Select value={filters.health} onChange={(event) => onChange('health', event.target.value)}>
+            <option value="all">All</option>
+            <option value="healthy">Healthy</option>
+            <option value="unhealthy">Unhealthy</option>
+            <option value="unknown">Unknown</option>
+          </Select>
+        </AdminToolbarField>
+        <AdminToolbarField label="Sort by">
+          <Select
+            value={sort}
+            onChange={(event) => onSort(event.target.value as NodeSort)}
+          >
+            <option value="health">Health</option>
+            <option value="name">Node name</option>
+            <option value="network">Network</option>
+            <option value="freshness">Freshness</option>
+          </Select>
+        </AdminToolbarField>
+        <div className="col-span-2 flex min-w-0 flex-wrap items-end gap-2 sm:col-span-1">
+          <Button
+            type="button"
+            variant="outline"
+            className="min-h-11"
+            aria-expanded={moreOpen}
+            aria-controls="node-more-filters"
+            onClick={() => setMoreOpen((value) => !value)}
+          >
+            {moreOpen ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
+            More filters
+            {secondary.length > 0 && (
+              <span className="rounded-full bg-primary/10 px-1.5 text-xs tabular-nums">{secondary.length}</span>
+            )}
+            {secondary.length > 0 && <span className="sr-only">active</span>}
+          </Button>
+          {anyFilter && (
+            <Button
+              type="button"
+              variant="link"
+              className="min-h-11 px-1"
+              onClick={() => onClear(['network', 'health', 'visibility', 'lifecycle'])}
+            >
+              Clear filters
+            </Button>
+          )}
+        </div>
+      </AdminToolbar>
+      {moreOpen ? (
+        <div
+          id="node-more-filters"
+          role="group"
+          aria-label="More Node filters"
+          className="grid grid-cols-2 gap-x-3 gap-y-2 sm:flex sm:flex-wrap sm:items-end"
         >
-          <option value="health">Health</option>
-          <option value="name">Node name</option>
-          <option value="network">Network</option>
-          <option value="freshness">Freshness</option>
-        </Select>
-      </AdminToolbarField>
-      <AdminToolbarField label="Network" size="lg">
-        <Select value={filters.network} onChange={(event) => onChange('network', event.target.value)}>
-          <option value="all">All</option>
-          {networks.map((network) => (
-            <option key={network} value={network}>
-              {network}
-            </option>
-          ))}
-        </Select>
-      </AdminToolbarField>
-      <AdminToolbarField label="Visibility">
-        <Select value={filters.visibility} onChange={(event) => onChange('visibility', event.target.value)}>
-          <option value="all">All</option>
-          <option value="public">Public</option>
-          <option value="private">Private</option>
-        </Select>
-      </AdminToolbarField>
-      <AdminToolbarField label="Lifecycle">
-        <Select value={filters.lifecycle} onChange={(event) => onChange('lifecycle', event.target.value)}>
-          <option value="all">All</option>
-          <option value="active">Active</option>
-          <option value="retired">Retired</option>
-        </Select>
-      </AdminToolbarField>
-      <AdminToolbarField label="Health">
-        <Select value={filters.health} onChange={(event) => onChange('health', event.target.value)}>
-          <option value="all">All</option>
-          <option value="healthy">Healthy</option>
-          <option value="unhealthy">Unhealthy</option>
-          <option value="unknown">Unknown</option>
-        </Select>
-      </AdminToolbarField>
-    </AdminToolbar>
+          <AdminToolbarField label="Visibility">
+            <Select value={filters.visibility} onChange={(event) => onChange('visibility', event.target.value)}>
+              <option value="all">All</option>
+              {VISIBILITY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </Select>
+          </AdminToolbarField>
+          <AdminToolbarField label="Lifecycle">
+            <Select value={filters.lifecycle} onChange={(event) => onChange('lifecycle', event.target.value)}>
+              <option value="all">All</option>
+              {LIFECYCLE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </Select>
+          </AdminToolbarField>
+        </div>
+      ) : (
+        secondary.length > 0 && (
+          <ul
+            aria-label="Active filters from More filters"
+            data-slot="node-active-filters"
+            className="flex list-none flex-wrap items-center gap-2 p-0"
+          >
+            {secondary.map((entry) => (
+              <li
+                key={entry.key}
+                className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted/40 pl-2.5 text-xs"
+              >
+                {entry.label}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-11 -my-2 text-muted-foreground"
+                  aria-label={'Clear ' + entry.label}
+                  onClick={() => onClear([entry.key])}
+                >
+                  <X size={14} aria-hidden="true" />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )
+      )}
+    </div>
   )
 }
 
+/**
+ * One Node summary row: the Node and its Network, the independent Health and
+ * Freshness dimensions, and head/sync. Identity, visibility, lifecycle detail,
+ * the redacted endpoint and the full Node ID open in the row's own details;
+ * an identity that is not established or contradicts the Registry, and a
+ * Retired lifecycle, stay visible on the row because they change what the
+ * other columns mean.
+ */
 function NodeListRow({
   node,
   expanded,
@@ -414,87 +540,102 @@ function NodeListRow({
 }) {
   const identity = identityBadge(node.identity)
   const visibility = visibilityBadge(node.visibility)
-  const health = healthTone(node.health)
-  const freshness = freshnessTone(node.freshness)
+  const lifecycle = lifecycleLabel(node.lifecycle)
+  const name = node.display_name ?? node.node_id
   const detailId = 'node-inventory-detail-' + node.node_id
+  const toggleRef = useRef<HTMLButtonElement>(null)
   const collapseOnEscape = (event: KeyboardEvent<HTMLElement>) => {
-    if (event.key === 'Escape' && expanded) onToggle()
+    if (event.key !== 'Escape' || !expanded) return
+    onToggle()
+    toggleRef.current?.focus()
   }
+  const healthException = node.health !== 'healthy'
+  const resyncException = node.resync_state !== 'normal'
   return (
     <>
-      <tr className={ADMIN_ROW}>
+      <tr className={cn(ADMIN_ROW, node.lifecycle === 'retired' && 'text-muted-foreground')}>
         <th scope="row" data-label="Node" className={cn(ADMIN_TD, 'min-w-0 text-left font-normal')}>
-          <div className="flex min-w-0 items-start gap-1">
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              className="-ml-2 shrink-0"
-              aria-label={(expanded ? 'Collapse ' : 'Expand ') + (node.display_name ?? node.node_id)}
-              aria-expanded={expanded}
-              aria-controls={detailId}
-              onClick={onToggle}
-              onKeyDown={collapseOnEscape}
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2">
+            <Link
+              className="flex min-h-11 w-fit min-w-11 max-w-full items-center py-1 leading-snug font-medium text-foreground [overflow-wrap:anywhere] underline-offset-4 hover:underline md:-my-2"
+              to={'/admin/nodes/' + node.node_id}
             >
-              <ChevronRight size={16} aria-hidden="true" className={expanded ? 'rotate-90' : ''} />
-            </Button>
-            <div className="min-w-0">
-              <Link
-                className="flex min-h-11 w-fit min-w-11 max-w-full items-center py-1 leading-snug break-words font-medium underline-offset-4 hover:underline"
-                to={'/admin/nodes/' + node.node_id}
+              {name}
+            </Link>
+            {node.lifecycle !== 'active' && (
+              <span
+                data-slot="node-lifecycle-marker"
+                className="rounded-sm border border-border px-1.5 py-0.5 text-xs font-medium text-muted-foreground"
               >
-                {node.display_name ?? node.node_id}
-              </Link>
-              <small className={cn('-mt-1 block [overflow-wrap:anywhere]', ADMIN_SECONDARY)}>
-                <span className="font-mono" title={'Full Node ID: ' + node.node_id}>{shortId(node.node_id)}</span> · {node.rpc_endpoint}
-              </small>
-            </div>
+                {lifecycle.label}
+              </span>
+            )}
+          </div>
+          {/* Network and, when it is not matched, the separate Identity
+              dimension share the secondary line. */}
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2">
+            <Link
+              className={cn('inline-flex min-h-11 items-center [overflow-wrap:anywhere] underline-offset-4 hover:underline md:-my-3', ADMIN_SECONDARY)}
+              to={'/admin/networks/' + node.network_key}
+            >
+              {node.network_display_name}
+            </Link>
+            {node.identity.state === 'mismatched' && (
+              <span data-slot="node-identity-summary" className="flex flex-wrap items-center gap-1.5 text-xs">
+                <span className="text-muted-foreground">Identity</span>
+                <StatusBadge status={identity.label} tone={identity.tone} />
+                {node.identity.mismatched_fields.length > 0 && (
+                  <span className="[overflow-wrap:anywhere]">{node.identity.mismatched_fields.join(', ')}</span>
+                )}
+              </span>
+            )}
+            {node.identity.state !== 'matched' && node.identity.state !== 'mismatched' && (
+              // Not established is its own dimension, never folded into Health.
+              <span data-slot="node-identity-summary" className={ADMIN_SECONDARY}>
+                · Identity {identity.label === 'Unknown' ? 'not reported yet' : identity.label}
+              </span>
+            )}
           </div>
         </th>
-        <td data-label="Network" className={cn(ADMIN_TD, 'min-w-0')}>
-          <Link
-            className="inline-flex min-h-11 min-w-11 items-center break-words md:-my-2.5 underline-offset-4 hover:underline"
-            to={'/admin/networks/' + node.network_key}
-          >
-            {node.network_display_name}
-          </Link>
-        </td>
         <td data-label="Health" className={cn(ADMIN_TD, 'min-w-0')}>
-          <StatusBadge status={node.health} tone={health} />
-          <small className={cn('mt-1 block break-words', ADMIN_SECONDARY)}>
-            {node.health_reason}
-          </small>
-        </td>
-        <td data-label="Freshness" className={cn(ADMIN_TD, 'min-w-0')}>
-          <StatusBadge status={freshnessLabel(node.freshness)} tone={freshness} />
-          <small className={cn('mt-1 block', ADMIN_SECONDARY)}>
-            {node.freshness === 'current' ? 'Reporting now' : 'Check age on detail'}
-          </small>
-        </td>
-        <td data-label="Identity" className={cn(ADMIN_TD, 'min-w-0')}>
-          <StatusBadge status={identity.label} tone={identity.tone} />
-          {node.identity.mismatched_fields.length > 0 && (
-            <small className={cn('mt-1 block break-words', ADMIN_SECONDARY)}>
-              {node.identity.mismatched_fields.join(', ')}
+          <StatusBadge status={node.health} tone={healthTone(node.health)} />
+          {healthException && (
+            <small className={cn('mt-1 block [overflow-wrap:anywhere]', ADMIN_SECONDARY)}>
+              {node.health_reason}
             </small>
           )}
         </td>
-        <td data-label="Visibility" className={cn(ADMIN_TD, 'min-w-0')}>
-          <StatusBadge status={visibility.label} tone={visibility.tone} />
-        </td>
-        <td data-label="Lifecycle" className={cn(ADMIN_TD, 'min-w-0')}>
-          <span>{lifecycleLabel(node.lifecycle).label}</span>
-          <small className={cn('mt-0.5 block tabular-nums', ADMIN_SECONDARY)}>
-            rev {node.inventory_revision}
-          </small>
+        <td data-label="Freshness" className={cn(ADMIN_TD, 'min-w-0')}>
+          <StatusBadge status={freshnessLabel(node.freshness)} tone={freshnessTone(node.freshness)} />
+          {node.freshness === 'stale' && (
+            <small className={cn('mt-1 block', ADMIN_SECONDARY)}>Last good values; age on detail</small>
+          )}
         </td>
         <td data-label="Head / Sync" className={cn(ADMIN_TD, 'min-w-0')}>
           <span className="font-medium tabular-nums">{node.current_head ?? 'Unknown'}</span>
-          <small className={cn('mt-0.5 block', ADMIN_SECONDARY)}>{node.resync_state}</small>
+          {resyncException && (
+            <small className={cn('mt-0.5 block', ADMIN_SECONDARY)}>Resync {node.resync_state}</small>
+          )}
+        </td>
+        <td data-label="Details" className={cn(ADMIN_TD, 'min-w-0 md:w-px md:whitespace-nowrap')}>
+          <Button
+            ref={toggleRef}
+            variant="ghost"
+            size="sm"
+            className="min-h-11 gap-1 px-2 md:-my-2.5"
+            aria-expanded={expanded}
+            aria-controls={detailId}
+            onClick={onToggle}
+            onKeyDown={collapseOnEscape}
+          >
+            <ChevronRight size={16} aria-hidden="true" className={cn('transition-transform', expanded && 'rotate-90')} />
+            Details <span className="sr-only">for {name}</span>
+          </Button>
         </td>
       </tr>
       {expanded && (
         <tr data-slot="detail-row" className={ADMIN_DETAIL_ROW}>
-          <td colSpan={8} id={detailId} onKeyDown={collapseOnEscape} className="p-0">
+          <td colSpan={5} id={detailId} onKeyDown={collapseOnEscape} className="p-0">
             <div className={ADMIN_DETAIL_BODY}>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className={ADMIN_SECTION_TITLE}>Node details</h3>
@@ -502,20 +643,44 @@ function NodeListRow({
                   Collapse details <ChevronUp size={16} aria-hidden="true" />
                 </Button>
               </div>
-              <DetailList>
-                <DetailItem label="Identity disposition">
-                  {identity.label}
-                  {node.identity.mismatched_fields.length > 0
-                    ? ' — contradicts the Registry on ' + node.identity.mismatched_fields.join(', ')
-                    : ''}
-                </DetailItem>
-                <DetailItem label="Health reason">{node.health_reason}</DetailItem>
-                <DetailItem label="Resync state">{node.resync_state}</DetailItem>
-                <DetailItem label="Node ID">
-                  <code className="font-mono text-xs">{node.node_id}</code>
-                </DetailItem>
-                <DetailItem label="Lifecycle guidance" wide>{node.lifecycle_guidance}</DetailItem>
-              </DetailList>
+              <AdminKeyValueList>
+                <AdminKeyValue label="Node ID" wide>
+                  <AdminIdentifier value={node.node_id} label="Node ID" fullSlot="node-full-id" />
+                </AdminKeyValue>
+                <AdminKeyValue label="Redacted RPC Endpoint" wide>
+                  <code className="font-mono text-xs [overflow-wrap:anywhere]">{node.rpc_endpoint}</code>
+                </AdminKeyValue>
+                <AdminKeyValue label="Identity disposition">
+                  <span className="flex flex-wrap items-center gap-2">
+                    <StatusBadge status={identity.label} tone={identity.tone} />
+                    {node.identity.mismatched_fields.length > 0
+                      ? 'Contradicts the Registry on ' + node.identity.mismatched_fields.join(', ')
+                      : null}
+                  </span>
+                </AdminKeyValue>
+                <AdminKeyValue label="Visibility">
+                  <StatusBadge status={visibility.label} tone={visibility.tone} />
+                </AdminKeyValue>
+                <AdminKeyValue label="Lifecycle">
+                  <span className="flex flex-wrap items-center gap-2">
+                    <StatusBadge status={lifecycle.label} tone={lifecycle.tone} />
+                    <span className="tabular-nums">Inventory revision {node.inventory_revision}</span>
+                  </span>
+                </AdminKeyValue>
+                <AdminKeyValue label="Resync state">{node.resync_state}</AdminKeyValue>
+                <AdminKeyValue label="Health reason" wide>{node.health_reason}</AdminKeyValue>
+                <AdminKeyValue label="Lifecycle guidance" wide>{node.lifecycle_guidance}</AdminKeyValue>
+              </AdminKeyValueList>
+              <p className={ADMIN_SECONDARY}>
+                Health, freshness, identity, visibility and lifecycle are separate Server-owned
+                dimensions.{' '}
+                <Link
+                  className="inline-flex min-h-11 items-center font-medium text-foreground underline-offset-4 hover:underline"
+                  to={'/admin/nodes/' + node.node_id + '?section=diagnostics'}
+                >
+                  Open Node diagnostics
+                </Link>
+              </p>
             </div>
           </td>
         </tr>
@@ -523,6 +688,7 @@ function NodeListRow({
     </>
   )
 }
+
 
 /** PAGE-ADMIN-NODE-DETAIL (webui.md §8.2): administrative diagnostics only —
  * Server-owned display name with its audited mutation flow, Node
@@ -537,6 +703,10 @@ export function AdminNodeDetail() {
   const csrfToken = status.state === 'authenticated' ? status.csrfToken : ''
   const [purged, setPurged] = useState<NodePurgeResponse | null>(null)
   const notFound = query.isError && query.error instanceof AdminApiError && query.error.code === 'not_found'
+  const [section, setSection, openSection] = useDetailSection()
+  const drafts = useDetailDrafts()
+  const notices = query.data ? nodeDetailNotices(query.data) : []
+  const diagnosticNotices = notices.length
 
   if (purged) {
     return (
@@ -578,42 +748,18 @@ export function AdminNodeDetail() {
       </section>
     )
   }
+  const data = query.data
   return (
-    <section className="w-full min-w-0 space-y-4">
-      <div className="space-y-1">
-        <h1 className={ADMIN_PAGE_TITLE}>
-          {query.data?.display_name ?? shortId(nodeId)}
-          <span className="mt-0.5 block text-xs font-medium text-muted-foreground break-all">
-            {nodeId}
-          </span>
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          <Link
-            className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
-            to="/admin/nodes"
-          >
-            All Nodes
-          </Link>{' '}
-          ·{' '}
-          <Link
-            className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
-            to={`/admin/alerts/incidents?subject=node&subject_key=${encodeURIComponent(nodeId)}`}
-          >
-            Incidents for this Node
-          </Link>{' '}
-          ·{' '}
-          <Link
-            className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
-            to={`/admin/nodes/${encodeURIComponent(nodeId)}/investigation`}
-          >
-            Investigate this Node
-          </Link>{' '}
-          · Server-owned metadata stays distinct from Agent-observed identity and configuration.
-          Lifecycle is Node Inventory state and is never confused with Agent liveness or Node
-          health.
-        </p>
-      </div>
-      {!query.data && (
+    <section className="w-full min-w-0 space-y-4" data-slot="admin-node-detail">
+      {data ? (
+        <NodeDetailHeader node={data} notices={notices} section={section} onSection={openSection} />
+      ) : (
+        <div className="space-y-1">
+          <DetailBackLink to="/admin/nodes">All Nodes</DetailBackLink>
+          <h1 className={ADMIN_PAGE_TITLE}>{shortId(nodeId)}</h1>
+        </div>
+      )}
+      {!data && (
         <>
           {query.isPending && (
             <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
@@ -636,7 +782,7 @@ export function AdminNodeDetail() {
           )}
         </>
       )}
-      {query.data && (
+      {data && (
         <>
           {query.isRefetchError && (
             <div
@@ -647,22 +793,214 @@ export function AdminNodeDetail() {
               successful Node values.
             </div>
           )}
-          <MetadataPanel node={query.data} csrfToken={csrfToken} />
-          <LifecyclePanel node={query.data} />
-          <HealthPanel node={query.data} />
-          <MetricHistoryPanel node={query.data} />
-          <SyncConsensusHistoryPanel node={query.data} />
-          <HostMetricHistoryPanel node={query.data} />
-          <IdentityPanel node={query.data} />
-          <ValidatorIdentityPanel node={query.data} />
-          <RpcDiagnosticsPanel node={query.data} />
-          <PurgePanel node={query.data} csrfToken={csrfToken} onPurged={setPurged} />
+          <DetailDraftProvider value={drafts.report}>
+            <AdminDetailSections
+              label="Node detail sections"
+              value={section}
+              onValueChange={setSection}
+              sections={[
+                {
+                  key: 'overview',
+                  label: 'Overview',
+                  content: (
+                    <>
+                      <HealthPanel node={data} />
+                      <LifecyclePanel node={data} />
+                    </>
+                  ),
+                },
+                {
+                  key: 'history',
+                  label: 'History',
+                  content: (
+                    <>
+                      <MetricHistoryPanel node={data} />
+                      <SyncConsensusHistoryPanel node={data} />
+                      <HostMetricHistoryPanel node={data} />
+                    </>
+                  ),
+                },
+                {
+                  key: 'diagnostics',
+                  label: 'Diagnostics',
+                  marker: diagnosticNotices > 0 ? diagnosticNotices : undefined,
+                  markerLabel:
+                    diagnosticNotices > 0
+                      ? diagnosticNotices + ' current finding' + (diagnosticNotices === 1 ? '' : 's')
+                      : undefined,
+                  content: (
+                    <>
+                      <IdentityPanel node={data} />
+                      <ValidatorIdentityPanel node={data} />
+                      <RpcDiagnosticsPanel node={data} />
+                      <ComponentDiagnosticsPanel node={data} />
+                    </>
+                  ),
+                },
+                {
+                  key: 'manage',
+                  label: 'Manage',
+                  ...draftMarker(drafts.pending),
+                  content: (
+                    <>
+                      <MetadataPanel node={data} csrfToken={csrfToken} />
+                      <PurgePanel node={data} csrfToken={csrfToken} onPurged={setPurged} />
+                    </>
+                  ),
+                },
+              ]}
+            />
+          </DetailDraftProvider>
         </>
       )}
     </section>
   )
 }
 
+
+/** Current Node conditions whose complete evidence is in Diagnostics. Health
+ *  and freshness are already in the header dimensions and are not repeated. */
+function nodeDetailNotices(node: AdminNodeDetailDto): DetailNotice[] {
+  const notices: DetailNotice[] = []
+  if (node.identity.state === 'mismatched') {
+    notices.push({
+      key: 'identity',
+      tone: 'error',
+      status: 'Mismatched',
+      message:
+        'Network identity contradicts the Registry' +
+        (node.identity.mismatched_fields.length > 0 ? ' on ' + node.identity.mismatched_fields.join(', ') : '') +
+        '; new history is not merged.',
+      section: 'diagnostics',
+      sectionLabel: 'Diagnostics',
+    })
+  } else if (node.identity.state !== 'matched') {
+    notices.push({
+      key: 'identity',
+      tone: 'neutral',
+      status: 'Unknown',
+      message: 'Network identity has not been reported yet.',
+      section: 'diagnostics',
+      sectionLabel: 'Diagnostics',
+    })
+  }
+  if (node.block_history_rejection) {
+    notices.push({
+      key: 'history-rejected',
+      tone: 'error',
+      status: 'History rejected',
+      message: "The Server is refusing this Node's Block history.",
+      section: 'diagnostics',
+      sectionLabel: 'Diagnostics',
+    })
+  }
+  if (node.rpc?.state === 'error') {
+    notices.push({
+      key: 'rpc',
+      tone: 'error',
+      status: 'Error',
+      // Only a value that was once observed can remain; never imply one.
+      message:
+        'RPC collection failed' +
+        (node.rpc.error_message ? ': ' + node.rpc.error_message : '') +
+        (node.rpc.observed_at || node.rpc.client_version ? '; last-good values remain.' : '.'),
+      section: 'diagnostics',
+      sectionLabel: 'Diagnostics',
+    })
+  }
+  // Not evaluated is not unresolved (webui.md §15.20): only an evaluation
+  // that did not establish an identity is a finding.
+  if (node.validator_identity && node.validator_identity.state !== 'not_evaluated' && validatorIdentityNeedsAttention(node.validator_identity)) {
+    const notice = validatorIdentityNotice(node.validator_identity!)
+    notices.push({
+      key: 'validator',
+      tone: notice.tone === 'error' ? 'error' : notice.tone === 'warning' ? 'warning' : 'neutral',
+      status: notice.label,
+      message: 'Automatic Validator identity is not established.',
+      section: 'diagnostics',
+      sectionLabel: 'Diagnostics',
+    })
+  }
+  return notices
+}
+
+/** The always-visible Node header: name and context, the independent
+ *  Server-owned dimensions, and the current conditions that need a look. */
+function NodeDetailHeader({
+  node,
+  notices,
+  section,
+  onSection,
+}: {
+  node: AdminNodeDetailDto
+  notices: DetailNotice[]
+  section: DetailSection
+  onSection: (next: DetailSection) => void
+}) {
+  const identity = identityBadge(node.identity)
+  const lifecycle = lifecycleLabel(node.lifecycle)
+  return (
+    <header className="grid min-w-0 gap-3" data-slot="node-detail-header">
+      <DetailBackLink to="/admin/nodes">All Nodes</DetailBackLink>
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-2">
+        <div className="min-w-0 flex-[1_1_18rem] space-y-1">
+          <h1 className={ADMIN_PAGE_TITLE}>{node.display_name ?? shortId(node.node_id)}</h1>
+          <p className={cn('flex min-w-0 flex-wrap items-center gap-x-1', ADMIN_SECONDARY)}>
+            <Link className={cn(DETAIL_LINK, '-my-3 text-foreground')} to={'/admin/networks/' + node.network_key}>
+              {node.network_display_name}
+            </Link>
+            <span aria-hidden="true">·</span>
+            <span>Agent</span>
+            <Link className={cn(DETAIL_LINK, '-my-3 text-foreground')} to={'/admin/agents/' + node.agent_id}>
+              {shortId(node.agent_id)}
+            </Link>
+          </p>
+          <AdminIdentifier value={node.node_id} label="Node ID" fullSlot="node-full-id" />
+        </div>
+        <nav aria-label="Node links" className="flex flex-wrap items-center gap-x-3 text-sm">
+          <Link
+            className={DETAIL_LINK}
+            to={`/admin/alerts/incidents?subject=node&subject_key=${encodeURIComponent(node.node_id)}`}
+          >
+            Incidents for this Node
+          </Link>
+          <Link className={DETAIL_LINK} to={`/admin/nodes/${encodeURIComponent(node.node_id)}/investigation`}>
+            Investigate this Node
+          </Link>
+        </nav>
+      </div>
+      <DetailDimensions label="Current Node dimensions">
+        <DetailDimension label="Health">
+          <span className="flex flex-wrap items-center gap-2">
+            <StatusBadge status={node.health} tone={healthTone(node.health)} />
+            {node.health !== 'healthy' && <span className={ADMIN_SECONDARY}>{node.health_reason}</span>}
+          </span>
+        </DetailDimension>
+        <DetailDimension label="Freshness">
+          <StatusBadge status={freshnessLabel(node.freshness)} tone={freshnessTone(node.freshness)} />
+        </DetailDimension>
+        <DetailDimension label="Identity">
+          <StatusBadge status={identity.label} tone={identity.tone} />
+        </DetailDimension>
+        <DetailDimension label="Lifecycle">
+          <StatusBadge status={lifecycle.label} tone={lifecycle.tone} />
+        </DetailDimension>
+        <DetailDimension label="Current head">
+          <span className="font-medium tabular-nums">{node.current_head ?? 'Unknown'}</span>
+        </DetailDimension>
+      </DetailDimensions>
+      <DetailNotices
+        label="Current Node findings"
+        notices={notices}
+        current={section}
+        onOpen={onSection}
+      />
+    </header>
+  )
+}
+
+/** Manage: the Server-owned display name. The Agent Inventory, endpoint, and
+ *  Node ID are not editable here. */
 function MetadataPanel({
   node,
   csrfToken,
@@ -675,6 +1013,10 @@ function MetadataPanel({
   const [displayName, setDisplayName] = useState(node.display_name ?? '')
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  useReportDraft(
+    'node-display-name',
+    editing && (confirming || displayName !== (node.display_name ?? '')),
+  )
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -721,7 +1063,7 @@ function MetadataPanel({
                 />
                 {confirming ? (
                   <>
-                    <span className="text-[11px] text-muted-foreground">
+                    <span className="text-xs text-muted-foreground">
                       Rename this Node in the Server-owned metadata? The Agent Inventory,
                       endpoint, and Node ID are not touched.
                     </span>
@@ -772,23 +1114,9 @@ function MetadataPanel({
             )}
           </dd>
         </div>
-        <DetailItem label="Agent">
-          <Link
-            className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
-            to={'/admin/agents/' + node.agent_id}
-          >
-            {shortId(node.agent_id)}
-          </Link>{' '}
-          <span className="text-muted-foreground">· {node.rpc_endpoint}</span>
-        </DetailItem>
-        <DetailItem label="First seen">{formatObservedAt(node.first_seen_at)}</DetailItem>
-        <DetailItem label="Metadata updated">{formatObservedAt(node.updated_at)}</DetailItem>
         <DetailItem label="Audit trail">
           Every mutation is recorded in the Server Audit log.{' '}
-          <Link
-            className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
-            to="/admin/access/audit"
-          >
+          <Link className={DETAIL_LINK} to="/admin/access/audit">
             Open the Audit log
           </Link>
         </DetailItem>
@@ -797,10 +1125,10 @@ function MetadataPanel({
   )
 }
 
-/** Node Inventory/lifecycle (CONTEXT.md: Active Node / Retired Node): the
- * latest valid Agent Inventory decides Active vs Retired. This is Server
- * state separate from Agent liveness, Node health, and freshness; retiring
- * is a local configuration fact, never a remote Server action. */
+/** Overview: Node Inventory/lifecycle (CONTEXT.md: Active Node / Retired
+ * Node) and the Node's context. The latest valid Agent Inventory decides
+ * Active vs Retired; this is not Agent liveness or Node health, and the
+ * Server never changes it remotely. */
 function LifecyclePanel({ node }: { node: AdminNodeDetailDto }) {
   const lifecycle = lifecycleLabel(node.lifecycle)
   const known = lifecycle.label === 'Active' || lifecycle.label === 'Retired'
@@ -815,23 +1143,32 @@ function LifecyclePanel({ node }: { node: AdminNodeDetailDto }) {
         </>
       }
     >
-      <p className="text-sm text-muted-foreground">
-        Lifecycle follows the latest valid Agent Inventory: Active Nodes are eligible for
-        current observation and alert evaluation, while Retired Nodes keep their identity
-        and history but no longer receive live observation alerts. This is not Agent
-        liveness or Node health, and the Server never changes lifecycle remotely.
+      <DetailList>
+        <DetailItem label="Lifecycle">
+          {lifecycle.label}{' '}
+          <span className="text-muted-foreground">· Inventory revision {node.inventory_revision}</span>
+        </DetailItem>
+        <DetailItem label="Lifecycle guidance">
+          {known ? node.lifecycle_guidance : 'No lifecycle disposition has been observed yet.'}
+        </DetailItem>
+        <DetailItem label="Agent">
+          <Link className={DETAIL_LINK} to={'/admin/agents/' + node.agent_id}>
+            {shortId(node.agent_id)}
+          </Link>
+        </DetailItem>
+        <DetailItem label="Network">
+          <Link className={DETAIL_LINK} to={'/admin/networks/' + node.network_key}>
+            {node.network_display_name}
+          </Link>{' '}
+          <span className="text-muted-foreground">({node.network_key})</span>
+        </DetailItem>
+        <DetailItem label="First seen">{formatObservedAt(node.first_seen_at)}</DetailItem>
+        <DetailItem label="Metadata updated">{formatObservedAt(node.updated_at)}</DetailItem>
+      </DetailList>
+      <p className="mt-3 text-xs text-muted-foreground">
+        Lifecycle follows the latest valid Agent Inventory; it is not Agent liveness or Node
+        health, and the Server never changes it remotely.
       </p>
-      <div className="mt-3">
-        <DetailList>
-          <DetailItem label="Lifecycle">
-            {lifecycle.label}{' '}
-            <span className="text-muted-foreground">· Inventory revision {node.inventory_revision}</span>
-          </DetailItem>
-          <DetailItem label="Lifecycle guidance">
-            {known ? node.lifecycle_guidance : 'No lifecycle disposition has been observed yet.'}
-          </DetailItem>
-        </DetailList>
-      </div>
     </CardX>
   )
 }
@@ -843,30 +1180,19 @@ function HealthPanel({ node }: { node: AdminNodeDetailDto }) {
       className={CARD_SURFACE}
       header={
         <>
-          <h2 className={ADMIN_SECTION_TITLE}>Health and freshness</h2>
-          <StatusBadge status={node.health} tone={healthTone(node.health)} />
+          <h2 className={ADMIN_SECTION_TITLE}>Chain head and data</h2>
         </>
       }
     >
-      <p className="text-sm text-muted-foreground">
-        {node.health_reason}. Freshness:{' '}
-        <StatusBadge
-          status={freshnessLabel(node.freshness)}
-          tone={freshnessTone(node.freshness)}
-        />
-      </p>
-      <p className="mt-2 text-sm text-muted-foreground">
-        Health and freshness are separate Server dimensions: Unknown, Stale, and Error are
-        never shown as Healthy or as zero values.
-      </p>
-      <div className="mt-3">
+      {/* Health and Freshness are the header's own dimensions above. */}
+      <div>
         <DetailList>
           <DetailItem label="Node data size">
             <span className="font-bold leading-none tracking-tight">
               {formatBytes(node.data_directory?.size_bytes)}
             </span>
             {node.data_directory?.state && (
-              <span className="text-[11px] font-medium text-muted-foreground">
+              <span className="text-xs font-medium text-muted-foreground">
                 {' '}· {componentStateLabel(node.data_directory.state)}
               </span>
             )}
@@ -896,7 +1222,7 @@ function HealthPanel({ node }: { node: AdminNodeDetailDto }) {
             <span className="font-bold leading-none tracking-tight">
               {node.network_reference_head ?? 'Unknown'}
             </span>
-            <span className="text-[11px] font-medium text-muted-foreground">
+            <span className="text-xs font-medium text-muted-foreground">
               {' '}· {node.network_reference_confidence}
             </span>
           </DetailItem>
@@ -1130,7 +1456,7 @@ function IdentityPanel({ node }: { node: AdminNodeDetailDto }) {
             <span className="text-muted-foreground">({node.network_key})</span>
           </DetailItem>
           <DetailItem label="Observed genesis hash">
-            <code className="break-all text-[11px]">
+            <code className="break-all text-xs">
               {node.identity.observed?.genesis_hash ?? 'Not observed'}
             </code>
           </DetailItem>
@@ -1170,6 +1496,7 @@ function PurgePanel({
   const [restoreFocus, setRestoreFocus] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const impact = useAdminNodePurgeImpact(generation, node.node_id, confirming)
+  useReportDraft('node-purge', confirming)
 
   // Cancelling the confirmation restores focus to the safe trigger, so a
   // keyboard user is never dropped onto the document body.
@@ -1194,10 +1521,12 @@ function PurgePanel({
   return (
     <CardX
       size="medium"
-      className={CARD_SURFACE}
-      header={<h2 className={ADMIN_SECTION_TITLE}>Permanent deletion</h2>}
+      className={cn(CARD_SURFACE, 'ring-1 ring-destructive/25')}
+      data-slot="danger-zone"
+      header={<h2 className={ADMIN_SECTION_TITLE}>Danger zone</h2>}
     >
-      <p className="text-sm text-muted-foreground">
+      <h3 className="text-sm font-medium">Permanent deletion</h3>
+      <p className="mt-1 text-sm text-muted-foreground">
         Permanently delete this Node to remove it from Home and current monitoring and to
         delete its observations, monitoring history, and Node Validator Links. This cannot be
         undone, and the same Node ID will not return; re-monitoring this deployment requires a
@@ -1412,7 +1741,7 @@ function RpcDiagnosticsPanel({ node }: { node: AdminNodeDetailDto }) {
       <div className="mt-3">
         <DetailList>
           <DetailItem label="Redacted RPC Endpoint">
-            <code className="break-all text-[11px]">{node.rpc_endpoint}</code>
+            <code className="break-all text-xs">{node.rpc_endpoint}</code>
           </DetailItem>
           <DetailItem label="Client version">{rpc?.client_version ?? 'Unknown'}</DetailItem>
           <DetailItem label="RPC namespaces">
@@ -1432,5 +1761,105 @@ function RpcDiagnosticsPanel({ node }: { node: AdminNodeDetailDto }) {
         </DetailList>
       </div>
     </CardX>
+  )
+}
+
+/**
+ * Per-component collection evidence for this Node (moved here from the
+ * Overview's former in-place disclosure, webui.md §8.7): collection state,
+ * the safe error, the last-good value and its time, and the attempt time for
+ * RPC, Sync, Consensus, Peers, Process and Node Data. Values are the Server's
+ * own; a component never observed reads Never observed, not zero.
+ */
+function ComponentDiagnosticsPanel({ node }: { node: AdminNodeDetailDto }) {
+  const lastGood = (state: string | null | undefined) => (state === 'error' ? 'last-good ' : '')
+  return (
+    <CardX
+      size="medium"
+      className={CARD_SURFACE}
+      data-slot="component-diagnostics"
+      header={<h2 className={ADMIN_SECTION_TITLE}>Component diagnostics</h2>}
+    >
+      <dl className="divide-y divide-border/60">
+        <ComponentRow
+          label="RPC"
+          component={node.rpc}
+          detail={node.rpc?.client_version ? lastGood(node.rpc.state) + node.rpc.client_version + ' · ' + node.rpc.namespaces.length + ' namespaces' : undefined}
+        />
+        <ComponentRow
+          label="Sync"
+          component={node.sync}
+          detail={
+            node.sync?.current_block != null
+              ? lastGood(node.sync.state) + 'head ' + node.sync.current_block +
+                (node.sync.highest_block != null ? ' · highest ' + node.sync.highest_block : '')
+              : undefined
+          }
+        />
+        <ComponentRow
+          label="Consensus"
+          component={node.consensus}
+          detail={node.consensus?.highest_commit_block != null ? lastGood(node.consensus.state) + 'commit ' + node.consensus.highest_commit_block : undefined}
+        />
+        <ComponentRow
+          label="Peers"
+          component={node.peers}
+          detail={node.peers?.peer_count != null ? lastGood(node.peers.state) + node.peers.peer_count + ' peers · ' + node.peers.freshness : undefined}
+        />
+        <ComponentRow
+          label="Process"
+          component={node.process}
+          detail={node.process?.pid != null ? lastGood(node.process.state) + 'pid ' + node.process.pid : undefined}
+        />
+        <ComponentRow
+          label="Node Data"
+          component={node.data_directory}
+          detail={node.data_directory?.size_bytes != null ? lastGood(node.data_directory.state) + formatBytes(node.data_directory.size_bytes) : undefined}
+        />
+      </dl>
+    </CardX>
+  )
+}
+
+type ComponentEvidence = {
+  state?: string | null
+  error_message?: string | null
+  observed_at?: string | null
+  attempted_at?: string | null
+  received_at?: string | null
+}
+
+function ComponentRow({
+  label,
+  component,
+  detail,
+}: {
+  label: string
+  component: ComponentEvidence | null | undefined
+  detail?: string
+}) {
+  const state = component?.state
+  const tone = state === 'error' ? 'error' : state === 'ok' ? 'ok' : 'neutral'
+  return (
+    <div className="grid grid-cols-1 gap-1 py-2 sm:grid-cols-[minmax(7rem,0.3fr)_minmax(0,1fr)] sm:gap-2">
+      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+      <dd className="m-0 min-w-0 text-sm [overflow-wrap:anywhere]">
+        <StatusBadge status={componentStateLabel(state)} tone={tone} />
+        {state === 'error' && component?.error_message && (
+          <span className="font-semibold text-destructive"> {component.error_message}</span>
+        )}
+        {detail && <span className="text-muted-foreground"> {detail}</span>}
+        <small className="block text-xs text-muted-foreground">
+          {state === 'error'
+            ? component?.observed_at
+              ? 'Last good · ' + formatObservedAt(component.observed_at)
+              : 'Never observed'
+            : formatObservedAt(component?.observed_at)}
+          {state === 'error' && (component?.attempted_at ?? component?.received_at)
+            ? ' · Attempted ' + formatObservedAt(component?.attempted_at ?? component?.received_at)
+            : ''}
+        </small>
+      </dd>
+    </div>
   )
 }

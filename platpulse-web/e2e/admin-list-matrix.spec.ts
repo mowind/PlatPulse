@@ -26,14 +26,7 @@ const SESSION = {
   csrfToken: 'matrix-csrf',
 }
 
-const SIX_HEADERS = [
-  'Agent',
-  'Reporting status',
-  'Last received',
-  'Node Inventory',
-  'Credentials',
-  'Diagnostics',
-]
+const FIVE_HEADERS = ['Agent', 'Reporting', 'Last received', 'Nodes', 'Diagnostics']
 
 const RECEIPT_TIMES = [
   '2026-09-08T09:59:00Z',
@@ -309,7 +302,7 @@ async function readAgentsGeometry(page: Page): Promise<RowGeometry[]> {
 }
 
 test.describe('SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix', () => {
-  test('keeps six aligned columns for twelve varied records at 1440/1920/390', async ({
+  test('keeps five aligned columns for twelve varied records at 1440/1920/390', async ({
     page,
   }, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop-1280', 'explicit-width matrix runs once')
@@ -319,30 +312,28 @@ test.describe('SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix', () => {
     for (const width of [1440, 1920, 390]) {
       await page.setViewportSize({ width, height: 1000 })
       await page.goto('/admin/agents')
-      await expect(page.locator('table[data-slot="agent-table"] thead th')).toHaveText(SIX_HEADERS)
+      await expect(page.locator('table[data-slot="agent-table"] thead th')).toHaveText(FIVE_HEADERS)
       await expect(page.locator('table[data-slot="agent-table"] tbody tr:not([data-slot="detail-row"])')).toHaveCount(12)
 
       const rows = await readAgentsGeometry(page)
       expect(rows).toHaveLength(12)
       for (const row of rows) {
-        expect(row.labels).toEqual(SIX_HEADERS)
+        expect(row.labels).toEqual(FIVE_HEADERS)
         if (width > 767) {
-          for (let index = 0; index < 6; index += 1) {
+          for (let index = 0; index < 5; index += 1) {
             expect(Math.abs(row.cells[index].left - row.headers[index].left)).toBeLessThanOrEqual(1)
             expect(Math.abs(row.cells[index].width - row.headers[index].width)).toBeLessThanOrEqual(1)
           }
         }
         const agentIndex = Number(row.id.slice(-12))
-        const numberFor = (label: string) => {
-          const match = row.text.match(new RegExp(label + '\\s*(\\d+)'))
-          return match ? Number(match[1]) : Number.NaN
-        }
-        expect(numberFor('Recorded gap intervals')).toBe(agentIndex)
-        expect(numberFor('Accumulated recorded security events')).toBe(agentIndex % 3)
-        const retained = row.text.match(/(\d+) retained Nodes?/)
+        // The first recorded item is the non-zero gap-interval counter;
+        // zero counters and credential detail stay off the row.
+        const gaps = row.text.match(/Recorded · (\d+) gap intervals?/)
+        expect(gaps ? Number(gaps[1]) : Number.NaN).toBe(agentIndex)
+        const retained = row.text.match(/(\d+) retained/)
         expect(retained ? Number(retained[1]) : Number.NaN).toBe(agentIndex % 5)
-        const credentials = agentIndex % 4
-        expect(row.text).toContain(credentials === 0 ? 'None issued' : credentials + ' total')
+        if (agentIndex % 4 === 0) expect(row.text).toContain('No credential issued')
+        expect(row.text).not.toMatch(/\d+ total|Accumulated recorded/)
       }
 
       if (width <= 390) {
@@ -350,38 +341,30 @@ test.describe('SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix', () => {
           .map((cell, index) => ({ label: rows[0].labels[index], top: cell.top }))
           .sort((left, right) => left.top - right.top)
           .map((cell) => cell.label)
-        expect(cardOrder).toEqual([
-          'Agent',
-          'Reporting status',
-          'Last received',
-          'Diagnostics',
-          'Node Inventory',
-          'Credentials',
-        ])
+        expect(cardOrder).toEqual(FIVE_HEADERS)
       }
 
-      // Full Agent ID stays reachable without disturbing the six columns.
+      // Full Agent ID stays reachable without disturbing the five columns.
       const firstRow = page.locator('table[data-slot="agent-table"] tbody tr:not([data-slot="detail-row"])').first()
       await firstRow.getByRole('button', { name: 'Show full Agent ID' }).click()
       await expect(firstRow.locator('code[data-slot="agent-full-id"]')).toHaveText(rows[0].id)
-      await expect(firstRow.locator('> *')).toHaveCount(6)
+      await expect(firstRow.locator('> *')).toHaveCount(5)
 
       // Diagnostics keeps only the summary; the full findings open below.
-      const riskyRow = page
-        .locator('table[data-slot="agent-table"] tbody tr:not([data-slot="detail-row"])')
-        .filter({ hasText: 'store fatal' })
-        .first()
-      await expect(riskyRow).toContainText('Recorded evidence')
-      await expect(riskyRow).not.toContainText('Dropped sequence range')
-      const toggle = riskyRow.getByRole('button', { name: /diagnostics/ })
+      const riskyRow = firstRow
+      await expect(riskyRow).not.toContainText('Host snapshot')
+      const toggle = riskyRow.locator('button[aria-controls^="agent-diagnostics-"]')
+      await expect(toggle).toHaveText(/^\+\d+ (current|recorded)/)
       await toggle.click()
       await expect(toggle).toHaveAttribute('aria-expanded', 'true')
       const detailRow = riskyRow.locator('xpath=following-sibling::tr[1]')
       await expect(detailRow).toHaveAttribute('data-slot', 'detail-row')
-      await expect(detailRow.locator('td')).toHaveAttribute('colspan', '6')
-      await expect(detailRow).toContainText('Dropped sequence range')
-      await expect(detailRow).toContainText('Host snapshot')
-      await expect(riskyRow.locator('> *')).toHaveCount(6)
+      await expect(detailRow.locator('td')).toHaveAttribute('colspan', '5')
+      await expect(detailRow).toContainText('Recorded gap intervals')
+      await expect(detailRow).toContainText('Accumulated recorded security events')
+      await expect(detailRow).toContainText(/Host snapshot|No Host snapshot/)
+      await expect(riskyRow.locator('> *')).toHaveCount(5)
+      await toggle.focus()
       await page.keyboard.press('Escape')
       await expect(toggle).toHaveAttribute('aria-expanded', 'false')
       await expect(page.locator('table[data-slot="agent-table"] tr[data-slot="detail-row"]')).toHaveCount(0)
@@ -399,9 +382,9 @@ test.describe('SCN-AGENTS-PRIORITY-SUMMARY acceptance matrix', () => {
     await page.reload()
     await expect(page.locator('table[data-slot="agent-table"] tbody tr:not([data-slot="detail-row"])')).toHaveCount(12)
     const refreshed = (await readAgentsGeometry(page)).find((row) => row.id.endsWith('000000000001'))
-    expect(refreshed?.text).toMatch(/Recorded gap intervals\s*777/)
-    expect(refreshed?.text).toContain('1 retained Node')
-    expect(refreshed?.labels).toEqual(SIX_HEADERS)
+    expect(refreshed?.text).toContain('Recorded · 777 gap intervals')
+    expect(refreshed?.text).toContain('1 retained')
+    expect(refreshed?.labels).toEqual(FIVE_HEADERS)
   })
 
   test('Audit renders multi-field long details in a cross-column row at 1440/1920/390', async ({

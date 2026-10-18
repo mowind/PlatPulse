@@ -341,7 +341,7 @@ test.describe('Raw Node metric history (issue #213)', () => {
         expect(unknownNode.status).toBe(404)
 
         // The production WebUI shows the same answer on the Node detail page.
-        await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId)
+        await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId + '?section=history')
         await expect(panel.getByRole('heading', { level: 2, name: 'Metric history', exact: true })).toBeVisible()
         // The samples table names the timing evidence it carries, and a delay
         // never replaces the observation it belongs to.
@@ -440,7 +440,7 @@ test.describe('Raw Node metric history (issue #213)', () => {
           for (const colorScheme of ['light', 'dark'] as const) {
             await page.setViewportSize(viewport)
             await page.emulateMedia({ colorScheme })
-            await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId)
+            await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId + '?section=history')
             await expect(panel.getByRole('heading', { level: 2, name: 'Metric history', exact: true })).toBeVisible()
             await expectResolvedTheme(page, colorScheme)
             await expect(panel.locator('[data-slot=\'metric-history-chart\']')).toBeVisible()
@@ -632,7 +632,7 @@ test.describe('Aggregate Node metric history (issue #214)', () => {
       const panel = processPanel(page)
       try {
         await loginToDisposableServer(page, server.baseUrl)
-        await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId)
+        await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId + '?section=history')
         await expect(panel.getByRole('heading', { level: 2, name: 'Metric history', exact: true })).toBeVisible()
         await panel
           .getByRole('group', { name: 'History range' })
@@ -673,7 +673,7 @@ test.describe('Aggregate Node metric history (issue #214)', () => {
           for (const colorScheme of ['light', 'dark'] as const) {
             await page.setViewportSize(viewport)
             await page.emulateMedia({ colorScheme })
-            await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId)
+            await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId + '?section=history')
             await panel
               .getByRole('group', { name: 'History range' })
               .getByRole('button', { name: '30 days' })
@@ -1145,7 +1145,7 @@ test.describe('Shared Host resource history (issue #215)', () => {
       })
       try {
         await loginToDisposableServer(page, server.baseUrl)
-        await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId)
+        await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId + '?section=history')
 
         // The Node page holds both vocabularies at once: the shared Host series
         // the Agent collected, and the Node's own Process series this Agent
@@ -1215,7 +1215,7 @@ test.describe('Shared Host resource history (issue #215)', () => {
 
         // The Agent page reads the same stored series under its own name and
         // says whose evidence it is: this Host is the Agent's, not one Node's.
-        await gotoAuthenticated(page, server.baseUrl, '/admin/agents/' + agent.agentId)
+        await gotoAuthenticated(page, server.baseUrl, '/admin/agents/' + agent.agentId + '?section=history')
         const agentHost = hostPanel(page, 'agent-host')
         await expect(
           agentHost.getByRole('heading', { level: 2, name: 'Host resource history' }),
@@ -1332,7 +1332,7 @@ test.describe('Shared Host resource history (issue #215)', () => {
 
             // The Node page: the shared Host series, its silence drawn as a
             // silence, and the Node's own empty Process series beside it.
-            await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId)
+            await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId + '?section=history')
             await expectResolvedTheme(page, colorScheme)
             const nodeHost = hostPanel(page, 'node-host')
             await expect(
@@ -1371,7 +1371,7 @@ test.describe('Shared Host resource history (issue #215)', () => {
 
             // The Agent page answers the same shared series in the same theme,
             // and stays inside the viewport while it does.
-            await gotoAuthenticated(page, server.baseUrl, '/admin/agents/' + agent.agentId)
+            await gotoAuthenticated(page, server.baseUrl, '/admin/agents/' + agent.agentId + '?section=history')
             const agentHost = hostPanel(page, 'agent-host')
             await expect(
               agentHost.getByRole('heading', { level: 2, name: 'Host resource history' }),
@@ -1496,7 +1496,7 @@ test.describe('Shared Host resource history (issue #215)', () => {
       const page = await context.newPage()
       try {
         await loginToDisposableServer(page, server.baseUrl)
-        await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId)
+        await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId + '?section=history')
         const nodeHost = hostPanel(page, 'node-host')
         await expect(
           nodeHost.getByRole('heading', { level: 2, name: 'Host metric history' }),
@@ -1537,7 +1537,7 @@ test.describe('Shared Host resource history (issue #215)', () => {
 
         // The Agent page states the same shared evidence, because it is the same
         // series read from one more page rather than a second copy of it.
-        await gotoAuthenticated(page, server.baseUrl, '/admin/agents/' + agent.agentId)
+        await gotoAuthenticated(page, server.baseUrl, '/admin/agents/' + agent.agentId + '?section=history')
         const agentHost = hostPanel(page, 'agent-host')
         await expect(
           agentHost.getByRole('heading', { level: 2, name: 'Host resource history' }),
@@ -1646,7 +1646,7 @@ test.describe('Shared Host resource history (issue #215)', () => {
       const page = await context.newPage()
       try {
         await loginToDisposableServer(page, server.baseUrl)
-        await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId)
+        await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId + '?section=history')
         const nodeHost = hostPanel(page, 'node-host')
         // The default window is the last day and the newest Host reading is three
         // days old: the panel says the series was observed and that nothing in
@@ -1684,7 +1684,7 @@ test.describe('Shared Host resource history (issue #215)', () => {
         // Node Process case above.
         await page.setViewportSize({ width: 360, height: 800 })
         await page.emulateMedia({ colorScheme: 'dark' })
-        await gotoAuthenticated(page, server.baseUrl, '/admin/agents/' + agent.agentId)
+        await gotoAuthenticated(page, server.baseUrl, '/admin/agents/' + agent.agentId + '?section=history')
         const agentHost = hostPanel(page, 'agent-host')
         await agentHost
           .getByRole('group', { name: 'History range' })

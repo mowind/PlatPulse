@@ -395,7 +395,8 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
     await expect(page.getByRole('heading', { level: 1, name: /Node B \(private\)/ })).toBeVisible({
       timeout: 15_000,
     })
-    await expect(page.getByText('RPC collection failed')).toBeVisible()
+    await expect(page.getByLabel('Current Node dimensions')).toContainText('RPC collection failed')
+    await expect(page.getByRole('list', { name: 'Current Node findings' })).toContainText('RPC collection failed')
     await expect(page.getByText(/last-good head 12842018/)).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })

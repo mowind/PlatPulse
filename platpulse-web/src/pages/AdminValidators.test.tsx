@@ -258,6 +258,13 @@ afterEach(() => {
   adminQueryClient.clear()
 })
 
+function showIdentityTable() {
+  const toggle = screen.getByRole('button', { name: 'Show identity table' })
+  expect(toggle.getAttribute('aria-expanded')).toBe('false')
+  fireEvent.click(toggle)
+  expect(toggle.getAttribute('aria-expanded')).toBe('true')
+}
+
 describe('PAGE-ADMIN-VALIDATORS (automatic identity and registry)', () => {
   it('shows one coverage row per evaluated Node, with the unresolved states named and the Public association kept separate', async () => {
     mockFetch(registryRoutes())
@@ -265,8 +272,15 @@ describe('PAGE-ADMIN-VALIDATORS (automatic identity and registry)', () => {
 
     await screen.findByRole('heading', { level: 1, name: 'Validators' })
     await screen.findByText(/4 Nodes/)
+    // The registry leads; the identity coverage is a summary until opened.
+    expect(screen.getAllByRole('heading', { level: 2 }).map((heading) => heading.textContent).slice(0, 2)).toEqual([
+      'Validator registry',
+      'Automatic Validator identity',
+    ])
     expect(screen.getByText('1 unresolved')).toBeTruthy()
-    expect(screen.getByText(/4 Nodes · 3 evaluated · 2 identified/)).toBeTruthy()
+    expect(screen.getByText('4 Nodes · 3 evaluated · 2 identified · 1 unresolved · 1 not evaluated')).toBeTruthy()
+    expect(screen.queryByRole('row', { name: /Node A/ })).toBeNull()
+    showIdentityTable()
 
     const nodeA = await screen.findByRole('row', { name: /Node A/ })
     expect(nodeA.textContent).toContain('Identified')
@@ -307,6 +321,8 @@ describe('PAGE-ADMIN-VALIDATORS (automatic identity and registry)', () => {
     mockFetch(registryRoutes())
     renderAt('/admin/validators')
 
+    await screen.findByText(/4 Nodes/)
+    showIdentityTable()
     const nodeA = await screen.findByRole('row', { name: /Node A/ })
     const keyCell = nodeA.querySelector('td[data-label="Observed P2P key"]') as HTMLElement
     expect(within(keyCell).queryByText(KEY_A, { exact: true })).toBeNull()
@@ -360,10 +376,13 @@ describe('PAGE-ADMIN-VALIDATORS (automatic identity and registry)', () => {
     renderAt('/admin/validators')
 
     await screen.findByRole('heading', { level: 1, name: 'Validators' })
-    await screen.findByRole('row', { name: /Node A/ })
+    await screen.findByText(/4 Nodes/)
     fireEvent.change(screen.getByLabelText('Search Validators and Nodes'), {
       target: { value: 'Node D' },
     })
+    // Collapsed, the identity table still says what the search matched in it.
+    expect(screen.getByText('1 Node matches this search in the identity table.')).toBeTruthy()
+    showIdentityTable()
 
     expect(screen.queryByRole('row', { name: /Node A/ })).toBeNull()
     expect(await screen.findByRole('row', { name: /Node D/ })).toBeTruthy()
@@ -372,6 +391,11 @@ describe('PAGE-ADMIN-VALIDATORS (automatic identity and registry)', () => {
     // unresolved Nodes cannot certify coverage.
     expect(screen.getByText('1 unresolved')).toBeTruthy()
     expect(screen.getByText(/4 Nodes · 3 evaluated · 2 identified/)).toBeTruthy()
+    // A background refresh never changes the Owner's own expansion choice.
+    await act(async () => {
+      await adminQueryClient.refetchQueries()
+    })
+    expect(screen.getByRole('button', { name: 'Hide identity table' }).getAttribute('aria-expanded')).toBe('true')
   })
 
   it('shows the Empty state when no Node was evaluated and no Validator was resolved', async () => {

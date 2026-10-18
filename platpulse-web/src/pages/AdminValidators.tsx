@@ -1,3 +1,4 @@
+import { ChevronDown, ChevronUp } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import {
@@ -132,12 +133,13 @@ export default function AdminValidatorsList() {
           />
         </AdminToolbarField>
       </AdminToolbar>
+      <ValidatorRegistrySection query={validators} rows={rows} />
       <AutomaticIdentitySection
         query={identities}
         coverage={coverage}
         rows={identityRows}
+        searching={query.trim().length > 0}
       />
-      <ValidatorRegistrySection query={validators} rows={rows} />
     </section>
   )
 }
@@ -148,11 +150,16 @@ function AutomaticIdentitySection({
   query,
   coverage,
   rows,
+  searching,
 }: {
   query: ReturnType<typeof useAdminValidatorIdentities>
   coverage: ReturnType<typeof validatorIdentityCoverage>
   rows: AdminNodeValidatorIdentity[]
+  searching: boolean
 }) {
+  // Presentation only: the Owner's own choice. A background refresh or a new
+  // search never opens or closes it.
+  const [open, setOpen] = useState(false)
   // The summary is global: it is computed from every Node the Server answered
   // with, so a search can neither hide unresolved Nodes nor certify coverage.
   // A Server that has evaluated nothing is neither resolved nor unresolved.
@@ -162,92 +169,120 @@ function AutomaticIdentitySection({
       : coverage.unresolved > 0
         ? { status: coverage.unresolved + ' unresolved', tone: 'warning' as const }
         : { status: 'Resolved', tone: 'ok' as const }
+  const notEvaluated = coverage.total - coverage.evaluated
   return (
     <CardX
       size="medium"
       bordered={false}
       className={ADMIN_PANEL_SURFACE}
       segmented
+      data-slot="validator-identity-section"
       header={
         <>
           <h2 className={ADMIN_SECTION_TITLE}>Automatic Validator identity</h2>
           {query.data && (
             <span className="flex flex-wrap items-center gap-2">
               <StatusBadge status={badge.status} tone={badge.tone} />
-              <span className="text-xs text-muted-foreground">
+              <span className="text-xs text-muted-foreground" data-slot="identity-coverage">
                 {coverage.total} {coverage.total === 1 ? 'Node' : 'Nodes'} ·{' '}
-                {coverage.evaluated} evaluated · {coverage.identified} identified
+                {coverage.evaluated} evaluated · {coverage.identified} identified ·{' '}
+                {coverage.unresolved} unresolved
+                {notEvaluated > 0 ? ' · ' + notEvaluated + ' not evaluated' : ''}
               </span>
             </span>
           )}
         </>
       }
     >
-      <p className={ADMIN_SECONDARY}>
-        Coverage is counted per Node, not per Agent: one Agent can observe several Nodes, and an
-        unresolved state says the evaluation did not establish an identity rather than that the Node
-        does not stake.
-      </p>
       {!query.data && query.isPending && (
-        <p className="mt-3 flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
+        <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
           <StatusBadge status="Starting" tone="neutral" /> Loading Validator identity coverage…
         </p>
       )}
       {!query.data && query.isError && (
-        <div className="mt-3">
-          <Unavailable
-            message={
-              query.error instanceof Error
-                ? query.error.message
-                : 'Unable to load Validator identity coverage'
-            }
-            onRetry={() => void query.refetch()}
-          />
-        </div>
+        <Unavailable
+          message={
+            query.error instanceof Error
+              ? query.error.message
+              : 'Unable to load Validator identity coverage'
+          }
+          onRetry={() => void query.refetch()}
+        />
       )}
       {query.data && query.isRefetchError && (
         <div
-          className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
+          className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
           role="alert"
         >
           <StatusBadge status="Error" tone="error" /> Failed to refresh; showing the last successful
           identity coverage.
         </div>
       )}
-      {query.data && rows.length === 0 && (
-        <div className="mt-3">
-          <Empty
-            description={
-              query.data.length === 0
-                ? 'No Node has been evaluated for an automatic Validator identity yet.'
-                : 'No Node matches this search.'
-            }
-          />
+      {query.data && (
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-1">
+          <p className={ADMIN_SECONDARY}>
+            Counted per Node, not per Agent. Unresolved means the evaluation did not establish an
+            identity, not that the Node does not stake.
+            {searching && (
+              <span className="block text-foreground" data-slot="identity-search-matches">
+                {rows.length === 0
+                  ? 'No Node in the identity table matches this search.'
+                  : rows.length + (rows.length === 1 ? ' Node matches' : ' Nodes match') + ' this search in the identity table.'}
+              </span>
+            )}
+          </p>
+          {query.data.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="min-h-11"
+              aria-expanded={open}
+              aria-controls="validator-identity-table-region"
+              onClick={() => setOpen((value) => !value)}
+            >
+              {open ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
+              {open ? 'Hide identity table' : 'Show identity table'}
+            </Button>
+          )}
         </div>
       )}
-      {query.data && rows.length > 0 && (
-        <div className="mt-3 overflow-x-auto">
-          <table data-stack data-slot="validator-identity-table" className="w-full text-sm">
-            <caption className="sr-only">
-              Automatic Validator identity per Node, with the evaluation state and the observation it
-              used
-            </caption>
-            <thead>
-              <tr className="border-b border-border/60">
-                <th scope="col" className={ADMIN_TH}>Node</th>
-                <th scope="col" className={ADMIN_TH}>Identity state</th>
-                <th scope="col" className={ADMIN_TH}>Observed P2P key</th>
-                <th scope="col" className={ADMIN_TH}>Validator</th>
-                <th scope="col" className={ADMIN_TH}>Public association</th>
-                <th scope="col" className={ADMIN_TH}>Evaluated</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((identity) => (
-                <IdentityRow key={identity.nodeId} identity={identity} />
-              ))}
-            </tbody>
-          </table>
+      {query.data && query.data.length === 0 && (
+        <div className="mt-3">
+          <Empty description="No Node has been evaluated for an automatic Validator identity yet." />
+        </div>
+      )}
+      {query.data && open && (
+        <div id="validator-identity-table-region">
+          {rows.length === 0 && (
+            <div className="mt-3">
+              <Empty description="No Node matches this search." />
+            </div>
+          )}
+          {rows.length > 0 && (
+            <div className="mt-3 overflow-x-auto">
+              <table data-stack data-slot="validator-identity-table" className="w-full text-sm">
+                <caption className="sr-only">
+                  Automatic Validator identity per Node, with the evaluation state and the observation it
+                  used
+                </caption>
+                <thead>
+                  <tr className="border-b border-border/60">
+                    <th scope="col" className={ADMIN_TH}>Node</th>
+                    <th scope="col" className={ADMIN_TH}>Identity state</th>
+                    <th scope="col" className={ADMIN_TH}>Observed P2P key</th>
+                    <th scope="col" className={ADMIN_TH}>Validator</th>
+                    <th scope="col" className={ADMIN_TH}>Public association</th>
+                    <th scope="col" className={ADMIN_TH}>Evaluated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((identity) => (
+                    <IdentityRow key={identity.nodeId} identity={identity} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
     </CardX>

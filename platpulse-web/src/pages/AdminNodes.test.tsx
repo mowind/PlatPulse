@@ -414,6 +414,14 @@ function hostHistoryFixture(overrides: Record<string, unknown> = {}) {
   }
 }
 
+/** Radix Tabs activates on pointer down (and on keyboard); a click alone
+ *  does not switch sections in jsdom. */
+function openSection(name: RegExp | string) {
+  const tab = screen.getByRole('tab', { name })
+  fireEvent.mouseDown(tab, { button: 0 })
+  return tab
+}
+
 async function renderAt(path: string) {
   render(<App />)
   await act(async () => {
@@ -435,7 +443,7 @@ afterEach(() => {
 })
 
 describe('PAGE-ADMIN-NODES (Node inventory)', () => {
-  it('lists every Node as its own row with separate health, freshness, identity, visibility, and lifecycle dimensions', async () => {
+  it('lists every Node with its Network, Health, Freshness and head, and opens the low-frequency fields in one step', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/nodes': () => jsonResponse([NODE_A, NODE_B], 200),
@@ -443,23 +451,51 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     renderAt('/admin/nodes')
 
     await screen.findByRole('heading', { level: 1, name: 'Nodes' })
+    const table = await screen.findByRole('table')
+    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent?.trim())).toEqual([
+      'Node', 'Health', 'Freshness', 'Head / Sync', 'Row Details',
+    ])
     const rowA = await screen.findByRole('row', { name: /Node A/ })
     expect(rowA.textContent).toContain('healthy')
     expect(rowA.textContent).toContain('Current')
-    expect(rowA.textContent).toContain('Matched')
-    expect(rowA.textContent).toContain('Public')
+    expect(rowA.textContent).toContain('PlatON E2E Network')
     expect(rowA.textContent).toContain('12842019')
+    // A normal row carries no reason, identity, visibility, endpoint or revision.
+    expect(rowA.textContent).not.toContain('RPC, sync, and consensus are current')
+    expect(rowA.textContent).not.toContain('Matched')
+    expect(rowA.textContent).not.toContain('Public')
+    expect(rowA.textContent).not.toContain('ws://127.0.0.1:****')
+    expect(rowA.textContent).not.toContain('rev ')
+    expect(within(rowA).getByRole('link', { name: 'PlatON E2E Network' }).getAttribute('href')).toBe('/admin/networks/platon-e2e')
+    // An exceptional row keeps its reason and an independent identity summary.
     const rowB = screen.getByRole('row', { name: /Node B \(private\)/ })
     expect(rowB.textContent).toContain('unhealthy')
     expect(rowB.textContent).toContain('Stale')
     expect(rowB.textContent).toContain('Mismatched')
     expect(rowB.textContent).toContain('chain_id')
-    expect(rowB.textContent).toContain('Private')
-    // Endpoints are redacted destination summaries.
-    expect(rowA.textContent).toContain('ws://127.0.0.1:****')
+    expect(rowB.textContent).not.toContain('Private')
+
+    const toggle = screen.getByRole('button', { name: 'Details for Node A' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    const region = document.getElementById(toggle.getAttribute('aria-controls') ?? '') as HTMLElement
+    expect(region).toBeTruthy()
+    expect(region.textContent).toContain('ws://127.0.0.1:****')
+    expect(region.textContent).toContain('Matched')
+    expect(region.textContent).toContain('Public')
+    expect(region.textContent).toContain('Inventory revision 1')
+    expect(region.textContent).toContain('RPC, sync, and consensus are current')
+    expect(region.textContent).toContain('never pushes Endpoint or lifecycle changes')
+    expect(within(region).getByRole('button', { name: /Show full\s*Node ID/ })).toBeTruthy()
+    expect(region.textContent).toContain(NODE_A.node_id)
+    toggle.focus()
+    fireEvent.keyDown(toggle, { key: 'Escape' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(toggle)
   })
 
-  it('filters through URL state and preserves it in back/forward', async () => {
+  it('keeps Visibility and Lifecycle in More filters and names an active one while collapsed', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/nodes': () => jsonResponse([NODE_A, NODE_B], 200),
@@ -467,13 +503,53 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     renderAt('/admin/nodes')
 
     await screen.findByRole('heading', { level: 1, name: 'Nodes' })
-    const visibilityFilter = screen.getByLabelText('Visibility')
-    fireEvent.change(visibilityFilter, { target: { value: 'public' } })
+    // Network, Health and Sort are on the toolbar; Network order stays available.
+    expect(screen.getByLabelText('Network')).toBeTruthy()
+    expect(screen.getByLabelText('Health')).toBeTruthy()
+    expect(within(screen.getByLabelText('Sort by')).getByRole('option', { name: 'Network' })).toBeTruthy()
+    expect(screen.queryByLabelText('Visibility')).toBeNull()
+    const more = screen.getByRole('button', { name: 'More filters' })
+    expect(more.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(more)
+    expect(more.getAttribute('aria-expanded')).toBe('true')
+    fireEvent.change(screen.getByLabelText('Visibility'), { target: { value: 'public' } })
     await waitFor(() => {
       expect(window.location.search).toContain('visibility=public')
     })
     expect(screen.queryByRole('row', { name: /Node B \(private\)/ })).toBeNull()
     expect(screen.getByRole('row', { name: /Node A/ })).toBeTruthy()
+
+    // Collapsed, the active filter is still named, counted, and clearable.
+    fireEvent.click(screen.getByRole('button', { name: /More filters/ }))
+    expect(screen.queryByLabelText('Visibility')).toBeNull()
+    expect(screen.getByRole('button', { name: /^More filters\s*1\s*active$/ })).toBeTruthy()
+    const active = screen.getByRole('list', { name: 'Active filters from More filters' })
+    expect(active.textContent).toContain('Visibility: Public')
+    fireEvent.click(within(active).getByRole('button', { name: 'Clear Visibility: Public' }))
+    await waitFor(() => expect(window.location.search).not.toContain('visibility'))
+    expect(await screen.findByRole('row', { name: /Node B \(private\)/ })).toBeTruthy()
+
+    // Back restores the filtered URL state.
+    await act(async () => {
+      window.history.back()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    await waitFor(() => expect(window.location.search).toContain('visibility=public'))
+    await waitFor(() => expect(screen.queryByRole('row', { name: /Node B \(private\)/ })).toBeNull())
+  })
+
+  it('opens a Lifecycle deep link with its filter named while More filters stays collapsed', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes': () => jsonResponse([NODE_A, { ...NODE_B, lifecycle: 'retired' }], 200),
+    })
+    renderAt('/admin/nodes?lifecycle=retired')
+    const row = await screen.findByRole('row', { name: /Node B \(private\)/ })
+    expect(within(row).getByText('Retired')).toBeTruthy()
+    expect(screen.queryByRole('row', { name: /Node A/ })).toBeNull()
+    expect(screen.getByRole('list', { name: 'Active filters from More filters' }).textContent).toContain('Lifecycle: Retired')
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
+    expect(await screen.findByRole('row', { name: /Node A/ })).toBeTruthy()
   })
 
   it('shows the Empty state when no Nodes exist', async () => {
@@ -487,7 +563,7 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     expect(await screen.findByText('No Nodes match these filters.')).toBeTruthy()
   })
 
-  it('shows the Server-owned detail with mismatch diagnostics and last-good values', async () => {
+  it('opens on Overview and keeps History, Diagnostics and Manage one section away', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
@@ -495,40 +571,56 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     })
     renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
 
-    await screen.findByRole('heading', { level: 1, name: /Node A/ })
-    expect(screen.getByText('Server-owned metadata')).toBeTruthy()
-    expect(screen.getByText('Lifecycle guidance')).toBeTruthy()
-    expect(screen.getByText(/never pushes Endpoint or lifecycle changes/)).toBeTruthy()
-    // Lifecycle is Node Inventory state on its own panel (issue #94).
-    expect(
-      screen.getByRole('heading', { level: 2, name: 'Node Inventory & lifecycle' }),
-    ).toBeTruthy()
-    expect(screen.getByRole('link', { name: 'Open the Audit log' })).toBeTruthy()
-    // Contextual shortcut from a Node detail to its Incident history
-    // (issue #202 Story 2): a bound subject filter, not a generic entry.
+    await screen.findByRole('heading', { level: 1, name: 'Node A' })
+    // Header: independent dimensions and the full Node ID behind a disclosure.
+    const dimensions = screen.getByLabelText('Current Node dimensions')
+    expect(dimensions.textContent).toContain('healthy')
+    expect(dimensions.textContent).toContain('Current')
+    expect(dimensions.textContent).toContain('Matched')
+    expect(dimensions.textContent).toContain('Active')
+    expect(screen.getByRole('button', { name: /Show full\s*Node ID/ })).toBeTruthy()
     expect(
       screen.getByRole('link', { name: 'Incidents for this Node' }).getAttribute('href'),
     ).toBe(
       '/admin/alerts/incidents?subject=node&subject_key=0195f2a1-0014-4014-8014-000000000014',
     )
-    expect(screen.getByText('Network identity')).toBeTruthy()
-    expect(screen.getByText('Observed chain ID / P2P network')).toBeTruthy()
-    expect(screen.getByText(/210425 \/ 1/)).toBeTruthy()
-    // The refusal panel is rendered only while the Server is actually
-    // refusing history, never as a permanent decoration (issue #235).
-    expect(
-      screen.queryByText(/The Server is refusing this Node's Block history/),
-    ).toBeNull()
-    // Administrative RPC diagnostics stay separate from Home's full
-    // observation view and retain the redacted endpoint.
-    expect(screen.getByText('RPC diagnostics')).toBeTruthy()
-    expect(screen.getByText('Redacted RPC Endpoint')).toBeTruthy()
-    expect(screen.getByText('platon/1.5.1')).toBeTruthy()
-    expect(screen.getByText('admin, net, platon')).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'Overview' }).getAttribute('aria-selected')).toBe('true')
+
+    // Overview: health, lifecycle and context only.
+    expect(screen.getByRole('heading', { level: 2, name: 'Node Inventory & lifecycle' })).toBeTruthy()
+    expect(screen.getByText(/never pushes Endpoint or lifecycle changes/)).toBeTruthy()
     expect(screen.getByText('Node data size')).toBeTruthy()
     expect(screen.getByText(/12.0 GiB/)).toBeTruthy()
     expect(screen.getByText('Last-good head')).toBeTruthy()
-    expect(screen.getAllByText('12842019').length).toBeGreaterThan(0)
+    expect(screen.queryByRole('heading', { name: 'Metric history' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'RPC diagnostics' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Permanently delete Node' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+
+    openSection('Diagnostics')
+    await waitFor(() => expect(window.location.search).toBe('?section=diagnostics'))
+    expect(screen.getByRole('heading', { level: 2, name: 'Network identity' })).toBeTruthy()
+    expect(screen.getByText('Observed chain ID / P2P network')).toBeTruthy()
+    expect(screen.getByText(/210425 \/ 1/)).toBeTruthy()
+    expect(
+      screen.queryByText(/The Server is refusing this Node's Block history/),
+    ).toBeNull()
+    expect(screen.getByRole('heading', { name: 'RPC diagnostics' })).toBeTruthy()
+    expect(screen.getByText('Redacted RPC Endpoint')).toBeTruthy()
+    expect(screen.getByText('platon/1.5.1')).toBeTruthy()
+    expect(screen.getByText('admin, net, platon')).toBeTruthy()
+    // Per-component evidence moved here from the Overview's old disclosure.
+    const components = screen.getByRole('heading', { name: 'Component diagnostics' }).closest('[data-slot="component-diagnostics"]') as HTMLElement
+    expect(within(components).getByText('Sync')).toBeTruthy()
+    expect(within(components).getByText('Node Data')).toBeTruthy()
+    // The Overview section left the accessibility tree instead of piling up.
+    expect(screen.queryByRole('heading', { name: 'Node Inventory & lifecycle' })).toBeNull()
+
+    openSection('Manage')
+    expect(screen.getByText('Server-owned metadata')).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'Open the Audit log' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Danger zone' })).toBeTruthy()
+
     expect(screen.queryByText('Per-Node observations')).toBeNull()
     expect(screen.queryByText('Peer snapshot')).toBeNull()
     expect(screen.queryByText('peer-a')).toBeNull()
@@ -550,10 +642,20 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     renderAt('/admin/nodes/0195f2a1-0015-4015-8015-000000000015')
 
     await screen.findByRole('heading', { level: 1, name: /Node B \(private\)/ })
+    // Summarized above every section, with its own entry into Diagnostics.
+    const findings = screen.getByRole('list', { name: 'Current Node findings' })
+    expect(findings.textContent).toContain('Network identity contradicts the Registry on chain_id')
+    expect(screen.getByRole('tab', { name: /^Diagnostics, \d+ current finding/ })).toBeTruthy()
+    fireEvent.click(within(findings).getAllByRole('button', { name: 'Open Diagnostics' })[0])
     expect(
       await screen.findByText(/Contradicts the Registry: chain_id/),
     ).toBeTruthy()
     expect(screen.getByText(/New history is not merged/)).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Diagnostics/ }).getAttribute('aria-selected')).toBe('true')
+    // The jump button left with its notice; focus moved to the opened section.
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute('data-section')).toBe('diagnostics'),
+    )
   })
 
   it('shows the Block history the Server refuses while the observation matches', async () => {
@@ -582,15 +684,16 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
           200,
         ),
     })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=diagnostics')
 
     await screen.findByRole('heading', { level: 1, name: /Node A/ })
-    const refusal = await screen.findByText(
-      /The Server is refusing this Node's Block history/,
+    // Summarized above every section, and complete in Diagnostics.
+    expect(screen.getByRole('list', { name: 'Current Node findings' }).textContent).toContain(
+      "The Server is refusing this Node's Block history.",
     )
-    const panel = refusal.closest(
-      '[data-slot="block-history-rejection"]',
-    ) as HTMLElement
+    const panel = (await screen.findAllByText(/The Server is refusing this Node's Block history/))
+      .map((element) => element.closest('[data-slot="block-history-rejection"]'))
+      .find(Boolean) as HTMLElement
     expect(panel).toBeTruthy()
     // The Server's own diagnosis is rendered verbatim, including the
     // differing field and the remedy.
@@ -647,13 +750,17 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     renderAt('/admin/nodes/0195f2a1-0015-4015-8015-000000000015')
 
     await screen.findByRole('heading', { level: 1, name: /Node B \(private\)/ })
-    expect(screen.getByText('Stale')).toBeTruthy()
-    expect(screen.getByText('Error')).toBeTruthy()
-    expect(screen.getByText('Last RPC error')).toBeTruthy()
-    expect(screen.getByText('connection refused')).toBeTruthy()
+    expect(screen.getByLabelText('Current Node dimensions').textContent).toContain('Stale')
+    // The RPC failure is summarized on Overview, with the error text.
+    expect(screen.getByRole('list', { name: 'Current Node findings' }).textContent).toContain(
+      'RPC collection failed: connection refused',
+    )
     // Last-good values stay visible beside the Error diagnostic.
     expect(screen.getByText(/last-good head 12842019/)).toBeTruthy()
     expect(screen.queryByText('Healthy')).toBeNull()
+    openSection(/^Diagnostics/)
+    expect(screen.getByText('Last RPC error')).toBeTruthy()
+    expect(screen.getAllByText('connection refused').length).toBeGreaterThan(0)
     // Only the redacted endpoint form is ever rendered.
     expect(screen.getAllByText('ws://127.0.0.1:****').length).toBeGreaterThan(0)
     expect(screen.queryByText('ws://127.0.0.1:8545')).toBeNull()
@@ -672,7 +779,7 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
         return jsonResponse({ nodeId: NODE_A.node_id, displayName: 'Atlas-01' }, 200)
       },
     })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=manage')
 
     await screen.findByRole('heading', { level: 1, name: /Node A/ })
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
@@ -691,6 +798,35 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     expect(
       await screen.findByRole('heading', { level: 1, name: /Atlas-01/ }),
     ).toBeTruthy()
+  })
+
+  it('keeps an unsaved rename and an open deletion confirmation across a section switch, and says so on the tab', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(NODE_A_DETAIL, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014/purge-impact': () =>
+        new Promise<Response>(() => {}),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=manage')
+    await screen.findByRole('heading', { level: 1, name: 'Node A' })
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Draft name' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Permanently delete Node' }))
+    expect(screen.getByRole('alertdialog', { name: 'Confirm permanent Node deletion' })).toBeTruthy()
+    const manage = screen.getByRole('tab', { name: /^Manage/ })
+    expect(manage.textContent).toContain('Unsaved')
+
+    openSection('Overview')
+    // Hidden, the draft's controls leave the keyboard and accessibility tree.
+    expect(screen.queryByRole('textbox', { name: 'Display name' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Confirm permanent deletion' })).toBeNull()
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.getByRole('tab', { name: /^Manage, unsaved change or open confirmation/ })).toBeTruthy()
+
+    openSection(/^Manage/)
+    expect((screen.getByLabelText('Display name') as HTMLInputElement).value).toBe('Draft name')
+    expect(screen.getByRole('alertdialog', { name: 'Confirm permanent Node deletion' })).toBeTruthy()
   })
 
   it('shows a non-leaking unavailable state for an unknown Node', async () => {
@@ -809,7 +945,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
         )
       },
     })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=history')
 
     await screen.findByRole('heading', { level: 1, name: /Node A/ })
     // The panel asks the Server for exactly the selected series and range.
@@ -917,7 +1053,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
           200,
         ),
     })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=history')
 
     await screen.findByRole('heading', { level: 2, name: 'Metric history' })
     // The ledger delay and the sample row both name the direction that made the
@@ -992,7 +1128,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
         )
       },
     })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=history')
 
     await screen.findByRole('heading', { level: 1, name: /Node A/ })
     expect(
@@ -1082,7 +1218,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
         return jsonResponse(page(canonical(0), newestOldest, true, newestOldest, 2.5), 200)
       },
     })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=history')
 
     // The newest window answers for itself alone: it is truncated, so it carries
     // the way into the older pages beside that notice.
@@ -1187,7 +1323,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
           200,
         ),
     })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=history')
 
     // The answer, not the static panel heading: wait for evidence the tiers
     // were read. Which tier answered which stretch, and what a bucket is worth,
@@ -1264,7 +1400,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
           200,
         ),
     })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=history')
 
     // The per-point copy names what the bucket measured and refuses to call the
     // stretch closed.
@@ -1306,7 +1442,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
         return jsonResponse(metricHistoryFixture(), 200)
       },
     })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=history')
 
     await screen.findByRole('heading', { level: 1, name: /Node A/ })
     expect(await screen.findByText('server database is unavailable')).toBeTruthy()
@@ -1382,7 +1518,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
         return jsonResponse(impact, 200)
       },
     })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=manage')
 
     await screen.findByRole('heading', { level: 1, name: /Node A/ })
     fireEvent.click(screen.getByRole('button', { name: 'Permanently delete Node' }))
@@ -1420,7 +1556,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
             )
           : jsonResponse({ target: {}, counts: { total_owned_rows: 0 } }, 200),
     })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=manage')
 
     await screen.findByRole('heading', { level: 1, name: /Node A/ })
     fireEvent.click(screen.getByRole('button', { name: 'Permanently delete Node' }))
@@ -1456,7 +1592,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
       '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
         jsonResponse(NODE_A_DETAIL, 200),
     })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=history')
 
     await screen.findByRole('heading', { level: 1, name: /Node A/ })
     // Two panels with two subjects: this Node's own Process series and the
@@ -1552,7 +1688,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
       '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
         jsonResponse(NODE_A_DETAIL, 200),
     })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=history')
 
     await screen.findByRole('heading', { level: 1, name: /Node A/ })
     // A storage series is identified by the mount path the Agent reported, so
@@ -1621,7 +1757,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
       '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
         jsonResponse(NODE_VALIDATOR_RESOLVED_DETAIL, 200),
     })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=diagnostics')
 
     await screen.findByRole('heading', { level: 1, name: /Node A/ })
     const panel = validatorIdentityPanel()
@@ -1651,7 +1787,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
       '/api/admin/v1/nodes/0195f2a1-0015-4015-8015-000000000015': () =>
         jsonResponse(NODE_VALIDATOR_MISMATCH_DETAIL, 200),
     })
-    renderAt('/admin/nodes/0195f2a1-0015-4015-8015-000000000015')
+    renderAt('/admin/nodes/0195f2a1-0015-4015-8015-000000000015?section=diagnostics')
 
     await screen.findByRole('heading', { level: 1, name: /Node B/ })
     const panel = validatorIdentityPanel()
@@ -1675,7 +1811,7 @@ function metricHistoryFixture(overrides: Record<string, unknown> = {}) {
       '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
         jsonResponse(NODE_VALIDATOR_UNEVALUATED_DETAIL, 200),
     })
-    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=diagnostics')
 
     await screen.findByRole('heading', { level: 1, name: /Node A/ })
     const panel = validatorIdentityPanel()

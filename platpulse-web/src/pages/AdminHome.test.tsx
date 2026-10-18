@@ -288,20 +288,27 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     expect(screen.getByText(/RPC collection failed/)).toBeTruthy()
     expect(screen.getByText('Critical')).toBeTruthy()
 
-    // Node Health Summary with its own table row per Node.
-    expect(screen.getByRole('heading', { level: 2, name: 'Node Health Summary' })).toBeTruthy()
-    const nodeRow = await screen.findByRole('row', { name: /Node A/ })
-    expect(nodeRow.textContent).toContain('healthy')
-    expect(nodeRow.textContent).toContain('Current')
-    await act(async () => {
-      screen.getByRole('button', { name: /Node A/ }).click()
-    })
-    expect(screen.getByText('Node Data')).toBeTruthy()
-    expect(screen.getByText('12.0 GiB')).toBeTruthy()
+    // Node Health Summary is a compact preview: name, Network, independent
+    // Health and Freshness, and a link to the Node; no in-place diagnostics.
+    const nodePanel = screen.getByRole('heading', { level: 2, name: 'Node Health Summary' }).closest('article') as HTMLElement
+    const nodeItem = await within(nodePanel).findByRole('listitem')
+    expect(nodeItem.textContent).toContain('healthy')
+    expect(nodeItem.textContent).toContain('Current')
+    expect(nodeItem.textContent).toContain('PlatON Mainnet')
+    // A healthy Node repeats no reason and no teaching copy.
+    expect(nodeItem.textContent).not.toContain('RPC, sync, and consensus are current')
+    expect(nodeItem.textContent).not.toContain('Server-owned freshness')
+    expect(within(nodeItem).getByRole('link', { name: 'Node A' }).getAttribute('href')).toBe('/admin/nodes/node-1')
+    expect(within(nodePanel).queryByRole('button')).toBeNull()
+    expect(screen.queryByText('Node Data')).toBeNull()
 
-    // Agent inventory stays an independent panel (one Agent, its own card).
-    expect(screen.getByRole('heading', { level: 2, name: 'Agent inventory' })).toBeTruthy()
-    expect(await screen.findByRole('row', { name: /agent-1/ })).toBeTruthy()
+    // Agent inventory stays an independent panel with a compact item.
+    const agentPanel = screen.getByRole('heading', { level: 2, name: 'Agent inventory' }).closest('article') as HTMLElement
+    const agentItem = await within(agentPanel).findByRole('listitem')
+    expect(within(agentItem).getByRole('link', { name: 'agent-1' }).getAttribute('href')).toBe('/admin/agents/agent-1')
+    expect(agentItem.textContent).toContain('1 retained Node')
+    // Host resources, report sequence and Spool/Clock fields stay on the Agent.
+    expect(agentPanel.textContent).not.toMatch(/CPU|Memory|RX \/ TX|Report #|Spool|Clock|Server liveness/)
 
     // Geo database status is absent from the Overview page (issue #93).
     expect(screen.queryByRole('heading', { level: 2, name: 'Geo database' })).toBeNull()
@@ -368,7 +375,7 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     expect(screen.queryByText('Fleet overview')).toBeNull()
   })
 
-  it('prioritizes Active Nodes before limiting the ledger and keeps deterministic ties stable', async () => {
+  it('prioritizes Active Nodes before limiting the preview and keeps deterministic ties stable', async () => {
     const activeNodes = [
       { ...NODE, node_id: 'healthy-1', display_name: 'Healthy 1', health: 'healthy', freshness: 'current' },
       { ...NODE, node_id: 'retired', display_name: 'Retired Node', lifecycle: 'retired' },
@@ -392,80 +399,95 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     })
     await renderAt('/admin')
 
-    const ledger = (await screen.findByRole('heading', { name: 'Node Health Summary' })).closest('article')
-    const rows = within(ledger as HTMLElement).getAllByRole('row').slice(1)
-    expect(rows).toHaveLength(10)
-    expect(rows.map((row) => row.textContent)).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining('Unhealthy A'),
-        expect.stringContaining('Unhealthy B'),
-        expect.stringContaining('Unknown Node'),
-        expect.stringContaining('Stale Node'),
-      ]),
-    )
-    expect(rows.slice(0, 4).map((row) => row.textContent)).toEqual([
+    const panel = (await screen.findByRole('heading', { name: 'Node Health Summary' })).closest('article') as HTMLElement
+    const items = await within(panel).findAllByRole('listitem')
+    expect(items).toHaveLength(5)
+    expect(items.slice(0, 4).map((item) => item.textContent)).toEqual([
       expect.stringContaining('Unhealthy A'),
       expect.stringContaining('Unhealthy B'),
       expect.stringContaining('Unknown Node'),
       expect.stringContaining('Stale Node'),
     ])
     expect(screen.queryByText('Retired Node')).toBeNull()
-    expect(screen.getByText('Showing 10 of 12 Active Nodes')).toBeTruthy()
+    expect(within(panel).getByText(/Showing 5 of 12 Active Nodes/)).toBeTruthy()
+    // Only healthy, current Nodes are left out, so nothing exceptional is hidden.
+    expect(panel.querySelector('[data-slot="preview-hidden"]')).toBeNull()
     expect(screen.getByRole('link', { name: 'View all Nodes' }).getAttribute('href')).toBe('/admin/nodes')
-    expect(within(rows[0]).getByRole('link', { name: 'View Node' }).getAttribute('href')).toBe('/admin/nodes/unhealthy-a')
+    expect(within(items[0]).getByRole('link', { name: 'Unhealthy A' }).getAttribute('href')).toBe('/admin/nodes/unhealthy-a')
   })
 
-  it('keeps one Node disclosure open and returns focus to its toggle on Escape', async () => {
-    const secondNode = { ...NODE, node_id: 'node-2', display_name: 'Node B' }
+  it('counts the exceptional Nodes and Agents the five-item previews leave out', async () => {
+    const nodes = [
+      ...Array.from({ length: 6 }, (_, index) => ({ ...NODE, node_id: 'bad-' + index, display_name: 'Bad ' + index, health: 'unhealthy' })),
+      { ...NODE, node_id: 'unknown-1', display_name: 'Unknown 1', health: 'unknown', freshness: 'unknown' },
+      { ...NODE, node_id: 'stale-1', display_name: 'Stale 1', health: 'healthy', freshness: 'stale' },
+      { ...NODE, node_id: 'mismatch-1', display_name: 'Mismatch 1', health: 'healthy', identity: { state: 'mismatched', observed: null, mismatched_fields: ['chain_id'] } },
+    ]
+    const active = [{ credential_id: 'c1', active: true, created_at: '2026-08-12T08:00:00Z', revoked_at: null, revoke_after: null }]
+    const agents = [
+      ...Array.from({ length: 5 }, (_, index) => ({ ...AGENT, agent_id: 'risk-' + index, security_event_count: 1, credentials: active })),
+      { ...AGENT, agent_id: 'offline-agent', liveness: 'offline', credentials: active },
+      { ...AGENT, agent_id: 'unknown-agent', liveness: 'unknown', credentials: active },
+    ]
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
-      '/api/admin/v1/nodes': () => jsonResponse([NODE, secondNode], 200),
-      '/api/admin/v1/agents': () => jsonResponse([{ ...AGENT, nodes: [AGENT.nodes[0], { ...AGENT.nodes[0], node_id: 'node-2', display_name: 'Node B' }] }], 200),
+      '/api/admin/v1/nodes': () => jsonResponse(nodes, 200),
+      '/api/admin/v1/agents': () => jsonResponse(agents, 200),
     })
     await renderAt('/admin')
-
-    const [firstDisclosure, secondDisclosure] = await screen.findAllByRole('button', { name: /Node [AB]/ })
-    await act(async () => firstDisclosure.click())
-    expect(firstDisclosure.getAttribute('aria-expanded')).toBe('true')
-    await act(async () => secondDisclosure.click())
-    expect(screen.getByRole('button', { name: 'Node A' }).getAttribute('aria-expanded')).toBe('false')
-    const secondToggle = screen.getByRole('button', { name: 'Node B' })
-    expect(secondToggle.getAttribute('aria-expanded')).toBe('true')
-
-    expect(screen.getAllByRole('button', { name: 'Node B' })).toHaveLength(1)
-    secondToggle.focus()
-    fireEvent.keyDown(secondToggle, { key: 'Escape' })
-    expect(secondToggle.getAttribute('aria-expanded')).toBe('false')
-    expect(document.activeElement).toBe(secondToggle)
+    const nodePanel = (await screen.findByRole('heading', { name: 'Node Health Summary' })).closest('article') as HTMLElement
+    await within(nodePanel).findAllByRole('listitem')
+    expect(within(nodePanel).getByText(/Showing 5 of 9 Active Nodes/)).toBeTruthy()
+    expect(nodePanel.querySelector('[data-slot="preview-hidden"]')?.textContent).toBe(
+      'Not shown: 1 unhealthy · 1 unknown health · 1 stale · 1 identity mismatch',
+    )
+    const agentPanel = screen.getByRole('heading', { name: 'Agent inventory' }).closest('article') as HTMLElement
+    expect(within(agentPanel).getByText(/Showing 5 of 7 Agents/)).toBeTruthy()
+    // Each left-out Agent is counted once, under its most pressing bucket.
+    expect(agentPanel.querySelector('[data-slot="preview-hidden"]')?.textContent).toBe(
+      'Not shown: 1 offline · 1 unknown reporting',
+    )
   })
 
-  it('preserves expansion across Node refetches and closes when the Node leaves the visible set', async () => {
-    const peerNode = { ...NODE, node_id: 'node-2', display_name: 'Node B' }
-    let currentNodes = [peerNode, NODE]
+  it('names identity mismatch and exception reasons on the preview without opening diagnostics in place', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
-      '/api/admin/v1/nodes': () => jsonResponse(currentNodes, 200),
+      '/api/admin/v1/nodes': () => jsonResponse([
+        { ...NODE, health: 'unhealthy', health_reason: 'RPC collection failed', identity: { state: 'mismatched', observed: null, mismatched_fields: ['chain_id', 'genesis_hash'] }, resync_state: 'resyncing' },
+      ], 200),
       '/api/admin/v1/agents': () => jsonResponse([AGENT], 200),
     })
     await renderAt('/admin')
-    const diagnosticsToggle = (await screen.findAllByRole('button', { name: /Node A/ }))[0]
-    await act(async () => diagnosticsToggle.click())
-    expect(screen.getByText('Node Data')).toBeTruthy()
-    const initialRows = screen.getAllByRole('row').filter((row) => row.textContent?.includes('Node A') || row.textContent?.includes('Node B'))
-    expect(initialRows[0].textContent).toContain('Node A')
-    currentNodes = [{ ...peerNode, updated_at: '2026-08-12T08:02:00Z' }, { ...NODE, updated_at: '2026-08-12T08:03:00Z' }]
-    await act(async () => { adminQueryClient.setQueriesData({ queryKey: ['admin', 'nodes'] }, currentNodes) })
-    const stableRows = screen.getAllByRole('row').filter((row) => row.textContent?.includes('Node A') || row.textContent?.includes('Node B'))
-    expect(stableRows[0].textContent).toContain('Node A')
-    currentNodes = [{ ...NODE, display_name: 'Node A (renamed)' }]
-    await act(async () => { adminQueryClient.setQueriesData({ queryKey: ['admin', 'nodes'] }, currentNodes) })
-    expect(await screen.findByRole('row', { name: /Node A \(renamed\)/ })).toBeTruthy()
-    expect(screen.getByText('Node Data')).toBeTruthy()
-    currentNodes = Array.from({ length: 10 }, (_, index) => ({ ...NODE, node_id: 'urgent-' + index, display_name: 'Urgent ' + index, health: 'unhealthy' }))
-    await act(async () => { adminQueryClient.setQueriesData({ queryKey: ['admin', 'nodes'] }, currentNodes) })
-    await waitFor(() => expect(screen.queryByText('Node Data')).toBeNull())
+    const panel = (await screen.findByRole('heading', { name: 'Node Health Summary' })).closest('article') as HTMLElement
+    const item = await within(panel).findByRole('listitem')
+    expect(item.textContent).toContain('unhealthy')
+    expect(item.textContent).toContain('RPC collection failed')
+    expect(item.textContent).toContain('Identity mismatched: chain_id, genesis_hash')
+    expect(item.textContent).toContain('Resync resyncing')
+    expect(within(item).queryByRole('button')).toBeNull()
+  })
+
+  it('keeps the preview order stable across a timestamp-only refetch', async () => {
+    const peerNode = { ...NODE, node_id: 'node-2', display_name: 'Node B' }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
+      '/api/admin/v1/nodes': () => jsonResponse([peerNode, NODE], 200),
+      '/api/admin/v1/agents': () => jsonResponse([AGENT], 200),
+    })
+    await renderAt('/admin')
+    const panel = (await screen.findByRole('heading', { name: 'Node Health Summary' })).closest('article') as HTMLElement
+    const before = (await within(panel).findAllByRole('listitem')).map((item) => item.textContent)
+    expect(before[0]).toContain('Node A')
+    await act(async () => {
+      adminQueryClient.setQueriesData({ queryKey: ['admin', 'nodes'] }, [
+        { ...peerNode, updated_at: '2026-08-12T08:02:00Z' },
+        { ...NODE, updated_at: '2026-08-12T08:03:00Z' },
+      ])
+    })
+    expect(within(panel).getAllByRole('listitem').map((item) => item.textContent)).toEqual(before)
   })
 
   it('renders one atomic snapshot time and exactly four linked summary cards', async () => {
@@ -588,57 +610,33 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     expect(header.textContent).toContain('30 seconds ago')
   })
 
-  it('keeps stale, unknown, never-observed, disabled, unsupported, and last-good states distinct', async () => {
-    const diagnosticNode = {
-      ...AGENT.nodes[0],
-      health: 'unknown',
-      health_reason: 'The Server has not observed enough current components',
-      freshness: 'stale',
-      rpc: undefined,
-      sync: {
-        state: 'error',
-        error_message: 'sync collector timed out',
-        current_block: 120,
-        highest_block: 128,
-        received_at: '2026-08-12T07:55:00Z',
-      },
-      consensus: { state: 'unsupported', received_at: null },
-      peers: undefined,
-      process: { state: 'disabled', received_at: null },
-      data_directory: { state: 'starting', received_at: null },
-    }
+  it('keeps stale, unknown, and never-observed states distinct on the previews', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
       '/api/admin/v1/nodes': () =>
         jsonResponse(
-          [{ ...NODE, health: 'unknown', freshness: 'stale', current_head: null }],
+          [{ ...NODE, health: 'unknown', health_reason: 'The Server has not observed enough current components', freshness: 'stale', current_head: null }],
           200,
         ),
       '/api/admin/v1/agents': () =>
-        jsonResponse([{ ...AGENT, liveness: 'unknown', nodes: [diagnosticNode] }], 200),
+        jsonResponse([{ ...AGENT, liveness: 'unknown', last_received_at: null, host: null, credentials: [{ credential_id: 'c1', active: true, created_at: '2026-08-12T08:00:00Z', revoked_at: null, revoke_after: null }] }], 200),
     })
     await renderAt('/admin')
 
-    const nodeRow = await screen.findByRole('row', { name: /Node A/ })
-    expect(nodeRow.textContent).toContain('unknown')
-    expect(nodeRow.textContent).toContain('Stale')
-    expect(nodeRow.textContent).toContain('Unknown')
+    const nodePanel = (await screen.findByRole('heading', { name: 'Node Health Summary' })).closest('article') as HTMLElement
+    const nodeItem = await within(nodePanel).findByRole('listitem')
+    expect(nodeItem.textContent).toContain('unknown')
+    expect(nodeItem.textContent).toContain('Stale')
+    expect(nodeItem.textContent).toContain('The Server has not observed enough current components')
+    expect(nodeItem.textContent).not.toContain('healthy')
 
-    const nodeToggle = screen.getByRole('button', { name: /Node A/ })
-    await act(async () => {
-      nodeToggle.click()
-    })
-    const detailId = nodeToggle.getAttribute('aria-controls')
-    const details = detailId ? document.getElementById(detailId) : null
-    expect(details).toBeTruthy()
-    expect(details?.textContent).toContain('Error')
-    expect(details?.textContent).toContain('sync collector timed out')
-    expect(details?.textContent).toContain('last-good head 120')
-    expect(details?.textContent).toContain('Disabled')
-    expect(details?.textContent).toContain('Unsupported')
-    expect(details?.textContent).toContain('Unknown')
-    expect(details?.textContent).toContain('Never observed')
+    const agentPanel = screen.getByRole('heading', { name: 'Agent inventory' }).closest('article') as HTMLElement
+    const agentItem = await within(agentPanel).findByRole('listitem')
+    expect(agentItem.textContent).toContain('Unknown')
+    expect(agentItem.textContent).toContain('Never received')
+    expect(agentItem.textContent).toContain('Host not observed yet')
+    expect(agentItem.textContent).not.toMatch(/\b0 queued|Normal/)
   })
 
   it('keeps Node health available when Agent diagnostics fail independently', async () => {
@@ -652,7 +650,7 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     await renderAt('/admin')
 
     await screen.findByRole('heading', { level: 1, name: 'Overview' })
-    expect(await screen.findByRole('row', { name: /Node A/ })).toBeTruthy()
+    expect(await screen.findByRole('link', { name: 'Node A' })).toBeTruthy()
     expect(await screen.findByText('Agent diagnostics unavailable')).toBeTruthy()
     expect(screen.queryByText('Unable to load Nodes')).toBeNull()
     expectNoGeoRequests(fetchMock)
@@ -700,8 +698,8 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     })
     await renderAt('/admin')
     await screen.findByRole('heading', { level: 1, name: 'Overview' })
+    expect(await screen.findByRole('link', { name: 'Node A' })).toBeTruthy()
     expect(screen.queryByRole('heading', { level: 2, name: 'Set up your first observation' })).toBeNull()
-    expect(screen.getByRole('row', { name: /Node A/ })).toBeTruthy()
   })
 
   it('shows an explicit loading state while the overview is in flight', async () => {
@@ -770,12 +768,12 @@ describe('Agent inventory risk ordering and evidence', () => {
     ])
   })
 
-  it('prioritizes before slicing and keeps the sixth-card boundary deterministic', async () => {
+  it('prioritizes before slicing and keeps the fifth-item boundary deterministic', async () => {
     const agents = [
       ...Array.from({ length: 4 }, (_, index) => ({ ...AGENT, agent_id: 'online-' + index, liveness: 'online' })),
-      { ...AGENT, agent_id: 'offline-agent', liveness: 'offline' },
-      { ...AGENT, agent_id: 'unknown-agent', liveness: 'unknown' },
-      { ...AGENT, agent_id: 'critical-agent', security_event_count: 1 },
+      { ...AGENT, agent_id: 'offline-a', liveness: 'offline' },
+      { ...AGENT, agent_id: 'unknown-a', liveness: 'unknown' },
+      { ...AGENT, agent_id: 'critical-a', security_event_count: 1 },
     ]
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
@@ -784,55 +782,57 @@ describe('Agent inventory risk ordering and evidence', () => {
       '/api/admin/v1/agents': () => jsonResponse(agents, 200),
     })
     await renderAt('/admin')
-    await screen.findByRole('row', { name: /critical-agent/ })
+    await screen.findByRole('link', { name: 'critical-a' })
     const agentPanel = screen.getByRole('heading', { level: 2, name: 'Agent inventory' }).closest('article') as HTMLElement
-    const agentRows = within(agentPanel).getAllByRole('row').slice(1)
-    expect(agentRows).toHaveLength(6)
-    expect(agentRows.map((row) => row.textContent)).toEqual([
-      expect.stringContaining('critical-agent'),
-      expect.stringContaining('offline-agent'),
-      expect.stringContaining('unknown-agent'),
+    const items = within(agentPanel).getAllByRole('listitem')
+    expect(items).toHaveLength(5)
+    expect(items.map((item) => item.textContent)).toEqual([
+      expect.stringContaining('critical-a'),
+      expect.stringContaining('offline-a'),
+      expect.stringContaining('unknown-a'),
       expect.stringContaining('online-0'),
       expect.stringContaining('online-1'),
-      expect.stringContaining('online-2'),
     ])
-    expect(screen.queryByText('online-3', { exact: true })).toBeNull()
-    expect(screen.getByText('Showing 6 of 7 Agents')).toBeTruthy()
+    expect(screen.queryByText('online-2', { exact: true })).toBeNull()
+    expect(within(agentPanel).getByText(/Showing 5 of 7 Agents/)).toBeTruthy()
     expect(screen.getByRole('link', { name: 'View all Agents' }).getAttribute('href')).toBe('/admin/agents')
   })
 
-  it('renders risk evidence, Host once, independent Node context, and safe Agent navigation', async () => {
+  it('separates current attention from recorded history and leaves Host resources to the Agent detail', async () => {
     const host: HostDiagnostic = {
       components: [], updated_at: '2026-08-12T08:00:00Z', cpu_percent: 37.5,
       memory_used_bytes: 4 * 1024 ** 3, memory_total_bytes: 8 * 1024 ** 3,
       spool_queued_reports: 3, spool_capacity_bytes: 16 * 1024 ** 3,
       spool_dropped_sequence_from: 10, spool_dropped_sequence_to: 12, spool_pending_history_gaps: 2,
     }
-    const diagnostic = { ...AGENT, host, security_event_count: 2, sequence_gap_count: 1, clock_status: 'unknown', clock_skew_ms: null }
+    const diagnostic = {
+      ...AGENT, host, security_event_count: 2, sequence_gap_count: 1, clock_status: 'unknown', clock_skew_ms: null,
+      credentials: [{ credential_id: 'c1', active: true, created_at: '2026-08-12T08:00:00Z', revoked_at: null, revoke_after: null }],
+      attention: [{ ...OVERVIEW.attention[0], id: 'a1', kind: 'agent_spool_overflow', subject_kind: 'agent', subject_id: 'agent-1', message: 'the Agent spool overflowed and discarded queued reports' }],
+    }
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
-      '/api/admin/v1/nodes': () => jsonResponse([{ ...NODE, display_name: 'Joined Node', lifecycle: 'active', health: 'unknown', freshness: 'stale' }], 200),
+      '/api/admin/v1/nodes': () => jsonResponse([{ ...NODE, display_name: 'Joined Node', health: 'unhealthy' }], 200),
       '/api/admin/v1/agents': () => jsonResponse([diagnostic], 200),
     })
     await renderAt('/admin')
-    const row = await screen.findByRole('row', { name: /agent-1/ })
-    expect(row.textContent).toContain('CPU37.5%')
-    expect(row.textContent).toContain('Memory4.00 GiB / 8.00 GiB')
-    expect(row.textContent).toContain('3 queued')
-    expect(row.textContent).toContain('discarded reports')
-    expect(row.textContent).toContain('Unknown')
-    expect(row.textContent).toContain('1 report gap')
-    expect(row.textContent).toContain('2 security events')
-    expect(row.textContent).toContain('1 retained Node')
-    expect(row.textContent).toContain('1 unknown')
-    expect(row.textContent).toContain('View Agent')
-    expect(within(row).getByRole('link', { name: 'View Agent' }).getAttribute('href')).toBe('/admin/agents/agent-1')
-    expect(row.textContent).not.toContain('0195f2a1-2b3c-4d5e-8f90-123456789abc')
-    expect(row.querySelectorAll('dt').length).toBe(7)
+    const link = await screen.findByRole('link', { name: 'agent-1' })
+    expect(link.getAttribute('href')).toBe('/admin/agents/agent-1')
+    const item = link.closest('li') as HTMLElement
+    expect(item.querySelector('[data-slot="agent-preview-current"]')?.textContent).toBe(
+      'the Agent spool overflowed and discarded queued reports',
+    )
+    expect(item.querySelector('[data-slot="agent-preview-recorded"]')?.textContent).toBe(
+      'Recorded history: 1 gap interval · 2 security events · +2 more on the Agent',
+    )
+    expect(item.textContent).toContain('1 retained Node')
+    expect(item.textContent).toContain('1 unhealthy')
+    expect(item.textContent).not.toMatch(/37\.5%|4\.00 GiB|3 queued|capacity|Clock/)
+    expect(item.textContent).not.toContain('0195f2a1-2b3c-4d5e-8f90-123456789abc')
   })
 
-  it('keeps Agent cards visible when Nodes fail and reports no observed Nodes when the join is empty', async () => {
+  it('keeps Agent items visible when Nodes fail, with the retained count from the Agent itself', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
@@ -840,7 +840,9 @@ describe('Agent inventory risk ordering and evidence', () => {
       '/api/admin/v1/agents': () => jsonResponse([{ ...AGENT, nodes: [] }], 200),
     })
     await renderAt('/admin')
-    const row = await screen.findByRole('row', { name: /agent-1/ })
-    expect(row.textContent).toContain('Node context unavailable; recover in Nodes')
+    const item = (await screen.findByRole('link', { name: 'agent-1' })).closest('li') as HTMLElement
+    expect(item.textContent).toContain('0 retained Nodes')
+    expect(await screen.findByText('Nodes unavailable')).toBeTruthy()
   })
+
 })

@@ -261,6 +261,13 @@ function identityRow(page: Page, nodeId: string): Locator {
     .filter({ has: page.locator('a[href="/admin/nodes/' + nodeId + '"]') })
 }
 
+/** The coverage table opens from its summary (webui.md §8.7); the choice is
+ *  the Operator's own and survives searches and refreshes. */
+async function showIdentityTable(page: Page, timeout = 15_000): Promise<void> {
+  await page.getByRole('button', { name: 'Show identity table' }).click({ timeout })
+  await expect(page.getByRole('button', { name: 'Hide identity table' })).toHaveAttribute('aria-expanded', 'true')
+}
+
 /** The registry row of one Validator. */
 function validatorRow(page: Page, validatorId: string): Locator {
   return page
@@ -295,7 +302,8 @@ async function expectListSurface(page: Page, validatorId: string): Promise<void>
   await expect(page.getByRole('heading', { level: 1, name: 'Validators' })).toBeVisible()
   // Two Nodes were not identified, and the coverage is counted per Node.
   await expect(page.getByText('2 unresolved', { exact: true })).toBeVisible()
-  await expect(page.getByText('3 Nodes · 3 evaluated · 1 identified', { exact: true })).toBeVisible()
+  await expect(page.getByText('3 Nodes · 3 evaluated · 1 identified · 2 unresolved', { exact: true })).toBeVisible()
+  await showIdentityTable(page)
 
   const resolved = identityRow(page, NODE_A_ID)
   await expect(resolved).toHaveCount(1)
@@ -540,7 +548,7 @@ test('the automatic Validator identity the Server resolved reaches every Admin s
       await page.setViewportSize({ width: 1280, height: 800 })
       await page.emulateMedia({ colorScheme: 'light' })
 
-      await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + NODE_A_ID)
+      await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + NODE_A_ID + '?section=diagnostics')
       const resolvedPanel = nodeIdentityPanel(page)
       await expect(resolvedPanel).toHaveCount(1)
       await expect(resolvedPanel).toContainText(
@@ -555,7 +563,7 @@ test('the automatic Validator identity the Server resolved reaches every Admin s
       await expect(resolvedPanel).toContainText('Active')
       await expect(resolvedPanel).not.toContainText('Never evaluated')
 
-      await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + NODE_B_ID)
+      await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + NODE_B_ID + '?section=diagnostics')
       const mismatchPanel = nodeIdentityPanel(page)
       await expect(mismatchPanel).toHaveCount(1)
       await expect(panelIdentityState(mismatchPanel)).toHaveText('Network identity mismatch')
@@ -564,7 +572,7 @@ test('the automatic Validator identity the Server resolved reaches every Admin s
       await expect(mismatchPanel).toContainText('No automatic Link to project')
       await expect(mismatchPanel).not.toContainText('Not a Validator')
 
-      await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + NODE_C_ID)
+      await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + NODE_C_ID + '?section=diagnostics')
       const missingKeyPanel = nodeIdentityPanel(page)
       await expect(missingKeyPanel).toHaveCount(1)
       await expect(panelIdentityState(missingKeyPanel)).toHaveText('P2P public key missing')
@@ -653,7 +661,8 @@ test('a contradicted identity ends its association interval but keeps the Valida
 
       await gotoAuthenticated(page, server.baseUrl, '/admin/validators')
       await expect(page.getByText('1 unresolved', { exact: true })).toBeVisible()
-      await expect(page.getByText('1 Node · 1 evaluated · 0 identified', { exact: true })).toBeVisible()
+      await expect(page.getByText('1 Node · 1 evaluated · 0 identified · 1 unresolved', { exact: true })).toBeVisible()
+      await showIdentityTable(page)
       const contradictedRow = identityRow(page, NODE_A_ID)
       await expect(contradictedRow).toHaveCount(1)
       await expect(contradictedRow.getByText('Network identity mismatch', { exact: true })).toBeVisible()
@@ -672,7 +681,7 @@ test('a contradicted identity ends its association interval but keeps the Valida
       await expect(links).not.toContainText('Open')
       await expect(links).toContainText('Automatic identity, no manual role')
 
-      await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + NODE_A_ID)
+      await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + NODE_A_ID + '?section=diagnostics')
       const panel = nodeIdentityPanel(page)
       await expect(panel).toHaveCount(1)
       await expect(panelIdentityState(panel)).toHaveText('Network identity mismatch')
@@ -755,6 +764,7 @@ test('a retired Node keeps its retained identity without claiming a Public assoc
       await loginToDisposableServer(page, server.baseUrl)
 
       await gotoAuthenticated(page, server.baseUrl, '/admin/validators')
+      await showIdentityTable(page)
       const row = identityRow(page, NODE_A_ID)
       await expect(row).toHaveCount(1)
       await expect(row).toContainText('Identified')
@@ -764,7 +774,7 @@ test('a retired Node keeps its retained identity without claiming a Public assoc
       await expect(row).not.toContainText('No Link to project')
       await expect(row.getByText('Shown', { exact: true })).toHaveCount(0)
 
-      await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + NODE_A_ID)
+      await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + NODE_A_ID + '?section=diagnostics')
       const panel = nodeIdentityPanel(page)
       await expect(panel).toHaveCount(1)
       await expect(panelIdentityState(panel)).toHaveText('Identified')
@@ -832,6 +842,8 @@ test('an already-open Validators page learns about a discovery pass', async ({ b
 
       // The Report's own invalidation refetches this page before discovery runs,
       // so the row becomes Identified only when the pass publishes its change.
+      // The table opens once the realtime refetch has a Node to show.
+      await showIdentityTable(page, 30_000)
       const row = identityRow(page, NODE_A_ID)
       await expect(row).toHaveCount(1, { timeout: 30_000 })
       await expect(row).toContainText('Identified', { timeout: 150_000 })

@@ -62,11 +62,16 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
 
     // Node Health Summary comes from the Server (health + reason), with the
     // fixed freshness vocabulary and last-good values.
-    const nodeBRow = page.getByRole('row', { name: /Node B \(private\)/ })
-    await expect(nodeBRow).toContainText('unhealthy')
-    await expect(nodeBRow).toContainText('Stale')
-    // Last-good head remains visible next to the Error state.
-    await expect(nodeBRow).toContainText('12842018')
+    // The preview keeps Health and Freshness separate and names the
+    // exception, with a link into the Node detail (webui.md §8.4.3).
+    const nodePanel = page.getByRole('heading', { level: 2, name: 'Node Health Summary' }).locator('xpath=ancestor::article[1]')
+    const nodeBItem = nodePanel.getByRole('listitem').filter({ hasText: 'Node B (private)' })
+    await expect(nodeBItem).toContainText('unhealthy')
+    await expect(nodeBItem).toContainText('Stale')
+    await expect(nodeBItem).toContainText('Identity mismatched')
+    await expect(nodeBItem.getByRole('link', { name: 'Node B (private)' })).toHaveAttribute('href', /\/admin\/nodes\//)
+    await expect(nodePanel.getByRole('listitem')).toHaveCount(5)
+    await expect(nodePanel.getByText(/^Showing 5 of \d+ Active Nodes/)).toBeVisible()
 
     // The Agent dimension stays independent of Node state.
     await expect(page.getByRole('heading', { level: 2, name: 'Agent inventory' })).toBeVisible()
@@ -108,45 +113,27 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     await expectNoHorizontalOverflow(page)
   })
 
-  test('node detail expansion survives an SSE-triggered REST refetch', async ({ page }, testInfo) => {
+  test('the Node preview follows an SSE-triggered REST refetch without a reload', async ({ page }, testInfo) => {
     // The mutation mutates shared Server state, so only one project runs it
     // and restores the seeded display name afterwards.
     test.skip(testInfo.project.name !== 'desktop-1280', 'metadata mutation runs once')
     await openOverview(page)
-
-    // Expand Node B (private)'s component details.
-    await page.getByRole('button', { name: 'Node B (private)' }).click()
-    await expect(page.locator('[data-slot="detail-row"]')).toBeVisible()
-    await expect(page.getByText('platon/1.5.1 · 0 namespaces')).toBeVisible()
+    const nodePanel = page.getByRole('heading', { level: 2, name: 'Node Health Summary' }).locator('xpath=ancestor::article[1]')
+    await expect(nodePanel.getByRole('link', { name: 'Node E (private)' })).toBeVisible({ timeout: 15_000 })
 
     try {
       // Rename Node E through the real Admin API: the Server publishes an
       // Admin `node` invalidation, and the shell refetches the
       // authoritative REST resources without a reload.
       await renameNode(page, NODE_E, 'Node E (refetched)')
-      await expect(
-        page.getByRole('row', { name: /Node E \(refetched\)/ }),
-        { timeout: 15_000 },
-      ).toBeVisible()
-
-      // Expansion and URL state survive the authorized refetch.
-      await expect(page.locator('[data-slot="detail-row"]')).toBeVisible()
+      await expect(nodePanel.getByRole('link', { name: 'Node E (refetched)' })).toBeVisible({ timeout: 15_000 })
       await expect(page).toHaveURL(/\/admin$/)
-
-      // Escape collapses the detail row; focus stays on the toggle.
-      await page.getByRole('button', { name: 'Node B (private)' }).focus()
-      await page.keyboard.press('Escape')
-      await expect(page.locator('[data-slot="detail-row"]')).toHaveCount(0)
-      await expect(page.getByRole('button', { name: 'Node B (private)' })).toBeFocused()
       await expectNoHorizontalOverflow(page)
     } finally {
       // Restore Node E's seeded display name so repeated runs and parallel
       // projects keep the seeded Server state.
       await renameNode(page, NODE_E, 'Node E (private)')
-      await expect(
-        page.getByRole('row', { name: /Node E \(private\)/ }),
-        { timeout: 15_000 },
-      ).toBeVisible()
+      await expect(nodePanel.getByRole('link', { name: 'Node E (private)' })).toBeVisible({ timeout: 15_000 })
     }
   })
 
@@ -311,11 +298,12 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     // The workbench is a single column, so every read-only region must appear
     // in document order and never overlap the one before it: removing the
     // decorative hover affordance must not collapse the reading hierarchy.
+    const nodePreview = page.getByRole('heading', { level: 2, name: 'Node Health Summary' }).locator('xpath=ancestor::article[1]')
+    const agentPreview = page.getByRole('heading', { level: 2, name: 'Agent inventory' }).locator('xpath=ancestor::article[1]')
     const regions = [
       page.getByRole('heading', { level: 2, name: 'Attention queue' }).locator('xpath=ancestor::article[1]'),
       page.getByRole('navigation', { name: 'Overview summaries' }),
-      page.getByRole('heading', { level: 2, name: 'Node Health Summary' }).locator('xpath=ancestor::article[1]'),
-      page.getByRole('heading', { level: 2, name: 'Agent inventory' }).locator('xpath=ancestor::article[1]'),
+      page.locator('[data-slot="overview-previews"]'),
     ]
     const boxes: { top: number; bottom: number }[] = []
     for (const region of regions) {
@@ -325,6 +313,17 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     }
     for (let index = 1; index < boxes.length; index += 1) {
       expect(boxes[index].top, `region ${index} overlaps the previous region`).toBeGreaterThanOrEqual(boxes[index - 1].bottom - 1)
+    }
+    // The two previews sit side by side when wide enough, otherwise stack;
+    // either way they never overlap.
+    const node = (await nodePreview.boundingBox())!
+    const agent = (await agentPreview.boundingBox())!
+    // §8.4.7: side by side on the desktop projects, stacked below them.
+    if ((page.viewportSize()?.width ?? 0) >= 1280) {
+      expect(Math.abs(node.y - agent.y)).toBeLessThan(1)
+      expect(agent.x).toBeGreaterThanOrEqual(node.x + node.width - 1)
+    } else {
+      expect(agent.y).toBeGreaterThanOrEqual(node.y + node.height - 1)
     }
     await expect(page.locator('[data-slot="overview-panel"]')).toHaveCount(3)
     await expectNoHorizontalOverflow(page)

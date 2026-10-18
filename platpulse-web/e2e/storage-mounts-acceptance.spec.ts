@@ -226,7 +226,7 @@ test.describe('Storage by mount path (issue #216)', () => {
       page.on('request', (request) => requests.push(request.url()))
       try {
         await loginToDisposableServer(page, server.baseUrl)
-        await gotoAuthenticated(page, server.baseUrl, '/admin/agents/' + agent.agentId)
+        await gotoAuthenticated(page, server.baseUrl, '/admin/agents/' + agent.agentId + '?section=history')
 
         // 06: the mount list sits with the Host history it names paths for.
         await expect(
@@ -341,7 +341,7 @@ test.describe('Storage by mount path (issue #216)', () => {
       const page = await context.newPage()
       try {
         await loginToDisposableServer(page, server.baseUrl)
-        await gotoAuthenticated(page, server.baseUrl, '/admin/agents/' + agent.agentId)
+        await gotoAuthenticated(page, server.baseUrl, '/admin/agents/' + agent.agentId + '?section=history')
         const rows = mountRows(page)
         await expect(rows).toHaveCount(1)
         await expect(rows.nth(0)).toHaveAttribute('data-mount-state', 'unknown')
@@ -409,7 +409,7 @@ test.describe('Storage by mount path (issue #216)', () => {
       const page = await context.newPage()
       try {
         await loginToDisposableServer(page, server.baseUrl)
-        await gotoAuthenticated(page, server.baseUrl, '/admin/agents/' + agent.agentId)
+        await gotoAuthenticated(page, server.baseUrl, '/admin/agents/' + agent.agentId + '?section=history')
         const rows = mountRows(page)
         await expect(rows).toHaveCount(256)
         await expect(rows.nth(0)).toHaveAttribute('data-mount-path', '/new-000')
@@ -466,7 +466,7 @@ test.describe('Storage by mount path (issue #216)', () => {
           for (const colorScheme of ['light', 'dark'] as const) {
             await page.setViewportSize(viewport)
             await page.emulateMedia({ colorScheme })
-            await gotoAuthenticated(page, server.baseUrl, '/admin/agents/' + agent.agentId)
+            await gotoAuthenticated(page, server.baseUrl, '/admin/agents/' + agent.agentId + '?section=history')
             await expectResolvedTheme(page, colorScheme)
 
             await expect(

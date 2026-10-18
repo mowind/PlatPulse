@@ -330,7 +330,7 @@ test.describe('recorded state history', () => {
           for (const colorScheme of ['light', 'dark'] as const) {
             await page.setViewportSize(viewport)
             await page.emulateMedia({ colorScheme })
-            await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId)
+            await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId + '?section=history')
             await expectResolvedTheme(page, colorScheme)
             const panel = statePanel(page)
             await expectRecordedSyncStates(panel)
@@ -444,7 +444,7 @@ test.describe('recorded state history', () => {
       try {
         await loginToDisposableServer(page, server.baseUrl)
         await page.setViewportSize({ width: 1280, height: 800 })
-        await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId)
+        await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId + '?section=history')
         const panel = statePanel(page)
         // The pause is disclosed as a pause, with the observations it swallowed,
         // and never as a state the Node held across the stretch.
@@ -539,7 +539,7 @@ test.describe('recorded state history', () => {
       try {
         await loginToDisposableServer(page, server.baseUrl)
         await page.setViewportSize({ width: 1280, height: 800 })
-        await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId)
+        await gotoAuthenticated(page, server.baseUrl, '/admin/nodes/' + nodeId + '?section=history')
         const panel = statePanel(page)
         const samples = panel.locator('[data-slot="state-history-samples"]')
         await expect(samples.locator('[data-slot="state-history-entry"]')).toHaveCount(2)

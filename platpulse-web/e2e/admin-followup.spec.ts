@@ -234,13 +234,17 @@ test.describe('Admin follow-up: long identifiers and Sessions', () => {
     await page.goto('/admin/networks')
     const row = page.locator('[data-slot="network-table"] tbody tr').first()
     await expect(row).toBeVisible()
-    const cell = row.locator('td[data-label="Genesis"]')
+    // The tuple is one Details step away (webui.md §8.7).
+    await row.getByRole('button', { name: /^Details for / }).click()
+    const cell = page.locator('[data-slot="network-table"] tr[data-slot="detail-row"] td')
     await expect(cell).toContainText('0x9f3c9f…9f3c')
     await exerciseIdentifier(page, testInfo, cell, 'Genesis hash', GENESIS, 'network-table')
   })
 
   test('Validators Observed P2P key opens, copies, and keeps a missing key Unknown', async ({ page }, testInfo) => {
     await page.goto('/admin/validators')
+    // The identity coverage table opens from its summary (webui.md §8.7).
+    await page.getByRole('button', { name: 'Show identity table' }).click()
     const table = page.locator('[data-slot="validator-identity-table"]')
     const observed = table
       .locator('tbody tr')

@@ -36,25 +36,18 @@ async function openAgents(page: Parameters<typeof loginAs>[0]) {
 }
 
 test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
-  test('shows the exact six-column priority summary and accessible identity controls', async ({ page }, testInfo) => {
+  test('shows the exact five-column inventory summary and accessible identity controls', async ({ page }, testInfo) => {
     await openAgents(page)
 
     const row = page.locator('tr').filter({ has: page.locator('a[href="/admin/agents/' + AGENT_ID + '"]') })
     await expect(row).toBeVisible({ timeout: 15_000 })
     const headers = await page.locator('table[data-slot="agent-table"] thead th').allTextContents()
-    expect(headers).toEqual([
-      'Agent',
-      'Reporting status',
-      'Last received',
-      'Node Inventory',
-      'Credentials',
-      'Diagnostics',
-    ])
+    expect(headers).toEqual(['Agent', 'Reporting', 'Last received', 'Nodes', 'Diagnostics'])
+    expect(headers).not.toContain('Credentials')
     expect(headers).not.toContain('Epoch')
-    expect(headers).not.toContain('Boot / shutdown')
     expect(headers).not.toContain('View')
 
-    // Six real cells per row in header order, and at table widths every cell
+    // Five real cells per row in header order, and at table widths every cell
     // box must align with its column header (regression guard for the flex
     // <td> layout collapse).
     const structure = await row.evaluate((element) => {
@@ -71,15 +64,8 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
         headers: [...table.querySelectorAll('thead th')].map(box),
       }
     })
-    expect(structure.cellCount).toBe(6)
-    expect(structure.labels).toEqual([
-      'Agent',
-      'Reporting status',
-      'Last received',
-      'Node Inventory',
-      'Credentials',
-      'Diagnostics',
-    ])
+    expect(structure.cellCount).toBe(5)
+    expect(structure.labels).toEqual(['Agent', 'Reporting', 'Last received', 'Nodes', 'Diagnostics'])
     if ((page.viewportSize()?.width ?? 1280) >= 768) {
       for (let index = 0; index < structure.cells.length; index += 1) {
         expect(Math.abs(structure.cells[index].left - structure.headers[index].left)).toBeLessThanOrEqual(1)
@@ -88,58 +74,58 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
     }
 
     await expect(row).toContainText('Current', { timeout: 15_000 })
-    await expect(row).toContainText('Server liveness')
+    // Dimension sources are explained once in the header, not per row.
+    await expect(row).not.toContainText(/Server liveness|Server receipt time|Server validity/)
     const receipt = row.locator('td[data-label="Last received"]')
-    await expect(receipt).toContainText('Server receipt time')
     await expect(receipt).not.toContainText(/Never received|Unknown/)
-    await expect(row).toContainText(/6 retained Nodes?/)
+    await expect(row.locator('td[data-label="Nodes"]')).toHaveText(/^\d+ retained$/)
     await expect(row).not.toContainText(/Active Nodes|healthy Nodes/)
-    // Shared Server: assert the credential summary's shape and every count rather than
-    // assuming the seeded credential is still active.
-    await expect(row).toContainText(/\d+ active · \d+ revoked · \d+ inactive \(not revoked\) · \d+ total/)
-    await expect(row).toContainText('Recorded gap intervals')
-    await expect(row).toContainText('Accumulated recorded security events')
-    await expect(row).toContainText('Recorded evidence')
-    await expect(row).toContainText('0 queued')
-    await expect(row).toContainText('delivery idle')
-    await expect(row).toContainText('store not fatal')
-    await expect(row).toContainText('delivery error recorded')
-    await expect(row).toContainText('dropped sequence range recorded')
-    // Long evidence stays behind the disclosure, never in the summary cell.
+    // Current attention and recorded history stay distinct summaries.
+    const diagnosticCell = row.locator('td[data-label="Diagnostics"]')
+    await expect(diagnosticCell.locator('[data-group="recorded"]')).toContainText('Recorded ·')
+    await expect(row).not.toContainText(/\d+ active · \d+ revoked/)
+    // Long evidence stays behind the details, never in the summary cell.
     await expect(row).not.toContainText('Dropped sequence range')
     await expect(row).not.toContainText('Host snapshot')
 
-    const diagnosticsToggle = row.getByRole('button', { name: /diagnostics/ })
+    const diagnosticsToggle = row.locator('button[aria-controls^="agent-diagnostics-"]')
     await diagnosticsToggle.click()
     await expect(diagnosticsToggle).toHaveAttribute('aria-expanded', 'true')
     const diagnosticsRow = row.locator('xpath=following-sibling::tr[1]')
     await expect(diagnosticsRow).toHaveAttribute('data-slot', 'detail-row')
-    await expect(diagnosticsRow.locator('td')).toHaveAttribute('colspan', '6')
+    await expect(diagnosticsRow.locator('td')).toHaveAttribute('colspan', '5')
+    // Shared Server: assert the credential summary's shape rather than assuming
+    // the seeded credential is still active.
+    await expect(diagnosticsRow).toContainText(/\d+ active · \d+ revoked · \d+ inactive \(not revoked\) · \d+ total/)
+    await expect(diagnosticsRow).toContainText(/\d+ retained · \d+ Active · \d+ Retired/)
+    await expect(diagnosticsRow).toContainText('Recorded gap intervals')
+    await expect(diagnosticsRow).toContainText('Accumulated recorded security events')
     await expect(diagnosticsRow).toContainText('Dropped sequence range')
     await expect(diagnosticsRow).toContainText('#40–#42 recorded')
     await expect(diagnosticsRow).toContainText('Delivery error')
     await expect(diagnosticsRow).toContainText('Host snapshot')
     await expect(diagnosticsRow).not.toContainText('delivery timeout retained after bounded retry')
-    await expect(row.locator('> *')).toHaveCount(6)
+    await expect(row.locator('> *')).toHaveCount(5)
+    await diagnosticsToggle.focus()
     await page.keyboard.press('Escape')
     await expect(diagnosticsToggle).toHaveAttribute('aria-expanded', 'false')
     await expect(page.locator('table[data-slot="agent-table"] tr[data-slot="detail-row"]')).toHaveCount(0)
     if ((page.viewportSize()?.width ?? 1280) < 768) {
-      const diagnosticCell = row.locator('td[data-label="Diagnostics"]')
       await expect(diagnosticCell).toHaveCSS('flex-direction', 'column')
-      await expect(diagnosticCell.getByRole('button', { name: 'Show diagnostics' })).toBeVisible()
+      await expect(diagnosticsToggle).toBeVisible()
     }
 
     const noHostRow = page.locator('tr').filter({ has: page.locator('a[href="/admin/agents/' + NO_HOST_AGENT_ID + '"]') })
     await expect(noHostRow).toBeVisible({ timeout: 15_000 })
-    await expect(noHostRow).toContainText('No Host observation yet')
-    await noHostRow.getByRole('button', { name: 'Show diagnostics' }).click()
+    await expect(noHostRow).toContainText('Host not observed yet')
+    const noHostToggle = noHostRow.locator('button[aria-controls^="agent-diagnostics-"]')
+    await noHostToggle.click()
     const noHostDetail = noHostRow.locator('xpath=following-sibling::tr[1]')
     await expect(noHostDetail).toContainText('Host observation')
     await expect(noHostDetail).toContainText('Not observed yet')
     await expect(noHostDetail).toContainText('No Host snapshot')
     await expect(noHostDetail).not.toContainText('Spool observation')
-    await noHostRow.getByRole('button', { name: 'Hide diagnostics' }).click()
+    await noHostToggle.click()
 
     if (page.viewportSize()?.width === 768) {
       const headersReadable = await page.locator('table[data-slot="agent-table"] thead th').evaluateAll((cells) =>
@@ -164,14 +150,7 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
           .sort((left, right) => left.top - right.top)
           .map((cell) => cell.label),
       )
-      expect(cardOrder).toEqual([
-        'Agent',
-        'Reporting status',
-        'Last received',
-        'Diagnostics',
-        'Node Inventory',
-        'Credentials',
-      ])
+      expect(cardOrder).toEqual(['Agent', 'Reporting', 'Last received', 'Nodes', 'Diagnostics'])
     }
 
     const agentLink = row.locator('a[href="/admin/agents/' + AGENT_ID + '"]')
@@ -224,7 +203,7 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
       await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 })
     }
     await page.setViewportSize({ width: 2560, height: 800 })
-    await expect(page.locator('table[data-slot="agent-table"] thead th')).toHaveCount(6)
+    await expect(page.locator('table[data-slot="agent-table"] thead th')).toHaveCount(5)
     await expectNoHorizontalOverflow(page)
   })
 })
@@ -235,47 +214,40 @@ test.describe('Agent detail (PAGE-ADMIN-AGENT-DETAIL)', () => {
     await page.locator('a[href="/admin/agents/' + AGENT_ID + '"]').click()
     await expect(page.getByRole('heading', { level: 1, name: /Agent 0195f2a1/ })).toBeVisible()
 
-    // Separate dimension panels (data-dependent; the Server is shared by
-    // all parallel projects, so allow for load).
-    await expect(page.getByRole('heading', { level: 2, name: 'Overview' })).toBeVisible({
-      timeout: 15_000,
-    })
-    await expect(page.getByRole('heading', { level: 2, name: 'Runtime and reporting' })).toBeVisible()
-    await expect(page.getByRole('heading', { level: 2, name: 'Credentials' })).toBeVisible()
-    await expect(page.getByRole('heading', { level: 2, name: 'Diagnostics' })).toBeVisible()
-    await expect(page.getByRole('heading', { level: 2, name: 'Audit' })).toBeVisible()
-    for (const heading of ['Identity', 'Liveness', 'Boot and report state', 'Inventory', 'Credential records', 'Host and component evidence', 'Audit trail']) {
-      await expect(page.getByRole('heading', { level: 3, name: heading })).toBeVisible()
-    }
-
-    await expect(page.getByText(AGENT_ID, { exact: true }).first()).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Copy Agent ID' })).toBeVisible()
-    // The summary repeats these key facts above the category panels.
-    await expect(page.getByText('Agent Epoch').first()).toBeVisible()
-    await expect(page.getByText('1', { exact: true }).first()).toBeVisible()
-    await expect(page.getByText('Report sequence', { exact: true }).first()).toBeVisible()
-    await expect(page.getByText('sequence #42')).toBeVisible()
-    await expect(page.getByText('Full active boot ID', { exact: true })).toBeVisible()
-    await expect(page.getByText('Boot status', { exact: true }).first()).toBeVisible()
-    await expect(page.getByText('Shutdown state')).toBeVisible()
-    await expect(page.getByText('running', { exact: true })).toBeVisible()
-    await expect(page.getByText(CREDENTIAL_ID, { exact: true })).toBeVisible()
-    // The seeded credential may already have been revoked by an earlier spec in the
-    // shared Server; the dimension must render its Server-owned state either way.
-    await expect(
-      page.getByRole('button', { name: 'Revoke' }).or(page.getByText(/revoked/i).first()),
-    ).toBeVisible()
+    // Header dimensions, then four sections (webui.md §8.7). Data-dependent;
+    // the Server is shared by all parallel projects, so allow for load.
+    await expect(page.getByLabel('Current Agent dimensions')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('heading', { level: 2, name: 'Reporting and runtime' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 2, name: 'Inventory' })).toBeVisible()
+    await expect(page.getByText('Report sequence', { exact: true })).toBeVisible()
+    await expect(page.getByText('#42', { exact: true })).toBeVisible()
     // Inventory stays per-Node, never merged at Agent level.
     await expect(page.getByText('Node A')).toBeVisible()
     await expect(page.getByText('Node D')).toBeVisible()
-    await expect(page.getByText('Dropped sequence range')).toBeVisible()
-    await expect(page.getByText('Last delivery error', { exact: true })).toBeVisible()
-    await expect(page.getByText('delivery timeout retained after bounded retry', { exact: true })).toBeVisible()
-    // Host evidence lives in the Diagnostics region. The page also carries the shared Host
-    // metric history panel, whose selector, unit description and empty state repeat the same
-    // series names, so a page-wide text match resolved to four elements (#229). Scope every
-    // locator to the region and pin the exact definition term instead of page-wide bare text.
-    const diagnostics = page.getByRole('region', { name: 'Diagnostics' })
+    // Diagnostics, history and management are one section away, not stacked.
+    await expect(page.getByText('Full active boot ID', { exact: true })).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: 'Audit trail' })).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: 'Danger zone' })).toHaveCount(0)
+    await expect(page.getByText(/^0[1-8]$/)).toHaveCount(0)
+
+    await page.getByRole('button', { name: /Show full\s*Agent ID/ }).click()
+    await expect(page.getByText(AGENT_ID, { exact: true }).first()).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Copy Agent ID' })).toBeVisible()
+
+    await page.getByRole('tab', { name: /^Diagnostics/ }).click()
+    const diagnostics = page.locator('[data-slot="admin-detail-section"][data-section="diagnostics"]')
+    for (const heading of ['Identity', 'Boot and report state', 'Host and component evidence']) {
+      await expect(diagnostics.getByRole('heading', { level: 2, name: heading })).toBeVisible()
+    }
+    await expect(diagnostics.getByText('Agent Epoch').first()).toBeVisible()
+    await expect(diagnostics.getByText('sequence #42')).toBeVisible()
+    await expect(diagnostics.getByText('Full active boot ID', { exact: true })).toBeVisible()
+    await expect(diagnostics.getByText('Shutdown state')).toBeVisible()
+    await expect(diagnostics.getByText('running', { exact: true })).toBeVisible()
+    await expect(diagnostics.getByText('Dropped sequence range')).toBeVisible()
+    await expect(diagnostics.getByText('Last delivery error', { exact: true })).toBeVisible()
+    await expect(diagnostics.getByText('delivery timeout retained after bounded retry', { exact: true })).toBeVisible()
     await expect(
       diagnostics.getByText(/Recorded evidence from the latest Host observation/),
     ).toBeVisible()
@@ -286,7 +258,21 @@ test.describe('Agent detail (PAGE-ADMIN-AGENT-DETAIL)', () => {
       await expect(evidence).toBeVisible()
       await expect(evidence).toHaveText(/\S/)
     }
-    await expect(page.getByRole('heading', { level: 3, name: 'Audit trail' })).toBeVisible()
+
+    await page.getByRole('tab', { name: 'History' }).click()
+    await expect(page.getByRole('heading', { level: 2, name: 'Audit trail' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 2, name: 'Host resource history' })).toBeVisible()
+
+    await page.getByRole('tab', { name: /^Manage/ }).click()
+    await expect(page.getByRole('heading', { level: 2, name: 'Credential records' })).toBeVisible()
+    await expect(page.getByText(CREDENTIAL_ID, { exact: true })).toBeVisible()
+    // The seeded credential may already have been revoked by an earlier spec in the
+    // shared Server; the dimension must render its Server-owned state either way.
+    const manage = page.locator('[data-slot="admin-detail-section"][data-section="manage"]')
+    await expect(
+      manage.getByRole('button', { name: 'Revoke' }).or(manage.getByText(/revoked/i)).first(),
+    ).toBeVisible()
+    await expect(page.getByRole('heading', { level: 2, name: 'Danger zone' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
   })
 
@@ -315,6 +301,7 @@ test.describe.serial('Agent lifecycle mutations (one run on desktop-1280)', () =
     await expect(
       page.getByRole('heading', { level: 1, name: /Agent 0195f2a1/ }),
     ).toBeVisible()
+    await page.getByRole('tab', { name: /^Manage/ }).click()
 
     // The seeded credential is revoked through an explicit confirmation.
     const item = page.locator('[data-slot="credential-item"]', { hasText: CREDENTIAL_ID })
@@ -334,6 +321,7 @@ test.describe.serial('Agent lifecycle mutations (one run on desktop-1280)', () =
     await expect(
       page.getByRole('heading', { level: 1, name: /Agent 0195f2a1/ }),
     ).toBeVisible()
+    await page.getByRole('tab', { name: /^Manage/ }).click()
 
     try {
       await page.getByLabel('Display name').fill('E2E Host A Agent')
@@ -347,6 +335,7 @@ test.describe.serial('Agent lifecycle mutations (one run on desktop-1280)', () =
       await expect(page.getByRole('heading', { level: 1, name: /E2E Host A Agent/ })).toBeVisible({
         timeout: 15_000,
       })
+      await page.getByRole('button', { name: /Show full\s*Agent ID/ }).click()
       await expect(page.getByText(AGENT_ID, { exact: true }).first()).toBeVisible()
       await expect(page.getByRole('button', { name: 'Copy Agent ID' })).toBeVisible()
     } finally {

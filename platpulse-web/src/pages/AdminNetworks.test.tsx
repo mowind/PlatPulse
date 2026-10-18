@@ -127,7 +127,7 @@ afterEach(() => {
 })
 
 describe('PAGE-ADMIN-NETWORKS (Network Registry)', () => {
-  it('lists the complete validated identity tuple with Node counts and typed mismatch outcomes', async () => {
+  it('lists Network, chain ID, Node counts and typed mismatch outcomes, and opens the complete tuple per row', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/networks': () => jsonResponse([NETWORK], 200),
@@ -135,12 +135,25 @@ describe('PAGE-ADMIN-NETWORKS (Network Registry)', () => {
     renderAt('/admin/networks')
 
     await screen.findByRole('heading', { level: 1, name: 'Networks' })
+    const table = await screen.findByRole('table')
+    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+      'Network', 'Chain ID', 'Nodes', 'Mismatches', 'Details',
+    ])
     const row = await screen.findByRole('row', { name: /PlatON E2E Network/ })
     expect(row.textContent).toContain('platon-e2e')
     expect(row.textContent).toContain('210425')
-    expect(row.textContent).toContain('lat')
     expect(row.textContent).toContain('1 active · 0 retired')
     expect(row.textContent).toContain('Mismatched')
+    // Configuration fields wait behind the row's details.
+    expect(within(row).queryByRole('button', { name: /Show full\s*Genesis hash/ })).toBeNull()
+    const toggle = within(row).getByRole('button', { name: 'Details for PlatON E2E Network' })
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    const region = document.getElementById(toggle.getAttribute('aria-controls') ?? '') as HTMLElement
+    expect(within(region).getByText('P2P network ID')).toBeTruthy()
+    expect(within(region).getByText('Address HRP')).toBeTruthy()
+    expect(within(region).getByText('lat')).toBeTruthy()
+    expect(within(region).getByRole('button', { name: /Show full\s*Genesis hash/ })).toBeTruthy()
   })
 
   it('does not present zero reported mismatches as Current or verified identity', async () => {
@@ -162,8 +175,10 @@ describe('PAGE-ADMIN-NETWORKS (Network Registry)', () => {
     })
     renderAt('/admin/networks')
 
-    const row = await screen.findByRole('row', { name: /PlatON E2E Network/ })
-    // Short by default: the complete hash is not laid out in the list.
+    const summary = await screen.findByRole('row', { name: /PlatON E2E Network/ })
+    fireEvent.click(within(summary).getByRole('button', { name: 'Details for PlatON E2E Network' }))
+    const row = screen.getByRole('row', { name: /Registered identity tuple/ })
+    // Short by default: the complete hash is not laid out in the details.
     expect(within(row).getByText('0x111111…1111')).toBeTruthy()
     expect(within(row).queryByText(NETWORK.genesis_hash, { exact: true })).toBeNull()
 

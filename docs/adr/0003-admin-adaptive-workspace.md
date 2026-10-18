@@ -28,6 +28,13 @@ scrolling and data-stack transformations. Do not hide overflow to obtain alignme
 Overview keeps its module order, query isolation, server-owned status/times,
 summary limits, diagnostics disclosure and keyboard/focus behavior.
 
+Amendment (Admin information layering, webui.md §8.7): the Overview no longer
+carries the in-place Node diagnostics disclosure or the wide Agent table; it
+keeps module order, query isolation, Server-owned status/times, summary limits
+(now five per preview, with counts of the exceptions not shown) and
+keyboard/focus behavior. Per-component diagnostics moved to the Node Detail
+`Diagnostics` section (Component diagnostics), linked from the Nodes row details.
+
 ## Verification
 
 Replace the shell's old ultrawide cap/centering assertion with remaining-width

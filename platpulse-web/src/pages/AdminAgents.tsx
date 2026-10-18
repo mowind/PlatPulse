@@ -1,5 +1,5 @@
 import { ChevronUp } from 'lucide-react'
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { Link, useParams } from 'react-router'
 import {
   AdminApiError,
@@ -30,10 +30,33 @@ import { StorageMountsPanel } from './StorageMountsPanel'
 import {
   formatBytesUnknown,
   formatBytesPerSecond,
-  formatIdentifier,
   formatPercent,
 } from '../formatBytes'
 import { livenessTone, receiptTimeText } from '../agentDiagnostics'
+import {
+  agentEvidence,
+  diagnosticFindings,
+  diagnosticRangeText,
+  hasSpoolObservation,
+  type EvidenceItem,
+  type EvidenceTone,
+} from '../agentEvidence'
+import { InfoHint } from '../components/InfoHint'
+import {
+  AdminDetailSections,
+  DETAIL_LINK,
+  DetailBackLink,
+  DetailDimension,
+  DetailDimensions,
+  DetailDraftProvider,
+  DetailNotices,
+  draftMarker,
+  useDetailDrafts,
+  useDetailSection,
+  useReportDraft,
+  type DetailNotice,
+  type DetailSection,
+} from '../components/AdminDetailSections'
 import {
   StatusBadge,
   formatObservedAt,
@@ -44,7 +67,6 @@ import { CardX } from '../components/ui/card-x'
 import { Checkbox, Input, Select, Textarea } from '../components/ui/input'
 import { Empty } from '../components/ui/empty'
 import { cn } from '../lib/utils'
-import { SURFACE_CARD_STATIC } from '../lib/surface'
 import type {
   AdminAgentRemovalImpact,
   AgentAuditItem,
@@ -113,50 +135,6 @@ function credentialSummaryText(credentials: AgentCredentialSummary[]): string {
   return String(active) + ' active · ' + revoked + ' revoked · ' + inactive + ' inactive (not revoked) · ' + credentials.length + ' total'
 }
 
-/** Emerald dimension label: a 12px muted caption, colourless. */
-function DimensionLabel({ children }: { children: ReactNode }) {
-  return (
-    <span className="text-xs text-muted-foreground">
-      {children}
-    </span>
-  )
-}
-
-function AgentIdCopyControl({ agentId }: { agentId: string }) {
-  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
-
-  async function copyAgentId() {
-    if (!navigator.clipboard?.writeText) {
-      setCopyState('failed')
-      return
-    }
-    try {
-      await navigator.clipboard.writeText(agentId)
-      setCopyState('copied')
-    } catch {
-      setCopyState('failed')
-    }
-  }
-
-  return (
-    <span className="inline-flex flex-wrap items-center gap-2">
-      <Button variant="link" size="xs" className="px-0 text-xs" onClick={() => void copyAgentId()}>
-        Copy Agent ID
-      </Button>
-      {copyState === 'copied' && (
-        <span className="text-xs text-success" role="status">
-          Copied to clipboard.
-        </span>
-      )}
-      {copyState === 'failed' && (
-        <span className="text-xs text-destructive" role="status">
-          Copy unavailable; select the full Agent ID shown here.
-        </span>
-      )}
-    </span>
-  )
-}
-
 function AgentIdentityAccess({
   agentId,
   displayName,
@@ -198,111 +176,6 @@ function AgentIdentityAccess({
   )
 }
 
-type DiagnosticFinding = {
-  key: string
-  label: string
-  value: string
-}
-
-function hasSpoolObservation(spool: HostDiagnostic): boolean {
-  return [
-    spool.spool_capacity_bytes,
-    spool.spool_dropped_height_from,
-    spool.spool_dropped_height_to,
-    spool.spool_dropped_sequence_from,
-    spool.spool_dropped_sequence_to,
-    spool.spool_dropped_time_from,
-    spool.spool_dropped_time_to,
-    spool.spool_in_flight,
-    spool.spool_last_delivery_at,
-    spool.spool_last_delivery_error,
-    spool.spool_max_age_seconds,
-    spool.spool_oldest_queued_age_ms,
-    spool.spool_pending_history_gaps,
-    spool.spool_queued_bytes,
-    spool.spool_queued_reports,
-    spool.spool_report_too_large,
-    spool.spool_store_error,
-    spool.spool_store_fatal,
-  ].some((value) => value != null)
-}
-
-function diagnosticFindings(host: HostDiagnostic | null | undefined): DiagnosticFinding[] {
-  if (!host) {
-    return [{ key: 'host-not-observed', label: 'Host observation', value: 'Not observed yet' }]
-  }
-
-  const findings: DiagnosticFinding[] = []
-  if (!hasSpoolObservation(host)) {
-    findings.push({ key: 'spool-not-observed', label: 'Spool observation', value: 'Not observed yet' })
-  } else {
-    findings.push({ key: 'spool-observed', label: 'Spool observation', value: 'Observed' })
-    if (host.spool_queued_reports != null) {
-      findings.push({ key: 'queued-reports', label: 'Queued reports', value: String(host.spool_queued_reports) })
-    }
-    if (host.spool_queued_bytes != null && host.spool_queued_reports == null) {
-      findings.push({ key: 'queued-bytes', label: 'Queued bytes', value: formatBytesUnknown(host.spool_queued_bytes) })
-    }
-    if (host.spool_in_flight != null) {
-      findings.push({ key: 'delivery-state', label: 'Delivery state', value: host.spool_in_flight ? 'In flight' : 'Idle' })
-    }
-    if (host.spool_store_fatal != null) {
-      findings.push({ key: 'store-fatal', label: 'Store fatal', value: host.spool_store_fatal ? 'Yes' : 'No' })
-    }
-    if (host.spool_dropped_sequence_from != null || host.spool_dropped_sequence_to != null) {
-      findings.push({
-        key: 'dropped-sequence',
-        label: 'Dropped sequence range',
-        value: diagnosticSequenceRangeText(host.spool_dropped_sequence_from, host.spool_dropped_sequence_to) + ' recorded',
-      })
-    }
-    if (host.spool_dropped_height_from != null || host.spool_dropped_height_to != null) {
-      findings.push({
-        key: 'dropped-height',
-        label: 'Dropped height range',
-        value: diagnosticRangeText(host.spool_dropped_height_from, host.spool_dropped_height_to) + ' recorded',
-      })
-    }
-    if (host.spool_dropped_time_from != null || host.spool_dropped_time_to != null) {
-      findings.push({
-        key: 'dropped-time',
-        label: 'Dropped time range',
-        value: diagnosticRangeText(host.spool_dropped_time_from, host.spool_dropped_time_to, formatObservedAt) + ' recorded',
-      })
-    }
-    if (host.spool_last_delivery_at) {
-      findings.push({ key: 'last-delivery', label: 'Last delivery', value: formatObservedAt(host.spool_last_delivery_at) })
-    }
-    if (host.spool_last_delivery_error) {
-      findings.push({ key: 'delivery-error', label: 'Delivery error', value: 'Recorded' })
-    }
-    if (host.spool_store_error) {
-      findings.push({ key: 'store-error', label: 'Store error', value: 'Recorded' })
-    }
-    if (host.spool_report_too_large != null) {
-      findings.push({
-        key: 'report-size',
-        label: 'Report size',
-        value: host.spool_report_too_large ? 'Too large recorded' : 'Within limit recorded',
-      })
-    }
-    if (host.spool_pending_history_gaps != null) {
-      findings.push({ key: 'pending-history-gaps', label: 'Pending history gaps', value: String(host.spool_pending_history_gaps) })
-    }
-  }
-
-  host.components.forEach((component) => {
-    if (component.state !== 'ok' || component.error_code || component.error_message) {
-      findings.push({
-        key: 'component-' + component.component,
-        label: 'Host component',
-        value: component.component + ': ' + component.state,
-      })
-    }
-  })
-  return findings
-}
-
 function spoolDiagnosticText(spool: HostDiagnostic | null | undefined): string {
   if (!spool) return 'No host observation yet'
   if (!hasSpoolObservation(spool)) return 'Spool not observed yet'
@@ -326,20 +199,6 @@ function spoolDiagnosticText(spool: HostDiagnostic | null | undefined): string {
   if (spool.spool_report_too_large != null) parts.push('report size: ' + (spool.spool_report_too_large ? 'too large' : 'within limit'))
   if (spool.spool_pending_history_gaps != null) parts.push('pending history gaps: ' + spool.spool_pending_history_gaps)
   return parts.length > 0 ? parts.join(' · ') : 'Spool observed; no additional evidence'
-}
-
-function diagnosticRangeText<T extends number | string>(
-  from: T | null | undefined,
-  to: T | null | undefined,
-  format: (value: T) => string = String,
-): string {
-  if (from == null && to == null) return 'Unknown'
-  return (from == null ? 'Unknown' : format(from)) + '–' + (to == null ? 'Unknown' : format(to))
-}
-
-function diagnosticSequenceRangeText(from: number | null | undefined, to: number | null | undefined): string {
-  if (from == null && to == null) return 'Unknown'
-  return '#' + (from == null ? 'Unknown' : from) + '–#' + (to == null ? 'Unknown' : to)
 }
 
 function diagnosticMessageText(value: string | null | undefined): string {
@@ -424,17 +283,44 @@ export default function AdminAgentsList() {
           <div className="overflow-x-auto max-md:px-3 max-md:pt-3">
             <table data-stack data-slot="agent-table" className="w-full text-sm">
               <caption className="sr-only">
-                Agent, Server reporting status, receipt time, retained Node inventory, credential validity,
-                and diagnostic evidence
+                Agent, Server reporting status, Server receipt time, retained Node count, and
+                current attention apart from recorded diagnostic evidence
               </caption>
               <thead>
                 <tr className="border-b border-border/60">
                   <th scope="col" className={ADMIN_TH}>Agent</th>
-                  <th scope="col" className={ADMIN_TH}>Reporting status</th>
-                  <th scope="col" className={ADMIN_TH}>Last received</th>
-                  <th scope="col" className={ADMIN_TH}>Node Inventory</th>
-                  <th scope="col" className={ADMIN_TH}>Credentials</th>
-                  <th scope="col" className={ADMIN_TH}>Diagnostics</th>
+                  <th scope="col" className={ADMIN_TH}>
+                    <span className="inline-flex items-center gap-1">
+                      Reporting
+                      <InfoHint label="About Reporting">
+                        <p>Server liveness from accepted Agent Reports. It is not Node health, clock reliability, or credential validity.</p>
+                      </InfoHint>
+                    </span>
+                  </th>
+                  <th scope="col" className={ADMIN_TH}>
+                    <span className="inline-flex items-center gap-1">
+                      Last received
+                      <InfoHint label="About Last received">
+                        <p>Server receipt time of the latest accepted Agent Report, not the report sequence or an Agent clock.</p>
+                      </InfoHint>
+                    </span>
+                  </th>
+                  <th scope="col" className={ADMIN_TH}>
+                    <span className="inline-flex items-center gap-1">
+                      Nodes
+                      <InfoHint label="About Nodes">
+                        <p>Retained Nodes assigned to the Agent: Active and Retired together. Row details split them.</p>
+                      </InfoHint>
+                    </span>
+                  </th>
+                  <th scope="col" className={ADMIN_TH}>
+                    <span className="inline-flex items-center gap-1">
+                      Diagnostics
+                      <InfoHint label="About Diagnostics">
+                        <p>Current: the Server's own Attention Items and credential state. Recorded: accumulated or retained history, which is not a current fault. Not observed: evidence the Server never received, never zero.</p>
+                      </InfoHint>
+                    </span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -450,50 +336,38 @@ export default function AdminAgentsList() {
   )
 }
 
-/** Concise recorded-evidence brief for the summary column. It is derived from
- * the same findings the expanded detail renders, so the summary and the detail
- * cannot drift; raw error text still stays off the summary row, and recorded
- * evidence never becomes a current liveness or health verdict. */
-function diagnosticBrief(host: HostDiagnostic | null | undefined): string {
-  const findings = diagnosticFindings(host)
-  const byKey = new Map(findings.map((finding) => [finding.key, finding.value]))
-  if (byKey.has('host-not-observed')) return 'No Host observation yet'
-  if (byKey.has('spool-not-observed')) return 'Spool not observed yet'
-  const parts: string[] = []
-  if (byKey.has('queued-reports')) parts.push(byKey.get('queued-reports') + ' queued')
-  if (byKey.has('delivery-state')) {
-    parts.push(byKey.get('delivery-state') === 'In flight' ? 'delivery in flight' : 'delivery idle')
-  }
-  if (byKey.has('store-fatal')) {
-    parts.push(byKey.get('store-fatal') === 'Yes' ? 'store fatal' : 'store not fatal')
-  }
-  if (byKey.has('store-error')) parts.push('store error recorded')
-  if (byKey.has('delivery-error')) parts.push('delivery error recorded')
-  if (byKey.has('dropped-sequence')) parts.push('dropped sequence range recorded')
-  if (byKey.has('dropped-height')) parts.push('dropped height range recorded')
-  if (byKey.has('dropped-time')) parts.push('dropped time range recorded')
-  if (byKey.get('report-size') === 'Too large recorded') parts.push('report too large')
-  const pendingGaps = byKey.get('pending-history-gaps')
-  if (pendingGaps != null && pendingGaps !== '0') {
-    parts.push(pendingGaps + ' pending history gap' + (pendingGaps === '1' ? '' : 's'))
-  }
-  const componentIssues = findings.filter((finding) => finding.key.startsWith('component-')).length
-  if (componentIssues > 0) {
-    parts.push(componentIssues + ' Host component issue' + (componentIssues === 1 ? '' : 's'))
-  }
-  return parts.length > 0 ? parts.join(' · ') : 'Spool observed; no additional evidence'
+const EVIDENCE_TONE: Record<EvidenceTone, string> = {
+  error: 'font-medium text-destructive',
+  warning: 'text-foreground',
+  neutral: 'text-muted-foreground',
 }
 
-/** PAGE-ADMIN-AGENTS row: one table cell per summary dimension so the six
- * columns stay aligned. The flex-column layout lives on inner wrappers, never
- * on the td itself, because a flex td drops out of the table layout
- * and collapses the remaining columns. */
+/** PAGE-ADMIN-AGENTS row: an inventory summary. The Diagnostics cell names the
+ * first current or unobserved item and the first recorded item, then counts
+ * the rest; the row's details show every item, the credential counts, the
+ * Active/Retired split and the complete recorded findings. Known-zero
+ * counters take no space on the row. */
 function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
   const liveness = livenessLabel(agent.liveness)
-  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
+  const [open, setOpen] = useState(false)
+  const toggleRef = useRef<HTMLButtonElement>(null)
   const detailId = 'agent-diagnostics-' + agent.agent_id
+  const evidence = agentEvidence(agent)
+  const attention = [...evidence.current, ...evidence.unknown]
+  const shown = [attention[0], evidence.recorded[0]].filter((item): item is EvidenceItem => Boolean(item))
+  // Current and recorded remainders are counted apart, so another current
+  // item never reads as more history.
+  const moreCurrent = Math.max(0, attention.length - 1)
+  const moreRecorded = Math.max(0, evidence.recorded.length - 1)
+  const more = [
+    moreCurrent > 0 ? '+' + moreCurrent + ' current' : null,
+    moreRecorded > 0 ? '+' + moreRecorded + ' recorded' : null,
+  ].filter(Boolean).join(' · ')
+  const name = agent.display_name ?? shortId(agent.agent_id)
   const collapseOnEscape = (event: KeyboardEvent<HTMLElement>) => {
-    if (event.key === 'Escape' && diagnosticsOpen) setDiagnosticsOpen(false)
+    if (event.key !== 'Escape' || !open) return
+    setOpen(false)
+    toggleRef.current?.focus()
   }
   return (
     <>
@@ -501,90 +375,138 @@ function AgentListRow({ agent }: { agent: AgentDiagnostic }) {
         <th scope="row" data-label="Agent" className={cn(ADMIN_TD, 'min-w-0 py-1 text-left font-normal')}>
           <AgentIdentityAccess agentId={agent.agent_id} displayName={agent.display_name} />
         </th>
-        <td data-label="Reporting status" className={cn(ADMIN_TD, 'min-w-0')}>
-          <div className="flex flex-col items-start gap-1">
-            <DimensionLabel>Server liveness</DimensionLabel>
-            <StatusBadge status={liveness} tone={livenessTone(agent.liveness)} />
-          </div>
+        <td data-label="Reporting" className={cn(ADMIN_TD, 'min-w-0')}>
+          <StatusBadge status={liveness} tone={livenessTone(agent.liveness)} />
         </td>
         <td data-label="Last received" className={cn(ADMIN_TD, 'min-w-0')}>
-          <div className="flex flex-col gap-1">
-            <DimensionLabel>Server receipt time</DimensionLabel>
-            <span className="tabular-nums">{receiptTimeText(agent.last_received_at)}</span>
-          </div>
+          <span className="tabular-nums">{receiptTimeText(agent.last_received_at)}</span>
         </td>
-        <td data-label="Node Inventory" className={cn(ADMIN_TD, 'min-w-0')}>
-          <div className="flex flex-col gap-1">
-            <span className="font-medium tabular-nums">{agent.nodes.length} retained Node{agent.nodes.length === 1 ? '' : 's'}</span>
-            <small className={ADMIN_SECONDARY}>Active + Retired</small>
-          </div>
-        </td>
-        <td data-label="Credentials" className={cn(ADMIN_TD, 'min-w-0')}>
-          <div className="flex flex-col gap-1">
-            <DimensionLabel>Server validity</DimensionLabel>
-            <span className="tabular-nums">{credentialSummaryText(agent.credentials)}</span>
-          </div>
+        <td data-label="Nodes" className={cn(ADMIN_TD, 'min-w-0')}>
+          <span className="tabular-nums">{agent.nodes.length} retained</span>
         </td>
         <td data-label="Diagnostics" className={cn(ADMIN_TD, 'min-w-0')}>
-          <div className="flex flex-col gap-1.5">
-            <dl className="grid grid-cols-1 gap-1">
-              <div className="flex items-baseline justify-between gap-2">
-                <dt className={ADMIN_SECONDARY}>Recorded gap intervals</dt>
-                <dd className="font-medium tabular-nums">{agent.sequence_gap_count}</dd>
-              </div>
-              <div className="flex items-baseline justify-between gap-2">
-                <dt className={ADMIN_SECONDARY}>Accumulated recorded security events</dt>
-                <dd className="font-medium tabular-nums">{agent.security_event_count}</dd>
-              </div>
-            </dl>
-            <p className={ADMIN_SECONDARY}>
-              <DimensionLabel>Recorded evidence</DimensionLabel>{' '}
-              <span className="text-foreground">{diagnosticBrief(agent.host)}</span>
-            </p>
+          <div className="flex min-w-0 flex-col items-start gap-0.5" data-slot="agent-evidence-summary">
+            {shown.length === 0 && <span className="text-muted-foreground">Nothing recorded</span>}
+            {attention[0] && (
+              <span className={cn('[overflow-wrap:anywhere]', EVIDENCE_TONE[attention[0].tone])} data-group="current">
+                {attention[0].text}
+              </span>
+            )}
+            {evidence.recorded[0] && (
+              <span className={cn('text-xs [overflow-wrap:anywhere]', EVIDENCE_TONE[evidence.recorded[0].tone])} data-group="recorded">
+                <span className="text-muted-foreground">Recorded · </span>
+                {evidence.recorded[0].short ?? evidence.recorded[0].text}
+              </span>
+            )}
             <Button
+              ref={toggleRef}
               variant="link"
               size="xs"
-              className="self-start px-0 text-xs"
-              aria-expanded={diagnosticsOpen}
+              className="min-h-11 px-0 text-xs md:-my-2"
+              aria-expanded={open}
               aria-controls={detailId}
-              onClick={() => setDiagnosticsOpen((value) => !value)}
+              onClick={() => setOpen((value) => !value)}
               onKeyDown={collapseOnEscape}
             >
-              {diagnosticsOpen ? 'Hide diagnostics' : 'Show diagnostics'}
+              {open ? 'Hide details' : more || 'Details'}{' '}
+              <span className="sr-only">for {name}</span>
             </Button>
           </div>
         </td>
       </tr>
-      {diagnosticsOpen && (
+      {open && (
         <tr data-slot="detail-row" className={ADMIN_DETAIL_ROW}>
-          <td colSpan={6} id={detailId} onKeyDown={collapseOnEscape} className="p-0">
-            <div className={ADMIN_DETAIL_BODY}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h3 className={ADMIN_SECTION_TITLE}>Recorded diagnostic evidence</h3>
-                <Button variant="link" size="sm" className="-my-1.5" onClick={() => setDiagnosticsOpen(false)}>
-                  Collapse diagnostics <ChevronUp size={16} aria-hidden="true" />
-                </Button>
-              </div>
-              <ul
-                className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2 xl:grid-cols-3"
-                aria-label="Recorded diagnostic evidence"
-              >
-                {diagnosticFindings(agent.host).map((finding) => (
-                  <li key={finding.key} className="flex min-w-0 flex-col">
-                    <span className={cn('font-medium', ADMIN_SECONDARY)}>{finding.label}</span>
-                    <span className="min-w-0 [overflow-wrap:anywhere]">{finding.value}</span>
-                  </li>
-                ))}
-              </ul>
-              <p className={ADMIN_SECONDARY}>
-                Recorded evidence; Server liveness remains separate.
-                {agent.host ? ' Host snapshot: ' + formatObservedAt(agent.host.updated_at) : ' No Host snapshot.'}
-              </p>
-            </div>
+          <td colSpan={5} id={detailId} onKeyDown={collapseOnEscape} className="p-0">
+            <AgentRowDetails agent={agent} evidence={evidence} onCollapse={() => setOpen(false)} />
           </td>
         </tr>
       )}
     </>
+  )
+}
+
+const GROUP_TITLE = 'text-xs font-semibold text-foreground'
+
+function AgentRowDetails({
+  agent,
+  evidence,
+  onCollapse,
+}: {
+  agent: AgentDiagnostic
+  evidence: ReturnType<typeof agentEvidence>
+  onCollapse: () => void
+}) {
+  const active = agent.nodes.filter((node) => node.lifecycle === 'active').length
+  const retired = agent.nodes.filter((node) => node.lifecycle === 'retired').length
+  const other = agent.nodes.length - active - retired
+  const attention = [...evidence.current, ...evidence.unknown]
+  return (
+    <div className={ADMIN_DETAIL_BODY}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className={ADMIN_SECTION_TITLE}>Agent details</h3>
+        <Button variant="link" size="sm" className="-my-1.5" onClick={onCollapse}>
+          Collapse details <ChevronUp size={16} aria-hidden="true" />
+        </Button>
+      </div>
+      <div className="grid min-w-0 gap-x-8 gap-y-4 sm:grid-cols-2 xl:grid-cols-3">
+        <section aria-label="Current and not observed" className="min-w-0 space-y-1.5">
+          <h4 className={GROUP_TITLE}>Current and not observed</h4>
+          {attention.length === 0 ? (
+            <p className={ADMIN_SECONDARY}>No current Server attention item; Host and spool observed.</p>
+          ) : (
+            <ul className="space-y-1">
+              {attention.map((item) => (
+                <li key={item.key} className={cn('[overflow-wrap:anywhere]', EVIDENCE_TONE[item.tone])}>{item.text}</li>
+              ))}
+            </ul>
+          )}
+        </section>
+        <section aria-label="Nodes and credentials" className="min-w-0 space-y-1.5">
+          <h4 className={GROUP_TITLE}>Nodes</h4>
+          <p className="tabular-nums">
+            {agent.nodes.length} retained · {active} Active · {retired} Retired
+            {other > 0 ? ' · ' + other + ' Unknown lifecycle' : ''}
+          </p>
+          <h4 className={cn(GROUP_TITLE, 'pt-1')}>Credentials</h4>
+          <p className="tabular-nums">{credentialSummaryText(agent.credentials)}</p>
+          <p className={ADMIN_SECONDARY}>
+            Server validity only; reporting status does not imply a valid credential.{' '}
+            <Link
+              className="inline-flex min-h-11 items-center font-medium text-foreground underline-offset-4 hover:underline"
+              to={'/admin/agents/' + encodeURIComponent(agent.agent_id) + '?section=manage#credentials'}
+            >
+              Manage credentials
+            </Link>
+          </p>
+        </section>
+        <section aria-label="Recorded evidence" className="min-w-0 space-y-1.5 sm:col-span-2 xl:col-span-1">
+          <h4 className={GROUP_TITLE}>Recorded evidence</h4>
+          <ul
+            className="grid grid-cols-1 gap-y-1"
+            aria-label="Recorded diagnostic evidence"
+          >
+            <li className="flex min-w-0 flex-col">
+              <span className={cn('font-medium', ADMIN_SECONDARY)}>Recorded gap intervals</span>
+              <span className="tabular-nums">{agent.sequence_gap_count}</span>
+            </li>
+            <li className="flex min-w-0 flex-col">
+              <span className={cn('font-medium', ADMIN_SECONDARY)}>Accumulated recorded security events</span>
+              <span className="tabular-nums">{agent.security_event_count}</span>
+            </li>
+            {diagnosticFindings(agent.host).map((finding) => (
+              <li key={finding.key} className="flex min-w-0 flex-col">
+                <span className={cn('font-medium', ADMIN_SECONDARY)}>{finding.label}</span>
+                <span className="min-w-0 [overflow-wrap:anywhere]">{finding.value}</span>
+              </li>
+            ))}
+          </ul>
+          <p className={ADMIN_SECONDARY}>
+            Recorded evidence; Server liveness remains separate.
+            {agent.host ? ' Host snapshot: ' + formatObservedAt(agent.host.updated_at) : ' No Host snapshot.'}
+          </p>
+        </section>
+      </div>
+    </div>
   )
 }
 
@@ -599,6 +521,14 @@ export function AdminAgentDetail() {
   const [removed, setRemoved] = useState<AgentRemovalResponse | null>(null)
   const notFound =
     agent.isError && agent.error instanceof AdminApiError && agent.error.code === 'agent_not_found'
+  const [section, setSection, openSection] = useDetailSection(AGENT_DETAIL_ANCHORS)
+  const drafts = useDetailDrafts()
+  const notices = agent.data ? agentDetailNotices(agent.data) : []
+  // The tab counts current and unobserved findings only; recorded history is
+  // in the section but is not a current fault.
+  const diagnosticCount = notices.filter(
+    (notice) => notice.section === 'diagnostics' && notice.status !== 'Recorded history',
+  ).length
 
   if (removed) {
     return (
@@ -613,7 +543,7 @@ export function AdminAgentDetail() {
         <CardX
           size="medium"
           className={CARD_SURFACE}
-          header={<h3 className="text-sm font-medium">Removal result</h3>}
+          header={<h2 className={ADMIN_SECTION_TITLE}>Removal result</h2>}
         >
           <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
             <li>{removed.revoked_credential_count} credential(s) were revoked.</li>
@@ -646,32 +576,25 @@ export function AdminAgentDetail() {
       </section>
     )
   }
+  const data = agent.data
   return (
-    <section className="w-full min-w-0 space-y-4">
-      <div className="space-y-1">
-        <h1 className={ADMIN_PAGE_TITLE}>
-          {agent.data?.display_name ?? 'Agent ' + shortId(agentId)}
-          <span className="mt-0.5 block text-xs font-medium text-muted-foreground break-all">{agentId}</span>
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          <Link
-            className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
-            to="/admin/agents"
-          >
-            All Agents
-          </Link>{' '}
-          ·{' '}
-          <Link
-            className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
-            to={`/admin/alerts/incidents?subject=agent&subject_key=${encodeURIComponent(agentId)}`}
-          >
-            Incidents for this Agent
-          </Link>{' '}
-          · identity, liveness, boot/report state, Inventory, credentials, and diagnostics
-          stay separate.
-        </p>
-      </div>
-      {!agent.data && (
+    <section className="w-full min-w-0 space-y-4" data-slot="admin-agent-detail">
+      {data ? (
+        <AgentDetailHeader
+          agent={data}
+          csrfToken={csrfToken}
+          onAcknowledged={() => void agent.refetch()}
+          notices={notices}
+          section={section}
+          onSection={openSection}
+        />
+      ) : (
+        <div className="space-y-1">
+          <DetailBackLink to="/admin/agents">All Agents</DetailBackLink>
+          <h1 className={ADMIN_PAGE_TITLE}>{'Agent ' + shortId(agentId)}</h1>
+        </div>
+      )}
+      {!data && (
         <>
           {agent.isPending && (
             <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status">
@@ -694,7 +617,7 @@ export function AdminAgentDetail() {
           )}
         </>
       )}
-      {agent.data && (
+      {data && (
         <>
           {agent.isRefetchError && (
             <div
@@ -705,101 +628,111 @@ export function AdminAgentDetail() {
               successful Agent values.
             </div>
           )}
-          <AgentDetailSummary
-            agent={agent.data}
-            csrfToken={csrfToken}
-            onAcknowledged={() => void agent.refetch()}
-          />
-          <section className="space-y-3" aria-labelledby="agent-profile-heading">
-            <div className="space-y-1">
-              <span className="text-xs font-medium text-muted-foreground">01</span>
-              <h2 id="agent-metadata-heading" className={ADMIN_SECTION_TITLE}>Server-owned metadata</h2>
-              <p className="text-sm text-muted-foreground">Server-owned display name and notes. The Agent ID, Host identity, liveness, Epoch, and collection configuration stay read-only.</p>
-            </div>
-            <MetadataPanel agent={agent.data} onSaved={() => void agent.refetch()} />
-          </section>
-          <section className="space-y-3" aria-labelledby="agent-overview-heading">
-            <div className="space-y-1">
-              <span className="text-xs font-medium text-muted-foreground">02</span>
-              <h2 id="agent-overview-heading" className={ADMIN_SECTION_TITLE}>Overview</h2>
-              <p className="text-sm text-muted-foreground">Identity and the Agent-declared Node Inventory.</p>
-            </div>
-            <div className="grid gap-3 lg:grid-cols-2">
-              <IdentityPanel agent={agent.data} />
-              <InventoryPanel agent={agent.data} />
-            </div>
-          </section>
-          <section className="space-y-3" aria-labelledby="agent-runtime-heading">
-            <div className="space-y-1">
-              <span className="text-xs font-medium text-muted-foreground">03</span>
-              <h2 id="agent-runtime-heading" className={ADMIN_SECTION_TITLE}>Runtime and reporting</h2>
-              <p className="text-sm text-muted-foreground">Server liveness remains separate from boot and report lifecycle.</p>
-            </div>
-            <div className="grid gap-3 lg:grid-cols-2">
-              <LivenessPanel agent={agent.data} />
-              <BootReportPanel agent={agent.data} />
-            </div>
-          </section>
-          <section className="space-y-3" aria-labelledby="agent-credentials-heading">
-            <div className="space-y-1">
-              <span className="text-xs font-medium text-muted-foreground">04</span>
-              <h2 id="agent-credentials-heading" className={ADMIN_SECTION_TITLE}>Credentials</h2>
-              <p className="text-sm text-muted-foreground">Server-owned credential validity and explicit revocation.</p>
-            </div>
-            <CredentialsPanel agent={agent.data} onConflictReload={() => void agent.refetch()} />
-          </section>
-          <section className="space-y-3" aria-labelledby="agent-diagnostics-heading">
-            <div className="space-y-1">
-              <span className="text-xs font-medium text-muted-foreground">05</span>
-              <h2 id="agent-diagnostics-heading" className={ADMIN_SECTION_TITLE}>Diagnostics</h2>
-              <p className="text-sm text-muted-foreground">Recorded evidence is shown without inferring current recovery or failure.</p>
-            </div>
-            <DiagnosticsPanel agent={agent.data} />
-          </section>
-          <section className="space-y-3" aria-label="Host resource history">
-            <span className="text-xs font-medium text-muted-foreground">
-              06
-            </span>
-            <AgentHostHistorySection agent={agent.data} />
-          </section>
-          <section className="space-y-3" aria-labelledby="agent-audit-heading">
-            <div className="space-y-1">
-              <span className="text-xs font-medium text-muted-foreground">
-                07
-              </span>
-              <h2 id="agent-audit-heading" className={ADMIN_SECTION_TITLE}>
-                Audit
-              </h2>
-              <p className="text-sm text-muted-foreground">
-                Immutable, redacted lifecycle events for this Agent.
-              </p>
-            </div>
-            <AuditTrailPanel audit={audit} agentId={agentId} />
-          </section>
-          <section className="space-y-3" aria-labelledby="agent-removal-heading">
-            <div className="space-y-1">
-              <span className="text-xs font-medium text-muted-foreground">
-                08
-              </span>
-              <h2 id="agent-removal-heading" className={ADMIN_SECTION_TITLE}>
-                Danger zone
-              </h2>
-              <p className="text-sm text-muted-foreground">
-                Irreversible Owner disposition. Credential revocation and Agent removal are
-                separate actions.
-              </p>
-            </div>
-            <AgentRemovalPanel
-              agentId={agent.data.agent_id}
-              displayName={agent.data.display_name ?? 'Agent ' + shortId(agent.data.agent_id)}
-              csrfToken={csrfToken}
-              onRemoved={setRemoved}
+          <DetailDraftProvider value={drafts.report}>
+            <AdminDetailSections
+              label="Agent detail sections"
+              value={section}
+              onValueChange={setSection}
+              sections={[
+                {
+                  key: 'overview',
+                  label: 'Overview',
+                  content: (
+                    <>
+                      <AgentRuntimeSummaryPanel agent={data} onSection={openSection} />
+                      <InventoryPanel agent={data} />
+                    </>
+                  ),
+                },
+                {
+                  key: 'history',
+                  label: 'History',
+                  content: (
+                    <>
+                      {/* The shared Host series and its mount paths, kept as one
+                          named region apart from the Audit trail. */}
+                      <section aria-label="Host resource history" className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4">
+                        <AgentHostHistorySection agent={data} />
+                      </section>
+                      <AuditTrailPanel audit={audit} agentId={agentId} />
+                    </>
+                  ),
+                },
+                {
+                  key: 'diagnostics',
+                  label: 'Diagnostics',
+                  marker: diagnosticCount > 0 ? diagnosticCount : undefined,
+                  markerLabel:
+                    diagnosticCount > 0
+                      ? diagnosticCount + ' recorded or unobserved item' + (diagnosticCount === 1 ? '' : 's')
+                      : undefined,
+                  content: (
+                    <>
+                      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[repeat(2,minmax(0,1fr))]">
+                        <IdentityPanel agent={data} />
+                        <BootReportPanel agent={data} />
+                      </div>
+                      <DiagnosticsPanel agent={data} />
+                    </>
+                  ),
+                },
+                {
+                  key: 'manage',
+                  label: 'Manage',
+                  ...draftMarker(drafts.pending),
+                  content: (
+                    <>
+                      <MetadataPanel agent={data} onSaved={() => void agent.refetch()} />
+                      <CredentialsPanel agent={data} onConflictReload={() => void agent.refetch()} />
+                      <AgentRemovalPanel
+                        agentId={data.agent_id}
+                        displayName={data.display_name ?? 'Agent ' + shortId(data.agent_id)}
+                        csrfToken={csrfToken}
+                        onRemoved={setRemoved}
+                      />
+                    </>
+                  ),
+                },
+              ]}
             />
-          </section>
+          </DetailDraftProvider>
         </>
       )}
     </section>
   )
+}
+
+/** Older in-page links (`#audit`, `#credentials`, `#removal`) open the
+ *  section that now holds their target. */
+const AGENT_DETAIL_ANCHORS = {
+  audit: 'history',
+  credentials: 'manage',
+  removal: 'manage',
+} as const
+
+/** Current, unobserved and recorded findings shown above every section,
+ *  each with the section that holds its complete evidence. The Server's own
+ *  Attention Items have their own list with acknowledgment. */
+function agentDetailNotices(agent: AgentDiagnostic): DetailNotice[] {
+  const notices: DetailNotice[] = []
+  for (const item of agentEvidence(agent).current) {
+    if (item.key === 'credentials') {
+      notices.push({ key: item.key, tone: 'warning', status: 'Current state', message: item.text + '.', section: 'manage', sectionLabel: 'Manage' })
+    } else if (item.key === 'store-fatal') {
+      notices.push({ key: item.key, tone: 'error', status: 'Current state', message: item.text + '.', section: 'diagnostics', sectionLabel: 'Diagnostics' })
+    }
+  }
+  agentSummaryWarnings(agent).forEach((warning, index) => {
+    notices.push({
+      key: warning.kind + '-' + index,
+      tone: warning.kind === 'current' ? 'warning' : 'neutral',
+      status: warning.kind === 'current' ? 'Current state' : warning.kind === 'recorded' ? 'Recorded history' : 'Unknown',
+      message: warning.message,
+      section: 'diagnostics',
+      sectionLabel: 'Diagnostics',
+    })
+  })
+  return notices
 }
 
 type AgentSummaryWarning = {
@@ -807,22 +740,28 @@ type AgentSummaryWarning = {
   message: string
 }
 
-/** Server-owned Agent Attention Items and their acknowledgment controls
- * (issue #172). The displayed boundaries come from the Server, so an
- * acknowledged occurrence stays suppressed while raw evidence remains in
- * Diagnostics; a stale boundary is reported as a conflict and the
- * authoritative list is refetched instead of hiding a newer occurrence. */
-function AgentDetailSummary({
+/** The always-visible Agent header: identity, the independent Server-owned
+ *  dimensions, the Server's own Attention Items with their acknowledgment
+ *  (issue #172), and the structural warnings. The displayed boundaries come
+ *  from the Server, so an acknowledged occurrence stays suppressed while raw
+ *  evidence remains in Diagnostics; a stale boundary is reported as a conflict
+ *  and the authoritative list is refetched instead of hiding a newer one. */
+function AgentDetailHeader({
   agent,
   csrfToken,
   onAcknowledged,
+  notices,
+  section,
+  onSection,
 }: {
   agent: AgentDiagnostic
   csrfToken: string
   onAcknowledged: () => void
+  notices: DetailNotice[]
+  section: DetailSection
+  onSection: (next: DetailSection) => void
 }) {
   const liveness = livenessLabel(agent.liveness)
-  const warnings = agentSummaryWarnings(agent)
   const activeCredentials = agent.credentials.filter((credential) => credential.active).length
   const bootStatus = agent.boot_status && agent.boot_status !== 'unknown' ? agent.boot_status : 'Unknown'
   const [pending, setPending] = useState<string | null>(null)
@@ -855,59 +794,39 @@ function AgentDetailSummary({
     }
   }
   return (
-    <section
-      className={cn('space-y-3 rounded-md border-none p-4', SURFACE_CARD_STATIC)}
-      aria-labelledby="agent-summary-heading"
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 space-y-1">
-          <span className="text-xs font-medium tracking-wider text-muted-foreground uppercase">Agent summary</span>
-          <h2 id="agent-summary-heading" className={cn(ADMIN_SECTION_TITLE, 'break-all')}>
-            {shortId(agent.agent_id)}
-          </h2>
-          <p className="flex min-w-0 flex-wrap items-center gap-2">
-            <code className="break-all text-xs" title={agent.agent_id}>{formatIdentifier(agent.agent_id)}</code>
-            <span className="sr-only">Full Agent ID: {agent.agent_id}</span>
-            <AgentIdCopyControl agentId={agent.agent_id} />
-          </p>
+    <header className="grid min-w-0 gap-3" data-slot="agent-detail-header">
+      <DetailBackLink to="/admin/agents">All Agents</DetailBackLink>
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-2">
+        <div className="min-w-0 flex-[1_1_18rem] space-y-1">
+          <h1 className={ADMIN_PAGE_TITLE}>{agent.display_name ?? 'Agent ' + shortId(agent.agent_id)}</h1>
+          <AdminIdentifier value={agent.agent_id} label="Agent ID" fullSlot="agent-full-id" />
         </div>
-        <div className="flex flex-wrap items-start gap-4" aria-label="Current Agent dimensions">
-          <div className="flex flex-col gap-1">
-            <DimensionLabel>Server liveness</DimensionLabel>
-            <StatusBadge status={liveness} tone={livenessTone(agent.liveness)} />
-          </div>
-          <div className="flex flex-col gap-1">
-            <DimensionLabel>Boot status</DimensionLabel>
-            <strong className="text-sm">{bootStatus}</strong>
-          </div>
-          <div className="flex flex-col gap-1">
-            <DimensionLabel>Active credentials</DimensionLabel>
-            <strong className="text-sm">{activeCredentials} active · {agent.credentials.length} total</strong>
-          </div>
-        </div>
+        <nav aria-label="Agent links" className="flex flex-wrap items-center gap-x-3 text-sm">
+          <Link
+            className={DETAIL_LINK}
+            to={`/admin/alerts/incidents?subject=agent&subject_key=${encodeURIComponent(agent.agent_id)}`}
+          >
+            Incidents for this Agent
+          </Link>
+        </nav>
       </div>
-      <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div>
-          <dt className="text-xs font-medium tracking-wider text-muted-foreground">Agent Epoch</dt>
-          <dd className="text-sm font-bold leading-none tracking-tight">{agent.agent_epoch}</dd>
-        </div>
-        <div>
-          <dt className="text-xs font-medium tracking-wider text-muted-foreground">Last received</dt>
-          <dd className="text-sm">{receiptTimeText(agent.last_received_at)}</dd>
-        </div>
-        <div>
-          <dt className="text-xs font-medium tracking-wider text-muted-foreground">Report sequence</dt>
-          <dd className="text-sm">{agent.last_report_sequence == null ? 'Never received' : '#' + agent.last_report_sequence}</dd>
-        </div>
-        <div>
-          <dt className="text-xs font-medium tracking-wider text-muted-foreground">Declared Nodes</dt>
-          <dd className="text-sm font-bold leading-none tracking-tight">{agent.nodes.length}</dd>
-        </div>
-      </dl>
+      <DetailDimensions label="Current Agent dimensions">
+        <DetailDimension label="Server liveness">
+          <StatusBadge status={liveness} tone={livenessTone(agent.liveness)} />
+        </DetailDimension>
+        <DetailDimension label="Last received">{receiptTimeText(agent.last_received_at)}</DetailDimension>
+        <DetailDimension label="Boot status">{bootStatus}</DetailDimension>
+        <DetailDimension label="Nodes">
+          <span className="tabular-nums">{agent.nodes.length} retained</span>
+        </DetailDimension>
+        <DetailDimension label="Active credentials">
+          <span className="tabular-nums">{activeCredentials} active · {agent.credentials.length} total</span>
+        </DetailDimension>
+      </DetailDimensions>
       {agent.attention.length > 0 && (
         <div className="space-y-2" role="note" aria-label="Agent attention items">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-medium">Attention</h3>
+            <h2 className={ADMIN_SECTION_TITLE}>Attention</h2>
             <Button
               variant="outline"
               size="sm"
@@ -958,35 +877,58 @@ function AgentDetailSummary({
           {feedback.message}
         </div>
       )}
-      {warnings.length > 0 && (
-        <div className="space-y-2" role="note" aria-label="Important Agent warnings">
-          <h3 className="text-sm font-medium">Important warnings</h3>
-          <ul className="space-y-1">
-            {warnings.map((warning, index) => (
-              <li
-                key={warning.kind + '-' + index}
-                data-kind={warning.kind}
-                className="flex flex-wrap items-baseline gap-2 text-sm"
-              >
-                <strong
-                  className={cn(
-                    'text-xs font-medium tracking-wider uppercase',
-                    warning.kind === 'current'
-                      ? 'text-warning'
-                      : warning.kind === 'recorded'
-                        ? 'text-destructive'
-                        : 'text-muted-foreground',
-                  )}
-                >
-                  {warning.kind === 'current' ? 'Current state' : warning.kind === 'recorded' ? 'Recorded history' : 'Unknown'}
-                </strong>
-                <span className="min-w-0 break-words">{warning.message}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </section>
+      <DetailNotices
+        label="Important Agent warnings"
+        notices={notices}
+        current={section}
+        onOpen={onSection}
+      />
+    </header>
+  )
+}
+
+/** Overview: reporting and the necessary running summary. Boot IDs, the
+ *  complete Spool, clock and component evidence stay in Diagnostics. */
+function AgentRuntimeSummaryPanel({
+  agent,
+  onSection,
+}: {
+  agent: AgentDiagnostic
+  onSection: (next: DetailSection) => void
+}) {
+  const host = agent.host
+  const evidence = agentEvidence(agent)
+  return (
+    <CardX size="medium" className={CARD_SURFACE} header={<h2 className={ADMIN_SECTION_TITLE}>Reporting and runtime</h2>}>
+      {/* Liveness, receipt time and boot status are in the header above. */}
+      <DetailList>
+        <DetailItem label="Report sequence">
+          {agent.last_report_sequence == null ? 'Never received' : '#' + agent.last_report_sequence}
+        </DetailItem>
+        <DetailItem label="Host snapshot">
+          {host ? formatObservedAt(host.updated_at) : 'No Host observation yet'}
+        </DetailItem>
+        <DetailItem label="Host CPU / memory">
+          {host
+            ? formatPercent(host.cpu_percent) + ' · ' + formatBytesUnknown(host.memory_used_bytes) + ' / ' + formatBytesUnknown(host.memory_total_bytes)
+            : 'Unknown'}
+        </DetailItem>
+        <DetailItem label="Credentials">
+          {credentialSummaryText(agent.credentials)}{' '}
+          <Button variant="link" size="sm" className="h-auto min-h-11 px-0" onClick={() => onSection('manage')}>
+            Manage credentials
+          </Button>
+        </DetailItem>
+        <DetailItem label="Recorded evidence">
+          {evidence.recorded.length === 0
+            ? 'Nothing recorded'
+            : evidence.recorded.map((item) => item.text).join(' · ')}{' '}
+          <Button variant="link" size="sm" className="h-auto min-h-11 px-0" onClick={() => onSection('diagnostics')}>
+            Open Diagnostics
+          </Button>
+        </DetailItem>
+      </DetailList>
+    </CardX>
   )
 }
 
@@ -1018,7 +960,7 @@ function agentSummaryWarnings(agent: AgentDiagnostic): AgentSummaryWarning[] {
 
 function IdentityPanel({ agent }: { agent: AgentDiagnostic }) {
   return (
-    <CardX size="medium" className={CARD_SURFACE} header={<h3 className="text-sm font-medium">Identity</h3>}>
+    <CardX size="medium" className={CARD_SURFACE} header={<h2 className={ADMIN_SECTION_TITLE}>Identity</h2>}>
       <DetailList>
         <DetailItem label="Agent ID">
           <code className="break-all text-xs">{agent.agent_id}</code>
@@ -1054,6 +996,10 @@ function MetadataPanel({ agent, onSaved }: { agent: AgentDiagnostic; onSaved: ()
     setDisplayName(agent.display_name ?? '')
     setNotes(agent.notes ?? '')
   }, [agent.display_name, agent.notes])
+  useReportDraft(
+    'agent-metadata',
+    displayName !== (agent.display_name ?? '') || notes !== (agent.notes ?? ''),
+  )
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -1087,7 +1033,7 @@ function MetadataPanel({ agent, onSaved }: { agent: AgentDiagnostic; onSaved: ()
     <CardX
       size="medium"
       className={CARD_SURFACE}
-      header={<h3 className="text-sm font-medium">Display name and notes</h3>}
+      header={<h2 className={ADMIN_SECTION_TITLE}>Display name and notes</h2>}
     >
       <form className="grid max-w-xl gap-3" onSubmit={save}>
         <div className="flex flex-col gap-1">
@@ -1164,23 +1110,9 @@ function MetadataPanel({ agent, onSaved }: { agent: AgentDiagnostic; onSaved: ()
   )
 }
 
-function LivenessPanel({ agent }: { agent: AgentDiagnostic }) {
-  const liveness = livenessLabel(agent.liveness)
-  return (
-    <CardX size="medium" className={CARD_SURFACE} header={<h3 className="text-sm font-medium">Liveness</h3>}>
-      <DetailList>
-        <DetailItem label="Server liveness">
-          <StatusBadge status={liveness} tone={livenessTone(agent.liveness)} />
-        </DetailItem>
-        <DetailItem label="Server receipt time">{receiptTimeText(agent.last_received_at)}</DetailItem>
-      </DetailList>
-    </CardX>
-  )
-}
-
 function BootReportPanel({ agent }: { agent: AgentDiagnostic }) {
   return (
-    <CardX size="medium" className={CARD_SURFACE} header={<h3 className="text-sm font-medium">Boot and report state</h3>}>
+    <CardX size="medium" className={CARD_SURFACE} header={<h2 className={ADMIN_SECTION_TITLE}>Boot and report state</h2>}>
       <DetailList>
         <DetailItem label="Boot status">{agent.boot_status}</DetailItem>
         <DetailItem label="Full active boot ID">
@@ -1238,7 +1170,7 @@ function InventoryPanel({ agent }: { agent: AgentDiagnostic }) {
   const nodes = agent.nodes
   const { accepted_revision, accepted_sha256, accepted_declaration } = agent.inventory
   return (
-    <CardX size="medium" className={CARD_SURFACE} header={<h3 className="text-sm font-medium">Inventory</h3>}>
+    <CardX size="medium" className={CARD_SURFACE} header={<h2 className={ADMIN_SECTION_TITLE}>Inventory</h2>}>
       <DetailList>
         <DetailItem label="Accepted declaration">
           {accepted_revision == null ? (
@@ -1301,6 +1233,7 @@ function CredentialsPanel({
   const { status } = useAuth()
   const csrfToken = status.state === 'authenticated' ? status.csrfToken : ''
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
+  useReportDraft('credential-revoke', confirmingId !== null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -1334,7 +1267,7 @@ function CredentialsPanel({
       size="medium"
       className={CARD_SURFACE}
       id="credentials"
-      header={<h3 className="text-sm font-medium">Credential records</h3>}
+      header={<h2 className={ADMIN_SECTION_TITLE}>Credential records</h2>}
     >
       <p className="text-sm text-muted-foreground">
         Only non-sensitive credential ids and lifecycle instants are shown; secrets are
@@ -1443,6 +1376,7 @@ function AgentRemovalPanel({
   const [restoreFocus, setRestoreFocus] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const impact = useAdminAgentRemovalImpact(generation, agentId, confirming)
+  useReportDraft('agent-removal', confirming)
 
   // Cancelling the confirmation restores focus to the safe trigger, so a
   // keyboard user is never dropped onto the document body.
@@ -1485,11 +1419,16 @@ function AgentRemovalPanel({
   return (
     <CardX
       size="medium"
-      className={CARD_SURFACE}
+      className={cn(CARD_SURFACE, 'ring-1 ring-destructive/25')}
       id="removal"
-      header={<h3 className="text-sm font-medium">Permanent Agent removal</h3>}
+      data-slot="danger-zone"
+      header={<h2 className={ADMIN_SECTION_TITLE}>Danger zone</h2>}
     >
-      <p className="text-sm text-muted-foreground">
+      <h3 className="text-sm font-medium">Permanent Agent removal</h3>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Irreversible Owner disposition, separate from revoking one credential.
+      </p>
+      <p className="mt-2 text-sm text-muted-foreground">
         Permanently delete this Agent to revoke every credential, remove it from current
         monitoring, and permanently purge every Node it owns (their observations, monitoring
         history, and Node Validator Links). This cannot be undone, and Recovery, Rotation, a
@@ -1710,7 +1649,7 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
     <CardX
       size="medium"
       className={CARD_SURFACE}
-      header={<h3 className="text-sm font-medium">Host and component evidence</h3>}
+      header={<h2 className={ADMIN_SECTION_TITLE}>Host and component evidence</h2>}
     >
       <p className="text-sm text-muted-foreground">
         {host
@@ -1844,7 +1783,7 @@ function AuditTrailPanel({
 }) {
   const items = audit.data?.items ?? []
   return (
-    <CardX size="medium" className={CARD_SURFACE} id="audit" header={<h3 className="text-sm font-medium">Audit trail</h3>}>
+    <CardX size="medium" className={CARD_SURFACE} id="audit" header={<h2 className={ADMIN_SECTION_TITLE}>Audit trail</h2>}>
       <p className="text-sm text-muted-foreground">
         Redacted immutable events for this Agent. One-time secrets never appear in Audit.
       </p>
@@ -2177,7 +2116,7 @@ export function AdminAgentRecover() {
         <p className="text-sm text-muted-foreground">
           <Link
             className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
-            to={'/admin/agents/' + agentId}
+            to={'/admin/agents/' + agentId + '?section=manage#credentials'}
           >
             Back to Agent detail
           </Link>
@@ -2209,7 +2148,7 @@ export function AdminAgentRecover() {
           <div className="mt-2">
             <AuditContextLink agentId={agentId} requestId={result.request_id} />
           </div>
-          <Link className={cn(buttonVariants(), 'mt-3 w-fit')} to={'/admin/agents/' + agentId}>
+          <Link className={cn(buttonVariants(), 'mt-3 w-fit')} to={'/admin/agents/' + agentId + '?section=manage#credentials'}>
             Back to Agent detail
           </Link>
         </CardX>
@@ -2305,7 +2244,7 @@ export function AdminAgentRotate() {
         <p className="text-sm text-muted-foreground">
           <Link
             className="inline-flex min-h-11 min-w-11 items-center font-medium underline-offset-4 hover:underline"
-            to={'/admin/agents/' + agentId}
+            to={'/admin/agents/' + agentId + '?section=manage#credentials'}
           >
             Back to Agent detail
           </Link>
@@ -2336,7 +2275,7 @@ export function AdminAgentRotate() {
           <div className="mt-2">
             <AuditContextLink agentId={agentId} requestId={result.request_id} />
           </div>
-          <Link className={cn(buttonVariants(), 'mt-3 w-fit')} to={'/admin/agents/' + agentId}>
+          <Link className={cn(buttonVariants(), 'mt-3 w-fit')} to={'/admin/agents/' + agentId + '?section=manage#credentials'}>
             Back to Agent detail
           </Link>
         </CardX>

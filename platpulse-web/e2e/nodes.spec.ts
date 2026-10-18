@@ -25,16 +25,21 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
   test('lists every Node as its own row with Server-owned dimensions', async ({ page }) => {
     await openNodes(page)
 
-    // Node A: healthy, current, matched identity, public.
-    const nodeARow = page.getByRole('row', { name: /Node A/ })
+    // Node A: healthy and current on the row; identity, visibility and the
+    // redacted endpoint are one Details step away (webui.md §8.7).
+    const nodeARow = page.getByRole('row', { name: /Node A/ }).first()
     await expect(nodeARow).toContainText('healthy', { timeout: 15_000 })
     await expect(nodeARow).toContainText('Current')
-    await expect(nodeARow).toContainText('Matched')
-    await expect(nodeARow).toContainText('Public')
     await expect(nodeARow).toContainText('12842019')
+    await expect(nodeARow).not.toContainText('Matched')
+    await expect(nodeARow).not.toContainText('ws://')
+    await nodeARow.getByRole('button', { name: 'Details for Node A' }).click()
+    const details = page.locator('[data-slot="detail-row"]').first()
+    await expect(details).toContainText('Matched')
+    await expect(details).toContainText('Public')
     // Endpoints are redacted destination summaries, never complete URLs.
-    await expect(nodeARow).toContainText('ws://[REDACTED_IP]:****')
-    await expect(nodeARow).not.toContainText('6790')
+    await expect(details).toContainText('ws://[REDACTED_IP]:****')
+    await expect(details).not.toContainText('6790')
 
     // Node B: unhealthy with its own Error/Stale/Mismatched dimensions.
     const nodeBRow = page.getByRole('row', { name: /Node B \(private\)/ })
@@ -42,7 +47,6 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
     await expect(nodeBRow).toContainText('Stale')
     await expect(nodeBRow).toContainText('Mismatched')
     await expect(nodeBRow).toContainText('chain_id')
-    await expect(nodeBRow).toContainText('Private')
 
     // Node D: retired is its own row with explicit lifecycle.
     const nodeDRow = page.getByRole('row', { name: /Node D \(retired\)/ })
@@ -54,6 +58,7 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
   test('filters are URL state and preserve back/forward', async ({ page }) => {
     await openNodes(page)
 
+    await page.getByRole('button', { name: 'More filters' }).click()
     await page.getByLabel('Visibility').selectOption('public')
     await expect(page).toHaveURL(/visibility=public/)
     await expect(page.getByRole('row', { name: /Node A/ })).toBeVisible({ timeout: 15_000 })
@@ -67,6 +72,9 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
 
     await page.getByLabel('Lifecycle').selectOption('all')
     await page.getByLabel('Visibility').selectOption('all')
+    // Collapsed, More filters names nothing once every filter is All.
+    await page.getByRole('button', { name: 'More filters' }).click()
+    await expect(page.getByRole('list', { name: 'Active filters from More filters' })).toHaveCount(0)
     await expect(page.getByRole('row', { name: /Node D \(retired\)/ })).toBeVisible({ timeout: 15_000 })
     // Sorting is real button state, not decoration: the default Health
     // order keeps Node B (unhealthy) last; the Node-name order moves it
@@ -89,22 +97,29 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
     await page.getByRole('link', { name: 'Node A' }).click()
     await expect(page.getByRole('heading', { level: 1, name: /Node A/ })).toBeVisible({ timeout: 15_000 })
 
-    // Server-owned metadata: display name and lifecycle guidance.
-    await expect(page.getByRole('heading', { level: 2, name: 'Server-owned metadata' })).toBeVisible()
+    // Overview: lifecycle guidance on its own administrative panel; the
+    // History, Diagnostics and Manage sections are one tab away (§8.7).
+    await expect(page.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
     await expect(page.getByText(/never pushes Endpoint or lifecycle changes/)).toBeVisible()
-    // Lifecycle is Node Inventory state on its own administrative panel.
     await expect(page.getByRole('heading', { level: 2, name: 'Node Inventory & lifecycle' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 2, name: 'RPC diagnostics' })).toHaveCount(0)
+
+    await page.getByRole('tab', { name: /^Manage/ }).click()
+    await expect(page.getByRole('heading', { level: 2, name: 'Server-owned metadata' })).toBeVisible()
     await expect(page.getByRole('link', { name: 'Open the Audit log' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 2, name: 'Danger zone' })).toBeVisible()
 
     // Identity disposition is typed and visible.
+    await page.getByRole('tab', { name: /^Diagnostics/ }).click()
+    await expect(page).toHaveURL(/section=diagnostics/)
     await expect(page.getByRole('heading', { level: 2, name: 'Network identity' })).toBeVisible()
-    await expect(page.getByText('Matched', { exact: true })).toBeVisible()
+    await expect(page.getByText('Matched', { exact: true }).first()).toBeVisible()
     await expect(page.getByText(/210425 \/ 210425/)).toBeVisible()
 
     // Admin keeps its detail administrative and leaves Home's full
     // observation cards on the public Node detail route.
     await expect(page.getByRole('heading', { level: 2, name: 'RPC diagnostics' })).toBeVisible()
-    await expect(page.getByText('platon/1.5.1')).toBeVisible()
+    await expect(page.getByText('platon/1.5.1', { exact: true })).toBeVisible()
     await expect(page.getByText('admin, net, platon')).toBeVisible()
     await expect(page.getByText('Redacted RPC Endpoint')).toBeVisible()
     await expect(page.getByRole('heading', { level: 2, name: 'Per-Node observations' })).toHaveCount(0)
@@ -124,10 +139,15 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
     await expect(page.getByRole('heading', { level: 1, name: /Node B \(private\)/ })).toBeVisible({ timeout: 15_000 })
 
     // The health summary carries the Server-owned reason.
-    await expect(page.getByText('RPC collection failed')).toBeVisible()
+    await expect(page.getByLabel('Current Node dimensions')).toContainText('RPC collection failed')
     // Last-good sync values remain visible with the Error context.
     await expect(page.getByText(/last-good head 12842018/)).toBeVisible()
+    // Both findings are summarized above every section.
+    const findings = page.getByRole('list', { name: 'Current Node findings' })
+    await expect(findings).toContainText('Network identity contradicts the Registry on chain_id')
+    await expect(findings).toContainText('RPC collection failed')
     // The mismatch is a blocking diagnostic distinct from the RPC error.
+    await findings.getByRole('button', { name: 'Open Diagnostics' }).first().click()
     await expect(page.getByText(/Contradicts the Registry: chain_id/)).toBeVisible()
     await expect(page.getByText(/New history is not merged/)).toBeVisible()
     await expectNoHorizontalOverflow(page)
@@ -138,9 +158,12 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
     await openNodes(page)
     await expect(page.getByRole('row', { name: /Node A/ })).toContainText('healthy', { timeout: 15_000 })
     // Row expansion keeps detail available without navigation.
-    await page.getByRole('button', { name: 'Expand Node A' }).click()
+    const details = page.getByRole('button', { name: 'Details for Node A' })
+    await details.click()
+    await expect(details).toHaveAttribute('aria-expanded', 'true')
     await expect(page.getByText('Lifecycle guidance')).toBeVisible()
-    await page.getByRole('button', { name: 'Collapse Node A' }).press('Escape')
+    await details.press('Escape')
+    await expect(details).toBeFocused()
     await expect(page.getByText('Lifecycle guidance')).toHaveCount(0)
     await setPageZoom(page, 2)
     await expect(page.getByRole('heading', { level: 1, name: 'Nodes' })).toBeVisible()
@@ -169,6 +192,7 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
 
     await page.getByRole('link', { name: 'Node C' }).click()
     await expect(page.getByRole('heading', { level: 1, name: /Node C/ })).toBeVisible({ timeout: 15_000 })
+    await page.getByRole('tab', { name: /^Manage/ }).click()
     try {
       await page.getByRole('button', { name: 'Edit' }).click()
       await page.getByLabel('Display name').fill('Node C (renamed)')

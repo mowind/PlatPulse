@@ -1,4 +1,5 @@
-import { useState, type FormEvent } from 'react'
+import { ChevronRight } from 'lucide-react'
+import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { Link, useParams } from 'react-router'
 import {
   AdminApiError,
@@ -20,6 +21,8 @@ import type { AdminNetwork, AdminNetworkNode } from '../api/generated'
 import { DetailItem, DetailList } from '../components/DetailList'
 import { AdminIdentifier } from '../components/AdminIdentifier'
 import {
+  ADMIN_DETAIL_BODY,
+  ADMIN_DETAIL_ROW,
   ADMIN_PAGE_TITLE,
   ADMIN_PANEL_SURFACE,
   ADMIN_ROW,
@@ -27,6 +30,8 @@ import {
   ADMIN_SECTION_TITLE,
   ADMIN_TD,
   ADMIN_TH,
+  AdminKeyValue,
+  AdminKeyValueList,
   AdminPageHeader,
   AdminPanel,
 } from '../components/AdminPage'
@@ -137,16 +142,17 @@ export default function AdminNetworksList() {
         >
           <div className="overflow-x-auto max-md:px-3 max-md:pt-3">
             <table data-stack data-slot="network-table" className="w-full text-sm">
-              <caption className="sr-only">Network Registry identity tuples and Node counts</caption>
+              <caption className="sr-only">
+                Network Registry: Network, chain ID, Node counts and reported mismatches; the complete
+                identity tuple opens per row
+              </caption>
               <thead>
                 <tr className="border-b border-border/60">
                   <th scope="col" className={ADMIN_TH}>Network</th>
                   <th scope="col" className={ADMIN_TH}>Chain ID</th>
-                  <th scope="col" className={ADMIN_TH}>P2P network</th>
-                  <th scope="col" className={ADMIN_TH}>HRP</th>
-                  <th scope="col" className={ADMIN_TH}>Genesis</th>
                   <th scope="col" className={ADMIN_TH}>Nodes</th>
                   <th scope="col" className={ADMIN_TH}>Mismatches</th>
+                  <th scope="col" className={cn(ADMIN_TH, 'w-px whitespace-nowrap')}>Details</th>
                 </tr>
               </thead>
               <tbody>
@@ -163,45 +169,97 @@ export default function AdminNetworksList() {
 }
 
 function NetworkRow({ network }: { network: AdminNetwork }) {
+  const [open, setOpen] = useState(false)
+  const toggleRef = useRef<HTMLButtonElement>(null)
+  const detailId = 'network-detail-' + network.network_key
+  const collapseOnEscape = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Escape' || !open) return
+    setOpen(false)
+    toggleRef.current?.focus()
+  }
   return (
-    <tr className={ADMIN_ROW}>
-      <th scope="row" data-label="Network" className={cn(ADMIN_TD, 'min-w-0 py-1 text-left font-normal')}>
-        <Link
-          className="inline-flex min-h-11 min-w-11 items-center break-words font-medium underline-offset-4 hover:underline"
-          to={'/admin/networks/' + network.network_key}
-        >
-          {network.display_name}
-        </Link>
-        <small className="-mt-2 block font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
-          {network.network_key}
-        </small>
-      </th>
-      <td data-label="Chain ID" className={cn(ADMIN_TD, 'min-w-0 tabular-nums')}>
-        {network.chain_id}
-      </td>
-      <td data-label="P2P network" className={cn(ADMIN_TD, 'min-w-0 tabular-nums')}>
-        {network.p2p_network_id}
-      </td>
-      <td data-label="HRP" className={cn(ADMIN_TD, 'min-w-0')}>{network.address_hrp}</td>
-      <td data-label="Genesis" className={cn(ADMIN_TD, 'min-w-0')}>
-        <AdminIdentifier value={network.genesis_hash} label="Genesis hash" />
-      </td>
-      <td data-label="Nodes" className={cn(ADMIN_TD, 'min-w-0 tabular-nums')}>
-        {network.active_node_count} active · {network.retired_node_count} retired
-      </td>
-      <td data-label="Mismatches" className={cn(ADMIN_TD, 'min-w-0')}>
-        {network.mismatched_node_count > 0 ? (
-          <span className="flex flex-wrap items-center gap-2">
-            <StatusBadge status="Mismatched" tone="error" />
-            <span className={cn(ADMIN_SECONDARY, 'tabular-nums')}>
-              {network.mismatched_node_count} Node{network.mismatched_node_count === 1 ? '' : 's'}
+    <>
+      <tr className={ADMIN_ROW}>
+        <th scope="row" data-label="Network" className={cn(ADMIN_TD, 'min-w-0 py-1 text-left font-normal')}>
+          <Link
+            className="inline-flex min-h-11 min-w-11 items-center break-words font-medium underline-offset-4 hover:underline"
+            to={'/admin/networks/' + network.network_key}
+          >
+            {network.display_name}
+          </Link>
+          <small className="-mt-2 block font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+            {network.network_key}
+          </small>
+        </th>
+        <td data-label="Chain ID" className={cn(ADMIN_TD, 'min-w-0 tabular-nums')}>
+          {network.chain_id}
+        </td>
+        <td data-label="Nodes" className={cn(ADMIN_TD, 'min-w-0 tabular-nums')}>
+          {network.active_node_count} active · {network.retired_node_count} retired
+        </td>
+        <td data-label="Mismatches" className={cn(ADMIN_TD, 'min-w-0')}>
+          {network.mismatched_node_count > 0 ? (
+            <span className="flex flex-wrap items-center gap-2">
+              <StatusBadge status="Mismatched" tone="error" />
+              <span className="tabular-nums">
+                {network.mismatched_node_count} Node{network.mismatched_node_count === 1 ? '' : 's'}
+              </span>
             </span>
-          </span>
-        ) : (
-          <span className={ADMIN_SECONDARY}>No mismatch reported</span>
-        )}
-      </td>
-    </tr>
+          ) : (
+            <span className={ADMIN_SECONDARY}>No mismatch reported</span>
+          )}
+        </td>
+        <td data-label="Details" className={cn(ADMIN_TD, 'min-w-0 md:w-px md:whitespace-nowrap')}>
+          <Button
+            ref={toggleRef}
+            variant="ghost"
+            size="sm"
+            className="min-h-11 gap-1 px-2 md:-my-2.5"
+            aria-expanded={open}
+            aria-controls={detailId}
+            onClick={() => setOpen((value) => !value)}
+            onKeyDown={collapseOnEscape}
+          >
+            <ChevronRight size={16} aria-hidden="true" className={cn('transition-transform', open && 'rotate-90')} />
+            Details <span className="sr-only">for {network.display_name}</span>
+          </Button>
+        </td>
+      </tr>
+      {open && (
+        <tr data-slot="detail-row" className={ADMIN_DETAIL_ROW}>
+          <td colSpan={5} id={detailId} onKeyDown={collapseOnEscape} className="p-0">
+            <div className={ADMIN_DETAIL_BODY}>
+              <h3 className={ADMIN_SECTION_TITLE}>Registered identity tuple</h3>
+              <AdminKeyValueList>
+                <AdminKeyValue label="Network key">
+                  <code className="font-mono text-xs">{network.network_key}</code>
+                </AdminKeyValue>
+                <AdminKeyValue label="Chain ID">
+                  <span className="tabular-nums">{network.chain_id}</span>
+                </AdminKeyValue>
+                <AdminKeyValue label="P2P network ID">
+                  <span className="tabular-nums">{network.p2p_network_id}</span>
+                </AdminKeyValue>
+                <AdminKeyValue label="Address HRP">{network.address_hrp}</AdminKeyValue>
+                <AdminKeyValue label="Genesis hash" wide>
+                  <AdminIdentifier value={network.genesis_hash} label="Genesis hash" />
+                </AdminKeyValue>
+              </AdminKeyValueList>
+              <p className={ADMIN_SECONDARY}>
+                Edit the tuple and review per-Node identity on the{' '}
+                <Link
+                  className="inline-flex min-h-11 items-center font-medium text-foreground underline-offset-4 hover:underline"
+                  to={'/admin/networks/' + network.network_key}
+                >
+                  Network detail
+                </Link>
+                .
+              </p>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   )
 }
 

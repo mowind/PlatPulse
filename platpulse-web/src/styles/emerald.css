@@ -213,8 +213,8 @@
  * breakpoint, each cell prefixed by its own label. The migration kept the
  * data-label attributes but dropped these rules, so a migrated table scrolled
  * horizontally instead. Restored here with Emerald tokens for every table that
- * opts in with data-stack. The Agent priority summary keeps the product order:
- * identity, reporting and receipt, evidence, inventory, credentials.
+ * opts in with data-stack. The Agent inventory summary keeps its product order:
+ * identity, reporting and receipt, retained Nodes, then diagnostics.
  * ------------------------------------------------------------------------- */
 @layer components {
   @media (width < 48rem) {
@@ -274,12 +274,11 @@
       color: var(--muted-foreground);
     }
 
-    table[data-stack] tr > [data-label='Agent'] { order: 1; }
-    table[data-stack] tr > [data-label='Reporting status'] { order: 2; }
-    table[data-stack] tr > [data-label='Last received'] { order: 2; }
-    table[data-stack] tr > [data-label='Diagnostics'] { order: 3; }
-    table[data-stack] tr > [data-label='Node Inventory'] { order: 4; }
-    table[data-stack] tr > [data-label='Credentials'] { order: 5; }
+    table[data-slot='agent-table'] tr > [data-label='Agent'] { order: 1; }
+    table[data-slot='agent-table'] tr > [data-label='Reporting'] { order: 2; }
+    table[data-slot='agent-table'] tr > [data-label='Last received'] { order: 2; }
+    table[data-slot='agent-table'] tr > [data-label='Nodes'] { order: 3; }
+    table[data-slot='agent-table'] tr > [data-label='Diagnostics'] { order: 4; }
   }
 }
 
@@ -288,12 +287,11 @@
  * neighbouring column, which the acceptance matrix measures. */
 @layer components {
   table[data-slot='agent-table'] { table-layout: fixed; }
-  table[data-slot='agent-table'] thead th:nth-child(1) { width: 18%; }
-  table[data-slot='agent-table'] thead th:nth-child(2) { width: 15%; }
-  table[data-slot='agent-table'] thead th:nth-child(3) { width: 17%; }
-  table[data-slot='agent-table'] thead th:nth-child(4) { width: 14%; }
-  table[data-slot='agent-table'] thead th:nth-child(5) { width: 18%; }
-  table[data-slot='agent-table'] thead th:nth-child(6) { width: 18%; }
+  table[data-slot='agent-table'] thead th:nth-child(1) { width: 27%; }
+  table[data-slot='agent-table'] thead th:nth-child(2) { width: 14%; }
+  table[data-slot='agent-table'] thead th:nth-child(3) { width: 19%; }
+  table[data-slot='agent-table'] thead th:nth-child(4) { width: 12%; }
+  table[data-slot='agent-table'] thead th:nth-child(5) { width: 28%; }
   table[data-slot='audit-table'] { table-layout: fixed; }
   table[data-slot='audit-table'] thead th:nth-child(1) { width: 16%; }
   table[data-slot='audit-table'] thead th:nth-child(2) { width: 22%; }

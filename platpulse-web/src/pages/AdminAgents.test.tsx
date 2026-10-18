@@ -171,33 +171,32 @@ function mockFetch(routes: Record<string, (ctx: RouteContext) => Response | Prom
   return fetchMock
 }
 
-/** The Diagnostics section, kept apart from the Host history panel that reads the same Host. */
+/** Radix Tabs activates a section on pointer down (and keyboard); a click
+ *  alone does not switch it in jsdom. */
+function openSection(name: RegExp | string) {
+  fireEvent.mouseDown(screen.getByRole('tab', { name }), { button: 0 })
+}
+
+function sectionPanel(key: string, tab: RegExp | string): HTMLElement {
+  openSection(tab)
+  const panel = document.querySelector('[data-slot="admin-detail-section"][data-section="' + key + '"]')
+  if (!panel || (panel as HTMLElement).hidden) throw new Error('the ' + key + ' section is not open')
+  return panel as HTMLElement
+}
+
+/** The Diagnostics section, kept apart from the Host history that reads the same Host. */
 function diagnosticsSection(): HTMLElement {
-  const section = document.querySelector(
-    'section[aria-labelledby="agent-diagnostics-heading"]',
-  )
-  if (!section) throw new Error('the Diagnostics section is not rendered')
-  return section as HTMLElement
+  return sectionPanel('diagnostics', /^Diagnostics/)
 }
 
-/** The Credentials section, kept apart from the Host history panel that also reports errors. */
+/** The Manage section, which holds the credential records and their revocation. */
 function credentialsSection(): HTMLElement {
-  const section = document.querySelector(
-    'section[aria-labelledby="agent-credentials-heading"]',
-  )
-  if (!section) throw new Error('the Credentials section is not rendered')
-  return section as HTMLElement
+  return sectionPanel('manage', /^Manage/)
 }
 
-/** The Agent's own section for the Host it observes once, kept apart from the
- * Diagnostics section that reports the same Host's latest observation. */
+/** The History section, which holds the Host the Agent observes once. */
 function agentHostSection(): HTMLElement {
-  const section = document.querySelector(
-    'section[aria-label="Host resource history"]',
-  )
-  if (!section)
-    throw new Error('the Host resource history section is not rendered')
-  return section as HTMLElement
+  return sectionPanel('history', 'History')
 }
 
 async function renderAt(path: string) {
@@ -209,17 +208,23 @@ async function renderAt(path: string) {
   })
 }
 
-/** Expand one row's Diagnostics disclosure and return the cross-column detail
- * row that must follow it. The item row keeps its six cells. */
+/** Expand one row's details and return the cross-column detail row that must
+ * follow it. The item row keeps its five cells. */
 function expandDiagnostics(row: HTMLElement): HTMLElement {
-  const toggle = within(row).getByRole('button', { name: 'Show diagnostics' })
+  const toggle = row.querySelector('button[aria-controls^="agent-diagnostics-"]') as HTMLButtonElement
+  expect(toggle).toBeTruthy()
+  expect(toggle.getAttribute('aria-expanded')).toBe('false')
   fireEvent.click(toggle)
   expect(toggle.getAttribute('aria-expanded')).toBe('true')
   const detail = row.nextElementSibling as HTMLElement | null
   expect(detail?.getAttribute('data-slot')).toBe('detail-row')
   expect(toggle.getAttribute('aria-controls')).toBe(detail?.querySelector('td')?.id)
-  expect(row.children).toHaveLength(6)
+  expect(row.children).toHaveLength(5)
   return detail as HTMLElement
+}
+
+function cell(row: HTMLElement, label: string): HTMLElement {
+  return row.querySelector('[data-label="' + label + '"]') as HTMLElement
 }
 
 beforeEach(() => {
@@ -262,7 +267,7 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     expect(alert.textContent).toContain('Try again')
   })
 
-  it('shows the six-column priority summary with independent evidence', async () => {
+  it('shows the five-column inventory summary and opens Nodes, credentials and every finding in the row details', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/agents': () => jsonResponse([AGENT_DIAGNOSTIC], 200),
@@ -272,52 +277,85 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     await screen.findByRole('heading', { level: 1, name: 'Agents' })
     const row = await screen.findByRole('row', { name: /0195f2a1/ })
     const headers = screen.getAllByRole('columnheader').map((header) => header.textContent)
-    expect(headers).toEqual([
-      'Agent',
-      'Reporting status',
-      'Last received',
-      'Node Inventory',
-      'Credentials',
-      'Diagnostics',
-    ])
-    // One cell per dimension, in header order: no summary field is merged
-    // into a neighbouring cell and no placeholder cell is added.
+    expect(headers).toEqual(['Agent', 'Reporting', 'Last received', 'Nodes', 'Diagnostics'])
+    // The dimension sources live once in the header, not on every row.
+    expect(screen.getByRole('button', { name: 'About Reporting' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'About Last received' })).toBeTruthy()
     const cells = Array.from(row.children)
-    expect(cells.map((cell) => cell.getAttribute('data-label'))).toEqual([
-      'Agent',
-      'Reporting status',
-      'Last received',
-      'Node Inventory',
-      'Credentials',
-      'Diagnostics',
+    expect(cells.map((entry) => entry.getAttribute('data-label'))).toEqual([
+      'Agent', 'Reporting', 'Last received', 'Nodes', 'Diagnostics',
     ])
-    expect(cells[1].textContent).toContain('Server liveness')
-    expect(cells[1].textContent).toContain('Current')
-    expect(cells[2].textContent).toContain('Server receipt time')
-    expect(cells[2].textContent).toContain('2026-08-12 08:00:00 UTC')
-    expect(cells[3].textContent).toContain('2 retained Nodes')
-    expect(cells[3].textContent).toContain('Active + Retired')
-    expect(cells[4].textContent).toContain('Server validity')
-    expect(cells[4].textContent).toContain('1 active · 0 revoked · 1 inactive (not revoked) · 2 total')
-    expect(cells[5].textContent).toContain('Recorded gap intervals')
-    expect(cells[5].textContent).toContain('Accumulated recorded security events')
-    expect(cells[5].textContent).toContain('3 queued')
-    expect(cells[5].textContent).toContain('delivery in flight')
-    expect(cells[5].textContent).toContain('store not fatal')
-    expect(cells[5].textContent).toContain('delivery error recorded')
-    expect(cells[5].textContent).toContain('dropped sequence range recorded')
-    // The full findings stay behind the disclosure, not in the summary cell.
+    expect(cells[1].textContent).toBe('Current')
+    expect(cells[2].textContent).toBe('2026-08-12 08:00:00 UTC')
+    expect(cells[3].textContent).toBe('2 retained')
+    // A normal credential set and zero counters take no room on the row.
+    expect(row.textContent).not.toMatch(/Server liveness|Server receipt time|Server validity|Active \+ Retired|revoked|Recorded gap intervals/)
+    const diagnostics = cells[4] as HTMLElement
+    expect(diagnostics.querySelector('[data-group="recorded"]')?.textContent).toBe('Recorded · Discarded reports')
+    expect(within(diagnostics).getByRole('button', { name: '+1 recorded for 0195f2a1…0011' })).toBeTruthy()
+    expect(row.textContent).not.toContain('3 queued')
     expect(row.textContent).not.toContain('Dropped sequence range')
     expect(row.textContent).not.toContain('Host snapshot')
+    expect(row.textContent).not.toContain('#42')
+
     const detail = expandDiagnostics(row as HTMLElement)
-    expect(detail.querySelector('td')?.getAttribute('colspan')).toBe('6')
+    expect(detail.querySelector('td')?.getAttribute('colspan')).toBe('5')
+    expect(detail.textContent).toContain('2 retained · 1 Active · 1 Retired')
+    expect(detail.textContent).toContain('1 active · 0 revoked · 1 inactive (not revoked) · 2 total')
+    expect(within(detail).getByRole('link', { name: 'Manage credentials' }).getAttribute('href')).toBe(
+      '/admin/agents/' + AGENT_ID + '?section=manage#credentials',
+    )
+    expect(detail.textContent).toContain('No current Server attention item')
+    expect(within(detail).getByText('Recorded gap intervals', { exact: true }).parentElement?.textContent).toContain('0')
     expect(detail.textContent).toContain('Dropped sequence range')
     expect(detail.textContent).toContain('#7–#9 recorded')
     expect(detail.textContent).toContain('Delivery error')
     expect(detail.textContent).toContain('Host snapshot')
     expect(detail.textContent).not.toContain('server unavailable')
-    expect(row.textContent).not.toContain('#42')
     expect(screen.queryByRole('link', { name: 'Enroll a new Agent' })).toBeNull()
+  })
+
+  it('names current attention and a credential set without an active credential apart from recorded history', async () => {
+    const attention = [
+      {
+        id: 'agent_spool_overflow:agent:' + AGENT_ID,
+        kind: 'agent_spool_overflow',
+        severity: 'critical',
+        subject_kind: 'agent',
+        subject_id: AGENT_ID,
+        subject_label: AGENT_ID,
+        message: 'the Agent spool overflowed and discarded queued reports',
+        observed_at: '2026-08-12T08:00:00Z',
+        evidence_key: 'overflow-1',
+      },
+    ]
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/agents': () =>
+        jsonResponse([
+          {
+            ...AGENT_DIAGNOSTIC,
+            attention,
+            sequence_gap_count: 2,
+            credentials: [{ ...AGENT_DIAGNOSTIC.credentials[0], active: false, revoked_at: '2026-08-12T07:30:00Z' }],
+          },
+        ], 200),
+    })
+    renderAt('/admin/agents')
+    const row = await screen.findByRole('row', { name: /0195f2a1/ })
+    const diagnostics = cell(row as HTMLElement, 'Diagnostics')
+    expect(diagnostics.querySelector('[data-group="current"]')?.textContent).toBe(
+      'the Agent spool overflowed and discarded queued reports',
+    )
+    expect(diagnostics.querySelector('[data-group="recorded"]')?.textContent).toBe('Recorded · 2 gap intervals')
+    // Reporting Current never implies a valid credential.
+    expect(cell(row as HTMLElement, 'Reporting').textContent).toBe('Current')
+    const detail = expandDiagnostics(row as HTMLElement)
+    const current = within(detail).getByRole('region', { name: 'Current and not observed' })
+    expect(current.textContent).toContain('the Agent spool overflowed and discarded queued reports')
+    expect(current.textContent).toContain('No active credential')
+    const recorded = within(detail).getByRole('region', { name: 'Recorded evidence' })
+    expect(recorded.textContent).toContain('Recorded gap intervals2')
   })
 
   it('keeps last-good Agent values visible after a failed refresh', async () => {
@@ -337,7 +375,7 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
 
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('last successful'))
     expect(row.textContent).toContain('Current')
-    expect(row.textContent).toContain('2 retained Nodes')
+    expect(row.textContent).toContain('2 retained')
   })
 
   it('distinguishes an omitted Server receipt time as Unknown', async () => {
@@ -349,8 +387,7 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     renderAt('/admin/agents')
 
     const row = await screen.findByRole('row', { name: /0195f2a1/ })
-    const receipt = within(row).getByText('Server receipt time', { exact: true }).parentElement
-    expect(receipt?.textContent).toContain('Unknown')
+    expect(cell(row as HTMLElement, 'Last received').textContent).toBe('Unknown')
   })
 
   it('distinguishes an explicit null Server receipt time as Never received', async () => {
@@ -362,10 +399,8 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     renderAt('/admin/agents')
 
     const row = await screen.findByRole('row', { name: /0195f2a1/ })
-    const liveness = within(row).getByText('Server liveness', { exact: true }).parentElement
-    expect(liveness?.textContent).toContain('Unknown')
-    const receipt = within(row).getByText('Server receipt time', { exact: true }).parentElement
-    expect(receipt?.textContent).toContain('Never received')
+    expect(cell(row as HTMLElement, 'Reporting').textContent).toBe('Unknown')
+    expect(cell(row as HTMLElement, 'Last received').textContent).toBe('Never received')
   })
 
   it('reveals the complete Agent ID and reports clipboard failure without claiming success', async () => {
@@ -437,18 +472,18 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     renderAt('/admin/agents')
 
     const row = await screen.findByRole('row', { name: /0195f2a1/ })
-    expect(row.textContent).toContain('Current')
-    expect(within(row).getByText('Recorded gap intervals', { exact: true }).parentElement?.textContent).toContain('2')
-    expect(within(row).getByText('Accumulated recorded security events', { exact: true }).parentElement?.textContent).toContain('3')
-    const summary = within(row).getByText('Recorded evidence', { exact: true }).parentElement
-    expect(summary?.textContent).toContain('0 queued')
-    expect(summary?.textContent).toContain('delivery idle')
-    expect(summary?.textContent).toContain('store fatal')
-    expect(summary?.textContent).toContain('delivery error recorded')
-    expect(summary?.textContent).toContain('report too large')
-    expect(summary?.textContent).toContain('4 pending history gaps')
+    expect(cell(row as HTMLElement, 'Reporting').textContent).toBe('Current')
+    const diagnostics = cell(row as HTMLElement, 'Diagnostics')
+    // One recorded item and a count of the rest: no run-on sentence, no clamp.
+    expect(diagnostics.querySelector('[data-group="recorded"]')?.textContent).toBe('Recorded · 2 gap intervals')
+    // A fatal store in the latest Host observation is current, not history.
+    expect(diagnostics.querySelector('[data-group="current"]')?.textContent).toBe(
+      'Spool store fatal in the latest Host observation',
+    )
+    expect(within(diagnostics).getByRole('button', { name: '+6 recorded for 0195f2a1…0011' })).toBeTruthy()
     expect(row.textContent).not.toContain(longDeliveryError)
     const detail = expandDiagnostics(row as HTMLElement)
+    expect(within(detail).getByText('Accumulated recorded security events', { exact: true }).parentElement?.textContent).toContain('3')
     expect(within(detail).getByText('Queued reports', { exact: true }).parentElement?.textContent).toContain('0')
     expect(within(detail).getByText('Delivery state', { exact: true }).parentElement?.textContent).toContain('Idle')
     expect(within(detail).getByText('Store fatal', { exact: true }).parentElement?.textContent).toContain('Yes')
@@ -468,8 +503,8 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     renderAt('/admin/agents')
 
     const row = await screen.findByRole('row', { name: /0195f2a1/ })
-    expect(within(row).getByText('Recorded evidence', { exact: true }).parentElement?.textContent).toContain('No Host observation yet')
-    expect(within(row).queryByText('Spool observation', { exact: true })).toBeNull()
+    expect(cell(row as HTMLElement, 'Diagnostics').textContent).toContain('Host not observed yet')
+    expect(row.textContent).not.toContain('Spool not observed')
     const detail = expandDiagnostics(row as HTMLElement)
     expect(within(detail).getByText('Host observation', { exact: true }).parentElement?.textContent).toContain('Not observed yet')
     expect(within(detail).queryByText('Spool observation', { exact: true })).toBeNull()
@@ -484,7 +519,7 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     renderAt('/admin/agents')
 
     let row = await screen.findByRole('row', { name: /0195f2a1/ })
-    expect(within(row).getByText('Recorded evidence', { exact: true }).parentElement?.textContent).toContain('Spool not observed yet')
+    expect(cell(row as HTMLElement, 'Diagnostics').textContent).toContain('Spool not observed yet')
     let detail = expandDiagnostics(row as HTMLElement)
     expect(within(detail).getByText('Spool observation', { exact: true }).parentElement?.textContent).toContain('Not observed yet')
     expect(within(detail).queryByText('Queued reports', { exact: true })).toBeNull()
@@ -507,8 +542,9 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
     await renderAt('/admin/agents')
 
     row = await screen.findByRole('row', { name: /0195f2a1/ })
-    expect(within(row).getByText('Recorded evidence', { exact: true }).parentElement?.textContent).toContain('0 queued')
-    expect(within(row).getByText('Recorded evidence', { exact: true }).parentElement?.textContent).toContain('delivery idle')
+    // An observed, empty spool is known, so nothing is listed on the row.
+    expect(cell(row as HTMLElement, 'Diagnostics').textContent).toContain('Nothing recorded')
+    expect(row.textContent).not.toContain('not observed')
     detail = expandDiagnostics(row as HTMLElement)
     expect(within(detail).getByText('Queued reports', { exact: true }).parentElement?.textContent).toContain('0')
     expect(within(detail).getByText('Delivery state', { exact: true }).parentElement?.textContent).toContain('Idle')
@@ -539,7 +575,7 @@ describe('PAGE-ADMIN-AGENTS (Agent lifecycle)', () => {
 })
 
 describe('PAGE-ADMIN-AGENT-DETAIL', () => {
-  it('shows identity, credentials with revoke, inventory, diagnostics, and the redacted audit trail', async () => {
+  it('opens on Overview and keeps History, Diagnostics and Manage one section away', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       [`/api/admin/v1/agents/${AGENT_ID}`]: () => jsonResponse(AGENT_DIAGNOSTIC, 200),
@@ -559,65 +595,93 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
           },
           200,
         ),
+      [`/api/admin/v1/agents/${AGENT_ID}/storage-mounts`]: () => new Promise<Response>(() => {}),
+      [`/api/admin/v1/agents/${AGENT_ID}/host-metrics/*`]: () => new Promise<Response>(() => {}),
     })
     renderAt(`/admin/agents/${AGENT_ID}`)
 
     await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
-    // The panels arrive with the authoritative REST data.
-    await screen.findByText('Identity')
-    // Contextual shortcut from an Agent detail to its Incident history
-    // (issue #202 Story 2): a bound subject filter, not a generic entry.
+    // Header: independent dimensions, the full Agent ID behind its disclosure.
+    const dimensions = await screen.findByLabelText('Current Agent dimensions')
+    expect(dimensions.textContent).toContain('Current')
+    expect(dimensions.textContent).toContain('2026-08-12 08:00:00 UTC')
+    expect(dimensions.textContent).toContain('2 retained')
+    expect(dimensions.textContent).toContain('1 active · 2 total')
     expect(
       screen.getByRole('link', { name: 'Incidents for this Agent' }).getAttribute('href'),
     ).toBe(`/admin/alerts/incidents?subject=agent&subject_key=${AGENT_ID}`)
-    for (const heading of ['Overview', 'Runtime and reporting', 'Credentials', 'Diagnostics', 'Audit']) {
-      expect(screen.getByRole('heading', { level: 2, name: heading })).toBeTruthy()
-    }
-    // Independent dimensions.
-    expect(screen.getByText('Identity')).toBeTruthy()
-    expect(screen.getByText('Liveness')).toBeTruthy()
-    expect(screen.getByText('Boot and report state')).toBeTruthy()
-    expect(screen.getByText('Inventory')).toBeTruthy()
-    // The Inventory dimension shows the declaration the Server accepts
-    // (issue #181), not an inferred per-Node counter.
+    fireEvent.click(screen.getByRole('button', { name: /Show full\s*Agent ID/ }))
+    expect(screen.getAllByText(AGENT_ID, { exact: true }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: 'Copy Agent ID' })).toBeTruthy()
+    // No report-style numbering and no repeated section-title blocks.
+    expect(screen.queryByText(/^0[1-8]$/)).toBeNull()
+
+    // Overview: reporting, a short runtime summary and the Node Inventory.
+    expect(screen.getByRole('tab', { name: 'Overview' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('heading', { level: 2, name: 'Reporting and runtime' })).toBeTruthy()
+    expect(screen.getByText('#42')).toBeTruthy()
     const acceptedRevision = screen.getByText('Accepted declaration', { exact: true }).parentElement
     expect(acceptedRevision?.textContent).toContain('Accepted revision 4')
     expect(acceptedRevision?.textContent).toContain('0x11111111…1111')
+    expect(screen.queryByText('Full active boot ID')).toBeNull()
+    expect(screen.queryByText('Spool store error')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Revoke' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Permanently delete Agent' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Audit trail' })).toBeNull()
+
+    const diagnostics = diagnosticsSection()
+    expect(within(diagnostics).getByRole('heading', { name: 'Identity' })).toBeTruthy()
+    expect(within(diagnostics).getByRole('heading', { name: 'Boot and report state' })).toBeTruthy()
     expect(
-      screen.getByText('Inventory rejection evidence', { exact: true }).parentElement?.textContent,
+      within(diagnostics).getByText('Inventory rejection evidence', { exact: true }).parentElement?.textContent,
     ).toContain('No Inventory rejection recorded')
-    expect(screen.getByText('Credentials')).toBeTruthy()
-    expect(screen.getByText('Diagnostics')).toBeTruthy()
-    expect(within(diagnosticsSection()).getByText('Host CPU')).toBeTruthy()
-    expect(screen.getByText('Host memory used / total')).toBeTruthy()
-    expect(screen.getByText('memory', { exact: true })).toBeTruthy()
-    expect(screen.getByText(/state revision 7 · value revision 11/)).toBeTruthy()
-    expect(screen.getByText('Audit trail')).toBeTruthy()
-    expect(screen.getAllByText(AGENT_ID, { exact: true }).length).toBeGreaterThan(0)
-    expect(screen.getAllByRole('button', { name: 'Copy Agent ID' }).length).toBeGreaterThan(0)
-    expect(screen.getByText('sequence #42')).toBeTruthy()
-    expect(screen.getByText('Server receipt time')).toBeTruthy()
-    expect(screen.getByText('Full active boot ID')).toBeTruthy()
-    expect(screen.getByText('boot-1', { exact: true })).toBeTruthy()
-    expect(screen.getByText('Recorded gap intervals')).toBeTruthy()
-    const droppedSequence = screen.getByText('Dropped sequence range', { exact: true }).parentElement
+    expect(within(diagnostics).getByText('Host CPU')).toBeTruthy()
+    expect(within(diagnostics).getByText('Host memory used / total')).toBeTruthy()
+    expect(within(diagnostics).getByText('memory', { exact: true })).toBeTruthy()
+    expect(within(diagnostics).getByText(/state revision 7 · value revision 11/)).toBeTruthy()
+    expect(within(diagnostics).getByText('sequence #42')).toBeTruthy()
+    expect(within(diagnostics).getByText('Full active boot ID')).toBeTruthy()
+    expect(within(diagnostics).getByText('boot-1', { exact: true })).toBeTruthy()
+    expect(within(diagnostics).getByText('Recorded gap intervals')).toBeTruthy()
+    const droppedSequence = within(diagnostics).getByText('Dropped sequence range', { exact: true }).parentElement
     expect(droppedSequence?.textContent).toContain('7–9')
-    const deliveryError = screen.getByText('Last delivery error', { exact: true }).parentElement
+    const deliveryError = within(diagnostics).getByText('Last delivery error', { exact: true }).parentElement
     expect(deliveryError?.textContent).toContain('server unavailable')
-    expect(screen.getByText(/Recorded evidence from the latest Host observation/)).toBeTruthy()
-    const storeError = screen.getByText('Spool store error', { exact: true }).parentElement
-    expect(storeError?.textContent).toContain('Unknown')
-    const reportSize = screen.getByText('Report size state', { exact: true }).parentElement
-    expect(reportSize?.textContent).toContain('Unknown')
+    expect(within(diagnostics).getByText(/Recorded evidence from the latest Host observation/)).toBeTruthy()
+    expect(within(diagnostics).getByText('Spool store error', { exact: true }).parentElement?.textContent).toContain('Unknown')
+    expect(within(diagnostics).getByText('Report size state', { exact: true }).parentElement?.textContent).toContain('Unknown')
+
+    const history = agentHostSection()
+    expect(await within(history).findByText('agent_credential_rotated')).toBeTruthy()
+    expect(within(history).getByText(/overlap_hours: 24/)).toBeTruthy()
+    expect(within(history).getByRole('heading', { name: 'Host resource history' })).toBeTruthy()
+
+    const manage = credentialsSection()
     // Credential state is Server-owned; the revoke action is explicit.
-    expect(screen.getByText(CREDENTIAL_ID)).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Revoke' })).toBeTruthy()
-    // The redacted audit trail renders details without secrets.
-    expect(screen.getByText('agent_credential_rotated')).toBeTruthy()
-    expect(screen.getByText(/overlap_hours: 24/)).toBeTruthy()
+    expect(within(manage).getByText(CREDENTIAL_ID)).toBeTruthy()
+    expect(within(manage).getByRole('button', { name: 'Revoke' })).toBeTruthy()
+    expect(within(manage).getByRole('heading', { name: 'Danger zone' })).toBeTruthy()
     // Actions are offered as links, not executed remotely.
     expect(screen.queryByRole('link', { name: 'Rotate credential' })).toBeNull()
     expect(screen.queryByRole('link', { name: 'Recover agent' })).toBeNull()
+  })
+
+  it('opens the section an older in-page anchor points at', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () => jsonResponse(AGENT_DIAGNOSTIC, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () => jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/storage-mounts`]: () => new Promise<Response>(() => {}),
+      [`/api/admin/v1/agents/${AGENT_ID}/host-metrics/*`]: () => new Promise<Response>(() => {}),
+    })
+    renderAt(`/admin/agents/${AGENT_ID}#audit`)
+    expect((await screen.findByRole('tab', { name: 'History' })).getAttribute('aria-selected')).toBe('true')
+    expect(await screen.findByRole('heading', { name: 'Audit trail' })).toBeTruthy()
+
+    cleanup()
+    await renderAt(`/admin/agents/${AGENT_ID}#credentials`)
+    expect((await screen.findByRole('tab', { name: /^Manage/ })).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('heading', { name: 'Credential records' })).toBeTruthy()
   })
 
   it('shows the Server-recorded Inventory rejection next to the accepted declaration', async () => {
@@ -641,7 +705,7 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
       [`/api/admin/v1/agents/${AGENT_ID}`]: () => jsonResponse(rejected, 200),
       [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () => jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
     })
-    renderAt(`/admin/agents/${AGENT_ID}`)
+    renderAt(`/admin/agents/${AGENT_ID}?section=diagnostics`)
 
     await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
     const evidence = (
@@ -687,7 +751,7 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     expect(inventory?.textContent).toContain('0x33333333…3333')
 
     const evidence = (
-      await screen.findByText('Inventory rejection evidence', { exact: true })
+      await within(diagnosticsSection()).findByText('Inventory rejection evidence', { exact: true })
     ).parentElement
     expect(evidence?.textContent).toContain('inventory_revision_conflict')
     expect(evidence?.textContent).toContain('server-managed declaration')
@@ -749,7 +813,7 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
         )
       },
     })
-    renderAt(`/admin/agents/${AGENT_ID}`)
+    renderAt(`/admin/agents/${AGENT_ID}?section=manage`)
 
     await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }))
@@ -777,7 +841,7 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
         return pendingRevoke
       },
     })
-    renderAt(`/admin/agents/${AGENT_ID}`)
+    renderAt(`/admin/agents/${AGENT_ID}?section=manage`)
 
     await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }))
@@ -826,7 +890,7 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
       [`/api/admin/v1/agents/${AGENT_ID}/credentials/${CREDENTIAL_ID}/revoke`]:
         () => errorBody('credential_already_revoked', 409),
     })
-    renderAt(`/admin/agents/${AGENT_ID}`)
+    renderAt(`/admin/agents/${AGENT_ID}?section=manage`)
 
     await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }))
@@ -866,7 +930,7 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
         )
       },
     })
-    renderAt(`/admin/agents/${AGENT_ID}`)
+    renderAt(`/admin/agents/${AGENT_ID}?section=manage`)
 
     await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
     // A fresh Agent has no name: the stable ID is the visible identifier.
@@ -885,6 +949,7 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     await waitFor(() =>
       expect(screen.getByRole('heading', { level: 1, name: /Host A Agent/ })).toBeTruthy(),
     )
+    fireEvent.click(screen.getByRole('button', { name: /Show full\s*Agent ID/ }))
     expect(screen.getAllByText(AGENT_ID, { exact: true }).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: 'Copy Agent ID' })).toBeTruthy()
   })
@@ -966,7 +1031,7 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
         )
       },
     })
-    renderAt(`/admin/agents/${AGENT_ID}`)
+    renderAt(`/admin/agents/${AGENT_ID}?section=manage`)
 
     await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
     await screen.findByRole('heading', { level: 2, name: 'Danger zone' })
@@ -1038,7 +1103,7 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
           200,
         ),
     })
-    renderAt(`/admin/agents/${AGENT_ID}`)
+    renderAt(`/admin/agents/${AGENT_ID}?section=manage`)
 
     await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
     await screen.findByRole('heading', { level: 2, name: 'Danger zone' })
@@ -1294,17 +1359,18 @@ function storageMountsAnswer(overrides: Record<string, unknown> = {}) {
         )
       },
     })
-    renderAt(`/admin/agents/${AGENT_ID}`)
+    renderAt(`/admin/agents/${AGENT_ID}?section=history`)
 
     await screen.findByRole('heading', { level: 1, name: /Agent 0195f2a1/ })
-    // 06: the shared Host series is its own section, not a row inside the
-    // Diagnostics section that reports the same Host's latest observation.
+    // The shared Host series is in History, not a row inside the Diagnostics
+    // section that reports the same Host's latest observation.
     await screen.findByRole('heading', {
       level: 2,
       name: 'Host resource history',
     })
     const section = agentHostSection()
-    expect(section.textContent).toContain('06')
+    expect(diagnosticsSection().contains(screen.getByText(/belongs to the Agent, not to a Node/))).toBe(false)
+    openSection('History')
     expect(
       within(section).getByRole('heading', {
         level: 2,
@@ -1470,7 +1536,7 @@ function storageMountsAnswer(overrides: Record<string, unknown> = {}) {
         )
       },
     })
-    renderAt(`/admin/agents/${AGENT_ID}`)
+    renderAt(`/admin/agents/${AGENT_ID}?section=history`)
 
     const section = await screen.findByRole('heading', {
       level: 2,
@@ -1566,7 +1632,7 @@ function storageMountsAnswer(overrides: Record<string, unknown> = {}) {
         jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
       [`/api/admin/v1/agents/${AGENT_ID}/storage-mounts`]: () => jsonResponse(paused, 200),
     })
-    renderAt(`/admin/agents/${AGENT_ID}`)
+    renderAt(`/admin/agents/${AGENT_ID}?section=history`)
     await screen.findByRole('heading', { level: 2, name: 'Storage by mount path' })
 
     const list = await within(agentHostSection()).findByRole('region', {
@@ -1605,7 +1671,7 @@ function storageMountsAnswer(overrides: Record<string, unknown> = {}) {
       [`/api/admin/v1/agents/${AGENT_ID}/storage-mounts`]: () =>
         failed ? errorBody('unavailable', 503) : jsonResponse(storageMountsAnswer(), 200),
     })
-    renderAt(`/admin/agents/${AGENT_ID}`)
+    renderAt(`/admin/agents/${AGENT_ID}?section=history`)
     await screen.findByRole('heading', { level: 2, name: 'Storage by mount path' })
 
     const list = await within(agentHostSection()).findByRole('region', {
