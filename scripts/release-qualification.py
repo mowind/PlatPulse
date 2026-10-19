@@ -711,9 +711,11 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
             "Agent 0 suspension is not available in this black-box harness; other-Agent traffic was observed but is not an outage proof",
         ))
 
+        # Restart durability is judged on the rows that exist before the restart;
+        # the sustained window that follows legitimately opens new incidents.
         with sqlite3.connect(db_path) as db:
-            alert_count_before = db.execute("SELECT COUNT(*) FROM alert_incidents").fetchone()[0]
-            delivery_count_before = db.execute("SELECT COUNT(*) FROM notification_deliveries").fetchone()[0]
+            alert_ids_before = {row[0] for row in db.execute("SELECT incident_id FROM alert_incidents")}
+            delivery_ids_before = {row[0] for row in db.execute("SELECT delivery_id FROM notification_deliveries")}
         pending_report, _ = make_report(template, first_identity, last_sequences[0] + 1, 150000)
         pending_body = json_bytes(pending_report)
         expected_outage.set()
@@ -845,32 +847,31 @@ def run_qualification(profile_path: Path, output_root: Path) -> int:
 
         with sqlite3.connect(db_path) as db:
             receipt_count, distinct_receipts = db.execute("SELECT COUNT(*), COUNT(DISTINCT report_id) FROM agent_report_receipts").fetchone()
-            alert_count = db.execute("SELECT COUNT(*) FROM alert_incidents").fetchone()[0]
-            delivery_count = db.execute("SELECT COUNT(*) FROM notification_deliveries").fetchone()[0]
+            alert_ids_after = {row[0] for row in db.execute("SELECT incident_id FROM alert_incidents")}
+            delivery_ids_after = {row[0] for row in db.execute("SELECT delivery_id FROM notification_deliveries")}
             gap_count, gap_nodes = db.execute("SELECT COUNT(*), COUNT(DISTINCT node_id) FROM block_history_gaps WHERE kind = 'unrecoverable_backfill'").fetchone()
         receipt_unique = receipt_count == distinct_receipts
         history_gap_ok = gap_count >= workload["agents"] and gap_nodes >= workload["agents"]
         scenarios.append(scenario("history_gap_restart", "PASS" if history_gap_ok else "FAIL", f"retained {gap_count} unrecoverable History Gaps across {gap_nodes} Nodes after restart" if history_gap_ok else "History Gap rows were not retained per Agent"))
         scenarios.append(scenario("receipt_uniqueness", "PASS" if receipt_unique else "FAIL", f"stored {receipt_count} unique Report Receipts" if receipt_unique else "duplicate Report Receipt rows were stored"))
-        alert_outbox_exercised = alert_count > 0 or delivery_count > 0
-        alert_outbox_ok = (
-            alert_count_before == alert_count
-            and delivery_count_before == delivery_count
-            and alert_outbox_exercised
-        )
+        alert_outbox_exercised = bool(alert_ids_before or delivery_ids_before)
+        lost_incidents = len(alert_ids_before - alert_ids_after)
+        lost_deliveries = len(delivery_ids_before - delivery_ids_after)
+        alert_outbox_ok = alert_outbox_exercised and lost_incidents == 0 and lost_deliveries == 0
         if not alert_outbox_exercised:
             scenarios.append(scenario(
                 "alert_outbox_restart",
                 "NOT_RUN",
-                "the black-box fixture produced no alert incident and no notification delivery in "
-                "this profile; real notification providers are not represented by loopback fixtures",
+                "the black-box fixture produced no alert incident and no notification delivery before "
+                "the Server restart; real notification providers are not represented by loopback fixtures",
             ))
         else:
             scenarios.append(scenario(
                 "alert_outbox_restart",
                 "PASS" if alert_outbox_ok else "FAIL",
-                f"alert and notification state remained durable after restart ({alert_count} incidents, {delivery_count} deliveries)"
-                if alert_outbox_ok else "expected durable alert incident and notification delivery rows were not retained",
+                f"alert and notification state remained durable after restart ({len(alert_ids_before)} incidents, {len(delivery_ids_before)} deliveries)"
+                if alert_outbox_ok else
+                f"pre-restart rows were not retained ({lost_incidents} incidents, {lost_deliveries} deliveries lost)",
             ))
 
         error_rate = request_failures / max(1, request_total)
