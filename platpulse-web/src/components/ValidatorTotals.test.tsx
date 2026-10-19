@@ -142,6 +142,28 @@ describe('Home cumulative overview', () => {
     expect(within(dialog).queryByRole('article', { name: 'Validator totals for Mainnet' })).toBeNull()
   })
 
+  it('names the whole Network scope while a filter narrows the list (#245)', () => {
+    render(<ValidatorTotalCard networks={networks} metric="blocks" listNarrowed />)
+    const card = screen.getByRole('article', { name: 'Cumulative blocks' })
+    // One short scope word on the face; the full explanation lives in the Breakdown.
+    expect(card.querySelector('[data-slot="summary-caption"]')?.textContent).toBe('All of 2 Networks · 5/6 reporting · 1 stale')
+    fireEvent.click(screen.getByRole('button', { name: /breakdown/ }))
+    expect(screen.getByRole('dialog').querySelector('[data-slot="validator-overview-note"]')?.textContent)
+      .toBe('This total covers every Active Node in the 2 selected Networks; search and the Health and Validator status filters do not narrow it.')
+    cleanup()
+    render(<ValidatorTotalCard networks={[networks[1]]} metric="rewards" listNarrowed />)
+    expect(screen.getByRole('article').querySelector('[data-slot="summary-caption"]')?.textContent).toBe('All of Testnet · 1/1 reporting')
+    fireEvent.click(screen.getByRole('button', { name: /breakdown/ }))
+    expect(screen.getByRole('dialog').querySelector('[data-slot="validator-overview-note"]')?.textContent)
+      .toBe('This total covers every Active Node in Testnet; search and the Health and Validator status filters do not narrow it.')
+    cleanup()
+    // Unnarrowed, the face keeps the plain scope and the Breakdown carries no note.
+    render(<ValidatorTotalCard networks={[networks[1]]} metric="rewards" />)
+    expect(screen.getByRole('article').querySelector('[data-slot="summary-caption"]')?.textContent).toBe('Testnet · 1/1 reporting')
+    fireEvent.click(screen.getByRole('button', { name: /breakdown/ }))
+    expect(screen.getByRole('dialog').querySelector('[data-slot="validator-overview-note"]')).toBeNull()
+  })
+
   it('keeps the abbreviated reward tile while the Breakdown carries the exact amount', () => {
     const rich = network('Rich', { ...other, rewards: { ...other.rewards, knownSum: '1730000.5' } })
     render(<ValidatorTotalCard networks={[rich]} metric="rewards" />)

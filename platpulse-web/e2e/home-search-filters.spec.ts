@@ -40,7 +40,9 @@ const summary = (page: Page) => home(page).locator('[aria-label="Home summary"]'
 const nodeGrid = (page: Page) => page.locator('[data-slot="node-grid"]')
 const filterNotice = (page: Page) => page.locator('[data-slot="home-filter-notice"]')
 const geoMap = (page: Page) => page.getByRole('region', { name: 'Peer countries' })
-const cumulativeNote = 'Whole Network selection, never the filtered list'
+// Issue #245: while a filter narrows the list, the two cumulative tiles name the
+// whole Network scope in one word on their caption.
+const cumulativeNote = /^All of /
 // Issue #232: the three select controls live behind the Sort & filter entry, so
 // every read or change opens the surface that holds the control first. Opening
 // is idempotent: an already open surface stays open. Issue #241 made the search

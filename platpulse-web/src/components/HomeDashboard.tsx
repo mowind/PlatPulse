@@ -492,11 +492,6 @@ export default function HomeDashboard({
   )
   const geoSelectionBasis = selectionNarrowed ? 'node-selection' : 'network'
   const geoStatus = geoMapStatus(geoOverview, { loading, hasProjection })
-  // The two cumulative Validator cells keep the Network selection, so they say
-  // which selection they cover as soon as a filter makes that visible.
-  const cumulativeScopeNote = selectionNarrowed
-    ? 'Whole Network selection, never the filtered list'
-    : undefined
   const streamLabel = realtimeStreamLabel(realtimeStatus)
   return (
     <section aria-label="Home">
@@ -572,14 +567,14 @@ export default function HomeDashboard({
         metrics={<>
           {/* Four counters read the current list selection (#233); the two
               cumulative Validator cells keep the Network selection and say so
-              on their face, because the Server publishes those totals per
+              on their face ('All of …', #245), because the Server publishes those totals per
               Network and a Node filter must never re-sum them. A selection that
               matches no Node puts these four in their own explicit empty state
               instead of a zero, while the cumulative cells keep counting the
               Network selection. */}
           <SummaryCard label="Active Nodes" value={activeNodeCount} tone="green" icon="server" emptyLabel={emptyLabel} />
           <SummaryCard label="Healthy Nodes" value={selectionHealthyCount} tone="green" icon="heart" emptyLabel={emptyLabel} />
-          <ValidatorTotalCard networks={scopedNetworks} metric="blocks" scopeNote={cumulativeScopeNote} availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
+          <ValidatorTotalCard networks={scopedNetworks} metric="blocks" listNarrowed={selectionNarrowed} availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
           {/* The one tile whose figure is a health verdict rather than a plain
               count, so it is the one tile that states what it counts (#236 round
               2). The caption names the two Server verdicts and the title states
@@ -588,7 +583,7 @@ export default function HomeDashboard({
             tone={attentionCount === null || attentionCount === 0 ? 'green' : 'red'} icon="alert" emptyLabel={emptyLabel}
             caption={ATTENTION_CAPTION} hint={ATTENTION_HINT} />
           <SummaryCard label="Networks" value={selectionNetworkCount} tone="green" icon="network" emptyLabel={emptyLabel} />
-          <ValidatorTotalCard networks={scopedNetworks} metric="rewards" scopeNote={cumulativeScopeNote} availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
+          <ValidatorTotalCard networks={scopedNetworks} metric="rewards" listNarrowed={selectionNarrowed} availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
         </>}
         map={<GeoMapBoundary>
           <GeoWorldMap overview={geoOverview} status={geoStatus} selectionBasis={geoSelectionBasis} />

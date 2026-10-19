@@ -1251,6 +1251,8 @@ describe('Public Home filter URLs', () => {
     // holds: the list itself carries no count line.
     expect(summaryValueOf('Active Nodes').textContent).toBe('3')
     expect(document.querySelector('[data-scope-basis]')?.getAttribute('data-scope-basis')).toBe('network')
+    // Nothing narrows the list yet, so the cumulative cells name the plain scope.
+    expect(screen.getByRole('article', { name: 'Cumulative blocks' }).querySelector('[data-slot="summary-caption"]')?.textContent).toMatch(/^2 Networks · /)
 
     fireEvent.change(searchbox(), { target: { value: 'Alpha' } })
 
@@ -1261,7 +1263,10 @@ describe('Public Home filter URLs', () => {
     expect(summaryValueOf('Active Nodes').textContent).toBe('1')
     expect(summaryValueOf('Networks').textContent).toBe('1')
     expect(document.querySelector('[data-scope-basis]')?.getAttribute('data-scope-basis')).toBe('node-selection')
-    expect(document.body.textContent).toContain('Whole Network selection, never the filtered list')
+    // #245: the note is one scope word on the face, not a sentence in the caption.
+    expect(screen.getByRole('article', { name: 'Cumulative blocks' }).querySelector('[data-slot="summary-caption"]')?.textContent).toMatch(/^All of 2 Networks · /)
+    expect(screen.getByRole('article', { name: 'Cumulative rewards' }).querySelector('[data-slot="summary-caption"]')?.textContent).toMatch(/^All of 2 Networks · /)
+    expect(document.body.textContent).not.toContain('Whole Network selection')
     expect(window.location.search).toBe('?q=Alpha')
   })
 
@@ -1311,7 +1316,7 @@ describe('Public Home filter URLs', () => {
     expect(document.querySelector('[data-scope-basis]')?.getAttribute('data-scope-basis')).toBe('node-selection')
     // The two cumulative cells do not follow the list, so they keep the
     // Network selection's figures and say so on the card.
-    expect(document.body.textContent).toContain('Whole Network selection, never the filtered list')
+    expect(screen.getByRole('article', { name: 'Cumulative blocks' }).querySelector('[data-slot="summary-caption"]')?.textContent).toMatch(/^All of Mainnet · /)
     // The map says the selection holds no Node; it never draws an empty world
     // and never reports a failure.
     expect(document.body.textContent).toContain('No Active Nodes match these filters')

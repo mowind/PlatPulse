@@ -101,11 +101,11 @@ The currently effective proportion of applicable Validator rewards allocated to 
 _Avoid_: Delegation APY, Operator commission, Pending reward ratio
 
 **Current-Selection Validator Summary**:
-The Server-owned totals of the distinct Validators linked to the Active Nodes in the current Home selection, grouped by Network and deduplicated by Validator through automatically identified Node Validator Links. Blocks and rewards are reported separately, each with its known-value total, eligible-Validator count, valued count, and stale count. It describes the current selection rather than an ownership ledger, and it can decrease when filters, effective Links, or Active membership change.
+The Server-owned totals of the distinct Validators linked to the Active Nodes of the Networks selected on Home, grouped by Network and deduplicated by Validator through automatically identified Node Validator Links. Blocks and rewards are reported separately, each with its known-value total, eligible-Validator count, valued count, and stale count. It describes that Network selection rather than an ownership ledger, and it can decrease when the Network selection, effective Links, or Active membership change; the Home list's search and status filters never narrow it.
 _Avoid_: Portfolio total, Node-summed total, Cross-network total
 
 **Cross-Network Validator Overview**:
-The numerical sum of the known cumulative Validator block counts or rewards from the per-Network Current-Selection Validator Summaries in the current Home selection, keeping Validator identity and coverage scoped to each Network. Rewards are added as native-unit numbers without conversion; the overview is neither a single-asset balance nor a monetary valuation, and unavailable contributions remain unknown rather than zero.
+The numerical sum of the known cumulative Validator block counts or rewards from the per-Network Current-Selection Validator Summaries of the Networks selected on Home, keeping Validator identity and coverage scoped to each Network. Rewards are added as native-unit numbers without conversion; the overview is neither a single-asset balance nor a monetary valuation, and unavailable contributions remain unknown rather than zero.
 _Avoid_: Portfolio value, Converted asset balance, Cross-network Validator identity
 
 **Agent Enrollment**:

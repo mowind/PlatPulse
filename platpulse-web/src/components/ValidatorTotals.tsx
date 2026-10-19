@@ -93,14 +93,15 @@ function NetworkTotals({ network }: { network: PublicNetwork }) {
   </article>
 }
 
-export function ValidatorTotalCard({ networks, metric, availability = 'ready', scopeNote }: {
+export function ValidatorTotalCard({ networks, metric, availability = 'ready', listNarrowed = false }: {
   networks: PublicNetwork[]
   metric: Metric
   availability?: 'ready' | 'loading' | 'unavailable'
-  /** Which selection this card covers, when that is not the whole page scope.
-   * #233: the cumulative totals stay Network-level even while a Node filter
-   * narrows the list, so the card says so instead of appearing to follow it. */
-  scopeNote?: string
+  /** Whether a search or status filter narrows the Home list below the Network
+   * selection. #233: the cumulative totals stay Network-level even then, so the
+   * card says so instead of appearing to follow the list (#245: in a short
+   * scope word on the face and one plain sentence in the Breakdown). */
+  listNarrowed?: boolean
 }) {
   const total = selectionTotal(availability === 'ready' ? networks : [], metric)
   const label = metric === 'blocks' ? 'Cumulative blocks' : 'Cumulative rewards'
@@ -108,6 +109,14 @@ export function ValidatorTotalCard({ networks, metric, availability = 'ready', s
   // keep the abbreviated tile form; the Breakdown exposes their exact digits.
   const exact = formatAmountExact(total.knownSum)
   const scope = networks.length === 1 ? networks[0].displayName : networks.length + ' Networks'
+  // While a filter narrows the list, the face names the whole scope in one word
+  // and the Breakdown says in full which filters leave this total alone.
+  const scopeNoted = listNarrowed && networks.length > 0
+  const faceScope = scopeNoted ? 'All of ' + scope : scope
+  const scopeNote = scopeNoted
+    ? 'This total covers every Active Node in ' + (networks.length === 1 ? scope : 'the ' + networks.length + ' selected Networks')
+      + '; search and the Health and Validator status filters do not narrow it.'
+    : null
   const populated = networks.filter(network => network.nodes.length > 0).length
   // One coverage vocabulary for the tile face and the Breakdown: the same
   // Server-owned per-metric coverage text, never a hover-only tooltip, and every
@@ -122,7 +131,7 @@ export function ValidatorTotalCard({ networks, metric, availability = 'ready', s
   // text, so the scope and the metric's own count are readable without opening
   // the Breakdown. A load/unavailable result still names the scope it is waiting
   // on rather than dropping it.
-  const caption = [availability === 'ready' || networks.length > 0 ? scope : null, scopeNote, coverage]
+  const caption = [availability === 'ready' || networks.length > 0 ? faceScope : null, coverage]
     .filter(Boolean).join(' · ')
   const shown = metric === 'blocks' ? <ExactAmount value={exact} split /> : formatAmountOverview(total.knownSum)
   // The marker slot owns the placement of this control (SummaryMetricCard); the
