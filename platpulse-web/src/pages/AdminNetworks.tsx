@@ -551,7 +551,9 @@ function tupleUpdate(fields: TupleFields): TupleUpdate {
  *  applied update and a failed read-back after it are two results: the
  *  read-back failure is its own notice, lifted by a later successful read of
  *  this Network's detail. Until then the page may still hold the earlier
- *  tuple, so a round begun meanwhile keeps its draft but cannot be saved. */
+ *  tuple, so a round begun meanwhile keeps its draft but cannot be saved; the
+ *  same holds whenever this Network's latest read failed, including after the
+ *  editor was left and reopened. */
 function IdentityTuplePanel({
   network,
   csrfToken,
@@ -613,7 +615,13 @@ function IdentityTuplePanel({
   // the earlier tuple, so a round begun meanwhile may have started from it and
   // cannot tell the Server moved. The draft is kept, but nothing is sent until
   // this Network is read successfully; then the Server-moved rule applies.
-  const awaitingReadBack = edit !== null && readBackFailure !== null
+  // The same holds whenever this Network's latest read failed: the page then
+  // shows its last successful tuple, which may be earlier than the Server's.
+  // That also covers an editor left and reopened (another Network and back),
+  // where the notice above is gone but the read still failed. Our own
+  // update's read-back is excluded while it is in flight, as for serverMoved.
+  const awaitingReadBack =
+    edit !== null && !submitting && (readBackFailure !== null || detailRead.isError)
   const readBackPendingId = 'network-edit-read-back-pending'
   const saveBlocked = serverMoved || awaitingReadBack
   // Defence in depth: no confirmation can stand while the save is held (a
@@ -703,8 +711,8 @@ function IdentityTuplePanel({
     }
   }
 
-  /** Reads the Network again after a failed read-back. It only reads; the
-   *  applied update is never sent again. */
+  /** Reads the Network again after a failed read-back or a failed read of
+   *  the page. It only reads; an applied update is never sent again. */
   async function readAgain() {
     const result = await readDetail()
     // The notice (and this button) leave on success: keep the keyboard here.
@@ -819,15 +827,36 @@ function IdentityTuplePanel({
             </div>
           )}
           {awaitingReadBack && (
-            <p
-              id={readBackPendingId}
-              className="text-xs text-muted-foreground"
+            <div
+              className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground"
               data-slot="tuple-read-back-pending"
             >
-              Save tuple is unavailable until the latest Network is read successfully: the last
-              update was applied, but this page may still show the earlier tuple. Your draft is
-              kept; use Read the Network again below.
-            </p>
+              {readBackFailure ? (
+                <p id={readBackPendingId}>
+                  Save tuple is unavailable until the latest Network is read successfully: the last
+                  update was applied, but this page may still show the earlier tuple. Your draft is
+                  kept; use Read the Network again below.
+                </p>
+              ) : (
+                <>
+                  <p id={readBackPendingId}>
+                    Save tuple is unavailable until the latest Network is read successfully: the
+                    last read of this Network failed, so this page may still show an earlier tuple.
+                    Your draft is kept.
+                  </p>
+                  {/* The read-back notice carries this action when it is shown. */}
+                  <Button
+                    ref={readAgainRef}
+                    type="button"
+                    variant="link"
+                    size="sm"
+                    onClick={() => void readAgain()}
+                  >
+                    Read the Network again
+                  </Button>
+                </>
+              )}
+            </div>
           )}
           <div className="flex flex-wrap items-center gap-2">
             {confirmed ? (

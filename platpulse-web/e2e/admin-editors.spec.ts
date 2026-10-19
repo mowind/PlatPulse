@@ -323,7 +323,7 @@ for (const theme of ['light', 'dark'] as const) {
       const reason = panel.locator('[data-slot="tuple-read-back-pending"]')
       await expect(reason).toBeVisible()
       await expect(reason).toContainText('Save tuple is unavailable until the latest Network is read successfully')
-      await expect(save).toHaveAttribute('aria-describedby', (await reason.getAttribute('id')) ?? 'missing')
+      await expect(save).toHaveAttribute('aria-describedby', (await reason.locator('p').getAttribute('id')) ?? 'missing')
       await save.click({ force: true })
       await name.press('Enter')
       await panel.locator('form').evaluate((form: HTMLFormElement) => form.requestSubmit())
@@ -358,6 +358,54 @@ for (const theme of ['light', 'dark'] as const) {
       await expect(panel.getByText('Updated Renamed after write.', { exact: true })).toBeVisible()
       expect(fixture.writes).toHaveLength(2)
       expect(fixture.writes[1]).toMatchObject({ displayName: 'Renamed after write', chainId: 210426 })
+    })
+
+    test('Network tuple: leaving the Network and coming back keeps the save held while it cannot be read', async ({ page }) => {
+      const fixture = await appliedWriteThenUnreadable(page, {
+        write: new RegExp('/api/admin/v1/networks/' + NETWORK + '$'),
+        read: new RegExp('/api/admin/v1/networks/' + NETWORK + '(\\?.*)?$'),
+        answer: (body) => ({ networkKey: NETWORK, displayName: body.displayName }),
+        rewrite: (detail, body) => ({ ...detail, display_name: body.displayName, chain_id: body.chainId }),
+      })
+      await page.goto('/admin/networks/' + NETWORK)
+      await expect(page.getByRole('heading', { level: 1, name: /PlatON E2E Network/ })).toBeVisible({ timeout: 20_000 })
+      const panel = page.locator('[data-slot="card-x"]', { has: page.getByRole('heading', { name: 'Expected identity tuple' }) })
+      await panel.getByRole('button', { name: 'Edit tuple' }).click()
+      await panel.getByLabel('Chain ID').fill('210426')
+      await panel.getByRole('button', { name: 'Save tuple' }).click()
+      await panel.getByRole('button', { name: 'Confirm tuple update' }).click()
+      await expect(panel.locator('[data-slot="read-back-failed"]')).toContainText('could not be read back')
+
+      // Leave through the Registry list and come back inside the app.
+      await page.getByRole('link', { name: 'All Networks' }).click()
+      await expect(page.getByRole('heading', { level: 1, name: 'Networks' })).toBeVisible()
+      await page.getByRole('link', { name: 'PlatON E2E Network', exact: true }).click()
+      await expect(page.getByRole('heading', { level: 1, name: /PlatON E2E Network/ })).toBeVisible()
+      await expect(page.getByText(/Failed to refresh; showing the last/)).toHaveCount(1)
+
+      await panel.getByRole('button', { name: 'Edit tuple' }).click()
+      await expect(panel.getByLabel('Chain ID')).toHaveValue('210425')
+      const name = panel.getByLabel('Display name')
+      await name.fill('Renamed after return')
+      const save = panel.getByRole('button', { name: 'Save tuple' })
+      await expect(save).toBeDisabled()
+      const reason = panel.locator('[data-slot="tuple-read-back-pending"]')
+      await expect(reason).toContainText('Save tuple is unavailable until the latest Network is read successfully')
+      await expect(save).toHaveAttribute('aria-describedby', (await reason.locator('p').getAttribute('id')) ?? 'missing')
+      await save.click({ force: true })
+      await name.press('Enter')
+      await expect(panel.getByRole('button', { name: 'Confirm tuple update' })).toHaveCount(0)
+      await expectNoHorizontalOverflow(page)
+      expect(fixture.writes).toHaveLength(1)
+
+      fixture.readable = true
+      await reason.getByRole('button', { name: 'Read the Network again' }).click()
+      await expect(reason).toHaveCount(0)
+      await expect(panel.locator('[data-slot="tuple-server-moved"]')).toContainText('Chain ID 210426')
+      await expect(name).toHaveValue('Renamed after return')
+      await expect(name).toBeFocused()
+      await expect(save).toBeDisabled()
+      expect(fixture.writes).toHaveLength(1)
     })
   })
 }

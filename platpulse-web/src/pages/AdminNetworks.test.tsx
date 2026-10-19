@@ -871,6 +871,108 @@ describe('Expected identity tuple editor', () => {
     })
   })
 
+  it('still holds the save after leaving the Network and coming back while it cannot be read', async () => {
+    const state = serve({
+      put: (body) => {
+        state.detail = { ...state.detail, display_name: body.displayName, chain_id: body.chainId }
+        state.unreadable = true
+        return jsonResponse({ networkKey: 'platon-e2e', displayName: body.displayName }, 200)
+      },
+    })
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.change(field('Chain ID'), { target: { value: '210426' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save tuple' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
+    expect(await within(tuplePanel()).findByText('Updated PlatON E2E Network.')).toBeTruthy()
+    expect(readBackNotice()).not.toBeNull()
+
+    // Another Network, then back: the editor starts afresh, but this
+    // Network's latest read still failed and the page shows the earlier tuple.
+    await act(async () => {
+      window.history.pushState({}, '', '/admin/networks/platon-other')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    await screen.findByRole('heading', { level: 1, name: /PlatON Other Network/ })
+    await act(async () => {
+      window.history.pushState({}, '', '/admin/networks/platon-e2e')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    await screen.findByRole('heading', { level: 1, name: /PlatON E2E Network/ })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    expect(field('Chain ID').value).toBe('210425')
+    fireEvent.change(field('Display name'), { target: { value: 'Renamed after return' } })
+    const save = within(tuplePanel()).getByRole('button', { name: 'Save tuple' }) as HTMLButtonElement
+    expect(save.disabled).toBe(true)
+    const reason = document.getElementById(save.getAttribute('aria-describedby') ?? '') as HTMLElement
+    expect(reason).toBeTruthy()
+    expect(reason.closest('form')).toBe(save.closest('form'))
+    expect(reason.textContent).toMatch(/Save tuple is unavailable until the latest Network is read successfully/)
+    fireEvent.click(save)
+    fireEvent.submit(field('Display name').closest('form') as HTMLFormElement)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(screen.queryByRole('button', { name: 'Confirm tuple update' })).toBeNull()
+    expect(state.puts).toHaveLength(1)
+
+    // Reading again only reads; then the Server-moved rule takes the kept draft.
+    state.unreadable = false
+    fireEvent.click(within(tuplePanel()).getByRole('button', { name: 'Read the Network again' }))
+    await waitFor(() => expect(tuplePanel().querySelector('[data-slot="tuple-server-moved"]')).not.toBeNull())
+    expect(tuplePanel().querySelector('[data-slot="tuple-read-back-pending"]')).toBeNull()
+    expect(field('Display name').value).toBe('Renamed after return')
+    expect((within(tuplePanel()).getByRole('button', { name: 'Save tuple' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(state.puts).toHaveLength(1)
+
+    fireEvent.click(within(tuplePanel()).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    expect(field('Chain ID').value).toBe('210426')
+  })
+
+  it('holds the save while a refresh of the Network fails, and releases it once a read succeeds unchanged', async () => {
+    const state = serve()
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.change(field('Display name'), { target: { value: 'Draft during outage' } })
+    state.unreadable = true
+    await backgroundRefresh()
+    await screen.findByText(/Failed to refresh; showing the last/)
+
+    const save = within(tuplePanel()).getByRole('button', { name: 'Save tuple' }) as HTMLButtonElement
+    expect(save.disabled).toBe(true)
+    const reason = document.getElementById(save.getAttribute('aria-describedby') ?? '') as HTMLElement
+    expect(reason.textContent).toMatch(/last read of this Network failed/)
+    expect(reason.textContent).not.toMatch(/Read the Network again/)
+    expect(readBackNotice()).toBeNull()
+    fireEvent.submit(field('Display name').closest('form') as HTMLFormElement)
+    expect(screen.queryByRole('button', { name: 'Confirm tuple update' })).toBeNull()
+
+    state.unreadable = false
+    const readAgain = within(tuplePanel()).getByRole('button', { name: 'Read the Network again' })
+    readAgain.focus()
+    fireEvent.click(readAgain)
+    await waitFor(() => expect(tuplePanel().querySelector('[data-slot="tuple-read-back-pending"]')).toBeNull())
+    // The Server did not move: the kept draft can be saved as it stands.
+    expect(tuplePanel().querySelector('[data-slot="tuple-server-moved"]')).toBeNull()
+    expect(field('Display name').value).toBe('Draft during outage')
+    await waitFor(() => expect(document.activeElement).toBe(field('Display name')))
+    const released = within(tuplePanel()).getByRole('button', { name: 'Save tuple' }) as HTMLButtonElement
+    expect(released.disabled).toBe(false)
+    expect(released.getAttribute('aria-describedby')).toBeNull()
+    fireEvent.click(released)
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
+    expect(await within(tuplePanel()).findByText('Updated Draft during outage.')).toBeTruthy()
+    expect(state.puts).toHaveLength(1)
+    expect(state.puts[0]).toMatchObject({ displayName: 'Draft during outage', chainId: 210425 })
+  })
+
   it('carries no feedback of an update that lands after switching to another Network', async () => {
     let release: () => void = () => {}
     serve({
