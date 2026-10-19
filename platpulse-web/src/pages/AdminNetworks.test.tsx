@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { adminQueryClient } from '../api/admin'
+import { resetNetworkTupleWrites } from '../api/networkTupleWrites'
 import { client } from '../api/generated/client.gen'
 
 const OWNER_SESSION = {
@@ -124,6 +125,7 @@ afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
   adminQueryClient.clear()
+  resetNetworkTupleWrites()
 })
 
 describe('PAGE-ADMIN-NETWORKS (Network Registry)', () => {
@@ -441,18 +443,37 @@ describe('Expected identity tuple editor', () => {
       puts: [] as Put[],
       // While set, reading the Network detail fails.
       unreadable: false,
+      // While set, a read takes its snapshot at once but answers only when
+      // the gate opens (a read begun before a write, answered after it).
+      readGate: null as Promise<void> | null,
+      // While set, the next Admin read answers that the session is gone.
+      authExpired: false,
+      other: { ...OTHER_NETWORK_DETAIL } as typeof OTHER_NETWORK_DETAIL,
+      otherPuts: [] as Put[],
     }
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = input instanceof Request ? input : new Request(String(input), init)
       const url = request.url.replace(TEST_ORIGIN, '')
       if (url === '/api/public/v1/session') return jsonResponse(OWNER_SESSION, 200)
+      if (state.authExpired && url.startsWith('/api/admin/') && request.method === 'GET') {
+        state.authExpired = false
+        return jsonResponse({ error: { code: 'auth_required', message: 'sign in again', requestId: 'r-auth' } }, 401)
+      }
       if (url === NETWORK_URL && request.method === 'GET') {
         if (state.unreadable) {
           return jsonResponse({ error: { code: 'unavailable', message: 'read failed' } }, 503)
         }
-        return jsonResponse(state.detail, 200)
+        const snapshot = state.detail
+        if (state.readGate) await state.readGate
+        return jsonResponse(snapshot, 200)
       }
-      if (url === OTHER_NETWORK_URL && request.method === 'GET') return jsonResponse(OTHER_NETWORK_DETAIL, 200)
+      if (url === OTHER_NETWORK_URL && request.method === 'GET') return jsonResponse(state.other, 200)
+      if (url === OTHER_NETWORK_URL && request.method === 'PUT') {
+        const body = (await request.json()) as Put
+        state.otherPuts.push(body)
+        state.other = { ...state.other, display_name: body.displayName }
+        return jsonResponse({ networkKey: 'platon-other', displayName: body.displayName }, 200)
+      }
       if (url === NETWORK_URL && request.method === 'PUT') {
         const body = (await request.json()) as Put
         state.puts.push(body)
@@ -971,6 +992,490 @@ describe('Expected identity tuple editor', () => {
     expect(await within(tuplePanel()).findByText('Updated Draft during outage.')).toBeTruthy()
     expect(state.puts).toHaveLength(1)
     expect(state.puts[0]).toMatchObject({ displayName: 'Draft during outage', chainId: 210425 })
+  })
+
+  async function go(path: string) {
+    await act(async () => {
+      window.history.pushState({}, '', path)
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+  }
+
+  async function settle() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+  }
+
+  /** Leave for another Network and come back inside the app: the editor
+   *  remounts from the cached (still fresh) detail of this Network. */
+  async function leaveAndReturn() {
+    await go('/admin/networks/platon-other')
+    await screen.findByRole('heading', { level: 1, name: /PlatON Other Network/ })
+    await go('/admin/networks/platon-e2e')
+    await screen.findByText('platon-e2e', { selector: 'h1 span' })
+    await screen.findByRole('heading', { level: 2, name: 'Expected identity tuple' })
+    await settle()
+  }
+
+  function gate() {
+    let release: () => void = () => {}
+    const promise = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    return { promise, release: () => release() }
+  }
+
+  function applied(state: ReturnType<typeof serve>, body: Put) {
+    state.detail = {
+      ...state.detail,
+      display_name: body.displayName,
+      genesis_hash: body.genesisHash,
+      chain_id: body.chainId,
+      p2p_network_id: body.p2pNetworkId,
+      address_hrp: body.addressHrp,
+    }
+  }
+
+  function saveButton(): HTMLButtonElement {
+    return within(tuplePanel()).getByRole('button', { name: 'Save tuple' }) as HTMLButtonElement
+  }
+
+  function saveReason(): HTMLElement {
+    const save = saveButton()
+    const ids = (save.getAttribute('aria-describedby') ?? '').split(' ').filter(Boolean)
+    expect(ids.length).toBeGreaterThan(0)
+    const reasons = ids.map((id) => document.getElementById(id) as HTMLElement)
+    for (const reason of reasons) {
+      expect(reason).toBeTruthy()
+      // Beside the button, inside the same form.
+      expect(reason.closest('form')).toBe(save.closest('form'))
+    }
+    const element = document.createElement('div')
+    element.textContent = reasons.map((reason) => reason.textContent).join(' ')
+    return element
+  }
+
+  /** Every way the form could be submitted: the Save click, Enter (the
+   *  implicit submission jsdom dispatches as submit), and requestSubmit(). */
+  async function trySubmitEveryWay() {
+    fireEvent.click(saveButton())
+    const form = field('Display name').closest('form') as HTMLFormElement
+    fireEvent.submit(form)
+    form.requestSubmit()
+    await settle()
+    expect(screen.queryByRole('button', { name: 'Confirm tuple update' })).toBeNull()
+  }
+
+  async function confirmChain(chainId: string) {
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.change(field('Chain ID'), { target: { value: chainId } })
+    fireEvent.click(saveButton())
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
+  }
+
+  it('holds a second update while the first is unanswered, across leaving and reopening the Network', async () => {
+    const answer = gate()
+    const state = serve({
+      put: async (body) => {
+        await answer.promise
+        applied(state, body)
+        return jsonResponse({ networkKey: 'platon-e2e', displayName: body.displayName }, 200)
+      },
+    })
+    await open()
+    await confirmChain('210426')
+    await screen.findByRole('button', { name: 'Saving…' })
+    await waitFor(() => expect(state.puts).toHaveLength(1))
+
+    await leaveAndReturn()
+    // The new editor starts from the cached, fresh, error-free detail.
+    expect(screen.queryByText(/Failed to refresh/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    expect(field('Chain ID').value).toBe('210425')
+    fireEvent.change(field('Display name'), { target: { value: 'Renamed while saving' } })
+    expect(field('Display name').disabled).toBe(false)
+    expect(saveButton().disabled).toBe(true)
+    expect(saveReason().textContent).toMatch(/still being saved/)
+    await trySubmitEveryWay()
+    expect(state.puts).toHaveLength(1)
+
+    // The first update is answered and read back: the kept draft now meets
+    // the existing Server-moved rule instead of being sent.
+    await act(async () => {
+      answer.release()
+    })
+    await waitFor(() => expect(tuplePanel().querySelector('[data-slot="tuple-server-moved"]')).not.toBeNull())
+    expect(field('Display name').value).toBe('Renamed while saving')
+    expect(saveButton().disabled).toBe(true)
+    await trySubmitEveryWay()
+    expect(state.puts).toHaveLength(1)
+
+    fireEvent.click(within(tuplePanel()).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    expect(field('Chain ID').value).toBe('210426')
+  })
+
+  it('holds the save across reopening while the Server has applied the update but its answer is delayed', async () => {
+    const answer = gate()
+    const state = serve({
+      put: async (body) => {
+        // The Server applies the update at once; only the answer is late.
+        applied(state, body)
+        await answer.promise
+        return jsonResponse({ networkKey: 'platon-e2e', displayName: body.displayName }, 200)
+      },
+    })
+    await open()
+    await confirmChain('210426')
+    await waitFor(() => expect(state.puts).toHaveLength(1))
+
+    await leaveAndReturn()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    expect(field('Chain ID').value).toBe('210425')
+    fireEvent.change(field('Display name'), { target: { value: 'Renamed meanwhile' } })
+    expect(saveButton().disabled).toBe(true)
+    expect(saveReason().textContent).toMatch(/still being saved/)
+    await trySubmitEveryWay()
+
+    // Even a page refresh that already shows the applied tuple does not
+    // release it: only the answer and the read after it do.
+    await backgroundRefresh()
+    await screen.findByRole('heading', { level: 1, name: /PlatON E2E Network/ })
+    expect(tuplePanel().querySelector('[data-slot="tuple-write-pending"]')).not.toBeNull()
+    await trySubmitEveryWay()
+    expect(state.puts).toHaveLength(1)
+
+    await act(async () => {
+      answer.release()
+    })
+    await waitFor(() => expect(tuplePanel().querySelector('[data-slot="tuple-write-pending"]')).toBeNull())
+    expect(field('Display name').value).toBe('Renamed meanwhile')
+    expect(tuplePanel().querySelector('[data-slot="tuple-server-moved"]')?.textContent).toContain('Chain ID 210426')
+    expect(saveButton().disabled).toBe(true)
+    expect(state.puts).toHaveLength(1)
+  })
+
+  it('treats a lost answer as unknown, checks by reading, and then starts from the applied tuple', async () => {
+    const state = serve({
+      put: (body) => {
+        // Applied on the Server first; then the connection drops.
+        applied(state, body)
+        throw new TypeError('Failed to fetch')
+      },
+    })
+    await open()
+    await confirmChain('210426')
+
+    // The one read-only check finds the Server holding the update.
+    await waitFor(() => expect(within(tuplePanel()).getByText(/Nothing is left to save/)).toBeTruthy())
+    expect(tuplePanel().querySelector('[data-slot="tuple-write-uncertain"]')).toBeNull()
+    expect(within(tuplePanel()).queryByRole('alert')).toBeNull()
+    expect(screen.queryByText(/^Updated/)).toBeNull()
+    fireEvent.click(within(tuplePanel()).getByRole('button', { name: 'Close editor' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    expect(field('Chain ID').value).toBe('210426')
+    fireEvent.change(field('Display name'), { target: { value: 'Renamed after loss' } })
+    fireEvent.click(saveButton())
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
+    await waitFor(() => expect(state.puts).toHaveLength(2))
+    expect(state.puts[1]).toMatchObject({ displayName: 'Renamed after loss', chainId: 210426 })
+  })
+
+  it('keeps a lost answer unknown while the Network cannot be read, across Cancel and reopening, then recovers by reading only', async () => {
+    const state = serve({
+      put: (body) => {
+        applied(state, body)
+        if (state.puts.length > 1) {
+          return jsonResponse({ networkKey: 'platon-e2e', displayName: body.displayName }, 200)
+        }
+        state.unreadable = true
+        throw new TypeError('Failed to fetch')
+      },
+    })
+    await open()
+    await confirmChain('210426')
+
+    const notice = await waitFor(() => {
+      const element = tuplePanel().querySelector('[data-slot="tuple-write-uncertain"]') as HTMLElement
+      expect(element).toBeTruthy()
+      return element
+    })
+    expect(notice.textContent).toMatch(/may or may\s+not have been applied/)
+    expect(notice.textContent).toMatch(/not sent again/)
+    await waitFor(() => expect(notice.textContent).toMatch(/could not be read/))
+    // The lost answer is not reported as a failed save, and nothing is retried.
+    expect(within(tuplePanel()).queryByText('Unable to update the Network')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Confirm tuple update' })).toBeNull()
+    expect(field('Chain ID').value).toBe('210426')
+    expect(saveButton().disabled).toBe(true)
+    await trySubmitEveryWay()
+    expect(state.puts).toHaveLength(1)
+
+    // Cancel and a new round from the page's tuple (from before the update).
+    fireEvent.click(within(tuplePanel()).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    expect(field('Chain ID').value).toBe('210425')
+    fireEvent.change(field('Display name'), { target: { value: 'Renamed while unknown' } })
+    expect(saveButton().disabled).toBe(true)
+    expect(saveReason().textContent).toMatch(/Server is seen holding the earlier update/)
+    await trySubmitEveryWay()
+
+    // Leaving and reopening keeps it unknown as well.
+    await leaveAndReturn()
+    expect(tuplePanel().querySelector('[data-slot="tuple-write-uncertain"]')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.change(field('Display name'), { target: { value: 'Renamed while unknown' } })
+    await trySubmitEveryWay()
+    expect(state.puts).toHaveLength(1)
+
+    // Checking reads only; once the Server is seen holding the update, the
+    // kept draft meets the Server-moved rule.
+    state.unreadable = false
+    const check = within(tuplePanel()).getByRole('button', { name: 'Check the Network' })
+    check.focus()
+    fireEvent.click(check)
+    await waitFor(() => expect(tuplePanel().querySelector('[data-slot="tuple-write-uncertain"]')).toBeNull())
+    expect(field('Display name').value).toBe('Renamed while unknown')
+    const moved = tuplePanel().querySelector('[data-slot="tuple-server-moved"]') as HTMLElement
+    expect(moved.textContent).toContain('Chain ID 210426')
+    expect(saveButton().disabled).toBe(true)
+    await waitFor(() => expect(document.activeElement).toBe(field('Display name')))
+    expect(state.puts).toHaveLength(1)
+
+    fireEvent.click(within(tuplePanel()).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    expect(field('Chain ID').value).toBe('210426')
+    fireEvent.change(field('Display name'), { target: { value: 'Renamed while unknown' } })
+    fireEvent.click(saveButton())
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
+    expect(await within(tuplePanel()).findByText('Updated Renamed while unknown.')).toBeTruthy()
+    expect(state.puts[1]).toMatchObject({ displayName: 'Renamed while unknown', chainId: 210426 })
+  })
+
+  it('does not take a read of the earlier tuple as proof that a lost update never applied', async () => {
+    // The update never reaches the Server here; the browser cannot tell.
+    const state = serve({ put: () => Promise.reject(new TypeError('Failed to fetch')) })
+    await open()
+    await confirmChain('210426')
+    const notice = await waitFor(() => {
+      const element = tuplePanel().querySelector('[data-slot="tuple-write-uncertain"]') as HTMLElement
+      expect(element.textContent).toMatch(/does not show this update/)
+      return element
+    })
+    expect(notice.textContent).toMatch(/does not prove it was not applied/)
+    fireEvent.click(within(notice).getByRole('button', { name: 'Check the Network' }))
+    await settle()
+    await settle()
+    expect(tuplePanel().querySelector('[data-slot="tuple-write-uncertain"]')).not.toBeNull()
+    expect(saveButton().disabled).toBe(true)
+    await trySubmitEveryWay()
+    expect(state.puts).toHaveLength(1)
+  })
+
+  it('never takes a read begun before the update was answered for its read-back', async () => {
+    const answer = gate()
+    const lateRead = gate()
+    const state = serve({
+      put: async (body) => {
+        await answer.promise
+        applied(state, body)
+        return jsonResponse({ networkKey: 'platon-e2e', displayName: body.displayName }, 200)
+      },
+    })
+    await open()
+    await confirmChain('210426')
+    await waitFor(() => expect(state.puts).toHaveLength(1))
+    // While the update is unanswered, a read of the earlier tuple starts; it
+    // is answered only after the update.
+    state.readGate = lateRead.promise
+    await act(async () => {
+      void adminQueryClient.invalidateQueries()
+    })
+    await settle()
+
+    // The update is applied and answered; every read after it fails.
+    state.readGate = null
+    state.unreadable = true
+    await act(async () => {
+      answer.release()
+    })
+    expect(await within(tuplePanel()).findByText('Updated PlatON E2E Network.')).toBeTruthy()
+    // The earlier read now answers, with the tuple from before the update.
+    await act(async () => {
+      lateRead.release()
+    })
+    await settle()
+    expect(readBackNotice()).not.toBeNull()
+    expect(within(tuplePanel()).getByText('210425')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    expect(field('Chain ID').value).toBe('210425')
+    fireEvent.change(field('Display name'), { target: { value: 'Renamed after late read' } })
+    expect(saveButton().disabled).toBe(true)
+    expect(saveReason().textContent).toMatch(/until the latest Network is read successfully/)
+    await trySubmitEveryWay()
+    // Nor across reopening.
+    await leaveAndReturn()
+    expect(readBackNotice()).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.change(field('Display name'), { target: { value: 'Renamed after late read' } })
+    expect(saveButton().disabled).toBe(true)
+    await trySubmitEveryWay()
+    expect(state.puts).toHaveLength(1)
+
+    // A read after the update releases it; the next round starts from it.
+    state.unreadable = false
+    fireEvent.click(within(readBackNotice() as HTMLElement).getByRole('button', { name: 'Read the Network again' }))
+    await waitFor(() => expect(readBackNotice()).toBeNull())
+    fireEvent.click(within(tuplePanel()).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    expect(field('Chain ID').value).toBe('210426')
+  })
+
+  it('returns a refused update to an editable, re-confirmable draft, and holds an answer that is not the Server’s', async () => {
+    let answer: 'refuse' | 'proxy' | 'apply' = 'refuse'
+    const state = serve({
+      put: (body) => {
+        if (answer === 'refuse') {
+          return jsonResponse(
+            { error: { code: 'invalid_network_tuple', message: 'the Network identity tuple is invalid', requestId: 'r1', fields: [] } },
+            400,
+          )
+        }
+        if (answer === 'proxy') {
+          // A gateway page: not the Server's answer, so the outcome is unknown.
+          return new Response('<html>502 Bad Gateway</html>', { status: 502, headers: { 'Content-Type': 'text/html' } })
+        }
+        applied(state, body)
+        return jsonResponse({ networkKey: 'platon-e2e', displayName: body.displayName }, 200)
+      },
+    })
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.change(field('Display name'), { target: { value: 'Refused draft' } })
+    fireEvent.click(saveButton())
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
+    expect(await within(tuplePanel()).findByText('the Network identity tuple is invalid')).toBeTruthy()
+    expect(field('Display name').value).toBe('Refused draft')
+    expect(field('Display name').disabled).toBe(false)
+    expect(tuplePanel().querySelector('[data-slot^="tuple-write"]')).toBeNull()
+    const again = screen.getByRole('button', { name: 'Confirm tuple update' })
+    expect(again.getAttribute('aria-disabled')).toBeNull()
+
+    // Not locked for good: it can be changed and confirmed again.
+    fireEvent.change(field('Display name'), { target: { value: 'Second draft' } })
+    expect(saveButton().disabled).toBe(false)
+    answer = 'proxy'
+    fireEvent.click(saveButton())
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
+    await waitFor(() => expect(tuplePanel().querySelector('[data-slot="tuple-write-uncertain"]')).not.toBeNull())
+    expect(state.puts).toHaveLength(2)
+    expect(field('Display name').value).toBe('Second draft')
+    expect(saveButton().disabled).toBe(true)
+    await trySubmitEveryWay()
+    expect(state.puts).toHaveLength(2)
+  })
+
+  it('does not hold another Network, and a late answer leaves its state, notices and focus alone', async () => {
+    const answer = gate()
+    const state = serve({
+      put: async (body) => {
+        await answer.promise
+        applied(state, body)
+        state.unreadable = true
+        return jsonResponse({ networkKey: 'platon-e2e', displayName: body.displayName }, 200)
+      },
+    })
+    await open()
+    await confirmChain('210426')
+    await waitFor(() => expect(state.puts).toHaveLength(1))
+
+    await go('/admin/networks/platon-other')
+    await screen.findByRole('heading', { level: 1, name: /PlatON Other Network/ })
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.change(field('Display name'), { target: { value: 'Other renamed' } })
+    expect(saveButton().disabled).toBe(false)
+    expect(saveButton().getAttribute('aria-describedby')).toBeNull()
+    fireEvent.click(saveButton())
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
+    expect(await within(tuplePanel()).findByText('Updated Other renamed.')).toBeTruthy()
+    expect(state.otherPuts).toHaveLength(1)
+    const edit = screen.getByRole('button', { name: 'Edit tuple' })
+    expect(document.activeElement).toBe(edit)
+
+    await act(async () => {
+      answer.release()
+    })
+    await settle()
+    expect(within(tuplePanel()).getByText('Updated Other renamed.')).toBeTruthy()
+    expect(readBackNotice()).toBeNull()
+    expect(tuplePanel().querySelector('[data-slot^="tuple-write"]')).toBeNull()
+    expect(document.activeElement).toBe(edit)
+    fireEvent.click(edit)
+    expect(saveButton().disabled).toBe(false)
+
+    // Network A keeps its own read-back hold.
+    await go('/admin/networks/platon-e2e')
+    await screen.findByRole('heading', { level: 1, name: /PlatON E2E Network/ })
+    expect(readBackNotice()).not.toBeNull()
+  })
+
+  it('ends with the authorization: an earlier answer neither pollutes nor releases a write of the new one', async () => {
+    const answers = [gate(), gate()]
+    const state = serve({
+      put: async (body) => {
+        const index = state.puts.length - 1
+        await answers[index].promise
+        applied(state, body)
+        return jsonResponse({ networkKey: 'platon-e2e', displayName: body.displayName }, 200)
+      },
+    })
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.change(field('Display name'), { target: { value: 'Old session tuple' } })
+    fireEvent.click(saveButton())
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
+    await waitFor(() => expect(state.puts).toHaveLength(1))
+
+    // The session is re-established: a new access generation.
+    state.authExpired = true
+    await act(async () => {
+      void adminQueryClient.invalidateQueries()
+    })
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Saving…' })).toBeNull())
+    await screen.findByRole('heading', { level: 1, name: /PlatON E2E Network/ })
+    await settle()
+    expect(tuplePanel().querySelector('[data-slot^="tuple-write"]')).toBeNull()
+
+    // A write of the new generation.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.change(field('Display name'), { target: { value: 'New session tuple' } })
+    expect(saveButton().disabled).toBe(false)
+    fireEvent.click(saveButton())
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
+    await waitFor(() => expect(state.puts).toHaveLength(2))
+    await screen.findByRole('button', { name: 'Saving…' })
+
+    // The earlier generation's answer arrives: it changes nothing here.
+    await act(async () => {
+      answers[0].release()
+    })
+    await settle()
+    expect(screen.getByRole('button', { name: 'Saving…' })).toBeTruthy()
+    expect(screen.queryByText('Updated Old session tuple.')).toBeNull()
+    await leaveAndReturn()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.change(field('P2P network ID'), { target: { value: '5' } })
+    expect(saveReason().textContent).toMatch(/still being saved/)
+    await trySubmitEveryWay()
+    expect(state.puts).toHaveLength(2)
+
+    await act(async () => {
+      answers[1].release()
+    })
+    await waitFor(() => expect(tuplePanel().querySelector('[data-slot="tuple-write-pending"]')).toBeNull())
   })
 
   it('carries no feedback of an update that lands after switching to another Network', async () => {

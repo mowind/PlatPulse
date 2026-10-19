@@ -10,12 +10,22 @@ export class TransportError extends Error {
   readonly requestId: string | null
   readonly fields: string[]
   readonly status: number | null
+  /** Whether the Server's own typed error envelope was received. Without it
+   *  (no response at all, an unreadable body, or a page some intermediary
+   *  sent in the Server's place) the failure says nothing about what the
+   *  Server did with the request. */
+  readonly serverEnvelope: boolean
 
   constructor(
     kind: ApiErrorKind,
     code: string,
     message: string,
-    options: { requestId?: string | null; fields?: string[]; status?: number | null } = {},
+    options: {
+      requestId?: string | null
+      fields?: string[]
+      status?: number | null
+      serverEnvelope?: boolean
+    } = {},
   ) {
     super(message)
     this.name = 'ApiTransportError'
@@ -24,6 +34,7 @@ export class TransportError extends Error {
     this.requestId = options.requestId ?? null
     this.fields = options.fields ?? []
     this.status = options.status ?? null
+    this.serverEnvelope = options.serverEnvelope ?? false
   }
 }
 
@@ -143,6 +154,7 @@ export async function requestGenerated<T>(
         requestId: envelope?.requestId,
         fields: envelope?.fields,
         status: result.response?.status,
+        serverEnvelope: typeof envelope?.code === 'string',
       },
     )
   }

@@ -372,6 +372,7 @@ export type AuditFilters = {
  */
 let adminCacheGeneration: number | null = null
 const adminRevisions = new Map<string, number>()
+const adminCacheResetListeners = new Set<() => void>()
 
 /** A failed Admin call, keyed by the Server's stable error `code`, with the
  * request and Audit references an operator can use to look the failure up
@@ -383,8 +384,9 @@ export class AdminApiError extends TransportError {
     message: string,
     requestId: string | null = null,
     fields: string[] = [],
+    options: { status?: number | null; serverEnvelope?: boolean } = {},
   ) {
-    super('domain', code, message, { requestId, fields })
+    super('domain', code, message, { requestId, fields, ...options })
     this.name = 'AdminApiError'
   }
 }
@@ -419,7 +421,10 @@ async function requestAdmin<T>(
     if (caught instanceof TransportError) {
       if (caught.code === 'auth_required') notifyAdminAccessReset()
       if (caught instanceof AdminApiError) throw caught
-      throw new AdminApiError(caught.code, caught.message, caught.requestId, caught.fields)
+      throw new AdminApiError(caught.code, caught.message, caught.requestId, caught.fields, {
+        status: caught.status,
+        serverEnvelope: caught.serverEnvelope,
+      })
     }
     throw new AdminApiError('unavailable', fallbackMessage)
   }
@@ -1063,9 +1068,14 @@ export async function fetchAdminNetwork(
   )
 }
 
+/** The detail query of one Network under one access generation. */
+export function adminNetworkDetailQueryKey(generation: number, networkKey: string) {
+  return [...adminKeys.networkDetail(networkKey), generation] as const
+}
+
 export function useAdminNetworkDetail(generation: number, networkKey: string) {
   return useQuery({
-    queryKey: [...adminKeys.networkDetail(networkKey), generation],
+    queryKey: adminNetworkDetailQueryKey(generation, networkKey),
     queryFn: ({ signal }) => fetchAdminNetwork(networkKey, signal),
     // No placeholder: another Network's DTO must never render under this
     // Network's URL.
@@ -1561,6 +1571,14 @@ export function resetAdminCache(generation: number): void {
   void adminQueryClient.cancelQueries({ queryKey: adminKeys.all })
   adminQueryClient.clear()
   adminRevisions.clear()
+  for (const listener of adminCacheResetListeners) listener()
+}
+
+/** Runs whenever the Admin cache is retired for a new access generation, so
+ *  state kept beside the cache (an unanswered write) ends with it. */
+export function onAdminCacheReset(listener: () => void): () => void {
+  adminCacheResetListeners.add(listener)
+  return () => adminCacheResetListeners.delete(listener)
 }
 
 /** Owner-only People listing (issue #47): allowlisted rows with role,

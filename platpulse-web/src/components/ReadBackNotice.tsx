@@ -11,6 +11,7 @@ export function ReadBackNotice({
   readAgainLabel,
   readAgainRef,
   onReadAgain,
+  reading,
   className,
 }: {
   /** What the failed read-back means for the value just written. */
@@ -18,6 +19,8 @@ export function ReadBackNotice({
   readAgainLabel: string
   readAgainRef?: Ref<HTMLButtonElement>
   onReadAgain: () => void
+  /** While the read runs: the action stays in place but answers nothing. */
+  reading?: boolean
   className?: string
 }) {
   return (
@@ -30,9 +33,23 @@ export function ReadBackNotice({
     >
       <StatusBadge status="Not read back" tone="warning" />
       <span className="min-w-0 break-words">{children}</span>
-      <Button ref={readAgainRef} variant="link" size="sm" onClick={onReadAgain}>
+      <Button
+        ref={readAgainRef}
+        variant="link"
+        size="sm"
+        aria-disabled={reading || undefined}
+        className="aria-disabled:cursor-progress aria-disabled:opacity-70"
+        onClick={() => {
+          if (!reading) onReadAgain()
+        }}
+      >
         {readAgainLabel}
       </Button>
+      {reading !== undefined && (
+        <span className="text-xs text-muted-foreground" role="status">
+          {reading ? 'Reading…' : ''}
+        </span>
+      )}
     </div>
   )
 }

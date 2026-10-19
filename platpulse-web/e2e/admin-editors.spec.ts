@@ -79,6 +79,69 @@ async function appliedWriteThenUnreadable(
   return state
 }
 
+/** The Network tuple update and its detail reads as a local fixture: the
+ *  realtime stream is closed (no refresh may stand in for the read under
+ *  test), detail reads pass through to the seeded Server and are rewritten to
+ *  the applied tuple, and the update itself never reaches the Server.
+ *  - `delayed`: the update is applied only when released, then answered.
+ *  - `lost`: the update is applied at once, then the connection is reset
+ *    before any answer, and reads fail until `readable` is set again. */
+async function networkTupleWrite(page: Page, mode: 'delayed' | 'lost') {
+  const state = {
+    writes: [] as Record<string, unknown>[],
+    applied: null as Record<string, unknown> | null,
+    readable: true,
+    release: () => {},
+  }
+  const gate = new Promise<void>((resolve) => {
+    state.release = resolve
+  })
+  await page.route('**/api/admin/v1/events**', (route) => route.abort())
+  await page.route(new RegExp('/api/admin/v1/networks/' + NETWORK + '(\\?.*)?$'), async (route) => {
+    const method = route.request().method()
+    if (method === 'GET') {
+      if (!state.readable) {
+        return route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { code: 'unavailable', message: 'local fixture: read unavailable' } }),
+        })
+      }
+      const response = await route.fetch()
+      const detail = (await response.json()) as Record<string, unknown>
+      const applied = state.applied
+      return route.fulfill({
+        response,
+        json: applied ? { ...detail, display_name: applied.displayName, chain_id: applied.chainId } : detail,
+      })
+    }
+    if (method !== 'PUT') return route.fallback()
+    const body = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>
+    state.writes.push(body)
+    if (mode === 'lost') {
+      state.applied = body
+      state.readable = false
+      return route.abort('connectionreset')
+    }
+    await gate
+    state.applied = body
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ networkKey: NETWORK, displayName: body.displayName }),
+    })
+  })
+  return state
+}
+
+/** Leave the Network through the Registry list and come back inside the app. */
+async function leaveAndReturn(page: Page) {
+  await page.getByRole('link', { name: 'All Networks' }).click()
+  await expect(page.getByRole('heading', { level: 1, name: 'Networks' })).toBeVisible()
+  await page.getByRole('link', { name: 'PlatON E2E Network', exact: true }).click()
+  await expect(page.getByRole('heading', { level: 1, name: /PlatON E2E Network/ })).toBeVisible()
+}
+
 async function shot(page: Page, selector: string, name: string, theme: string) {
   const width = page.viewportSize()?.width ?? 0
   // Region captures: one phone and one desktop width are enough for a
@@ -398,14 +461,121 @@ for (const theme of ['light', 'dark'] as const) {
       await expectNoHorizontalOverflow(page)
       expect(fixture.writes).toHaveLength(1)
 
+      // The read-back notice outlives the editor that sent the update.
+      const notice = panel.locator('[data-slot="read-back-failed"]')
+      await expect(notice).toContainText('could not be read back')
       fixture.readable = true
-      await reason.getByRole('button', { name: 'Read the Network again' }).click()
+      await notice.getByRole('button', { name: 'Read the Network again' }).click()
       await expect(reason).toHaveCount(0)
+      await expect(notice).toHaveCount(0)
       await expect(panel.locator('[data-slot="tuple-server-moved"]')).toContainText('Chain ID 210426')
       await expect(name).toHaveValue('Renamed after return')
       await expect(name).toBeFocused()
       await expect(save).toBeDisabled()
       expect(fixture.writes).toHaveLength(1)
+    })
+
+    test('Network tuple: an unanswered update holds the save across leaving and reopening the Network', async ({ page }) => {
+      const fixture = await networkTupleWrite(page, 'delayed')
+      await page.goto('/admin/networks/' + NETWORK)
+      await expect(page.getByRole('heading', { level: 1, name: /PlatON E2E Network/ })).toBeVisible({ timeout: 20_000 })
+      const panel = page.locator('[data-slot="card-x"]', { has: page.getByRole('heading', { name: 'Expected identity tuple' }) })
+      await panel.getByRole('button', { name: 'Edit tuple' }).click()
+      await panel.getByLabel('Chain ID').fill('210426')
+      await panel.getByRole('button', { name: 'Save tuple' }).click()
+      await panel.getByRole('button', { name: 'Confirm tuple update' }).click()
+      await expect(panel.getByRole('button', { name: 'Saving…' })).toBeVisible()
+      expect(fixture.writes).toHaveLength(1)
+
+      await leaveAndReturn(page)
+      // The new editor starts from the cached tuple; no read failed.
+      await expect(page.getByText(/Failed to refresh/)).toHaveCount(0)
+      await expect(panel.getByText(/earlier update to this tuple is still being saved/)).toBeVisible()
+      await panel.getByRole('button', { name: 'Edit tuple' }).click()
+      await expect(panel.getByLabel('Chain ID')).toHaveValue('210425')
+      const name = panel.getByLabel('Display name')
+      await name.fill('Renamed while saving')
+      await expect(name).toBeEnabled()
+      const save = panel.getByRole('button', { name: 'Save tuple' })
+      await expect(save).toBeDisabled()
+      const reason = panel.locator('[data-slot="tuple-write-pending"]')
+      await expect(reason).toContainText('still being saved')
+      await expect(save).toHaveAttribute('aria-describedby', (await reason.locator('p').getAttribute('id')) ?? 'missing')
+      await save.click({ force: true })
+      await name.press('Enter')
+      await panel.locator('form').evaluate((form: HTMLFormElement) => form.requestSubmit())
+      await expect(panel.getByRole('button', { name: 'Confirm tuple update' })).toHaveCount(0)
+      await expectNoHorizontalOverflow(page)
+      expect(fixture.writes).toHaveLength(1)
+
+      // Answered and read back: the kept draft meets the Server-moved rule.
+      fixture.release()
+      await expect(reason).toHaveCount(0)
+      await expect(panel.locator('[data-slot="tuple-server-moved"]')).toContainText('Chain ID 210426')
+      await expect(name).toHaveValue('Renamed while saving')
+      await expect(save).toBeDisabled()
+      await name.press('Enter')
+      await expect(panel.getByRole('button', { name: 'Confirm tuple update' })).toHaveCount(0)
+      expect(fixture.writes).toHaveLength(1)
+      await panel.getByRole('button', { name: 'Cancel' }).click()
+      await panel.getByRole('button', { name: 'Edit tuple' }).click()
+      await expect(panel.getByLabel('Chain ID')).toHaveValue('210426')
+    })
+
+    test('Network tuple: an update applied but whose answer was lost stays unknown until a read shows it', async ({ page }) => {
+      const fixture = await networkTupleWrite(page, 'lost')
+      await page.goto('/admin/networks/' + NETWORK)
+      await expect(page.getByRole('heading', { level: 1, name: /PlatON E2E Network/ })).toBeVisible({ timeout: 20_000 })
+      const panel = page.locator('[data-slot="card-x"]', { has: page.getByRole('heading', { name: 'Expected identity tuple' }) })
+      await panel.getByRole('button', { name: 'Edit tuple' }).click()
+      await panel.getByLabel('Chain ID').fill('210426')
+      await panel.getByRole('button', { name: 'Save tuple' }).click()
+      await panel.getByRole('button', { name: 'Confirm tuple update' }).click()
+
+      const notice = panel.locator('[data-slot="tuple-write-uncertain"]')
+      await expect(notice).toContainText('may or may not have been applied')
+      await expect(notice).toContainText('The Network could not be read.')
+      await expect(panel.getByText(/Unable to update the Network/)).toHaveCount(0)
+      await expect(panel.getByRole('button', { name: 'Confirm tuple update' })).toHaveCount(0)
+      expect(fixture.writes).toHaveLength(1)
+
+      // Cancel, and a new round from the tuple this page last read.
+      await panel.getByRole('button', { name: 'Cancel' }).click()
+      await panel.getByRole('button', { name: 'Edit tuple' }).click()
+      await expect(panel.getByLabel('Chain ID')).toHaveValue('210425')
+      const name = panel.getByLabel('Display name')
+      await name.fill('Renamed while unknown')
+      const save = panel.getByRole('button', { name: 'Save tuple' })
+      await expect(save).toBeDisabled()
+      const reason = panel.locator('[data-slot="tuple-write-uncertain-held"]')
+      await expect(reason).toContainText('Server is seen holding the earlier update')
+      await expect(save).toHaveAttribute('aria-describedby', (await reason.locator('p').getAttribute('id')) ?? 'missing')
+      await save.click({ force: true })
+      await name.press('Enter')
+      await panel.locator('form').evaluate((form: HTMLFormElement) => form.requestSubmit())
+      await expect(panel.getByRole('button', { name: 'Confirm tuple update' })).toHaveCount(0)
+      await expectNoHorizontalOverflow(page)
+      await shot(page, '[data-slot="card-x"]:has(h2:text-is("Expected identity tuple"))', 'network-tuple-uncertain', theme)
+
+      // Leaving and reopening does not end it either.
+      await leaveAndReturn(page)
+      await expect(notice).toBeVisible()
+      expect(fixture.writes).toHaveLength(1)
+
+      // A read-only check finds the Server holding the update.
+      fixture.readable = true
+      await panel.getByRole('button', { name: 'Edit tuple' }).click()
+      await name.fill('Renamed while unknown')
+      await notice.getByRole('button', { name: 'Check the Network' }).click()
+      await expect(notice).toHaveCount(0)
+      await expect(panel.locator('[data-slot="tuple-server-moved"]')).toContainText('Chain ID 210426')
+      await expect(name).toHaveValue('Renamed while unknown')
+      await expect(save).toBeDisabled()
+      expect(fixture.writes).toHaveLength(1)
+
+      await panel.getByRole('button', { name: 'Cancel' }).click()
+      await panel.getByRole('button', { name: 'Edit tuple' }).click()
+      await expect(panel.getByLabel('Chain ID')).toHaveValue('210426')
     })
   })
 }

@@ -1,10 +1,9 @@
 import { ChevronRight } from 'lucide-react'
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type RefObject } from 'react'
 import { Link, useParams } from 'react-router'
 import {
   AdminApiError,
   createNetworkEntry,
-  updateNetworkEntry,
   useAdminNetworkDetail,
   useAdminNetworks,
 } from '../api/admin'
@@ -16,7 +15,14 @@ import { Button } from '../components/ui/button'
 import { CardX } from '../components/ui/card-x'
 import { Empty } from '../components/ui/empty'
 import { Input } from '../components/ui/input'
-import { readBackRecovered, type DetailRead, type DetailReadResult, type ReadBackFailure } from '../lib/readBack'
+import {
+  checkNetworkTupleWrite,
+  networkTupleWrite,
+  startNetworkTupleWrite,
+  useNetworkTupleWrite,
+  type NetworkTupleWrite,
+  type NetworkTupleWriteOutcome,
+} from '../api/networkTupleWrites'
 import { ReadBackNotice } from '../components/ReadBackNotice'
 import { cn } from '../lib/utils'
 import type { AdminNetwork, AdminNetworkDetail, AdminNetworkNode } from '../api/generated'
@@ -478,12 +484,9 @@ export function AdminNetworkDetailPage() {
             // One edit round belongs to one Network.
             key={query.data.network_key}
             network={query.data}
+            generation={generation}
             csrfToken={csrfToken}
-            detailRead={{
-              isError: query.isError,
-              errorUpdateCount: query.errorUpdateCount,
-              dataUpdatedAt: query.dataUpdatedAt,
-            }}
+            detailReadFailed={query.isError}
             readDetail={() => query.refetch({ cancelRefetch: false })}
           />
           <NetworkNodesPanel networkKey={query.data.network_key} nodes={query.data.nodes} />
@@ -547,39 +550,52 @@ function tupleUpdate(fields: TupleFields): TupleUpdate {
  *  discards it) or a successful update; there is no half-closed editor that
  *  keeps a draft or a confirmation. A confirmation holds the exact update it
  *  sends, and any field change withdraws it. While the update is in flight
- *  only this editor is locked and the request is never sent twice. An
- *  applied update and a failed read-back after it are two results: the
- *  read-back failure is its own notice, lifted by a later successful read of
- *  this Network's detail. Until then the page may still hold the earlier
- *  tuple, so a round begun meanwhile keeps its draft but cannot be saved; the
- *  same holds whenever this Network's latest read failed, including after the
- *  editor was left and reopened. */
+ *  only this editor is locked and the request is never sent twice.
+ *
+ *  The update sends the complete tuple, so one composed from a tuple read
+ *  before an earlier update landed would put that update's identity fields
+ *  back. The earlier update's hold therefore lives outside this editor
+ *  (api/networkTupleWrites): from the moment it is sent until it is answered
+ *  and this Network is read again — or, if its answer was lost, until a read
+ *  shows the Server holding it — a round on this Network keeps its draft but
+ *  cannot be saved, including after the editor was left and reopened. The
+ *  same holds whenever this Network's latest read failed. Once read, the
+ *  Server-moved rule applies to the kept draft. */
 function IdentityTuplePanel({
   network,
+  generation,
   csrfToken,
-  detailRead,
+  detailReadFailed,
   readDetail,
 }: {
   network: AdminNetworkDetail
+  generation: number
   csrfToken: string
-  /** The page's latest read of this Network's detail. */
-  detailRead: DetailRead
-  /** Reads the authoritative Network detail again (joining a read in flight). */
-  readDetail: () => Promise<DetailReadResult>
+  /** Whether the page's latest read of this Network's detail failed. */
+  detailReadFailed: boolean
+  /** Reads the Network detail again (joining a read in flight). */
+  readDetail: () => Promise<{ isError: boolean }>
 }) {
+  const networkKey = network.network_key
   const current = tupleFields(network)
   // One edit round: the draft and the Server tuple it started from.
   const [edit, setEdit] = useState<{ fields: TupleFields; base: TupleFields } | null>(null)
   // The exact update the open confirmation will send.
   const [confirmed, setConfirmed] = useState<TupleUpdate | null>(null)
+  // This editor's own update, from Confirm until it is answered and read back.
   const [submitting, setSubmitting] = useState(false)
   const inFlight = useRef(false)
+  const alive = useRef(true)
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+    }
+  }, [])
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  // A read-back that failed after an applied update; lifted only by a later
-  // successful read of this Network's detail.
-  const [readBackFailure, setReadBackFailure] = useState<ReadBackFailure | null>(null)
-  if (readBackFailure && readBackRecovered(readBackFailure, detailRead)) setReadBackFailure(null)
+  // This Network's write, whichever editor instance sent it.
+  const write = useNetworkTupleWrite(generation, networkKey)
   // Re-renders once to move the focus when nothing else changes.
   const [, setFocusTick] = useState(0)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -588,6 +604,7 @@ function IdentityTuplePanel({
   const editRef = useRef<HTMLButtonElement>(null)
   const promptRef = useRef<HTMLSpanElement>(null)
   const readAgainRef = useRef<HTMLButtonElement>(null)
+  const checkRef = useRef<HTMLButtonElement>(null)
   const focusNext = useRef<'field' | 'edit' | 'prompt' | null>(null)
   useEffect(() => {
     const target = focusNext.current
@@ -603,7 +620,7 @@ function IdentityTuplePanel({
 
   // The Server tuple moved while this round was open: the draft is kept, and
   // a confirmation given against the earlier tuple no longer stands. Our own
-  // update is excluded while it is in flight (including its refetch).
+  // update is excluded while it is in flight (including its read-back).
   const serverMoved = edit !== null && !submitting && !sameTuple(current, edit.base)
   if (serverMoved && confirmed !== null) setConfirmed(null)
   // The Server already holds the draft (for example a write whose answer was
@@ -611,26 +628,27 @@ function IdentityTuplePanel({
   const serverHasDraft =
     serverMoved && JSON.stringify(tupleUpdate(current)) === JSON.stringify(tupleUpdate(edit.fields))
   const movedNoticeId = 'network-edit-server-moved'
-  // After an applied update whose read-back failed, this page may still hold
-  // the earlier tuple, so a round begun meanwhile may have started from it and
-  // cannot tell the Server moved. The draft is kept, but nothing is sent until
-  // this Network is read successfully; then the Server-moved rule applies.
-  // The same holds whenever this Network's latest read failed: the page then
-  // shows its last successful tuple, which may be earlier than the Server's.
-  // That also covers an editor left and reopened (another Network and back),
-  // where the notice above is gone but the read still failed. Our own
-  // update's read-back is excluded while it is in flight, as for serverMoved.
-  const awaitingReadBack =
-    edit !== null && !submitting && (readBackFailure !== null || detailRead.isError)
-  const readBackPendingId = 'network-edit-read-back-pending'
-  const saveBlocked = serverMoved || awaitingReadBack
-  // Defence in depth: no confirmation can stand while the save is held (a
-  // failure is only recorded as its round closes, and submit() refuses).
-  if (awaitingReadBack && confirmed !== null) setConfirmed(null)
+  // While an earlier update holds this Network (unanswered, not read back, or
+  // with a lost answer), this page may still show the tuple from before it,
+  // so a round cannot tell the Server moved: the draft is kept, but nothing
+  // is sent. The same holds while this Network's latest read failed. This
+  // editor's own update is excluded while it is in flight, as for serverMoved.
+  const hold: NetworkTupleWrite['phase'] | 'readFailed' | null =
+    edit === null || submitting ? null : write !== null ? write.phase : detailReadFailed ? 'readFailed' : null
+  const holdReasonId = 'network-edit-save-held'
+  const saveBlocked = serverMoved || hold !== null
+  // Defence in depth: no confirmation can stand while the save is held
+  // (submit() and confirm() refuse it as well).
+  if (hold !== null && confirmed !== null) setConfirmed(null)
   const saveReasonIds =
-    [serverMoved ? movedNoticeId : null, awaitingReadBack ? readBackPendingId : null]
+    [serverMoved ? movedNoticeId : null, hold !== null ? holdReasonId : null]
       .filter((id) => id !== null)
       .join(' ') || undefined
+  // Read synchronously at the moment of a submit, not from the last render.
+  const writeHeld = () => networkTupleWrite(generation, networkKey) !== null
+  // Another editor instance's update (sent before this one was opened).
+  const earlierWriteInProgress =
+    !submitting && (write?.phase === 'pending' || write?.phase === 'reconciling')
 
   function startEdit() {
     setEdit({ fields: current, base: current })
@@ -657,9 +675,10 @@ function IdentityTuplePanel({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    // A draft against a tuple the Server no longer holds, or that may have
-    // started from a tuple this page could not read back, cannot be saved.
-    if (inFlight.current || edit === null || saveBlocked) return
+    // A draft against a tuple the Server no longer holds, or one that may
+    // have started from a tuple an earlier update has since replaced, cannot
+    // be saved.
+    if (inFlight.current || edit === null || saveBlocked || writeHeld()) return
     if (!event.currentTarget.reportValidity()) return
     setMessage(null)
     setError(null)
@@ -667,52 +686,65 @@ function IdentityTuplePanel({
     focusNext.current = 'prompt'
   }
 
+  /** Whether the keyboard is still on this panel (or nowhere), so a result
+   *  may move it; a result never takes it from elsewhere on the page. */
+  function focusIsOurs(): boolean {
+    const active = document.activeElement
+    return !active || active === document.body || Boolean(panelRef.current?.contains(active))
+  }
+
   async function confirm() {
-    if (inFlight.current || confirmed === null || saveBlocked) return
+    if (inFlight.current || confirmed === null || saveBlocked || writeHeld()) return
     // Confirm is a plain button: it re-runs the form's own validity rules
     // instead of trusting that the Save step was valid.
     if (formRef.current && !formRef.current.reportValidity()) {
       setConfirmed(null)
       return
     }
-    const update = confirmed
+    // The hold is in place before the request leaves.
+    const pending = startNetworkTupleWrite({ generation, networkKey, update: confirmed, csrfToken })
+    if (pending === null) {
+      setConfirmed(null)
+      return
+    }
     inFlight.current = true
     setSubmitting(true)
     setError(null)
+    let outcome: NetworkTupleWriteOutcome
     try {
-      let result: Awaited<ReturnType<typeof updateNetworkEntry>>
-      try {
-        result = await updateNetworkEntry(network.network_key, update, csrfToken)
-      } catch (caught) {
-        // The draft and the confirmation stay, so the Owner can retry it.
-        setError(caught instanceof Error ? caught.message : 'Unable to update the Network')
-        return
-      }
-      // The read view is the Server's tuple; wait for it to be read back. A
-      // read that finished before the write did is not that read-back.
-      const writtenAt = Date.now()
-      let readBack = await readDetail()
-      if (!readBack.isError && readBack.dataUpdatedAt < writtenAt) readBack = await readDetail()
-      const active = document.activeElement
-      if (!active || active === document.body || panelRef.current?.contains(active)) {
-        focusNext.current = 'edit'
-      }
-      setMessage('Updated ' + result.displayName + '.')
-      setReadBackFailure(
-        readBack.isError
-          ? { errorUpdateCount: readBack.errorUpdateCount, errorUpdatedAt: readBack.errorUpdatedAt }
-          : null,
-      )
-      setEdit(null)
-      setConfirmed(null)
+      outcome = await pending
     } finally {
       inFlight.current = false
-      setSubmitting(false)
+      if (alive.current) setSubmitting(false)
+    }
+    // An editor left meanwhile shows nothing of it and moves no focus.
+    if (!alive.current) return
+    switch (outcome.kind) {
+      case 'applied':
+        if (focusIsOurs()) focusNext.current = 'edit'
+        setMessage('Updated ' + outcome.response.displayName + '.')
+        setEdit(null)
+        setConfirmed(null)
+        break
+      case 'rejected':
+        // Refused by the Server, so nothing was applied: the draft and the
+        // confirmation stay, so the Owner can retry it.
+        setError(
+          outcome.error instanceof Error ? outcome.error.message : 'Unable to update the Network',
+        )
+        break
+      case 'uncertain':
+        // Not a failure to report: the outcome is unknown and stated beside
+        // the editor. The draft stays; the confirmation cannot be sent again.
+        if (focusIsOurs()) focusNext.current = 'field'
+        setConfirmed(null)
+        break
+      case 'superseded':
+        break
     }
   }
 
-  /** Reads the Network again after a failed read-back or a failed read of
-   *  the page. It only reads; an applied update is never sent again. */
+  /** Reads the Network again after a failed read of the page. It only reads. */
   async function readAgain() {
     const result = await readDetail()
     // The notice (and this button) leave on success: keep the keyboard here.
@@ -721,6 +753,27 @@ function IdentityTuplePanel({
       setFocusTick((tick) => tick + 1)
     }
   }
+
+  /** Reads the Network again for an earlier update whose read-back failed or
+   *  whose answer was lost. It only reads; the update is never sent again. */
+  async function checkWrite(button: RefObject<HTMLButtonElement | null>) {
+    const hadFocus = button.current !== null && document.activeElement === button.current
+    await checkNetworkTupleWrite(generation, networkKey)
+    if (!alive.current || !hadFocus || writeHeld()) return
+    // The notice and its button left: keep the keyboard in this panel.
+    if (!focusIsOurs()) return
+    focusNext.current = 'edit'
+    setFocusTick((tick) => tick + 1)
+  }
+
+  const holdReason =
+    hold === 'pending' || hold === 'reconciling'
+      ? 'Save tuple is unavailable while an earlier update to this Network is still being saved and read back: this page may still show the tuple from before it. Your draft is kept; nothing is sent until that update has been answered and the Network read again.'
+      : hold === 'readBackFailed'
+        ? 'Save tuple is unavailable until the latest Network is read successfully: the last update was applied, but this page may still show the earlier tuple. Your draft is kept; use Read the Network again below.'
+        : hold === 'uncertain'
+          ? 'Save tuple is unavailable until the Server is seen holding the earlier update: its answer was lost, so it may have been applied while this page still shows the tuple from before it. Your draft is kept; use Check the Network below.'
+          : 'Save tuple is unavailable until the latest Network is read successfully: the last read of this Network failed, so this page may still show an earlier tuple. Your draft is kept.'
 
   const fields = edit?.fields
   return (
@@ -826,35 +879,29 @@ function IdentityTuplePanel({
               )}
             </div>
           )}
-          {awaitingReadBack && (
+          {hold !== null && (
             <div
               className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground"
-              data-slot="tuple-read-back-pending"
+              data-slot={
+                hold === 'pending' || hold === 'reconciling'
+                  ? 'tuple-write-pending'
+                  : hold === 'uncertain'
+                    ? 'tuple-write-uncertain-held'
+                    : 'tuple-read-back-pending'
+              }
             >
-              {readBackFailure ? (
-                <p id={readBackPendingId}>
-                  Save tuple is unavailable until the latest Network is read successfully: the last
-                  update was applied, but this page may still show the earlier tuple. Your draft is
-                  kept; use Read the Network again below.
-                </p>
-              ) : (
-                <>
-                  <p id={readBackPendingId}>
-                    Save tuple is unavailable until the latest Network is read successfully: the
-                    last read of this Network failed, so this page may still show an earlier tuple.
-                    Your draft is kept.
-                  </p>
-                  {/* The read-back notice carries this action when it is shown. */}
-                  <Button
-                    ref={readAgainRef}
-                    type="button"
-                    variant="link"
-                    size="sm"
-                    onClick={() => void readAgain()}
-                  >
-                    Read the Network again
-                  </Button>
-                </>
+              <p id={holdReasonId}>{holdReason}</p>
+              {/* The notices below carry the read for an earlier update. */}
+              {hold === 'readFailed' && (
+                <Button
+                  ref={readAgainRef}
+                  type="button"
+                  variant="link"
+                  size="sm"
+                  onClick={() => void readAgain()}
+                >
+                  Read the Network again
+                </Button>
               )}
             </div>
           )}
@@ -918,21 +965,70 @@ function IdentityTuplePanel({
           <DetailItem label="Updated">{formatObservedAt(network.updated_at)}</DetailItem>
         </DetailList>
       )}
-      <p className={message && !submitting ? 'mt-3 text-sm text-success' : 'sr-only'} role="status">
-        {submitting ? 'Saving the identity tuple…' : message}
+      <p
+        className={
+          earlierWriteInProgress
+            ? 'mt-3 text-sm text-muted-foreground'
+            : message && !submitting
+              ? 'mt-3 text-sm text-success'
+              : 'sr-only'
+        }
+        role="status"
+      >
+        {submitting
+          ? 'Saving the identity tuple…'
+          : earlierWriteInProgress
+            ? 'An earlier update to this tuple is still being saved; the Network is read again once it is answered.'
+            : message}
       </p>
-      {readBackFailure && (
+      {write?.phase === 'readBackFailed' && (
         // The page's refresh alert already announces the failed read; this
         // says what it means for the update just applied.
         <ReadBackNotice
           className="mt-3"
           readAgainLabel="Read the Network again"
           readAgainRef={readAgainRef}
-          onReadAgain={() => void readAgain()}
+          reading={write.checking}
+          onReadAgain={() => void checkWrite(readAgainRef)}
         >
           The tuple update was applied, but the Network could not be read back afterwards, so this
           page may still show the earlier tuple. The update is not sent again.
         </ReadBackNotice>
+      )}
+      {write?.phase === 'uncertain' && (
+        <div
+          data-slot="tuple-write-uncertain"
+          className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-warning/40 bg-warning/5 p-3 text-sm"
+        >
+          <StatusBadge status="Outcome unknown" tone="warning" />
+          <span className="min-w-0 break-words" role="alert">
+            The connection failed before the Server answered the tuple update, so it may or may
+            not have been applied. It is not sent again, and Save tuple stays unavailable for this
+            Network until a read shows the Server holding that update, or until this sign-in ends.
+          </span>
+          <Button
+            ref={checkRef}
+            type="button"
+            variant="link"
+            size="sm"
+            aria-disabled={write.checking || undefined}
+            className="aria-disabled:cursor-progress aria-disabled:opacity-70"
+            onClick={() => {
+              if (!write.checking) void checkWrite(checkRef)
+            }}
+          >
+            Check the Network
+          </Button>
+          <span className="min-w-0 break-words text-xs text-muted-foreground" role="status">
+            {write.checking
+              ? 'Reading the Network…'
+              : write.lastCheck === 'notShown'
+                ? 'The latest read does not show this update. That does not prove it was not applied, or that it will not still be.'
+                : write.lastCheck === 'failed'
+                  ? 'The Network could not be read.'
+                  : ''}
+          </span>
+        </div>
       )}
       {error && (
         <p className="mt-3 text-sm text-destructive" role="alert">
