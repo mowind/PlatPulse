@@ -205,8 +205,8 @@ function SetupGuide() {
       <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
         <li><Link className={TEXT_LINK} to="/admin/networks">Register the expected Network identity</Link>.</li>
         <li>
-          <Link className={TEXT_LINK} to="/admin/agents/enroll">Add an Agent</Link>: create a one-time
-          token here, then install and enroll the Agent on its Host.
+          <Link className={TEXT_LINK} to="/admin/agents/enroll">Add an Agent</Link>: create an
+          Enrollment Token on that page, then install and enroll the Agent on its Host.
         </li>
         <li data-slot="setup-local-inventory">
           On the Agent's Host, declare its Nodes in the Agent's local configuration file

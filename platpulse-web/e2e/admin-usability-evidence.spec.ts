@@ -59,7 +59,7 @@ test('matched Admin usability evidence', async ({ page }, info) => {
       await shot('node-detail-tabs-' + width + '-' + theme, '[data-slot="admin-node-detail"]')
       await page.goto('/admin/agents/' + AGENT + '?section=manage')
       await settle(page)
-      await page.getByRole('textbox', { name: 'Display name' }).first().fill('Unsaved evidence draft').catch(() => {})
+      await page.getByRole('textbox', { name: 'Display name' }).first().fill('Unsaved evidence draft')
       await page.waitForTimeout(200)
       await shot('agent-detail-tabs-' + width + '-' + theme, '[data-slot="admin-detail-sections"] [role="tablist"]')
 

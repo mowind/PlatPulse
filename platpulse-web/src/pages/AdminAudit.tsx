@@ -68,7 +68,7 @@ export function auditDeepLinkNotice(state: {
       : 'It may be excluded by the current filters; no further events are available for them.'
     : state.more
       ? 'It may not be loaded yet.'
-      : 'No further events are available to load.'
+      : 'No more pages are available to load here.'
   const progress = state.olderLoading
     ? ' Loading older events…'
     : state.olderFailed
@@ -155,8 +155,12 @@ export default function AdminAudit() {
       revealedDeepLink.current = null
       return
     }
+    if (!itemsRef.current.some((item) => item.auditEventId === deepLinkId)) {
+      // Left the loaded results (another filter): reveal it again when it returns.
+      revealedDeepLink.current = null
+      return
+    }
     if (revealedDeepLink.current === deepLinkId) return
-    if (!itemsRef.current.some((item) => item.auditEventId === deepLinkId)) return
     revealedDeepLink.current = deepLinkId
     setExpanded((current) => (current.has(deepLinkId) ? current : new Set(current).add(deepLinkId)))
     const target = document.getElementById('event-' + deepLinkId)
@@ -352,7 +356,7 @@ export default function AdminAudit() {
                 <StatusBadge status="Error" tone="error" />
                 <span className="min-w-0 text-destructive [overflow-wrap:anywhere]">
                   {(query.error instanceof Error ? query.error.message : 'Unable to load the Audit log') +
-                    '. The ' + items.length + ' loaded events stay listed.'}
+                    (items.length === 1 ? '. The loaded event stays listed.' : '. The ' + items.length + ' loaded events stay listed.')}
                 </span>
               </p>
             )}

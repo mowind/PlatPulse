@@ -480,6 +480,26 @@ describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
       'Event 6 is not in the 1 loaded event. It may be excluded by the current filters; no further events are available for them.',
     )
   })
+
+  it('opens a linked event again when a filter change brings it back into the results', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/audit': ({ request }) => {
+        const kind = new URL(request.url).searchParams.get('event_kind')
+        return jsonResponse(kind ? { items: [AUDIT.items[0]], nextBefore: null } : { items: AUDIT.items, nextBefore: null }, 200)
+      },
+    })
+    renderAt('/admin/access/audit#event-6')
+    const region = () => screen.queryByRole('region', { name: 'Redacted details for Audit event 6' })
+    await waitFor(() => expect(region()).toBeTruthy(), SLOW)
+    fireEvent.click(screen.getByRole('button', { name: 'Hide details' }))
+    expect(region()).toBeNull()
+    fireEvent.change(screen.getByLabelText('Event kind'), { target: { value: 'viewer_created' } })
+    await waitFor(() => expect(rowIds()).toEqual(['event-7']), SLOW)
+    fireEvent.change(screen.getByLabelText('Event kind'), { target: { value: '' } })
+    await waitFor(() => expect(region()).toBeTruthy(), SLOW)
+    expect(document.querySelector('[data-slot="audit-deep-link-notice"]')).toBeNull()
+  })
 })
 
 function withinRowButton(row: HTMLElement, name: string): HTMLButtonElement {

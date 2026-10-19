@@ -219,7 +219,7 @@ export default function AdminNodesList() {
     else next.set('sort', value)
     setSearch(next, { replace: false })
   }
-  const clearAllFilters = () => clearFilters(['network', 'health', 'visibility', 'lifecycle'])
+  const clearAllFilters = () => clearFilters(Object.keys(filters) as (keyof NodeFilters)[])
 
   const networks = useMemo(() => {
     const keys = new Set((query.data ?? []).map((node) => node.network_key))
@@ -775,7 +775,7 @@ export function AdminNodeDetail() {
   const [section, setSection, openSection] = useDetailSection()
   const drafts = useDetailDrafts()
   const notices = query.data ? nodeDetailNotices(query.data) : []
-  const diagnosticNotices = notices.length
+  const diagnosticCount = notices.length
 
   if (purged) {
     return (
@@ -892,11 +892,11 @@ export function AdminNodeDetail() {
                 {
                   key: 'diagnostics',
                   label: 'Diagnostics',
-                  marker: diagnosticNotices > 0 ? diagnosticNotices : undefined,
+                  marker: diagnosticCount > 0 ? diagnosticCount : undefined,
                   markerTone: noticesMarkerTone(notices),
                   markerLabel:
-                    diagnosticNotices > 0
-                      ? diagnosticNotices + ' current finding' + (diagnosticNotices === 1 ? '' : 's')
+                    diagnosticCount > 0
+                      ? diagnosticCount + ' current finding' + (diagnosticCount === 1 ? '' : 's')
                       : undefined,
                   content: (
                     <>
