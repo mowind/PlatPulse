@@ -927,7 +927,11 @@ export function AdminNodeDetail() {
                   ...draftMarker(drafts.pending),
                   content: (
                     <>
-                      <MetadataPanel node={data} csrfToken={csrfToken} />
+                      <MetadataPanel
+                        node={data}
+                        csrfToken={csrfToken}
+                        onSaved={() => query.refetch({ cancelRefetch: false })}
+                      />
                       <PurgePanel node={data} csrfToken={csrfToken} onPurged={setPurged} />
                     </>
                   ),
@@ -1100,44 +1104,128 @@ function NodeDetailHeader({
 }
 
 /** Manage: the Server-owned display name. The Agent Inventory, endpoint, and
- *  Node ID are not editable here. */
+ *  Node ID are not editable here.
+ *
+ *  Three values stay apart: the Server's current name (`node.display_name`,
+ *  the only thing the read view shows), the draft of one edit round (started
+ *  from the latest Server value, never overwritten by a background refresh),
+ *  and the exact value the Owner confirmed, which is what Confirm sends. A
+ *  rename in flight locks this editor only, survives a section switch (the
+ *  section stays mounted) and is never sent twice. */
 function MetadataPanel({
   node,
   csrfToken,
+  onSaved,
 }: {
   node: AdminNodeDetailDto
   csrfToken: string
+  /** Resolves once the authoritative Node detail has been read again. */
+  onSaved: () => Promise<unknown>
 }) {
-  const [editing, setEditing] = useState(false)
-  const [confirming, setConfirming] = useState(false)
-  const [displayName, setDisplayName] = useState(node.display_name ?? '')
+  const current = node.display_name ?? ''
+  // One edit round: the draft and the Server value it started from.
+  const [edit, setEdit] = useState<{ draft: string; base: string } | null>(null)
+  // The exact value the open confirmation will send.
+  const [confirmed, setConfirmed] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const inFlight = useRef(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const formRef = useRef<HTMLFormElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const editRef = useRef<HTMLButtonElement>(null)
+  const promptRef = useRef<HTMLSpanElement>(null)
+  const focusNext = useRef<'input' | 'edit' | 'prompt' | null>(null)
+  useEffect(() => {
+    const target = focusNext.current
+    if (!target) return
+    focusNext.current = null
+    ;({ input: inputRef, edit: editRef, prompt: promptRef })[target].current?.focus()
+  })
+
+  // The Server name moved while this round was open (another Owner, another
+  // tab). The draft is kept, never overwritten, and a confirmation given
+  // against the earlier name no longer stands. Our own save is excluded: it
+  // is in flight until the refetched detail has arrived.
+  const serverMoved = edit !== null && !submitting && current !== edit.base
+  if (serverMoved && confirmed !== null) setConfirmed(null)
+
   useReportDraft(
     'node-display-name',
-    editing && (confirming || displayName !== (node.display_name ?? '')),
+    edit !== null && (confirmed !== null || submitting || edit.draft !== edit.base),
   )
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
+  function startEdit() {
+    setEdit({ draft: current, base: current })
+    setConfirmed(null)
     setMessage(null)
     setError(null)
-    setConfirming(true)
+    focusNext.current = 'input'
+  }
+
+  function cancel() {
+    if (inFlight.current) return
+    setEdit(null)
+    setConfirmed(null)
+    setMessage(null)
+    setError(null)
+    focusNext.current = 'edit'
+  }
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (inFlight.current || edit === null) return
+    setMessage(null)
+    setError(null)
+    setConfirmed(edit.draft.trim())
+    focusNext.current = 'prompt'
   }
 
   async function confirm() {
-    setConfirming(false)
+    if (inFlight.current || confirmed === null) return
+    // Confirm is a plain button: it re-checks the form instead of trusting
+    // that the Save step was valid.
+    if (formRef.current && !formRef.current.reportValidity()) {
+      setConfirmed(null)
+      return
+    }
+    const value = confirmed
+    inFlight.current = true
+    setSubmitting(true)
+    setError(null)
     try {
-      const result = await updateNodeMetadata(node.node_id, displayName.trim(), csrfToken)
-      setMessage('Display name is now "' + result.displayName + '".')
-      setEditing(false)
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Unable to update the display name')
+      let result: Awaited<ReturnType<typeof updateNodeMetadata>>
+      try {
+        result = await updateNodeMetadata(node.node_id, value, csrfToken)
+      } catch (caught) {
+        // The draft and the confirmation stay, so the Owner can retry it.
+        setError(caught instanceof Error ? caught.message : 'Unable to update the display name')
+        return
+      }
+      // The saved name is the one the Server reads back; wait for it so the
+      // read view and the header change together.
+      await onSaved().catch(() => undefined)
+      const active = document.activeElement
+      if (!active || active === document.body || panelRef.current?.contains(active)) {
+        focusNext.current = 'edit'
+      }
+      setMessage(
+        result.displayName
+          ? 'Display name is now "' + result.displayName + '".'
+          : 'Display name cleared; the Node ID is shown.',
+      )
+      setEdit(null)
+      setConfirmed(null)
+    } finally {
+      inFlight.current = false
+      setSubmitting(false)
     }
   }
 
   return (
     <CardX
+      ref={panelRef}
       size="medium"
       className={CARD_SURFACE}
       header={<h2 className={ADMIN_SECTION_TITLE}>Server-owned metadata</h2>}
@@ -1146,34 +1234,57 @@ function MetadataPanel({
         <div className="min-w-0">
           <dt className="text-xs font-medium tracking-wider text-muted-foreground">Display name</dt>
           <dd className="mt-0.5 min-w-0 break-words text-sm">
-            {editing ? (
-              <form className="flex flex-wrap items-center gap-2" onSubmit={submit}>
+            {edit ? (
+              <form
+                ref={formRef}
+                className="flex flex-wrap items-center gap-2"
+                onSubmit={submit}
+                aria-busy={submitting}
+              >
                 <label className="sr-only" htmlFor={'display-name-' + node.node_id}>
                   Display name
                 </label>
                 <Input
+                  ref={inputRef}
                   id={'display-name-' + node.node_id}
                   className="max-w-xs"
-                  value={displayName}
+                  value={edit.draft}
                   onChange={(event) => {
-                    setDisplayName(event.target.value)
-                    setConfirming(false)
+                    setEdit({ ...edit, draft: event.target.value })
+                    setConfirmed(null)
                   }}
                   maxLength={128}
+                  disabled={submitting}
                 />
-                {confirming ? (
+                {serverMoved && (
+                  <span className="basis-full text-xs text-muted-foreground">
+                    The display name changed on the Server to "{current || 'None'}" while you
+                    were editing. Your draft is kept and has not been saved; Cancel to start
+                    again from the current name.
+                  </span>
+                )}
+                {confirmed !== null ? (
                   <>
-                    <span className="text-xs text-muted-foreground">
+                    <span ref={promptRef} tabIndex={-1} className="text-xs text-muted-foreground outline-none">
                       Rename this Node in the Server-owned metadata? The Agent Inventory,
                       endpoint, and Node ID are not touched.
                     </span>
-                    <Button type="button" onClick={() => void confirm()}>
-                      Confirm rename
+                    <Button
+                      type="button"
+                      aria-disabled={submitting || undefined}
+                      className="aria-disabled:cursor-progress aria-disabled:opacity-70"
+                      onClick={() => void confirm()}
+                    >
+                      {submitting ? 'Saving…' : 'Confirm rename'}
                     </Button>
                     <Button
                       variant="outline"
                       type="button"
-                      onClick={() => setConfirming(false)}
+                      disabled={submitting}
+                      onClick={() => {
+                        setConfirmed(null)
+                        focusNext.current = 'input'
+                      }}
                     >
                       Keep editing
                     </Button>
@@ -1181,32 +1292,24 @@ function MetadataPanel({
                 ) : (
                   <Button type="submit">Save</Button>
                 )}
-                <Button
-                  variant="outline"
-                  type="button"
-                  onClick={() => {
-                    setEditing(false)
-                    setConfirming(false)
-                    setDisplayName(node.display_name ?? '')
-                    setError(null)
-                  }}
-                >
+                <Button variant="outline" type="button" disabled={submitting} onClick={cancel}>
                   Cancel
                 </Button>
               </form>
             ) : (
               <span className="inline-flex flex-wrap items-center gap-2">
-                {displayName.trim() || 'None — Agent ID is shown'}
-                <Button variant="link" size="sm" onClick={() => setEditing(true)}>
+                {current.trim() || 'None — Node ID is shown'}
+                <Button ref={editRef} variant="link" size="sm" onClick={startEdit}>
                   Edit
                 </Button>
               </span>
             )}
-            {message && (
-              <span className="mt-1 block text-sm text-success" role="status">
-                {message}
-              </span>
-            )}
+            <span
+              className={message && !submitting ? 'mt-1 block text-sm text-success' : 'sr-only'}
+              role="status"
+            >
+              {submitting ? 'Saving the display name…' : message}
+            </span>
             {error && (
               <span className="mt-1 block text-sm text-destructive" role="alert">
                 {error}

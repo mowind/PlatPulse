@@ -932,6 +932,195 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     ).toBeTruthy()
   })
 
+  describe('Server-owned display name editor', () => {
+    const NODE_URL = '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014'
+
+    function metadataPanel(): HTMLElement {
+      return screen
+        .getByRole('heading', { level: 2, name: 'Server-owned metadata' })
+        .closest('[data-slot="card-x"]') as HTMLElement
+    }
+
+    async function backgroundRefresh() {
+      await act(async () => {
+        await adminQueryClient.invalidateQueries()
+      })
+    }
+
+    it('reads the current Server name outside editing and keeps a draft through a background refresh', async () => {
+      let detail = NODE_A_DETAIL
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () => jsonResponse(detail, 200),
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+
+      // Renamed elsewhere: the read view follows the Server, like the header.
+      detail = { ...detail, display_name: 'Atlas (renamed elsewhere)' }
+      await backgroundRefresh()
+      await screen.findByRole('heading', { level: 1, name: 'Atlas (renamed elsewhere)' })
+      expect(within(metadataPanel()).getByText('Atlas (renamed elsewhere)')).toBeTruthy()
+      expect(within(metadataPanel()).queryByText('Node A')).toBeNull()
+
+      // An edit starts from the latest Server value.
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+      const input = within(metadataPanel()).getByLabelText('Display name') as HTMLInputElement
+      expect(input.value).toBe('Atlas (renamed elsewhere)')
+      expect(document.activeElement).toBe(input)
+      fireEvent.change(input, { target: { value: 'My draft' } })
+
+      // A refresh during the edit keeps the draft and says the Server moved.
+      detail = { ...detail, display_name: 'Atlas v3' }
+      await backgroundRefresh()
+      await screen.findByRole('heading', { level: 1, name: 'Atlas v3' })
+      expect((within(metadataPanel()).getByLabelText('Display name') as HTMLInputElement).value).toBe('My draft')
+      expect(within(metadataPanel()).getByText(/changed on the Server to "Atlas v3" while you were editing/)).toBeTruthy()
+
+      // Cancel discards the draft; the next edit reads the latest value.
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Cancel' }))
+      expect(within(metadataPanel()).getByText('Atlas v3')).toBeTruthy()
+      expect(within(metadataPanel()).queryByText(/while you were editing/)).toBeNull()
+      expect(document.activeElement).toBe(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+      expect((within(metadataPanel()).getByLabelText('Display name') as HTMLInputElement).value).toBe('Atlas v3')
+    })
+
+    it('drops an open confirmation when the Server name changes underneath it', async () => {
+      let detail = NODE_A_DETAIL
+      const fetchMock = mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () => jsonResponse(detail, 200),
+        [NODE_URL + '/metadata']: () => jsonResponse({ nodeId: NODE_A.node_id, displayName: 'never' }, 200),
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Mine' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(screen.getByRole('button', { name: 'Confirm rename' })).toBeTruthy()
+
+      detail = { ...detail, display_name: 'Theirs' }
+      await backgroundRefresh()
+      await screen.findByRole('heading', { level: 1, name: 'Theirs' })
+      expect(screen.queryByRole('button', { name: 'Confirm rename' })).toBeNull()
+      expect((screen.getByLabelText('Display name') as HTMLInputElement).value).toBe('Mine')
+      expect(screen.getByText(/changed on the Server to "Theirs"/)).toBeTruthy()
+      expect(fetchMock.mock.calls.some(([input]) => String(input instanceof Request ? input.url : input).endsWith('/metadata'))).toBe(false)
+    })
+
+    it('keeps the input after a failed save, and a later edit shows no earlier feedback', async () => {
+      let detail = NODE_A_DETAIL
+      let fail = true
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () => jsonResponse(detail, 200),
+        [NODE_URL + '/metadata']: async (request) => {
+          if (fail) {
+            return jsonResponse({ error: { code: 'unavailable', message: 'server database is unavailable' } }, 503)
+          }
+          const body = (await request.json()) as { displayName: string }
+          detail = { ...detail, display_name: body.displayName }
+          return jsonResponse({ nodeId: NODE_A.node_id, displayName: body.displayName }, 200)
+        },
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: '  Atlas-02  ' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm rename' }))
+
+      expect(await within(metadataPanel()).findByText('server database is unavailable')).toBeTruthy()
+      // Nothing claims the draft was saved; the controls are usable again.
+      expect(within(metadataPanel()).queryByText(/Display name is now/)).toBeNull()
+      expect(screen.getByRole('heading', { level: 1, name: 'Node A' })).toBeTruthy()
+      const input = screen.getByLabelText('Display name') as HTMLInputElement
+      expect(input.value).toBe('  Atlas-02  ')
+      expect(input.disabled).toBe(false)
+      const retry = screen.getByRole('button', { name: 'Confirm rename' })
+      expect(retry.getAttribute('aria-disabled')).toBeNull()
+      expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(false)
+
+      fail = false
+      fireEvent.click(retry)
+      expect(await within(metadataPanel()).findByText('Display name is now "Atlas-02".')).toBeTruthy()
+      // The read view and the header both show the Server's result.
+      expect(screen.getByRole('heading', { level: 1, name: 'Atlas-02' })).toBeTruthy()
+      expect(within(metadataPanel()).getByText('Atlas-02')).toBeTruthy()
+      expect(within(metadataPanel()).queryByText('server database is unavailable')).toBeNull()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      expect(within(metadataPanel()).queryByText(/Display name is now/)).toBeNull()
+      expect(within(metadataPanel()).queryByRole('alert')).toBeNull()
+      expect((screen.getByLabelText('Display name') as HTMLInputElement).value).toBe('Atlas-02')
+    })
+
+    it('sends one rename while it is in flight, through repeated clicks, Enter and a section switch', async () => {
+      let detail = NODE_A_DETAIL
+      let release: () => void = () => {}
+      const puts: string[] = []
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () => jsonResponse(detail, 200),
+        [NODE_URL + '/metadata']: async (request) => {
+          const body = (await request.json()) as { displayName: string }
+          puts.push(body.displayName)
+          await new Promise<void>((resolve) => {
+            release = resolve
+          })
+          detail = { ...detail, display_name: body.displayName }
+          return jsonResponse({ nodeId: NODE_A.node_id, displayName: body.displayName }, 200)
+        },
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Slow name' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm rename' }))
+
+      const saving = await screen.findByRole('button', { name: 'Saving…' })
+      await waitFor(() => expect(puts).toHaveLength(1))
+      expect(saving.getAttribute('aria-disabled')).toBe('true')
+      expect(saving.closest('form')?.getAttribute('aria-busy')).toBe('true')
+      expect((screen.getByLabelText('Display name') as HTMLInputElement).disabled).toBe(true)
+      expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(true)
+      expect((screen.getByRole('button', { name: 'Keep editing' }) as HTMLButtonElement).disabled).toBe(true)
+      fireEvent.click(saving)
+      fireEvent.click(saving)
+      fireEvent.submit(saving.closest('form') as HTMLFormElement)
+
+      openSection('Overview')
+      openSection(/^Manage/)
+      const stillSaving = screen.getByRole('button', { name: 'Saving…' })
+      fireEvent.click(stillSaving)
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(puts).toEqual(['Slow name'])
+
+      await act(async () => {
+        release()
+      })
+      expect(await screen.findByText('Display name is now "Slow name".')).toBeTruthy()
+      expect(screen.getByRole('heading', { level: 1, name: 'Slow name' })).toBeTruthy()
+      expect(puts).toEqual(['Slow name'])
+      expect(screen.getByRole('tab', { name: /^Manage/ }).textContent).not.toContain('Unsaved')
+    })
+
+    it('says a cleared name falls back to the Node ID', async () => {
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () => jsonResponse({ ...NODE_A_DETAIL, display_name: null }, 200),
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 2, name: 'Server-owned metadata' })
+      expect(within(metadataPanel()).getByText(/None — Node ID is shown/)).toBeTruthy()
+      expect(screen.queryByText(/Agent ID is shown/)).toBeNull()
+    })
+  })
+
   it('keeps an unsaved rename and an open deletion confirmation across a section switch, and says so on the tab', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),

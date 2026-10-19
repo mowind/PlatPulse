@@ -405,3 +405,244 @@ describe('PAGE-ADMIN-NETWORKS (Network Registry)', () => {
     })
   })
 })
+
+describe('Expected identity tuple editor', () => {
+  const NETWORK_URL = '/api/admin/v1/networks/platon-e2e'
+
+  function tuplePanel(): HTMLElement {
+    return screen
+      .getByRole('heading', { level: 2, name: 'Expected identity tuple' })
+      .closest('[data-slot="card-x"]') as HTMLElement
+  }
+
+  function field(label: string): HTMLInputElement {
+    return within(tuplePanel()).getByLabelText(label) as HTMLInputElement
+  }
+
+  async function backgroundRefresh() {
+    await act(async () => {
+      await adminQueryClient.invalidateQueries()
+    })
+  }
+
+  type Put = { displayName: string; genesisHash: string; chainId: number; p2pNetworkId: number; addressHrp: string }
+
+  function serve(options: { put?: (body: Put) => Response | Promise<Response> } = {}) {
+    const state = { detail: { ...NETWORK_DETAIL } as typeof NETWORK_DETAIL, puts: [] as Put[] }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(String(input), init)
+      const url = request.url.replace(TEST_ORIGIN, '')
+      if (url === '/api/public/v1/session') return jsonResponse(OWNER_SESSION, 200)
+      if (url === NETWORK_URL && request.method === 'GET') return jsonResponse(state.detail, 200)
+      if (url === NETWORK_URL && request.method === 'PUT') {
+        const body = (await request.json()) as Put
+        state.puts.push(body)
+        if (options.put) return options.put(body)
+        state.detail = {
+          ...state.detail,
+          display_name: body.displayName,
+          genesis_hash: body.genesisHash,
+          chain_id: body.chainId,
+          p2p_network_id: body.p2pNetworkId,
+          address_hrp: body.addressHrp,
+        }
+        return jsonResponse({ networkKey: 'platon-e2e', displayName: body.displayName }, 200)
+      }
+      return jsonResponse({ error: { code: 'not_found' } }, 404)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    return state
+  }
+
+  async function open() {
+    renderAt('/admin/networks/platon-e2e')
+    await screen.findByRole('heading', { level: 1, name: /PlatON E2E Network/ })
+  }
+
+  it('discards a cancelled edit, keeps a draft through a refresh, and starts the next edit from the Server', async () => {
+    const state = serve()
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    expect(document.activeElement).toBe(field('Display name'))
+    // One way out of the editor: Cancel, which discards the round.
+    expect(screen.queryByRole('button', { name: 'Close editor' })).toBeNull()
+    fireEvent.change(field('Display name'), { target: { value: 'Draft name' } })
+    fireEvent.change(field('Chain ID'), { target: { value: '7' } })
+
+    // A refresh with a new Server tuple keeps the draft and says so.
+    state.detail = { ...state.detail, display_name: 'Renamed elsewhere', address_hrp: 'atp' }
+    await backgroundRefresh()
+    await screen.findByRole('heading', { level: 1, name: /Renamed elsewhere/ })
+    expect(field('Display name').value).toBe('Draft name')
+    expect(field('Chain ID').value).toBe('7')
+    expect(field('Address HRP').value).toBe('lat')
+    expect(within(tuplePanel()).getByText(/changed on the Server while you were editing/)).toBeTruthy()
+
+    fireEvent.click(within(tuplePanel()).getByRole('button', { name: 'Cancel' }))
+    // The read view is the Server tuple; the cancelled draft is gone.
+    expect(within(tuplePanel()).getByText('Renamed elsewhere')).toBeTruthy()
+    expect(within(tuplePanel()).getByText('210425')).toBeTruthy()
+    expect(within(tuplePanel()).getByText('atp')).toBeTruthy()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit tuple' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    expect(field('Display name').value).toBe('Renamed elsewhere')
+    expect(field('Chain ID').value).toBe('210425')
+    expect(field('Address HRP').value).toBe('atp')
+    expect(within(tuplePanel()).queryByText(/while you were editing/)).toBeNull()
+    expect(state.puts).toHaveLength(0)
+  })
+
+  it('needs a fresh confirmation after any field changes, and sends exactly the confirmed tuple', async () => {
+    const state = serve()
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.change(field('Display name'), { target: { value: '  PlatON E2E v2  ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save tuple' }))
+    expect(screen.getByRole('button', { name: 'Confirm tuple update' })).toBeTruthy()
+
+    for (const [label, value] of [
+      ['Display name', 'PlatON E2E v3'],
+      ['Genesis hash', '0x' + '2'.repeat(64)],
+      ['Chain ID', '210426'],
+      ['P2P network ID', '2'],
+      ['Address HRP', 'atp'],
+    ] as const) {
+      fireEvent.change(field(label), { target: { value } })
+      expect(screen.queryByRole('button', { name: 'Confirm tuple update' })).toBeNull()
+      expect(screen.queryByText(/Update the expected identity tuple\?/)).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Save tuple' }))
+      expect(screen.getByRole('button', { name: 'Confirm tuple update' })).toBeTruthy()
+    }
+    // The risk statement is complete beside the confirmation.
+    expect(
+      screen.getByText(/Existing Nodes whose observed identity\s+contradicts the new tuple surface as typed mismatches; no Node state changes,\s+and Block History already rejected on a mismatch is not reclaimed\./),
+    ).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
+    expect(await screen.findByText('Updated PlatON E2E v3.')).toBeTruthy()
+    expect(state.puts).toEqual([
+      {
+        displayName: 'PlatON E2E v3',
+        genesisHash: '0x' + '2'.repeat(64),
+        chainId: 210426,
+        p2pNetworkId: 2,
+        addressHrp: 'atp',
+      },
+    ])
+    // Success closes the round on the Server's tuple.
+    expect(screen.getByRole('heading', { level: 1, name: /PlatON E2E v3/ })).toBeTruthy()
+    expect(within(tuplePanel()).getByText('210426')).toBeTruthy()
+    expect(within(tuplePanel()).queryByRole('textbox')).toBeNull()
+  })
+
+  it('never reopens with an earlier confirmation', async () => {
+    serve()
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.change(field('Display name'), { target: { value: 'Confirmed once' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save tuple' }))
+    expect(screen.getByRole('button', { name: 'Confirm tuple update' })).toBeTruthy()
+    fireEvent.click(within(tuplePanel()).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    expect(screen.queryByRole('button', { name: 'Confirm tuple update' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Save tuple' })).toBeTruthy()
+    expect(field('Display name').value).toBe('PlatON E2E Network')
+  })
+
+  it('keeps the existing validity rules at the final step', async () => {
+    const state = serve()
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save tuple' }))
+    expect(screen.getByRole('button', { name: 'Confirm tuple update' })).toBeTruthy()
+    // An invalid value after Save withdraws the confirmation; Save then
+    // refuses it, so nothing invalid reaches Confirm.
+    fireEvent.change(field('Chain ID'), { target: { value: '' } })
+    expect(screen.queryByRole('button', { name: 'Confirm tuple update' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Save tuple' }))
+    expect(screen.queryByRole('button', { name: 'Confirm tuple update' })).toBeNull()
+    fireEvent.change(field('Chain ID'), { target: { value: '-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save tuple' }))
+    expect(screen.queryByRole('button', { name: 'Confirm tuple update' })).toBeNull()
+    expect(state.puts).toHaveLength(0)
+  })
+
+  it('locks only this editor while the update is in flight and sends it once', async () => {
+    let release: () => void = () => {}
+    const state = serve({
+      put: async (body) => {
+        await new Promise<void>((resolve) => {
+          release = resolve
+        })
+        state.detail = { ...state.detail, display_name: body.displayName }
+        return jsonResponse({ networkKey: 'platon-e2e', displayName: body.displayName }, 200)
+      },
+    })
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.change(field('Display name'), { target: { value: 'Slow tuple' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save tuple' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
+
+    const saving = await screen.findByRole('button', { name: 'Saving…' })
+    await waitFor(() => expect(state.puts).toHaveLength(1))
+    const form = saving.closest('form') as HTMLFormElement
+    expect(form.getAttribute('aria-busy')).toBe('true')
+    expect(saving.getAttribute('aria-disabled')).toBe('true')
+    for (const label of ['Display name', 'Genesis hash', 'Chain ID', 'P2P network ID', 'Address HRP']) {
+      expect(field(label).disabled).toBe(true)
+    }
+    expect((within(tuplePanel()).getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Keep editing' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(saving)
+    fireEvent.click(saving)
+    fireEvent.submit(form)
+    // The rest of the page stays usable.
+    expect(screen.getByRole('link', { name: 'All Networks' })).toBeTruthy()
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(state.puts).toHaveLength(1)
+
+    await act(async () => {
+      release()
+    })
+    expect(await screen.findByText('Updated Slow tuple.')).toBeTruthy()
+    expect(state.puts).toHaveLength(1)
+  })
+
+  it('keeps the draft and the confirmation after a failed update so it can be retried', async () => {
+    let fail = true
+    const state = serve({
+      put: (body) => {
+        if (fail) {
+          return jsonResponse({ error: { code: 'unavailable', message: 'server database is unavailable' } }, 503)
+        }
+        state.detail = { ...state.detail, display_name: body.displayName }
+        return jsonResponse({ networkKey: 'platon-e2e', displayName: body.displayName }, 200)
+      },
+    })
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.change(field('Display name'), { target: { value: 'Retry tuple' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save tuple' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
+
+    expect(await within(tuplePanel()).findByText('server database is unavailable')).toBeTruthy()
+    expect(screen.queryByText(/^Updated/)).toBeNull()
+    expect(field('Display name').value).toBe('Retry tuple')
+    expect(field('Display name').disabled).toBe(false)
+    expect((within(tuplePanel()).getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(false)
+    const retry = screen.getByRole('button', { name: 'Confirm tuple update' })
+    expect(retry.getAttribute('aria-disabled')).toBeNull()
+
+    fail = false
+    fireEvent.click(retry)
+    expect(await screen.findByText('Updated Retry tuple.')).toBeTruthy()
+    expect(within(tuplePanel()).queryByText('server database is unavailable')).toBeNull()
+    expect(state.puts).toHaveLength(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    expect(screen.queryByText('Updated Retry tuple.')).toBeNull()
+    expect(field('Display name').value).toBe('Retry tuple')
+  })
+})

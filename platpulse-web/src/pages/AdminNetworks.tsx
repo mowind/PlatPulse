@@ -1,5 +1,5 @@
 import { ChevronRight } from 'lucide-react'
-import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { Link, useParams } from 'react-router'
 import {
   AdminApiError,
@@ -472,7 +472,11 @@ export function AdminNetworkDetailPage() {
               successful Registry values.
             </div>
           )}
-          <IdentityTuplePanel network={query.data} csrfToken={csrfToken} />
+          <IdentityTuplePanel
+            network={query.data}
+            csrfToken={csrfToken}
+            onSaved={() => query.refetch({ cancelRefetch: false })}
+          />
           <NetworkNodesPanel networkKey={query.data.network_key} nodes={query.data.nodes} />
         </>
       )}
@@ -480,89 +484,215 @@ export function AdminNetworkDetailPage() {
   )
 }
 
+type NetworkDetail = ReturnType<typeof useAdminNetworkDetail>['data'] & object
+
+/** The editable Registry tuple as the form holds it (numbers as typed). */
+type TupleFields = {
+  displayName: string
+  genesisHash: string
+  chainId: string
+  p2pNetworkId: string
+  addressHrp: string
+}
+
+/** The exact update one confirmation sends. */
+type TupleUpdate = {
+  displayName: string
+  genesisHash: string
+  chainId: number
+  p2pNetworkId: number
+  addressHrp: string
+}
+
+function tupleFields(network: NetworkDetail): TupleFields {
+  return {
+    displayName: network.display_name,
+    genesisHash: network.genesis_hash,
+    chainId: String(network.chain_id),
+    p2pNetworkId: String(network.p2p_network_id),
+    addressHrp: network.address_hrp,
+  }
+}
+
+function sameTuple(a: TupleFields, b: TupleFields): boolean {
+  return (
+    a.displayName === b.displayName &&
+    a.genesisHash === b.genesisHash &&
+    a.chainId === b.chainId &&
+    a.p2pNetworkId === b.p2pNetworkId &&
+    a.addressHrp === b.addressHrp
+  )
+}
+
+function tupleUpdate(fields: TupleFields): TupleUpdate {
+  return {
+    displayName: fields.displayName.trim(),
+    genesisHash: fields.genesisHash.trim(),
+    chainId: Number(fields.chainId),
+    p2pNetworkId: Number(fields.p2pNetworkId),
+    addressHrp: fields.addressHrp.trim(),
+  }
+}
+
+/** The expected identity tuple and its audited edit. The read view is always
+ *  the Server's current tuple. An edit round starts from the latest tuple,
+ *  keeps its draft through background refreshes, and ends with Cancel (which
+ *  discards it) or a successful update; there is no half-closed editor that
+ *  keeps a draft or a confirmation. A confirmation holds the exact update it
+ *  sends, and any field change withdraws it. While the update is in flight
+ *  only this editor is locked and the request is never sent twice. */
 function IdentityTuplePanel({
   network,
   csrfToken,
+  onSaved,
 }: {
-  network: ReturnType<typeof useAdminNetworkDetail>['data'] & object
+  network: NetworkDetail
   csrfToken: string
+  /** Resolves once the authoritative Network detail has been read again. */
+  onSaved: () => Promise<unknown>
 }) {
-  const [editing, setEditing] = useState(false)
-  const [confirming, setConfirming] = useState(false)
-  const [displayName, setDisplayName] = useState(network.display_name)
-  const [genesisHash, setGenesisHash] = useState(network.genesis_hash)
-  const [chainId, setChainId] = useState(String(network.chain_id))
-  const [p2pNetworkId, setP2pNetworkId] = useState(String(network.p2p_network_id))
-  const [addressHrp, setAddressHrp] = useState(network.address_hrp)
+  const current = tupleFields(network)
+  // One edit round: the draft and the Server tuple it started from.
+  const [edit, setEdit] = useState<{ fields: TupleFields; base: TupleFields } | null>(null)
+  // The exact update the open confirmation will send.
+  const [confirmed, setConfirmed] = useState<TupleUpdate | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const inFlight = useRef(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const formRef = useRef<HTMLFormElement>(null)
+  const firstFieldRef = useRef<HTMLInputElement>(null)
+  const editRef = useRef<HTMLButtonElement>(null)
+  const promptRef = useRef<HTMLSpanElement>(null)
+  const focusNext = useRef<'field' | 'edit' | 'prompt' | null>(null)
+  useEffect(() => {
+    const target = focusNext.current
+    if (!target) return
+    focusNext.current = null
+    ;({ field: firstFieldRef, edit: editRef, prompt: promptRef })[target].current?.focus()
+  })
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
+  // The Server tuple moved while this round was open: the draft is kept, and
+  // a confirmation given against the earlier tuple no longer stands. Our own
+  // update is excluded while it is in flight (including its refetch).
+  const serverMoved = edit !== null && !submitting && !sameTuple(current, edit.base)
+  if (serverMoved && confirmed !== null) setConfirmed(null)
+
+  function startEdit() {
+    setEdit({ fields: current, base: current })
+    setConfirmed(null)
     setMessage(null)
     setError(null)
-    setConfirming(true)
+    focusNext.current = 'field'
+  }
+
+  function cancel() {
+    if (inFlight.current) return
+    setEdit(null)
+    setConfirmed(null)
+    setMessage(null)
+    setError(null)
+    focusNext.current = 'edit'
+  }
+
+  function setField(key: keyof TupleFields, value: string) {
+    if (edit === null) return
+    setEdit({ ...edit, fields: { ...edit.fields, [key]: value } })
+    setConfirmed(null)
+  }
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (inFlight.current || edit === null) return
+    if (!event.currentTarget.reportValidity()) return
+    setMessage(null)
+    setError(null)
+    setConfirmed(tupleUpdate(edit.fields))
+    focusNext.current = 'prompt'
   }
 
   async function confirm() {
-    setConfirming(false)
+    if (inFlight.current || confirmed === null) return
+    // Confirm is a plain button: it re-runs the form's own validity rules
+    // instead of trusting that the Save step was valid.
+    if (formRef.current && !formRef.current.reportValidity()) {
+      setConfirmed(null)
+      return
+    }
+    const update = confirmed
+    inFlight.current = true
+    setSubmitting(true)
+    setError(null)
     try {
-      const result = await updateNetworkEntry(
-        network.network_key,
-        {
-          displayName: displayName.trim(),
-          genesisHash: genesisHash.trim(),
-          chainId: Number(chainId),
-          p2pNetworkId: Number(p2pNetworkId),
-          addressHrp: addressHrp.trim(),
-        },
-        csrfToken,
-      )
+      let result: Awaited<ReturnType<typeof updateNetworkEntry>>
+      try {
+        result = await updateNetworkEntry(network.network_key, update, csrfToken)
+      } catch (caught) {
+        // The draft and the confirmation stay, so the Owner can retry it.
+        setError(caught instanceof Error ? caught.message : 'Unable to update the Network')
+        return
+      }
+      // The read view is the Server's tuple; wait for it to be read back.
+      await onSaved().catch(() => undefined)
+      const active = document.activeElement
+      if (!active || active === document.body || panelRef.current?.contains(active)) {
+        focusNext.current = 'edit'
+      }
       setMessage('Updated ' + result.displayName + '.')
-      setEditing(false)
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Unable to update the Network')
+      setEdit(null)
+      setConfirmed(null)
+    } finally {
+      inFlight.current = false
+      setSubmitting(false)
     }
   }
 
+  const fields = edit?.fields
   return (
     <CardX
+      ref={panelRef}
       size="medium"
       className={ADMIN_PANEL_SURFACE}
       header={
         <>
           <h2 className={ADMIN_SECTION_TITLE}>Expected identity tuple</h2>
-          <Button
-            variant="link"
-            size="sm"
-            onClick={() => setEditing((value) => !value)}
-            aria-expanded={editing}
-            aria-controls="network-edit-form"
-          >
-            {editing ? 'Close editor' : 'Edit tuple'}
-          </Button>
+          {!edit && (
+            <Button ref={editRef} variant="link" size="sm" onClick={startEdit}>
+              Edit tuple
+            </Button>
+          )}
         </>
       }
     >
-      {editing ? (
-        <form id="network-edit-form" onSubmit={submit} className="grid max-w-2xl gap-3">
+      {fields ? (
+        <form
+          ref={formRef}
+          id="network-edit-form"
+          onSubmit={submit}
+          className="grid max-w-2xl gap-3"
+          aria-busy={submitting}
+        >
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="network-edit-name">Display name</label>
             <Input
+              ref={firstFieldRef}
               id="network-edit-name"
-              value={displayName}
-              onChange={(event) => setDisplayName(event.target.value)}
+              value={fields.displayName}
+              onChange={(event) => setField('displayName', event.target.value)}
               required
               maxLength={128}
+              disabled={submitting}
             />
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="network-edit-genesis">Genesis hash</label>
             <Input
               id="network-edit-genesis"
-              value={genesisHash}
-              onChange={(event) => setGenesisHash(event.target.value)}
+              value={fields.genesisHash}
+              onChange={(event) => setField('genesisHash', event.target.value)}
               required
+              disabled={submitting}
             />
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -572,9 +702,10 @@ function IdentityTuplePanel({
                 id="network-edit-chain"
                 type="number"
                 min={0}
-                value={chainId}
-                onChange={(event) => setChainId(event.target.value)}
+                value={fields.chainId}
+                onChange={(event) => setField('chainId', event.target.value)}
                 required
+                disabled={submitting}
               />
             </div>
             <div className="flex flex-col gap-1">
@@ -583,37 +714,55 @@ function IdentityTuplePanel({
                 id="network-edit-p2p"
                 type="number"
                 min={0}
-                value={p2pNetworkId}
-                onChange={(event) => setP2pNetworkId(event.target.value)}
+                value={fields.p2pNetworkId}
+                onChange={(event) => setField('p2pNetworkId', event.target.value)}
                 required
+                disabled={submitting}
               />
             </div>
             <div className="flex flex-col gap-1">
               <label className="text-xs font-medium tracking-wider text-muted-foreground" htmlFor="network-edit-hrp">Address HRP</label>
               <Input
                 id="network-edit-hrp"
-                value={addressHrp}
-                onChange={(event) => setAddressHrp(event.target.value)}
+                value={fields.addressHrp}
+                onChange={(event) => setField('addressHrp', event.target.value)}
                 required
                 maxLength={16}
+                disabled={submitting}
               />
             </div>
           </div>
+          {serverMoved && (
+            <p className="text-xs text-muted-foreground">
+              The expected identity tuple changed on the Server while you were editing. Your
+              draft is kept and has not been saved; Cancel to start again from the current
+              tuple.
+            </p>
+          )}
           <div className="flex flex-wrap items-center gap-2">
-            {confirming ? (
+            {confirmed ? (
               <>
-                <span className="text-xs text-muted-foreground">
+                <span ref={promptRef} tabIndex={-1} className="text-xs text-muted-foreground outline-none">
                   Update the expected identity tuple? Existing Nodes whose observed identity
                   contradicts the new tuple surface as typed mismatches; no Node state changes,
                   and Block History already rejected on a mismatch is not reclaimed.
                 </span>
-                <Button type="button" onClick={() => void confirm()}>
-                  Confirm tuple update
+                <Button
+                  type="button"
+                  aria-disabled={submitting || undefined}
+                  className="aria-disabled:cursor-progress aria-disabled:opacity-70"
+                  onClick={() => void confirm()}
+                >
+                  {submitting ? 'Saving…' : 'Confirm tuple update'}
                 </Button>
                 <Button
                   variant="outline"
                   type="button"
-                  onClick={() => setConfirming(false)}
+                  disabled={submitting}
+                  onClick={() => {
+                    setConfirmed(null)
+                    focusNext.current = 'field'
+                  }}
                 >
                   Keep editing
                 </Button>
@@ -621,14 +770,7 @@ function IdentityTuplePanel({
             ) : (
               <Button type="submit">Save tuple</Button>
             )}
-            <Button
-              variant="outline"
-              type="button"
-              onClick={() => {
-                setEditing(false)
-                setConfirming(false)
-              }}
-            >
+            <Button variant="outline" type="button" disabled={submitting} onClick={cancel}>
               Cancel
             </Button>
           </div>
@@ -653,11 +795,9 @@ function IdentityTuplePanel({
           <DetailItem label="Updated">{formatObservedAt(network.updated_at)}</DetailItem>
         </DetailList>
       )}
-      {message && (
-        <p className="mt-3 text-sm text-success" role="status">
-          {message}
-        </p>
-      )}
+      <p className={message && !submitting ? 'mt-3 text-sm text-success' : 'sr-only'} role="status">
+        {submitting ? 'Saving the identity tuple…' : message}
+      </p>
       {error && (
         <p className="mt-3 text-sm text-destructive" role="alert">
           {error}

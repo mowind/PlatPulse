@@ -312,6 +312,8 @@ SSE updates must preserve filters, sorting, scroll, expansion, and ordinary draf
 - success immediately invalidates and refetches authoritative REST;
 - failure preserves drafts and shows field/page errors;
 - conflicts refetch current authoritative state without overwriting drafts;
+- an inline editor keeps three values apart: the read view shows only the Server's current value; an edit round starts from the latest Server value and a background refresh never overwrites its draft (a Server change during the round is stated beside the draft and withdraws an open confirmation); a confirmation holds the exact request it sends, any field change withdraws it, and Confirm re-runs the form's validity rules; Cancel discards the round, so reopening never reuses an earlier draft or confirmation;
+- a request in flight locks only its own editor (inputs, Keep editing and Cancel; the Confirm control reads `Saving…`, keeps focus and is `aria-disabled`, with `aria-busy` on the form), survives a section switch, is never sent twice, and success is shown only once the authoritative detail has been read back;
 - access changes abort old requests and discard old responses.
 
 ## 7. Shared patterns
