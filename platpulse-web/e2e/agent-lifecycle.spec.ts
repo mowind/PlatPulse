@@ -128,10 +128,25 @@ test.describe('Agent inventory and detail (PAGE-ADMIN-AGENTS)', () => {
     await noHostToggle.click()
 
     if (page.viewportSize()?.width === 768) {
+      // A header's own text and its definition icon stay inside the header
+      // cell. The InfoHint's transparent 44px target deliberately reaches past
+      // the label through negative margins (see InfoHint), so the cell's
+      // scroll width is not the measure of what a reader sees.
       const headersReadable = await page.locator('table[data-slot="agent-table"] thead th').evaluateAll((cells) =>
         cells.every((cell) => {
           const element = cell as HTMLElement
-          return element.getBoundingClientRect().height > 0 && element.scrollWidth <= element.clientWidth + 1
+          const box = element.getBoundingClientRect()
+          const textRects: DOMRect[] = []
+          const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+          for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+            if (!text.textContent?.trim() || text.parentElement?.closest('[data-slot="info-hint-content"]')) continue
+            const range = document.createRange()
+            range.selectNodeContents(text)
+            textRects.push(...range.getClientRects())
+          }
+          const icons = [...element.querySelectorAll('[data-slot="info-hint"] svg')].map((icon) => icon.getBoundingClientRect())
+          const within = (rect: DOMRect) => rect.left >= box.left - 1 && rect.right <= box.right + 1
+          return box.height > 0 && textRects.length > 0 && textRects.every(within) && icons.every(within)
         }),
       )
       const cellsReadable = await row.locator('[data-label]').evaluateAll((cells) =>

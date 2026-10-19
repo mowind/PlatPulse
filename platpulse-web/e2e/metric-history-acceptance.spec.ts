@@ -1429,14 +1429,19 @@ test.describe('Shared Host resource history (issue #215)', () => {
         { age: 10 * MINUTE_SECONDS, cpuPercent: 23 },
       ]
       let sequence = 0
+      // The instant each reading was observed at, fixed once: the carried
+      // delivery below must name the very same instant, and recomputing it
+      // across a second boundary would describe a new observation instead.
+      let lastObservedAt = ''
       for (const reading of readings) {
         sequence += 1
+        lastObservedAt = canonicalAgo(reading.age)
         await server.submitReport(
           agent.agentId,
           agent.credential,
-          hostProbeReport(canonicalAgo(reading.age), sequence, {
+          hostProbeReport(lastObservedAt, sequence, {
             value: reading.cpuPercent,
-            observedAt: canonicalAgo(reading.age),
+            observedAt: lastObservedAt,
             ok: true,
           }),
         )
@@ -1453,7 +1458,7 @@ test.describe('Shared Host resource history (issue #215)', () => {
         agent.credential,
         hostProbeReport(canonicalAgo(5 * MINUTE_SECONDS), sequence, {
           value: 23,
-          observedAt: canonicalAgo(10 * MINUTE_SECONDS),
+          observedAt: lastObservedAt,
           ok: false,
         }),
       )

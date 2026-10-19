@@ -132,13 +132,34 @@ test('the chain block keeps one full-value Head line and three resource columns'
         // true at the auto-fill grid's own 300px minimum track. An unattested word
         // may still take its own right-aligned line (never overflow, clip or
         // shrink), which is the only case the columns' fallback exists for.
-        const sameLine = await resources.locator('[data-slot="resource-cell"]').evaluateAll(cells => cells.map(cell => {
-          const label = (cell.querySelector('[data-slot="resource-label"]') as HTMLElement).getBoundingClientRect()
-          const value = (cell.querySelector('[data-slot="resource-value"]') as HTMLElement).getBoundingClientRect()
-          return Math.abs(label.top - value.top) <= 8
+        const cellsGeometry = await resources.locator('[data-slot="resource-cell"]').evaluateAll(cells => cells.map(cell => {
+          const box = cell.getBoundingClientRect()
+          const labelEl = cell.querySelector('[data-slot="resource-label"]') as HTMLElement
+          const valueEl = cell.querySelector('[data-slot="resource-value"]') as HTMLElement
+          const label = labelEl.getBoundingClientRect()
+          const value = valueEl.getBoundingClientRect()
+          return {
+            sameLine: Math.abs(label.top - value.top) <= 8,
+            belowLabel: value.top >= label.bottom - 1,
+            rightAligned: Math.abs(value.right - box.right) <= 1.5,
+            inside: value.left >= box.left - 1 && value.right <= box.right + 1,
+            overflow: valueEl.scrollWidth > valueEl.clientWidth + 1,
+            fontSize: getComputedStyle(valueEl).fontSize,
+          }
         }))
+        const sameLine = cellsGeometry.map(cell => cell.sameLine)
         if (i < 2) expect(sameLine, `the attested percentages share their labels' lines at ${width}px`).toEqual([true, true, true])
-        else expect(sameLine.filter(Boolean).length, JSON.stringify({ width, i, sameLine })).toBeGreaterThanOrEqual(2)
+        // How many unattested words fit beside their labels depends on the
+        // reader's font; wherever one does not, it takes its own line under the
+        // label, flush right, whole and at the same size.
+        for (const cell of cellsGeometry) {
+          const where = JSON.stringify({ width, i, cell })
+          if (!cell.sameLine) expect(cell.belowLabel, where).toBe(true)
+          expect(cell.rightAligned, where).toBe(true)
+          expect(cell.inside, where).toBe(true)
+          expect(cell.overflow, where).toBe(false)
+          expect(cell.fontSize, where).toBe('13px')
+        }
         await expect(card.locator('[data-slot="node-business-metrics"] [data-short-label]')).toHaveCount(0)
         expect(await badge.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true)
       }
