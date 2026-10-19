@@ -46,9 +46,9 @@ use crate::database::{
     delete_expired_receipt_markers,
 };
 use crate::reporting::{ReportStoreError, ReportTransport};
-pub const MAX_SPOOL_BYTES: u64 = 2 * 1024 * 1024;
+pub const MAX_SPOOL_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_SPOOL_AGE_SECONDS: u64 = 24 * 60 * 60;
-pub const PREFLUSH_SPOOL_BYTES: u64 = 1536 * 1024;
+pub const PREFLUSH_SPOOL_BYTES: u64 = 48 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpoolPolicy {
@@ -1206,6 +1206,15 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
     )
     .await?;
     crate::reporting::validate_receipt_history(&mut store).await?;
+    // Record the configured Spool policy before any collection tick can drop a
+    // report: the process owns the Store from here, and every later enforcement
+    // and diagnostic reads this row.
+    crate::reporting::apply_spool_policy(
+        &mut store,
+        &config.spool.policy(),
+        &crate::database::now_rfc3339(),
+    )
+    .await?;
     let state: Option<(String, i64, Option<String>, i64, String)> = sqlx::query_as(
         "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
     )
@@ -1636,7 +1645,7 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
         }
     }
     drop(_write_permit);
-    crate::reporting::enforce_spool_policy(store, &crate::collector::SpoolPolicy::default(), &now)
+    crate::reporting::enforce_stored_spool_policy(store, &now)
         .await
         .map_err(CollectionError::Report)?;
     Ok(digest)
@@ -3110,6 +3119,7 @@ mod tests {
             state_db: dir.path().join("agent.db"),
             collection_interval_seconds: 5,
             backfill: crate::config::BackfillConfig::default(),
+            spool: crate::config::SpoolConfig::default(),
         };
         let inventory: NodeInventory = serde_json::from_str(r#"{"revision":1,"nodes":[{"node_id":"0195f2a1-0014-4014-8014-000000000014","network_key":"platon-mainnet","rpc_endpoint":"ws://127.0.0.1:6790"}]}"#).unwrap();
         let report = collect_report(
@@ -3167,6 +3177,7 @@ mod tests {
             state_db: dir.path().join("agent.db"),
             collection_interval_seconds: 5,
             backfill: crate::config::BackfillConfig::default(),
+            spool: crate::config::SpoolConfig::default(),
         };
         let supervisor_inventory: NodeInventory = serde_json::from_str(
             r#"{"revision":1,"nodes":[{"node_id":"0195f2a1-0014-4014-8014-000000000014","network_key":"platon-mainnet","rpc_endpoint":"ws://127.0.0.1:6790","process":{"kind":"supervisor","program":"validators:platon-validator-a"}},{"node_id":"0195f2a1-0015-4015-8015-000000000015","network_key":"platon-mainnet","rpc_endpoint":"ws://127.0.0.1:6791"}]}"#
@@ -3229,6 +3240,7 @@ mod tests {
             state_db: dir.path().join("agent.db"),
             collection_interval_seconds: 5,
             backfill: crate::config::BackfillConfig::default(),
+            spool: crate::config::SpoolConfig::default(),
         };
         let first_endpoint: RpcEndpoint = "ws://127.0.0.1:6790".parse().unwrap();
         let second_endpoint: RpcEndpoint = "ws://127.0.0.1:6791".parse().unwrap();
@@ -3306,6 +3318,7 @@ mod tests {
             state_db: dir.path().join("agent.db"),
             collection_interval_seconds: 5,
             backfill: crate::config::BackfillConfig::default(),
+            spool: crate::config::SpoolConfig::default(),
         };
         let first_endpoint: RpcEndpoint = "ws://127.0.0.1:6790".parse().unwrap();
         let second_endpoint: RpcEndpoint = "ws://127.0.0.1:6791".parse().unwrap();

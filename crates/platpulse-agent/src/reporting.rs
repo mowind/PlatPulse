@@ -876,7 +876,7 @@ async fn persist_immutable_report_inner(
         }
     }
     drop(_write_permit);
-    enforce_spool_policy(store, &SpoolPolicy::default(), generated_at).await?;
+    enforce_stored_spool_policy(store, generated_at).await?;
     Ok(digest)
 }
 
@@ -1081,6 +1081,54 @@ pub async fn validate_receipt_history(store: &mut AgentStore) -> Result<(), Repo
             return Ok(());
         }
     }
+}
+
+/// Record the configured Spool policy in the Agent Store.
+///
+/// The stored columns are the single source of truth for enforcement, the
+/// host.spool diagnostics, and the Admin evidence panel: a configured capacity
+/// that only lived in the configuration file would make the Agent drop reports
+/// against a bound no surface ever showed.
+pub async fn apply_spool_policy(
+    store: &mut AgentStore,
+    policy: &SpoolPolicy,
+    now: &str,
+) -> Result<(), ReportStoreError> {
+    let _write_permit = store.acquire_write().await;
+    sqlx::query(
+        "UPDATE spool_state SET max_bytes=?, max_age_seconds=?, preflush_bytes=?, updated_at=? WHERE singleton=1",
+    )
+    .bind(policy.max_bytes.min(i64::MAX as u64) as i64)
+    .bind(policy.max_age_seconds.min(i64::MAX as u64) as i64)
+    .bind(policy.preflush_bytes.min(i64::MAX as u64) as i64)
+    .bind(now)
+    .execute(store.connection())
+    .await?;
+    Ok(())
+}
+
+/// The Spool policy currently recorded in the Agent Store.
+pub async fn stored_spool_policy(store: &mut AgentStore) -> Result<SpoolPolicy, ReportStoreError> {
+    let (max_bytes, max_age_seconds, preflush_bytes): (i64, i64, i64) = sqlx::query_as(
+        "SELECT max_bytes, max_age_seconds, preflush_bytes FROM spool_state WHERE singleton=1",
+    )
+    .fetch_one(store.connection())
+    .await?;
+    Ok(SpoolPolicy {
+        max_bytes: max_bytes.max(0) as u64,
+        max_age_seconds: max_age_seconds.max(0) as u64,
+        preflush_bytes: preflush_bytes.max(0) as u64,
+    })
+}
+
+/// Enforce the policy recorded in the Agent Store rather than a compiled-in
+/// default, so the configured capacity is what actually governs retention.
+pub async fn enforce_stored_spool_policy(
+    store: &mut AgentStore,
+    now: &str,
+) -> Result<SpoolCleanupSummary, ReportStoreError> {
+    let policy = stored_spool_policy(store).await?;
+    enforce_spool_policy(store, &policy, now).await
 }
 
 /// Apply a bounded, transactional spool policy. In-flight and newest complete
@@ -1376,6 +1424,12 @@ pub(crate) async fn persist_report_from_config_with_permit(
         )
         .await?;
         validate_receipt_history(&mut store).await?;
+        apply_spool_policy(
+            &mut store,
+            &config.spool.policy(),
+            &crate::database::now_rfc3339(),
+        )
+        .await?;
         let digest = persist_immutable_report(
             &mut store,
             &report.report_id.to_string(),
@@ -1403,6 +1457,12 @@ pub(crate) async fn persist_report_from_config_with_permit(
     )
     .await?;
     validate_receipt_history(&mut store).await?;
+    apply_spool_policy(
+        &mut store,
+        &config.spool.policy(),
+        &crate::database::now_rfc3339(),
+    )
+    .await?;
     // Refuse to spool a report whose Inventory the Server would refuse
     // (issue #181): the report is immutable, so a conflict cannot be fixed
     // after the fact. This frozen v1 guard applies only to a v1 configuration.
@@ -2147,6 +2207,57 @@ mod delivery_tests {
         );
     }
 
+    /// The compiled-in policy is only a default: the recorded configuration is
+    /// what drops reports and what every diagnostics surface reports as
+    /// capacity.
+    #[tokio::test]
+    async fn configured_spool_policy_governs_enforcement_and_diagnostics() {
+        let mut store = test_store().await;
+        let body_size = report_body(1).len() as u64;
+        let policy = SpoolPolicy {
+            max_bytes: body_size * 2,
+            max_age_seconds: 365 * 24 * 60 * 60,
+            preflush_bytes: body_size,
+        };
+        apply_spool_policy(&mut store, &policy, "2026-08-12T09:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(stored_spool_policy(&mut store).await.unwrap(), policy);
+
+        for sequence in 1..=3 {
+            let body = report_body(sequence);
+            persist_immutable_report(
+                &mut store,
+                &report_id(sequence),
+                1,
+                "0195f2a1-0012-4012-8012-000000000012",
+                sequence,
+                "2026-08-12T09:00:00Z",
+                &body,
+            )
+            .await
+            .unwrap();
+        }
+
+        // Persisting enforces the recorded capacity, not the 2 MiB default.
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            2
+        );
+        let diagnostics = crate::collector::current_spool_diagnostics(&mut store)
+            .await
+            .unwrap();
+        assert_eq!(diagnostics.capacity_bytes, Some(body_size * 2));
+        assert_eq!(
+            diagnostics.max_age_seconds,
+            Some(365 * 24 * 60 * 60),
+            "diagnostics must describe the configured bounds"
+        );
+    }
+
     #[tokio::test]
     async fn hot_receipt_validation_only_reads_queued_receipts() {
         let mut store = test_store().await;
@@ -2484,7 +2595,7 @@ mod backlog_recovery_tests {
         persist_immutable_report,
     };
     use crate::collector::{CollectionError, SpoolPolicy, guard_startup_inventory_declaration};
-    use crate::config::{AgentConfig, BackfillConfig};
+    use crate::config::{AgentConfig, BackfillConfig, SpoolConfig};
     use crate::database::{AgentDatabaseConfig, AgentStore, AgentStoreWritePermit};
     use crate::inventory_declaration::{InventoryDeclarationConflict, read_inventory_declaration};
 
@@ -2556,6 +2667,7 @@ mod backlog_recovery_tests {
             state_db: dir.join("agent.db"),
             collection_interval_seconds: 5,
             backfill: BackfillConfig::default(),
+            spool: SpoolConfig::default(),
         }
     }
 

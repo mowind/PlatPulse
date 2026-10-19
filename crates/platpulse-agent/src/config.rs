@@ -28,6 +28,9 @@ pub struct AgentConfigFile {
     /// intentionally finite: realtime collection never falls back to polling.
     #[serde(default)]
     pub backfill: BackfillConfig,
+    /// Durable Spool capacity policy.
+    #[serde(default)]
+    pub spool: SpoolConfig,
     #[serde(default)]
     pub nodes: Vec<AgentNodeConfig>,
 }
@@ -102,6 +105,75 @@ impl BackfillConfig {
     }
 }
 
+/// Durable Spool capacity policy (design §7.2).
+///
+/// The Spool is bounded by bytes and by age; exceeding either bound drops the
+/// oldest unconfirmed historical reports. Both bounds are configuration because
+/// the byte bound is what actually binds at a fast collection cadence: the
+/// shipped 64 MiB holds about half an hour of reports at a one-second interval,
+/// so a shorter interval or a longer accepted Server outage needs a larger
+/// Spool. The preflush reserve is derived as three quarters of capacity rather
+/// than configured separately, so the two can never contradict each other.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SpoolConfig {
+    /// Configured byte capacity of the Durable Spool.
+    #[serde(default = "default_spool_max_bytes")]
+    pub max_bytes: u64,
+    /// Oldest report age retained even when the byte bound is not reached.
+    #[serde(default = "default_spool_max_age_seconds")]
+    pub max_age_seconds: u64,
+}
+
+pub const MIN_SPOOL_MAX_BYTES: u64 = 512 * 1024;
+pub const MAX_SPOOL_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+pub const MIN_SPOOL_MAX_AGE_SECONDS: u64 = 60;
+pub const MAX_SPOOL_MAX_AGE_SECONDS: u64 = 30 * 24 * 60 * 60;
+
+fn default_spool_max_bytes() -> u64 {
+    crate::collector::MAX_SPOOL_BYTES
+}
+
+fn default_spool_max_age_seconds() -> u64 {
+    crate::collector::MAX_SPOOL_AGE_SECONDS
+}
+
+impl Default for SpoolConfig {
+    fn default() -> Self {
+        Self {
+            max_bytes: default_spool_max_bytes(),
+            max_age_seconds: default_spool_max_age_seconds(),
+        }
+    }
+}
+
+impl SpoolConfig {
+    pub fn validate(&self) -> Result<(), AgentConfigError> {
+        if !(MIN_SPOOL_MAX_BYTES..=MAX_SPOOL_MAX_BYTES).contains(&self.max_bytes) {
+            return Err(AgentConfigError::InvalidSpool(format!(
+                "max_bytes must be between {MIN_SPOOL_MAX_BYTES} and {MAX_SPOOL_MAX_BYTES}"
+            )));
+        }
+        if !(MIN_SPOOL_MAX_AGE_SECONDS..=MAX_SPOOL_MAX_AGE_SECONDS).contains(&self.max_age_seconds)
+        {
+            return Err(AgentConfigError::InvalidSpool(format!(
+                "max_age_seconds must be between {MIN_SPOOL_MAX_AGE_SECONDS} and \
+                 {MAX_SPOOL_MAX_AGE_SECONDS}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// The effective policy the Agent Store enforces.
+    pub fn policy(&self) -> crate::collector::SpoolPolicy {
+        crate::collector::SpoolPolicy {
+            max_bytes: self.max_bytes,
+            max_age_seconds: self.max_age_seconds,
+            preflush_bytes: self.max_bytes / 4 * 3,
+        }
+    }
+}
+
 /// One Node declaration in the Agent's authoritative local configuration.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -139,6 +211,7 @@ pub struct AgentConfig {
     pub state_db: PathBuf,
     pub collection_interval_seconds: u64,
     pub backfill: BackfillConfig,
+    pub spool: SpoolConfig,
 }
 
 #[derive(Debug, Error)]
@@ -161,6 +234,8 @@ pub enum AgentConfigError {
     InvalidNode(String),
     #[error("invalid backfill configuration: {0}")]
     InvalidBackfill(String),
+    #[error("invalid spool configuration: {0}")]
+    InvalidSpool(String),
     #[error("collection_interval_seconds must be between 1 and 300")]
     InvalidCollectionInterval,
     #[error("inventory_revision must be greater than zero")]
@@ -197,6 +272,7 @@ impl AgentConfigFile {
             return Err(AgentConfigError::InvalidInventoryRevision);
         }
         self.backfill.validate()?;
+        self.spool.validate()?;
         let mut seen_ids = std::collections::HashSet::new();
         let mut seen_endpoints = std::collections::HashSet::new();
         let mut nodes = Vec::with_capacity(self.nodes.len());
@@ -352,6 +428,7 @@ impl AgentConfig {
         {
             return Err(AgentConfigError::InvalidCollectionInterval);
         }
+        file.spool.validate()?;
         Ok(Self {
             config_path: config_path.to_owned(),
             server_url,
@@ -359,6 +436,7 @@ impl AgentConfig {
             state_db: file.state_db,
             collection_interval_seconds: file.collection_interval_seconds,
             backfill: file.backfill,
+            spool: file.spool,
         })
     }
 
@@ -416,6 +494,59 @@ mod tests {
         assert!(matches!(
             AgentConfig::resolve(&config(301)),
             Err(AgentConfigError::InvalidCollectionInterval)
+        ));
+    }
+
+    #[test]
+    fn spool_capacity_is_configurable_within_documented_bounds() {
+        let dir = tempdir().unwrap();
+        let config = |spool: &str| {
+            write_config(
+                dir.path(),
+                &format!(
+                    "server_url=\"https://example.com\"\ncredential_file=\"/tmp/c\"\nstate_db=\"/tmp/d\"\n{spool}"
+                ),
+            )
+        };
+
+        // Omitting the section keeps the shipped policy, whose flush reserve is
+        // three quarters of capacity.
+        let default = AgentConfig::resolve(&config("")).unwrap();
+        assert_eq!(default.spool, SpoolConfig::default());
+        assert_eq!(default.spool.max_bytes, 64 * 1024 * 1024);
+        assert_eq!(default.spool.policy().preflush_bytes, 48 * 1024 * 1024);
+
+        let enlarged = AgentConfig::resolve(&config(
+            "[spool]\nmax_bytes = 67108864\nmax_age_seconds = 604800\n",
+        ))
+        .unwrap();
+        assert_eq!(enlarged.spool.max_bytes, 64 * 1024 * 1024);
+        assert_eq!(enlarged.spool.max_age_seconds, 604_800);
+        assert_eq!(enlarged.spool.policy().preflush_bytes, 48 * 1024 * 1024);
+
+        for invalid in [
+            "[spool]\nmax_bytes = 1024\n",
+            "[spool]\nmax_bytes = 2147483648\n",
+            "[spool]\nmax_age_seconds = 59\n",
+            "[spool]\nmax_age_seconds = 2592001\n",
+        ] {
+            assert!(
+                matches!(
+                    AgentConfig::resolve(&config(invalid)).unwrap_err(),
+                    AgentConfigError::InvalidSpool(_)
+                ),
+                "{invalid}"
+            );
+        }
+
+        // The flush reserve is derived, never a second input that could
+        // contradict the capacity.
+        assert!(matches!(
+            AgentConfig::resolve(&config(
+                "[spool]\nmax_bytes = 4194304\npreflush_bytes = 1048576\n",
+            ))
+            .unwrap_err(),
+            AgentConfigError::Parse { .. }
         ));
     }
 

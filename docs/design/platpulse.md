@@ -298,7 +298,7 @@ Server 不下发或修改 `nodes.rpc_endpoint`。
 独立发送循环 → 最老报告优先 → 校验完整 Report Receipt → 按 per-Node/per-sample 结果应用 → 事务性删除已确认报告
 ~~~
 
-`collection_interval_seconds` 可配置范围为 1–300 秒，默认 5 秒；`inventory_revision` 默认 1。发送循环对**单次 HTTP 发送**施加 `sender_deadline_ms`（默认 5000 ms），它约束的是 Agent 等待 Server 响应的时间，而不是 Server 处理一份 report 的成本：deadline 到期后 Agent 放弃本次响应，但 Server 侧已经开始的事务可能仍然提交，因此该 report 可能已经落地。`[backfill]` 默认 `max_height_span = 256`、`max_block_count = 128`、`max_time_ms = 5000`，边界分别为 1–1,000,000、1–100,000、1–60,000 ms。Durable Spool 默认容量 2 MiB、最大年龄 24 小时，并在约 1.5 MiB 时预留 flush 空间；单个 AgentReport body 的 Server 上限为 8 MiB，Agent 接近 2 MiB 或样本阈值时提前 flush。区块订阅、当前观测采集、报告组装与发送相互解耦；线上仍只使用完整、不可变的 AgentReport，不按数据类型拆分 wire protocol。
+`collection_interval_seconds` 可配置范围为 1–300 秒，默认 5 秒；`inventory_revision` 默认 1。发送循环对**单次 HTTP 发送**施加 `sender_deadline_ms`（默认 5000 ms），它约束的是 Agent 等待 Server 响应的时间，而不是 Server 处理一份 report 的成本：deadline 到期后 Agent 放弃本次响应，但 Server 侧已经开始的事务可能仍然提交，因此该 report 可能已经落地。`[backfill]` 默认 `max_height_span = 256`、`max_block_count = 128`、`max_time_ms = 5000`，边界分别为 1–1,000,000、1–100,000、1–60,000 ms。Durable Spool 由 `[spool]` 配置：`max_bytes` 默认 64 MiB（边界 512 KiB–1 GiB）、`max_age_seconds` 默认 24 小时（边界 60 秒–30 天）；flush 预留按容量的 3/4 推导（默认 48 MiB），不是独立配置项，避免与容量上限自相矛盾。配置在 Agent 启动时写入 Agent Store，之后的清理、`host.spool` 诊断与 Admin 证据面板都以该记录为准；未配置时保持上述默认。单个 AgentReport body 的 Server 上限为 8 MiB，Agent 接近配置容量或样本阈值时提前 flush。区块订阅、当前观测采集、报告组装与发送相互解耦；线上仍只使用完整、不可变的 AgentReport，不按数据类型拆分 wire protocol。
 
 要求：
 

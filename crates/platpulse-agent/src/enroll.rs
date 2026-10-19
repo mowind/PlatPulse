@@ -299,6 +299,7 @@ mod tests {
             state_db: dir.join("agent.db"),
             collection_interval_seconds: 5,
             backfill: crate::config::BackfillConfig::default(),
+            spool: crate::config::SpoolConfig::default(),
         }
     }
 

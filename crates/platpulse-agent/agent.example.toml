@@ -9,6 +9,15 @@ max_height_span = 256
 max_block_count = 128
 max_time_ms = 5000
 
+# Durable Spool capacity (defaults: 64 MiB, 24 hours).
+# Allowed ranges: max_bytes 524288..=1073741824, max_age_seconds 60..=2592000.
+# The flush reserve follows capacity (three quarters) and is not a separate key.
+# A short collection interval or a longer accepted Server outage needs a larger
+# spool: 64 MiB holds about half an hour of reports at a one-second interval.
+[spool]
+max_bytes = 67108864
+max_age_seconds = 86400
+
 # [[nodes]]
 # node_id = "0195f2a1-0014-4014-8014-000000000014"
 # network_key = "platon-mainnet"

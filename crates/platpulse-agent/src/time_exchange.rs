@@ -118,7 +118,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::config::BackfillConfig;
+    use crate::config::{BackfillConfig, SpoolConfig};
     use crate::http_test_support::KeepAliveServer;
 
     const SERVER_TIME_BODY: &str = r#"{"server_time":"2026-10-15T09:00:00Z"}"#;
@@ -160,6 +160,7 @@ mod tests {
             state_db: dir.join("agent.db"),
             collection_interval_seconds: 5,
             backfill: BackfillConfig::default(),
+            spool: SpoolConfig::default(),
         }
     }
 

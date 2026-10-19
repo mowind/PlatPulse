@@ -629,7 +629,7 @@ async fn run_delivery_loop(
     .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     let transport = crate::reporting::HttpReportTransport::from_config(&config)
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
-    let policy = crate::collector::SpoolPolicy::default();
+    let policy = config.spool.policy();
     let mut tick = periodic_interval(Duration::from_secs(1));
     let mut rejections = RepeatingMessage::new();
     loop {
