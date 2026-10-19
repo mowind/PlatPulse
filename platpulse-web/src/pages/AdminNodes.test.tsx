@@ -994,6 +994,88 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
 
     expect(await screen.findByText('Node unavailable')).toBeTruthy()
     expect(screen.getByText('This Node is no longer available.')).toBeTruthy()
+    // Opened directly: a page-local way back to the complete list.
+    expect(screen.getByRole('link', { name: 'All Nodes' }).getAttribute('href')).toBe('/admin/nodes')
+  })
+
+  describe('Back to results', () => {
+    const DETAIL_PATH = '/admin/nodes/' + NODE_A.node_id
+    function routes(detail: () => Response = () => jsonResponse(NODE_A_DETAIL, 200)) {
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        '/api/admin/v1/nodes': () => jsonResponse([NODE_A, NODE_B], 200),
+        ['/api/admin/v1/nodes/' + NODE_A.node_id]: detail,
+      })
+    }
+
+    it('returns from the name link to the same filters and sort, across section switches', async () => {
+      routes()
+      renderAt('/admin/nodes?health=healthy&sort=name')
+      fireEvent.click(await screen.findByRole('link', { name: 'Node A' }))
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      expect(window.location.pathname).toBe(DETAIL_PATH)
+      // The list reading never enters the detail URL.
+      expect(window.location.search).toBe('')
+      expect(screen.queryByRole('link', { name: 'All Nodes' })).toBeNull()
+      expect(screen.getByRole('link', { name: 'Back to results' }).getAttribute('href')).toBe(
+        '/admin/nodes?health=healthy&sort=name',
+      )
+
+      openSection('Diagnostics')
+      await waitFor(() => expect(window.location.search).toBe('?section=diagnostics'))
+      openSection('Manage')
+      await waitFor(() => expect(window.location.search).toBe('?section=manage'))
+      const back = screen.getByRole('link', { name: 'Back to results' })
+      expect(back.getAttribute('href')).toBe('/admin/nodes?health=healthy&sort=name')
+
+      fireEvent.click(back)
+      await screen.findByRole('heading', { level: 1, name: 'Nodes' })
+      expect(window.location.pathname + window.location.search).toBe('/admin/nodes?health=healthy&sort=name')
+      expect((screen.getByLabelText('Sort by') as HTMLSelectElement).value).toBe('name')
+      expect((screen.getByLabelText('Health') as HTMLSelectElement).value).toBe('healthy')
+    })
+
+    it('carries the same return from Open Node diagnostics', async () => {
+      routes()
+      renderAt('/admin/nodes?sort=network')
+      fireEvent.click(await screen.findByRole('button', { name: /Details\s*for Node A/ }))
+      fireEvent.click(screen.getByRole('link', { name: 'Open Node diagnostics' }))
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      expect(window.location.search).toBe('?section=diagnostics')
+      expect(screen.getByRole('link', { name: 'Back to results' }).getAttribute('href')).toBe('/admin/nodes?sort=network')
+    })
+
+    it('offers the same return on the unavailable state', async () => {
+      routes(() => jsonResponse({ error: { code: 'not_found' } }, 404))
+      renderAt('/admin/nodes?lifecycle=active')
+      fireEvent.click(await screen.findByRole('link', { name: 'Node A' }))
+      expect(await screen.findByText('Node unavailable')).toBeTruthy()
+      expect(screen.getByRole('link', { name: 'Back to results' }).getAttribute('href')).toBe('/admin/nodes?lifecycle=active')
+    })
+
+    it('keeps All Nodes for a detail opened directly', async () => {
+      routes()
+      renderAt(DETAIL_PATH + '?section=history')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      expect(screen.getByRole('link', { name: 'All Nodes' }).getAttribute('href')).toBe('/admin/nodes')
+      expect(screen.queryByRole('link', { name: 'Back to results' })).toBeNull()
+    })
+
+    it('never follows a hand-written return target out of the Nodes list', async () => {
+      routes()
+      render(<App />)
+      await act(async () => {
+        window.history.pushState(
+          { usr: { adminNodesReturn: { search: '//evil.example/?sort=name' } }, key: 'hand', idx: 1 },
+          '',
+          DETAIL_PATH,
+        )
+        window.dispatchEvent(new PopStateEvent('popstate'))
+        await Promise.resolve()
+      })
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      expect(screen.getByRole('link', { name: 'Back to results' }).getAttribute('href')).toBe('/admin/nodes')
+    })
   })
 
 

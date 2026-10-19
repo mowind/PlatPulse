@@ -70,9 +70,11 @@ export function useDetailSection(
       else params.set('section', next)
       // Replace, not push: switching sections is not a navigation step, but
       // the section still survives reload and a return from another page.
-      setSearch(params, { replace: true })
+      // The entry keeps its navigation state (such as where the page was
+      // opened from), because it is still the same visit.
+      setSearch(params, { replace: true, state: location.state })
     },
-    [search, setSearch],
+    [location.state, search, setSearch],
   )
   const open = useCallback(
     (next: DetailSection) => {

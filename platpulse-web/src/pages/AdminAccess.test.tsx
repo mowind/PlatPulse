@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { adminQueryClient } from '../api/admin'
 import { client } from '../api/generated/client.gen'
+import { auditQueryState } from '../auditQueryState'
 
 const OWNER_SESSION = {
   session: {
@@ -460,7 +461,8 @@ describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Load older events' }, SLOW))
     await waitFor(() => expect(rowIds()).toContain('event-5'), SLOW)
     expect(document.querySelector('[data-slot="audit-deep-link-notice"]')).toBeNull()
-    expect(screen.getByRole('region', { name: 'Redacted details for Audit event 5' })).toBeTruthy()
+    // The reveal opens the event in the effect after it is listed.
+    expect(await screen.findByRole('region', { name: 'Redacted details for Audit event 5' }, SLOW)).toBeTruthy()
   })
 
   it('names the current filters when a linked event is not in a filtered result', async () => {
@@ -499,6 +501,203 @@ describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     fireEvent.change(screen.getByLabelText('Event kind'), { target: { value: '' } })
     await waitFor(() => expect(region()).toBeTruthy(), SLOW)
     expect(document.querySelector('[data-slot="audit-deep-link-notice"]')).toBeNull()
+  })
+
+  // A refresh is what an invalidation (an SSE signal, a reconnect, a
+  // mutation elsewhere in the tab) asks of the shown Audit query.
+  const refreshAudit = () =>
+    act(async () => {
+      await adminQueryClient.invalidateQueries({ queryKey: ['admin', 'audit'] })
+    })
+  const refreshRow = () => document.querySelector('[data-slot="audit-refresh-error"]')
+  const unavailable = (message: string) =>
+    jsonResponse({ error: { code: 'unavailable', message, requestId: 'r1', fields: [] } }, 503)
+
+  it('A: keeps the first-page retry button and its focus in place while the retry runs', async () => {
+    let calls = 0
+    let resolveRetry: (response: Response) => void = () => {}
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/audit': () => {
+        calls += 1
+        if (calls === 1) return unavailable('Audit log unavailable')
+        return new Promise<Response>((resolve) => {
+          resolveRetry = resolve
+        })
+      },
+    })
+    renderAt('/admin/access/audit')
+    const alert = await screen.findByRole('alert', {}, SLOW)
+    expect(alert.textContent).toContain('Audit log unavailable')
+    const retry = screen.getByRole('button', { name: 'Try again' })
+    retry.focus()
+    fireEvent.click(retry)
+    // Never a blank panel: the same row says the retry is running.
+    const busy = await screen.findByRole('button', { name: 'Trying again…' })
+    expect(busy).toBe(retry)
+    expect(busy.getAttribute('aria-disabled')).toBe('true')
+    expect(document.activeElement).toBe(busy)
+    expect(document.querySelector('[data-slot="audit-initial-error"] [role="status"]')?.textContent).toContain(
+      'Loading the Audit log again…',
+    )
+    fireEvent.click(busy)
+    fireEvent.click(busy)
+    expect(calls).toBe(2)
+
+    resolveRetry(jsonResponse({ items: AUDIT.items, nextBefore: null }, 200))
+    await waitFor(() => expect(rowIds()).toEqual(['event-7', 'event-6']), SLOW)
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Try again|Trying again/ })).toBeNull()
+    // Focus lands on the events the retry brought back.
+    expect(document.activeElement).toBe(document.querySelector('[data-slot="audit-table"]'))
+  })
+
+  it('A: moves focus to the empty result when a retry succeeds with no events', async () => {
+    let calls = 0
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/audit': () => {
+        calls += 1
+        return calls === 1 ? unavailable('Audit log unavailable') : jsonResponse({ items: [], nextBefore: null }, 200)
+      },
+    })
+    renderAt('/admin/access/audit')
+    const retry = await screen.findByRole('button', { name: 'Try again' }, SLOW)
+    retry.focus()
+    fireEvent.click(retry)
+    expect(await screen.findByText('No matching Audit events.', {}, SLOW)).toBeTruthy()
+    await waitFor(() => expect(document.activeElement).toBe(document.querySelector('[data-slot="audit-empty"]')))
+  })
+
+  it('B: keeps the loaded first page when its refresh fails and says so once, above the list', async () => {
+    let failing = false
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/audit': () =>
+        failing ? unavailable('Refresh unavailable') : jsonResponse({ items: AUDIT.items, nextBefore: null }, 200),
+    })
+    renderAt('/admin/access/audit')
+    await waitFor(() => expect(rowIds()).toEqual(['event-7', 'event-6']), SLOW)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Show details' })[0])
+
+    failing = true
+    await refreshAudit()
+    await waitFor(() => expect(refreshRow()).toBeTruthy(), SLOW)
+    const alerts = screen.getAllByRole('alert')
+    expect(alerts).toHaveLength(1)
+    expect(alerts[0].textContent).toBe(
+      'ErrorRefreshing the Audit log failed: Refresh unavailable. Showing the 2 events loaded before.',
+    )
+    // Not a page-wide error and not an older-page error.
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
+    expect(document.querySelector('[data-slot="audit-older-error"]')).toBeNull()
+    expect(rowIds()).toEqual(['event-7', 'event-6'])
+    expect(count()).toBe('2 loaded')
+    expect(screen.getByRole('region', { name: 'Redacted details for Audit event 7' })).toBeTruthy()
+    // The list follows the row, not replaced by it.
+    expect(refreshRow()!.compareDocumentPosition(document.querySelector('[data-slot="audit-list"]')!)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    )
+  })
+
+  it('C, D, E: a failed refresh after several pages keeps every page, retries the same cursor once, and clears on success', async () => {
+    const befores: (string | null)[] = []
+    let mode: 'ok' | 'fail' | 'hold' = 'ok'
+    let olderCalls = 0
+    let resolveHeld: (response: Response) => void = () => {}
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/audit': ({ request }) => {
+        const before = new URL(request.url).searchParams.get('before')
+        befores.push(before)
+        if (before === null) return jsonResponse({ items: AUDIT.items, nextBefore: 6 }, 200)
+        olderCalls += 1
+        // D: the newly appended page fails first and is retried by its cursor.
+        if (olderCalls === 1) return unavailable('Older page unavailable')
+        if (mode === 'fail') return unavailable('Refresh unavailable')
+        if (mode === 'hold') {
+          return new Promise<Response>((resolve) => {
+            resolveHeld = resolve
+          })
+        }
+        return jsonResponse({ items: [AUDIT.items[1], OLDER], nextBefore: 4 }, 200)
+      },
+    })
+    renderAt('/admin/access/audit')
+    await waitFor(() => expect(rowIds()).toEqual(['event-7', 'event-6']), SLOW)
+    fireEvent.click(screen.getByRole('button', { name: 'Load older events' }))
+    await screen.findByRole('button', { name: 'Try loading older events again' }, SLOW)
+    expect(refreshRow()).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Try loading older events again' }))
+    await waitFor(() => expect(rowIds()).toEqual(['event-7', 'event-6', 'event-5']), SLOW)
+    expect(befores).toEqual([null, '6', '6'])
+    fireEvent.click(screen.getAllByRole('button', { name: 'Show details' })[0])
+    expect(screen.getByRole('region', { name: 'Redacted details for Audit event 7' })).toBeTruthy()
+
+    // C: the shown query (the cursor-6 page) fails its refresh.
+    mode = 'fail'
+    await refreshAudit()
+    await waitFor(() => expect(refreshRow()).toBeTruthy(), SLOW)
+    expect(befores).toEqual([null, '6', '6', '6'])
+    expect(refreshRow()!.textContent).toContain('Showing the 3 events loaded before.')
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    expect(document.querySelector('[data-slot="audit-older-error"]')).toBeNull()
+    expect(rowIds()).toEqual(['event-7', 'event-6', 'event-5'])
+    expect(count()).toBe('3 loaded')
+    // The cursor for the next page is still the one the last success gave.
+    expect(screen.getByRole('button', { name: 'Load older events' })).toBeTruthy()
+
+    // E: the retry asks for the same cursor once, says it is running, and
+    // clears the row when it succeeds.
+    mode = 'hold'
+    const retry = screen.getByRole('button', { name: 'Try refreshing again' })
+    retry.focus()
+    fireEvent.click(retry)
+    const busy = await screen.findByRole('button', { name: 'Refreshing…' })
+    expect(busy.getAttribute('aria-disabled')).toBe('true')
+    expect(document.activeElement).toBe(busy)
+    fireEvent.click(busy)
+    expect(befores).toEqual([null, '6', '6', '6', '6'])
+    // While it runs the row says so (and still says what is shown); a new
+    // failure mounts a fresh alert, so it is announced again.
+    expect(within(refreshRow() as HTMLElement).getByRole('status').textContent).toBe(
+      'StartingRefreshing the Audit log again. Showing the 3 events loaded before.',
+    )
+    expect(within(refreshRow() as HTMLElement).queryByRole('alert')).toBeNull()
+    resolveHeld(jsonResponse({ items: [AUDIT.items[1], OLDER], nextBefore: 4 }, 200))
+    await waitFor(() => expect(refreshRow()).toBeNull(), SLOW)
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(rowIds()).toEqual(['event-7', 'event-6', 'event-5'])
+    expect(count()).toBe('3 loaded')
+    expect(screen.getByRole('region', { name: 'Redacted details for Audit event 7' })).toBeTruthy()
+    expect(document.activeElement).toBe(document.querySelector('[data-slot="audit-table"]'))
+  })
+})
+
+describe('auditQueryState', () => {
+  const base = { settled: true, appending: false, hasData: true, isError: false, isFetching: false, retrying: false }
+  it('keeps the first-page, older-page and refresh failures apart', () => {
+    expect(auditQueryState({ ...base, settled: false, hasData: false, isFetching: true })).toBe('initial-loading')
+    expect(auditQueryState({ ...base, settled: false, hasData: false, isError: true, retrying: true })).toBe('initial-failed')
+    expect(auditQueryState({ ...base, settled: false, hasData: false, isFetching: true, retrying: true })).toBe('initial-retrying')
+    // Never a state without feedback before the first page is merged.
+    expect(auditQueryState({ ...base, settled: false, hasData: false, isError: true, isFetching: true })).toBe('initial-retrying')
+    expect(auditQueryState({ ...base, settled: false, hasData: true, isError: true })).toBe('initial-loading')
+    expect(auditQueryState({ ...base, appending: true, hasData: false, isFetching: true })).toBe('older-loading')
+    expect(auditQueryState({ ...base, appending: true, hasData: false, isError: true, retrying: true })).toBe('older-failed')
+    expect(auditQueryState({ ...base, appending: true, hasData: false, isFetching: true, retrying: true })).toBe('older-loading')
+    expect(auditQueryState({ ...base, isError: true, retrying: true })).toBe('refresh-failed')
+    expect(auditQueryState({ ...base, appending: true, isError: true, retrying: true })).toBe('refresh-failed')
+    expect(auditQueryState({ ...base, isError: true, isFetching: true, retrying: true })).toBe('refresh-retrying')
+    expect(auditQueryState({ ...base, isFetching: true })).toBe('ready')
+    // An automatic load of a selection that failed earlier is a plain load.
+    expect(auditQueryState({ ...base, settled: false, hasData: false, isFetching: true })).toBe('initial-loading')
+    // The same selection under a new key (generation change) with the old
+    // events listed: its failure and its retry are a refresh's.
+    expect(auditQueryState({ ...base, hasData: false, isError: true })).toBe('refresh-failed')
+    expect(auditQueryState({ ...base, hasData: false, isFetching: true, retrying: true })).toBe('refresh-retrying')
+    expect(auditQueryState({ ...base, hasData: false, isFetching: true })).toBe('ready')
+    expect(auditQueryState(base)).toBe('ready')
   })
 })
 

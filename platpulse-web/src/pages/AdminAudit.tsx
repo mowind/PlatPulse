@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { LoaderCircle } from 'lucide-react'
 import { Link, useLocation } from 'react-router'
 import { useAdminAudit, type AuditFilters } from '../api/admin'
@@ -22,6 +22,7 @@ import { Empty } from '../components/ui/empty'
 import { Select } from '../components/ui/input'
 import { cn } from '../lib/utils'
 import type { AuditItem } from '../api/generated'
+import { auditQueryState } from '../auditQueryState'
 
 /** `#event-13` deep link used by the recorded Operation pages (issue #208). */
 function deepLinkEventId(hash: string): number | null {
@@ -129,17 +130,31 @@ export default function AdminAudit() {
     })
   }, [before, filterKey, query.data])
 
+  // A retry belongs to the exact query it was pressed for, and ends once that
+  // query has succeeded.
+  const queryIdentity = [generation, filterKey, before ?? ''].join('\u0001')
+  const [retryFor, setRetryFor] = useState<string | null>(null)
+  if (retryFor !== null && (retryFor !== queryIdentity || (query.isSuccess && !query.isFetching))) setRetryFor(null)
+
   const settled = history.filterKey === filterKey && history.loaded
   const items = settled ? history.items : []
   const nextBefore = settled ? history.nextBefore : null
   const filtered = eventKind !== '' || targetKind !== ''
-  // The loaded events stay listed while an older page loads or fails; only
-  // the first page of a selection has a page-wide loading or error state.
-  const appending = settled && before != null
-  const olderLoading = appending && !query.data && query.isFetching
-  const olderFailed = appending && !query.data && query.isError && !query.isFetching
-  const initialLoading = !settled && !query.isError
-  const initialFailed = !settled && query.isError && !query.isFetching
+  const state = auditQueryState({
+    settled,
+    appending: before != null,
+    hasData: query.data !== undefined,
+    isError: query.isError,
+    isFetching: query.isFetching,
+    retrying: retryFor === queryIdentity,
+  })
+  const olderLoading = state === 'older-loading'
+  const olderFailed = state === 'older-failed'
+  const initialFailed = state === 'initial-failed'
+  // Without a closing period, so the sentences below never end in "..".
+  const errorMessage = (query.error instanceof Error ? query.error.message : 'Unable to load the Audit log').replace(/[.\s]+$/, '')
+  const keptEvents =
+    items.length === 1 ? 'Showing the event loaded before.' : 'Showing the ' + items.length + ' events loaded before.'
 
   const location = useLocation()
   const deepLinkId = deepLinkEventId(location.hash)
@@ -187,6 +202,33 @@ export default function AdminAudit() {
     }
     if (nextBefore != null) setBefore(nextBefore)
   }
+
+  // A retry asks for the failed query again (its own filters and cursor) and
+  // is ignored while that request is still running, so repeat presses never
+  // cancel and restart it.
+  const retryHadFocus = useRef(false)
+  const tableRef = useRef<HTMLTableElement>(null)
+  const emptyRef = useRef<HTMLDivElement>(null)
+  function retry(event: MouseEvent<HTMLButtonElement>) {
+    if (query.isFetching) return
+    retryHadFocus.current = document.activeElement === event.currentTarget
+    setRetryFor(queryIdentity)
+    void query.refetch()
+  }
+  // A retry button leaves once its query succeeds; when it held focus, focus
+  // moves to the events it brought back instead of falling to the page.
+  const retryPending =
+    state === 'initial-failed' || state === 'initial-retrying' || state === 'refresh-failed' || state === 'refresh-retrying'
+  useEffect(() => {
+    // A retry that failed again leaves focus on its button; a later, unrelated
+    // arrival must not move it.
+    if (state === 'initial-failed' || state === 'refresh-failed') retryHadFocus.current = false
+    // A first page that arrived is merged into the list one render later.
+    if (retryPending || state === 'initial-loading' || !retryHadFocus.current) return
+    retryHadFocus.current = false
+    const active = document.activeElement
+    if (active === null || active === document.body) (tableRef.current ?? emptyRef.current)?.focus()
+  }, [retryPending, state])
 
   const toggle = (id: number) => {
     setExpanded((current) => {
@@ -288,26 +330,76 @@ export default function AdminAudit() {
             })}
           </p>
         )}
-        {initialLoading && (
+        {state === 'initial-loading' && (
           <div role="status" className="flex items-center gap-2 px-4 py-6 text-sm text-muted-foreground">
             <StatusBadge status="Starting" tone="neutral" /> Loading the Audit log…
           </div>
         )}
-        {initialFailed && (
-          <div role="alert" className="flex flex-wrap items-center gap-2 px-4 py-6 text-sm">
-            <StatusBadge status="Error" tone="error" />
-            <span className="text-destructive">
-              {query.error instanceof Error ? query.error.message : 'Unable to load the Audit log'}
-            </span>
-            <Button variant="ghost" size="sm" onClick={() => void query.refetch()}>
-              Try again
-            </Button>
+        {/* The first page failed: one row that keeps its retry button (and its
+            focus) in place while the retry runs. */}
+        {(state === 'initial-failed' || state === 'initial-retrying') && (
+          <div
+            data-slot="audit-initial-error"
+            className="flex flex-wrap items-center gap-2 px-4 py-6 text-sm"
+            aria-busy={state === 'initial-retrying'}
+          >
+            {/* Keyed apart so a repeated failure mounts a new alert and is
+                announced again. */}
+            {state === 'initial-failed' ? (
+              <p key="failed" role="alert" className="flex min-w-0 flex-wrap items-center gap-2">
+                <StatusBadge status="Error" tone="error" />
+                <span className="min-w-0 text-destructive [overflow-wrap:anywhere]">{errorMessage}</span>
+              </p>
+            ) : (
+              <p key="retrying" role="status" className="flex min-w-0 flex-wrap items-center gap-2 text-muted-foreground">
+                <StatusBadge status="Starting" tone="neutral" /> Loading the Audit log again…
+              </p>
+            )}
+            <RetryButton
+              busy={state === 'initial-retrying'}
+              busyLabel="Trying again…"
+              label="Try again"
+              onClick={retry}
+            />
           </div>
         )}
-        {settled && items.length === 0 && <Empty description="No matching Audit events." />}
+        {/* A refresh of the shown query failed: its earlier successful events
+            stay listed below, and only this row says so. */}
+        {(state === 'refresh-failed' || state === 'refresh-retrying') && (
+          <div
+            data-slot="audit-refresh-error"
+            className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/60 px-4 py-2"
+            aria-busy={state === 'refresh-retrying'}
+          >
+            {state === 'refresh-failed' ? (
+              <p key="failed" role="alert" className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
+                <StatusBadge status="Error" tone="error" />
+                <span className="min-w-0 text-destructive [overflow-wrap:anywhere]">
+                  {'Refreshing the Audit log failed: ' + errorMessage + '. ' + keptEvents}
+                </span>
+              </p>
+            ) : (
+              <p key="retrying" role="status" className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                <StatusBadge status="Starting" tone="neutral" />
+                <span className="min-w-0 [overflow-wrap:anywhere]">{'Refreshing the Audit log again. ' + keptEvents}</span>
+              </p>
+            )}
+            <RetryButton
+              busy={state === 'refresh-retrying'}
+              busyLabel="Refreshing…"
+              label="Try refreshing again"
+              onClick={retry}
+            />
+          </div>
+        )}
+        {settled && items.length === 0 && (
+          <div ref={emptyRef} tabIndex={-1} data-slot="audit-empty" className={RESULT_FOCUS}>
+            <Empty description="No matching Audit events." />
+          </div>
+        )}
         {items.length > 0 && (
           <div data-slot="audit-list" className="overflow-x-auto max-md:px-3 max-md:pt-3">
-            <table data-stack data-slot="audit-table" className="w-full text-sm md:min-w-[44rem]">
+            <table ref={tableRef} tabIndex={-1} data-stack data-slot="audit-table" className={cn('w-full text-sm md:min-w-[44rem]', RESULT_FOCUS)}>
               <caption className="sr-only">
                 Immutable redacted Audit events with time, event, actor, target, and details
               </caption>
@@ -355,7 +447,7 @@ export default function AdminAudit() {
               <p role="alert" data-slot="audit-older-error" className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
                 <StatusBadge status="Error" tone="error" />
                 <span className="min-w-0 text-destructive [overflow-wrap:anywhere]">
-                  {(query.error instanceof Error ? query.error.message : 'Unable to load the Audit log') +
+                  {errorMessage +
                     (items.length === 1 ? '. The loaded event stays listed.' : '. The ' + items.length + ' loaded events stay listed.')}
                 </span>
               </p>
@@ -385,6 +477,38 @@ export default function AdminAudit() {
         )}
       </AdminPanel>
     </section>
+  )
+}
+
+/** Where focus lands after a successful retry: a programmatic target that
+ *  still shows the keyboard focus ring. */
+const RESULT_FOCUS = 'outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring'
+
+/** A retry control that stays in place, keeps focus and ignores presses
+ *  while its request runs. */
+function RetryButton({
+  busy,
+  label,
+  busyLabel,
+  onClick,
+}: {
+  busy: boolean
+  label: string
+  busyLabel: string
+  onClick: (event: MouseEvent<HTMLButtonElement>) => void
+}) {
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      data-slot="audit-retry"
+      aria-disabled={busy || undefined}
+      className="aria-disabled:cursor-progress aria-disabled:opacity-70"
+      onClick={onClick}
+    >
+      {busy && <LoaderCircle size={16} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />}
+      {busy ? busyLabel : label}
+    </Button>
   )
 }
 

@@ -17,6 +17,7 @@ import {
 import { useAuth } from '../auth/AuthContext'
 import { Button } from '../components/ui/button'
 import { useIsScrolled } from '../hooks/use-is-scrolled'
+import { useMediaQuery } from '../hooks/use-media-query'
 import { cn } from '../lib/utils'
 import platpulseMark from '../../../assets/platpulse-mark.png'
 
@@ -25,6 +26,12 @@ import platpulseMark from '../../../assets/platpulse-mark.png'
 const NAV_LINK =
   'flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50'
 const NAV_LINK_ACTIVE = 'bg-accent font-semibold text-foreground'
+
+/** The width at which the `lg:` classes below turn the drawer into the
+ *  persistent sidebar: Tailwind's `lg` breakpoint (64rem; emerald.css does not
+ *  override it). The drawer's modal behaviour reads this same query so the
+ *  script never disagrees with the layout about which navigation is on screen. */
+export const ADMIN_SIDEBAR_QUERY = '(min-width: 64rem)'
 
 /**
  * Admin shell: Owner-only management layout with its own query cache and
@@ -48,6 +55,14 @@ export default function AdminLayout() {
   const [streamKey, setStreamKey] = useState(0)
   const [resetting, setResetting] = useState(false)
   const [navOpen, setNavOpen] = useState(false)
+  const sidebar = useMediaQuery(ADMIN_SIDEBAR_QUERY)
+  // Crossing into the sidebar layout ends the drawer session: the drawer is
+  // gone from the screen, so its open state must not linger and reopen it
+  // when the width shrinks again.
+  if (sidebar && navOpen) setNavOpen(false)
+  // Scroll lock, Tab containment, Escape and focus moves belong to the
+  // drawer only while it is really open; the sidebar is ordinary navigation.
+  const drawerOpen = navOpen && !sidebar
   const previousGeneration = useRef(generation)
   const streamKeyRef = useRef(0)
   const accessGenerationRef = useRef(generation)
@@ -92,37 +107,43 @@ export default function AdminLayout() {
 
   const closeNav = useCallback(() => setNavOpen(false), [])
 
-  // Body scroll lock while the mobile drawer is open.
+  // Body scroll lock while the mobile drawer is open. The cleanup restores
+  // whatever overflow was set before, also when the drawer ends because the
+  // viewport crossed into the sidebar layout.
   useEffect(() => {
-    if (!navOpen) return
+    if (!drawerOpen) return
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     return () => {
       document.body.style.overflow = previousOverflow
     }
-  }, [navOpen])
+  }, [drawerOpen])
 
   // Drawer opening moves focus inside; closing restores focus to the opener
-  // (design §10.1). The initial mount never steals focus.
-  const wasNavOpen = useRef(false)
+  // (design §10.1). The initial mount never steals focus. A drawer that ends
+  // because the sidebar took over leaves focus where it is: the focused link
+  // is now in the visible sidebar, while the opener is hidden at that width.
+  const wasDrawerOpen = useRef(false)
   useEffect(() => {
-    if (navOpen) {
-      wasNavOpen.current = true
+    if (drawerOpen) {
+      wasDrawerOpen.current = true
       navRef.current?.querySelector<HTMLElement>('a[href]')?.focus()
-    } else if (wasNavOpen.current) {
-      wasNavOpen.current = false
-      navToggleRef.current?.focus()
+    } else if (wasDrawerOpen.current) {
+      wasDrawerOpen.current = false
+      if (!sidebar) navToggleRef.current?.focus()
     }
-  }, [navOpen])
+  }, [drawerOpen, sidebar])
 
-  // Escape closes the drawer; Tab is trapped inside while it is open.
+  // Escape closes the drawer; Tab is trapped inside while it is open. The
+  // sidebar handles neither, so its keys behave like any other navigation.
   const onNavKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (!drawerOpen || !navRef.current) return
     if (event.key === 'Escape') {
       event.stopPropagation()
       closeNav()
       return
     }
-    if (event.key !== 'Tab' || !navRef.current || !navOpen) return
+    if (event.key !== 'Tab') return
     const focusables = Array.from(
       navRef.current.querySelectorAll<HTMLElement>('a[href], button:not([disabled])'),
     )
@@ -178,7 +199,7 @@ export default function AdminLayout() {
               size="sm"
               data-slot="admin-nav-toggle"
               className="lg:hidden"
-              aria-expanded={navOpen}
+              aria-expanded={drawerOpen}
               aria-controls="admin-nav"
               onClick={() => setNavOpen((value) => !value)}
             >
@@ -202,7 +223,7 @@ export default function AdminLayout() {
           aria-label="Admin"
           className={cn(
             'fixed inset-y-0 left-0 z-40 flex w-[min(80vw,18rem)] flex-col gap-1 overflow-y-auto border-r border-border/60 bg-background/95 p-4 backdrop-blur-xl transition-transform duration-200 ease-out',
-            navOpen ? 'visible translate-x-0' : 'hidden -translate-x-full lg:flex lg:visible lg:translate-x-0',
+            drawerOpen ? 'visible translate-x-0' : 'hidden -translate-x-full lg:flex lg:visible lg:translate-x-0',
             'lg:sticky lg:top-14 lg:z-auto lg:h-[calc(100dvh-3.5rem)] lg:w-[var(--admin-sidebar)] lg:flex-none lg:visible lg:translate-x-0 lg:border-r lg:bg-background/60 lg:backdrop-blur-none',
           )}
           onKeyDown={onNavKeyDown}
@@ -408,7 +429,7 @@ export default function AdminLayout() {
           data-slot="admin-nav-scrim"
           className={cn(
             'fixed inset-0 z-30 bg-black/40 transition-opacity lg:hidden',
-            navOpen ? 'visible opacity-100' : 'invisible opacity-0',
+            drawerOpen ? 'visible opacity-100' : 'invisible opacity-0',
           )}
           onClick={closeNav}
           aria-hidden="true"

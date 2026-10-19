@@ -6,8 +6,17 @@ import {
   useState,
   type FormEvent,
   type KeyboardEvent,
+  type ReactNode,
 } from 'react'
-import { Link, useParams, useSearchParams } from 'react-router'
+import { Link, useLocation, useParams, useSearchParams } from 'react-router'
+import {
+  ADMIN_NODES_FILTER_PARAMS,
+  ADMIN_NODES_PATH,
+  ADMIN_NODES_SORT_PARAM,
+  adminNodesDeparture,
+  readAdminNodesReturn,
+  type AdminNodesReturnState,
+} from '../adminNodesReturn'
 import {
   AdminApiError,
   purgeNode,
@@ -117,12 +126,7 @@ function shortId(value: string): string {
 }
 
 /** URL-state filters (design §10.1: back/forward preserves them). */
-type NodeFilters = {
-  visibility: string
-  lifecycle: string
-  network: string
-  health: string
-}
+type NodeFilters = Record<(typeof ADMIN_NODES_FILTER_PARAMS)[number], string>
 
 const NODE_SORTS = ['health', 'name', 'network', 'freshness'] as const
 type NodeSort = (typeof NODE_SORTS)[number]
@@ -131,17 +135,14 @@ const DEFAULT_NODE_SORT: NodeSort = 'health'
 /** The list order is URL state too, so reload and back/forward restore it;
  *  an unknown value falls back to the default order. */
 function readSort(search: URLSearchParams): NodeSort {
-  const value = search.get('sort')
+  const value = search.get(ADMIN_NODES_SORT_PARAM)
   return (NODE_SORTS as readonly string[]).includes(value ?? '') ? (value as NodeSort) : DEFAULT_NODE_SORT
 }
 
 function readFilters(search: URLSearchParams): NodeFilters {
-  return {
-    visibility: search.get('visibility') ?? 'all',
-    lifecycle: search.get('lifecycle') ?? 'all',
-    network: search.get('network') ?? 'all',
-    health: search.get('health') ?? 'all',
-  }
+  return Object.fromEntries(
+    ADMIN_NODES_FILTER_PARAMS.map((key) => [key, search.get(key) ?? 'all']),
+  ) as NodeFilters
 }
 
 /** PAGE-ADMIN-NODES: per-Node inventory with filters, sorting, freshness,
@@ -152,6 +153,10 @@ export default function AdminNodesList() {
   const [search, setSearch] = useSearchParams()
   const filters = readFilters(search)
   const sort = readSort(search)
+  // Links into a Node detail carry this reading (filters and sort) in their
+  // navigation state, so the detail can offer `Back to results`.
+  const { search: listLocationSearch } = useLocation()
+  const departure = useMemo(() => adminNodesDeparture(listLocationSearch), [listLocationSearch])
 
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
@@ -215,8 +220,8 @@ export default function AdminNodesList() {
   }
   const setSort = (value: NodeSort) => {
     const next = new URLSearchParams(search)
-    if (value === DEFAULT_NODE_SORT) next.delete('sort')
-    else next.set('sort', value)
+    if (value === DEFAULT_NODE_SORT) next.delete(ADMIN_NODES_SORT_PARAM)
+    else next.set(ADMIN_NODES_SORT_PARAM, value)
     setSearch(next, { replace: false })
   }
   const clearAllFilters = () => clearFilters(Object.keys(filters) as (keyof NodeFilters)[])
@@ -370,6 +375,7 @@ export default function AdminNodesList() {
                     node={node}
                     expanded={expanded.has(node.node_id)}
                     onToggle={() => toggle(node.node_id)}
+                    departure={departure}
                   />
                 ))}
               </tbody>
@@ -592,10 +598,13 @@ function NodeListRow({
   node,
   expanded,
   onToggle,
+  departure,
 }: {
   node: AdminNodeListItem
   expanded: boolean
   onToggle: () => void
+  /** Navigation state of both links into the Node detail. */
+  departure: AdminNodesReturnState
 }) {
   const identity = identityBadge(node.identity)
   const visibility = visibilityBadge(node.visibility)
@@ -623,6 +632,7 @@ function NodeListRow({
               data-slot="node-name-link"
               className="flex min-h-11 w-fit min-w-11 max-w-full items-center py-1 leading-snug font-medium text-foreground [overflow-wrap:anywhere] underline-offset-4 hover:underline"
               to={'/admin/nodes/' + node.node_id}
+              state={departure}
             >
               {name}
             </Link>
@@ -746,6 +756,7 @@ function NodeListRow({
                 <Link
                   className="inline-flex min-h-11 items-center font-medium text-foreground underline-offset-4 hover:underline"
                   to={'/admin/nodes/' + node.node_id + '?section=diagnostics'}
+                  state={departure}
                 >
                   Open Node diagnostics
                 </Link>
@@ -774,6 +785,8 @@ export function AdminNodeDetail() {
   const notFound = query.isError && query.error instanceof AdminApiError && query.error.code === 'not_found'
   const [section, setSection, openSection] = useDetailSection()
   const drafts = useDetailDrafts()
+  const location = useLocation()
+  const backLink = <NodesBackLink returnTo={readAdminNodesReturn(location.state)} />
   const notices = query.data ? nodeDetailNotices(query.data) : []
   const diagnosticCount = notices.length
 
@@ -811,6 +824,7 @@ export function AdminNodeDetail() {
     return (
       <section className="w-full min-w-0 space-y-4">
         <div className="space-y-1">
+          {backLink}
           <h1 className={ADMIN_PAGE_TITLE}>Node unavailable</h1>
           <p className="text-sm text-muted-foreground">This Node is no longer available.</p>
         </div>
@@ -821,10 +835,10 @@ export function AdminNodeDetail() {
   return (
     <section className="w-full min-w-0 space-y-4" data-slot="admin-node-detail">
       {data ? (
-        <NodeDetailHeader node={data} notices={notices} section={section} onSection={openSection} />
+        <NodeDetailHeader node={data} notices={notices} section={section} onSection={openSection} backLink={backLink} />
       ) : (
         <div className="space-y-1">
-          <DetailBackLink to="/admin/nodes">All Nodes</DetailBackLink>
+          {backLink}
           <h1 className={ADMIN_PAGE_TITLE}>{shortId(nodeId)}</h1>
         </div>
       )}
@@ -994,6 +1008,16 @@ function nodeDetailNotices(node: AdminNodeDetailDto): DetailNotice[] {
   return notices
 }
 
+/** The detail's return link: back to the Nodes list reading the detail was
+ *  opened from, or — opened any other way — the complete list. */
+function NodesBackLink({ returnTo }: { returnTo: string | null }) {
+  return returnTo ? (
+    <DetailBackLink to={returnTo}>Back to results</DetailBackLink>
+  ) : (
+    <DetailBackLink to={ADMIN_NODES_PATH}>All Nodes</DetailBackLink>
+  )
+}
+
 /** The always-visible Node header: name and context, the independent
  *  Server-owned dimensions, and the current conditions that need a look. */
 function NodeDetailHeader({
@@ -1001,27 +1025,33 @@ function NodeDetailHeader({
   notices,
   section,
   onSection,
+  backLink,
 }: {
   node: AdminNodeDetailDto
   notices: DetailNotice[]
   section: DetailSection
   onSection: (next: DetailSection) => void
+  backLink: ReactNode
 }) {
   const identity = identityBadge(node.identity)
   const lifecycle = lifecycleLabel(node.lifecycle)
   return (
     <header className="grid min-w-0 gap-3" data-slot="node-detail-header">
-      <DetailBackLink to="/admin/nodes">All Nodes</DetailBackLink>
+      {backLink}
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-2">
         <div className="min-w-0 flex-[1_1_18rem] space-y-1">
           <h1 className={ADMIN_PAGE_TITLE}>{node.display_name ?? shortId(node.node_id)}</h1>
-          <p className={cn('flex min-w-0 flex-wrap items-center gap-x-1', ADMIN_SECONDARY)}>
-            <Link className={cn(DETAIL_LINK, '-my-3 text-foreground')} to={'/admin/networks/' + node.network_key}>
+          {/* The Network and Agent links keep their whole 44px boxes in the
+              line's layout (no negative margins): pulled into the line they
+              reached over the Node ID's Show full control below and, wrapped,
+              over each other. */}
+          <p data-slot="node-detail-context" className={cn('flex min-w-0 flex-wrap items-center gap-x-1', ADMIN_SECONDARY)}>
+            <Link className={cn(DETAIL_LINK, 'text-foreground')} to={'/admin/networks/' + node.network_key}>
               {node.network_display_name}
             </Link>
             <span aria-hidden="true">·</span>
             <span>Agent</span>
-            <Link className={cn(DETAIL_LINK, '-my-3 text-foreground')} to={'/admin/agents/' + node.agent_id}>
+            <Link className={cn(DETAIL_LINK, 'text-foreground')} to={'/admin/agents/' + node.agent_id}>
               {shortId(node.agent_id)}
             </Link>
           </p>
