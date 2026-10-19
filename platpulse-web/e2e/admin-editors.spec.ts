@@ -7,9 +7,12 @@ import { findRepoRoot } from './repo-root'
 // Admin Node / Network editor state round against the seeded local e2e
 // Server: the read view follows the Server, Cancel discards a round, a
 // confirmation is withdrawn by any change, and a slow write is sent once and
-// keeps its editor locked across a section switch. Every write here is a
-// local Playwright route that delays and then fails, so the shared seeded
-// Server state is never changed. It runs on every fixed project, Light and
+// keeps its editor locked across a section switch; a successful write and a
+// failed read-back after it are stated apart, and the next successful read
+// lifts the read-back notice. Every write here is a local Playwright route
+// (delayed and failing, or answered as applied) and every read after an
+// "applied" write is a local route fixture, so the shared seeded Server state
+// is never changed. It runs on every fixed project, Light and
 // Dark; ADMIN_EDITORS_EVIDENCE=1 additionally captures the edited panels at
 // 390 and 1280.
 const NODE_A = '0195f2a1-0014-4014-8014-000000000014'
@@ -36,6 +39,44 @@ function slowFailingWrite(page: Page, pattern: RegExp, method: string) {
     })
   })
   return { calls, release }
+}
+
+/** A write answered as applied by a local fixture, after which the detail
+ *  read fails until `readable` is set and then serves the written value. The
+ *  Server is never written; the detail reads pass through and are rewritten. */
+async function appliedWriteThenUnreadable(
+  page: Page,
+  options: {
+    write: RegExp
+    read: RegExp
+    answer: (body: Record<string, unknown>) => Record<string, unknown>
+    rewrite: (detail: Record<string, unknown>, body: Record<string, unknown>) => Record<string, unknown>
+  },
+) {
+  const state = { writes: [] as Record<string, unknown>[], readable: false }
+  // No realtime refetch may stand in for the read under test.
+  await page.route('**/api/admin/v1/events**', (route) => route.abort())
+  await page.route(options.read, async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback()
+    const written = state.writes.at(-1)
+    if (written && !state.readable) {
+      return route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'unavailable', message: 'local fixture: read unavailable' } }),
+      })
+    }
+    const response = await route.fetch()
+    const detail = (await response.json()) as Record<string, unknown>
+    return route.fulfill({ response, json: written ? options.rewrite(detail, written) : detail })
+  })
+  await page.route(options.write, async (route) => {
+    if (route.request().method() !== 'PUT') return route.fallback()
+    const body = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>
+    state.writes.push(body)
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(options.answer(body)) })
+  })
+  return state
 }
 
 async function shot(page: Page, selector: string, name: string, theme: string) {
@@ -168,6 +209,88 @@ for (const theme of ['light', 'dark'] as const) {
       await panel.getByRole('button', { name: 'Cancel' }).click()
       await expect(panel.getByText('PlatON E2E Network', { exact: true })).toBeVisible()
       await expectNoHorizontalOverflow(page)
+    })
+
+    test('Node rename: the written name and a failed read-back stand apart until the Node is read again', async ({ page }) => {
+      const fixture = await appliedWriteThenUnreadable(page, {
+        write: new RegExp('/api/admin/v1/nodes/' + NODE_A + '/metadata$'),
+        read: new RegExp('/api/admin/v1/nodes/' + NODE_A + '(\\?.*)?$'),
+        answer: (body) => ({ nodeId: NODE_A, displayName: body.displayName }),
+        rewrite: (detail, body) => ({ ...detail, display_name: body.displayName }),
+      })
+      await page.goto('/admin/nodes/' + NODE_A + '?section=manage')
+      await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 20_000 })
+      const panel = page.locator('[data-slot="card-x"]', { has: page.getByRole('heading', { name: 'Server-owned metadata' }) })
+
+      await panel.getByRole('button', { name: 'Edit' }).click()
+      await panel.getByLabel('Display name').fill('Node A written')
+      await panel.getByRole('button', { name: 'Save' }).click()
+      await panel.getByRole('button', { name: 'Confirm rename' }).click()
+
+      const written = panel.getByText('Display name is now "Node A written".', { exact: true })
+      await expect(written).toBeVisible()
+      await expect(written).toHaveClass(/text-success/)
+      const notice = panel.locator('[data-slot="read-back-failed"]')
+      await expect(notice).toContainText('could not be read back')
+      await expect(notice).not.toHaveClass(/text-success/)
+      await expect(notice).not.toHaveAttribute('role', /.+/)
+      // One page-level refresh alert, not a second copy in the editor.
+      await expect(page.getByText(/Failed to refresh; showing the last/)).toHaveCount(1)
+      await expect(panel.getByText(/save failed/i)).toHaveCount(0)
+      // The read view is still the last Server value; the editor is closed.
+      await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible()
+      await expect(panel.getByRole('textbox')).toHaveCount(0)
+      await expect(panel.getByRole('button', { name: 'Edit' })).toBeFocused()
+      await expectNoHorizontalOverflow(page)
+      await shot(page, '[data-slot="card-x"]:has(h2:text-is("Server-owned metadata"))', 'node-rename-unread', theme)
+
+      fixture.readable = true
+      await notice.getByRole('button', { name: 'Read the Node again' }).click()
+      await expect(page.getByRole('heading', { level: 1, name: 'Node A written' })).toBeVisible()
+      await expect(notice).toHaveCount(0)
+      await expect(page.getByText(/Failed to refresh; showing the last/)).toHaveCount(0)
+      await expect(written).toBeVisible()
+      await expect(panel.getByRole('button', { name: 'Edit' })).toBeFocused()
+      expect(fixture.writes).toEqual([{ displayName: 'Node A written' }])
+    })
+
+    test('Network tuple: the applied update and a failed read-back stand apart until the Network is read again', async ({ page }) => {
+      const fixture = await appliedWriteThenUnreadable(page, {
+        write: new RegExp('/api/admin/v1/networks/' + NETWORK + '$'),
+        read: new RegExp('/api/admin/v1/networks/' + NETWORK + '(\\?.*)?$'),
+        answer: (body) => ({ networkKey: NETWORK, displayName: body.displayName }),
+        rewrite: (detail, body) => ({ ...detail, display_name: body.displayName }),
+      })
+      await page.goto('/admin/networks/' + NETWORK)
+      await expect(page.getByRole('heading', { level: 1, name: /PlatON E2E Network/ })).toBeVisible({ timeout: 20_000 })
+      const panel = page.locator('[data-slot="card-x"]', { has: page.getByRole('heading', { name: 'Expected identity tuple' }) })
+
+      await panel.getByRole('button', { name: 'Edit tuple' }).click()
+      await panel.getByLabel('Display name').fill('PlatON E2E written')
+      await panel.getByRole('button', { name: 'Save tuple' }).click()
+      await panel.getByRole('button', { name: 'Confirm tuple update' }).click()
+
+      const written = panel.getByText('Updated PlatON E2E written.', { exact: true })
+      await expect(written).toBeVisible()
+      await expect(written).toHaveClass(/text-success/)
+      const notice = panel.locator('[data-slot="read-back-failed"]')
+      await expect(notice).toContainText('could not be read back')
+      await expect(notice).not.toHaveClass(/text-success/)
+      await expect(page.getByText(/Failed to refresh; showing the last/)).toHaveCount(1)
+      await expect(panel.getByText('PlatON E2E Network', { exact: true })).toBeVisible()
+      await expect(panel.getByRole('textbox')).toHaveCount(0)
+      await expectNoHorizontalOverflow(page)
+      await shot(page, '[data-slot="card-x"]:has(h2:text-is("Expected identity tuple"))', 'network-tuple-unread', theme)
+
+      fixture.readable = true
+      await notice.getByRole('button', { name: 'Read the Network again' }).click()
+      await expect(page.getByRole('heading', { level: 1, name: /PlatON E2E written/ })).toBeVisible()
+      await expect(notice).toHaveCount(0)
+      await expect(page.getByText(/Failed to refresh; showing the last/)).toHaveCount(0)
+      await expect(written).toBeVisible()
+      await expect(panel.getByRole('button', { name: 'Edit tuple' })).toBeFocused()
+      expect(fixture.writes).toHaveLength(1)
+      expect(fixture.writes[0]).toMatchObject({ displayName: 'PlatON E2E written', chainId: 210425 })
     })
   })
 }

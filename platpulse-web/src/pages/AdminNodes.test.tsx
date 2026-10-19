@@ -1049,6 +1049,9 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
       expect(screen.getByRole('heading', { level: 1, name: 'Atlas-02' })).toBeTruthy()
       expect(within(metadataPanel()).getByText('Atlas-02')).toBeTruthy()
       expect(within(metadataPanel()).queryByText('server database is unavailable')).toBeNull()
+      // Read back: no read-back notice, and the editor has closed.
+      expect(metadataPanel().querySelector('[data-slot="read-back-failed"]')).toBeNull()
+      expect(within(metadataPanel()).queryByRole('textbox')).toBeNull()
 
       fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
       expect(within(metadataPanel()).queryByText(/Display name is now/)).toBeNull()
@@ -1145,14 +1148,29 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
       expect(puts).toBe(1)
     })
 
-    it('does not claim the saved name was read back when the refresh after it fails', async () => {
+    // Found while Manage is hidden as well.
+    function readBackNotice(): HTMLElement | null {
+      const panel = screen
+        .getByRole('heading', { level: 2, name: 'Server-owned metadata', hidden: true })
+        .closest('[data-slot="card-x"]') as HTMLElement
+      return panel.querySelector('[data-slot="read-back-failed"]')
+    }
+
+    function metadataWrites(fetchMock: ReturnType<typeof mockFetch>): number {
+      return fetchMock.mock.calls.filter(([input]) =>
+        String(input instanceof Request ? input.url : input).endsWith('/metadata'),
+      ).length
+    }
+
+    it('states a written name apart from a failed read-back, and lifts the read-back notice once the Node is read again', async () => {
       let saved = false
-      mockFetch({
+      let readable = false
+      const fetchMock = mockFetch({
         '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
         [NODE_URL]: () =>
-          saved
+          saved && !readable
             ? jsonResponse({ error: { code: 'unavailable', message: 'read failed' } }, 503)
-            : jsonResponse(NODE_A_DETAIL, 200),
+            : jsonResponse(saved ? { ...NODE_A_DETAIL, display_name: 'Unread' } : NODE_A_DETAIL, 200),
         [NODE_URL + '/metadata']: () => {
           saved = true
           return jsonResponse({ nodeId: NODE_A.node_id, displayName: 'Unread' }, 200)
@@ -1164,12 +1182,194 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
       fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Unread' } })
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
       fireEvent.click(screen.getByRole('button', { name: 'Confirm rename' }))
-      expect(
-        await within(metadataPanel()).findByText(
-          'Display name is now "Unread". The Node could not be read back, so this page may still show the earlier name.',
-        ),
-      ).toBeTruthy()
-      expect(screen.getByText(/Failed to refresh; showing the last/)).toBeTruthy()
+
+      // The write's own result, in the success tone, says only what was written.
+      const written = await within(metadataPanel()).findByText('Display name is now "Unread".')
+      expect(written.className).toContain('text-success')
+      // The failed read-back is its own notice, never painted as success and
+      // never a second copy of the page's refresh alert.
+      const notice = readBackNotice() as HTMLElement
+      expect(notice.textContent).toMatch(/could not be read back/)
+      expect(notice.closest('.text-success')).toBeNull()
+      expect(notice.getAttribute('role')).toBeNull()
+      // A warning beside the write's result, in the warning tone.
+      expect(notice.className).toMatch(/border-warning/)
+      expect(notice.querySelector('[data-slot="status-badge"]')?.getAttribute('data-tone')).toBe('warning')
+      expect(within(metadataPanel()).queryByText(/save failed|not saved/i)).toBeNull()
+      expect(screen.getAllByText(/Failed to refresh; showing the last/)).toHaveLength(1)
+      // The read view stays the last Server value; the editor is closed.
+      expect(screen.getByRole('heading', { level: 1, name: 'Node A' })).toBeTruthy()
+      expect(within(metadataPanel()).queryByRole('textbox')).toBeNull()
+      expect(metadataWrites(fetchMock)).toBe(1)
+
+      // Another failed read is not a recovery.
+      await backgroundRefresh()
+      expect(readBackNotice()).not.toBeNull()
+
+      readable = true
+      fireEvent.click(within(notice).getByRole('button', { name: 'Read the Node again' }))
+      await screen.findByRole('heading', { level: 1, name: 'Unread' })
+      await waitFor(() => expect(readBackNotice()).toBeNull())
+      expect(within(metadataPanel()).getByText('Unread')).toBeTruthy()
+      // The write's result stands; nothing turned it into a failure.
+      expect(within(metadataPanel()).getByText('Display name is now "Unread".').className).toContain('text-success')
+      expect(screen.queryByText(/Failed to refresh; showing the last/)).toBeNull()
+      expect(metadataWrites(fetchMock)).toBe(1)
+    })
+
+    it('keeps focus where it is when a save with a failed read-back lands while Manage is hidden', async () => {
+      let saved = false
+      let release: () => void = () => {}
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () =>
+          saved
+            ? jsonResponse({ error: { code: 'unavailable', message: 'read failed' } }, 503)
+            : jsonResponse(NODE_A_DETAIL, 200),
+        [NODE_URL + '/metadata']: async () => {
+          await new Promise<void>((resolve) => {
+            release = resolve
+          })
+          saved = true
+          return jsonResponse({ nodeId: NODE_A.node_id, displayName: 'Hidden write' }, 200)
+        },
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Hidden write' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm rename' }))
+      await screen.findByRole('button', { name: 'Saving…' })
+      openSection('Overview')
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      await act(async () => {
+        release()
+      })
+      await waitFor(() => expect(readBackNotice()).not.toBeNull())
+      // Nothing inside the hidden section takes the focus.
+      expect(document.activeElement).toBe(document.body)
+
+      openSection(/^Manage/)
+      expect(within(metadataPanel()).getByText('Display name is now "Hidden write".')).toBeTruthy()
+      expect((readBackNotice() as HTMLElement).textContent).toMatch(/could not be read back/)
+    })
+
+    it('carries no feedback of a save that lands after switching to another Node', async () => {
+      let release: () => void = () => {}
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () => jsonResponse(NODE_A_DETAIL, 200),
+        [NODE_URL + '/metadata']: async () => {
+          await new Promise<void>((resolve) => {
+            release = resolve
+          })
+          return jsonResponse({ nodeId: NODE_A.node_id, displayName: 'Late A' }, 200)
+        },
+        '/api/admin/v1/nodes/0195f2a1-0015-4015-8015-000000000015': () =>
+          jsonResponse(NODE_RPC_ERROR_DETAIL, 200),
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Late A' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm rename' }))
+      await screen.findByRole('button', { name: 'Saving…' })
+      await act(async () => {
+        window.history.pushState({}, '', '/admin/nodes/0195f2a1-0015-4015-8015-000000000015?section=manage')
+        window.dispatchEvent(new PopStateEvent('popstate'))
+        await Promise.resolve()
+      })
+      await screen.findByRole('heading', { level: 1, name: /Node B \(private\)/ })
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      await act(async () => {
+        release()
+      })
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      expect(within(metadataPanel()).queryByText(/Display name is now/)).toBeNull()
+      expect(readBackNotice()).toBeNull()
+      expect(document.activeElement).not.toBe(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+    })
+
+    it('disables Save, with the reason beside it, while the Server holds another name than the draft', async () => {
+      let detail = NODE_A_DETAIL
+      const fetchMock = mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () => jsonResponse(detail, 200),
+        [NODE_URL + '/metadata']: () => jsonResponse({ nodeId: NODE_A.node_id, displayName: 'never' }, 200),
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Draft B' } })
+
+      detail = { ...detail, display_name: 'Server C' }
+      await backgroundRefresh()
+      await screen.findByRole('heading', { level: 1, name: 'Server C' })
+      const input = within(metadataPanel()).getByLabelText('Display name') as HTMLInputElement
+      expect(input.value).toBe('Draft B')
+      const save = within(metadataPanel()).getByRole('button', { name: 'Save' }) as HTMLButtonElement
+      expect(save.disabled).toBe(true)
+      // The reason is visible text right beside the control, not a tooltip.
+      const reason = document.getElementById(save.getAttribute('aria-describedby') ?? '') as HTMLElement
+      expect(metadataPanel().contains(reason)).toBe(true)
+      expect(reason.textContent).toMatch(/changed on the Server to "Server C" while you were editing/)
+      expect(reason.textContent).toMatch(/Save is unavailable/)
+      expect(reason.textContent).toMatch(/Cancel to start again from the current name/)
+      expect(reason.closest('[title]')).toBeNull()
+
+      // Neither a click nor Enter opens a confirmation that would be withdrawn.
+      fireEvent.click(save)
+      fireEvent.submit(input.closest('form') as HTMLFormElement)
+      expect(screen.queryByRole('button', { name: 'Confirm rename' })).toBeNull()
+      expect(screen.queryByText(/Rename this Node in the Server-owned metadata\?/)).toBeNull()
+      expect(metadataWrites(fetchMock)).toBe(0)
+      // The kept draft is still an unsaved change.
+      expect(screen.getByRole('tab', { name: /^Manage/ }).textContent).toContain('Unsaved')
+    })
+
+    it('offers only Close editor once the Server holds the draft, and leaves another open operation marked', async () => {
+      let detail = NODE_A_DETAIL
+      const fetchMock = mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () => jsonResponse(detail, 200),
+        [NODE_URL + '/purge-impact']: () => new Promise<Response>(() => {}),
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: '  Landed elsewhere ' } })
+      expect(screen.getByRole('tab', { name: /^Manage/ }).textContent).toContain('Unsaved')
+
+      // Compared under the same trimming the save would send.
+      detail = { ...detail, display_name: 'Landed elsewhere' }
+      await backgroundRefresh()
+      await screen.findByRole('heading', { level: 1, name: 'Landed elsewhere' })
+      expect(within(metadataPanel()).getByText(/Nothing is left to save/)).toBeTruthy()
+      expect(within(metadataPanel()).queryByRole('button', { name: 'Save' })).toBeNull()
+      expect(within(metadataPanel()).queryByRole('button', { name: 'Cancel' })).toBeNull()
+      // Nothing is pending any more, so this editor no longer marks the tab.
+      expect(screen.getByRole('tab', { name: /^Manage/ }).textContent).not.toContain('Unsaved')
+      fireEvent.submit(within(metadataPanel()).getByLabelText('Display name').closest('form') as HTMLFormElement)
+      expect(screen.queryByRole('button', { name: 'Confirm rename' })).toBeNull()
+
+      // Another operation's open confirmation keeps its own mark.
+      fireEvent.click(screen.getByRole('button', { name: 'Permanently delete Node' }))
+      expect(screen.getByRole('tab', { name: /^Manage/ }).textContent).toContain('Unsaved')
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Close editor' }))
+      expect(within(metadataPanel()).queryByRole('textbox')).toBeNull()
+      expect(within(metadataPanel()).getByText('Landed elsewhere')).toBeTruthy()
+      expect(document.activeElement).toBe(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+      expect(screen.getByRole('alertdialog', { name: 'Confirm permanent Node deletion' })).toBeTruthy()
+      expect(screen.getByRole('tab', { name: /^Manage/ }).textContent).toContain('Unsaved')
+      // A fresh round starts from the Server with no earlier feedback.
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+      expect((within(metadataPanel()).getByLabelText('Display name') as HTMLInputElement).value).toBe('Landed elsewhere')
+      expect(within(metadataPanel()).queryByText(/Nothing is left to save/)).toBeNull()
+      expect(metadataWrites(fetchMock)).toBe(0)
     })
 
     it('says so when a write whose answer was lost reached the Server after all', async () => {

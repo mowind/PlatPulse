@@ -16,6 +16,8 @@ import { Button } from '../components/ui/button'
 import { CardX } from '../components/ui/card-x'
 import { Empty } from '../components/ui/empty'
 import { Input } from '../components/ui/input'
+import { readBackRecovered, type DetailRead, type DetailReadResult, type ReadBackFailure } from '../lib/readBack'
+import { ReadBackNotice } from '../components/ReadBackNotice'
 import { cn } from '../lib/utils'
 import type { AdminNetwork, AdminNetworkDetail, AdminNetworkNode } from '../api/generated'
 import { DetailItem, DetailList } from '../components/DetailList'
@@ -477,7 +479,12 @@ export function AdminNetworkDetailPage() {
             key={query.data.network_key}
             network={query.data}
             csrfToken={csrfToken}
-            onSaved={() => query.refetch({ cancelRefetch: false })}
+            detailRead={{
+              isError: query.isError,
+              errorUpdateCount: query.errorUpdateCount,
+              dataUpdatedAt: query.dataUpdatedAt,
+            }}
+            readDetail={() => query.refetch({ cancelRefetch: false })}
           />
           <NetworkNodesPanel networkKey={query.data.network_key} nodes={query.data.nodes} />
         </>
@@ -540,16 +547,22 @@ function tupleUpdate(fields: TupleFields): TupleUpdate {
  *  discards it) or a successful update; there is no half-closed editor that
  *  keeps a draft or a confirmation. A confirmation holds the exact update it
  *  sends, and any field change withdraws it. While the update is in flight
- *  only this editor is locked and the request is never sent twice. */
+ *  only this editor is locked and the request is never sent twice. An
+ *  applied update and a failed read-back after it are two results: the
+ *  read-back failure is its own notice, lifted by a later successful read of
+ *  this Network's detail. */
 function IdentityTuplePanel({
   network,
   csrfToken,
-  onSaved,
+  detailRead,
+  readDetail,
 }: {
   network: AdminNetworkDetail
   csrfToken: string
+  /** The page's latest read of this Network's detail. */
+  detailRead: DetailRead
   /** Reads the authoritative Network detail again (joining a read in flight). */
-  onSaved: () => Promise<{ isError: boolean; dataUpdatedAt: number }>
+  readDetail: () => Promise<DetailReadResult>
 }) {
   const current = tupleFields(network)
   // One edit round: the draft and the Server tuple it started from.
@@ -560,17 +573,29 @@ function IdentityTuplePanel({
   const inFlight = useRef(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // A read-back that failed after an applied update; lifted only by a later
+  // successful read of this Network's detail.
+  const [readBackFailure, setReadBackFailure] = useState<ReadBackFailure | null>(null)
+  if (readBackFailure && readBackRecovered(readBackFailure, detailRead)) setReadBackFailure(null)
+  // Re-renders once to move the focus when nothing else changes.
+  const [, setFocusTick] = useState(0)
   const panelRef = useRef<HTMLDivElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
   const firstFieldRef = useRef<HTMLInputElement>(null)
   const editRef = useRef<HTMLButtonElement>(null)
   const promptRef = useRef<HTMLSpanElement>(null)
+  const readAgainRef = useRef<HTMLButtonElement>(null)
   const focusNext = useRef<'field' | 'edit' | 'prompt' | null>(null)
   useEffect(() => {
     const target = focusNext.current
     if (!target) return
     focusNext.current = null
-    ;({ field: firstFieldRef, edit: editRef, prompt: promptRef })[target].current?.focus()
+    // With a new round open there is no Edit tuple button; its first field
+    // takes it.
+    const element =
+      { field: firstFieldRef, edit: editRef, prompt: promptRef }[target].current ??
+      (target === 'edit' ? firstFieldRef.current : null)
+    element?.focus()
   })
 
   // The Server tuple moved while this round was open: the draft is kept, and
@@ -582,6 +607,7 @@ function IdentityTuplePanel({
   // lost reached it after all): nothing is left to save.
   const serverHasDraft =
     serverMoved && JSON.stringify(tupleUpdate(current)) === JSON.stringify(tupleUpdate(edit.fields))
+  const movedNoticeId = 'network-edit-server-moved'
 
   function startEdit() {
     setEdit({ fields: current, base: current })
@@ -608,7 +634,8 @@ function IdentityTuplePanel({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (inFlight.current || edit === null) return
+    // A draft against a tuple the Server no longer holds cannot be saved.
+    if (inFlight.current || edit === null || serverMoved) return
     if (!event.currentTarget.reportValidity()) return
     setMessage(null)
     setError(null)
@@ -640,25 +667,34 @@ function IdentityTuplePanel({
       // The read view is the Server's tuple; wait for it to be read back. A
       // read that finished before the write did is not that read-back.
       const writtenAt = Date.now()
-      let readBack = await onSaved()
-      if (!readBack.isError && readBack.dataUpdatedAt < writtenAt) readBack = await onSaved()
+      let readBack = await readDetail()
+      if (!readBack.isError && readBack.dataUpdatedAt < writtenAt) readBack = await readDetail()
       const active = document.activeElement
       if (!active || active === document.body || panelRef.current?.contains(active)) {
         focusNext.current = 'edit'
       }
-      setMessage(
-        'Updated ' +
-          result.displayName +
-          '.' +
-          (readBack.isError
-            ? ' The Network could not be read back, so this page may still show the earlier tuple.'
-            : ''),
+      setMessage('Updated ' + result.displayName + '.')
+      setReadBackFailure(
+        readBack.isError
+          ? { errorUpdateCount: readBack.errorUpdateCount, errorUpdatedAt: readBack.errorUpdatedAt }
+          : null,
       )
       setEdit(null)
       setConfirmed(null)
     } finally {
       inFlight.current = false
       setSubmitting(false)
+    }
+  }
+
+  /** Reads the Network again after a failed read-back. It only reads; the
+   *  applied update is never sent again. */
+  async function readAgain() {
+    const result = await readDetail()
+    // The notice (and this button) leave on success: keep the keyboard here.
+    if (!result.isError && document.activeElement === readAgainRef.current) {
+      focusNext.current = 'edit'
+      setFocusTick((tick) => tick + 1)
     }
   }
 
@@ -747,11 +783,15 @@ function IdentityTuplePanel({
             </div>
           </div>
           {serverMoved && (
-            <div className="grid gap-1 text-xs text-muted-foreground" data-slot="tuple-server-moved">
+            <div
+              id={movedNoticeId}
+              className="grid gap-1 text-xs text-muted-foreground"
+              data-slot="tuple-server-moved"
+            >
               <p>
                 {serverHasDraft
-                  ? 'The Server now holds this tuple — an earlier attempt or another Owner saved it. Nothing is left to save; Cancel closes the editor.'
-                  : 'The expected identity tuple changed on the Server while you were editing. Your draft is kept and has not been saved; Cancel to start again from the current tuple.'}
+                  ? 'The Server now holds this tuple — an earlier attempt or another Owner saved it. Nothing is left to save; Close editor ends this edit.'
+                  : 'The expected identity tuple changed on the Server while you were editing. Your draft is kept and has not been saved; Save tuple is unavailable because the draft was started from the earlier tuple. Cancel to start again from the current tuple.'}
               </p>
               {!serverHasDraft && (
                 <p className="[overflow-wrap:anywhere]">
@@ -790,11 +830,19 @@ function IdentityTuplePanel({
                   Keep editing
                 </Button>
               </>
-            ) : (
-              <Button type="submit">Save tuple</Button>
+            ) : serverHasDraft ? null : (
+              <Button
+                type="submit"
+                disabled={serverMoved}
+                aria-describedby={serverMoved ? movedNoticeId : undefined}
+              >
+                Save tuple
+              </Button>
             )}
+            {/* Cancel discards the round; with nothing left to save the same
+                control closes the editor. */}
             <Button variant="outline" type="button" disabled={submitting} onClick={cancel}>
-              Cancel
+              {serverHasDraft ? 'Close editor' : 'Cancel'}
             </Button>
           </div>
         </form>
@@ -821,6 +869,19 @@ function IdentityTuplePanel({
       <p className={message && !submitting ? 'mt-3 text-sm text-success' : 'sr-only'} role="status">
         {submitting ? 'Saving the identity tuple…' : message}
       </p>
+      {readBackFailure && (
+        // The page's refresh alert already announces the failed read; this
+        // says what it means for the update just applied.
+        <ReadBackNotice
+          className="mt-3"
+          readAgainLabel="Read the Network again"
+          readAgainRef={readAgainRef}
+          onReadAgain={() => void readAgain()}
+        >
+          The tuple update was applied, but the Network could not be read back afterwards, so this
+          page may still show the earlier tuple. The update is not sent again.
+        </ReadBackNotice>
+      )}
       {error && (
         <p className="mt-3 text-sm text-destructive" role="alert">
           {error}

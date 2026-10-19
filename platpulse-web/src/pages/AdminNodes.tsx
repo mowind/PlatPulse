@@ -47,6 +47,8 @@ import { Button } from '../components/ui/button'
 import { CardX } from '../components/ui/card-x'
 import { Empty } from '../components/ui/empty'
 import { Input, Select } from '../components/ui/input'
+import { readBackRecovered, type DetailRead, type DetailReadResult, type ReadBackFailure } from '../lib/readBack'
+import { ReadBackNotice } from '../components/ReadBackNotice'
 import { cn } from '../lib/utils'
 import { stateHistoryComponent, type StateHistoryComponent } from '../stateHistory'
 import {
@@ -933,7 +935,12 @@ export function AdminNodeDetail() {
                         key={data.node_id}
                         node={data}
                         csrfToken={csrfToken}
-                        onSaved={() => query.refetch({ cancelRefetch: false })}
+                        detailRead={{
+                          isError: query.isError,
+                          errorUpdateCount: query.errorUpdateCount,
+                          dataUpdatedAt: query.dataUpdatedAt,
+                        }}
+                        readDetail={() => query.refetch({ cancelRefetch: false })}
                       />
                       <PurgePanel node={data} csrfToken={csrfToken} onPurged={setPurged} />
                     </>
@@ -1114,16 +1121,23 @@ function NodeDetailHeader({
  *  from the latest Server value, never overwritten by a background refresh),
  *  and the exact value the Owner confirmed, which is what Confirm sends. A
  *  rename in flight locks this editor only, survives a section switch (the
- *  section stays mounted) and is never sent twice. */
+ *  section stays mounted) and is never sent twice.
+ *
+ *  A written name and a failed read-back after it are two results: the write
+ *  is stated as written, and the read-back failure is its own notice that
+ *  stays until a later read of this Node's detail succeeds. */
 function MetadataPanel({
   node,
   csrfToken,
-  onSaved,
+  detailRead,
+  readDetail,
 }: {
   node: AdminNodeDetailDto
   csrfToken: string
+  /** The page's latest read of this Node's detail. */
+  detailRead: DetailRead
   /** Reads the authoritative Node detail again (joining a read in flight). */
-  onSaved: () => Promise<{ isError: boolean; dataUpdatedAt: number }>
+  readDetail: () => Promise<DetailReadResult>
 }) {
   const current = node.display_name ?? ''
   // One edit round: the draft and the Server value it started from.
@@ -1134,17 +1148,30 @@ function MetadataPanel({
   const inFlight = useRef(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // A read-back that failed after a successful write; lifted only by a later
+  // successful read of this Node's detail.
+  const [readBackFailure, setReadBackFailure] = useState<ReadBackFailure | null>(null)
+  if (readBackFailure && readBackRecovered(readBackFailure, detailRead)) setReadBackFailure(null)
+  // Re-renders once to move the focus when nothing else changes.
+  const [, setFocusTick] = useState(0)
   const panelRef = useRef<HTMLDivElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const editRef = useRef<HTMLButtonElement>(null)
   const promptRef = useRef<HTMLSpanElement>(null)
+  const readAgainRef = useRef<HTMLButtonElement>(null)
   const focusNext = useRef<'input' | 'edit' | 'prompt' | null>(null)
   useEffect(() => {
     const target = focusNext.current
     if (!target) return
     focusNext.current = null
-    ;({ input: inputRef, edit: editRef, prompt: promptRef })[target].current?.focus()
+    // A section that is not shown never takes the focus.
+    if (panelRef.current?.closest('[hidden]')) return
+    // With a new round open there is no Edit button; its input takes it.
+    const element =
+      { input: inputRef, edit: editRef, prompt: promptRef }[target].current ??
+      (target === 'edit' ? inputRef.current : null)
+    element?.focus()
   })
 
   // The Server name moved while this round was open (another Owner, another
@@ -1156,10 +1183,14 @@ function MetadataPanel({
   // The Server already holds the draft — for example a write whose answer
   // was lost reached it after all. Nothing is left to save.
   const serverHasDraft = serverMoved && current === edit.draft.trim()
+  const movedNoticeId = 'display-name-server-moved-' + node.node_id
 
+  // Unsaved while a changed draft, an open confirmation or a save in flight
+  // remains — but not once the Server already holds the draft: nothing is
+  // left to send.
   useReportDraft(
     'node-display-name',
-    edit !== null && (confirmed !== null || submitting || edit.draft !== edit.base),
+    edit !== null && (confirmed !== null || submitting || (edit.draft !== edit.base && !serverHasDraft)),
   )
 
   function startEdit() {
@@ -1181,7 +1212,8 @@ function MetadataPanel({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (inFlight.current || edit === null) return
+    // A draft against a name the Server no longer holds cannot be saved.
+    if (inFlight.current || edit === null || serverMoved) return
     setMessage(null)
     setError(null)
     setConfirmed(edit.draft.trim())
@@ -1213,25 +1245,38 @@ function MetadataPanel({
       // read view and the header change together. A read that finished
       // before the write did is not that read-back, so read once more.
       const writtenAt = Date.now()
-      let readBack = await onSaved()
-      if (!readBack.isError && readBack.dataUpdatedAt < writtenAt) readBack = await onSaved()
+      let readBack = await readDetail()
+      if (!readBack.isError && readBack.dataUpdatedAt < writtenAt) readBack = await readDetail()
       const active = document.activeElement
       if (!active || active === document.body || panelRef.current?.contains(active)) {
         focusNext.current = 'edit'
       }
-      const saved = result.displayName
-        ? 'Display name is now "' + result.displayName + '".'
-        : 'Display name cleared; the Node ID is shown.'
       setMessage(
+        result.displayName
+          ? 'Display name is now "' + result.displayName + '".'
+          : 'Display name cleared; the Node ID is shown.',
+      )
+      setReadBackFailure(
         readBack.isError
-          ? saved + ' The Node could not be read back, so this page may still show the earlier name.'
-          : saved,
+          ? { errorUpdateCount: readBack.errorUpdateCount, errorUpdatedAt: readBack.errorUpdatedAt }
+          : null,
       )
       setEdit(null)
       setConfirmed(null)
     } finally {
       inFlight.current = false
       setSubmitting(false)
+    }
+  }
+
+  /** Reads the Node again after a failed read-back. It only reads; the
+   *  written name is never sent again. */
+  async function readAgain() {
+    const result = await readDetail()
+    // The notice (and this button) leave on success: keep the keyboard here.
+    if (!result.isError && document.activeElement === readAgainRef.current) {
+      focusNext.current = 'edit'
+      setFocusTick((tick) => tick + 1)
     }
   }
 
@@ -1267,15 +1312,16 @@ function MetadataPanel({
                   }}
                   maxLength={128}
                   disabled={submitting}
+                  aria-describedby={serverMoved ? movedNoticeId : undefined}
                 />
                 {serverMoved && (
-                  <span className="basis-full text-xs text-muted-foreground">
+                  <span id={movedNoticeId} className="basis-full text-xs text-muted-foreground">
                     {serverHasDraft
-                      ? 'The Server now holds this name — an earlier attempt or another Owner saved it. Nothing is left to save; Cancel closes the editor.'
+                      ? 'The Server now holds this name — an earlier attempt or another Owner saved it. Nothing is left to save; Close editor ends this edit.'
                       : (current
                           ? 'The display name changed on the Server to "' + current + '"'
                           : 'The display name was cleared on the Server') +
-                        ' while you were editing. Your draft is kept and has not been saved; Cancel to start again from the current name.'}
+                        ' while you were editing. Your draft is kept and has not been saved; Save is unavailable because the draft was started from the earlier name. Cancel to start again from the current name.'}
                   </span>
                 )}
                 {confirmed !== null ? (
@@ -1304,11 +1350,19 @@ function MetadataPanel({
                       Keep editing
                     </Button>
                   </>
-                ) : (
-                  <Button type="submit">Save</Button>
+                ) : serverHasDraft ? null : (
+                  <Button
+                    type="submit"
+                    disabled={serverMoved}
+                    aria-describedby={serverMoved ? movedNoticeId : undefined}
+                  >
+                    Save
+                  </Button>
                 )}
+                {/* Cancel discards the round; with nothing left to save the
+                    same control closes the editor. */}
                 <Button variant="outline" type="button" disabled={submitting} onClick={cancel}>
-                  Cancel
+                  {serverHasDraft ? 'Close editor' : 'Cancel'}
                 </Button>
               </form>
             ) : (
@@ -1325,6 +1379,19 @@ function MetadataPanel({
             >
               {submitting ? 'Saving the display name…' : message}
             </span>
+            {readBackFailure && (
+              // The page's refresh alert already announces the failed read;
+              // this says what it means for the name just written.
+              <ReadBackNotice
+                className="mt-2"
+                readAgainLabel="Read the Node again"
+                readAgainRef={readAgainRef}
+                onReadAgain={() => void readAgain()}
+              >
+                The display name was saved, but the Node could not be read back afterwards, so this
+                page may still show the earlier name. The save is not sent again.
+              </ReadBackNotice>
+            )}
             {error && (
               <span className="mt-1 block text-sm text-destructive" role="alert">
                 {error}
