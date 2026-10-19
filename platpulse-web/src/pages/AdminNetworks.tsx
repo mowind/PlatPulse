@@ -594,6 +594,8 @@ function IdentityTuplePanel({
   }, [])
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // The page read started by Read the Network again (no earlier update).
+  const [reading, setReading] = useState(false)
   // This Network's write, whichever editor instance sent it.
   const write = useNetworkTupleWrite(generation, networkKey)
   // Re-renders once to move the focus when nothing else changes.
@@ -746,7 +748,10 @@ function IdentityTuplePanel({
 
   /** Reads the Network again after a failed read of the page. It only reads. */
   async function readAgain() {
+    if (reading) return
+    setReading(true)
     const result = await readDetail()
+    if (alive.current) setReading(false)
     // The notice (and this button) leave on success: keep the keyboard here.
     if (!result.isError && document.activeElement === readAgainRef.current) {
       focusNext.current = 'edit'
@@ -893,15 +898,20 @@ function IdentityTuplePanel({
               <p id={holdReasonId}>{holdReason}</p>
               {/* The notices below carry the read for an earlier update. */}
               {hold === 'readFailed' && (
-                <Button
-                  ref={readAgainRef}
-                  type="button"
-                  variant="link"
-                  size="sm"
-                  onClick={() => void readAgain()}
-                >
-                  Read the Network again
-                </Button>
+                <>
+                  <Button
+                    ref={readAgainRef}
+                    type="button"
+                    variant="link"
+                    size="sm"
+                    aria-disabled={reading || undefined}
+                    className="aria-disabled:cursor-progress aria-disabled:opacity-70"
+                    onClick={() => void readAgain()}
+                  >
+                    Read the Network again
+                  </Button>
+                  <span role="status">{reading ? 'Reading…' : ''}</span>
+                </>
               )}
             </div>
           )}
@@ -1004,7 +1014,7 @@ function IdentityTuplePanel({
           <span className="min-w-0 break-words" role="alert">
             The connection failed before the Server answered the tuple update, so it may or may
             not have been applied. It is not sent again, and Save tuple stays unavailable for this
-            Network until a read shows the Server holding that update, or until this sign-in ends.
+            Network until a read shows the Server holding that update.
           </span>
           <Button
             ref={checkRef}

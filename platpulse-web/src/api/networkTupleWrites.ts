@@ -36,9 +36,11 @@ import { TransportError } from './transport'
  * prove it never will. A Server refusal (its typed error envelope; the update
  * handler sends one only when nothing was committed) ends the write at once.
  *
- * The state is memory only, bound to this tab and authorization: an access
- * generation change clears it with the Admin cache, and an answer arriving
- * afterwards changes nothing. It holds no request bodies beyond the tuple
+ * The state is memory only, bound to this tab and access generation: a
+ * generation change (sign-in, sign-out, or any access re-check) clears it
+ * with the Admin cache, and an answer arriving afterwards changes nothing.
+ * An update still unanswered at that moment is no longer held in the new
+ * generation; that is the existing authorization boundary, not a proof. It holds no request bodies beyond the tuple
  * being compared, and no credential.
  */
 
@@ -64,12 +66,13 @@ export type NetworkTupleWrite =
 export type NetworkTupleWriteOutcome =
   | { kind: 'applied'; response: NetworkResponse }
   | { kind: 'rejected'; error: unknown }
-  | { kind: 'uncertain'; error: unknown }
+  | { kind: 'uncertain' }
   /** The authorization ended (or the write was otherwise retired) first. */
   | { kind: 'superseded' }
 
+/** One update. The entry object itself is the operation's identity: a late
+ *  answer acts only while its own entry is still the one held. */
 type Entry = {
-  readonly id: number
   readonly key: string
   readonly generation: number
   readonly networkKey: string
@@ -80,7 +83,6 @@ type Entry = {
 
 const entries = new Map<string, Entry>()
 const listeners = new Set<() => void>()
-let nextId = 0
 
 function entryKey(generation: number, networkKey: string): string {
   return JSON.stringify([generation, networkKey])
@@ -90,18 +92,18 @@ function emit(): void {
   for (const listener of listeners) listener()
 }
 
-function live(entry: Entry): boolean {
+function isCurrent(entry: Entry): boolean {
   return entries.get(entry.key) === entry
 }
 
 function transition(entry: Entry, state: NetworkTupleWrite): void {
-  if (!live(entry)) return
+  if (!isCurrent(entry)) return
   entry.state = state
   emit()
 }
 
-function settle(entry: Entry): void {
-  if (!live(entry)) return
+function endHold(entry: Entry): void {
+  if (!isCurrent(entry)) return
   entries.delete(entry.key)
   emit()
 }
@@ -126,7 +128,7 @@ export function useNetworkTupleWrite(generation: number, networkKey: string): Ne
  *  itself fails, so such an answer proves the update was not applied. Any
  *  other failure — no response, an unreadable one, or an intermediary's page
  *  — proves nothing either way. */
-export function updateRefused(error: unknown): boolean {
+function updateRefused(error: unknown): boolean {
   return error instanceof TransportError && error.serverEnvelope
 }
 
@@ -144,9 +146,9 @@ function holdsUpdate(detail: AdminNetworkDetail, update: NetworkTupleUpdate): bo
 function readSucceeded(entry: Entry, detail: AdminNetworkDetail | undefined): void {
   const state = entry.state
   if (state.phase === 'readBackFailed') {
-    settle(entry)
+    endHold(entry)
   } else if (state.phase === 'uncertain') {
-    if (detail && holdsUpdate(detail, entry.update)) settle(entry)
+    if (detail && holdsUpdate(detail, entry.update)) endHold(entry)
     else transition(entry, { ...state, lastCheck: 'notShown' })
   }
 }
@@ -174,7 +176,7 @@ onAdminCacheReset(() => {
 
 /** Cancels every read of this Network in flight: none of them may stand for
  *  a read made after the write was answered. */
-function barrier(entry: Entry): void {
+function cancelEarlierReads(entry: Entry): void {
   void adminQueryClient.cancelQueries({
     queryKey: adminNetworkDetailQueryKey(entry.generation, entry.networkKey),
     exact: true,
@@ -183,8 +185,8 @@ function barrier(entry: Entry): void {
 
 /** Reads this Network's detail into the page's query (joining a read that
  *  began after the barrier). Resolves to whether the read succeeded. */
-async function read(entry: Entry): Promise<boolean> {
-  if (!live(entry)) return false
+async function readNetwork(entry: Entry): Promise<boolean> {
+  if (!isCurrent(entry)) return false
   try {
     await adminQueryClient.fetchQuery({
       queryKey: adminNetworkDetailQueryKey(entry.generation, entry.networkKey),
@@ -209,9 +211,7 @@ export function startNetworkTupleWrite(options: {
   const { generation, networkKey, update, csrfToken } = options
   const key = entryKey(generation, networkKey)
   if (entries.has(key)) return null
-  nextId += 1
   const entry: Entry = {
-    id: nextId,
     key,
     generation,
     networkKey,
@@ -221,42 +221,42 @@ export function startNetworkTupleWrite(options: {
   }
   entries.set(key, entry)
   emit()
-  return run(entry, csrfToken)
+  return sendUpdate(entry, csrfToken)
 }
 
-async function run(entry: Entry, csrfToken: string): Promise<NetworkTupleWriteOutcome> {
+async function sendUpdate(entry: Entry, csrfToken: string): Promise<NetworkTupleWriteOutcome> {
   let response: NetworkResponse
   try {
     response = await updateNetworkEntry(entry.networkKey, entry.update, csrfToken)
   } catch (error) {
-    if (!live(entry)) return { kind: 'superseded' }
+    if (!isCurrent(entry)) return { kind: 'superseded' }
     if (updateRefused(error)) {
-      settle(entry)
+      endHold(entry)
       return { kind: 'rejected', error }
     }
-    barrier(entry)
+    cancelEarlierReads(entry)
     transition(entry, { phase: 'uncertain', checking: false, lastCheck: 'none' })
     // One read-only look straight away; the update itself is never re-sent.
-    void check(entry)
-    return { kind: 'uncertain', error }
+    void checkEntry(entry)
+    return { kind: 'uncertain' }
   }
-  if (!live(entry)) return { kind: 'superseded' }
-  barrier(entry)
+  if (!isCurrent(entry)) return { kind: 'superseded' }
+  cancelEarlierReads(entry)
   transition(entry, { phase: 'reconciling' })
-  const readBack = await read(entry)
+  const readBack = await readNetwork(entry)
   // Only a reset retires a reconciling write (page reads do not settle it).
-  if (!live(entry)) return { kind: 'superseded' }
-  if (readBack) settle(entry)
+  if (!isCurrent(entry)) return { kind: 'superseded' }
+  if (readBack) endHold(entry)
   else transition(entry, { phase: 'readBackFailed', checking: false })
   return { kind: 'applied', response }
 }
 
-async function check(entry: Entry): Promise<void> {
+async function checkEntry(entry: Entry): Promise<void> {
   const state = entry.state
   if (state.phase !== 'readBackFailed' && state.phase !== 'uncertain') return
   if (state.checking) return
   transition(entry, { ...state, checking: true })
-  const ok = await read(entry)
+  const ok = await readNetwork(entry)
   // A successful read has already been applied through the query cache.
   const after = entry.state
   if (after.phase === 'uncertain') {
@@ -270,7 +270,7 @@ async function check(entry: Entry): Promise<void> {
  *  was lost. It only reads. */
 export function checkNetworkTupleWrite(generation: number, networkKey: string): Promise<void> {
   const entry = entries.get(entryKey(generation, networkKey))
-  return entry ? check(entry) : Promise.resolve()
+  return entry ? checkEntry(entry) : Promise.resolve()
 }
 
 /** Test seam: forget every write between in-process UI tests. */
