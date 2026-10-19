@@ -9,8 +9,9 @@ import { findRepoRoot } from './repo-root'
 // confirmation is withdrawn by any change, and a slow write is sent once and
 // keeps its editor locked across a section switch. Every write here is a
 // local Playwright route that delays and then fails, so the shared seeded
-// Server state is never changed. ADMIN_EDITORS_EVIDENCE=1 additionally
-// captures the edited panels in Light and Dark.
+// Server state is never changed. It runs on every fixed project, Light and
+// Dark; ADMIN_EDITORS_EVIDENCE=1 additionally captures the edited panels at
+// 390 and 1280.
 const NODE_A = '0195f2a1-0014-4014-8014-000000000014'
 const NETWORK = 'platon-e2e'
 const evidence = Boolean(process.env.ADMIN_EDITORS_EVIDENCE)
@@ -38,16 +39,17 @@ function slowFailingWrite(page: Page, pattern: RegExp, method: string) {
 }
 
 async function shot(page: Page, selector: string, name: string, theme: string) {
-  if (!evidence) return
-  await mkdir(OUT, { recursive: true })
   const width = page.viewportSize()?.width ?? 0
+  // Region captures: one phone and one desktop width are enough for a
+  // button-state and copy change.
+  if (!evidence || ![390, 1280].includes(width)) return
+  await mkdir(OUT, { recursive: true })
   await page.locator(selector).first().screenshot({ path: join(OUT, name + '-' + width + '-' + theme + '.png'), animations: 'disabled' })
 }
 
 for (const theme of ['light', 'dark'] as const) {
   test.describe(theme, () => {
-    test.beforeEach(async ({ page }, info) => {
-      test.skip(!['phone-390-touch', 'desktop-1280'].includes(info.project.name), 'one phone and one desktop project')
+    test.beforeEach(async ({ page }) => {
       await page.addInitScript((value) => localStorage.setItem('platpulse.themeMode', value), theme)
       await loginAs(page)
     })

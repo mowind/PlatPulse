@@ -17,7 +17,7 @@ import { CardX } from '../components/ui/card-x'
 import { Empty } from '../components/ui/empty'
 import { Input } from '../components/ui/input'
 import { cn } from '../lib/utils'
-import type { AdminNetwork, AdminNetworkNode } from '../api/generated'
+import type { AdminNetwork, AdminNetworkDetail, AdminNetworkNode } from '../api/generated'
 import { DetailItem, DetailList } from '../components/DetailList'
 import { AdminIdentifier } from '../components/AdminIdentifier'
 import {
@@ -473,6 +473,8 @@ export function AdminNetworkDetailPage() {
             </div>
           )}
           <IdentityTuplePanel
+            // One edit round belongs to one Network.
+            key={query.data.network_key}
             network={query.data}
             csrfToken={csrfToken}
             onSaved={() => query.refetch({ cancelRefetch: false })}
@@ -483,8 +485,6 @@ export function AdminNetworkDetailPage() {
     </section>
   )
 }
-
-type NetworkDetail = ReturnType<typeof useAdminNetworkDetail>['data'] & object
 
 /** The editable Registry tuple as the form holds it (numbers as typed). */
 type TupleFields = {
@@ -504,7 +504,7 @@ type TupleUpdate = {
   addressHrp: string
 }
 
-function tupleFields(network: NetworkDetail): TupleFields {
+function tupleFields(network: AdminNetworkDetail): TupleFields {
   return {
     displayName: network.display_name,
     genesisHash: network.genesis_hash,
@@ -546,10 +546,10 @@ function IdentityTuplePanel({
   csrfToken,
   onSaved,
 }: {
-  network: NetworkDetail
+  network: AdminNetworkDetail
   csrfToken: string
-  /** Resolves once the authoritative Network detail has been read again. */
-  onSaved: () => Promise<unknown>
+  /** Reads the authoritative Network detail again (joining a read in flight). */
+  onSaved: () => Promise<{ isError: boolean; dataUpdatedAt: number }>
 }) {
   const current = tupleFields(network)
   // One edit round: the draft and the Server tuple it started from.
@@ -578,6 +578,10 @@ function IdentityTuplePanel({
   // update is excluded while it is in flight (including its refetch).
   const serverMoved = edit !== null && !submitting && !sameTuple(current, edit.base)
   if (serverMoved && confirmed !== null) setConfirmed(null)
+  // The Server already holds the draft (for example a write whose answer was
+  // lost reached it after all): nothing is left to save.
+  const serverHasDraft =
+    serverMoved && JSON.stringify(tupleUpdate(current)) === JSON.stringify(tupleUpdate(edit.fields))
 
   function startEdit() {
     setEdit({ fields: current, base: current })
@@ -633,13 +637,23 @@ function IdentityTuplePanel({
         setError(caught instanceof Error ? caught.message : 'Unable to update the Network')
         return
       }
-      // The read view is the Server's tuple; wait for it to be read back.
-      await onSaved().catch(() => undefined)
+      // The read view is the Server's tuple; wait for it to be read back. A
+      // read that finished before the write did is not that read-back.
+      const writtenAt = Date.now()
+      let readBack = await onSaved()
+      if (!readBack.isError && readBack.dataUpdatedAt < writtenAt) readBack = await onSaved()
       const active = document.activeElement
       if (!active || active === document.body || panelRef.current?.contains(active)) {
         focusNext.current = 'edit'
       }
-      setMessage('Updated ' + result.displayName + '.')
+      setMessage(
+        'Updated ' +
+          result.displayName +
+          '.' +
+          (readBack.isError
+            ? ' The Network could not be read back, so this page may still show the earlier tuple.'
+            : ''),
+      )
       setEdit(null)
       setConfirmed(null)
     } finally {
@@ -733,11 +747,20 @@ function IdentityTuplePanel({
             </div>
           </div>
           {serverMoved && (
-            <p className="text-xs text-muted-foreground">
-              The expected identity tuple changed on the Server while you were editing. Your
-              draft is kept and has not been saved; Cancel to start again from the current
-              tuple.
-            </p>
+            <div className="grid gap-1 text-xs text-muted-foreground" data-slot="tuple-server-moved">
+              <p>
+                {serverHasDraft
+                  ? 'The Server now holds this tuple — an earlier attempt or another Owner saved it. Nothing is left to save; Cancel closes the editor.'
+                  : 'The expected identity tuple changed on the Server while you were editing. Your draft is kept and has not been saved; Cancel to start again from the current tuple.'}
+              </p>
+              {!serverHasDraft && (
+                <p className="[overflow-wrap:anywhere]">
+                  Server now: {network.display_name} · Chain ID {network.chain_id} · P2P network ID{' '}
+                  {network.p2p_network_id} · Address HRP {network.address_hrp} · Genesis hash{' '}
+                  <code className="break-all">{network.genesis_hash}</code>
+                </p>
+              )}
+            </div>
           )}
           <div className="flex flex-wrap items-center gap-2">
             {confirmed ? (

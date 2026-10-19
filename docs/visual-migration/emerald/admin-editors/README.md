@@ -7,7 +7,8 @@ re-acceptance.
 
 Captured by `e2e/admin-editors.spec.ts` with `ADMIN_EDITORS_EVIDENCE=1`
 against the local seeded e2e Server, at 390 (phone-390-touch) and 1280
-(desktop-1280), Light and Dark. Every write in those runs is a local
+(desktop-1280), Light and Dark; the spec's behaviour assertions run on all
+five fixed projects. Every write in those runs is a local
 Playwright route that is held open and then answers 503, so no Server state
 was changed and no production service was touched.
 

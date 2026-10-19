@@ -1109,6 +1109,116 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
       expect(screen.getByRole('tab', { name: /^Manage/ }).textContent).not.toContain('Unsaved')
     })
 
+    it('lands a rename that finishes while Manage is hidden, and shows it on return', async () => {
+      let detail = NODE_A_DETAIL
+      let release: () => void = () => {}
+      let puts = 0
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () => jsonResponse(detail, 200),
+        [NODE_URL + '/metadata']: async () => {
+          puts += 1
+          await new Promise<void>((resolve) => {
+            release = resolve
+          })
+          detail = { ...detail, display_name: 'Hidden landing' }
+          return jsonResponse({ nodeId: NODE_A.node_id, displayName: 'Hidden landing' }, 200)
+        },
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Hidden landing' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm rename' }))
+      await screen.findByRole('button', { name: 'Saving…' })
+      openSection('Overview')
+      await act(async () => {
+        release()
+      })
+      // The header shows the Server's result even while Manage is hidden.
+      await screen.findByRole('heading', { level: 1, name: 'Hidden landing' })
+      openSection(/^Manage/)
+      expect(within(metadataPanel()).getByText('Display name is now "Hidden landing".')).toBeTruthy()
+      expect(within(metadataPanel()).queryByRole('textbox')).toBeNull()
+      expect(within(metadataPanel()).getByText('Hidden landing')).toBeTruthy()
+      expect(puts).toBe(1)
+    })
+
+    it('does not claim the saved name was read back when the refresh after it fails', async () => {
+      let saved = false
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () =>
+          saved
+            ? jsonResponse({ error: { code: 'unavailable', message: 'read failed' } }, 503)
+            : jsonResponse(NODE_A_DETAIL, 200),
+        [NODE_URL + '/metadata']: () => {
+          saved = true
+          return jsonResponse({ nodeId: NODE_A.node_id, displayName: 'Unread' }, 200)
+        },
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Unread' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm rename' }))
+      expect(
+        await within(metadataPanel()).findByText(
+          'Display name is now "Unread". The Node could not be read back, so this page may still show the earlier name.',
+        ),
+      ).toBeTruthy()
+      expect(screen.getByText(/Failed to refresh; showing the last/)).toBeTruthy()
+    })
+
+    it('says so when a write whose answer was lost reached the Server after all', async () => {
+      let detail = NODE_A_DETAIL
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () => jsonResponse(detail, 200),
+        [NODE_URL + '/metadata']: () => {
+          // Applied on the Server, but the answer never arrives intact.
+          detail = { ...detail, display_name: 'Landed' }
+          return jsonResponse({ error: { code: 'unavailable', message: 'gateway timeout' } }, 504)
+        },
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Landed' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm rename' }))
+      await within(metadataPanel()).findByRole('alert')
+      await backgroundRefresh()
+      await screen.findByRole('heading', { level: 1, name: 'Landed' })
+      expect(within(metadataPanel()).getByText(/The Server now holds this name/)).toBeTruthy()
+      expect(within(metadataPanel()).queryByText(/has not been saved/)).toBeNull()
+    })
+
+    it('never carries one Node\'s edit round into another Node', async () => {
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () => jsonResponse(NODE_A_DETAIL, 200),
+        '/api/admin/v1/nodes/0195f2a1-0015-4015-8015-000000000015': () =>
+          jsonResponse(NODE_RPC_ERROR_DETAIL, 200),
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Node A draft' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await act(async () => {
+        window.history.pushState({}, '', '/admin/nodes/0195f2a1-0015-4015-8015-000000000015?section=manage')
+        window.dispatchEvent(new PopStateEvent('popstate'))
+        await Promise.resolve()
+      })
+      await screen.findByRole('heading', { level: 1, name: /Node B \(private\)/ })
+      expect(within(metadataPanel()).queryByRole('textbox')).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Confirm rename' })).toBeNull()
+      expect(screen.getByRole('tab', { name: /^Manage/ }).textContent).not.toContain('Unsaved')
+    })
+
     it('says a cleared name falls back to the Node ID', async () => {
       mockFetch({
         '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),

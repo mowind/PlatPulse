@@ -928,6 +928,9 @@ export function AdminNodeDetail() {
                   content: (
                     <>
                       <MetadataPanel
+                        // One edit round belongs to one Node: another Node's
+                        // detail never inherits it.
+                        key={data.node_id}
                         node={data}
                         csrfToken={csrfToken}
                         onSaved={() => query.refetch({ cancelRefetch: false })}
@@ -1119,8 +1122,8 @@ function MetadataPanel({
 }: {
   node: AdminNodeDetailDto
   csrfToken: string
-  /** Resolves once the authoritative Node detail has been read again. */
-  onSaved: () => Promise<unknown>
+  /** Reads the authoritative Node detail again (joining a read in flight). */
+  onSaved: () => Promise<{ isError: boolean; dataUpdatedAt: number }>
 }) {
   const current = node.display_name ?? ''
   // One edit round: the draft and the Server value it started from.
@@ -1150,6 +1153,9 @@ function MetadataPanel({
   // is in flight until the refetched detail has arrived.
   const serverMoved = edit !== null && !submitting && current !== edit.base
   if (serverMoved && confirmed !== null) setConfirmed(null)
+  // The Server already holds the draft — for example a write whose answer
+  // was lost reached it after all. Nothing is left to save.
+  const serverHasDraft = serverMoved && current === edit.draft.trim()
 
   useReportDraft(
     'node-display-name',
@@ -1204,16 +1210,22 @@ function MetadataPanel({
         return
       }
       // The saved name is the one the Server reads back; wait for it so the
-      // read view and the header change together.
-      await onSaved().catch(() => undefined)
+      // read view and the header change together. A read that finished
+      // before the write did is not that read-back, so read once more.
+      const writtenAt = Date.now()
+      let readBack = await onSaved()
+      if (!readBack.isError && readBack.dataUpdatedAt < writtenAt) readBack = await onSaved()
       const active = document.activeElement
       if (!active || active === document.body || panelRef.current?.contains(active)) {
         focusNext.current = 'edit'
       }
+      const saved = result.displayName
+        ? 'Display name is now "' + result.displayName + '".'
+        : 'Display name cleared; the Node ID is shown.'
       setMessage(
-        result.displayName
-          ? 'Display name is now "' + result.displayName + '".'
-          : 'Display name cleared; the Node ID is shown.',
+        readBack.isError
+          ? saved + ' The Node could not be read back, so this page may still show the earlier name.'
+          : saved,
       )
       setEdit(null)
       setConfirmed(null)
@@ -1258,9 +1270,12 @@ function MetadataPanel({
                 />
                 {serverMoved && (
                   <span className="basis-full text-xs text-muted-foreground">
-                    The display name changed on the Server to "{current || 'None'}" while you
-                    were editing. Your draft is kept and has not been saved; Cancel to start
-                    again from the current name.
+                    {serverHasDraft
+                      ? 'The Server now holds this name — an earlier attempt or another Owner saved it. Nothing is left to save; Cancel closes the editor.'
+                      : (current
+                          ? 'The display name changed on the Server to "' + current + '"'
+                          : 'The display name was cleared on the Server') +
+                        ' while you were editing. Your draft is kept and has not been saved; Cancel to start again from the current name.'}
                   </span>
                 )}
                 {confirmed !== null ? (

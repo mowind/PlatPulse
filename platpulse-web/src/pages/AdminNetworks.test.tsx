@@ -477,6 +477,10 @@ describe('Expected identity tuple editor', () => {
     expect(field('Chain ID').value).toBe('7')
     expect(field('Address HRP').value).toBe('lat')
     expect(within(tuplePanel()).getByText(/changed on the Server while you were editing/)).toBeTruthy()
+    // The Server's current tuple stays readable beside the kept draft.
+    const moved = tuplePanel().querySelector('[data-slot="tuple-server-moved"]') as HTMLElement
+    expect(moved.textContent).toContain('Server now: Renamed elsewhere')
+    expect(moved.textContent).toContain('Address HRP atp')
 
     fireEvent.click(within(tuplePanel()).getByRole('button', { name: 'Cancel' }))
     // The read view is the Server tuple; the cancelled draft is gone.
@@ -565,6 +569,23 @@ describe('Expected identity tuple editor', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save tuple' }))
     expect(screen.queryByRole('button', { name: 'Confirm tuple update' })).toBeNull()
     expect(state.puts).toHaveLength(0)
+  })
+
+  it('re-runs the form validity at Confirm instead of trusting the Save step', async () => {
+    const state = serve()
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save tuple' }))
+    // The control no longer holds a valid value even though no change event
+    // reached the editor (autofill, extensions, a browser quirk).
+    field('Chain ID').value = ''
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(state.puts).toHaveLength(0)
+    expect(screen.queryByRole('button', { name: 'Confirm tuple update' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Save tuple' })).toBeTruthy()
   })
 
   it('locks only this editor while the update is in flight and sends it once', async () => {
