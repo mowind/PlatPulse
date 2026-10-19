@@ -700,8 +700,18 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     expect(screen.getByText('No Agents enrolled yet.')).toBeTruthy()
     expect(screen.getByRole('heading', { level: 2, name: 'Set up your first observation' })).toBeTruthy()
     expect(screen.getByRole('link', { name: 'Register the expected Network identity' }).getAttribute('href')).toBe('/admin/networks')
-    expect(screen.getByRole('link', { name: "Configure the Agent's local Node Inventory" }).getAttribute('href')).toBe('/admin/settings')
-    expect(screen.queryByText(/RPC Endpoint|Enrollment|fake data|one-click/i)).toBeNull()
+    // Agent provisioning points at the existing Add Agent page; the local
+    // Node Inventory step is plain text, never a Server page link (Settings
+    // only manages Server-wide values and cannot edit an Agent's Inventory).
+    expect(screen.getByRole('link', { name: 'Add an Agent' }).getAttribute('href')).toBe('/admin/agents/enroll')
+    const guide = document.querySelector('[data-slot="setup-guide"]') as HTMLElement
+    const localStep = guide.querySelector('[data-slot="setup-local-inventory"]') as HTMLElement
+    expect(localStep.textContent).toContain("On the Agent's Host, declare its Nodes")
+    expect(localStep.textContent).toContain('never edit')
+    expect(localStep.querySelector('a')).toBeNull()
+    expect(within(guide).queryByRole('link', { name: /Inventory/ })).toBeNull()
+    expect(guide.querySelector('a[href="/admin/settings"]')).toBeNull()
+    expect(screen.queryByText(/RPC Endpoint|fake data|one-click/i)).toBeNull()
   })
 
   it('does not show setup guidance until all three surfaces prove authoritative emptiness', async () => {
@@ -714,6 +724,40 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     await renderAt('/admin')
     await screen.findByRole('heading', { level: 1, name: 'Overview' })
     expect(await screen.findByRole('link', { name: 'Node A' })).toBeTruthy()
+    expect(screen.queryByRole('heading', { level: 2, name: 'Set up your first observation' })).toBeNull()
+  })
+
+  it('never reads a failed or pending surface as a first install', async () => {
+    const EMPTY_OVERVIEW = {
+      generated_at: '2026-08-12T08:00:00Z',
+      summary: {
+        agents: { total: 0, online: 0, offline: 0, unknown: 0 },
+        nodes: { total: 0, active: 0, healthy: 0, unhealthy: 0, unknown: 0, retired: 0 },
+        networks: { total: 0, with_identity_mismatch: 0 },
+      },
+      attention: [],
+    }
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse(EMPTY_OVERVIEW, 200),
+      '/api/admin/v1/nodes': () => jsonResponse([], 200),
+      '/api/admin/v1/agents': () =>
+        jsonResponse({ error: { code: 'unavailable', message: 'Agent diagnostics unavailable' } }, 503),
+    })
+    await renderAt('/admin')
+    expect(await screen.findByText('Agent diagnostics unavailable')).toBeTruthy()
+    expect(screen.queryByRole('heading', { level: 2, name: 'Set up your first observation' })).toBeNull()
+
+    cleanup()
+    adminQueryClient.clear()
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/overview': () => jsonResponse(EMPTY_OVERVIEW, 200),
+      '/api/admin/v1/nodes': () => new Promise<Response>(() => {}),
+      '/api/admin/v1/agents': () => jsonResponse([], 200),
+    })
+    await renderAt('/admin')
+    expect(await screen.findByText('No Agents enrolled yet.')).toBeTruthy()
     expect(screen.queryByRole('heading', { level: 2, name: 'Set up your first observation' })).toBeNull()
   })
 

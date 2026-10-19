@@ -74,6 +74,7 @@ import {
   DetailDraftProvider,
   DetailNotices,
   draftMarker,
+  noticesMarkerTone,
   useDetailDrafts,
   useDetailSection,
   useReportDraft,
@@ -123,6 +124,17 @@ type NodeFilters = {
   health: string
 }
 
+const NODE_SORTS = ['health', 'name', 'network', 'freshness'] as const
+type NodeSort = (typeof NODE_SORTS)[number]
+const DEFAULT_NODE_SORT: NodeSort = 'health'
+
+/** The list order is URL state too, so reload and back/forward restore it;
+ *  an unknown value falls back to the default order. */
+function readSort(search: URLSearchParams): NodeSort {
+  const value = search.get('sort')
+  return (NODE_SORTS as readonly string[]).includes(value ?? '') ? (value as NodeSort) : DEFAULT_NODE_SORT
+}
+
 function readFilters(search: URLSearchParams): NodeFilters {
   return {
     visibility: search.get('visibility') ?? 'all',
@@ -139,7 +151,7 @@ export default function AdminNodesList() {
   const query = useAdminNodes(generation)
   const [search, setSearch] = useSearchParams()
   const filters = readFilters(search)
-  const [sort, setSort] = useState<NodeSort>('health')
+  const sort = readSort(search)
 
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
@@ -195,11 +207,19 @@ export default function AdminNodesList() {
     else next.set(key, value)
     setSearch(next, { replace: false })
   }
+  // Filters only: the chosen order (`sort`) and any other parameter stay.
   const clearFilters = (keys: (keyof NodeFilters)[]) => {
     const next = new URLSearchParams(search)
     for (const key of keys) next.delete(key)
     setSearch(next, { replace: false })
   }
+  const setSort = (value: NodeSort) => {
+    const next = new URLSearchParams(search)
+    if (value === DEFAULT_NODE_SORT) next.delete('sort')
+    else next.set('sort', value)
+    setSearch(next, { replace: false })
+  }
+  const clearAllFilters = () => clearFilters(['network', 'health', 'visibility', 'lifecycle'])
 
   const networks = useMemo(() => {
     const keys = new Set((query.data ?? []).map((node) => node.network_key))
@@ -250,6 +270,7 @@ export default function AdminNodesList() {
             networks={networks}
             onChange={setFilter}
             onClear={clearFilters}
+            onClearAll={clearAllFilters}
             sort={sort}
             onSort={setSort}
           />
@@ -275,7 +296,34 @@ export default function AdminNodesList() {
             </div>
           </div>
         )}
-        {query.data && nodes.length === 0 && <Empty description="No Nodes match these filters." />}
+        {/* Two different empties: an inventory with no Nodes yet, and Nodes
+            that the current filters exclude. Loading and failure above are
+            never shown as either. */}
+        {query.data && query.data.length === 0 && (
+          <Empty description="No Nodes have been reported yet." className="text-center">
+            <p data-slot="node-inventory-empty" className="max-w-prose text-sm">
+              A Node appears here after an Agent's accepted Report declares it in that Agent's
+              local Node Inventory, which is configured on the Agent's Host.
+            </p>
+            <Link
+              className="inline-flex min-h-11 min-w-11 items-center font-medium text-foreground underline-offset-4 hover:underline"
+              to="/admin/agents"
+            >
+              Open Agents
+            </Link>
+          </Empty>
+        )}
+        {query.data && query.data.length > 0 && nodes.length === 0 && (
+          <Empty description="No Nodes match these filters." className="text-center">
+            <p data-slot="node-filtered-empty" className="text-sm">
+              {query.data.length === 1 ? 'The one Node in the inventory is' : 'All ' + query.data.length + ' Nodes in the inventory are'}{' '}
+              outside the current filters.
+            </p>
+            <Button type="button" variant="outline" className="min-h-11" onClick={clearAllFilters}>
+              Clear filters
+            </Button>
+          </Empty>
+        )}
         {query.data && nodes.length > 0 && (
           <div className="overflow-x-auto max-md:px-3 max-md:pt-3">
             <table data-stack data-slot="node-table" className="w-full text-sm">
@@ -333,8 +381,6 @@ export default function AdminNodesList() {
   )
 }
 
-type NodeSort = 'name' | 'network' | 'health' | 'freshness'
-
 function SortButton({
   label,
   column,
@@ -351,7 +397,10 @@ function SortButton({
     <Button
       variant="ghost"
       size="xs"
-      className="-my-2.5 justify-start gap-1 px-0 text-xs font-medium text-muted-foreground hover:bg-transparent aria-pressed:text-foreground"
+      // The 44px target fills its header cell (-my-2 cancels the cell's py-2)
+      // instead of reaching 2px past it, where the table's scroller clipped
+      // its top edge and the focus ring; the ring is drawn inside the button.
+      className="-my-2 justify-start gap-1 px-0 text-xs font-medium text-muted-foreground hover:bg-transparent focus-visible:ring-inset aria-pressed:text-foreground"
       aria-pressed={active}
       onClick={() => onSort(column)}
     >
@@ -389,6 +438,7 @@ function NodeFiltersBar({
   networks,
   onChange,
   onClear,
+  onClearAll,
   sort,
   onSort,
 }: {
@@ -396,6 +446,7 @@ function NodeFiltersBar({
   networks: string[]
   onChange: (key: keyof NodeFilters, value: string) => void
   onClear: (keys: (keyof NodeFilters)[]) => void
+  onClearAll: () => void
   sort: string
   onSort: (column: NodeSort) => void
 }) {
@@ -458,7 +509,7 @@ function NodeFiltersBar({
               type="button"
               variant="link"
               className="min-h-11 px-1"
-              onClick={() => onClear(['network', 'health', 'visibility', 'lifecycle'])}
+              onClick={onClearAll}
             >
               Clear filters
             </Button>
@@ -491,22 +542,30 @@ function NodeFiltersBar({
         </div>
       ) : (
         secondary.length > 0 && (
+          // Each chip's box is its full 44px row: the clear button's touch
+          // area is laid out, not pulled over the neighbouring row with a
+          // negative margin. The light pill is drawn inside that box.
           <ul
             aria-label="Active filters from More filters"
             data-slot="node-active-filters"
-            className="flex list-none flex-wrap items-center gap-2 p-0"
+            className="flex list-none flex-wrap items-center gap-x-2 gap-y-1 p-0"
           >
             {secondary.map((entry) => (
               <li
                 key={entry.key}
-                className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted/40 pl-2.5 text-xs"
+                data-slot="node-active-filter"
+                className="relative isolate inline-flex min-h-11 max-w-full items-center pl-2.5 text-xs"
               >
-                {entry.label}
+                <span
+                  aria-hidden="true"
+                  className="absolute inset-x-0 inset-y-2 -z-10 rounded-full border border-border/60 bg-muted/40"
+                />
+                <span className="min-w-0 py-2.5 [overflow-wrap:anywhere]">{entry.label}</span>
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="size-11 -my-2 text-muted-foreground"
+                  className="size-11 shrink-0 rounded-full text-muted-foreground hover:bg-transparent hover:text-foreground"
                   aria-label={'Clear ' + entry.label}
                   onClick={() => onClear([entry.key])}
                 >
@@ -834,6 +893,7 @@ export function AdminNodeDetail() {
                   key: 'diagnostics',
                   label: 'Diagnostics',
                   marker: diagnosticNotices > 0 ? diagnosticNotices : undefined,
+                  markerTone: noticesMarkerTone(notices),
                   markerLabel:
                     diagnosticNotices > 0
                       ? diagnosticNotices + ' current finding' + (diagnosticNotices === 1 ? '' : 's')

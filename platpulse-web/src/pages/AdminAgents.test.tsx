@@ -822,6 +822,34 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     expect(evidence.textContent).not.toMatch(/Nothing recorded|Healthy|normal/)
   })
 
+  it('colours the Diagnostics tab marker only from tones the findings already carry', async () => {
+    const routes = (agent: unknown) => ({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () => jsonResponse(agent, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () => jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/storage-mounts`]: () => new Promise<Response>(() => {}),
+      [`/api/admin/v1/agents/${AGENT_ID}/host-metrics/*`]: () => new Promise<Response>(() => {}),
+    })
+    const marker = () =>
+      screen.getByRole('tab', { name: /^Diagnostics/ }).querySelector('[data-slot="detail-section-marker"]') as HTMLElement | null
+
+    // Host never observed: counted and announced, but neutral, not a warning.
+    mockFetch(routes({ ...AGENT_DIAGNOSTIC, attention: [], host: null }))
+    renderAt(`/admin/agents/${AGENT_ID}`)
+    await screen.findByRole('tab', { name: /^Diagnostics, \d+ current or not-observed item/ })
+    expect(marker()?.getAttribute('data-tone')).toBe('neutral')
+    expect(marker()?.className).not.toMatch(/bg-warning|bg-destructive/)
+
+    // A Spool store fatal in the latest Host observation keeps its existing
+    // Critical mapping, so the marker is the error tone.
+    cleanup()
+    adminQueryClient.clear()
+    mockFetch(routes({ ...AGENT_DIAGNOSTIC, attention: [], host: { ...AGENT_DIAGNOSTIC.host, spool_store_fatal: true } }))
+    await renderAt(`/admin/agents/${AGENT_ID}`)
+    await screen.findByRole('tab', { name: /^Diagnostics, \d+ current or not-observed item/ })
+    expect(marker()?.getAttribute('data-tone')).toBe('error')
+  })
+
   it('opens the section an older in-page anchor points at', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),

@@ -54,6 +54,7 @@ import {
   DetailDraftProvider,
   DetailNotices,
   draftMarker,
+  noticesMarkerTone,
   useDetailDrafts,
   useDetailSection,
   useReportDraft,
@@ -525,9 +526,10 @@ export function AdminAgentDetail() {
   const notices = agent.data ? agentDetailNotices(agent.data) : []
   // The tab counts current and unobserved findings only; recorded history is
   // in the section but is not a current fault.
-  const diagnosticCount = notices.filter(
+  const diagnosticNotices = notices.filter(
     (notice) => notice.section === 'diagnostics' && notice.status !== 'Recorded history',
-  ).length
+  )
+  const diagnosticCount = diagnosticNotices.length
 
   if (removed) {
     return (
@@ -661,6 +663,7 @@ export function AdminAgentDetail() {
                   key: 'diagnostics',
                   label: 'Diagnostics',
                   marker: diagnosticCount > 0 ? diagnosticCount : undefined,
+                  markerTone: noticesMarkerTone(diagnosticNotices),
                   markerLabel:
                     diagnosticCount > 0
                       ? diagnosticCount + ' current or not-observed item' + (diagnosticCount === 1 ? '' : 's')

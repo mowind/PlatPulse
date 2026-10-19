@@ -316,6 +316,170 @@ describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     // the newest events that are still part of this Audit view.
     expect(list()).toContain('viewer_created')
   })
+
+  // Generous waits: these flows chain several fetches and renders, which a
+  // loaded full-suite run can stretch past the 1s default.
+  const SLOW = { timeout: 5000 }
+  const OLDER = {
+    auditEventId: 5,
+    eventKind: 'login_failed',
+    actorUsername: null,
+    targetKind: 'user',
+    targetId: 'ghost',
+    createdAt: '2026-08-11T00:00:00Z',
+    details: { username: 'ghost' },
+  }
+  const rowIds = () =>
+    Array.from(document.querySelectorAll('[data-slot="audit-table"] tbody tr[id^="event-"]')).map((row) => row.id)
+  const count = () => document.querySelector('[data-slot="audit-count"]')?.textContent
+
+  it('keeps loaded events while an older page loads, ignores repeat presses, and appends without duplicates', async () => {
+    const befores: (string | null)[] = []
+    let resolveOlder: (response: Response) => void = () => {}
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/audit': ({ request }) => {
+        const before = new URL(request.url).searchParams.get('before')
+        befores.push(before)
+        if (before === null) return jsonResponse({ items: AUDIT.items, nextBefore: 6 }, 200)
+        return new Promise<Response>((resolve) => {
+          resolveOlder = resolve
+        })
+      },
+    })
+    renderAt('/admin/access/audit')
+    await waitFor(() => expect(rowIds()).toEqual(['event-7', 'event-6']))
+    // An expanded event stays expanded through the append.
+    fireEvent.click(screen.getAllByRole('button', { name: 'Show details' })[0])
+    expect(screen.getByRole('region', { name: 'Redacted details for Audit event 7' })).toBeTruthy()
+
+    const older = screen.getByRole('button', { name: 'Load older events' })
+    older.focus()
+    fireEvent.click(older)
+    const loading = await screen.findByRole('button', { name: 'Loading older events…' })
+    expect(loading).toBe(older)
+    expect(loading.getAttribute('aria-disabled')).toBe('true')
+    expect(document.activeElement).toBe(older)
+    // No page-wide loading state; the loaded events and their count remain.
+    expect(screen.queryByText('Loading the Audit log…')).toBeNull()
+    expect(rowIds()).toEqual(['event-7', 'event-6'])
+    expect(count()).toBe('2 loaded')
+    fireEvent.click(loading)
+    fireEvent.click(loading)
+    expect(befores.filter((before) => before === '6')).toHaveLength(1)
+
+    // The Server's page overlaps the loaded one by one event.
+    resolveOlder(jsonResponse({ items: [AUDIT.items[1], OLDER], nextBefore: null }, 200))
+    await waitFor(() => expect(rowIds()).toEqual(['event-7', 'event-6', 'event-5']))
+    expect(count()).toBe('3 loaded')
+    expect(screen.getByRole('region', { name: 'Redacted details for Audit event 7' })).toBeTruthy()
+    // The last page arrived: the button is gone and focus is not dropped.
+    expect(screen.queryByRole('button', { name: /older events/ })).toBeNull()
+    const end = screen.getByText('No older events for the current filters.')
+    await waitFor(() => expect(document.activeElement).toBe(end))
+  })
+
+  it('reports a failed older page beside the list and retries the same cursor', async () => {
+    const befores: (string | null)[] = []
+    let olderCalls = 0
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/audit': ({ request }) => {
+        const before = new URL(request.url).searchParams.get('before')
+        befores.push(before)
+        if (before === null) return jsonResponse({ items: AUDIT.items, nextBefore: 6 }, 200)
+        olderCalls += 1
+        if (olderCalls === 1) {
+          return jsonResponse({ error: { code: 'unavailable', message: 'Older page unavailable', requestId: 'r1', fields: [] } }, 503)
+        }
+        return jsonResponse({ items: [OLDER], nextBefore: 4 }, 200)
+      },
+    })
+    renderAt('/admin/access/audit')
+    await waitFor(() => expect(rowIds()).toEqual(['event-7', 'event-6']))
+    fireEvent.click(screen.getByRole('button', { name: 'Load older events' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('Older page unavailable')
+    expect(alert.textContent).toContain('The 2 loaded events stay listed.')
+    // At the bottom of the list, not in place of it.
+    expect(alert.closest('[data-slot="audit-older"]')).toBeTruthy()
+    expect(rowIds()).toEqual(['event-7', 'event-6'])
+    expect(screen.queryByText('Loading the Audit log…')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try loading older events again' }))
+    await waitFor(() => expect(rowIds()).toEqual(['event-7', 'event-6', 'event-5']))
+    // The retry asked for the failed page again instead of skipping its cursor.
+    expect(befores).toEqual([null, '6', '6'])
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Load older events' })).toBeTruthy()
+  })
+
+  it('says a linked event is not among the loaded results without calling it older, missing or deleted', async () => {
+    let resolveFirst: (response: Response) => void = () => {}
+    let first = true
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/audit': ({ request }) => {
+        const url = new URL(request.url)
+        if (url.searchParams.get('event_kind') === 'logout') return jsonResponse({ items: [], nextBefore: null }, 200)
+        if (url.searchParams.get('before') === '6') return jsonResponse({ items: [OLDER], nextBefore: null }, 200)
+        if (first) {
+          first = false
+          return new Promise<Response>((resolve) => {
+            resolveFirst = resolve
+          })
+        }
+        return jsonResponse({ items: AUDIT.items, nextBefore: 6 }, 200)
+      },
+    })
+    renderAt('/admin/access/audit#event-5')
+    const notice = () => document.querySelector('[data-slot="audit-deep-link-notice"]')?.textContent ?? ''
+
+    // Not loaded yet.
+    await waitFor(() => expect(notice()).toBe('Looking for event 5 in the Audit log…'), SLOW)
+
+    // Loaded, but outside the loaded range.
+    resolveFirst(jsonResponse({ items: AUDIT.items, nextBefore: 6 }, 200))
+    await waitFor(() => expect(notice()).toContain('Event 5 is not in the 2 loaded events.'), SLOW)
+    expect(notice()).toContain('It may not be loaded yet.')
+    for (const text of [notice()]) expect(text).not.toMatch(/older than|does not exist|deleted|removed/i)
+
+    // A filter with no matching events.
+    fireEvent.change(screen.getByLabelText('Event kind'), { target: { value: 'logout' } })
+    await waitFor(() =>
+      expect(notice()).toBe(
+        'Event 5 is not in the current results: no events match the current filters. Changing the filters may bring it into view.',
+      ),
+      SLOW,
+    )
+    expect(notice()).not.toMatch(/older than|does not exist|deleted/i)
+
+    // Back to every event, then the older page brings the target in.
+    fireEvent.change(screen.getByLabelText('Event kind'), { target: { value: '' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Load older events' }, SLOW))
+    await waitFor(() => expect(rowIds()).toContain('event-5'), SLOW)
+    expect(document.querySelector('[data-slot="audit-deep-link-notice"]')).toBeNull()
+    expect(screen.getByRole('region', { name: 'Redacted details for Audit event 5' })).toBeTruthy()
+  })
+
+  it('names the current filters when a linked event is not in a filtered result', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/audit': ({ request }) => {
+        const kind = new URL(request.url).searchParams.get('event_kind')
+        return jsonResponse(kind ? { items: [AUDIT.items[0]], nextBefore: null } : { items: AUDIT.items, nextBefore: null }, 200)
+      },
+    })
+    renderAt('/admin/access/audit#event-6')
+    await waitFor(() => expect(rowIds()).toEqual(['event-7', 'event-6']))
+    expect(document.querySelector('[data-slot="audit-deep-link-notice"]')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Event kind'), { target: { value: 'viewer_created' } })
+    await waitFor(() => expect(rowIds()).toEqual(['event-7']))
+    expect(document.querySelector('[data-slot="audit-deep-link-notice"]')?.textContent).toBe(
+      'Event 6 is not in the 1 loaded event. It may be excluded by the current filters; no further events are available for them.',
+    )
+  })
 })
 
 function withinRowButton(row: HTMLElement, name: string): HTMLButtonElement {

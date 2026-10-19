@@ -88,11 +88,37 @@ export function useDetailSection(
   return [section, select, open]
 }
 
-/** The tab marker for a Manage section holding a draft or open confirmation. */
-export function draftMarker(pending: ReadonlySet<string>): Pick<DetailSectionEntry, 'marker' | 'markerLabel'> {
+/** The tab marker for a Manage section holding a draft or open confirmation.
+ *  An unsaved draft is interface state, not a health finding: neutral. */
+export function draftMarker(
+  pending: ReadonlySet<string>,
+): Pick<DetailSectionEntry, 'marker' | 'markerLabel' | 'markerTone'> {
   return pending.size > 0
-    ? { marker: 'Unsaved', markerLabel: 'unsaved change or open confirmation' }
+    ? { marker: 'Unsaved', markerLabel: 'unsaved change or open confirmation', markerTone: 'neutral' }
     : {}
+}
+
+/** A tab marker's colour. It is only a cue beside the visible count or word
+ *  and its accessible wording, never the message itself. */
+export type DetailMarkerTone = 'neutral' | 'warning' | 'error'
+
+const MARKER_TONE_RANK: Record<DetailMarkerTone, number> = { neutral: 0, warning: 1, error: 2 }
+
+/** The tone a section's counted notices already carry: the highest of the
+ *  tones the page gave them from existing Server mappings, neutral when none
+ *  does. No new severity is derived here — a not-observed or unknown notice
+ *  is neutral, so it stays neutral on the tab. */
+export function noticesMarkerTone(notices: readonly Pick<DetailNotice, 'tone'>[]): DetailMarkerTone {
+  return notices.reduce<DetailMarkerTone>(
+    (highest, notice) => (MARKER_TONE_RANK[notice.tone] > MARKER_TONE_RANK[highest] ? notice.tone : highest),
+    'neutral',
+  )
+}
+
+const MARKER_TONE_CLASS: Record<DetailMarkerTone, string> = {
+  neutral: 'border-border bg-muted text-foreground',
+  warning: 'border-transparent bg-warning/15 text-foreground',
+  error: 'border-transparent bg-destructive/10 text-destructive',
 }
 
 /** The return link above a detail header. */
@@ -147,6 +173,9 @@ export type DetailSectionEntry = {
   marker?: ReactNode
   /** Accessible wording for the marker, read after the label. */
   markerLabel?: string
+  /** Colour cue for the marker; neutral unless the page passes a tone it
+   *  already holds from an existing Server mapping. */
+  markerTone?: DetailMarkerTone
   content: ReactNode
 }
 
@@ -175,17 +204,29 @@ export function AdminDetailSections({
       <div className="min-w-0 overflow-x-auto border-b border-border/60">
         <TabsList variant="line" aria-label={label} className="justify-start">
           {sections.map((section) => (
-            <TabsTrigger key={section.key} value={section.key} className="flex-none px-3">
+            <TabsTrigger
+              key={section.key}
+              value={section.key}
+              className="flex-none px-3"
+              // One accessible name ("Diagnostics, 2 current findings"): a
+              // separate visually hidden span let browsers insert a stray
+              // space before the comma between the flex items.
+              aria-label={section.markerLabel ? section.label + ', ' + section.markerLabel : undefined}
+            >
               {section.label}
               {section.marker && (
                 <span
                   aria-hidden="true"
-                  className="rounded-full bg-warning/15 px-1.5 text-xs font-medium tabular-nums text-foreground"
+                  data-slot="detail-section-marker"
+                  data-tone={section.markerTone ?? 'neutral'}
+                  className={cn(
+                    'rounded-full border px-1.5 text-xs font-medium tabular-nums',
+                    MARKER_TONE_CLASS[section.markerTone ?? 'neutral'],
+                  )}
                 >
                   {section.marker}
                 </span>
               )}
-              {section.markerLabel && <span className="sr-only">{', ' + section.markerLabel}</span>}
             </TabsTrigger>
           ))}
         </TabsList>

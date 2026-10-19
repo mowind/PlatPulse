@@ -199,10 +199,20 @@ function SetupGuide() {
       <p className="mt-3 text-sm text-muted-foreground">
         There are no Agents, Nodes, or Networks yet. Complete these steps to begin receiving authoritative observations.
       </p>
+      {/* Server-side steps link to their pages; the Agent's Node Inventory is
+          local configuration on its Host, so that step is text, not a link
+          to a Server page that could be read as editing it remotely. */}
       <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
         <li><Link className={TEXT_LINK} to="/admin/networks">Register the expected Network identity</Link>.</li>
-        <li>Provision and start an Agent.</li>
-        <li><Link className={TEXT_LINK} to="/admin/settings">Configure the Agent's local Node Inventory</Link>.</li>
+        <li>
+          <Link className={TEXT_LINK} to="/admin/agents/enroll">Add an Agent</Link>: create a one-time
+          token here, then install and enroll the Agent on its Host.
+        </li>
+        <li data-slot="setup-local-inventory">
+          On the Agent's Host, declare its Nodes in the Agent's local configuration file
+          (<code>agent.toml</code>) and start the Agent. This WebUI and the Server never edit an
+          Agent's Node Inventory.
+        </li>
         <li>Wait for the first accepted Agent Report.</li>
       </ol>
     </aside>

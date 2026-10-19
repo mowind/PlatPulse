@@ -552,7 +552,7 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     expect(await screen.findByRole('row', { name: /Node A/ })).toBeTruthy()
   })
 
-  it('shows the Empty state when no Nodes exist', async () => {
+  it('says an empty inventory is waiting for an Agent Report, not that filters hide Nodes', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/nodes': () => jsonResponse([], 200),
@@ -560,7 +560,137 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     renderAt('/admin/nodes')
 
     await screen.findByRole('heading', { level: 1, name: 'Nodes' })
+    expect(await screen.findByText('No Nodes have been reported yet.')).toBeTruthy()
+    expect(screen.getByText(/after an Agent's accepted Report declares it/)).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'Open Agents' }).getAttribute('href')).toBe('/admin/agents')
+    expect(screen.queryByText('No Nodes match these filters.')).toBeNull()
+    // No invented "create Node" action and nothing to clear.
+    expect(screen.queryByRole('button', { name: /Clear filters|Create|Add Node/ })).toBeNull()
+    expect(screen.queryByRole('link', { name: /Create|Add Node/ })).toBeNull()
+  })
+
+  it('says filters exclude every Node of a non-empty inventory and offers to clear them, keeping the sort', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes': () => jsonResponse([NODE_A, NODE_B], 200),
+    })
+    renderAt('/admin/nodes?health=unknown&sort=name')
+
     expect(await screen.findByText('No Nodes match these filters.')).toBeTruthy()
+    expect(screen.getByText('All 2 Nodes in the inventory are outside the current filters.')).toBeTruthy()
+    expect(screen.queryByText('No Nodes have been reported yet.')).toBeNull()
+    const empty = screen.getByText('No Nodes match these filters.').parentElement as HTMLElement
+    fireEvent.click(within(empty).getByRole('button', { name: 'Clear filters' }))
+    expect(await screen.findByRole('row', { name: /Node A/ })).toBeTruthy()
+    expect(window.location.search).toBe('?sort=name')
+  })
+
+  it('never renders loading or a failed load as an empty inventory', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes': () => new Promise<Response>(() => {}),
+    })
+    renderAt('/admin/nodes')
+    expect(await screen.findByText('Loading the Node inventory…')).toBeTruthy()
+    expect(screen.queryByText(/No Nodes have been reported yet|No Nodes match these filters/)).toBeNull()
+
+    cleanup()
+    adminQueryClient.clear()
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes': () => jsonResponse({ error: { code: 'unavailable', message: 'Nodes unavailable' } }, 503),
+    })
+    await renderAt('/admin/nodes')
+    expect(await screen.findByText('Nodes unavailable')).toBeTruthy()
+    expect(screen.queryByText(/No Nodes have been reported yet|No Nodes match these filters/)).toBeNull()
+  })
+
+  describe('sort order in the URL', () => {
+    // Health order puts the healthy Node first and ties by name; name order
+    // is alphabetical: the two orders differ on this inventory.
+    const ALPHA = {
+      ...NODE_A,
+      node_id: '0195f2a1-0099-4099-8099-000000000099',
+      display_name: 'Alpha',
+      health: 'unhealthy',
+      health_reason: 'RPC collection failed',
+    }
+    const order = () =>
+      Array.from(document.querySelectorAll('[data-slot="node-name-link"]')).map((link) => link.textContent)
+    const caption = () => document.querySelector('[data-slot="node-table"] caption')?.textContent ?? ''
+    const sortedHeader = () =>
+      within(screen.getByRole('table'))
+        .getAllByRole('columnheader')
+        .filter((cell) => cell.getAttribute('aria-sort') === 'ascending')
+        .map((cell) => cell.textContent?.trim())
+
+    function routes() {
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        '/api/admin/v1/nodes': () => jsonResponse([NODE_B, ALPHA, NODE_A], 200),
+      })
+    }
+
+    it('restores the sort from the URL and keeps the existing comparison rules', async () => {
+      routes()
+      renderAt('/admin/nodes?sort=name')
+      await screen.findByRole('row', { name: /Alpha/ })
+      expect(order()).toEqual(['Alpha', 'Node A', 'Node B (private)'])
+      expect((screen.getByLabelText('Sort by') as HTMLSelectElement).value).toBe('name')
+      expect(caption()).toContain('Sorted by Node name.')
+      expect(sortedHeader()).toEqual(['Node'])
+
+      // The default order is unchanged: healthy first, then by name.
+      fireEvent.change(screen.getByLabelText('Sort by'), { target: { value: 'health' } })
+      await waitFor(() => expect(order()).toEqual(['Node A', 'Alpha', 'Node B (private)']))
+      expect(window.location.search).toBe('')
+      expect(caption()).toContain('Sorted by Health.')
+      expect(sortedHeader()).toEqual(['Health'])
+
+      // Back restores the previous order with its control, caption and header.
+      await act(async () => {
+        window.history.back()
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      })
+      await waitFor(() => expect(order()).toEqual(['Alpha', 'Node A', 'Node B (private)']))
+      expect((screen.getByLabelText('Sort by') as HTMLSelectElement).value).toBe('name')
+      expect(sortedHeader()).toEqual(['Node'])
+    })
+
+    it('falls back to the default order for an unknown sort value', async () => {
+      routes()
+      renderAt('/admin/nodes?sort=bogus')
+      await screen.findByRole('row', { name: /Alpha/ })
+      expect(order()).toEqual(['Node A', 'Alpha', 'Node B (private)'])
+      expect((screen.getByLabelText('Sort by') as HTMLSelectElement).value).toBe('health')
+      expect(caption()).toContain('Sorted by Health.')
+    })
+
+    it('keeps other parameters when sorting, the sort when filtering, and the sort when clearing filters', async () => {
+      routes()
+      renderAt('/admin/nodes?lifecycle=active&return=keep')
+      await screen.findByRole('row', { name: /Alpha/ })
+      // A column header and the Sort by control set the same URL state.
+      fireEvent.click(within(screen.getByRole('table')).getByRole('button', { name: /^Freshness/ }))
+      await waitFor(() => expect(new URLSearchParams(window.location.search).get('sort')).toBe('freshness'))
+      expect((screen.getByLabelText('Sort by') as HTMLSelectElement).value).toBe('freshness')
+      expect(sortedHeader()).toEqual(['Freshness'])
+      let params = new URLSearchParams(window.location.search)
+      expect(params.get('lifecycle')).toBe('active')
+      expect(params.get('return')).toBe('keep')
+
+      fireEvent.change(screen.getByLabelText('Health'), { target: { value: 'unhealthy' } })
+      await waitFor(() => expect(new URLSearchParams(window.location.search).get('health')).toBe('unhealthy'))
+      expect(new URLSearchParams(window.location.search).get('sort')).toBe('freshness')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
+      await waitFor(() => expect(new URLSearchParams(window.location.search).get('health')).toBeNull())
+      params = new URLSearchParams(window.location.search)
+      expect(params.get('lifecycle')).toBeNull()
+      expect(params.get('sort')).toBe('freshness')
+      expect(params.get('return')).toBe('keep')
+      expect((screen.getByLabelText('Sort by') as HTMLSelectElement).value).toBe('freshness')
+    })
   })
 
   it('opens on Overview and keeps History, Diagnostics and Manage one section away', async () => {
@@ -645,7 +775,9 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     // Summarized above every section, with its own entry into Diagnostics.
     const findings = screen.getByRole('list', { name: 'Current Node findings' })
     expect(findings.textContent).toContain('Network identity contradicts the Registry on chain_id')
-    expect(screen.getByRole('tab', { name: /^Diagnostics, \d+ current finding/ })).toBeTruthy()
+    const diagnosticsTab = screen.getByRole('tab', { name: /^Diagnostics, \d+ current finding/ })
+    // The mismatch carries the existing error mapping, so its marker does too.
+    expect(diagnosticsTab.querySelector('[data-slot="detail-section-marker"]')?.getAttribute('data-tone')).toBe('error')
     fireEvent.click(within(findings).getAllByRole('button', { name: 'Open Diagnostics' })[0])
     expect(
       await screen.findByText(/Contradicts the Registry: chain_id/),
@@ -816,6 +948,10 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     expect(screen.getByRole('alertdialog', { name: 'Confirm permanent Node deletion' })).toBeTruthy()
     const manage = screen.getByRole('tab', { name: /^Manage/ })
     expect(manage.textContent).toContain('Unsaved')
+    // An unsaved draft is interface state, not a warning.
+    const marker = manage.querySelector('[data-slot="detail-section-marker"]') as HTMLElement
+    expect(marker.getAttribute('data-tone')).toBe('neutral')
+    expect(marker.className).not.toMatch(/bg-warning|bg-destructive/)
 
     openSection('Overview')
     // Hidden, the draft's controls leave the keyboard and accessibility tree.
@@ -827,6 +963,25 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     openSection(/^Manage/)
     expect((screen.getByLabelText('Display name') as HTMLInputElement).value).toBe('Draft name')
     expect(screen.getByRole('alertdialog', { name: 'Confirm permanent Node deletion' })).toBeTruthy()
+    // The hidden sections stay mounted but out of the keyboard order.
+    const hidden = document.querySelector('[data-slot="admin-detail-section"][data-section="overview"]') as HTMLElement
+    expect(hidden.hidden).toBe(true)
+  })
+
+  it('keeps a not-reported identity neutral on the Diagnostics tab', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse({ ...NODE_A_DETAIL, identity: { state: 'unknown', observed: null, mismatched_fields: [] } }, 200),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+    await screen.findByRole('heading', { level: 1, name: 'Node A' })
+    const tab = screen.getByRole('tab', { name: /^Diagnostics, 1 current finding/ })
+    const marker = tab.querySelector('[data-slot="detail-section-marker"]') as HTMLElement
+    // Count and accessible wording stay; a missing observation is not a warning.
+    expect(marker.textContent).toBe('1')
+    expect(marker.getAttribute('data-tone')).toBe('neutral')
+    expect(marker.className).not.toMatch(/bg-warning|bg-destructive/)
   })
 
   it('shows a non-leaking unavailable state for an unknown Node', async () => {

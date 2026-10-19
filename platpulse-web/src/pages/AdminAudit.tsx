@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { LoaderCircle } from 'lucide-react'
 import { Link, useLocation } from 'react-router'
 import { useAdminAudit, type AuditFilters } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
@@ -28,6 +29,56 @@ function deepLinkEventId(hash: string): number | null {
   return match ? Number.parseInt(match[1], 10) : null
 }
 
+/** The merged Audit view for one filter selection: the pages loaded so far,
+ *  newest first, and the Server's cursor for the next older page. */
+type AuditHistory = {
+  filterKey: string
+  items: AuditItem[]
+  nextBefore: number | null
+  /** Whether at least one page for this selection has arrived. */
+  loaded: boolean
+}
+
+/** What the page can truthfully say about a linked event it is not showing.
+ *  It never claims the event is older, missing or deleted: it only knows the
+ *  event is not among the loaded results, and why that set may be partial. */
+export function auditDeepLinkNotice(state: {
+  id: number
+  loaded: boolean
+  failed: boolean
+  count: number
+  filtered: boolean
+  more: boolean
+  olderLoading: boolean
+  olderFailed: boolean
+}): string {
+  const subject = 'Event ' + state.id
+  if (!state.loaded) {
+    if (state.failed) return subject + ' cannot be looked for: the Audit log failed to load.'
+    return 'Looking for event ' + state.id + ' in the Audit log…'
+  }
+  if (state.count === 0) {
+    return state.filtered
+      ? subject + ' is not in the current results: no events match the current filters. Changing the filters may bring it into view.'
+      : subject + ' is not in the current results: the Audit log returned no events.'
+  }
+  const scope = state.filtered
+    ? state.more
+      ? 'It may be excluded by the current filters or not be loaded yet.'
+      : 'It may be excluded by the current filters; no further events are available for them.'
+    : state.more
+      ? 'It may not be loaded yet.'
+      : 'No further events are available to load.'
+  const progress = state.olderLoading
+    ? ' Loading older events…'
+    : state.olderFailed
+      ? ' Loading older events failed; try again below.'
+      : state.more
+        ? ' Load older events below to keep looking.'
+        : ''
+  return subject + ' is not in the ' + state.count + ' loaded event' + (state.count === 1 ? '' : 's') + '. ' + scope + progress
+}
+
 /**
  * PAGE-ACCESS-AUDIT (design §18.2, issue #47): immutable, redacted Audit
  * review with filtering and detail/link navigation. Events are Server-owned
@@ -47,55 +98,90 @@ export default function AdminAudit() {
     targetKind: targetKind || undefined,
     before,
   }
+  // Each cursor is its own query; the page merges the pages it has loaded.
   const query = useAdminAudit(generation, filters)
   const filterKey = `${eventKind}\u0000${targetKind}`
-  const [history, setHistory] = useState<{ filterKey: string; items: AuditItem[] }>({
+  const [history, setHistory] = useState<AuditHistory>({
     filterKey,
     items: [],
+    nextBefore: null,
+    loaded: false,
   })
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
-  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!query.data || query.isFetching) return
+    const page = query.data
+    if (!page) return
     setHistory((current) => {
+      // The newest page (no cursor) or another filter selection starts over.
       if (current.filterKey !== filterKey || before == null) {
-        return { filterKey, items: query.data.items }
+        return { filterKey, items: page.items, nextBefore: page.nextBefore ?? null, loaded: true }
       }
+      // An older page appends; an event already listed is never repeated.
       const known = new Set(current.items.map((item) => item.auditEventId))
+      const added = page.items.filter((item) => !known.has(item.auditEventId))
       return {
         filterKey,
-        items: [...current.items, ...query.data.items.filter((item) => !known.has(item.auditEventId))],
+        items: added.length > 0 ? [...current.items, ...added] : current.items,
+        nextBefore: page.nextBefore ?? null,
+        loaded: true,
       }
     })
-  }, [before, filterKey, query.data, query.isFetching])
+  }, [before, filterKey, query.data])
 
-  const items = history.filterKey === filterKey ? history.items : []
+  const settled = history.filterKey === filterKey && history.loaded
+  const items = settled ? history.items : []
+  const nextBefore = settled ? history.nextBefore : null
+  const filtered = eventKind !== '' || targetKind !== ''
+  // The loaded events stay listed while an older page loads or fails; only
+  // the first page of a selection has a page-wide loading or error state.
+  const appending = settled && before != null
+  const olderLoading = appending && !query.data && query.isFetching
+  const olderFailed = appending && !query.data && query.isError && !query.isFetching
+  const initialLoading = !settled && !query.isError
+  const initialFailed = !settled && query.isError && !query.isFetching
+
   const location = useLocation()
   const deepLinkId = deepLinkEventId(location.hash)
-  const [deepLinkMissing, setDeepLinkMissing] = useState(false)
   const itemsRef = useRef(items)
   itemsRef.current = items
-
-  // A recorded Operation links to its Audit event with `#event-<id>`. The
-  // Audit log is loaded one page at a time, so a linked event is expanded and
-  // scrolled to when it is inside the loaded window, and otherwise the Owner
-  // is told plainly that the window does not reach it (issue #208).
+  const deepLinkFound = deepLinkId != null && items.some((item) => item.auditEventId === deepLinkId)
+  // A linked event is opened and scrolled to once, when it first appears;
+  // a later older page must not pull the reader back to it.
+  const revealedDeepLink = useRef<number | null>(null)
   const itemIds = items.map((item) => item.auditEventId).join(',')
   useEffect(() => {
-    if (deepLinkId == null || itemsRef.current.length === 0) return
-    if (itemsRef.current.some((item) => item.auditEventId === deepLinkId)) {
-      setDeepLinkMissing(false)
-      setExpanded((current) => (current.has(deepLinkId) ? current : new Set(current).add(deepLinkId)))
-      document.getElementById('event-' + deepLinkId)?.scrollIntoView({ block: 'center' })
+    if (deepLinkId == null) {
+      revealedDeepLink.current = null
       return
     }
-    setDeepLinkMissing(true)
+    if (revealedDeepLink.current === deepLinkId) return
+    if (!itemsRef.current.some((item) => item.auditEventId === deepLinkId)) return
+    revealedDeepLink.current = deepLinkId
+    setExpanded((current) => (current.has(deepLinkId) ? current : new Set(current).add(deepLinkId)))
+    const target = document.getElementById('event-' + deepLinkId)
+    if (target && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center' })
   }, [deepLinkId, itemIds])
 
+  const olderHadFocus = useRef(false)
+  const endNote = useRef<HTMLParagraphElement>(null)
+  // When the last older page arrives, the button it was pressed on goes away;
+  // focus moves to the note that says so instead of falling to the page.
+  useEffect(() => {
+    if (nextBefore == null && olderHadFocus.current) {
+      olderHadFocus.current = false
+      endNote.current?.focus()
+    }
+  }, [nextBefore])
+
   function loadOlder() {
-    setError(null)
-    if (query.data?.nextBefore != null) setBefore(query.data.nextBefore)
+    if (olderLoading) return
+    // A failed page is retried with its own cursor, never skipped.
+    if (olderFailed) {
+      void query.refetch()
+      return
+    }
+    if (nextBefore != null) setBefore(nextBefore)
   }
 
   const toggle = (id: number) => {
@@ -127,20 +213,12 @@ export default function AdminAudit() {
           ),
         }}
       />
-      {error && (
-        <p
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
-        >
-          {error}
-        </p>
-      )}
       <AdminPanel
         slot="audit-panel"
         flush
         title="Events"
         count={
-          query.data ? (
+          settled ? (
             <Badge variant="secondary" data-slot="audit-count" className="tabular-nums">
               {items.length} loaded
             </Badge>
@@ -157,7 +235,6 @@ export default function AdminAudit() {
                   onChange={(event) => {
                     setEventKind(event.target.value)
                     setBefore(undefined)
-                    setError(null)
                   }}
                 >
                   <option value="">All kinds</option>
@@ -175,7 +252,6 @@ export default function AdminAudit() {
                   onChange={(event) => {
                     setTargetKind(event.target.value)
                     setBefore(undefined)
-                    setError(null)
                   }}
                 >
                   <option value="">All targets</option>
@@ -190,18 +266,30 @@ export default function AdminAudit() {
             </div>
           </AdminToolbar>
         </div>
-        {deepLinkMissing && deepLinkId != null && (
-          <p role="status" className="border-b border-border/60 px-4 py-2 text-sm text-muted-foreground">
-            Event {deepLinkId} is older than the events loaded here. Load older events until it appears; the
-            Audit log is append-only and never trimmed by this page.
+        {deepLinkId != null && !deepLinkFound && (
+          <p
+            role="status"
+            data-slot="audit-deep-link-notice"
+            className="border-b border-border/60 px-4 py-2 text-sm text-muted-foreground"
+          >
+            {auditDeepLinkNotice({
+              id: deepLinkId,
+              loaded: settled,
+              failed: initialFailed,
+              count: items.length,
+              filtered,
+              more: nextBefore != null,
+              olderLoading,
+              olderFailed,
+            })}
           </p>
         )}
-        {!query.data && query.isPending && (
+        {initialLoading && (
           <div role="status" className="flex items-center gap-2 px-4 py-6 text-sm text-muted-foreground">
             <StatusBadge status="Starting" tone="neutral" /> Loading the Audit log…
           </div>
         )}
-        {!query.data && query.isError && (
+        {initialFailed && (
           <div role="alert" className="flex flex-wrap items-center gap-2 px-4 py-6 text-sm">
             <StatusBadge status="Error" tone="error" />
             <span className="text-destructive">
@@ -212,7 +300,7 @@ export default function AdminAudit() {
             </Button>
           </div>
         )}
-        {query.data && items.length === 0 && <Empty description="No matching Audit events." />}
+        {settled && items.length === 0 && <Empty description="No matching Audit events." />}
         {items.length > 0 && (
           <div data-slot="audit-list" className="overflow-x-auto max-md:px-3 max-md:pt-3">
             <table data-stack data-slot="audit-table" className="w-full text-sm md:min-w-[44rem]">
@@ -251,11 +339,44 @@ export default function AdminAudit() {
             </table>
           </div>
         )}
-        {query.data?.nextBefore != null && (
-          <div className="px-4 py-2">
-            <Button variant="ghost" size="sm" onClick={loadOlder}>
-              Load older events
-            </Button>
+        {settled && items.length > 0 && (nextBefore != null || before != null) && (
+          <div
+            data-slot="audit-older"
+            className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2"
+            aria-busy={olderLoading}
+          >
+            {/* The button keeps its place (and focus) through loading and
+                failure; only its label and the message beside it change. */}
+            {olderFailed && (
+              <p role="alert" data-slot="audit-older-error" className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
+                <StatusBadge status="Error" tone="error" />
+                <span className="min-w-0 text-destructive [overflow-wrap:anywhere]">
+                  {(query.error instanceof Error ? query.error.message : 'Unable to load the Audit log') +
+                    '. The ' + items.length + ' loaded events stay listed.'}
+                </span>
+              </p>
+            )}
+            {nextBefore != null ? (
+              <Button
+                variant={olderFailed ? 'outline' : 'ghost'}
+                size="sm"
+                data-slot="audit-load-older"
+                aria-disabled={olderLoading || undefined}
+                className="aria-disabled:cursor-progress aria-disabled:opacity-70"
+                onFocus={() => (olderHadFocus.current = true)}
+                onBlur={() => (olderHadFocus.current = false)}
+                onClick={loadOlder}
+              >
+                {olderLoading && (
+                  <LoaderCircle size={16} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                )}
+                {olderLoading ? 'Loading older events…' : olderFailed ? 'Try loading older events again' : 'Load older events'}
+              </Button>
+            ) : (
+              <p ref={endNote} tabIndex={-1} data-slot="audit-older-end" className={cn('outline-none', ADMIN_SECONDARY)}>
+                No older events for the current filters.
+              </p>
+            )}
           </div>
         )}
       </AdminPanel>
