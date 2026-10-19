@@ -550,7 +550,8 @@ function tupleUpdate(fields: TupleFields): TupleUpdate {
  *  only this editor is locked and the request is never sent twice. An
  *  applied update and a failed read-back after it are two results: the
  *  read-back failure is its own notice, lifted by a later successful read of
- *  this Network's detail. */
+ *  this Network's detail. Until then the page may still hold the earlier
+ *  tuple, so a round begun meanwhile keeps its draft but cannot be saved. */
 function IdentityTuplePanel({
   network,
   csrfToken,
@@ -608,6 +609,20 @@ function IdentityTuplePanel({
   const serverHasDraft =
     serverMoved && JSON.stringify(tupleUpdate(current)) === JSON.stringify(tupleUpdate(edit.fields))
   const movedNoticeId = 'network-edit-server-moved'
+  // After an applied update whose read-back failed, this page may still hold
+  // the earlier tuple, so a round begun meanwhile may have started from it and
+  // cannot tell the Server moved. The draft is kept, but nothing is sent until
+  // this Network is read successfully; then the Server-moved rule applies.
+  const awaitingReadBack = edit !== null && readBackFailure !== null
+  const readBackPendingId = 'network-edit-read-back-pending'
+  const saveBlocked = serverMoved || awaitingReadBack
+  // Defence in depth: no confirmation can stand while the save is held (a
+  // failure is only recorded as its round closes, and submit() refuses).
+  if (awaitingReadBack && confirmed !== null) setConfirmed(null)
+  const saveReasonIds =
+    [serverMoved ? movedNoticeId : null, awaitingReadBack ? readBackPendingId : null]
+      .filter((id) => id !== null)
+      .join(' ') || undefined
 
   function startEdit() {
     setEdit({ fields: current, base: current })
@@ -634,8 +649,9 @@ function IdentityTuplePanel({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    // A draft against a tuple the Server no longer holds cannot be saved.
-    if (inFlight.current || edit === null || serverMoved) return
+    // A draft against a tuple the Server no longer holds, or that may have
+    // started from a tuple this page could not read back, cannot be saved.
+    if (inFlight.current || edit === null || saveBlocked) return
     if (!event.currentTarget.reportValidity()) return
     setMessage(null)
     setError(null)
@@ -644,7 +660,7 @@ function IdentityTuplePanel({
   }
 
   async function confirm() {
-    if (inFlight.current || confirmed === null) return
+    if (inFlight.current || confirmed === null || saveBlocked) return
     // Confirm is a plain button: it re-runs the form's own validity rules
     // instead of trusting that the Save step was valid.
     if (formRef.current && !formRef.current.reportValidity()) {
@@ -802,6 +818,17 @@ function IdentityTuplePanel({
               )}
             </div>
           )}
+          {awaitingReadBack && (
+            <p
+              id={readBackPendingId}
+              className="text-xs text-muted-foreground"
+              data-slot="tuple-read-back-pending"
+            >
+              Save tuple is unavailable until the latest Network is read successfully: the last
+              update was applied, but this page may still show the earlier tuple. Your draft is
+              kept; use Read the Network again below.
+            </p>
+          )}
           <div className="flex flex-wrap items-center gap-2">
             {confirmed ? (
               <>
@@ -831,11 +858,7 @@ function IdentityTuplePanel({
                 </Button>
               </>
             ) : serverHasDraft ? null : (
-              <Button
-                type="submit"
-                disabled={serverMoved}
-                aria-describedby={serverMoved ? movedNoticeId : undefined}
-              >
+              <Button type="submit" disabled={saveBlocked} aria-describedby={saveReasonIds}>
                 Save tuple
               </Button>
             )}

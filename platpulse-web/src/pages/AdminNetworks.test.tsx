@@ -791,6 +791,86 @@ describe('Expected identity tuple editor', () => {
     expect(state.puts).toHaveLength(1)
   })
 
+  it('keeps a draft begun before the read-back but sends nothing until the Network is read, then needs the latest tuple', async () => {
+    const state = serve({
+      put: (body) => {
+        state.detail = { ...state.detail, display_name: body.displayName, chain_id: body.chainId }
+        state.unreadable = true
+        return jsonResponse({ networkKey: 'platon-e2e', displayName: body.displayName }, 200)
+      },
+    })
+    await open()
+    // First round: an identity field changes, the write lands, the read-back fails.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    fireEvent.change(field('Chain ID'), { target: { value: '210426' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save tuple' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
+    expect(await within(tuplePanel()).findByText('Updated PlatON E2E Network.')).toBeTruthy()
+    expect(readBackNotice()).not.toBeNull()
+    await backgroundRefresh()
+    expect(readBackNotice()).not.toBeNull()
+
+    // A new round starts from the tuple this page last read: only the name changes.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    expect(field('Chain ID').value).toBe('210425')
+    fireEvent.change(field('Display name'), { target: { value: 'Renamed after write' } })
+    const save = within(tuplePanel()).getByRole('button', { name: 'Save tuple' }) as HTMLButtonElement
+    expect(save.disabled).toBe(true)
+    const reason = document.getElementById(save.getAttribute('aria-describedby') ?? '') as HTMLElement
+    expect(reason).toBeTruthy()
+    expect(tuplePanel().contains(reason)).toBe(true)
+    expect(reason.closest('form')).toBe(save.closest('form'))
+    expect(reason.textContent).toMatch(/Save tuple is unavailable until the latest Network is read successfully/)
+    expect(reason.textContent).toMatch(/Read the Network again/)
+
+    fireEvent.click(save)
+    // Enter in a field is the form's implicit submission (jsdom has none, so
+    // it is dispatched directly; the Playwright case presses the real key).
+    fireEvent.submit(field('Display name').closest('form') as HTMLFormElement)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(screen.queryByRole('button', { name: 'Confirm tuple update' })).toBeNull()
+    expect(state.puts).toHaveLength(1)
+    expect(field('Display name').value).toBe('Renamed after write')
+
+    // The Network is read again (a read only): the draft stays, and the
+    // existing Server-moved handling takes over.
+    state.unreadable = false
+    fireEvent.click(within(readBackNotice() as HTMLElement).getByRole('button', { name: 'Read the Network again' }))
+    await waitFor(() => expect(readBackNotice()).toBeNull())
+    expect(state.puts).toHaveLength(1)
+    expect(field('Display name').value).toBe('Renamed after write')
+    expect(field('Chain ID').value).toBe('210425')
+    const moved = tuplePanel().querySelector('[data-slot="tuple-server-moved"]') as HTMLElement
+    expect(moved.textContent).toMatch(/changed on the Server while you were editing/)
+    expect(moved.textContent).toContain('Chain ID 210426')
+    const blocked = within(tuplePanel()).getByRole('button', { name: 'Save tuple' }) as HTMLButtonElement
+    expect(blocked.disabled).toBe(true)
+    expect(blocked.getAttribute('aria-describedby')).toBe(moved.id)
+    expect(tuplePanel().textContent).not.toMatch(/until the latest Network is read/)
+    fireEvent.submit(field('Display name').closest('form') as HTMLFormElement)
+    expect(screen.queryByRole('button', { name: 'Confirm tuple update' })).toBeNull()
+    expect(state.puts).toHaveLength(1)
+
+    // Starting again from the latest tuple keeps the first update's identity fields.
+    fireEvent.click(within(tuplePanel()).getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+    expect(field('Chain ID').value).toBe('210426')
+    fireEvent.change(field('Display name'), { target: { value: 'Renamed after write' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save tuple' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
+    expect(await within(tuplePanel()).findByText('Updated Renamed after write.')).toBeTruthy()
+    expect(state.puts).toHaveLength(2)
+    expect(state.puts[1]).toEqual({
+      displayName: 'Renamed after write',
+      genesisHash: NETWORK.genesis_hash,
+      chainId: 210426,
+      p2pNetworkId: 1,
+      addressHrp: 'lat',
+    })
+  })
+
   it('carries no feedback of an update that lands after switching to another Network', async () => {
     let release: () => void = () => {}
     serve({

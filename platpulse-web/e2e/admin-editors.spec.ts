@@ -292,5 +292,72 @@ for (const theme of ['light', 'dark'] as const) {
       expect(fixture.writes).toHaveLength(1)
       expect(fixture.writes[0]).toMatchObject({ displayName: 'PlatON E2E written', chainId: 210425 })
     })
+
+    test('Network tuple: a draft begun before the read-back is kept but not sent until the Network is read', async ({ page }) => {
+      const fixture = await appliedWriteThenUnreadable(page, {
+        write: new RegExp('/api/admin/v1/networks/' + NETWORK + '$'),
+        read: new RegExp('/api/admin/v1/networks/' + NETWORK + '(\\?.*)?$'),
+        answer: (body) => ({ networkKey: NETWORK, displayName: body.displayName }),
+        rewrite: (detail, body) => ({ ...detail, display_name: body.displayName, chain_id: body.chainId }),
+      })
+      await page.goto('/admin/networks/' + NETWORK)
+      await expect(page.getByRole('heading', { level: 1, name: /PlatON E2E Network/ })).toBeVisible({ timeout: 20_000 })
+      const panel = page.locator('[data-slot="card-x"]', { has: page.getByRole('heading', { name: 'Expected identity tuple' }) })
+
+      // First round: an identity field; the write is applied, the read-back fails.
+      await panel.getByRole('button', { name: 'Edit tuple' }).click()
+      await panel.getByLabel('Chain ID').fill('210426')
+      await panel.getByRole('button', { name: 'Save tuple' }).click()
+      await panel.getByRole('button', { name: 'Confirm tuple update' }).click()
+      await expect(panel.getByText('Updated PlatON E2E Network.', { exact: true })).toBeVisible()
+      const notice = panel.locator('[data-slot="read-back-failed"]')
+      await expect(notice).toContainText('could not be read back')
+
+      // A new round from the tuple this page last read; only the name changes.
+      await panel.getByRole('button', { name: 'Edit tuple' }).click()
+      await expect(panel.getByLabel('Chain ID')).toHaveValue('210425')
+      const name = panel.getByLabel('Display name')
+      await name.fill('Renamed after write')
+      const save = panel.getByRole('button', { name: 'Save tuple' })
+      await expect(save).toBeDisabled()
+      const reason = panel.locator('[data-slot="tuple-read-back-pending"]')
+      await expect(reason).toBeVisible()
+      await expect(reason).toContainText('Save tuple is unavailable until the latest Network is read successfully')
+      await expect(save).toHaveAttribute('aria-describedby', (await reason.getAttribute('id')) ?? 'missing')
+      await save.click({ force: true })
+      await name.press('Enter')
+      await panel.locator('form').evaluate((form: HTMLFormElement) => form.requestSubmit())
+      await expect(panel.getByRole('button', { name: 'Confirm tuple update' })).toHaveCount(0)
+      await expect(name).toHaveValue('Renamed after write')
+      await expectNoHorizontalOverflow(page)
+      await shot(page, '[data-slot="card-x"]:has(h2:text-is("Expected identity tuple"))', 'network-tuple-read-back-pending', theme)
+      expect(fixture.writes).toHaveLength(1)
+
+      // Reading again only reads: the draft stays and the Server-moved rule applies.
+      fixture.readable = true
+      await notice.getByRole('button', { name: 'Read the Network again' }).click()
+      await expect(notice).toHaveCount(0)
+      await expect(reason).toHaveCount(0)
+      await expect(name).toHaveValue('Renamed after write')
+      await expect(panel.getByLabel('Chain ID')).toHaveValue('210425')
+      const moved = panel.locator('[data-slot="tuple-server-moved"]')
+      await expect(moved).toContainText('changed on the Server while you were editing')
+      await expect(moved).toContainText('Chain ID 210426')
+      await expect(save).toBeDisabled()
+      await name.press('Enter')
+      await expect(panel.getByRole('button', { name: 'Confirm tuple update' })).toHaveCount(0)
+      expect(fixture.writes).toHaveLength(1)
+
+      // From the latest tuple, the next update carries the first one's identity fields.
+      await panel.getByRole('button', { name: 'Cancel' }).click()
+      await panel.getByRole('button', { name: 'Edit tuple' }).click()
+      await expect(panel.getByLabel('Chain ID')).toHaveValue('210426')
+      await name.fill('Renamed after write')
+      await panel.getByRole('button', { name: 'Save tuple' }).click()
+      await panel.getByRole('button', { name: 'Confirm tuple update' }).click()
+      await expect(panel.getByText('Updated Renamed after write.', { exact: true })).toBeVisible()
+      expect(fixture.writes).toHaveLength(2)
+      expect(fixture.writes[1]).toMatchObject({ displayName: 'Renamed after write', chainId: 210426 })
+    })
   })
 }
