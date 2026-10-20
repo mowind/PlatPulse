@@ -295,9 +295,17 @@ async function settledDeck(page: Page, width: number): Promise<ChartGeometry[]> 
         // The right edge is part of the condition because changing the viewport
         // width resizes the card before ECharts repaints: without it the poll
         // could return a chart still painted at the previous width.
+        // The tick count is part of it too: ECharts' own resize repaints the grid
+        // at the new size in the ResizeObserver callback, while the band count the
+        // new plot height allows reaches the option only on React's next render.
+        // In that gap the old band count is drawn into the shorter plot, so the
+        // split lines outnumber the labels ECharts still has room to print.
+        const lines = chart.splits.filter((line) => line.right - line.x > 1).length
+        const ticks = chart.texts.filter((text) => text.text !== card.axisName && text.text !== '' && text.y < bottom).length
         return Math.abs(Math.min(...chart.splits.map((line) => line.x)) - EMERALD.left) <= 1
           && Math.abs(Math.max(...chart.splits.map((line) => line.bottom)) - bottom) <= 1
           && Math.abs(Math.max(...chart.splits.map((line) => line.right)) - (chart.width - EMERALD.right)) <= 1
+          && lines === ticks
       })
     }, { timeout: 10_000, message: 'the six charts settle into their ' + expectedChartHeight(width) + 'px box, ' + width + 'px wide, at ' + width + 'px' })
     .toBe(true)
