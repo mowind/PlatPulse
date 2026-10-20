@@ -3477,7 +3477,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "platpulse-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "alloy",
  "axum",
@@ -3505,7 +3505,7 @@ dependencies = [
 
 [[package]]
 name = "platpulse-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3516,7 +3516,7 @@ dependencies = [
 
 [[package]]
 name = "platpulse-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "async-trait",
