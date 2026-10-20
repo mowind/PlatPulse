@@ -166,7 +166,7 @@ jobs:
             -v "$PWD/target/release-artifacts:/artifacts:ro" \
             -v "$PWD:/repo:ro" \
             fedora:41 bash -euxo pipefail -c '
-              dnf install -y curl /artifacts/*.rpm
+              dnf install -y curl util-linux /artifacts/*.rpm
               getent passwd platpulse-server
               getent passwd platpulse-agent
               /usr/bin/platpulse-server --help >/dev/null
