@@ -1420,15 +1420,7 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     })
 
     it('says a Node without a Server-owned name falls back to the Node ID, and cannot be saved without one', async () => {
-      const puts: string[] = []
-      mockFetch({
-        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
-        [NODE_URL]: () => jsonResponse({ ...NODE_A_DETAIL, display_name: null }, 200),
-        [NODE_URL + '/metadata']: async (request) => {
-          puts.push(((await request.json()) as { displayName: string }).displayName)
-          return jsonResponse({ nodeId: NODE_A.node_id, displayName: 'never' }, 200)
-        },
-      })
+      const puts = serveRename({ ...NODE_A_DETAIL, display_name: null })
       renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
       await screen.findByRole('heading', { level: 2, name: 'Server-owned metadata' })
       expect(within(metadataPanel()).getByText(/None — Node ID is shown/)).toBeTruthy()
@@ -1467,8 +1459,8 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
       return errors[0]
     }
 
-    function serveRename() {
-      let detail = NODE_A_DETAIL
+    function serveRename(initial: Omit<typeof NODE_A_DETAIL, 'display_name'> & { display_name: string | null } = NODE_A_DETAIL) {
+      let detail = initial
       const puts: string[] = []
       mockFetch({
         '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
@@ -1529,6 +1521,35 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
       fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Cancel' }))
       expect(within(metadataPanel()).getByText('Node A')).toBeTruthy()
       expect(within(metadataPanel()).queryByRole('alert')).toBeNull()
+    })
+
+    // The shared transport reads error bodies field by field; a rename (which
+    // holds nothing across a failure) still shows what a gateway's JSON says,
+    // or its own fallback, and stays retryable.
+    it.each([
+      ['a gateway timeout with a message', 504, { error: { code: 'upstream_timeout', message: 'Gateway timed out' } }, 'Gateway timed out'],
+      ['a bad gateway with only a code', 502, { error: { code: 'bad_gateway' } }, 'Unable to update the Node display name'],
+      ['an error object of the wrong types', 502, { error: { code: 502, message: { text: 'x' } } }, 'Unable to update the Node display name'],
+    ])('shows %s from the rename and keeps it retryable', async (_name, status, body, shown) => {
+      const puts: string[] = []
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () => jsonResponse(NODE_A_DETAIL, 200),
+        [NODE_URL + '/metadata']: async (request) => {
+          puts.push(((await request.json()) as { displayName: string }).displayName)
+          return jsonResponse(body, status)
+        },
+      })
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(nameInput(), { target: { value: 'Atlas-07' } })
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Save' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm rename' }))
+      expect((await within(metadataPanel()).findByRole('alert')).textContent).toBe(shown)
+      expect(nameInput().value).toBe('Atlas-07')
+      expect(screen.getByRole('button', { name: 'Confirm rename' }).getAttribute('aria-disabled')).toBeNull()
+      expect(puts).toEqual(['Atlas-07'])
     })
 
     it('re-runs the same check at Confirm and withdraws a confirmation the field no longer supports', async () => {

@@ -12,11 +12,10 @@ import { findRepoRoot } from './repo-root'
 // lifts the read-back notice; a blank Node name is refused beside its field;
 // and a Network update whose answer is lost or comes from a gateway (its own
 // JSON error included) stays unknown and is never sent again. Every write here
-// is a local Playwright route
-// (delayed and failing, or answered as applied) and every read after an
-// "applied" write is a local route fixture, so the shared seeded Server state
-// is never changed. It runs on every fixed project, Light and
-// Dark; ADMIN_EDITORS_EVIDENCE=1 additionally captures the edited panels at
+// is a local Playwright route (delayed and failing, or answered as applied)
+// and every read after an "applied" write is a local route fixture, so the
+// shared seeded Server state is never changed. It runs on every fixed
+// project, Light and Dark; ADMIN_EDITORS_EVIDENCE=1 additionally captures the edited panels at
 // 390 and 1280.
 const NODE_A = '0195f2a1-0014-4014-8014-000000000014'
 const NETWORK = 'platon-e2e'

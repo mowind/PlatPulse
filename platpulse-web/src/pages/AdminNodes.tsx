@@ -1229,7 +1229,7 @@ function MetadataPanel({
   /** The one check Save and Confirm both run, on what the field holds now:
    *  the name the rename would send, or null — with the reason beside the
    *  field and the keyboard back in it — when the field holds none. */
-  function checkField(): string | null {
+  function nameToSendFromField(): string | null {
     if (edit === null) return null
     const raw = inputRef.current?.value ?? edit.draft
     // A value that reached the control without a change event (autofill, an
@@ -1250,7 +1250,7 @@ function MetadataPanel({
     if (inFlight.current || edit === null || serverMoved) return
     setMessage(null)
     setError(null)
-    const name = checkField()
+    const name = nameToSendFromField()
     if (name === null) {
       setConfirmed(null)
       return
@@ -1264,7 +1264,7 @@ function MetadataPanel({
     // Confirm is a plain button: it re-runs Save's check and the form's own
     // rules instead of trusting that the Save step was valid, and sends
     // nothing but the name it confirmed.
-    const name = checkField()
+    const name = nameToSendFromField()
     if (name !== confirmed) {
       setConfirmed(null)
       if (name !== null) focusNext.current = 'input'
@@ -1373,7 +1373,7 @@ function MetadataPanel({
                       ? 'The Server now holds this name — an earlier attempt or another Owner saved it. Nothing is left to save; Close editor ends this edit.'
                       : (current
                           ? 'The display name changed on the Server to "' + current + '"'
-                          : 'The display name changed on the Server') +
+                          : 'The Server now holds no display name for this Node (the Node ID is shown)') +
                         ' while you were editing. Your draft is kept and has not been saved; Save is unavailable because the draft was started from the earlier name. Cancel to start again from the current name.'}
                   </span>
                 )}

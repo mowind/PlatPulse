@@ -25,7 +25,8 @@ import { TransportError } from './transport'
  * - reconciling: applied; this write's own read-back is in flight.
  * - readBackFailed: applied, but no read of this Network since has succeeded.
  * - uncertain: the answer was lost (no response, or none known to be the
- *   Server's refusal), so the update may or may not have been applied. It is never sent again; it
+ *   Server's refusal), so the update may or may not have been
+ *   applied. It is never sent again; it
  *   ends only when a read shows the Server holding exactly that tuple.
  *
  * A read counts only when it began after this write was answered (or lost):
@@ -127,9 +128,11 @@ export function useNetworkTupleWrite(generation: number, networkKey: string): Ne
 /** The refusals the update can answer with, by HTTP status: those of
  *  update_network itself (crates/platpulse-server/src/http/admin.rs) and of
  *  the guards in front of every Admin mutation (proxy headers, session,
- *  Owner role, Inventory cutover). Each is sent before the update's
- *  transaction commits, or when the commit itself fails, so each proves the
- *  update was not applied. */
+ *  Owner role, Inventory cutover; crates/platpulse-server/src/http/mod.rs).
+ *  The generated OpenAPI lists only 400/403/404 for the route, so this list
+ *  is taken from that code and must follow it. Each is sent before the
+ *  update's transaction commits, or when the commit itself fails, so each
+ *  proves the update was not applied. */
 const UPDATE_REFUSALS: ReadonlyMap<number, ReadonlySet<string>> = new Map([
   [400, new Set(['invalid_json', 'empty_update', 'invalid_network_tuple'])],
   [401, new Set(['auth_required'])],
