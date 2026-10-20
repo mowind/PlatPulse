@@ -13,6 +13,12 @@ export default defineConfig({
   workers: 1,
   fullyParallel: true,
   reporter: 'list',
+  // One retry on CI only. The gate runs ~1500 fixed-viewport tests against a
+  // single shared Server and a hosted runner occasionally blows a 30s budget on
+  // a heavy Admin flow (three different specs did so in three consecutive
+  // runs); Playwright still reports a retried test as flaky, so a genuine
+  // failure stays visible. Local runs keep zero retries.
+  retries: process.env.CI === undefined || process.env.CI === '' ? 0 : 1,
   use: {
     baseURL: `http://127.0.0.1:${process.env.E2E_PORT ?? '4173'}`,
   },
