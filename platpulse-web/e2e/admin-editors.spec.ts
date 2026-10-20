@@ -9,7 +9,10 @@ import { findRepoRoot } from './repo-root'
 // confirmation is withdrawn by any change, and a slow write is sent once and
 // keeps its editor locked across a section switch; a successful write and a
 // failed read-back after it are stated apart, and the next successful read
-// lifts the read-back notice. Every write here is a local Playwright route
+// lifts the read-back notice; a blank Node name is refused beside its field;
+// and a Network update whose answer is lost or comes from a gateway (its own
+// JSON error included) stays unknown and is never sent again. Every write here
+// is a local Playwright route
 // (delayed and failing, or answered as applied) and every read after an
 // "applied" write is a local route fixture, so the shared seeded Server state
 // is never changed. It runs on every fixed project, Light and
@@ -35,7 +38,10 @@ function slowFailingWrite(page: Page, pattern: RegExp, method: string) {
     await route.fulfill({
       status: 503,
       contentType: 'application/json',
-      body: JSON.stringify({ error: { code: 'unavailable', message: 'local fixture: write unavailable' } }),
+      // The Server's own refusal: its status, code and complete envelope.
+      body: JSON.stringify({
+        error: { code: 'unavailable', message: 'local fixture: write unavailable', requestId: 'local-fixture', fields: [] },
+      }),
     })
   })
   return { calls, release }
@@ -85,8 +91,16 @@ async function appliedWriteThenUnreadable(
  *  the applied tuple, and the update itself never reaches the Server.
  *  - `delayed`: the update is applied only when released, then answered.
  *  - `lost`: the update is applied at once, then the connection is reset
- *    before any answer, and reads fail until `readable` is set again. */
-async function networkTupleWrite(page: Page, mode: 'delayed' | 'lost') {
+ *    before any answer, and reads fail until `readable` is set again.
+ *  - `gateway504` / `gateway502`: the update is applied at once, then a
+ *    gateway in front of the Server answers with its own JSON error (which
+ *    carries an `error.code` too), and reads fail until `readable` is set. */
+const GATEWAY_ANSWERS = {
+  gateway504: { status: 504, body: { error: { code: 'upstream_timeout', message: 'Gateway timed out' } } },
+  gateway502: { status: 502, body: { error: { code: 'bad_gateway' } } },
+} as const
+
+async function networkTupleWrite(page: Page, mode: 'delayed' | 'lost' | keyof typeof GATEWAY_ANSWERS) {
   const state = {
     writes: [] as Record<string, unknown>[],
     applied: null as Record<string, unknown> | null,
@@ -122,6 +136,12 @@ async function networkTupleWrite(page: Page, mode: 'delayed' | 'lost') {
       state.applied = body
       state.readable = false
       return route.abort('connectionreset')
+    }
+    if (mode !== 'delayed') {
+      state.applied = body
+      state.readable = false
+      const answer = GATEWAY_ANSWERS[mode]
+      return route.fulfill({ status: answer.status, contentType: 'application/json', body: JSON.stringify(answer.body) })
     }
     await gate
     state.applied = body
@@ -212,6 +232,53 @@ for (const theme of ['light', 'dark'] as const) {
       await panel.getByRole('button', { name: 'Edit' }).click()
       await expect(panel.getByLabel('Display name')).toHaveValue('Node A')
       await expectNoHorizontalOverflow(page)
+    })
+
+    test('Node rename: a blank name is refused beside the field and never sent', async ({ page }) => {
+      // Any rename that did reach the network would land here, never on the Server.
+      const writes: string[] = []
+      await page.route(new RegExp('/api/admin/v1/nodes/' + NODE_A + '/metadata$'), (route) => {
+        writes.push(route.request().postData() ?? '')
+        return route.fulfill({ status: 500, contentType: 'text/plain', body: 'local fixture: never expected' })
+      })
+      await page.goto('/admin/nodes/' + NODE_A + '?section=manage')
+      await expect(page.getByRole('heading', { level: 1, name: 'Node A' })).toBeVisible({ timeout: 20_000 })
+      const panel = page.locator('[data-slot="card-x"]', { has: page.getByRole('heading', { name: 'Server-owned metadata' }) })
+
+      await panel.getByRole('button', { name: 'Edit' }).click()
+      const input = panel.getByLabel('Display name')
+      const error = panel.getByRole('alert')
+      for (const blank of ['', '   ']) {
+        await input.fill(blank)
+        await expect(input).not.toHaveAttribute('aria-invalid', 'true')
+        // Enter, the Save click, and a direct form submission.
+        await input.press('Enter')
+        await expect(error).toHaveText(/cannot be empty or only spaces/)
+        await expect(input).toHaveAttribute('aria-invalid', 'true')
+        await expect(input).toHaveAttribute('aria-describedby', (await error.getAttribute('id')) ?? 'missing')
+        await expect(input).toBeFocused()
+        await expect(panel.getByRole('button', { name: 'Confirm rename' })).toHaveCount(0)
+        await input.fill(blank + ' ')
+        await expect(error).toHaveCount(0)
+        await panel.getByRole('button', { name: 'Save' }).click()
+        await expect(error).toHaveText(/cannot be empty or only spaces/)
+        await expect(input).toBeFocused()
+        await panel.locator('form').evaluate((form: HTMLFormElement) => form.requestSubmit())
+        await expect(panel.getByRole('button', { name: 'Confirm rename' })).toHaveCount(0)
+      }
+      await shot(page, '[data-slot="card-x"]:has(h2:text-is("Server-owned metadata"))', 'node-rename-blank', theme)
+      await expectNoHorizontalOverflow(page)
+
+      // A valid name still reaches the confirmation, trimmed.
+      await input.fill('  Node A trimmed ')
+      await input.press('Enter')
+      await expect(error).toHaveCount(0)
+      await expect(panel.getByText(/Rename this Node in the Server-owned metadata\?/)).toBeFocused()
+      await expect(panel.getByRole('button', { name: 'Confirm rename' })).toBeVisible()
+      await panel.getByRole('button', { name: 'Keep editing' }).click()
+      await panel.getByRole('button', { name: 'Cancel' }).click()
+      await expect(panel.locator('dd').first()).toHaveText(/^Node A\s*Edit$/)
+      expect(writes).toEqual([])
     })
 
     test('Network tuple: Cancel discards, a change withdraws the confirmation, and one slow write fails cleanly', async ({ page }) => {
@@ -577,5 +644,75 @@ for (const theme of ['light', 'dark'] as const) {
       await panel.getByRole('button', { name: 'Edit tuple' }).click()
       await expect(panel.getByLabel('Chain ID')).toHaveValue('210426')
     })
+
+    for (const mode of ['gateway504', 'gateway502'] as const) {
+      const status = GATEWAY_ANSWERS[mode].status
+      test(`Network tuple: an update applied behind a JSON gateway ${status} stays unknown and is never sent again`, async ({ page }) => {
+        const fixture = await networkTupleWrite(page, mode)
+        // Every request the page makes to this Network other than a read.
+        const writes: string[] = []
+        page.on('request', (request) => {
+          if (request.url().includes('/api/admin/v1/networks/' + NETWORK) && request.method() !== 'GET') {
+            writes.push(request.method())
+          }
+        })
+        await page.goto('/admin/networks/' + NETWORK)
+        await expect(page.getByRole('heading', { level: 1, name: /PlatON E2E Network/ })).toBeVisible({ timeout: 20_000 })
+        const panel = page.locator('[data-slot="card-x"]', { has: page.getByRole('heading', { name: 'Expected identity tuple' }) })
+        await panel.getByRole('button', { name: 'Edit tuple' }).click()
+        await panel.getByLabel('Chain ID').fill('210426')
+        await panel.getByRole('button', { name: 'Save tuple' }).click()
+        await panel.getByRole('button', { name: 'Confirm tuple update' }).click()
+
+        const notice = panel.locator('[data-slot="tuple-write-uncertain"]')
+        await expect(notice).toContainText('may or may not have been applied')
+        await expect(notice).toContainText('The Network could not be read.')
+        // The gateway's answer is not taken for the Server's refusal: the one
+        // alert in the editor is the unknown outcome, not a failed save.
+        await expect(panel.getByRole('alert')).toHaveText(/something in between answered instead/)
+        await expect(panel.getByText(/Gateway timed out|Unable to update the Network/)).toHaveCount(0)
+        await expect(panel.getByRole('button', { name: 'Confirm tuple update' })).toHaveCount(0)
+        const name = panel.getByLabel('Display name')
+        const save = panel.getByRole('button', { name: 'Save tuple' })
+        await expect(save).toBeDisabled()
+        await name.press('Enter')
+
+        // Cancel, and a new round from the tuple this page last read.
+        await panel.getByRole('button', { name: 'Cancel' }).click()
+        await panel.getByRole('button', { name: 'Edit tuple' }).click()
+        await expect(panel.getByLabel('Chain ID')).toHaveValue('210425')
+        await name.fill('Renamed behind gateway')
+        await expect(save).toBeDisabled()
+        await expect(panel.locator('[data-slot="tuple-write-uncertain-held"]')).toContainText('Server is seen holding the earlier update')
+        await save.click({ force: true })
+        await name.press('Enter')
+        await panel.locator('form').evaluate((form: HTMLFormElement) => form.requestSubmit())
+        await expect(panel.getByRole('button', { name: 'Confirm tuple update' })).toHaveCount(0)
+        await expectNoHorizontalOverflow(page)
+
+        // Leaving and reopening does not end it either.
+        await leaveAndReturn(page)
+        await expect(notice).toBeVisible()
+        await panel.getByRole('button', { name: 'Edit tuple' }).click()
+        await expect(panel.getByLabel('Chain ID')).toHaveValue('210425')
+        await name.fill('Renamed behind gateway')
+        await expect(save).toBeDisabled()
+        await name.press('Enter')
+        await expect(panel.getByRole('button', { name: 'Confirm tuple update' })).toHaveCount(0)
+        expect(fixture.writes).toHaveLength(1)
+
+        // A read-only check finds the Server holding the update.
+        fixture.readable = true
+        await notice.getByRole('button', { name: 'Check the Network' }).click()
+        await expect(notice).toHaveCount(0)
+        await expect(panel.locator('[data-slot="tuple-server-moved"]')).toContainText('Chain ID 210426')
+        await expect(name).toHaveValue('Renamed behind gateway')
+        await expect(save).toBeDisabled()
+        await name.press('Enter')
+        await expect(panel.getByRole('button', { name: 'Confirm tuple update' })).toHaveCount(0)
+        expect(fixture.writes).toHaveLength(1)
+        expect(writes).toEqual(['PUT'])
+      })
+    }
   })
 }

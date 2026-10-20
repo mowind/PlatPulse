@@ -1419,15 +1419,163 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
       expect(screen.getByRole('tab', { name: /^Manage/ }).textContent).not.toContain('Unsaved')
     })
 
-    it('says a cleared name falls back to the Node ID', async () => {
+    it('says a Node without a Server-owned name falls back to the Node ID, and cannot be saved without one', async () => {
+      const puts: string[] = []
       mockFetch({
         '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
         [NODE_URL]: () => jsonResponse({ ...NODE_A_DETAIL, display_name: null }, 200),
+        [NODE_URL + '/metadata']: async (request) => {
+          puts.push(((await request.json()) as { displayName: string }).displayName)
+          return jsonResponse({ nodeId: NODE_A.node_id, displayName: 'never' }, 200)
+        },
       })
       renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
       await screen.findByRole('heading', { level: 2, name: 'Server-owned metadata' })
       expect(within(metadataPanel()).getByText(/None — Node ID is shown/)).toBeTruthy()
       expect(screen.queryByText(/Agent ID is shown/)).toBeNull()
+
+      // The edit starts empty; saving it as is is refused beside the field.
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+      expect(nameInput().value).toBe('')
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Save' }))
+      expect(nameError().textContent).toMatch(/cannot be empty or only spaces/)
+      expect(screen.queryByRole('button', { name: 'Confirm rename' })).toBeNull()
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Cancel' }))
+      expect(within(metadataPanel()).getByText(/None — Node ID is shown/)).toBeTruthy()
+      expect(within(metadataPanel()).queryByRole('alert')).toBeNull()
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(puts).toEqual([])
+    })
+
+    function nameInput(): HTMLInputElement {
+      return within(metadataPanel()).getByLabelText('Display name') as HTMLInputElement
+    }
+
+    /** The error beside the name field: inside its form, and the field's
+     *  accessible description. */
+    function nameError(): HTMLElement {
+      const input = nameInput()
+      expect(input.getAttribute('aria-invalid')).toBe('true')
+      const ids = (input.getAttribute('aria-describedby') ?? '').split(' ').filter(Boolean)
+      const errors = ids
+        .map((id) => document.getElementById(id))
+        .filter((element): element is HTMLElement => element?.getAttribute('role') === 'alert')
+      expect(errors).toHaveLength(1)
+      expect(errors[0].closest('form')).toBe(input.closest('form'))
+      return errors[0]
+    }
+
+    function serveRename() {
+      let detail = NODE_A_DETAIL
+      const puts: string[] = []
+      mockFetch({
+        '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+        [NODE_URL]: () => jsonResponse(detail, 200),
+        [NODE_URL + '/metadata']: async (request) => {
+          const body = (await request.json()) as { displayName: string }
+          puts.push(body.displayName)
+          detail = { ...detail, display_name: body.displayName }
+          return jsonResponse({ nodeId: NODE_A.node_id, displayName: body.displayName }, 200)
+        },
+      })
+      return puts
+    }
+
+    it.each([
+      ['an empty name', ''],
+      ['a name of spaces', '   '],
+      ['a name of tabs and no-break spaces', '\t\u00a0 \t'],
+    ])('refuses %s beside the field on Save, Enter and a direct form submission, and sends nothing', async (_name, blank) => {
+      const puts = serveRename()
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(nameInput(), { target: { value: blank } })
+      expect(nameInput().getAttribute('aria-invalid')).toBeNull()
+
+      // The Save click.
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Save' }))
+      expect(nameError().textContent).toMatch(/cannot be empty or only spaces/)
+      expect(screen.queryByRole('button', { name: 'Confirm rename' })).toBeNull()
+      expect(screen.queryByText(/Rename this Node in the Server-owned metadata\?/)).toBeNull()
+      await waitFor(() => expect(document.activeElement).toBe(nameInput()))
+      // The draft is kept as typed.
+      expect(nameInput().value).toBe(blank)
+
+      // A change lifts the error until the next attempt.
+      fireEvent.change(nameInput(), { target: { value: blank + ' ' } })
+      expect(nameInput().getAttribute('aria-invalid')).toBeNull()
+      expect(within(metadataPanel()).queryByRole('alert')).toBeNull()
+
+      // Enter (the implicit submission jsdom dispatches as submit), and a
+      // direct requestSubmit() of the form.
+      const form = nameInput().closest('form') as HTMLFormElement
+      fireEvent.submit(form)
+      expect(nameError().textContent).toMatch(/cannot be empty or only spaces/)
+      expect(screen.queryByRole('button', { name: 'Confirm rename' })).toBeNull()
+      fireEvent.change(nameInput(), { target: { value: blank } })
+      act(() => form.requestSubmit())
+      expect(nameError().textContent).toMatch(/cannot be empty or only spaces/)
+      expect(screen.queryByRole('button', { name: 'Confirm rename' })).toBeNull()
+
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(puts).toEqual([])
+      // Still an unsaved draft of this round; Cancel discards it.
+      expect(screen.getByRole('tab', { name: /^Manage/ }).textContent).toContain('Unsaved')
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Cancel' }))
+      expect(within(metadataPanel()).getByText('Node A')).toBeTruthy()
+      expect(within(metadataPanel()).queryByRole('alert')).toBeNull()
+    })
+
+    it('re-runs the same check at Confirm and withdraws a confirmation the field no longer supports', async () => {
+      const puts = serveRename()
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(nameInput(), { target: { value: 'Atlas-04' } })
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Save' }))
+      expect(screen.getByRole('button', { name: 'Confirm rename' })).toBeTruthy()
+
+      // The control no longer holds a valid name although no change event
+      // reached the editor (autofill, an extension, a browser quirk).
+      nameInput().value = '   '
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm rename' }))
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(puts).toEqual([])
+      expect(screen.queryByRole('button', { name: 'Confirm rename' })).toBeNull()
+      expect(nameInput().value).toBe('   ')
+      expect(nameError().textContent).toMatch(/cannot be empty or only spaces/)
+      await waitFor(() => expect(document.activeElement).toBe(nameInput()))
+    })
+
+    it('saves a valid name, trimmed, through Enter and a direct form submission', async () => {
+      const puts = serveRename()
+      renderAt(NODE_URL.replace('/api/admin/v1', '/admin') + '?section=manage')
+      await screen.findByRole('heading', { level: 1, name: 'Node A' })
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.change(nameInput(), { target: { value: '  Atlas-05 ' } })
+      fireEvent.submit(nameInput().closest('form') as HTMLFormElement)
+      const prompt = await screen.findByText(/Rename this Node in the Server-owned metadata\?/)
+      await waitFor(() => expect(document.activeElement).toBe(prompt))
+      expect(nameInput().getAttribute('aria-invalid')).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm rename' }))
+      expect(await within(metadataPanel()).findByText('Display name is now "Atlas-05".')).toBeTruthy()
+      expect(puts).toEqual(['Atlas-05'])
+      await waitFor(() => expect(document.activeElement).toBe(within(metadataPanel()).getByRole('button', { name: 'Edit' })))
+
+      // A second round through requestSubmit().
+      fireEvent.click(within(metadataPanel()).getByRole('button', { name: 'Edit' }))
+      fireEvent.change(nameInput(), { target: { value: 'Atlas-06' } })
+      act(() => (nameInput().closest('form') as HTMLFormElement).requestSubmit())
+      fireEvent.click(await screen.findByRole('button', { name: 'Confirm rename' }))
+      expect(await within(metadataPanel()).findByText('Display name is now "Atlas-06".')).toBeTruthy()
+      expect(puts).toEqual(['Atlas-05', 'Atlas-06'])
     })
   })
 

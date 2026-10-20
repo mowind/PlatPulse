@@ -450,10 +450,13 @@ describe('Expected identity tuple editor', () => {
       authExpired: false,
       other: { ...OTHER_NETWORK_DETAIL } as typeof OTHER_NETWORK_DETAIL,
       otherPuts: [] as Put[],
+      // Every request other than a read, in order (method and path).
+      writes: [] as string[],
     }
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = input instanceof Request ? input : new Request(String(input), init)
       const url = request.url.replace(TEST_ORIGIN, '')
+      if (request.method !== 'GET' && request.method !== 'HEAD') state.writes.push(request.method + ' ' + url)
       if (url === '/api/public/v1/session') return jsonResponse(OWNER_SESSION, 200)
       if (state.authExpired && url.startsWith('/api/admin/') && request.method === 'GET') {
         state.authExpired = false
@@ -677,7 +680,11 @@ describe('Expected identity tuple editor', () => {
     const state = serve({
       put: (body) => {
         if (fail) {
-          return jsonResponse({ error: { code: 'unavailable', message: 'server database is unavailable' } }, 503)
+          // The Server's own refusal: its status, code and complete envelope.
+          return jsonResponse(
+            { error: { code: 'unavailable', message: 'server database is unavailable', requestId: 'r-503', fields: [] } },
+            503,
+          )
         }
         state.detail = { ...state.detail, display_name: body.displayName }
         return jsonResponse({ networkKey: 'platon-e2e', displayName: body.displayName }, 200)
@@ -1252,6 +1259,87 @@ describe('Expected identity tuple editor', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm tuple update' }))
     expect(await within(tuplePanel()).findByText('Updated Renamed while unknown.')).toBeTruthy()
     expect(state.puts[1]).toMatchObject({ displayName: 'Renamed while unknown', chainId: 210426 })
+  })
+
+  it.each([
+    ['504', 'Gateway timed out', () => jsonResponse({ error: { code: 'upstream_timeout', message: 'Gateway timed out' } }, 504)],
+    ['502', 'Unable to update the Network', () => jsonResponse({ error: { code: 'bad_gateway' } }, 502)],
+  ])(
+    'keeps an update applied behind a JSON gateway %s unknown across Cancel, a new round and reopening, then recovers by reading only',
+    async (_status, gatewayMessage, gatewayAnswer) => {
+      const state = serve({
+        put: (body) => {
+          // The Server applies the update; a gateway in front of it answers
+          // with its own JSON error, which carries an `error.code` too.
+          applied(state, body)
+          state.unreadable = true
+          return gatewayAnswer()
+        },
+      })
+      await open()
+      await confirmChain('210426')
+
+      const notice = await waitFor(() => {
+        const element = tuplePanel().querySelector('[data-slot="tuple-write-uncertain"]') as HTMLElement
+        expect(element).toBeTruthy()
+        return element
+      })
+      expect(notice.textContent).toMatch(/may or may\s+not have been applied/)
+      expect(notice.textContent).toMatch(/not sent again/)
+      await waitFor(() => expect(notice.textContent).toMatch(/could not be read/))
+      // Not reported as a refused save, and nothing is left to confirm again.
+      expect(within(tuplePanel()).queryByText(gatewayMessage)).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Confirm tuple update' })).toBeNull()
+      expect(field('Chain ID').value).toBe('210426')
+      expect(saveButton().disabled).toBe(true)
+      await trySubmitEveryWay()
+
+      // Cancel, and a new round from the tuple this page last read.
+      fireEvent.click(within(tuplePanel()).getByRole('button', { name: 'Cancel' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+      expect(field('Chain ID').value).toBe('210425')
+      fireEvent.change(field('Display name'), { target: { value: 'Renamed behind gateway' } })
+      expect(saveButton().disabled).toBe(true)
+      expect(saveReason().textContent).toMatch(/Server is seen holding the earlier update/)
+      await trySubmitEveryWay()
+
+      // Leaving and reopening keeps it unknown as well.
+      await leaveAndReturn()
+      expect(tuplePanel().querySelector('[data-slot="tuple-write-uncertain"]')).not.toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Edit tuple' }))
+      expect(field('Chain ID').value).toBe('210425')
+      fireEvent.change(field('Display name'), { target: { value: 'Renamed behind gateway' } })
+      expect(saveButton().disabled).toBe(true)
+      await trySubmitEveryWay()
+      expect(state.puts).toHaveLength(1)
+
+      // Checking reads only; the Server is seen holding the update, and the
+      // kept draft meets the Server-moved rule instead of being sent.
+      state.unreadable = false
+      fireEvent.click(within(tuplePanel()).getByRole('button', { name: 'Check the Network' }))
+      await waitFor(() => expect(tuplePanel().querySelector('[data-slot="tuple-write-uncertain"]')).toBeNull())
+      expect(field('Display name').value).toBe('Renamed behind gateway')
+      expect(tuplePanel().querySelector('[data-slot="tuple-server-moved"]')?.textContent).toContain('Chain ID 210426')
+      expect(saveButton().disabled).toBe(true)
+      await trySubmitEveryWay()
+      expect(state.writes).toEqual(['PUT ' + NETWORK_URL])
+    },
+  )
+
+  it.each([
+    ['an unknown code in a complete envelope', 'locked', () =>
+      jsonResponse({ error: { code: 'tuple_locked', message: 'locked', requestId: 'r9', fields: [] } }, 409)],
+    ['a known code in an incomplete envelope', 'Service Unavailable', () =>
+      jsonResponse({ error: { code: 'unavailable', message: 'Service Unavailable' } }, 503)],
+  ])('keeps %s unknown rather than refused, and sends nothing more', async (_name, answerMessage, answer) => {
+    const state = serve({ put: () => answer() })
+    await open()
+    await confirmChain('210426')
+    await waitFor(() => expect(tuplePanel().querySelector('[data-slot="tuple-write-uncertain"]')).not.toBeNull())
+    expect(within(tuplePanel()).queryByText(answerMessage)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Confirm tuple update' })).toBeNull()
+    await trySubmitEveryWay()
+    expect(state.writes).toEqual(['PUT ' + NETWORK_URL])
   })
 
   it('does not take a read of the earlier tuple as proof that a lost update never applied', async () => {

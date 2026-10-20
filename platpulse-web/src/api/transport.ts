@@ -10,11 +10,13 @@ export class TransportError extends Error {
   readonly requestId: string | null
   readonly fields: string[]
   readonly status: number | null
-  /** Whether the Server's own typed error envelope was received. Without it
-   *  (no response at all, an unreadable body, or a page some intermediary
-   *  sent in the Server's place) the failure says nothing about what the
-   *  Server did with the request. */
-  readonly serverEnvelope: boolean
+  /** Whether the error body had the documented envelope shape: an `error`
+   *  object with a string `code`, `message` and `requestId` and a string
+   *  array `fields`. A statement about the body's shape only: an
+   *  intermediary can send the same shape, so this never says on its own
+   *  whether the request was applied. An operation that needs that answer
+   *  checks the refusals it documents (status and code) itself. */
+  readonly wellFormedEnvelope: boolean
 
   constructor(
     kind: ApiErrorKind,
@@ -24,7 +26,7 @@ export class TransportError extends Error {
       requestId?: string | null
       fields?: string[]
       status?: number | null
-      serverEnvelope?: boolean
+      wellFormedEnvelope?: boolean
     } = {},
   ) {
     super(message)
@@ -34,7 +36,7 @@ export class TransportError extends Error {
     this.requestId = options.requestId ?? null
     this.fields = options.fields ?? []
     this.status = options.status ?? null
-    this.serverEnvelope = options.serverEnvelope ?? false
+    this.wellFormedEnvelope = options.wellFormedEnvelope ?? false
   }
 }
 
@@ -118,9 +120,28 @@ type GeneratedResult<T> = {
   response?: Response
 }
 
-function errorEnvelope(value: unknown): ApiErrorBody['error'] | undefined {
-  const candidate = value as Partial<ApiErrorBody> | undefined
-  return candidate?.error
+type ReadEnvelope = Partial<ApiErrorBody['error']> & { wellFormed: boolean }
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Reads an error body field by field: a field not of its documented type is
+ *  left out rather than passed on as one. Any readable `error` object counts
+ *  (its code and message are still worth showing); `wellFormed` says whether
+ *  every documented field was there with its documented type. */
+function readErrorEnvelope(value: unknown): ReadEnvelope | undefined {
+  if (!isRecord(value) || !isRecord(value.error)) return undefined
+  const { code, message, requestId, fields } = value.error
+  const read: ReadEnvelope = { wellFormed: false }
+  if (typeof code === 'string') read.code = code
+  if (typeof message === 'string') read.message = message
+  if (typeof requestId === 'string') read.requestId = requestId
+  const fieldsValid = Array.isArray(fields) && fields.every((field) => typeof field === 'string')
+  if (fieldsValid) read.fields = fields
+  read.wellFormed =
+    read.code !== undefined && read.message !== undefined && read.requestId !== undefined && fieldsValid
+  return read
 }
 
 /**
@@ -142,7 +163,7 @@ export async function requestGenerated<T>(
   }
 
   if (result.error !== undefined) {
-    const envelope = errorEnvelope(result.error)
+    const envelope = readErrorEnvelope(result.error)
     if (!envelope && result.response === undefined) {
       throw new TransportError('transport', 'network_unavailable', fallbackMessage)
     }
@@ -154,7 +175,7 @@ export async function requestGenerated<T>(
         requestId: envelope?.requestId,
         fields: envelope?.fields,
         status: result.response?.status,
-        serverEnvelope: typeof envelope?.code === 'string',
+        wellFormedEnvelope: envelope?.wellFormed ?? false,
       },
     )
   }

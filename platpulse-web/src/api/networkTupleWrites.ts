@@ -24,8 +24,8 @@ import { TransportError } from './transport'
  * - pending: sent and unanswered. Nothing but the answer ends it.
  * - reconciling: applied; this write's own read-back is in flight.
  * - readBackFailed: applied, but no read of this Network since has succeeded.
- * - uncertain: the answer was lost (no response, or none from the Server), so
- *   the update may or may not have been applied. It is never sent again; it
+ * - uncertain: the answer was lost (no response, or none known to be the
+ *   Server's refusal), so the update may or may not have been applied. It is never sent again; it
  *   ends only when a read shows the Server holding exactly that tuple.
  *
  * A read counts only when it began after this write was answered (or lost):
@@ -33,8 +33,9 @@ import { TransportError } from './transport'
  * first, so a read that began before the write can never stand for the
  * read-back. A read showing the earlier tuple does not end an uncertain write:
  * the request may still reach the Server, and nothing in the current API can
- * prove it never will. A Server refusal (its typed error envelope; the update
- * handler sends one only when nothing was committed) ends the write at once.
+ * prove it never will. A Server refusal (one the update documents, see
+ * updateRefused; each is sent only when nothing was committed) ends the
+ * write at once.
  *
  * The state is memory only, bound to this tab and access generation: a
  * generation change (sign-in, sign-out, or any access re-check) clears it
@@ -123,13 +124,28 @@ export function useNetworkTupleWrite(generation: number, networkKey: string): Ne
   return useSyncExternalStore(subscribe, () => networkTupleWrite(generation, networkKey))
 }
 
-/** Whether the Server refused the update. Its handler answers with the typed
- *  error envelope only before its transaction commits, or when the commit
- *  itself fails, so such an answer proves the update was not applied. Any
- *  other failure — no response, an unreadable one, or an intermediary's page
- *  — proves nothing either way. */
+/** The refusals the update can answer with, by HTTP status: those of
+ *  update_network itself (crates/platpulse-server/src/http/admin.rs) and of
+ *  the guards in front of every Admin mutation (proxy headers, session,
+ *  Owner role, Inventory cutover). Each is sent before the update's
+ *  transaction commits, or when the commit itself fails, so each proves the
+ *  update was not applied. */
+const UPDATE_REFUSALS: ReadonlyMap<number, ReadonlySet<string>> = new Map([
+  [400, new Set(['invalid_json', 'empty_update', 'invalid_network_tuple'])],
+  [401, new Set(['auth_required'])],
+  [403, new Set(['csrf_validation_failed', 'owner_required', 'untrusted_proxy_headers', 'proxy_scheme_required'])],
+  [404, new Set(['not_found'])],
+  [503, new Set(['unavailable', 'inventory_cutover_required'])],
+])
+
+/** Whether the Server refused the update: one of its documented refusals,
+ *  at the status it is sent with, in the complete error envelope. Anything
+ *  else — no response, an unreadable one, an intermediary's page or JSON
+ *  (a gateway's 502/504 can carry an `error.code` too), an unknown code, or
+ *  an incomplete envelope — proves nothing either way. */
 function updateRefused(error: unknown): boolean {
-  return error instanceof TransportError && error.serverEnvelope
+  if (!(error instanceof TransportError) || !error.wellFormedEnvelope || error.status === null) return false
+  return UPDATE_REFUSALS.get(error.status)?.has(error.code) ?? false
 }
 
 function holdsUpdate(detail: AdminNetworkDetail, update: NetworkTupleUpdate): boolean {

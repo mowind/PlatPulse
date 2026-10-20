@@ -1012,7 +1012,8 @@ function IdentityTuplePanel({
         >
           <StatusBadge status="Outcome unknown" tone="warning" />
           <span className="min-w-0 break-words" role="alert">
-            The connection failed before the Server answered the tuple update, so it may or may
+            No answer known to be the Server's reached this page for the tuple update (the
+            connection failed, or something in between answered instead), so it may or may
             not have been applied. It is not sent again, and Save tuple stays unavailable for this
             Network until a read shows the Server holding that update.
           </span>

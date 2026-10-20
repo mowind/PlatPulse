@@ -384,7 +384,7 @@ export class AdminApiError extends TransportError {
     message: string,
     requestId: string | null = null,
     fields: string[] = [],
-    options: { status?: number | null; serverEnvelope?: boolean } = {},
+    options: { status?: number | null; wellFormedEnvelope?: boolean } = {},
   ) {
     super('domain', code, message, { requestId, fields, ...options })
     this.name = 'AdminApiError'
@@ -423,7 +423,7 @@ async function requestAdmin<T>(
       if (caught instanceof AdminApiError) throw caught
       throw new AdminApiError(caught.code, caught.message, caught.requestId, caught.fields, {
         status: caught.status,
-        serverEnvelope: caught.serverEnvelope,
+        wellFormedEnvelope: caught.wellFormedEnvelope,
       })
     }
     throw new AdminApiError('unavailable', fallbackMessage)

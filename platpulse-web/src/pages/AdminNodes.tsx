@@ -1113,6 +1113,17 @@ function NodeDetailHeader({
   )
 }
 
+/** The name a rename sends: the draft trimmed, or null when nothing is left.
+ *  The Server refuses an empty name and there is no operation that clears
+ *  one, so a blank draft is never a valid rename. */
+function displayNameToSend(draft: string): string | null {
+  const name = draft.trim()
+  return name === '' ? null : name
+}
+
+const BLANK_DISPLAY_NAME =
+  'Enter a display name. It cannot be empty or only spaces; Cancel keeps the current name.'
+
 /** Manage: the Server-owned display name. The Agent Inventory, endpoint, and
  *  Node ID are not editable here.
  *
@@ -1148,6 +1159,8 @@ function MetadataPanel({
   const inFlight = useRef(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Why the field holds no name Save or Confirm can send; shown beside it.
+  const [nameError, setNameError] = useState<string | null>(null)
   // A read-back that failed after a successful write; lifted only by a later
   // successful read of this Node's detail.
   const [readBackFailure, setReadBackFailure] = useState<ReadBackFailure | null>(null)
@@ -1182,8 +1195,9 @@ function MetadataPanel({
   if (serverMoved && confirmed !== null) setConfirmed(null)
   // The Server already holds the draft — for example a write whose answer
   // was lost reached it after all. Nothing is left to save.
-  const serverHasDraft = serverMoved && current === edit.draft.trim()
+  const serverHasDraft = serverMoved && current === displayNameToSend(edit.draft)
   const movedNoticeId = 'display-name-server-moved-' + node.node_id
+  const nameErrorId = 'display-name-error-' + node.node_id
 
   // Unsaved while a changed draft, an open confirmation or a save in flight
   // remains — but not once the Server already holds the draft: nothing is
@@ -1198,6 +1212,7 @@ function MetadataPanel({
     setConfirmed(null)
     setMessage(null)
     setError(null)
+    setNameError(null)
     focusNext.current = 'input'
   }
 
@@ -1207,7 +1222,26 @@ function MetadataPanel({
     setConfirmed(null)
     setMessage(null)
     setError(null)
+    setNameError(null)
     focusNext.current = 'edit'
+  }
+
+  /** The one check Save and Confirm both run, on what the field holds now:
+   *  the name the rename would send, or null — with the reason beside the
+   *  field and the keyboard back in it — when the field holds none. */
+  function checkField(): string | null {
+    if (edit === null) return null
+    const raw = inputRef.current?.value ?? edit.draft
+    // A value that reached the control without a change event (autofill, an
+    // extension) is the draft from here on.
+    if (raw !== edit.draft) setEdit({ ...edit, draft: raw })
+    const name = displayNameToSend(raw)
+    if (name === null) {
+      setNameError(BLANK_DISPLAY_NAME)
+      focusNext.current = 'input'
+      setFocusTick((tick) => tick + 1)
+    }
+    return name
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -1216,14 +1250,26 @@ function MetadataPanel({
     if (inFlight.current || edit === null || serverMoved) return
     setMessage(null)
     setError(null)
-    setConfirmed(edit.draft.trim())
+    const name = checkField()
+    if (name === null) {
+      setConfirmed(null)
+      return
+    }
+    setConfirmed(name)
     focusNext.current = 'prompt'
   }
 
   async function confirm() {
     if (inFlight.current || confirmed === null) return
-    // Confirm is a plain button: it re-checks the form instead of trusting
-    // that the Save step was valid.
+    // Confirm is a plain button: it re-runs Save's check and the form's own
+    // rules instead of trusting that the Save step was valid, and sends
+    // nothing but the name it confirmed.
+    const name = checkField()
+    if (name !== confirmed) {
+      setConfirmed(null)
+      if (name !== null) focusNext.current = 'input'
+      return
+    }
     if (formRef.current && !formRef.current.reportValidity()) {
       setConfirmed(null)
       return
@@ -1251,11 +1297,7 @@ function MetadataPanel({
       if (!active || active === document.body || panelRef.current?.contains(active)) {
         focusNext.current = 'edit'
       }
-      setMessage(
-        result.displayName
-          ? 'Display name is now "' + result.displayName + '".'
-          : 'Display name cleared; the Node ID is shown.',
-      )
+      setMessage('Display name is now "' + result.displayName + '".')
       setReadBackFailure(
         readBack.isError
           ? { errorUpdateCount: readBack.errorUpdateCount, errorUpdatedAt: readBack.errorUpdatedAt }
@@ -1309,18 +1351,29 @@ function MetadataPanel({
                   onChange={(event) => {
                     setEdit({ ...edit, draft: event.target.value })
                     setConfirmed(null)
+                    setNameError(null)
                   }}
                   maxLength={128}
                   disabled={submitting}
-                  aria-describedby={serverMoved ? movedNoticeId : undefined}
+                  aria-invalid={nameError ? true : undefined}
+                  aria-describedby={
+                    [nameError ? nameErrorId : null, serverMoved ? movedNoticeId : null]
+                      .filter((id) => id !== null)
+                      .join(' ') || undefined
+                  }
                 />
+                {nameError && (
+                  <span id={nameErrorId} role="alert" className="basis-full text-xs text-destructive">
+                    {nameError}
+                  </span>
+                )}
                 {serverMoved && (
                   <span id={movedNoticeId} className="basis-full text-xs text-muted-foreground">
                     {serverHasDraft
                       ? 'The Server now holds this name — an earlier attempt or another Owner saved it. Nothing is left to save; Close editor ends this edit.'
                       : (current
                           ? 'The display name changed on the Server to "' + current + '"'
-                          : 'The display name was cleared on the Server') +
+                          : 'The display name changed on the Server') +
                         ' while you were editing. Your draft is kept and has not been saved; Save is unavailable because the draft was started from the earlier name. Cancel to start again from the current name.'}
                   </span>
                 )}
