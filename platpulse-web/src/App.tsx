@@ -35,7 +35,7 @@ import AdminNotificationDeliveries, {
 import AdminNotificationChannels from './pages/AdminNotificationChannels'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { ThemeProvider } from './theme/ThemeProvider'
-import { ensureSiteAccessModeKnown, subscribeSiteAccessMode } from './api/public'
+import { ensureSiteAccessModeKnown, subscribeSiteAccessMode, usePublicRewardWallet } from './api/public'
 import { CardX } from './components/ui/card-x'
 import { SURFACE_CARD_STATIC } from './lib/surface'
 import HomeDashboard from './components/HomeDashboard'
@@ -240,7 +240,10 @@ export default function App() {
 }
 
 function HomeIndex() {
-  const { networks, realtime, resetting } = useHomeRealtimeContext()
+  const { networks, realtime, resetting, generation } = useHomeRealtimeContext()
+  // Its own query (#246): the Network projection's loading or failure never
+  // decides what the Balance tile reads.
+  const rewardWallet = usePublicRewardWallet(generation, !resetting)
   // The projection on screen may be the one Home already held while the
   // authoritative refetch is still in flight, so the arrival's landing is
   // provisional until that reading settles (design §15.25).
@@ -258,6 +261,9 @@ function HomeIndex() {
       hasLastGood={networks.data !== undefined}
       loading={networks.isPending}
       refreshing={networks.isFetching}
+      rewardWallet={rewardWallet.data
+        ? { status: 'ready', wallet: rewardWallet.data }
+        : rewardWallet.isError ? { status: 'error' } : { status: 'loading' }}
     />
   )
 }

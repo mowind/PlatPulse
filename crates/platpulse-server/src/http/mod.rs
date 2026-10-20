@@ -1205,7 +1205,10 @@ pub(crate) async fn public_session_guard(
 fn guest_readable_path(path: &str) -> bool {
     // The guard runs on the nested Public router, where the matched prefix
     // has already been stripped, so paths are relative to the group.
-    path == "/networks" || path.starts_with("/nodes/") || path == "/events"
+    path == "/networks"
+        || path == "/reward-wallet"
+        || path.starts_with("/nodes/")
+        || path == "/events"
 }
 
 async fn session_guard(
@@ -3777,5 +3780,88 @@ mod tests {
             json(get(build_app(state.clone()), "/api/public/v1/networks").await).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body["error"]["code"], "auth_required");
+    }
+
+    /// The Reward Wallet Balance is a Public Projection read (issue #246):
+    /// Guests read it in Public mode, Private mode requires a human Session,
+    /// and the DTO carries the error category, never the upstream detail.
+    #[tokio::test]
+    async fn reward_wallet_follows_the_site_access_mode() {
+        let (_, _, state) = test_state().await;
+        seed_owner(&state).await;
+        let uri = "/api/public/v1/reward-wallet";
+
+        let (status, body) = json(get(build_app(state.clone()), uri).await).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "auth_required");
+
+        let app = build_app(state.clone());
+        let cookie = login_cookie(app.clone())
+            .await
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let request = Request::builder()
+            .uri(uri)
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = json(app.oneshot(request).await.unwrap()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body,
+            json!({
+                "address": crate::reward_wallet::REWARD_WALLET_ADDRESS,
+                "balance": null,
+                "unit": "LAT",
+                "state": "unavailable",
+                "lastGoodAt": null,
+                "lastAttemptAt": null,
+                "errorCategory": null,
+            })
+        );
+
+        let now = crate::auth::now_utc();
+        crate::reward_wallet::record(state.db().pool(), Ok("138179.543005858536"), now)
+            .await
+            .unwrap();
+        crate::reward_wallet::record(
+            state.db().pool(),
+            Err(crate::reward_wallet::ErrorCategory::UpstreamUnavailable),
+            now,
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE server_settings SET setting_value = 'public' WHERE setting_key = 'site_access_mode'",
+        )
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+        let (status, body) = json(get(build_app(state.clone()), uri).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["balance"], "138179.543005858536");
+        assert_eq!(body["state"], "current");
+        assert_eq!(body["errorCategory"], "upstream_unavailable");
+        let mut fields: Vec<&str> = body
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(
+            fields,
+            [
+                "address",
+                "balance",
+                "errorCategory",
+                "lastAttemptAt",
+                "lastGoodAt",
+                "state",
+                "unit"
+            ]
+        );
     }
 }

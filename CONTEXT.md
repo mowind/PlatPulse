@@ -108,6 +108,14 @@ _Avoid_: Portfolio total, Node-summed total, Cross-network total
 The numerical sum of the known cumulative Validator block counts or rewards from the per-Network Current-Selection Validator Summaries of the Networks selected on Home, keeping Validator identity and coverage scoped to each Network. Rewards are added as native-unit numbers without conversion; the overview is neither a single-asset balance nor a monetary valuation, and unavailable contributions remain unknown rather than zero.
 _Avoid_: Portfolio value, Converted asset balance, Cross-network Validator identity
 
+**Reward Wallet**:
+The single PlatON mainnet address that receives this deployment's Validator rewards (奖励账户), fixed for the deployment rather than chosen by an Owner, an Agent, or a reader. It is an on-chain account, not a Validator, a Node, or a Network.
+_Avoid_: Operator wallet, Watched address, Treasury, Validator address
+
+**Reward Wallet Balance**:
+The Reward Wallet's freely available native balance as reported by PlatScan, excluding restricted, staked, delegated, and unclaimed-reward amounts. It is one Network-independent figure that neither the Home Network selection nor the list filters narrow, and a decrease is an ordinary account movement rather than a Counter Reset or Correction.
+_Avoid_: Validator Lifetime Rewards, Total assets, Portfolio value, Cross-Network Validator Overview
+
 **Agent Enrollment**:
 The one-time process through which a new Agent establishes its identity with the Server and receives its own revocable credential.
 _Avoid_: Agent login, Permanent install token

@@ -22,8 +22,11 @@ import { cn } from '../lib/utils'
  * title line, one marker position and one value baseline by construction, and
  * the box is the target the interactive tiles already needed.
  */
-export function SummaryMetricCard({ label, value, icon: Icon, tone = 'green', action, caption, hint, hoverable = true, dataSlot = 'summary-card' }: {
+export function SummaryMetricCard({ label, value, icon: Icon, tone = 'green', action, caption, hint, accessibleName, hoverable = true, dataSlot = 'summary-card' }: {
   label: string
+  /** The tile's full accessible name when the face abbreviates what it reads
+   *  (the Balance tile's exact amount and full address); defaults to the label. */
+  accessibleName?: string
   value: ReactNode
   /** Trailing metric icon; omit it for a read-only tile that carries none. */
   icon?: LucideIcon
@@ -44,7 +47,7 @@ export function SummaryMetricCard({ label, value, icon: Icon, tone = 'green', ac
   /** `data-slot` of the tile; Node Detail keeps `node-summary-tile`. */
   dataSlot?: string
 }) {
-  return <CardX bordered={false} role="article" aria-label={label} size="small"
+  return <CardX bordered={false} role="article" aria-label={accessibleName ?? label} size="small"
     data-slot={dataSlot} data-tone={tone}
     className={cn('min-w-0 rounded-md transition-all', hoverable ? SURFACE_CARD : SURFACE_CARD_SUMMARY)}
     contentClassName="flex h-full min-w-0 flex-col gap-1 !p-3">

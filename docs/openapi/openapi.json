@@ -7488,6 +7488,36 @@
         }
       }
     },
+    "/api/public/v1/reward-wallet": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "operationId": "public_reward_wallet",
+        "responses": {
+          "200": {
+            "description": "The Reward Wallet Balance, independent of every Home selection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicRewardWallet"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/public/v1/session": {
       "get": {
         "tags": [
@@ -17050,6 +17080,76 @@
             "format": "int64"
           }
         }
+      },
+      "PublicRewardWallet": {
+        "type": "object",
+        "description": "The Reward Wallet Balance (CONTEXT.md): the fixed Reward Wallet's freely\navailable native balance as PlatScan reports it. One Network-independent\nfigure; neither the Home Network selection nor the list filters narrow it.",
+        "required": [
+          "address",
+          "unit",
+          "state"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "The fixed Reward Wallet address on PlatON mainnet."
+          },
+          "balance": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact decimal LAT string of the last successful refresh; absent until\none has succeeded."
+          },
+          "errorCategory": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PublicRewardWalletErrorCategory",
+                "description": "Category of the latest attempt's failure; absent after a success."
+              }
+            ]
+          },
+          "lastAttemptAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastGoodAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/PublicRewardWalletState",
+            "description": "`stale` once the last success is older than three refresh cycles."
+          },
+          "unit": {
+            "type": "string",
+            "description": "Always `LAT`."
+          }
+        }
+      },
+      "PublicRewardWalletErrorCategory": {
+        "type": "string",
+        "description": "Why the latest refresh produced no balance. The raw upstream error stays\nin the Server log.",
+        "enum": [
+          "upstream_unavailable",
+          "invalid_response"
+        ]
+      },
+      "PublicRewardWalletState": {
+        "type": "string",
+        "description": "Freshness of the Reward Wallet Balance. `unavailable` means no refresh has\never succeeded; it is never a zero balance.",
+        "enum": [
+          "current",
+          "stale",
+          "unavailable"
+        ]
       },
       "PublicValidatorBlockTotal": {
         "type": "object",

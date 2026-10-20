@@ -16,9 +16,11 @@ import {
 
 /**
  * Public Home search and filter URLs (issue #222, revised by issue #233). The
- * four attributable overview counters and the Peer map now read the current
- * list selection, while the two cumulative Validator cells keep the Network
- * selection and say so, so this spec reads the band and the list together. The
+ * three attributable overview counters (four before issue #246 replaced
+ * Networks with the selection-independent Balance) and the Peer map now read
+ * the current list selection, while the two cumulative Validator cells keep the
+ * Network selection and say so, so this spec reads the band and the list
+ * together. The
  * shared Server is seeded
  * by e2e/start-server.sh with two public Networks: "PlatON E2E Network" and the
  * convergence Network, whose six Active Nodes carry the display names this spec
@@ -79,9 +81,15 @@ async function listedNodes(page: Page): Promise<string[]> {
     .evaluateAll((links) => links.map((link) => (link.getAttribute('aria-label') ?? '').trim()))
 }
 
+/** One Home summary tile. The Balance tile's accessible name carries its exact
+ *  amount and full address after the label (#246). */
+function summaryCard(page: Page, label: string) {
+  return summary(page).getByRole('article', { name: label === 'Balance' ? /^Balance:/ : label, exact: true })
+}
+
 /** Read one Home summary statistic as a number. */
 async function summaryValue(page: Page, label: string): Promise<number> {
-  const card = summary(page).getByRole('article', { name: label, exact: true })
+  const card = summaryCard(page, label)
   const text = await card.locator('[data-slot="summary-value"]').innerText()
   const digits = text.replace(/[^0-9]/g, '')
   expect(digits, `the ${label} statistic must be a number, never Unknown`).not.toBe('')
@@ -90,7 +98,7 @@ async function summaryValue(page: Page, label: string): Promise<number> {
 
 /** Read one Home summary statistic exactly as the card presents it. */
 async function summaryText(page: Page, label: string): Promise<string> {
-  const card = summary(page).getByRole('article', { name: label, exact: true })
+  const card = summaryCard(page, label)
   return (await card.locator('[data-slot="summary-value"]').innerText()).trim()
 }
 
@@ -141,13 +149,13 @@ async function expectConvergenceList(page: Page): Promise<string[]> {
 }
 
 test.describe('Public Home search and filter URLs (issue #222)', () => {
-  test('narrows the Node list and reads the four counters over that selection', async ({ page }) => {
+  test('narrows the Node list and reads the three counters over that selection', async ({ page }) => {
     await loginAs(page)
     await expect(home(page)).toBeVisible()
     await expect(nodeGrid(page).locator(`a[href="/nodes/${SOLO_NODE_ID}"]`)).toBeVisible({ timeout: 15_000 })
 
     const activeNodes = await summaryValue(page, 'Active Nodes')
-    const networks = await summaryValue(page, 'Networks')
+    const balance = await summaryText(page, 'Balance')
     const unfiltered = await expectListAgreesWithSummary(page)
     expect(unfiltered.matching, 'the unfiltered list holds the whole Network selection').toBe(activeNodes)
     expect(unfiltered.cards).toBe(activeNodes)
@@ -159,13 +167,11 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expect(nodeGrid(page).locator(`a[href="/nodes/${SOLO_NODE_ID}"]`)).toHaveCount(1)
     expect(await listedNodes(page)).toEqual([expect.stringContaining('Node H')])
 
-    // Issue #233: the four attributable counters read the Nodes the search left
-    // — one Node in one Network — while the in-scope total stays the Network
-    // selection's own, and the two cumulative cells say which selection they
-    // cover.
+    // Issue #233: the three attributable counters read the Nodes the search left
+    // — one Node — while the two cumulative cells say which selection they
+    // cover and the Balance (#246) follows no selection at all.
     await expectSummaryValue(page, 'Active Nodes', 1)
-    await expectSummaryValue(page, 'Networks', 1)
-    expect(networks, 'the unfiltered Network count was the whole Registry').toBeGreaterThan(1)
+    expect(await summaryText(page, 'Balance')).toBe(balance)
     await expect(summary(page).getByText(cumulativeNote).first()).toBeVisible()
     const counts = await expectListAgreesWithSummary(page)
     expect(counts.matching).toBe(1)
@@ -178,7 +184,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await (await searchBox(page)).fill('')
     await expectListedNodes(page, activeNodes)
     await expectSummaryValue(page, 'Active Nodes', activeNodes)
-    await expectSummaryValue(page, 'Networks', networks)
+    expect(await summaryText(page, 'Balance')).toBe(balance)
     await expect(geoMap(page)).toHaveAttribute('data-scope-basis', 'network')
     await expect(summary(page).getByText(cumulativeNote)).toHaveCount(0)
   })
@@ -220,7 +226,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     expect(filtered.matching, 'the health filter narrows the list').toBeLessThan(activeNodes)
     const unknowns = await expectListedNodes(page, filtered.matching)
     expect(unknowns.filter((name) => name.startsWith('Node H '))).toHaveLength(0)
-    // The four attributable counters read the filtered selection.
+    // The three attributable counters read the filtered selection.
     await expectSummaryValue(page, 'Active Nodes', filtered.matching)
 
     // Search and health combine with AND, so the two together match nothing,
@@ -230,11 +236,13 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     await expect(page.getByText('No Active Nodes match these filters.')).toBeVisible()
     await expect(page.getByText(/widen the filters/)).toBeVisible()
     // Issue #233: a selection that holds no Node is an empty reading, and the
-    // whole band says so. The four counters that follow the list read no figure
+    // whole band says so. The three counters that follow the list read no figure
     // at all — never a zero, never a failure tone — the map states that no Node
-    // matches instead of drawing an empty world, and the two cumulative cells
-    // keep the Network selection's totals and name that selection.
-    for (const label of ['Active Nodes', 'Healthy Nodes', 'Attention', 'Networks']) {
+    // matches instead of drawing an empty world, the two cumulative cells keep
+    // the Network selection's totals and name that selection, and the Balance
+    // keeps the Reward Wallet's own figure (#246).
+    await expect(summaryCard(page, 'Balance').locator('[data-slot="summary-value"]')).toHaveText('138,179.54 LAT')
+    for (const label of ['Active Nodes', 'Healthy Nodes', 'Attention']) {
       await expect
         .poll(() => summaryText(page, label), { message: `the ${label} statistic reads its empty state` })
         .toBe('No match')
@@ -265,7 +273,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     // the counters inside it.
     await expect(tab(page, CONVERGENCE_NETWORK_NAME)).toHaveAttribute('aria-selected', 'true')
     await expectSummaryValue(page, 'Active Nodes', 1)
-    await expectSummaryValue(page, 'Networks', 1)
+    await expect(summaryCard(page, 'Balance').locator('[data-slot="summary-value"]')).toHaveText('138,179.54 LAT')
     const counts = await expectListAgreesWithSummary(page)
     expect(counts.matching).toBe(1)
     expect(await listedNodes(page)).toEqual([expect.stringContaining('Node H')])

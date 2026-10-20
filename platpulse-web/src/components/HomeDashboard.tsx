@@ -26,7 +26,7 @@ import { Alert, AlertDescription } from './ui/alert'
 import { Empty } from './ui/empty'
 import { Input, Select } from './ui/input'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
-import { Server, HeartPulse, TriangleAlert, Network, ChevronUp, ChevronDown, Info, Search, SlidersHorizontal, X } from 'lucide-react'
+import { Server, HeartPulse, TriangleAlert, ChevronUp, ChevronDown, Info, Search, SlidersHorizontal, X } from 'lucide-react'
 import { SURFACE_TOOLBAR } from '../lib/surface'
 import { cn } from '../lib/utils'
 import {
@@ -50,6 +50,7 @@ import { ValidatorTotalCard } from './ValidatorTotals'
 import { ValidatorActivityBadge } from './ValidatorActivityBadge'
 import { SURFACE_CARD_INTERACTIVE } from '../lib/surface'
 import { SummaryMetricCard } from './SummaryMetricCard'
+import { RewardWalletCard, type RewardWalletReading } from './RewardWalletCard'
 import { OverviewBand } from './OverviewBand'
 import { Button } from './ui/button'
 import { Dialog, DialogTrigger, DialogContent, DialogTitle, DialogDescription } from './ui/dialog'
@@ -66,6 +67,9 @@ type HomeDashboardProps = {
   /** True while the projection on screen is being refetched: the reading the
    *  arrival places the reader in is then still provisional (design §15.25). */
   refreshing?: boolean
+  /** The Reward Wallet Balance query (#246). It is independent of the Network
+   *  projection above, so it is handed over as its own reading. */
+  rewardWallet?: RewardWalletReading
 }
 
 type NodeRecord = { network: PublicNetwork; node: PublicNode }
@@ -133,6 +137,7 @@ export default function HomeDashboard({
   hasLastGood = true,
   loading,
   refreshing = false,
+  rewardWallet = { status: 'loading' },
 }: HomeDashboardProps) {
   const [search, setSearch] = useSearchParams()
   // An ordinary Home URL is the whole filter state (design §9, #222): the
@@ -452,22 +457,15 @@ export default function HomeDashboard({
   // the one Home has always shown.
   const selectionNarrowed = matching.length !== scoped.length
   const matchedNodes = useMemo(() => matching.map(({ node }) => node), [matching])
-  // A narrowed list is counted by the Networks that still hold a matched Node;
-  // unfiltered, the counter keeps reading the Network selection itself, so a
-  // Network with no Active Node is not silently dropped from it.
-  const matchedNetworkCount = useMemo(() => {
-    if (!selectionNarrowed) return scopedNetworks.length
-    const keys = new Set(matching.map(({ network }) => network.networkKey))
-    return scopedNetworks.filter((network) => keys.has(network.networkKey)).length
-  }, [matching, scopedNetworks, selectionNarrowed])
   const healthyCount = hasProjection ? matching.filter(({ node }) => healthCategory(node.health) === 'healthy').length : null
   // A narrowed selection that matches no Node leaves the whole band in an
-  // explicit empty state (#233, decision 8): the four counters that follow the
+  // explicit empty state (#233, decision 8): the three counters that follow the
   // list read no figure at all — never a zero, and never a failure tone — while
   // the list states the reason in words instead of a count. Without a
   // projection the counters keep reading 'Unknown', which is a
-  // different statement from "no Node matches". The two cumulative cells are
-  // not part of the empty state: they keep their Network-level totals.
+  // different statement from "no Node matches". The two cumulative cells and
+  // the Balance tile are not part of the empty state: the cumulative cells keep
+  // their Network-level totals and the Balance follows no selection at all.
   const emptySelection = hasProjection && selectionNarrowed && matching.length === 0
   const emptyLabel = emptySelection ? 'No match' : undefined
   const activeNodeCount = emptySelection ? null : hasProjection ? matching.length : null
@@ -475,7 +473,6 @@ export default function HomeDashboard({
   const attentionCount = activeNodeCount === null || selectionHealthyCount === null
     ? null
     : activeNodeCount - selectionHealthyCount
-  const selectionNetworkCount = emptySelection ? null : hasProjection ? matchedNetworkCount : null
   // The map receives a projection, never raw Network input. While nothing is
   // narrowed that projection is the Network-level Geo Insight, field for field;
   // a narrowed list reads the Node Selection Geo Aggregate over exactly the
@@ -565,16 +562,19 @@ export default function HomeDashboard({
         metricsLabel="Home summary"
         mapFirst
         metrics={<>
-          {/* Four counters read the current list selection (#233); the two
-              cumulative Validator cells keep the Network selection and say so
-              on their face ('All of …', #245), because the Server publishes those totals per
-              Network and a Node filter must never re-sum them. A selection that
-              matches no Node puts these four in their own explicit empty state
-              instead of a zero, while the cumulative cells keep counting the
-              Network selection. */}
+          {/* Reading/DOM order (#246): Active, Healthy, Attention, Balance,
+              Cumulative blocks, Cumulative rewards — three rows of two on phones
+              and two rows of three from 640px, so the visual order is the DOM
+              order. The three counters read the current list selection (#233);
+              the two cumulative Validator cells keep the Network selection and
+              say so on their face ('All of …', #245), because the Server
+              publishes those totals per Network and a Node filter must never
+              re-sum them. A selection that matches no Node puts the three
+              counters in their own explicit empty state instead of a zero. The
+              Balance is the fixed Reward Wallet's own figure: no Network
+              selection, filter or Network projection failure changes it. */}
           <SummaryCard label="Active Nodes" value={activeNodeCount} tone="green" icon="server" emptyLabel={emptyLabel} />
           <SummaryCard label="Healthy Nodes" value={selectionHealthyCount} tone="green" icon="heart" emptyLabel={emptyLabel} />
-          <ValidatorTotalCard networks={scopedNetworks} metric="blocks" listNarrowed={selectionNarrowed} availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
           {/* The one tile whose figure is a health verdict rather than a plain
               count, so it is the one tile that states what it counts (#236 round
               2). The caption names the two Server verdicts and the title states
@@ -582,7 +582,8 @@ export default function HomeDashboard({
           <SummaryCard label="Attention" value={attentionCount}
             tone={attentionCount === null || attentionCount === 0 ? 'green' : 'red'} icon="alert" emptyLabel={emptyLabel}
             caption={ATTENTION_CAPTION} hint={ATTENTION_HINT} />
-          <SummaryCard label="Networks" value={selectionNetworkCount} tone="green" icon="network" emptyLabel={emptyLabel} />
+          <RewardWalletCard reading={rewardWallet} />
+          <ValidatorTotalCard networks={scopedNetworks} metric="blocks" listNarrowed={selectionNarrowed} availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
           <ValidatorTotalCard networks={scopedNetworks} metric="rewards" listNarrowed={selectionNarrowed} availability={loading ? 'loading' : hasProjection ? 'ready' : 'unavailable'} />
         </>}
         map={<GeoMapBoundary>
@@ -1011,7 +1012,6 @@ const SUMMARY_ICONS = {
   server: Server,
   heart: HeartPulse,
   alert: TriangleAlert,
-  network: Network,
 } as const
 
 function SummaryCard({ label, value, tone, icon, emptyLabel, caption, hint }: {

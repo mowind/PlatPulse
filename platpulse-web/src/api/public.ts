@@ -6,10 +6,12 @@ import {
   publicNodeDetail,
   publicNodeHistory,
   publicNodeMetrics,
+  publicRewardWallet,
   type PublicBlockHistoryItem,
   type PublicNetwork,
   type PublicNodeDetail,
   type PublicNodeMetricHistory,
+  type PublicRewardWallet,
 } from './generated'
 import {
   requestGenerated,
@@ -51,6 +53,7 @@ export const publicKeys = {
   history: (nodeId: string) => ['public', 'node', nodeId, 'history'] as const,
   metrics: (nodeId: string) => ['public', 'node', nodeId, 'metrics'] as const,
   validators: ['public', 'validator'] as const,
+  rewardWallet: ['public', 'reward-wallet'] as const,
 } as const
 
 function contextOf(
@@ -74,6 +77,16 @@ export async function fetchNetworks(signal?: AbortSignal, generation?: number): 
   return requestGenerated(
     () => publicNetworks({ signal: context.signal, headers: headersOf(context) }),
     'Unable to load Active Nodes',
+  )
+}
+
+/** The Reward Wallet Balance (#246): one Network-independent reading, so it is
+ *  its own request rather than a field of the Network projection. */
+export async function fetchRewardWallet(signal?: AbortSignal, generation?: number): Promise<PublicRewardWallet> {
+  const context = contextOf(signal, generation)
+  return requestGenerated(
+    () => publicRewardWallet({ signal: context.signal, headers: headersOf(context) }),
+    'Unable to load the Reward Wallet Balance',
   )
 }
 
@@ -175,6 +188,16 @@ export async function fetchNodeHistory(nodeId: string, signal?: AbortSignal, gen
 
 export function usePublicNetworks(generation: number, enabled = true) {
   return useQuery({ queryKey: [...publicKeys.networks, generation], queryFn: ({ signal }) => fetchNetworks(signal, generation), enabled })
+}
+
+/** Independent of the Network query: neither its loading nor its failure, nor
+ *  any Home selection, changes what this one reads. */
+export function usePublicRewardWallet(generation: number, enabled = true) {
+  return useQuery({
+    queryKey: [...publicKeys.rewardWallet, generation],
+    queryFn: ({ signal }) => fetchRewardWallet(signal, generation),
+    enabled,
+  })
 }
 
 export function usePublicNode(nodeId: string, generation: number) {
@@ -315,6 +338,8 @@ export function invalidatePublicResource(resource: string, resourceId?: string, 
         return [publicKeys.networks]
       case 'validator':
         return [publicKeys.validators, publicKeys.networks]
+      case 'reward_wallet':
+        return [publicKeys.rewardWallet]
       case 'collection':
         return [publicKeys.all]
       default:
@@ -322,7 +347,7 @@ export function invalidatePublicResource(resource: string, resourceId?: string, 
     }
   })()
   for (const queryKey of keys) {
-    if (resourceId !== undefined || queryKey === publicKeys.networks) {
+    if (resourceId !== undefined || queryKey === publicKeys.networks || queryKey === publicKeys.rewardWallet) {
       invalidatePublicExact(queryKey, generation)
     } else {
       invalidatePublicNamespace(queryKey, generation)

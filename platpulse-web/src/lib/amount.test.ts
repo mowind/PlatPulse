@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatAmountCompact, formatAmountExact, formatAmountOverview, sumKnownAmounts } from './amount'
+import { formatAmountCompact, formatAmountExact, formatAmountOverview, formatAmountTwoDecimals, sumKnownAmounts } from './amount'
 
 /**
  * Issue #155: Provider monetary amounts arrive as bounded decimal strings
@@ -117,5 +117,19 @@ describe('sumKnownAmounts', () => {
     expect(sumKnownAmounts([])).toBeNull()
     expect(sumKnownAmounts([null, undefined])).toBeNull()
     expect(sumKnownAmounts(['0', null])).toBe('0')
+  })
+})
+
+describe('formatAmountTwoDecimals', () => {
+  it('groups the integer and truncates to exactly two fractional digits', () => {
+    expect(formatAmountTwoDecimals('138179.543005858536')).toBe('138,179.54')
+    expect(formatAmountTwoDecimals('0.999')).toBe('0.99')
+    expect(formatAmountTwoDecimals('42')).toBe('42.00')
+    expect(formatAmountTwoDecimals('7.5')).toBe('7.50')
+  })
+
+  it('never turns a malformed value into zero', () => {
+    expect(formatAmountTwoDecimals(null)).toBe('Unknown')
+    expect(formatAmountTwoDecimals('-1')).toBe('Unknown')
   })
 })

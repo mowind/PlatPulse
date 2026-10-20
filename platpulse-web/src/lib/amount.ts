@@ -44,6 +44,18 @@ export function formatAmountExact(value: string | null | undefined): string {
   return parts ? renderDecimal(parts, false) : 'Unknown'
 }
 
+/**
+ * A balance on a narrow tile: grouped integer digits and exactly two
+ * fractional digits, truncated from the source digits (never rounded up, so
+ * the tile never states more than the account holds). The exact digits stay
+ * reachable beside it. Malformed input is Unknown, never a zero.
+ */
+export function formatAmountTwoDecimals(value: string | null | undefined): string {
+  const parts = parseDecimalAmount(value)
+  if (!parts) return 'Unknown'
+  return groupInteger(parts.integer) + '.' + parts.fractional.slice(0, 2).padEnd(2, '0')
+}
+
 /** Add already-deduplicated Network subtotals without losing decimal digits.
  * Missing values contribute nothing; an entirely unknown selection stays null.
  * This is a numerical cross-Network overview, not currency conversion. */

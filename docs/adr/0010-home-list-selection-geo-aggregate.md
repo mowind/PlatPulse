@@ -2,6 +2,8 @@
 
 **Status:** Accepted; implemented by issue #233 (Server slice in crates/platpulse-server/src/http/public.rs, Web slice in platpulse-web/src/homeGeo.ts and platpulse-web/src/components/). This revises the Home scope rule settled for issue #222 (Story 71), which had made the whole overview band and the Peer country map follow only the Network selection while the search, Health and Validator status filters narrowed the Node list.
 
+**Amended:** Networks counter replaced by Reward Wallet Balance; three attributable counters (issue #246, docs/design/webui.md §15.37). The Balance tile reads the fixed Reward Wallet and follows no selection, so the counters that read the current list selection are now Active Nodes, Healthy Nodes and Attention; every other decision below stands.
+
 ## Context
 
 A Home reader who types a search term, or picks a Health or Validator status, is looking at a specific set of Nodes. Until this decision the band above that list kept reporting the whole Network selection: four attributable counters (Active Nodes, Healthy Nodes, Attention, Networks) and the Peer country map described Nodes the reader had just filtered out, with a sentence explaining that the overview covered the whole Network selection. The list said one thing and the readings above it another.

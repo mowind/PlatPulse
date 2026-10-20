@@ -137,6 +137,14 @@ with sqlite3.connect(path) as db:
         "INSERT OR REPLACE INTO server_settings (setting_key, setting_value, updated_at) VALUES ('geo_provider_generation', '0', ?)",
         (now,),
     )
+    # Reward Wallet Balance (#246): development mode starts no PlatScan
+    # refresher, so the suite reads this row instead. It is the 2026-10-20
+    # mainnet reading, and the refresher below keeps last_good_at inside the
+    # Server's three-minute current window.
+    db.execute(
+        "INSERT OR REPLACE INTO reward_wallet_balance (address, balance, last_good_at, last_attempt_at, error_category) VALUES ('lat1zyctwgvw3ssagn722cneh6sz92y8j3dp8gqj5h', '138179.543005858536', ?, ?, NULL)",
+        (fresh, fresh),
+    )
     db.execute(
         "INSERT OR IGNORE INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES (?, 1, ?, ?)",
         (agent_id, now, now),
@@ -1000,6 +1008,11 @@ while True:
             db.execute(
                 "UPDATE current_validator_insights SET last_attempt_received_at = ?, last_good_verdict_received_at = ? WHERE validator_id = ?",
                 (fresh, fresh, "0195f2a1-0071-4071-8071-000000000071"),
+            )
+            # The seeded Reward Wallet reading stays current (#246).
+            db.execute(
+                "UPDATE reward_wallet_balance SET last_good_at = ?, last_attempt_at = ? WHERE address = 'lat1zyctwgvw3ssagn722cneh6sz92y8j3dp8gqj5h'",
+                (fresh, fresh),
             )
     except Exception:
         # The Server holds the only write connection; a transient SQLITE_BUSY

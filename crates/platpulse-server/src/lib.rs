@@ -50,6 +50,8 @@ pub mod redaction;
 pub mod relationships;
 pub mod restore;
 pub mod retention;
+/// Reward Wallet Balance refresher and reading (issue #246).
+pub mod reward_wallet;
 pub mod secrets;
 /// Bounded, interruptible SQLite integrity queries (issue #194).
 pub(crate) mod sqlite_check;

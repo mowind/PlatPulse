@@ -3124,6 +3124,91 @@ pub(crate) async fn public_access_settings(State(state): State<AppState>) -> Res
     }
 }
 
+/// Freshness of the Reward Wallet Balance. `unavailable` means no refresh has
+/// ever succeeded; it is never a zero balance.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicRewardWalletState {
+    Current,
+    Stale,
+    Unavailable,
+}
+
+/// Why the latest refresh produced no balance. The raw upstream error stays
+/// in the Server log.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicRewardWalletErrorCategory {
+    UpstreamUnavailable,
+    InvalidResponse,
+}
+
+/// The Reward Wallet Balance (CONTEXT.md): the fixed Reward Wallet's freely
+/// available native balance as PlatScan reports it. One Network-independent
+/// figure; neither the Home Network selection nor the list filters narrow it.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicRewardWallet {
+    /// The fixed Reward Wallet address on PlatON mainnet.
+    pub address: String,
+    /// Exact decimal LAT string of the last successful refresh; absent until
+    /// one has succeeded.
+    pub balance: Option<String>,
+    /// Always `LAT`.
+    pub unit: String,
+    /// `stale` once the last success is older than three refresh cycles.
+    pub state: PublicRewardWalletState,
+    pub last_good_at: Option<String>,
+    pub last_attempt_at: Option<String>,
+    /// Category of the latest attempt's failure; absent after a success.
+    pub error_category: Option<PublicRewardWalletErrorCategory>,
+}
+
+impl From<crate::reward_wallet::RewardWalletReading> for PublicRewardWallet {
+    fn from(reading: crate::reward_wallet::RewardWalletReading) -> Self {
+        use crate::reward_wallet::{BalanceState, ErrorCategory};
+        Self {
+            address: reading.address.to_owned(),
+            balance: reading.balance,
+            unit: crate::reward_wallet::REWARD_WALLET_UNIT.to_owned(),
+            state: match reading.state {
+                BalanceState::Current => PublicRewardWalletState::Current,
+                BalanceState::Stale => PublicRewardWalletState::Stale,
+                BalanceState::Unavailable => PublicRewardWalletState::Unavailable,
+            },
+            last_good_at: reading.last_good_at,
+            last_attempt_at: reading.last_attempt_at,
+            error_category: reading.error_category.map(|category| match category {
+                ErrorCategory::UpstreamUnavailable => {
+                    PublicRewardWalletErrorCategory::UpstreamUnavailable
+                }
+                ErrorCategory::InvalidResponse => PublicRewardWalletErrorCategory::InvalidResponse,
+            }),
+        }
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/public/v1/reward-wallet",
+    tag = "public",
+    responses(
+        (status = 200, description = "The Reward Wallet Balance, independent of every Home selection", body = PublicRewardWallet),
+        (status = 503, body = crate::http::ApiErrorBody)
+    )
+)]
+pub(crate) async fn public_reward_wallet(State(state): State<AppState>) -> Response {
+    match crate::reward_wallet::read(state.db().pool(), crate::auth::now_utc()).await {
+        Ok(reading) => Json(PublicRewardWallet::from(reading)).into_response(),
+        Err(_) => error_response(
+            "unknown",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
+    }
+}
+
 fn error_response(
     request_id: &str,
     status: StatusCode,
@@ -3144,6 +3229,7 @@ pub fn router() -> Router<AppState> {
         .route("/session", get(session_handler))
         .route("/access", get(public_access_settings))
         .route("/networks", get(public_networks))
+        .route("/reward-wallet", get(public_reward_wallet))
         .route("/nodes/{node_id}", get(public_node_detail))
         .route("/nodes/{node_id}/history", get(public_node_history))
         .route("/nodes/{node_id}/metrics", get(public_node_metrics))

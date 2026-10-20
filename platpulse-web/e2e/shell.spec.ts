@@ -55,7 +55,7 @@ test.describe('Authenticated shell', () => {
     await expect(page.getByText('Active Nodes', { exact: true })).toBeVisible()
     await expect(page.getByText('Healthy Nodes', { exact: true })).toBeVisible()
     await expect(page.getByText('Attention', { exact: true })).toBeVisible()
-    await expect(page.getByText('Networks', { exact: true })).toBeVisible()
+    await expect(page.getByText('Balance', { exact: true })).toBeVisible()
     await expect(page.getByRole('tablist', { name: 'Network filter' })).toBeVisible()
     await expect(page.getByRole('tab', { name: 'All Networks' })).toHaveAttribute('aria-selected', 'true')
     // Issue #232: the row control a reader reaches is the Sort & filter entry;

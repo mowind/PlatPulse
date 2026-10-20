@@ -125,7 +125,7 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(lDiagnostic).toHaveAttribute('title', 'one or more observations are stale or unknown')
     await expect(lDiagnostic).toHaveAttribute('data-tone', 'warning')
 
-    // The four non-cumulative summary cards stay marker, title and number, with
+    // The three Node counters stay marker, title and number, with
     // one deliberate exception: the Attention tile names what it counts on the
     // shared stat line, so its figure is never read as a chain-height
     // difference. The two cumulative cards add their scope/coverage line to
@@ -134,7 +134,6 @@ test.describe('Converged Public Home (issue #102)', () => {
       { label: 'Active Nodes', value: '12' },
       { label: 'Healthy Nodes', value: '5' },
       { label: 'Attention', value: '7', caption: 'Unhealthy or Unknown' },
-      { label: 'Networks', value: '2' },
     ]
     for (const { label, value, caption } of summaryFacts) {
       const card = page.getByRole('article', { name: label, exact: true })
@@ -150,6 +149,17 @@ test.describe('Converged Public Home (issue #102)', () => {
       expect(height, 'summary card keeps the restored compact height').toBeGreaterThanOrEqual(80)
       expect(height, 'summary card stays compact').toBeLessThanOrEqual(160)
     }
+
+    // The Balance tile (#246) reads the seeded Reward Wallet row: two grouped
+    // decimals and the short Mainnet address on its face, the exact digits and
+    // the full address in its title and accessible name, and no Breakdown.
+    const balance = page.getByRole('article', { name: /^Balance:/ })
+    await expect(balance).toHaveCount(1)
+    await expect(balance.locator('[data-slot="summary-value"]')).toHaveText('138,179.54 LAT')
+    await expect(balance.locator('[data-slot="summary-caption"]')).toHaveText('Mainnet · lat1zy…j5h')
+    await expect(balance.locator('[data-slot="summary-reading"]')).toHaveAttribute('title', /138179\.543005858536 LAT · Reward Wallet lat1zyctwgvw3ssagn722cneh6sz92y8j3dp8gqj5h/)
+    await expect(balance.getByRole('button')).toHaveCount(0)
+    await expect(balance.getByRole('link')).toHaveCount(0)
 
     // The cumulative tiles print their own Network scope and their own
     // valued/expected reporting count directly on the face; coverage is no

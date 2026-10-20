@@ -5,6 +5,7 @@ import { BrowserRouter, createMemoryRouter, RouterProvider } from 'react-router'
 import type { PublicNetwork, PublicNode } from '../api/generated'
 import { homeReturnState, homeReturnTab, type HomeReturnState } from '../homeReturn'
 import HomeDashboard from './HomeDashboard'
+import type { RewardWalletReading } from './RewardWalletCard'
 
 const network = {
   networkKey: 'mainnet',
@@ -47,6 +48,21 @@ const network = {
   },
 } satisfies PublicNetwork
 
+/** A current Reward Wallet Balance (#246), the fixture every Home render reads
+ *  unless a test asks for another state. */
+const rewardWallet: RewardWalletReading = {
+  status: 'ready',
+  wallet: {
+    address: 'lat1zyctwgvw3ssagn722cneh6sz92y8j3dp8gqj5h',
+    balance: '138179.543005858536',
+    unit: 'LAT',
+    state: 'current',
+    lastGoodAt: new Date().toISOString(),
+    lastAttemptAt: new Date().toISOString(),
+    errorCategory: null,
+  },
+}
+
 /** The title is the one stretched Node Detail link; controls are siblings. */
 const nodeCardLink = (name: string) => screen.getByRole('link', { name: new RegExp(name) })
 const cardOf = (link: HTMLElement) => link.closest('article') as HTMLElement
@@ -60,7 +76,9 @@ const validatorSummaryValue = (scope: HTMLElement, label: string) => {
 
 /** The summary card carrying the given label (issue #142). */
 const summaryCardOf = (label: string) => {
-  const card = screen.getByRole('article', { name: label })
+  // The Balance tile's accessible name carries the exact amount and address
+  // after its label (#246); every other tile is named by its label alone.
+  const card = screen.getByRole('article', { name: label === 'Balance' ? /^Balance:/ : label })
   if (!card) throw new Error(`No summary card for ${label}`)
   return card as HTMLElement
 }
@@ -74,7 +92,7 @@ const summaryValueOf = (label: string) => {
 
 /** Home in its ordinary shell: the projection, the realtime status and the
  *  session states a reader sees, against the URL the test set up beforehand. */
-function renderHome(networks: PublicNetwork[], options: { loading?: boolean } = {}) {
+function renderHome(networks: PublicNetwork[], options: { loading?: boolean; rewardWallet?: RewardWalletReading } = {}) {
   return render(
     <BrowserRouter>
       <HomeDashboard
@@ -84,6 +102,7 @@ function renderHome(networks: PublicNetwork[], options: { loading?: boolean } = 
         resetting={false}
         error={null}
         loading={options.loading ?? false}
+        rewardWallet={options.rewardWallet ?? rewardWallet}
       />
     </BrowserRouter>,
   )
@@ -130,12 +149,15 @@ afterEach(() => {
 describe('Public Home dashboard', () => {
   it('scopes all six overview counters, map and cards to the selected network', () => {
     const second = { ...network, networkKey: 'testnet', displayName: 'Testnet', nodes: [{ ...network.nodes[0], nodeId: 'gamma', displayName: 'Gamma', networkKey: 'testnet' }] }
-    render(<BrowserRouter><HomeDashboard networks={[network, second]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    render(<BrowserRouter><HomeDashboard networks={[network, second]} realtimeStatus="connected" online resetting={false} error={null} loading={false} rewardWallet={rewardWallet} /></BrowserRouter>)
+    expect(summaryValueOf('Balance').textContent).toBe('138,179.54 LAT')
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Testnet' }), { button: 0, ctrlKey: false })
     expect(summaryValueOf('Active Nodes').textContent).toBe('1')
     expect(summaryValueOf('Healthy Nodes').textContent).toBe('1')
     expect(summaryValueOf('Attention').textContent).toBe('0')
-    expect(summaryValueOf('Networks').textContent).toBe('1')
+    // The Reward Wallet Balance follows no Network selection.
+    expect(summaryValueOf('Balance').textContent).toBe('138,179.54 LAT')
+    expect(screen.queryByRole('article', { name: 'Networks' })).toBeNull()
     expect(summaryValueOf('Cumulative blocks').textContent).toBe('100')
     expect(summaryValueOf('Cumulative rewards').textContent).toBe('10')
     expect(screen.queryByRole('link', { name: /Alpha/ })).toBeNull()
@@ -696,18 +718,21 @@ describe('Public Home dashboard', () => {
       expect(marker).not.toBeNull()
       expect(marker!.querySelectorAll('svg[data-icon]')).toHaveLength(1)
       expect(header.lastElementChild).toBe(marker)
-      expect(header.firstElementChild?.textContent).toBe(card.getAttribute('aria-label'))
+      expect(card.getAttribute('aria-label')?.startsWith(header.firstElementChild?.textContent ?? '\u0000')).toBe(true)
     }
   })
 
   it('orders all six overview cards together and removes the standalone Validator summary', () => {
-    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} rewardWallet={rewardWallet} /></BrowserRouter>)
     const summary = screen.getByLabelText('Home summary')
     const cards = within(summary).getAllByRole('article')
-    expect(cards.map(card => card.getAttribute('aria-label'))).toEqual([
-      'Active Nodes', 'Healthy Nodes', 'Cumulative blocks', 'Attention', 'Networks', 'Cumulative rewards',
+    // #246: DOM order is the visual order — two rows of three from 640px
+    // (Active/Healthy/Attention, Balance/blocks/rewards) and three rows of two
+    // below it (Active/Healthy, Attention/Balance, blocks/rewards).
+    expect(cards.map(card => card.querySelector('[data-slot="card-x-content"] > div:first-child > span')?.textContent)).toEqual([
+      'Active Nodes', 'Healthy Nodes', 'Attention', 'Balance', 'Cumulative blocks', 'Cumulative rewards',
     ])
-    expect(cards.map(card => card.querySelector('[data-slot="summary-value"]')?.textContent)).toEqual(['2', '1', '100', '1', '1', '10'])
+    expect(cards.map(card => card.querySelector('[data-slot="summary-value"]')?.textContent)).toEqual(['2', '1', '1', '138,179.54 LAT', '100', '10'])
     expect(summary.className).toContain('grid-cols-2')
     expect(summary.className).toContain('sm:grid-cols-3')
     expect(summary.className).toContain('auto-rows-fr')
@@ -724,7 +749,7 @@ describe('Public Home dashboard', () => {
     const attention = summaryCardOf('Attention')
     // The tile names the two states it counts inside the caption slot every card
     // already reserves, and the full reading travels as the tile's title. The
-    // other five tiles stay wordless, so the band keeps its density (round 2).
+    // plain count tiles stay wordless, so the band keeps its density (round 2).
     expect(attention.querySelector('[data-slot="summary-caption"]')?.textContent).toBe('Unhealthy or Unknown')
     expect(attention.querySelector('[data-slot="summary-reading"]')?.getAttribute('title')).toBe('Home Attention counts Active Nodes the Server has not confirmed Healthy: Unhealthy or Unknown. A chain-height difference never counts, and Observing is not an abnormal state.')
     // The explanation is a tooltip, never copy the compact tile has to render.
@@ -732,9 +757,9 @@ describe('Public Home dashboard', () => {
     expect(screen.queryByText(/^Home Attention counts Active Nodes/)).toBeNull()
     const summary = screen.getByLabelText('Home summary')
     expect([...summary.querySelectorAll('[data-slot="summary-caption"]')].filter((caption) => caption.textContent === 'Unhealthy or Unknown')).toHaveLength(1)
-    // The three plain count tiles stay wordless: the caption slot they already
+    // The two plain count tiles stay wordless: the caption slot they already
     // reserve is empty, so the band's height and density are unchanged.
-    expect(['Active Nodes', 'Healthy Nodes', 'Networks'].map((label) => summaryCardOf(label).querySelector('[data-slot="summary-caption"]')?.textContent)).toEqual(['', '', ''])
+    expect(['Active Nodes', 'Healthy Nodes'].map((label) => summaryCardOf(label).querySelector('[data-slot="summary-caption"]')?.textContent)).toEqual(['', ''])
     // Attention First is the one order whose name does not say what it leads
     // with, so its explanation is announced with the control that selects it,
     // and withdrawn again when another order is chosen.
@@ -773,10 +798,10 @@ describe('Public Home dashboard', () => {
     expect(window.location.href).toBe(before)
   })
 
-  it('paints Active Nodes, Healthy Nodes, and Networks with the brand-green marker', () => {
-    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+  it('paints Active Nodes, Healthy Nodes, and Balance with the brand-green marker', () => {
+    render(<BrowserRouter><HomeDashboard networks={[network]} realtimeStatus="connected" online resetting={false} error={null} loading={false} rewardWallet={rewardWallet} /></BrowserRouter>)
 
-    for (const label of ['Active Nodes', 'Healthy Nodes', 'Networks']) {
+    for (const label of ['Active Nodes', 'Healthy Nodes', 'Balance']) {
       expect(summaryCardOf(label).getAttribute('data-tone')).toBe('green')
     }
   })
@@ -1132,8 +1157,23 @@ describe('Public Home dashboard', () => {
   it('does not render loading as fabricated zero-valued summary data', () => {
     render(<BrowserRouter><HomeDashboard networks={[]} realtimeStatus="connecting" online loading resetting={false} error={null} /></BrowserRouter>)
     const summary = screen.getByLabelText('Home summary')
-    expect(within(summary).getAllByText('Unknown')).toHaveLength(6)
+    // Five tiles wait on the Network projection; the Balance waits on its own
+    // query and states that it is loading, never a zero.
+    expect(within(summary).getAllByText('Unknown')).toHaveLength(5)
+    expect(summaryValueOf('Balance').textContent).toBe('—')
+    expect(summaryCardOf('Balance').querySelector('[data-slot="summary-caption"]')?.textContent).toBe('Loading…')
     expect(screen.queryByText('No Active Nodes in this view.')).toBeNull()
+  })
+
+  it('keeps the Balance on its own query when the Network projection is loading or failed', () => {
+    const { unmount } = render(<BrowserRouter><HomeDashboard networks={[]} realtimeStatus="connecting" online loading resetting={false} error={null} rewardWallet={rewardWallet} /></BrowserRouter>)
+    expect(summaryValueOf('Active Nodes').textContent).toBe('Unknown')
+    expect(summaryValueOf('Balance').textContent).toBe('138,179.54 LAT')
+    unmount()
+    render(<BrowserRouter><HomeDashboard networks={[]} realtimeStatus="connected" online resetting={false} error="Unable to load Active Nodes" hasLastGood={false} loading={false} rewardWallet={rewardWallet} /></BrowserRouter>)
+    expect(screen.getByText('Unable to load Active Nodes')).toBeTruthy()
+    expect(summaryValueOf('Active Nodes').textContent).toBe('Unknown')
+    expect(summaryValueOf('Balance').textContent).toBe('138,179.54 LAT')
   })
 
   it('preserves an authoritative empty projection when a refresh fails', () => {
@@ -1245,7 +1285,7 @@ describe('Public Home filter URLs', () => {
     expect(filterNotice()).toBeNull()
   })
 
-  it('narrows the list by search and reads the four counters over that selection', () => {
+  it('narrows the list by search and reads the three counters over that selection', () => {
     renderHome([network, secondNetwork])
     // The overview counters are the one place Home states how many Nodes it
     // holds: the list itself carries no count line.
@@ -1257,11 +1297,12 @@ describe('Public Home filter URLs', () => {
     fireEvent.change(searchbox(), { target: { value: 'Alpha' } })
 
     expect(nodeHrefs()).toEqual(['/nodes/node-a'])
-    // Issue #233: the four attributable counters and the map read the list
+    // Issue #233: the three attributable counters and the map read the list
     // selection the filters left, while the two cumulative cells keep the
     // Network selection and say so on the card.
     expect(summaryValueOf('Active Nodes').textContent).toBe('1')
-    expect(summaryValueOf('Networks').textContent).toBe('1')
+    // The Balance is not part of the list selection.
+    expect(summaryValueOf('Balance').textContent).toBe('138,179.54 LAT')
     expect(document.querySelector('[data-scope-basis]')?.getAttribute('data-scope-basis')).toBe('node-selection')
     // #245: the note is one scope word on the face, not a sentence in the caption.
     expect(screen.getByRole('article', { name: 'Cumulative blocks' }).querySelector('[data-slot="summary-caption"]')?.textContent).toMatch(/^All of 2 Networks · /)
@@ -1307,12 +1348,13 @@ describe('Public Home filter URLs', () => {
     expect(screen.getByText('No Active Nodes match these filters.')).toBeTruthy()
     expect(document.body.textContent).toContain('widen the filters')
     // Issue #233: a selection that holds no Node is an empty reading, not a
-    // zero — the four counters that follow the list state no figure at all
+    // zero — the three counters that follow the list state no figure at all
     // instead of inventing a country count for the Nodes they did not find.
     expect(summaryValueOf('Active Nodes').textContent).toBe('No match')
     expect(summaryValueOf('Healthy Nodes').textContent).toBe('No match')
     expect(summaryValueOf('Attention').textContent).toBe('No match')
-    expect(summaryValueOf('Networks').textContent).toBe('No match')
+    // The Balance is the Reward Wallet's own figure: it still reads its value.
+    expect(summaryValueOf('Balance').textContent).toBe('138,179.54 LAT')
     expect(document.querySelector('[data-scope-basis]')?.getAttribute('data-scope-basis')).toBe('node-selection')
     // The two cumulative cells do not follow the list, so they keep the
     // Network selection's figures and say so on the card.

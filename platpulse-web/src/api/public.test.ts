@@ -4,6 +4,7 @@ import { client } from './generated/client.gen'
 import {
   applySiteAccessSettings,
   fetchNetworks,
+  fetchRewardWallet,
   invalidatePublicResource,
   PUBLIC_INVALIDATION_COALESCE_MS,
   publicKeys,
@@ -78,6 +79,34 @@ describe('Public adapter and query namespace', () => {
     expect(invalidate).toHaveBeenCalledTimes(1)
     expect(invalidate.mock.calls.map(([options]) => options)).toEqual([
       { queryKey: [...publicKeys.networks, 0], exact: true, refetchType: 'active' },
+    ])
+  })
+
+  it('reads the Reward Wallet Balance from its own Public route', async () => {
+    client.setConfig({ baseUrl: 'http://platpulse.test' })
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      void input
+      return Promise.resolve(response({ address: 'lat1', balance: '1', unit: 'LAT', state: 'current' }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wallet = await fetchRewardWallet(undefined, 5)
+
+    const request = fetchMock.mock.calls[0]?.[0] as unknown as Request
+    expect(request.url).toContain('/api/public/v1/reward-wallet')
+    expect(request.headers.get('X-PlatPulse-Access-Generation')).toBe('5')
+    expect(wallet.balance).toBe('1')
+  })
+
+  it('refetches only the Reward Wallet Balance for its own invalidation', () => {
+    vi.useFakeTimers()
+    const invalidate = vi.spyOn(publicQueryClient, 'invalidateQueries')
+
+    invalidatePublicResource('reward_wallet', undefined, 3)
+    vi.advanceTimersByTime(PUBLIC_INVALIDATION_COALESCE_MS)
+
+    expect(invalidate.mock.calls.map(([options]) => options)).toEqual([
+      { queryKey: [...publicKeys.rewardWallet, 0], exact: true, refetchType: 'active' },
     ])
   })
 

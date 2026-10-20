@@ -3986,6 +3986,46 @@ export type PublicPeerLagSummary = {
 };
 
 /**
+ * The Reward Wallet Balance (CONTEXT.md): the fixed Reward Wallet's freely
+ * available native balance as PlatScan reports it. One Network-independent
+ * figure; neither the Home Network selection nor the list filters narrow it.
+ */
+export type PublicRewardWallet = {
+    /**
+     * The fixed Reward Wallet address on PlatON mainnet.
+     */
+    address: string;
+    /**
+     * Exact decimal LAT string of the last successful refresh; absent until
+     * one has succeeded.
+     */
+    balance?: string | null;
+    errorCategory?: null | PublicRewardWalletErrorCategory;
+    lastAttemptAt?: string | null;
+    lastGoodAt?: string | null;
+    /**
+     * `stale` once the last success is older than three refresh cycles.
+     */
+    state: PublicRewardWalletState;
+    /**
+     * Always `LAT`.
+     */
+    unit: string;
+};
+
+/**
+ * Why the latest refresh produced no balance. The raw upstream error stays
+ * in the Server log.
+ */
+export type PublicRewardWalletErrorCategory = 'upstream_unavailable' | 'invalid_response';
+
+/**
+ * Freshness of the Reward Wallet Balance. `unavailable` means no refresh has
+ * ever succeeded; it is never a zero balance.
+ */
+export type PublicRewardWalletState = 'current' | 'stale' | 'unavailable';
+
+/**
  * Per-Network cumulative total for one metric, deduplicated by Validator.
  *
  * The Server owns the eligible set, the deduplication, the exact arithmetic,
@@ -7786,6 +7826,28 @@ export type PublicNodePeerHistoryResponses = {
 };
 
 export type PublicNodePeerHistoryResponse = PublicNodePeerHistoryResponses[keyof PublicNodePeerHistoryResponses];
+
+export type PublicRewardWalletData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/public/v1/reward-wallet';
+};
+
+export type PublicRewardWalletErrors = {
+    503: ApiErrorBody;
+};
+
+export type PublicRewardWalletError = PublicRewardWalletErrors[keyof PublicRewardWalletErrors];
+
+export type PublicRewardWalletResponses = {
+    /**
+     * The Reward Wallet Balance, independent of every Home selection
+     */
+    200: PublicRewardWallet;
+};
+
+export type PublicRewardWalletResponse = PublicRewardWalletResponses[keyof PublicRewardWalletResponses];
 
 export type SessionHandlerData = {
     body?: never;

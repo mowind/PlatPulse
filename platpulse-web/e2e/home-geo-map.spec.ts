@@ -117,14 +117,14 @@ function mapTooltip(page: Page) {
   return geoChart(page).locator('> div').filter({ hasText: /[\d,]+ records/ })
 }
 
-/** Home's four global statistics, read from their own card surfaces so the
+/** Home's three Node counters and the Balance (#246), read from their own card surfaces so the
  *  map can never change or reorder them. The figure is read from the value slot
  *  rather than the card's whole text: the Attention tile now names what it
  *  counts on the shared stat line, and that reading is not part of the number. */
 async function summaryFacts(page: Page): Promise<Array<{ label: string; value: string; box: Box }>> {
   return page.locator('[data-slot="summary-card"]').evaluateAll((elements) =>
     elements.flatMap((element) => {
-      const match = /^(Active Nodes|Healthy Nodes|Attention|Networks)/.exec((element.textContent ?? '').trim())
+      const match = /^(Active Nodes|Healthy Nodes|Attention|Balance)/.exec((element.textContent ?? '').trim())
       const value = element.querySelector('[data-slot="summary-value"]')?.textContent?.trim()
       if (!match || value === undefined) return []
       const rect = element.getBoundingClientRect()
@@ -133,7 +133,7 @@ async function summaryFacts(page: Page): Promise<Array<{ label: string; value: s
   )
 }
 
-/** The same four statistics as label/value pairs, without layout noise. */
+/** The same four readings as label/value pairs, without layout noise. */
 async function summaryValues(page: Page) {
   return (await summaryFacts(page)).map(({ label, value }) => ({ label, value }))
 }
@@ -412,7 +412,7 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     const expectedHealthy = String(nodes.filter(node => node.health === 'healthy').length)
     const expectedAttention = String(nodes.length - nodes.filter(node => node.health === 'healthy').length)
     await expect.poll(async () => (await summaryValues(page)).map(fact => fact.value))
-      .toEqual([expectedActive, expectedHealthy, expectedAttention, '2'])
+      .toEqual([expectedActive, expectedHealthy, expectedAttention, '138,179.54 LAT'])
     await expect(await openHomeSort(page)).toHaveValue('health')
     // Close the surface again so the evidence captured below shows the toolbar
     // row alone, the way a reader leaves it (issue #232).
@@ -928,7 +928,8 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
       await expect.poll(async () => (await itemNames()).every(label => allNames.includes(label))).toBe(true)
       const filtered = await summaryValues(page)
       expect(filtered.find(item => item.label === 'Active Nodes')?.value).toBe(String(await page.locator('[data-slot="node-card"]').count()))
-      expect(filtered.find(item => item.label === 'Networks')?.value).toBe('1')
+      // The Balance follows no Network selection.
+      expect(filtered.find(item => item.label === 'Balance')?.value).toBe('138,179.54 LAT')
     }
 
     await pills.getByRole('tab', { name: 'All Networks', exact: true }).click()
@@ -960,7 +961,7 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expect(countryItems(page)).toHaveText([`Sweden: ${total} records`])
     expect((await summaryValues(page)).find(fact => fact.label === 'Active Nodes')?.value).toBe(String(total))
 
-    // One Node's own ID narrows the list to one Node: the four attributable
+    // One Node's own ID narrows the list to one Node: the three attributable
     // counters and the whole map reading follow it, without a second request.
     await (await openHomeSearch(page)).fill(nodes[0].nodeId!)
     await expect(page.locator('[data-slot="node-card"]')).toHaveCount(1)
@@ -968,7 +969,7 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     await expect(map.locator('[data-slot="geo-counter"]')).toHaveText('Peers: 1')
     await expect(countryItems(page)).toHaveText(['Sweden: 1 records'])
     await expect.poll(async () => (await summaryValues(page)).map(fact => fact.value))
-      .toEqual(['1', '1', '0', '1'])
+      .toEqual(['1', '1', '0', '138,179.54 LAT'])
     // Clearing the field is what widens the list again: Escape closes the
     // surface, but the query stays in the URL, so the wide reading has to come
     // back on the same page. It is what an unfiltered Home shows, field for

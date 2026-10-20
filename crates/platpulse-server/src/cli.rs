@@ -1441,6 +1441,24 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                 }
             }));
         }
+
+        // Reward Wallet Balance (issue #246): one fixed-address PlatScan read
+        // per minute, independent of Home traffic and unrelated to the
+        // Validator Provider. Development mode starts nothing, so local runs
+        // and the e2e suite never contact PlatScan.
+        match crate::reward_wallet::PlatScanBalanceSource::platscan() {
+            Ok(source) => {
+                if let Some(worker) =
+                    crate::reward_wallet::start(&state, config.development, source)
+                {
+                    worker_handles.push(worker);
+                }
+            }
+            Err(error) => eprintln!(
+                "Reward Wallet refresher disabled: {}",
+                crate::redaction::redact_sensitive(&error)
+            ),
+        }
     }
 
     println!("listening on {}", config.listen);

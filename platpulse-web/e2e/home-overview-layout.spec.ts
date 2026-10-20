@@ -2,7 +2,13 @@ import { expect, test, type Locator, type Page, type TestInfo } from '@playwrigh
 import type { PublicNetwork } from '../src/api/generated'
 import { closeHomeSurface, expectNoHorizontalOverflow, homeNodeColumns, loginAs, openHomeSort } from './helpers'
 
-const labels = ['Active Nodes', 'Healthy Nodes', 'Cumulative blocks', 'Attention', 'Networks', 'Cumulative rewards']
+// #246: Balance replaced Networks, and the reading/DOM order is the visual
+// order at every width (two rows of three from 640px, three rows of two below).
+const labels = ['Active Nodes', 'Healthy Nodes', 'Attention', 'Balance', 'Cumulative blocks', 'Cumulative rewards']
+
+/** The Balance tile's accessible name carries its exact amount and the full
+ *  Reward Wallet address after the label; every other tile is its label. */
+const tileName = (label: string) => (label === 'Balance' ? /^Balance:/ : label)
 
 async function box(locator: Locator) {
   const result = await locator.boundingBox()
@@ -47,9 +53,9 @@ async function overviewGeometry(page: Page) {
   const summary = page.locator('[aria-label="Home summary"]')
   const cards = summary.locator('[data-slot="summary-card"]')
   await expect(cards).toHaveCount(6)
-  expect(await cards.evaluateAll(elements => elements.map(el => el.getAttribute('aria-label')))).toEqual(labels)
+  expect(await cards.evaluateAll(elements => elements.map(el => el.querySelector('[data-slot="card-x-content"] > div:first-child > span')?.textContent))).toEqual(labels)
   const columns = width >= 640 ? 3 : 2
-  const boxes = await Promise.all(labels.map(label => box(summary.getByRole('article', { name: label, exact: true }))))
+  const boxes = await Promise.all(labels.map(label => box(summary.getByRole('article', { name: tileName(label), exact: true }))))
   for (let index = 0; index < boxes.length; index++) {
     const current = boxes[index]
     expect(current.width).toBeCloseTo(boxes[0].width, 0)
