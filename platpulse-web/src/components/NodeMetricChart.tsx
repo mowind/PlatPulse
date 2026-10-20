@@ -10,6 +10,7 @@ import {
   metricChartOption,
   withLegendSelection,
   type MetricChartSeriesInput,
+  type MetricCountNoun,
   type MetricLegendSelection,
 } from './nodeMetricChartOption'
 
@@ -59,6 +60,9 @@ export type NodeMetricChartProps = {
   windowText?: MetricWindowText
   /** Time-axis label and tooltip instant of the window. */
   timeFormat?: (value: number) => string
+  /** What a bucket's count counts in the tooltip; `samples` when absent. A
+   *  module-level constant keeps the option stable across renders. */
+  countNoun?: MetricCountNoun
   /** Replaces the empty-state sentence while history is still loading. */
   message?: string
   /** What the curve cannot show, read out by assistive technology. */
@@ -86,6 +90,7 @@ export default function NodeMetricChart({
   seconds,
   windowText,
   timeFormat,
+  countNoun,
   message,
   description,
   showLegend = false,
@@ -127,8 +132,8 @@ export default function NodeMetricChart({
   const scale = useMemo(() => axis(peak, maxBands), [axis, peak, maxBands])
 
   const option = useMemo(
-    () => metricChartOption({ kind, from, to, max: scale.max, interval: scale.interval, series, dark, axisFormat: scale.format, valueFormat, barWidth, showLegend, yAxisName: scale.name, ...(timeFormat ? { timeFormat } : {}) }),
-    [kind, from, to, scale, series, dark, valueFormat, barWidth, showLegend, timeFormat],
+    () => metricChartOption({ kind, from, to, max: scale.max, interval: scale.interval, series, dark, axisFormat: scale.format, valueFormat, barWidth, showLegend, yAxisName: scale.name, ...(timeFormat ? { timeFormat } : {}), ...(countNoun ? { countNoun } : {}) }),
+    [kind, from, to, scale, series, dark, valueFormat, barWidth, showLegend, timeFormat, countNoun],
   )
   optionRef.current = option
 

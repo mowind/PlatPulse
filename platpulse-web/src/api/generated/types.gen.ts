@@ -598,6 +598,10 @@ export type AdminNodeListItem = {
  * only; shared Agent/Host/Network/Validator data is never included.
  */
 export type AdminNodePurgeCounts = {
+    /**
+     * Block-tier buckets counted from this Node's blocks (issue #248).
+     */
+    block_aggregates: number;
     block_coverage_intervals: number;
     block_history_gaps: number;
     block_history_states: number;
@@ -3682,6 +3686,13 @@ export type PublicMetricBucket = {
      * The bucket's own interval: its UTC-aligned start, inclusive...
      */
     start: string;
+    /**
+     * Present only on a Transactions / block bucket (issue #248): every
+     * transaction the bucket's blocks carried. Its `sampleCount` is then the
+     * number of blocks, so the reader can state both without a mean the
+     * chart would have to invent.
+     */
+    totalValue?: number;
 };
 
 /**
@@ -3853,10 +3864,12 @@ export type PublicMetricWindowAnswer = {
      */
     grainSeconds: number;
     /**
-     * The series this window does not provide, by response field name. The
-     * two block series have no aggregate tier yet (issue #248), so outside
-     * Live they are absent from the answer and named here, never answered as
-     * an empty series that would read as nothing observed.
+     * The series this window does not provide, by response field name, so a
+     * series without evidence at this grain is named rather than answered as
+     * an empty series that would read as nothing observed. Since the block
+     * aggregate tiers (issue #248) every window provides all nine series and
+     * the list is empty; it stays part of the answer so a reader keeps one
+     * place to ask.
      */
     unavailableSeries: Array<string>;
     window: PublicMetricWindow;
@@ -3951,9 +3964,11 @@ export type PublicNodeDetail = PublicNode & {
 
 export type PublicNodeMetricHistory = {
     /**
-     * Absent outside Live: see `metricWindow.unavailableSeries`.
+     * Live: each held block with a held parent. A longer window: the raw
+     * blocks (1h) or the block-tier buckets, each drawn by its longest
+     * interval (issue #248).
      */
-    blockIntervalMs?: Array<PublicMetricPoint>;
+    blockIntervalMs: Array<PublicMetricPoint>;
     dataDirectoryPercent: Array<PublicMetricPoint>;
     from: string;
     /**
@@ -3970,15 +3985,16 @@ export type PublicNodeMetricHistory = {
      * The same nine series, judged: which of them were observed, where the
      * silences are, and how much of the window is covered. One entry per
      * series, in the order above, so `series` is the contract a chart reads
-     * before it draws a line (issue #225). A longer window judges only the
-     * series it provides.
+     * before it draws a line (issue #225).
      */
     series: Array<PublicMetricSeriesCoverage>;
     to: string;
     /**
-     * Absent outside Live: see `metricWindow.unavailableSeries`.
+     * Live: each held block. A longer window: the raw blocks (1h) or the
+     * block-tier buckets, each drawn by the most transactions one of its
+     * blocks carried, with the bucket's total in `bucket.totalValue`.
      */
-    transactionCount?: Array<PublicMetricPoint>;
+    transactionCount: Array<PublicMetricPoint>;
     windowSeconds: number;
 };
 

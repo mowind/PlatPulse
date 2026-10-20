@@ -2,13 +2,14 @@ import { expect, test, type Page } from '@playwright/test'
 import { expectNoHorizontalOverflow, loginAs } from './helpers'
 
 /**
- * Issue #247 (ADR 0012, docs/design/webui.md §15.38): the Node Detail Metric
- * Window. The existing six-chart matrix keeps running on Live
+ * Issues #247 and #248 (ADR 0012, docs/design/webui.md §15.38): the Node
+ * Detail Metric Window, all six charts included. The existing six-chart matrix keeps running on Live
  * (node-detail-six-charts.spec.ts); this file adds one `normal` scenario for
  * each longer window in both themes, plus a bucket `gap` and an `Open bucket`
- * scenario for 24h, across the five fixed projects. The buckets are the ones
- * the harness writes the way ingestion does (e2e/metric_buckets.py), read back
- * through the real Server; only the gap scenario rewrites one series.
+ * scenario for 24h, across the five fixed projects, and the two block charts
+ * in 24h and 7d. The buckets are the ones the harness writes the way ingestion
+ * does (e2e/metric_buckets.py), read back through the real Server; only the gap
+ * scenarios rewrite one series.
  */
 
 const PUBLIC_NODE_NAME = 'Node A'
@@ -87,12 +88,13 @@ test.describe('Node Detail Metric Window (issue #247)', () => {
           const selector = metrics.getByRole('radiogroup', { name: 'Metric window' })
           await expect(selector.getByRole('radio', { checked: true })).toHaveText(spec.window)
 
-          // Four sample charts at the window's own span, the two block cards Live only.
+          // Four sample charts and the two block charts (#248), all at the
+          // window's own span.
           const lines = metrics.getByRole('img', { name: new RegExp('line chart over ' + spec.span + '$') })
           await expect(lines).toHaveCount(4)
-          await expect(metrics.getByRole('img', { name: /bar chart/ })).toHaveCount(0)
-          await expect(metrics.locator('[data-slot="node-metric-chart-live-only"]')).toHaveCount(2)
-          await expect(metrics.getByText('Block charts show the Live window only')).toHaveCount(2)
+          const bars = metrics.getByRole('img', { name: new RegExp('bar chart over ' + spec.span + '$') })
+          await expect(bars).toHaveCount(2)
+          await expect(metrics.getByText('Block charts show the Live window only')).toHaveCount(0)
           for (const heading of ['Block interval', 'Transactions / block']) {
             const card = metrics.getByRole('article').filter({ has: page.getByRole('heading', { level: 3, name: heading }) })
             await expect(card.locator('[data-slot="node-metric-value"]')).not.toHaveText('')
@@ -104,7 +106,7 @@ test.describe('Node Detail Metric Window (issue #247)', () => {
             shapes: Array.from(node.querySelectorAll('svg path')).filter((path) => (path.getAttribute('d') ?? '').startsWith('M')).length,
             axis: node.querySelector('svg')?.textContent ?? '',
           })))
-          expect(drawn, JSON.stringify(drawn)).toHaveLength(4)
+          expect(drawn, JSON.stringify(drawn)).toHaveLength(6)
           for (const plot of drawn) {
             expect(plot.points, JSON.stringify(drawn)).toBeGreaterThan(0)
             expect(plot.shapes, JSON.stringify(drawn)).toBeGreaterThan(0)
@@ -119,9 +121,6 @@ test.describe('Node Detail Metric Window (issue #247)', () => {
           const expectedPlotHeight = viewportWidth >= 1024 ? 192 : viewportWidth >= 768 ? 168 : 132
           for (const plot of await metrics.locator('[data-slot="node-metric-chart"]').all()) {
             await expect(plot).toHaveCSS('height', expectedPlotHeight + 'px')
-          }
-          for (const notice of await metrics.locator('[data-slot="node-metric-chart-live-only"]').all()) {
-            await expect(notice).toHaveCSS('height', expectedPlotHeight + 'px')
           }
 
           // The selector: one row of 44px segments, beside the title from md and
@@ -162,11 +161,69 @@ test.describe('Node Detail Metric Window (issue #247)', () => {
             await expect(tooltip).toContainText(/\d{2}:\d{2}:\d{2}/)
             await expect(tooltip).not.toContainText('samples')
           }
+          // A block bucket counts its blocks and states their transaction total.
+          const blockTooltip = await hoverPlot(page, 'Transactions / block', spec.bucketed ? 0.5 : 'end')
+          await expect(blockTooltip).toBeVisible()
+          await expect(blockTooltip).toContainText('Transactions / block')
+          if (spec.bucketed) {
+            await expect(blockTooltip).toContainText(/min \d+ · max \d+ · \d+ blocks · total \d+/)
+          } else {
+            await expect(blockTooltip).not.toContainText('blocks')
+          }
 
           // Refresh restores the window from the URL.
           await page.reload()
           await expect(page.getByRole('heading', { level: 2, name: spec.title })).toBeVisible({ timeout: 15_000 })
           await expect(page.getByRole('radio', { name: spec.window, exact: true })).toHaveAttribute('aria-checked', 'true')
+        })
+      }
+    }
+  })
+
+  test('24h and 7d block charts: a missing block bucket is a gap (#248)', async ({ page }) => {
+    test.setTimeout(120_000)
+    await loginAs(page)
+    const spans = { '24h': 'the last 24 hours', '7d': 'the last 7 days' } as const
+    for (const window of ['24h', '7d'] as const) {
+      for (const theme of THEMES) {
+        await test.step(window + ' block gap / ' + theme, async () => {
+          // Drop the middle third of the Transactions / block buckets and state
+          // the gap the Server's long-history rule names for that hole.
+          await page.route(metricsOf(window), async (route) => {
+            const response = await route.fetch()
+            const body = (await response.json()) as Record<string, unknown>
+            const points = body.transactionCount as Array<{ bucket: { lastObservedAt: string; firstObservedAt: string } }>
+            const from = Math.floor(points.length / 3)
+            const to = Math.floor((points.length * 2) / 3)
+            const before = points[from - 1]
+            const after = points[to]
+            body.transactionCount = [...points.slice(0, from), ...points.slice(to)]
+            const series = body.series as Array<Record<string, unknown>>
+            body.series = series.map((entry) => entry.metric === 'transactionCount' && before && after
+              ? {
+                  ...entry,
+                  gaps: [{
+                    from: before.bucket.lastObservedAt,
+                    to: after.bucket.firstObservedAt,
+                    seconds: Math.round((Date.parse(after.bucket.firstObservedAt) - Date.parse(before.bucket.lastObservedAt)) / 1000),
+                    kind: 'collection_gap',
+                  }],
+                }
+              : entry)
+            await route.fulfill({ response, json: body })
+          })
+          await openWindow(page, window)
+          await setTheme(page, theme)
+          const metrics = page.locator('[data-slot="node-metrics-section"]')
+          const transactions = metrics.getByRole('img', { name: 'Transactions / block bar chart over ' + spans[window] })
+          // Two runs either side of the hole: nothing drawn across it, no zero bars.
+          await expect(transactions).toHaveAttribute('data-runs', '2')
+          await expect(transactions).toHaveAccessibleDescription(/1 gap in this window/)
+          const intervals = metrics.getByRole('img', { name: 'Block interval bar chart over ' + spans[window] })
+          await expect(intervals).toHaveAttribute('data-runs', '1')
+          await expect(intervals).toHaveAttribute('data-points', /^[1-9]\d*$/)
+          await expectNoHorizontalOverflow(page)
+          await page.unroute(metricsOf(window))
         })
       }
     }

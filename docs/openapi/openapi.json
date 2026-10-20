@@ -8932,6 +8932,7 @@
           "metric_samples",
           "metric_series_state",
           "metric_aggregates",
+          "block_aggregates",
           "state_observations",
           "state_series_state",
           "capacity_skipped_series",
@@ -8942,6 +8943,11 @@
           "total_owned_rows"
         ],
         "properties": {
+          "block_aggregates": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Block-tier buckets counted from this Node's blocks (issue #248)."
+          },
           "block_coverage_intervals": {
             "type": "integer",
             "format": "int64"
@@ -16379,6 +16385,11 @@
           "start": {
             "type": "string",
             "description": "The bucket's own interval: its UTC-aligned start, inclusive..."
+          },
+          "totalValue": {
+            "type": "number",
+            "format": "double",
+            "description": "Present only on a Transactions / block bucket (issue #248): every\ntransaction the bucket's blocks carried. Its `sampleCount` is then the\nnumber of blocks, so the reader can state both without a mean the\nchart would have to invent."
           }
         }
       },
@@ -16542,7 +16553,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The series this window does not provide, by response field name. The\ntwo block series have no aggregate tier yet (issue #248), so outside\nLive they are absent from the answer and named here, never answered as\nan empty series that would read as nothing observed."
+            "description": "The series this window does not provide, by response field name, so a\nseries without evidence at this grain is named rather than answered as\nan empty series that would read as nothing observed. Since the block\naggregate tiers (issue #248) every window provides all nine series and\nthe list is empty; it stays part of the answer so a reader keeps one\nplace to ask."
           },
           "window": {
             "$ref": "#/components/schemas/PublicMetricWindow"
@@ -16842,6 +16853,8 @@
           "networkTxBytesPerSec",
           "peerInboundCount",
           "peerOutboundCount",
+          "blockIntervalMs",
+          "transactionCount",
           "series"
         ],
         "properties": {
@@ -16850,7 +16863,7 @@
             "items": {
               "$ref": "#/components/schemas/PublicMetricPoint"
             },
-            "description": "Absent outside Live: see `metricWindow.unavailableSeries`."
+            "description": "Live: each held block with a held parent. A longer window: the raw\nblocks (1h) or the block-tier buckets, each drawn by its longest\ninterval (issue #248)."
           },
           "dataDirectoryPercent": {
             "type": "array",
@@ -16906,7 +16919,7 @@
             "items": {
               "$ref": "#/components/schemas/PublicMetricSeriesCoverage"
             },
-            "description": "The same nine series, judged: which of them were observed, where the\nsilences are, and how much of the window is covered. One entry per\nseries, in the order above, so `series` is the contract a chart reads\nbefore it draws a line (issue #225). A longer window judges only the\nseries it provides."
+            "description": "The same nine series, judged: which of them were observed, where the\nsilences are, and how much of the window is covered. One entry per\nseries, in the order above, so `series` is the contract a chart reads\nbefore it draws a line (issue #225)."
           },
           "to": {
             "type": "string"
@@ -16916,7 +16929,7 @@
             "items": {
               "$ref": "#/components/schemas/PublicMetricPoint"
             },
-            "description": "Absent outside Live: see `metricWindow.unavailableSeries`."
+            "description": "Live: each held block. A longer window: the raw blocks (1h) or the\nblock-tier buckets, each drawn by the most transactions one of its\nblocks carried, with the bucket's total in `bucket.totalValue`."
           },
           "windowSeconds": {
             "type": "integer",

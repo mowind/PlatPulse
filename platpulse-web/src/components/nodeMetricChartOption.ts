@@ -133,7 +133,15 @@ export type MetricChartOptionInput = {
   /** Time-axis label and tooltip instant. Live's `HH:mm:ss` clock when absent;
    *  a longer Metric Window passes its own (see metricAxisTimeFormat). */
   timeFormat?: (value: number) => string
+  /** What a bucket's `sampleCount` counts, singular and plural. `samples` when
+   *  absent; the block charts count blocks and intervals (issue #248). */
+  countNoun?: MetricCountNoun
 }
+
+/** A bucket's count noun, singular then plural. */
+export type MetricCountNoun = readonly [one: string, other: string]
+
+const SAMPLE_NOUN: MetricCountNoun = ['sample', 'samples']
 
 /** Where the axis title starts, measured from the chart's left edge. Emerald
  *  centres its short titles over the tick column; a title carrying its unit can
@@ -198,7 +206,7 @@ function escapeText(value: string): string {
  * is the observation's own timestamp.
  */
 /** The bucket an aggregated point carries, read back from its data item. */
-type TooltipBucket = { start: number; end: number; minValue: number; maxValue: number; sampleCount: number; open: boolean }
+type TooltipBucket = { start: number; end: number; minValue: number; maxValue: number; sampleCount: number; totalValue?: number; open: boolean }
 
 function tooltipBucket(entry: Record<string, unknown>): TooltipBucket | undefined {
   const bucket = record(record(entry.data)?.bucket)
@@ -208,7 +216,8 @@ function tooltipBucket(entry: Record<string, unknown>): TooltipBucket | undefine
   const minValue = typeof bucket.minValue === 'number' ? bucket.minValue : Number.NaN
   const maxValue = typeof bucket.maxValue === 'number' ? bucket.maxValue : Number.NaN
   const sampleCount = typeof bucket.sampleCount === 'number' ? bucket.sampleCount : Number.NaN
-  return { start, end, minValue, maxValue, sampleCount, open: bucket.open === true }
+  const totalValue = typeof bucket.totalValue === 'number' && Number.isFinite(bucket.totalValue) ? bucket.totalValue : undefined
+  return { start, end, minValue, maxValue, sampleCount, ...(totalValue === undefined ? {} : { totalValue }), open: bucket.open === true }
 }
 
 /** A data item's [instant, value]: the item itself for a raw sample, its
@@ -223,6 +232,7 @@ function tooltipPair(entry: Record<string, unknown>): unknown[] {
 function tooltipFormatter(input: MetricChartOptionInput) {
   const theme = input.dark ? METRIC_CHART_THEME.dark : METRIC_CHART_THEME.light
   const time = input.timeFormat ?? clockTime
+  const [one, other] = input.countNoun ?? SAMPLE_NOUN
   return (raw: unknown): string => {
     const entries = (Array.isArray(raw) ? raw : [raw]).map(record).filter((entry) => entry !== undefined)
     const first = entries[0]
@@ -243,7 +253,8 @@ function tooltipFormatter(input: MetricChartOptionInput) {
       const bucket = tooltipBucket(entry)
       const detail = bucket
         ? '<div style="padding-left:16px;line-height:18px;color:' + theme.textSecondary + ';font-variant-numeric:tabular-nums">'
-          + escapeText('min ' + input.valueFormat(bucket.minValue) + ' · max ' + input.valueFormat(bucket.maxValue) + ' · ' + bucket.sampleCount + (bucket.sampleCount === 1 ? ' sample' : ' samples'))
+          + escapeText('min ' + input.valueFormat(bucket.minValue) + ' · max ' + input.valueFormat(bucket.maxValue) + ' · ' + bucket.sampleCount + ' ' + (bucket.sampleCount === 1 ? one : other)
+            + (bucket.totalValue === undefined ? '' : ' · total ' + input.valueFormat(bucket.totalValue)))
           + '</div>'
         : ''
       return '<div style="display:flex;align-items:center;line-height:20px">'
@@ -291,7 +302,7 @@ export function metricChartOption(input: MetricChartOptionInput): EChartsOption 
       return [{
         type: 'bar' as const,
         name: entry.label,
-        data: entry.segments.flat().map((point) => [point.sampledAt, point.value]),
+        data: entry.segments.flat().map(dataItem),
         barMaxWidth: 12,
         ...(input.barWidth !== undefined ? { barWidth: input.barWidth } : {}),
         itemStyle: { color: entry.color, borderRadius: [3, 3, 0, 0], opacity: 0.75 },

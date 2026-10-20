@@ -20,7 +20,7 @@ import { formatNodeDataBytes } from '../formatBytes'
 import { formatDuration } from '../formatDuration'
 import { nodeDataProgress } from '../nodeData'
 import { coverageNotes, coverageSegments, metricCoverage } from '../metricCoverage'
-import NodeMetricChart, { NODE_METRIC_CHART_HEIGHT } from '../components/NodeMetricChart'
+import NodeMetricChart from '../components/NodeMetricChart'
 import { MetricWindowSelector } from '../components/MetricWindowSelector'
 import {
   METRIC_WINDOW_PARAM,
@@ -31,7 +31,7 @@ import {
   type MetricWindow,
   type MetricWindowText,
 } from '../metricWindow'
-import { METRIC_SERIES_COLORS, type MetricChartSeriesInput, type MetricSeriesKey } from '../components/nodeMetricChartOption'
+import { METRIC_SERIES_COLORS, type MetricChartSeriesInput, type MetricCountNoun, type MetricSeriesKey } from '../components/nodeMetricChartOption'
 import {
   countAxis,
   durationAxis,
@@ -69,6 +69,10 @@ const NETWORK_AXIS = rateAxis('Speed')
 const PEER_AXIS = countAxis('Connections')
 const BLOCK_INTERVAL_AXIS = durationAxis('Duration')
 const TRANSACTION_AXIS = countAxis('Txs')
+// What a block-tier bucket counts (#248): a Block interval bucket counts the
+// intervals it saw, a Transactions / block bucket the blocks.
+const INTERVAL_NOUN: MetricCountNoun = ['interval', 'intervals']
+const BLOCK_NOUN: MetricCountNoun = ['block', 'blocks']
 
 const PAGE = 'min-w-0 p-4'
 // Info/chart tier; the summary tiles sit one step brighter, the disclosures one step dimmer.
@@ -143,7 +147,7 @@ export function NodePage() {
   const metricWindowTitle = metricHistoryRetained ? 'Retained ' + metricText.adjective + ' window' : metricText.title
   const validatorNode = nodeUsesValidatorComposition(node)
   // Live keeps the deck exactly as it was; a longer window brings its own axis
-  // labels and words, and the two block charts state that they are Live only.
+  // labels and words to all six charts, the two block charts included (#248).
   const longWindow = metricWindow !== 'live'
   const windowText = longWindow ? metricText : undefined
 
@@ -279,7 +283,7 @@ export function NodePage() {
         <NodeMetricCard
           label="Block interval"
           kind="bar"
-          liveOnly={longWindow}
+          countNoun={INTERVAL_NOUN}
           value={blockInterval.value}
           detail={blockIntervalDetail}
           series={[{ key: 'blockInterval', label: 'Block interval', points: metricHistory?.blockIntervalMs ?? [], coverage: metricCoverage(metricHistory, 'blockIntervalMs') }]}
@@ -293,7 +297,7 @@ export function NodePage() {
         <NodeMetricCard
           label="Transactions / block"
           kind="bar"
-          liveOnly={longWindow}
+          countNoun={BLOCK_NOUN}
           value={formatNumber(node.latestBlockTransactionCount)}
           series={[{ key: 'transactions', label: 'Transactions / block', points: metricHistory?.transactionCount ?? [], coverage: metricCoverage(metricHistory, 'transactionCount') }]}
           history={metricHistory}
@@ -549,7 +553,7 @@ type MetricChartKind = 'line' | 'bar'
 /** One current reading of a two-direction card. */
 type MetricReading = { label: string; value: string; direction: 'up' | 'down'; color: string }
 
-function NodeMetricCard({ label, value, readings, detail, kind = 'line', series, showLegend = false, history, axis, valueFormat, historyMessage, retained = false, windowText, liveOnly = false, className = '' }: {
+function NodeMetricCard({ label, value, readings, detail, kind = 'line', series, showLegend = false, history, axis, valueFormat, historyMessage, retained = false, windowText, countNoun, className = '' }: {
   label: string
   /** The current value beside the title; its unit is part of the value
    *  ("12.3%"), so the title never repeats it. */
@@ -572,10 +576,9 @@ function NodeMetricCard({ label, value, readings, detail, kind = 'line', series,
   /** A longer Metric Window's own words (ADR 0012); absent for Live, whose
    *  sentences stay exactly as they were. */
   windowText?: MetricWindowText
-  /** The series has no aggregate tier yet (#248): outside Live the card keeps
-   *  its title and current value and states that the chart is Live only,
-   *  mounting no chart at all. */
-  liveOnly?: boolean
+  /** What a bucket of this card counts, for its tooltip: the block charts
+   *  count blocks and intervals rather than samples (#248). */
+  countNoun?: MetricCountNoun
   className?: string
 }) {
   const seconds = metricWindowSeconds(history)
@@ -667,24 +670,23 @@ function NodeMetricCard({ label, value, readings, detail, kind = 'line', series,
         {detail && <p className="m-0 break-words text-[11px] leading-4 text-muted-foreground">{detail}</p>}
         {missingDirections.length > 0 && <p className="m-0 text-[11px] italic text-muted-foreground">{missingDirections.join(' and ')} unavailable in this window</p>}
       </div>
-      {liveOnly
-        ? <p data-slot="node-metric-chart-live-only" className={cn('m-0 mt-auto flex items-center justify-center text-center text-[13px] text-muted-foreground', NODE_METRIC_CHART_HEIGHT)}>Block charts show the Live window only</p>
-        : <NodeMetricChart
-            label={label}
-            kind={kind}
-            from={fromMs}
-            to={toMs}
-            series={plots}
-            axis={axis}
-            valueFormat={valueFormat}
-            seconds={seconds}
-            {...(windowText ? { windowText } : {})}
-            {...(timeFormat ? { timeFormat } : {})}
-            message={historyMessage}
-            description={description}
-            retained={retained}
-            showLegend={showLegend}
-          />}
+      <NodeMetricChart
+        label={label}
+        kind={kind}
+        from={fromMs}
+        to={toMs}
+        series={plots}
+        axis={axis}
+        valueFormat={valueFormat}
+        seconds={seconds}
+        {...(windowText ? { windowText } : {})}
+        {...(timeFormat ? { timeFormat } : {})}
+        {...(countNoun ? { countNoun } : {})}
+        message={historyMessage}
+        description={description}
+        retained={retained}
+        showLegend={showLegend}
+      />
     </CardX>
   )
 }

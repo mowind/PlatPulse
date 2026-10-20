@@ -262,6 +262,13 @@ const _: () = assert!(
             + 2 * crate::metric_history::MAX_HOST_MOUNTS as i64,
     "the per-Report Host aggregate batch must cover one maximal Host Report"
 );
+// A Report carries at most MAX_BLOCK_SUMMARIES blocks, and each opens at most
+// one bucket per tier (issue #248), so the block tier's per-Report expiry keeps
+// pace with its arrival under the same bound.
+const _: () = assert!(
+    AGGREGATE_CLEANUP_BATCH >= platpulse_core::protocol::MAX_BLOCK_SUMMARIES as i64,
+    "the per-Report block aggregate batch must cover one maximal Report"
+);
 
 /// The 1-minute tier the design §11.6 window declares: a bucket is kept for the
 /// 7 days the reader can still be served at that grain, and the delete is a
@@ -285,6 +292,15 @@ const TARGET_ONE_MINUTE_AGGREGATES: &[CleanupTarget] = &[
         count_sql: "SELECT COUNT(*) FROM host_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < ?",
         delete_sql: "DELETE FROM host_metric_aggregates WHERE rowid IN (SELECT rowid FROM host_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < ? ORDER BY bucket_start LIMIT 2048)",
     },
+    // The block tier (issue #248) is fed by the same Reports and served by the
+    // same Public windows, so it expires with this family rather than with one
+    // whose window could drift from the tier it serves.
+    CleanupTarget {
+        table: "node_block_aggregates",
+        kind: CleanupKind::Delete,
+        count_sql: "SELECT COUNT(*) FROM node_block_aggregates WHERE grain_seconds = 60 AND bucket_start < ?",
+        delete_sql: "DELETE FROM node_block_aggregates WHERE rowid IN (SELECT rowid FROM node_block_aggregates WHERE grain_seconds = 60 AND bucket_start < ? ORDER BY bucket_start LIMIT 4096)",
+    },
 ];
 
 /// The 5-minute tier, kept for the whole 30-day investigation horizon. It is the
@@ -303,6 +319,12 @@ const TARGET_FIVE_MINUTE_AGGREGATES: &[CleanupTarget] = &[
         kind: CleanupKind::Delete,
         count_sql: "SELECT COUNT(*) FROM host_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < ?",
         delete_sql: "DELETE FROM host_metric_aggregates WHERE rowid IN (SELECT rowid FROM host_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < ? ORDER BY bucket_start LIMIT 2048)",
+    },
+    CleanupTarget {
+        table: "node_block_aggregates",
+        kind: CleanupKind::Delete,
+        count_sql: "SELECT COUNT(*) FROM node_block_aggregates WHERE grain_seconds = 300 AND bucket_start < ?",
+        delete_sql: "DELETE FROM node_block_aggregates WHERE rowid IN (SELECT rowid FROM node_block_aggregates WHERE grain_seconds = 300 AND bucket_start < ? ORDER BY bucket_start LIMIT 4096)",
     },
 ];
 
@@ -3022,6 +3044,83 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(raw_owned, 1);
+    }
+
+    /// Issue #248: the block tiers are targets of the same two aggregate
+    /// families as the sample tiers, so their windows are the same 7 and 30
+    /// days, and one cleanup pass releases each tier's expired block buckets -
+    /// one bucket width behind the cutoff - while the rest stay.
+    #[tokio::test]
+    async fn the_block_tiers_expire_with_their_aggregate_families() {
+        for (family, grain) in [
+            (FAMILY_ONE_MINUTE_AGGREGATE, 60),
+            (FAMILY_FIVE_MINUTE_AGGREGATE, 300),
+        ] {
+            let target = catalog_targets(family)
+                .iter()
+                .find(|target| target.table == "node_block_aggregates")
+                .unwrap_or_else(|| panic!("{family} must declare the block tier"));
+            assert!(
+                target
+                    .count_sql
+                    .contains(&format!("grain_seconds = {grain}"))
+            );
+            assert!(
+                target
+                    .delete_sql
+                    .contains(&format!("grain_seconds = {grain}"))
+            );
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
+            dir.path().join("server.db"),
+        ))
+        .await
+        .unwrap();
+        let pool = database.pool();
+        let now = crate::auth::now_utc();
+        let now_text = crate::auth::format_rfc3339(now);
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('tier-network', 'Tier', '0xgenesis', 1, 1, 'lat', ?, ?)")
+            .bind(&now_text).bind(&now_text).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('tier-agent', 1, ?, ?)")
+            .bind(&now_text).bind(&now_text).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('tier-node', 'tier-agent', 'tier-network', 'ws://127.0.0.1:1', 'active', 'private', 1, ?, ?)")
+            .bind(&now_text).bind(&now_text).execute(pool).await.unwrap();
+        let insert = "INSERT INTO node_block_aggregates (node_id, grain_seconds, bucket_start, block_count, transaction_total, transaction_min, transaction_max, last_transaction_count, first_observed_at, last_observed_at, last_received_at, updated_at) VALUES ('tier-node', ?, ?, 1, 2, 2, 2, 2, ?, ?, ?, ?)";
+        let at = |offset: time::Duration| crate::auth::format_rfc3339(now - offset);
+        let minute_expired = at(time::Duration::days(7) + time::Duration::seconds(130));
+        let minute_kept = at(time::Duration::days(6));
+        let five_expired = at(time::Duration::days(30) + time::Duration::seconds(700));
+        let five_kept = at(time::Duration::days(8));
+        for (grain, bucket) in [
+            (60_i64, minute_expired.as_str()),
+            (60, minute_kept.as_str()),
+            (300, five_expired.as_str()),
+            (300, five_kept.as_str()),
+        ] {
+            sqlx::query(insert)
+                .bind(grain)
+                .bind(bucket)
+                .bind(bucket)
+                .bind(bucket)
+                .bind(bucket)
+                .bind(&now_text)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        ensure_seeded(pool).await.unwrap();
+        assert_eq!(
+            cleanup_expired_metric_aggregates(pool, now).await.unwrap(),
+            2
+        );
+        let remaining: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT grain_seconds, bucket_start FROM node_block_aggregates ORDER BY grain_seconds, bucket_start",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, vec![(60, minute_kept), (300, five_kept)]);
     }
 
     /// Issue #214 review F2: a bucket is released only once every observation it

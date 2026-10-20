@@ -1487,7 +1487,7 @@ const BUCKET_GAP_STATE_SQL: &str = "SELECT first_observed_at, last_observed_at, 
 /// not support but can never invent one. The arithmetic runs in Rust over
 /// canonical instants because that is what the rest of the read path compares,
 /// not a SQL date function whose accepted input formats are a library detail.
-fn candidate_gap_seconds(
+pub(crate) fn candidate_gap_seconds(
     first_observed_at: &str,
     last_observed_at: &str,
     observed_at: &str,
@@ -2262,16 +2262,9 @@ pub async fn load_window(
         let points: Vec<MetricRangePoint> = buckets.into_iter().map(bucket_range_point).collect();
         (points, truncated)
     };
-    // No raw window is read beside the tier, so every point is judged by the
-    // cadence it proves itself, exactly as the Admin reader judges a stretch it
-    // answers without a raw window.
     let mut points = points;
-    for point in &mut points {
-        point.judged_cadence_seconds = unmeasured_judged_cadence(point);
-    }
     let pauses = load_pauses(pool, &query.scope, &from_text, &to_text).await?;
-    let judged = judged_points(&points);
-    let continuity = continuity_from(&judged, &pauses, &from_text, &to_text, MIN_GAP_SECONDS);
+    let continuity = judge_fixed_window(&mut points, &pauses, &from_text, &to_text);
     let segments = vec![MetricRangeSegment {
         grain: query.tier.grain_label(),
         source: if grain_seconds == 0 {
@@ -2293,6 +2286,30 @@ pub async fn load_window(
         truncated,
         continuation: None,
     })
+}
+
+/// Judge the points of one fixed window (ADR 0012) by the Admin long-history
+/// rule, and set the cadence each point is judged with.
+///
+/// No raw window is read beside the tier, so every point is judged by the
+/// cadence it proves itself, exactly as the Admin reader judges a stretch it
+/// answers without a raw window, and silence is the merged-sequence continuity
+/// rule with the `MIN_GAP_SECONDS` floor, each bucket's own `max_gap_seconds`
+/// and the unwritten-window check between two buckets. One function for every
+/// fixed-window reader - the sample tiers here and the block tiers
+/// (`crate::block_aggregates`, issue #248) - so the two cannot drift apart on
+/// what a silence is.
+pub(crate) fn judge_fixed_window(
+    points: &mut [MetricRangePoint],
+    pauses: &[ProtectionPause],
+    from: &str,
+    to: &str,
+) -> Continuity {
+    for point in points.iter_mut() {
+        point.judged_cadence_seconds = unmeasured_judged_cadence(point);
+    }
+    let judged = judged_points(points);
+    continuity_from(&judged, pauses, from, to, MIN_GAP_SECONDS)
 }
 
 /// The silence two consecutive points of a fixed window must span before the

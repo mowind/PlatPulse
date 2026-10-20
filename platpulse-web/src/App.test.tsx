@@ -1370,8 +1370,12 @@ describe('App shell with private Home', () => {
       from: '2026-08-19T18:00:00Z', to: '2026-08-20T00:00:30Z', windowSeconds: 21_600,
       processCpuPercent: [bucket('2026-08-19T23:58:00Z', '2026-08-19T23:59:00Z', 40), bucket('2026-08-19T23:59:00Z', '2026-08-20T00:00:00Z', 55), bucket('2026-08-20T00:00:00Z', '2026-08-20T00:01:00Z', 30, true)],
       processMemoryPercent: [], dataDirectoryPercent: [], networkRxBytesPerSec: [], networkTxBytesPerSec: [],
-      peerInboundCount: [], peerOutboundCount: [], series: [],
-      metricWindow: { window: '6h', grain: '1m', grainSeconds: 60, unavailableSeries: ['blockIntervalMs', 'transactionCount'] },
+      peerInboundCount: [], peerOutboundCount: [],
+      // The block tiers (#248): one bucket of each block series.
+      blockIntervalMs: [bucket('2026-08-19T23:59:00Z', '2026-08-20T00:00:00Z', 3_000)],
+      transactionCount: [{ ...bucket('2026-08-19T23:59:00Z', '2026-08-20T00:00:00Z', 9), bucket: { ...bucket('2026-08-19T23:59:00Z', '2026-08-20T00:00:00Z', 9).bucket, totalValue: 60 } }],
+      series: [],
+      metricWindow: { window: '6h', grain: '1m', grainSeconds: 60, unavailableSeries: [] },
     }
     const requests: string[] = []
     let releaseSixHours: (() => void) | null = null
@@ -1412,11 +1416,11 @@ describe('App shell with private Home', () => {
     expect(screen.getAllByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveLength(4)
 
     // Selecting 6h writes the URL and never shows the Live answer meanwhile:
-    // every sample card is loading, and the two block cards state they are Live only.
+    // all six cards are loading, the two block cards included (#248).
     fireEvent.click(screen.getByRole('radio', { name: '6h' }))
     await waitFor(() => expect(window.location.search).toBe('?window=6h'))
-    expect(await screen.findAllByText('Loading 6-hour window…')).toHaveLength(4)
-    expect(screen.getAllByText('Block charts show the Live window only')).toHaveLength(2)
+    expect(await screen.findAllByText('Loading 6-hour window…')).toHaveLength(6)
+    expect(screen.queryByText('Block charts show the Live window only')).toBeNull()
     expect(screen.queryAllByRole('img', { name: /over the last 60 seconds/ })).toHaveLength(0)
     expect(screen.getByRole('radio', { name: '6h' }).getAttribute('aria-checked')).toBe('true')
     await waitFor(() => expect(releaseSixHours).not.toBeNull())
@@ -1426,11 +1430,12 @@ describe('App shell with private Home', () => {
     })
     expect(await screen.findByRole('heading', { level: 2, name: 'Latest 6 hours' })).toBeTruthy()
     expect(screen.getAllByRole('img', { name: /line chart over the last 6 hours/ })).toHaveLength(4)
-    // The block cards keep their title and current value but mount no chart.
-    expect(screen.queryAllByRole('img', { name: /bar chart/ })).toHaveLength(0)
+    // The block cards keep their title and current value and draw their
+    // buckets over the same window (#248).
+    expect(screen.getAllByRole('img', { name: /bar chart over the last 6 hours/ })).toHaveLength(2)
     const blockCard = screen.getByRole('heading', { level: 3, name: 'Block interval' }).closest('[data-slot="node-metric-card"]')
     expect(blockCard?.querySelector('[data-slot="node-metric-value"]')?.textContent).toBeTruthy()
-    expect(blockCard?.querySelector('[data-slot="node-metric-chart"]')).toBeNull()
+    expect(blockCard?.querySelector('[data-slot="node-metric-chart"]')?.getAttribute('data-points')).toBe('1')
     const cpuPlot = screen.getByRole('img', { name: 'Process CPU line chart over the last 6 hours' })
     expect(cpuPlot.getAttribute('data-points')).toBe('3')
     expect(document.getElementById(cpuPlot.getAttribute('aria-describedby') ?? '')?.textContent).toContain("drawn through each bucket's maximum")
@@ -1452,6 +1457,7 @@ describe('App shell with private Home', () => {
     expect(await screen.findByRole('heading', { level: 2, name: 'Retained 6-hour window' })).toBeTruthy()
     expect(screen.getByText('History update failed · Showing previous window')).toBeTruthy()
     expect(screen.getAllByRole('img', { name: /line chart over a retained 6-hour window/ })).toHaveLength(4)
+    expect(screen.getAllByRole('img', { name: /bar chart over a retained 6-hour window/ })).toHaveLength(2)
 
     // Arrow keys move the one selection: Right from 6h is 24h... and End is 7d,
     // whose first failure is the unavailable state, never a retained window.
@@ -1461,7 +1467,7 @@ describe('App shell with private Home', () => {
     fireEvent.keyDown(selected, { key: 'End' })
     await waitFor(() => expect(window.location.search).toBe('?window=7d'))
     expect(document.activeElement).toBe(screen.getByRole('radio', { name: '7d' }))
-    expect(await screen.findAllByText('Metric history unavailable')).toHaveLength(4)
+    expect(await screen.findAllByText('Metric history unavailable')).toHaveLength(6)
     expect(screen.queryByRole('heading', { level: 2, name: /Retained/ })).toBeNull()
     expect(screen.getByRole('heading', { level: 2, name: 'Latest 7 days' })).toBeTruthy()
 

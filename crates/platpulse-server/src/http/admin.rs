@@ -453,6 +453,8 @@ pub struct AdminNodePurgeCounts {
     pub metric_samples: i64,
     pub metric_series_state: i64,
     pub metric_aggregates: i64,
+    /// Block-tier buckets counted from this Node's blocks (issue #248).
+    pub block_aggregates: i64,
     /// Recorded sync/consensus state entries (issue #217).
     pub state_observations: i64,
     /// The recorded-state series ledger.
@@ -535,6 +537,7 @@ fn node_purge_counts(counts: crate::node_purge::NodePurgeCounts) -> AdminNodePur
         metric_samples: counts.metric_samples,
         metric_series_state: counts.metric_series_state,
         metric_aggregates: counts.metric_aggregates,
+        block_aggregates: counts.block_aggregates,
         state_observations: counts.state_observations,
         state_series_state: counts.state_series_state,
         capacity_skipped_series: counts.capacity_skipped_series,

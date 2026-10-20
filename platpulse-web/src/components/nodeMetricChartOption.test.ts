@@ -6,7 +6,7 @@ import {
   metricChartOption,
   type MetricChartOptionInput,
 } from './nodeMetricChartOption'
-import { formatPercentSample, formatRateSample } from './metricChartAxis'
+import { formatCountSample, formatPercentSample, formatRateSample } from './metricChartAxis'
 
 // The option is pure data, so the whole chart contract can be read without a
 // canvas: which run became which series, what the axis promises, and the exact
@@ -243,6 +243,38 @@ describe('metricChartOption', () => {
     expect(closed).toContain('min 26% · max 30% · 60 samples')
     const open = option.tooltip.formatter({ axisValue: at(300), seriesName: 'Process CPU', data: { value: [at(300), 50], bucket: last }, color: METRIC_SERIES_COLORS.cpu })
     expect(open).toContain('T300 – T600 · Open bucket')
+  })
+
+  it('names a block bucket by its blocks and states its transaction total (#248)', () => {
+    const bucket = {
+      start: new Date(at(0)).toISOString(),
+      end: new Date(at(300)).toISOString(),
+      grainSeconds: 300,
+      minValue: 2,
+      maxValue: 9,
+      lastValue: 4,
+      sampleCount: 3,
+      totalValue: 15,
+      firstObservedAt: new Date(at(10)).toISOString(),
+      lastObservedAt: new Date(at(14)).toISOString(),
+      open: false,
+    }
+    const option = build({
+      to: at(600),
+      kind: 'bar',
+      valueFormat: formatCountSample,
+      countNoun: ['block', 'blocks'],
+      series: [{ label: 'Transactions / block', color: METRIC_SERIES_COLORS.transactions, segments: [[{ sampledAt: at(0), value: 9, bucket }]] }],
+    })
+    // A bar keeps its bucket beside the pair too, or the tooltip has nothing to state.
+    expect(option.series[0].data).toEqual([{ value: [at(0), 9], bucket }])
+    const body = option.tooltip.formatter({ axisValue: at(0), seriesName: 'Transactions / block', data: { value: [at(0), 9], bucket }, color: METRIC_SERIES_COLORS.transactions })
+    expect(body).toContain('Transactions / block (max)')
+    expect(body).toContain('min 2 · max 9 · 3 blocks · total 15')
+    expect(body).not.toContain('samples')
+    const single = option.tooltip.formatter({ axisValue: at(0), seriesName: 'Transactions / block', data: { value: [at(0), 9], bucket: { ...bucket, sampleCount: 1, totalValue: undefined } }, color: METRIC_SERIES_COLORS.transactions })
+    expect(single).toContain('· 1 block')
+    expect(single).not.toContain('total')
   })
 
   it('keeps a raw point a bare pair, so Live draws exactly what it drew before', () => {

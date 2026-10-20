@@ -344,6 +344,7 @@ const NODE_OWNED_TABLES: &[&str] = &[
     "node_metric_samples",
     "node_metric_series_state",
     "node_metric_aggregates",
+    "node_block_aggregates",
     "node_state_observations",
     "node_state_series_state",
     "node_validator_links",
@@ -410,6 +411,10 @@ async fn seed_directly_owned_rows(
     // window and carry its Node ID directly, so they are Node-owned history
     // (issue #214).
     sqlx::query("INSERT OR IGNORE INTO node_metric_aggregates (node_id, metric, grain_seconds, bucket_start, sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at, last_received_at, updated_at) VALUES (?, 'process_cpu_percent', 60, ?, 2, 1.0, 2.0, 2.0, ?, ?, ?, ?)")
+        .bind(node_id).bind(now).bind(now).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
+    // The block tiers summarize this Node's accepted blocks and carry its Node
+    // ID directly, so they are Node-owned history too (issue #248).
+    sqlx::query("INSERT OR IGNORE INTO node_block_aggregates (node_id, grain_seconds, bucket_start, block_count, transaction_total, transaction_min, transaction_max, last_transaction_count, first_observed_at, last_observed_at, last_received_at, updated_at) VALUES (?, 60, ?, 1, 1, 1, 1, 1, ?, ?, ?, ?)")
         .bind(node_id).bind(now).bind(now).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
     // The recorded synchronization and consensus states are evidence about
     // this Node, so they are Node-owned history and the Purge removes them

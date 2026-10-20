@@ -1916,6 +1916,22 @@ async fn save_current<I: ReportInventory>(
         sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, last_accepted_summary_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET historical_high_watermark=MAX(block_history_state.historical_high_watermark, excluded.historical_high_watermark), cumulative_block_count=block_history_state.cumulative_block_count + 1, cumulative_transaction_count=block_history_state.cumulative_transaction_count + excluded.cumulative_transaction_count, cumulative_self_seal_count=block_history_state.cumulative_self_seal_count + excluded.cumulative_self_seal_count, last_accepted_summary_at=excluded.last_accepted_summary_at, updated_at=excluded.updated_at")
             .bind(&node_id).bind(sample.block_number as i64).bind(sample.transaction_count as i64)
             .bind((sample.attribution.seal_signer_match == platpulse_core::block::SealSignerMatch::SignerSelf) as i64).bind(received_at).bind(received_at).execute(&mut **tx).await?;
+        // The block tiers (issue #248) advance exactly where the cumulative
+        // counters do: only for a Block Summary this transaction has just
+        // inserted, so Block history dedup decides for both.
+        let observed_at = sample.observed_at.to_string();
+        crate::block_aggregates::record_accepted_block(
+            tx,
+            crate::block_aggregates::AcceptedBlock {
+                node_id: &node_id,
+                block_number: sample.block_number as i64,
+                block_timestamp_ms: sample.block_timestamp_ms as i64,
+                observed_at: &observed_at,
+                transaction_count: sample.transaction_count as i64,
+            },
+            received_at,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -5642,6 +5658,316 @@ mod tests {
         let counters: (i64, i64) = sqlx::query_as("SELECT cumulative_block_count, cumulative_transaction_count FROM block_history_state WHERE node_id=?").bind(node_id.to_string()).fetch_one(state.db().pool()).await.unwrap();
         assert_eq!(summaries, 0);
         assert_eq!(counters, (1, 3));
+    }
+
+    /// A 5-minute bucket edge an hour before now. The block tiers expire with
+    /// their aggregate families after every accepted Report, so the instants a
+    /// block case writes have to be inside the tiers' own windows.
+    fn block_base() -> time::OffsetDateTime {
+        let hour_ago = now_utc() - time::Duration::hours(1);
+        time::OffsetDateTime::from_unix_timestamp(hour_ago.unix_timestamp().div_euclid(300) * 300)
+            .unwrap()
+    }
+
+    fn at(base: time::OffsetDateTime, seconds: i64) -> String {
+        format_rfc3339(base + time::Duration::seconds(seconds))
+    }
+
+    /// A report carrying the given Block Summaries for the fixture's Node, each
+    /// stamped with the registered Network Identity: (height, block timestamp
+    /// in ms, observed_at, transactions, source).
+    fn report_with_blocks(
+        report_id: &str,
+        sequence: u64,
+        blocks: &[(u64, u64, String, u64, platpulse_core::block::BlockSource)],
+    ) -> AgentReport {
+        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        report.report_id = report_id.parse().unwrap();
+        report.report_sequence = sequence;
+        let node_id = report.inventory.nodes[0].node_id;
+        let mut identity = report.nodes[0]
+            .chain
+            .network_identity
+            .latest
+            .clone()
+            .unwrap();
+        identity.genesis_hash =
+            "0x0000000000000000000000000000000000000000000000000000000000000001"
+                .parse()
+                .unwrap();
+        identity.address_hrp = Some("lat".to_owned());
+        for (height, timestamp_ms, observed_at, transactions, source) in blocks.iter().cloned() {
+            report
+                .block_summaries
+                .push(platpulse_core::block::BlockSummary {
+                    node_id,
+                    network_identity: identity.clone(),
+                    block_number: height,
+                    block_hash: format!("0x{height:064x}").parse().unwrap(),
+                    parent_hash: format!("0x{:064x}", height.saturating_sub(1))
+                        .parse()
+                        .unwrap(),
+                    block_timestamp_ms: timestamp_ms,
+                    observed_at: observed_at.parse().unwrap(),
+                    transaction_count: transactions,
+                    block_interval_ms: None,
+                    source,
+                    attribution:
+                        platpulse_core::block::BlockProductionAttribution::unknown_attribution(
+                            "0x1111111111111111111111111111111111111111"
+                                .parse()
+                                .unwrap(),
+                            "test",
+                        ),
+                });
+        }
+        report.validate().unwrap();
+        report
+    }
+
+    /// One block bucket as (block_count, transaction_total, transaction_min,
+    /// transaction_max, interval_count, interval_min_ms, interval_max_ms).
+    type BlockBucket = (i64, i64, i64, i64, i64, Option<i64>, Option<i64>);
+
+    async fn block_bucket(
+        state: &AppState,
+        node_id: &str,
+        grain_seconds: i64,
+        bucket_start: &str,
+    ) -> Option<BlockBucket> {
+        sqlx::query_as("SELECT block_count, transaction_total, transaction_min, transaction_max, interval_count, interval_min_ms, interval_max_ms FROM node_block_aggregates WHERE node_id = ? AND grain_seconds = ? AND bucket_start = ?")
+            .bind(node_id)
+            .bind(grain_seconds)
+            .bind(bucket_start)
+            .fetch_optional(state.db().pool())
+            .await
+            .unwrap()
+    }
+
+    async fn block_bucket_rows(state: &AppState) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM node_block_aggregates")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap()
+    }
+
+    /// Issue #248: an accepted block advances one bucket of each tier, by the
+    /// minute and five minutes its own observation falls in, with its
+    /// transactions and its interval to the held parent. The identical Report
+    /// delivered again is a Replay and a later Report repeating the same
+    /// heights is a repeated delivery: neither moves a bucket.
+    #[tokio::test]
+    async fn accepted_blocks_advance_both_block_tiers_and_a_repeat_never_does() {
+        use platpulse_core::block::BlockSource::Subscription;
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let base = block_base();
+        let blocks = [
+            (10, 1_000, at(base, 1), 3, Subscription),
+            (11, 3_000, at(base, 3), 5, Subscription),
+            (12, 4_500, at(base, 5), 1, Subscription),
+            (13, 6_500, at(base, 67), 2, Subscription),
+        ];
+        let report = report_with_blocks("0195f2a1-0013-4013-8013-000000000301", 1, &blocks);
+        let node_id = report.inventory.nodes[0].node_id.to_string();
+        let body = serde_json::to_vec(&report).unwrap();
+        submit(&state, &agent_id, body.clone()).await;
+
+        // Three blocks in the 09:00 minute: 3 + 5 + 1 transactions, and the
+        // two intervals whose parent is held (block 10's parent is not).
+        let minute = Some((3, 9, 1, 5, 2, Some(1_500), Some(2_000)));
+        assert_eq!(
+            block_bucket(&state, &node_id, 60, &at(base, 0)).await,
+            minute
+        );
+        assert_eq!(
+            block_bucket(&state, &node_id, 60, &at(base, 60)).await,
+            Some((1, 2, 2, 2, 1, Some(2_000), Some(2_000)))
+        );
+        // The 5-minute bucket counted all four.
+        let five = Some((4, 11, 1, 5, 3, Some(1_500), Some(2_000)));
+        assert_eq!(
+            block_bucket(&state, &node_id, 300, &at(base, 0)).await,
+            five
+        );
+        assert_eq!(
+            block_bucket_rows(&state).await,
+            3,
+            "an empty bucket is never written"
+        );
+
+        // A Replay of the same Report bytes answers the stored receipt.
+        submit(&state, &agent_id, body).await;
+        // A later Report delivering the same heights again.
+        let repeat = report_with_blocks("0195f2a1-0013-4013-8013-000000000302", 2, &blocks);
+        submit(&state, &agent_id, serde_json::to_vec(&repeat).unwrap()).await;
+        assert_eq!(
+            block_bucket(&state, &node_id, 60, &at(base, 0)).await,
+            minute
+        );
+        assert_eq!(
+            block_bucket(&state, &node_id, 300, &at(base, 0)).await,
+            five
+        );
+        assert_eq!(block_bucket_rows(&state).await, 3);
+    }
+
+    /// Issue #248: a plain resync replay - a subscription block at or below the
+    /// historical high-water mark whose raw row retention has already released
+    /// - is refused by Block history dedup and therefore never re-accumulates,
+    /// even though no raw row is left to collide with.
+    #[tokio::test]
+    async fn a_resync_replay_below_the_high_water_mark_never_accumulates() {
+        use platpulse_core::block::BlockSource::Subscription;
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let base = block_base();
+        let blocks = [(10, 1_000, at(base, 1), 3, Subscription)];
+        let first = report_with_blocks("0195f2a1-0013-4013-8013-000000000311", 1, &blocks);
+        let node_id = first.inventory.nodes[0].node_id.to_string();
+        submit(&state, &agent_id, serde_json::to_vec(&first).unwrap()).await;
+        sqlx::query("DELETE FROM block_summaries WHERE node_id=?")
+            .bind(&node_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE block_history_state SET historical_high_watermark=100 WHERE node_id=?")
+            .bind(&node_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let replay = report_with_blocks("0195f2a1-0013-4013-8013-000000000312", 2, &blocks);
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&replay).unwrap()).await;
+        assert_eq!(
+            receipt.samples[0].rejection.as_ref().unwrap().code,
+            platpulse_core::RejectionCode::ResyncReplay
+        );
+        let once = Some((1, 3, 3, 3, 0, None, None));
+        assert_eq!(block_bucket(&state, &node_id, 60, &at(base, 0)).await, once);
+        assert_eq!(
+            block_bucket(&state, &node_id, 300, &at(base, 0)).await,
+            once
+        );
+    }
+
+    /// Issue #248: only an explicit OpenRecoverableGap admits a block below the
+    /// high-water mark. Its backfill is counted once, in the bucket of its own
+    /// observation, and completes the interval of the child that was waiting
+    /// for it in the child's own bucket; a second delivery of the same backfill
+    /// and a backfill outside any open gap accumulate nothing.
+    #[tokio::test]
+    async fn an_open_gap_backfill_accumulates_once_and_completes_its_child_interval() {
+        use platpulse_core::block::BlockSource::{GapBackfill, Subscription};
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let base = block_base();
+        let live = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000321",
+            1,
+            &[
+                (10, 1_000, at(base, 1), 3, Subscription),
+                (12, 5_000, at(base, 5), 4, Subscription),
+            ],
+        );
+        let node_id = live.inventory.nodes[0].node_id.to_string();
+        submit(&state, &agent_id, serde_json::to_vec(&live).unwrap()).await;
+        assert_eq!(
+            block_bucket(&state, &node_id, 60, &at(base, 0)).await,
+            Some((2, 7, 3, 4, 0, None, None)),
+            "neither block has a held parent yet"
+        );
+        sqlx::query("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES (?, 11, 11, 'open_recoverable_gap', '2026-08-12T09:00:06Z', '2026-08-12T09:00:06Z')")
+            .bind(&node_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let backfill = [(11, 2_500, at(base, 210), 6, GapBackfill)];
+        let first = report_with_blocks("0195f2a1-0013-4013-8013-000000000322", 2, &backfill);
+        submit(&state, &agent_id, serde_json::to_vec(&first).unwrap()).await;
+        // Block 11 lands in its own minute with its interval to block 10...
+        assert_eq!(
+            block_bucket(&state, &node_id, 60, &at(base, 180)).await,
+            Some((1, 6, 6, 6, 1, Some(1_500), Some(1_500)))
+        );
+        // ...and completes block 12's interval in block 12's minute.
+        let completed = Some((2, 7, 3, 4, 1, Some(2_500), Some(2_500)));
+        assert_eq!(
+            block_bucket(&state, &node_id, 60, &at(base, 0)).await,
+            completed
+        );
+        let five = Some((3, 13, 3, 6, 2, Some(1_500), Some(2_500)));
+        assert_eq!(
+            block_bucket(&state, &node_id, 300, &at(base, 0)).await,
+            five
+        );
+
+        // The gap is closed now: the same backfill again, and a backfill below
+        // the high-water mark outside any open gap, are both refused.
+        let again = report_with_blocks("0195f2a1-0013-4013-8013-000000000323", 3, &backfill);
+        submit(&state, &agent_id, serde_json::to_vec(&again).unwrap()).await;
+        let outside = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000324",
+            4,
+            &[(9, 500, at(base, 220), 9, GapBackfill)],
+        );
+        submit(&state, &agent_id, serde_json::to_vec(&outside).unwrap()).await;
+        assert_eq!(
+            block_bucket(&state, &node_id, 60, &at(base, 0)).await,
+            completed
+        );
+        assert_eq!(
+            block_bucket(&state, &node_id, 60, &at(base, 180)).await,
+            Some((1, 6, 6, 6, 1, Some(1_500), Some(1_500)))
+        );
+        assert_eq!(
+            block_bucket(&state, &node_id, 300, &at(base, 0)).await,
+            five
+        );
+    }
+
+    /// Issue #248: the buckets are written inside the receipt transaction, so a
+    /// Report whose transaction fails after a bucket was already advanced
+    /// leaves no bucket - and no Block Summary - behind.
+    #[tokio::test]
+    async fn a_rolled_back_report_leaves_no_block_bucket() {
+        use platpulse_core::block::BlockSource::Subscription;
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let base = block_base();
+        // The first block opens the bucket; the second one's update aborts.
+        sqlx::query("CREATE TRIGGER abort_block_bucket BEFORE UPDATE ON node_block_aggregates BEGIN SELECT RAISE(ABORT, 'injected bucket failure'); END")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let report = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000331",
+            1,
+            &[
+                (10, 1_000, at(base, 1), 3, Subscription),
+                (11, 3_000, at(base, 3), 5, Subscription),
+            ],
+        );
+        let status = submit_status(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert_ne!(status, StatusCode::OK);
+        assert_eq!(block_bucket_rows(&state).await, 0);
+        let summaries: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries")
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(summaries, 0);
+
+        // Without the injected failure the same Report is accepted once.
+        sqlx::query("DROP TRIGGER abort_block_bucket")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        let node_id = report.inventory.nodes[0].node_id.to_string();
+        assert_eq!(
+            block_bucket(&state, &node_id, 60, &at(base, 0)).await,
+            Some((2, 8, 3, 5, 1, Some(2_000), Some(2_000)))
+        );
     }
 
     #[tokio::test]

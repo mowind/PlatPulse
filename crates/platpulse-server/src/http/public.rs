@@ -1297,6 +1297,13 @@ pub(crate) struct PublicMetricBucket {
     /// The newest bucket, whose interval the answer has not reached the end of
     /// yet: it is still accumulating, so a later answer can widen it.
     pub open: bool,
+    /// Present only on a Transactions / block bucket (issue #248): every
+    /// transaction the bucket's blocks carried. Its `sampleCount` is then the
+    /// number of blocks, so the reader can state both without a mean the
+    /// chart would have to invent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub total_value: Option<f64>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1324,10 +1331,12 @@ pub(crate) struct PublicMetricWindowAnswer {
     pub grain: String,
     /// The bucket width, 0 for raw observations.
     pub grain_seconds: i64,
-    /// The series this window does not provide, by response field name. The
-    /// two block series have no aggregate tier yet (issue #248), so outside
-    /// Live they are absent from the answer and named here, never answered as
-    /// an empty series that would read as nothing observed.
+    /// The series this window does not provide, by response field name, so a
+    /// series without evidence at this grain is named rather than answered as
+    /// an empty series that would read as nothing observed. Since the block
+    /// aggregate tiers (issue #248) every window provides all nine series and
+    /// the list is empty; it stays part of the answer so a reader keeps one
+    /// place to ask.
     pub unavailable_series: Vec<String>,
 }
 
@@ -1344,19 +1353,18 @@ pub(crate) struct PublicNodeMetricHistory {
     pub network_tx_bytes_per_sec: Vec<PublicMetricPoint>,
     pub peer_inbound_count: Vec<PublicMetricPoint>,
     pub peer_outbound_count: Vec<PublicMetricPoint>,
-    /// Absent outside Live: see `metricWindow.unavailableSeries`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(nullable = false)]
-    pub block_interval_ms: Option<Vec<PublicMetricPoint>>,
-    /// Absent outside Live: see `metricWindow.unavailableSeries`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(nullable = false)]
-    pub transaction_count: Option<Vec<PublicMetricPoint>>,
+    /// Live: each held block with a held parent. A longer window: the raw
+    /// blocks (1h) or the block-tier buckets, each drawn by its longest
+    /// interval (issue #248).
+    pub block_interval_ms: Vec<PublicMetricPoint>,
+    /// Live: each held block. A longer window: the raw blocks (1h) or the
+    /// block-tier buckets, each drawn by the most transactions one of its
+    /// blocks carried, with the bucket's total in `bucket.totalValue`.
+    pub transaction_count: Vec<PublicMetricPoint>,
     /// The same nine series, judged: which of them were observed, where the
     /// silences are, and how much of the window is covered. One entry per
     /// series, in the order above, so `series` is the contract a chart reads
-    /// before it draws a line (issue #225). A longer window judges only the
-    /// series it provides.
+    /// before it draws a line (issue #225).
     pub series: Vec<PublicMetricSeriesCoverage>,
     /// The Metric Window of a longer preset (ADR 0012). Absent from Live.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1699,6 +1707,8 @@ fn public_metric_points_mut<'a>(
         "networkTxBytesPerSec" => &mut history.network_tx_bytes_per_sec,
         "peerInboundCount" => &mut history.peer_inbound_count,
         "peerOutboundCount" => &mut history.peer_outbound_count,
+        "blockIntervalMs" => &mut history.block_interval_ms,
+        "transactionCount" => &mut history.transaction_count,
         _ => return None,
     })
 }
@@ -1716,8 +1726,8 @@ fn public_metric_points<'a>(
         "networkTxBytesPerSec" => &history.network_tx_bytes_per_sec,
         "peerInboundCount" => &history.peer_inbound_count,
         "peerOutboundCount" => &history.peer_outbound_count,
-        "blockIntervalMs" => history.block_interval_ms.as_deref()?,
-        "transactionCount" => history.transaction_count.as_deref()?,
+        "blockIntervalMs" => &history.block_interval_ms,
+        "transactionCount" => &history.transaction_count,
         _ => return None,
     })
 }
@@ -1997,8 +2007,8 @@ pub(crate) async fn public_node_metrics(
         network_tx_bytes_per_sec: Vec::new(),
         peer_inbound_count: Vec::new(),
         peer_outbound_count: Vec::new(),
-        block_interval_ms: None,
-        transaction_count: None,
+        block_interval_ms: Vec::new(),
+        transaction_count: Vec::new(),
         series: Vec::new(),
         metric_window: None,
     };
@@ -2044,8 +2054,8 @@ pub(crate) async fn public_node_metrics(
     if let Some(point) = prior_transactions {
         transaction_count.insert(0, point);
     }
-    history.block_interval_ms = Some(block_interval_ms);
-    history.transaction_count = Some(transaction_count);
+    history.block_interval_ms = block_interval_ms;
+    history.transaction_count = transaction_count;
     // The coverage is judged after the payload is whole: the rule answers about
     // the observations this answer really carries, and the last-good point that
     // precedes the window is one of them.
@@ -2065,9 +2075,6 @@ pub(crate) async fn public_node_metrics(
 
     Json(history).into_response()
 }
-
-/// The series a longer window does not provide, by response field name.
-const WINDOW_UNAVAILABLE_SERIES: [&str; 2] = ["blockIntervalMs", "transactionCount"];
 
 /// The older end of a longer window. A bucket tier starts at a bucket edge, so
 /// the oldest bucket the window holds is answered whole rather than straddling
@@ -2114,6 +2121,7 @@ fn window_point(
             first_observed_at: point.first_observed_at,
             last_observed_at: point.last_observed_at,
             open: end > to,
+            total_value: None,
         }),
     })
 }
@@ -2203,9 +2211,10 @@ fn public_window_coverage(
 
 /// Answer a longer Metric Window (ADR 0012, issue #247).
 ///
-/// Every series is read from the one tier the preset fixes; the two block
-/// series are absent and named as unavailable. The window ends at the clock,
-/// so a later request answers a later window.
+/// Every series is read from the one tier the preset fixes: the seven sample
+/// series from the metric tiers, the two block series from the block tiers
+/// (issue #248). The window ends at the clock, so a later request answers a
+/// later window.
 async fn public_window_metrics(
     state: &AppState,
     node_id: &str,
@@ -2229,17 +2238,14 @@ async fn public_window_metrics(
         network_tx_bytes_per_sec: Vec::new(),
         peer_inbound_count: Vec::new(),
         peer_outbound_count: Vec::new(),
-        block_interval_ms: None,
-        transaction_count: None,
+        block_interval_ms: Vec::new(),
+        transaction_count: Vec::new(),
         series: Vec::new(),
         metric_window: Some(PublicMetricWindowAnswer {
             window,
             grain: tier.grain_label().to_owned(),
             grain_seconds: tier.grain_seconds(),
-            unavailable_series: WINDOW_UNAVAILABLE_SERIES
-                .iter()
-                .map(|name| (*name).to_owned())
-                .collect(),
+            unavailable_series: Vec::new(),
         }),
     };
     // The same seven sample series the Live answer reads, named by the one
@@ -2273,6 +2279,48 @@ async fn public_window_metrics(
             );
         }
     }
+    let blocks = crate::block_aggregates::load_block_window(
+        state.db().pool(),
+        crate::block_aggregates::BlockWindowQuery {
+            node_id,
+            from: from_instant,
+            to: to_instant,
+            tier,
+            limit: PUBLIC_METRIC_WINDOW_POINT_LIMIT,
+        },
+    )
+    .await?;
+    history.series.push(public_window_coverage(
+        "blockIntervalMs",
+        &blocks.block_interval_ms,
+        tier,
+        &to,
+    ));
+    history.series.push(public_window_coverage(
+        "transactionCount",
+        &blocks.transaction_count,
+        tier,
+        &to,
+    ));
+    history.block_interval_ms = blocks
+        .block_interval_ms
+        .points
+        .into_iter()
+        .filter_map(|point| window_point(point, to_instant))
+        .collect();
+    history.transaction_count = blocks
+        .transaction_count
+        .points
+        .into_iter()
+        .zip(blocks.transaction_totals)
+        .filter_map(|(point, total)| {
+            let mut point = window_point(point, to_instant)?;
+            if let Some(bucket) = point.bucket.as_mut() {
+                bucket.total_value = total.map(|total| total as f64);
+            }
+            Some(point)
+        })
+        .collect();
     Ok(history)
 }
 
@@ -5384,8 +5432,8 @@ mod tests {
 
     /// 6h is answered from 1-minute buckets alone: a raw sample the window
     /// still holds is not drawn, a bucket is drawn by its maximum with the rest
-    /// of it beside the point, the newest bucket is open, and the block series
-    /// are named as unavailable rather than answered empty.
+    /// of it beside the point, and the newest bucket is open. Since #248 every
+    /// series is provided, so nothing is named as unavailable.
     #[tokio::test]
     async fn a_six_hour_window_reads_one_minute_buckets_by_their_maximum() {
         let (_dir, state) = test_state().await;
@@ -5435,18 +5483,18 @@ mod tests {
         assert_eq!(body["metricWindow"]["grainSeconds"], 60);
         assert_eq!(
             body["metricWindow"]["unavailableSeries"],
-            serde_json::json!(["blockIntervalMs", "transactionCount"])
+            serde_json::json!([])
         );
-        assert!(body.get("blockIntervalMs").is_none());
-        assert!(body.get("transactionCount").is_none());
+        // No block was accepted: both block series are present and empty.
+        assert_eq!(body["blockIntervalMs"], serde_json::json!([]));
+        assert_eq!(body["transactionCount"], serde_json::json!([]));
         let metrics: Vec<&str> = body["series"]
             .as_array()
             .unwrap()
             .iter()
             .map(|entry| entry["metric"].as_str().unwrap())
             .collect();
-        assert!(!metrics.contains(&"blockIntervalMs"));
-        assert_eq!(metrics.len(), 7);
+        assert_eq!(metrics, PUBLIC_METRIC_SERIES);
         // The window starts on a bucket edge and spans the whole six hours.
         let from = crate::auth::parse_rfc3339(body["from"].as_str().unwrap()).unwrap();
         let to = crate::auth::parse_rfc3339(body["to"].as_str().unwrap()).unwrap();
@@ -5625,6 +5673,222 @@ mod tests {
         let memory = coverage("processMemoryPercent");
         assert_eq!(memory["observed"], false);
         assert_eq!(memory["neverObservedProven"], true);
+    }
+
+    // ---- Issue #248: the block aggregate tiers behind the longer windows ----
+
+    /// One block accepted the way ingestion accepts it: its Block Summary row
+    /// and its bucket advance in one transaction.
+    async fn accept_block(
+        state: &AppState,
+        height: i64,
+        timestamp_ms: i64,
+        observed_at: &str,
+        transactions: i64,
+    ) {
+        let mut tx = state.db().pool().begin().await.unwrap();
+        sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES ('node-public', ?, ?, '0xparent', '0xgenesis', 1, 1, 'lat', ?, ?, ?, 'subscription', '0x0000000000000000000000000000000000000000', 'unknown', 'unknown', 'test', ?)")
+            .bind(height)
+            .bind(format!("0xblock-{height}"))
+            .bind(timestamp_ms)
+            .bind(observed_at)
+            .bind(transactions)
+            .bind(observed_at)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        crate::block_aggregates::record_accepted_block(
+            &mut tx,
+            crate::block_aggregates::AcceptedBlock {
+                node_id: "node-public",
+                block_number: height,
+                block_timestamp_ms: timestamp_ms,
+                observed_at,
+                transaction_count: transactions,
+            },
+            observed_at,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    fn series_coverage(body: &serde_json::Value, metric: &str) -> serde_json::Value {
+        body["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["metric"] == metric)
+            .unwrap_or_else(|| panic!("{metric} has no coverage: {body}"))
+            .clone()
+    }
+
+    /// Four 5-minute buckets back: one block; two buckets back nothing; the
+    /// previous bucket: three blocks; the current, open bucket: one block.
+    async fn seed_block_tiers(state: &AppState, current: time::OffsetDateTime) {
+        let at = |seconds: i64| format_rfc3339(current + time::Duration::seconds(seconds));
+        accept_block(state, 90, 1_000, &at(-1_200 + 10), 6).await;
+        accept_block(state, 100, 10_000, &at(-300 + 10), 2).await;
+        accept_block(state, 101, 12_000, &at(-300 + 12), 9).await;
+        accept_block(state, 102, 15_000, &at(-300 + 14), 4).await;
+        accept_block(state, 103, 16_000, &at(1), 1).await;
+    }
+
+    /// 24h and 7d draw both block series from the 5-minute block tier: an
+    /// interval bucket by its longest interval, a transaction bucket by the
+    /// most transactions one of its blocks carried, with the bucket's total
+    /// beside it. A bucket nobody wrote is a gap, and a bucket whose blocks
+    /// have no held parent has no interval point at all, never a zero.
+    #[tokio::test]
+    async fn a_long_window_draws_the_block_tiers_by_their_maximum() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = settled_now(300).await;
+        let current = bucket_floor(now, 300);
+        seed_block_tiers(&state, current).await;
+
+        for window in ["24h", "7d"] {
+            let (status, body) = metric_window_answer(&state, Some(window)).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(
+                body["metricWindow"]["unavailableSeries"],
+                serde_json::json!([])
+            );
+            let metrics: Vec<&str> = body["series"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| entry["metric"].as_str().unwrap())
+                .collect();
+            assert_eq!(metrics, PUBLIC_METRIC_SERIES, "{window}");
+
+            let intervals = body["blockIntervalMs"].as_array().unwrap();
+            assert_eq!(intervals.len(), 2, "{window}: {intervals:?}");
+            let previous = format_rfc3339(current - time::Duration::seconds(300));
+            assert_eq!(intervals[0]["sampledAt"], previous.as_str());
+            assert_eq!(intervals[0]["value"], 3_000.0, "the longest interval");
+            let bucket = &intervals[0]["bucket"];
+            assert_eq!(bucket["minValue"], 2_000.0);
+            assert_eq!(bucket["maxValue"], 3_000.0);
+            assert_eq!(bucket["lastValue"], 3_000.0);
+            assert_eq!(bucket["sampleCount"], 2, "block 100 has no held parent");
+            assert_eq!(bucket["grainSeconds"], 300);
+            assert_eq!(bucket["open"], false);
+            assert!(bucket.get("totalValue").is_none());
+            assert_eq!(intervals[1]["value"], 1_000.0);
+            assert_eq!(intervals[1]["bucket"]["open"], true);
+
+            let transactions = body["transactionCount"].as_array().unwrap();
+            assert_eq!(transactions.len(), 3, "{window}: {transactions:?}");
+            assert_eq!(transactions[1]["sampledAt"], previous.as_str());
+            assert_eq!(transactions[1]["value"], 9.0, "the busiest block");
+            let bucket = &transactions[1]["bucket"];
+            assert_eq!(bucket["minValue"], 2.0);
+            assert_eq!(bucket["lastValue"], 4.0);
+            assert_eq!(bucket["sampleCount"], 3);
+            assert_eq!(bucket["totalValue"], 15.0);
+            assert_eq!(transactions[2]["bucket"]["open"], true);
+
+            // Blocks have no value-less ledger, so an absence is never proof.
+            let tx_coverage = series_coverage(&body, "transactionCount");
+            assert_eq!(tx_coverage["observed"], true);
+            assert_eq!(tx_coverage["neverObservedProven"], false);
+            assert_eq!(tx_coverage["observationCount"], 5);
+            let gaps = tx_coverage["gaps"].as_array().unwrap();
+            assert_eq!(gaps.len(), 1, "{window}: {gaps:?}");
+            assert_eq!(gaps[0]["kind"], "collection_gap");
+            assert_eq!(
+                gaps[0]["from"],
+                format_rfc3339(current - time::Duration::seconds(1_190))
+            );
+            assert_eq!(
+                gaps[0]["to"],
+                format_rfc3339(current - time::Duration::seconds(290))
+            );
+            let interval_coverage = series_coverage(&body, "blockIntervalMs");
+            assert_eq!(interval_coverage["observationCount"], 3);
+            assert_eq!(interval_coverage["gaps"], serde_json::json!([]));
+        }
+    }
+
+    /// 6h reads the 1-minute block tier and 1h the held Block Summaries
+    /// themselves, with the interval of each block to its held parent and no
+    /// bucket on any point; history older than the tier is unobserved.
+    #[tokio::test]
+    async fn the_short_windows_read_the_minute_tier_and_the_raw_blocks() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = settled_now(300).await;
+        let current = bucket_floor(now, 300);
+        seed_block_tiers(&state, current).await;
+        // Held from before the tiers existed: a Block Summary with no bucket.
+        sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES ('node-public', 50, '0xblock-50', '0xparent', '0xgenesis', 1, 1, 'lat', 500, ?, 8, 'subscription', '0x0000000000000000000000000000000000000000', 'unknown', 'unknown', 'test', ?)")
+            .bind(format_rfc3339(now - time::Duration::hours(3)))
+            .bind(format_rfc3339(now - time::Duration::hours(3)))
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let (_, six) = metric_window_answer(&state, Some("6h")).await;
+        assert_eq!(six["metricWindow"]["grain"], "1m");
+        let transactions = six["transactionCount"].as_array().unwrap();
+        assert_eq!(transactions.len(), 3, "{transactions:?}");
+        assert!(
+            transactions
+                .iter()
+                .all(|point| point["bucket"]["grainSeconds"] == 60)
+        );
+        assert!(
+            transactions.iter().all(|point| point["value"] != 8.0),
+            "pre-tier history is never drawn from a bucket"
+        );
+        let intervals = six["blockIntervalMs"].as_array().unwrap();
+        assert_eq!(intervals.len(), 2);
+        assert_eq!(intervals[0]["value"], 3_000.0);
+
+        let (_, hour) = metric_window_answer(&state, Some("1h")).await;
+        assert_eq!(hour["metricWindow"]["grain"], "raw");
+        let transactions = hour["transactionCount"].as_array().unwrap();
+        let counts: Vec<f64> = transactions
+            .iter()
+            .map(|point| point["value"].as_f64().unwrap())
+            .collect();
+        assert_eq!(counts, [6.0, 2.0, 9.0, 4.0, 1.0]);
+        assert!(
+            transactions
+                .iter()
+                .all(|point| point.get("bucket").is_none())
+        );
+        let intervals: Vec<f64> = hour["blockIntervalMs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|point| point["value"].as_f64().unwrap())
+            .collect();
+        assert_eq!(intervals, [2_000.0, 3_000.0, 1_000.0]);
+        assert_eq!(
+            series_coverage(&hour, "blockIntervalMs")["observationCount"],
+            3
+        );
+
+        // A block backfilled at a low height is read by the instant it was
+        // observed, not lost behind the newer heights.
+        accept_block(
+            &state,
+            7,
+            400,
+            &format_rfc3339(now - time::Duration::seconds(30)),
+            11,
+        )
+        .await;
+        let (_, hour) = metric_window_answer(&state, Some("1h")).await;
+        let counts: Vec<f64> = hour["transactionCount"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|point| point["value"].as_f64().unwrap())
+            .collect();
+        assert!(counts.contains(&11.0), "{counts:?}");
     }
 
     fn public_metric_point(sampled_at: &str, value: f64) -> PublicMetricPoint {
