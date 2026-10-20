@@ -219,27 +219,51 @@ describe('sample and current-value formats', () => {
     expect(formatMetricRate(12.5)).toBe('12.5 B/s')
     expect(formatMetricRate(2048)).toBe('2.00 KiB/s')
     expect(formatMetricRate(1024 * 1024)).toBe('1.00 MiB/s')
+    // Below 1024 of its unit a rate stays in that unit, four digits at most…
+    expect(formatMetricRate(1023)).toBe('1023 B/s')
+    expect(formatMetricRate(1000)).toBe('1000 B/s')
+    // …and a value that only rounds up to 1024 moves to the next unit rather
+    // than printing "1024 B/s" or "1024 KiB/s".
+    expect(formatMetricRate(1023.7)).toBe('1.00 KiB/s')
+    expect(formatMetricRate(1024 * 1024 - 1)).toBe('1.00 MiB/s')
+    expect(formatMetricRate(1024 ** 4)).toBe('1.00 TiB/s')
   })
 
-  // The tooltip states the sample the Server stored: no display rounding, no
-  // rescaled unit, so two different samples can never print the same reading.
+  // A percentage, count or duration tooltip states the sample the Server stored:
+  // no display rounding, so two different samples never print the same reading.
   it('states a tooltip sample as it was retained, never as a display reading', () => {
     expect(formatPercentSample(12.345)).toBe('12.345%')
     expect(formatPercentSample(12.1)).toBe('12.1%')
     // Three decimals is the display cap, and it is the cap, not the value, that
     // stops there: no displayed percentage or unit conversion happens first.
     expect(formatPercentSample(12.3456)).toBe('12.346%')
-    expect(formatRateSample(1025.4)).toBe('1025.4 B/s')
     expect(formatPercentSample(0)).toBe('0%')
     expect(formatPercentSample(Number.NaN)).toBe('Unknown%')
-    expect(formatRateSample(1025)).toBe('1025 B/s')
-    expect(formatRateSample(1024)).toBe('1024 B/s')
-    expect(formatRateSample(0)).toBe('0 B/s')
     expect(formatCountSample(7)).toBe('7')
     expect(formatCountSample(7.4)).toBe('7')
     expect(formatCountSample(Number.NaN)).toBe('Unknown')
     expect(formatMillisecondsSample(12480)).toBe('12480 ms')
     expect(formatMillisecondsSample(12480.5)).toBe('12480.5 ms')
     expect(formatMillisecondsSample(Number.NaN)).toBe('Unknown ms')
+  })
+
+  // Issue #249: a byte-rate tooltip is read against the card's own header and
+  // its `Speed (MiB/s)` axis title, so it walks the same binary ladder with the
+  // same decimals instead of printing a bare `151618 B/s`.
+  it('states a byte-rate tooltip sample in the binary unit the card header reads it in', () => {
+    expect(formatRateSample(82366)).toBe('80.4 KiB/s')
+    expect(formatRateSample(151618)).toBe('148 KiB/s')
+    expect(formatRateSample(1.52 * 1024 * 1024)).toBe('1.52 MiB/s')
+    expect(formatRateSample(3 * 1024 ** 3)).toBe('3.00 GiB/s')
+    // Below one KiB the sample stays in bytes rather than becoming 0.78 KiB/s.
+    expect(formatRateSample(800)).toBe('800 B/s')
+    expect(formatRateSample(12.5)).toBe('12.5 B/s')
+    expect(formatRateSample(0)).toBe('0.00 B/s')
+    expect(formatRateSample(1024)).toBe('1.00 KiB/s')
+    expect(formatRateSample(Number.NaN)).toBe('Unknown')
+    // The header and the tooltip are one reading of the same sample.
+    for (const sample of [0, 800, 1023, 1024, 82366, 151618, 5 * 1024 * 1024]) {
+      expect(formatRateSample(sample), String(sample)).toBe(formatMetricRate(sample))
+    }
   })
 })

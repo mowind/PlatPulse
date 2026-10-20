@@ -197,14 +197,6 @@ function escapeText(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
 
-/**
- * Emerald's hand-built tooltip body: the sample's absolute instant, then one row
- * per direction with the value as retained rather than as the page displays it —
- * byte rates keep their reported unit and percentages are not pre-rounded. The
- * row goes through `formatXSample`, whose three-decimal cap drops float noise
- * without becoming the rounded reading the card's own value prints; the instant
- * is the observation's own timestamp.
- */
 /** The bucket an aggregated point carries, read back from its data item. */
 type TooltipBucket = { start: number; end: number; minValue: number; maxValue: number; sampleCount: number; totalValue?: number; open: boolean }
 
@@ -229,6 +221,15 @@ function tooltipPair(entry: Record<string, unknown>): unknown[] {
   return Array.isArray(entry.value) ? entry.value : []
 }
 
+/**
+ * Emerald's hand-built tooltip body: the sample's absolute instant, then one row
+ * per direction formatted by the card's own `valueFormat` (`formatXSample`).
+ * Percentages, counts and durations are printed as retained — the three-decimal
+ * cap drops float noise without becoming the rounded reading the card's own
+ * value prints — while a byte rate is read on the card header's binary ladder
+ * (`80.4 KiB/s`, issue #249) so the tooltip and the header share one unit. The
+ * instant is the observation's own timestamp.
+ */
 function tooltipFormatter(input: MetricChartOptionInput) {
   const theme = input.dark ? METRIC_CHART_THEME.dark : METRIC_CHART_THEME.light
   const time = input.timeFormat ?? clockTime

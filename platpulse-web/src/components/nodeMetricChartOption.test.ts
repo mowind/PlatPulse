@@ -187,20 +187,32 @@ describe('metricChartOption', () => {
     expect(body).toContain('background:' + METRIC_SERIES_COLORS.cpu)
   })
 
-  it('prints the retained sample itself, not a display reading of it', () => {
-    // 12.345% must not be pre-rounded onto the card's own one-decimal reading,
-    // and a byte rate must keep the unit the Server reported: 1025 B/s and
-    // 1024 B/s are different samples, so neither may print as "1.00 KiB/s".
+  it('prints a percentage sample itself, not a display reading of it', () => {
+    // 12.345% must not be pre-rounded onto the card's own one-decimal reading.
     const percent = build()
-    const rate = build({
-      valueFormat: formatRateSample,
-      series: [{ label: 'Download', color: METRIC_SERIES_COLORS.download, segments: [[{ sampledAt: at(20), value: 1025 }]] }],
-    })
     expect(percent.tooltip.formatter({ axisValue: at(20), seriesName: 'Process CPU', data: [at(20), 12.345], color: METRIC_SERIES_COLORS.cpu })).toContain('12.345%')
     expect(percent.tooltip.formatter({ axisValue: at(20), seriesName: 'Process CPU', data: [at(20), 12.1], color: METRIC_SERIES_COLORS.cpu })).toContain('12.1%')
-    const body = rate.tooltip.formatter({ axisValue: at(20), seriesName: 'Download', data: [at(20), 1025], color: METRIC_SERIES_COLORS.download })
-    expect(body).toContain('1025 B/s')
-    expect(body, 'a rate is never rescaled away from its sample').not.toContain('KiB')
+  })
+
+  it('reads a byte-rate sample in the binary unit the card header and axis title use (issue #249)', () => {
+    const rate = build({
+      valueFormat: formatRateSample,
+      series: [
+        { label: 'Download', color: METRIC_SERIES_COLORS.download, segments: [[{ sampledAt: at(20), value: 82366 }]] },
+        { label: 'Upload', color: METRIC_SERIES_COLORS.upload, segments: [[{ sampledAt: at(20), value: 151618 }]] },
+      ],
+    })
+    const body = rate.tooltip.formatter([
+      { axisValue: at(20), seriesName: 'Download', data: [at(20), 82366], color: METRIC_SERIES_COLORS.download },
+      { axisValue: at(20), seriesName: 'Upload', data: [at(20), 151618], color: METRIC_SERIES_COLORS.upload },
+    ])
+    expect(body).toContain('>80.4 KiB/s<')
+    expect(body).toContain('>148 KiB/s<')
+    expect(body, 'no bare byte count survives in the tooltip').not.toMatch(/\d{4,} B\/s/)
+    // Below one KiB the sample keeps its byte unit instead of becoming 0.78 KiB/s.
+    const small = rate.tooltip.formatter({ axisValue: at(20), seriesName: 'Download', data: [at(20), 800], color: METRIC_SERIES_COLORS.download })
+    expect(small).toContain('>800 B/s<')
+    expect(small).not.toContain('KiB')
   })
 
   it('draws a bucket through its maximum and states the whole bucket in the tooltip (ADR 0012)', () => {

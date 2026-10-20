@@ -30,6 +30,21 @@ const nodeRoute = '**/api/public/v1/nodes/' + PUBLIC_NODE_ID
 const metricsRoute = nodeRoute + '/metrics'
 
 /**
+ * Centres a plot and returns its middle point, checking the point really belongs
+ * to the plot: on the phones the sticky shell header would otherwise sit over
+ * the point the pointer is sent to, and the crosshair would stay untriggered.
+ */
+async function centredPlotPoint(page: Page, plot: Locator, name: string) {
+  await plot.evaluate((node) => node.scrollIntoView({ block: 'center' }))
+  const box = await plot.boundingBox()
+  if (!box) throw new Error('the ' + name + ' plot has no box')
+  const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+  const hit = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-slot="node-metric-chart"]') !== null, point)
+  expect(hit, name + ' plot under the pointer').toBe(true)
+  return point
+}
+
+/**
  * The inline Validator activity badge is 11px inside the 12px meta row. With
  * some Linux font metrics (FreeSans/IPAGothic/FreeSerif/FreeMono, installed by
  * Playwright's `install --with-deps`) its data-tooltip wrapper used to add 1px
@@ -447,20 +462,13 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             expect(rateLabels.every((label) => /^\d+(\.\d+)?$/.test(label)), JSON.stringify(rateLabels)).toBe(true)
             const rateTitle = (await rateCard.locator('svg text[text-anchor="start"]').first().textContent())?.trim() ?? ''
             expect(rateTitle, JSON.stringify(rateLabels)).toMatch(/^Speed \([KMGT]?i?B\/s\)$/)
-            // The crosshair tooltip is the one place the exact retained sample is
-            // stated, with its own instant rather than a rounded reading.
+            // The crosshair tooltip states each sample with its own instant; a
+            // percentage is not pre-rounded onto the card's one-decimal reading.
             const cpuPlot = metrics.getByRole("article").filter({ has: page.getByRole("heading", { level: 3, name: "Process CPU" }) }).locator('[data-slot="node-metric-chart"]')
             // A real pointer gesture: centre the plot, leave it, then cross into
-            // it. The plot is centred rather than merely brought into view because
-            // on the phones the sticky shell header would otherwise sit over the
-            // point the pointer is sent to, and a bare jump can resolve before the
-            // deck has stopped moving: either way the crosshair stays untriggered.
-            await cpuPlot.evaluate((node) => node.scrollIntoView({ block: 'center' }))
-            const cpuBox = await cpuPlot.boundingBox()
-            if (!cpuBox) throw new Error('the Process CPU plot has no box')
-            const cpuPoint = { x: cpuBox.x + cpuBox.width / 2, y: cpuBox.y + cpuBox.height / 2 }
-            const cpuHit = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-slot="node-metric-chart"]') !== null, cpuPoint)
-            expect(cpuHit).toBe(true)
+            // it. A bare jump can resolve before the deck has stopped moving, and
+            // the crosshair then stays untriggered.
+            const cpuPoint = await centredPlotPoint(page, cpuPlot, 'Process CPU')
             await page.mouse.move(2, 2)
             await page.mouse.move(cpuPoint.x, cpuPoint.y, { steps: 4 })
             // Scoped to this card: every mounted chart owns a tooltip element, and
@@ -470,6 +478,30 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             await expect(tooltip).toContainText(/\d{2}:\d{2}:\d{2}/)
             await expect(tooltip).toContainText("Process CPU")
             await expect(tooltip).toContainText(/%/)
+            // Issue #249: the Host network tooltip reads its samples on the same
+            // binary ladder as the card header and the `Speed (…)` axis title —
+            // a number below 1024 in B/s, KiB/s, MiB/s, GiB/s or TiB/s, so a
+            // sample under 1 KiB stays in B/s — never as a bare byte count such
+            // as `151618 B/s`, and never in a unit above the one the axis
+            // title chose from the window's peak.
+            const ratePoint = await centredPlotPoint(page, rateCard, 'Host network')
+            await page.mouse.move(2, 2)
+            await page.mouse.move(ratePoint.x, ratePoint.y, { steps: 4 })
+            const rateTooltip = rateCard.locator('.node-metric-chart-tooltip')
+            await expect(rateTooltip).toBeVisible()
+            await expect(rateTooltip).toContainText(/\d{2}:\d{2}:\d{2}/)
+            const rateText = (await rateTooltip.textContent()) ?? ''
+            const rateUnits = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+            const axisUnit = rateUnits.indexOf(/^Speed \(([KMGT]?i?B)\/s\)$/.exec(rateTitle)?.[1] ?? '')
+            expect(axisUnit, rateTitle).toBeGreaterThanOrEqual(0)
+            const readings = [...rateText.matchAll(/(\d+(?:\.\d+)?) ([A-Za-z]+)\/s/g)]
+            expect(readings.length, rateText).toBeGreaterThan(0)
+            for (const [reading, number, unit] of readings) {
+              expect(rateUnits, reading).toContain(unit)
+              expect(Number(number), reading).toBeLessThan(1024)
+              expect(rateUnits.indexOf(unit), reading + ' under ' + rateTitle).toBeLessThanOrEqual(axisUnit)
+            }
+            await page.mouse.move(2, 2)
             // The retained-sample explanation opposite the section label is gone.
             await expect(page.getByText(/Real retained samples/)).toHaveCount(0)
             // Multi-series cards embed native ECharts legends matching Emerald specifications,

@@ -175,12 +175,12 @@ export function rateAxis(name: string): MetricAxisRule {
 
 
 /**
- * The tooltip states the sample itself, not a reading of it: byte rates keep
- * their reported unit (1025 B/s must not become an indistinguishable
- * "1.00 KiB/s") and percentages are not pre-rounded (12.345% must not print as
+ * A percentage, count or duration tooltip states the sample itself, not a
+ * reading of it: percentages are not pre-rounded (12.345% must not print as
  * "12.3%"). Trimming to three decimals is a display cap that drops float noise,
  * not a claim of unbounded precision; the card's own current value keeps the
- * page's display formatting.
+ * page's display formatting. Byte rates are the exception (issue #249): see
+ * `formatRateSample`.
  */
 function trimSample(value: number, digits: number): string {
   if (!Number.isFinite(value)) return 'Unknown'
@@ -191,8 +191,16 @@ export function formatPercentSample(value: number): string {
   return trimSample(value, 3) + '%'
 }
 
+/**
+ * A byte-rate tooltip sample is read exactly as the card header reads the
+ * current rate — the same binary ladder and decimals as `formatMetricRate`
+ * (82366 B/s → "80.4 KiB/s", 800 B/s stays "800 B/s") — so the tooltip, the
+ * header and the `Speed (MiB/s)` axis title never state one card in two units.
+ * Two samples inside one rounding step (1024 and 1025 B/s) therefore share a
+ * reading, which the header has always accepted (issue #249, option A).
+ */
 export function formatRateSample(value: number): string {
-  return trimSample(value, 3) + ' B/s'
+  return formatMetricRate(value)
 }
 
 export function formatCountSample(value: number): string {
@@ -203,15 +211,26 @@ export function formatMillisecondsSample(value: number): string {
   return trimSample(value, 3) + ' ms'
 }
 
-/** The exact retained byte rate, as a current value and in the tooltip. */
+/**
+ * A byte rate read in the binary unit that keeps its printed number below 1024,
+ * on the same `RATE_UNITS` ladder the rate axis titles use: two decimals under
+ * 10, one under 100, none above (`5.00 B/s`, `80.4 KiB/s`, `148 KiB/s`,
+ * `1023 B/s`). A value that only rounds up to 1024 moves to the next unit
+ * (1023.7 B/s → `1.00 KiB/s`). The card header's current value and the hover
+ * tooltip both print it.
+ */
 export function formatMetricRate(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value) || value < 0) return 'Unknown'
-  const units = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s']
+  const fixed = (scaled: number) => scaled.toFixed(scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2)
   let scaled = value
   let unit = 0
-  while (scaled >= 1024 && unit < units.length - 1) {
+  while (scaled >= 1024 && unit < RATE_UNITS.length - 1) {
     scaled /= 1024
     unit += 1
   }
-  return scaled.toFixed(scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2) + ' ' + units[unit]
+  if (Number(fixed(scaled)) >= 1024 && unit < RATE_UNITS.length - 1) {
+    scaled /= 1024
+    unit += 1
+  }
+  return fixed(scaled) + ' ' + RATE_UNITS[unit]
 }

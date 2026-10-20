@@ -544,10 +544,10 @@ type MetricSeries = {
 
 type MetricChartKind = 'line' | 'bar'
 
-/** The chart's tooltip states each retained sample as the Server reported it —
- *  unrounded percent, unscaled byte rate — while the card's own top-right value
- *  keeps the page's display formatting. The formatters are module-level so the
- *  option is not rebuilt on every render. */
+/** The chart's tooltip states each retained sample with its own unit — an
+ *  unrounded percent, and a byte rate on the same binary ladder the card's
+ *  top-right value reads it in (issue #249). The formatters are module-level so
+ *  the option is not rebuilt on every render. */
 
 /** One current reading of a two-direction card. */
 type MetricReading = { label: string; value: string; direction: 'up' | 'down'; color: string }
