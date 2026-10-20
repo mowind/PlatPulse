@@ -1,8 +1,12 @@
-import type { PublicMetricGap, PublicMetricPoint, PublicMetricSeriesCoverage } from './api/generated'
+import type { PublicMetricBucket, PublicMetricGap, PublicMetricPoint, PublicMetricSeriesCoverage } from './api/generated'
 import { formatHistoryDuration } from './metricHistory'
 
-/** One observed sample, in the Server's own units and the Server's own instant. */
-export type MetricObservation = { sampledAt: number; value: number }
+/**
+ * One observed sample, in the Server's own units and the Server's own instant.
+ * A point of an aggregated Metric Window (ADR 0012) is a bucket: `value` is its
+ * maximum and `bucket` carries the rest of it for the tooltip.
+ */
+export type MetricObservation = { sampledAt: number; value: number; bucket?: PublicMetricBucket }
 
 /**
  * Observation/coverage evidence the Server answered for one plotted direction.
@@ -41,7 +45,9 @@ export function coverageSegments(
   const segments: MetricObservation[][] = []
   let previous: number | undefined
   const ordered = points
-    .map((point) => ({ sampledAt: Date.parse(point.sampledAt), value: point.value }))
+    .map((point): MetricObservation => point.bucket
+      ? { sampledAt: Date.parse(point.sampledAt), value: point.value, bucket: point.bucket }
+      : { sampledAt: Date.parse(point.sampledAt), value: point.value })
     .filter((point) => Number.isFinite(point.sampledAt) && Number.isFinite(point.value) && point.sampledAt >= from && point.sampledAt <= to)
     .sort((left, right) => left.sampledAt - right.sampledAt)
   for (const point of ordered) {

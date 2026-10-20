@@ -320,6 +320,10 @@ _Avoid_: Per-Node visibility, Guest switch
 The fixed, sanitized representation consumed by the Home Dashboard. It excludes connection details, credentials, raw addresses, internal errors, and other administrative data regardless of who views it.
 _Avoid_: Filtered admin response, Browser redaction
 
+**Metric Window**:
+The span of time the Node Detail charts present, chosen from a fixed set the Server defines: Live (the latest 60 seconds) or a longer preset. It is part of the Public Projection, identical for every Home reader, and a longer window may be answered in coarser summaries than individual samples; it never presents values the Server did not observe.
+_Avoid_: Time range, Period, Zoom, Investigation horizon
+
 **Invalidation Event**:
 A small versioned SSE notification indicating that a REST resource should be fetched again. It carries no full resource representation and respects the Public or Admin API boundary that produced it.
 _Avoid_: State stream, WebSocket payload

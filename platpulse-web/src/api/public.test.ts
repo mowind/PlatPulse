@@ -4,6 +4,7 @@ import { client } from './generated/client.gen'
 import {
   applySiteAccessSettings,
   fetchNetworks,
+  fetchNodeMetrics,
   fetchRewardWallet,
   invalidatePublicResource,
   PUBLIC_INVALIDATION_COALESCE_MS,
@@ -67,6 +68,37 @@ describe('Public adapter and query namespace', () => {
       { queryKey: [...publicKeys.history('node-1'), 0], exact: true, refetchType: 'active' },
       { queryKey: [...publicKeys.metrics('node-1'), 0], exact: true, refetchType: 'active' },
     ])
+  })
+
+  it('asks for a longer Metric Window by its preset and for Live with no parameter', async () => {
+    client.setConfig({ baseUrl: 'http://platpulse.test' })
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      void input
+      return Promise.resolve(response({}))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await fetchNodeMetrics('node-1', undefined, 0)
+    await fetchNodeMetrics('node-1', undefined, 0, '24h')
+    const urls = fetchMock.mock.calls.map(([request]) => (request as unknown as Request).url)
+    expect(urls).toEqual([
+      'http://platpulse.test/api/public/v1/nodes/node-1/metrics',
+      'http://platpulse.test/api/public/v1/nodes/node-1/metrics?window=24h',
+    ])
+  })
+
+  it('never lets an Invalidation Event wake a clock-refreshed Metric Window', () => {
+    vi.useFakeTimers()
+    const cache = publicQueryClient.getQueryCache()
+    const live = cache.build(publicQueryClient, { queryKey: [...publicKeys.metrics('node-1'), 0] })
+    const sevenDays = cache.build(publicQueryClient, {
+      queryKey: [...publicKeys.metricsWindow('node-1', '7d'), 0],
+      meta: { refresh: 'clock' },
+    })
+    invalidatePublicResource('collection', undefined, 21)
+    invalidatePublicResource('node', 'node-1', 22)
+    vi.advanceTimersByTime(PUBLIC_INVALIDATION_COALESCE_MS)
+    expect(live.state.isInvalidated).toBe(true)
+    expect(sevenDays.state.isInvalidated).toBe(false)
   })
 
   it('invalidates the Network list for an addressed Network resource', () => {

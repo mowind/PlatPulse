@@ -68,12 +68,16 @@ printf '%s\n' "$VIEWER_PASSWORD" | cargo run -q -p platpulse-server -- viewer cr
 # Every Active Node appears in the Public Projection; Node B retains a legacy
 # private value to guard against accidental per-Node filtering. This uses the
 # temporary SQLite database created by `init`, not a bootstrap shortcut.
-python3 - "$STATE_DIR/platpulse.db" <<'PY'
+python3 - "$STATE_DIR/platpulse.db" "$WEB_DIR/e2e" <<'PY'
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 
 path = sys.argv[1]
+sys.path.insert(0, sys.argv[2])
+sys.dont_write_bytecode = True
+import metric_buckets
+
 now = "2026-08-12T08:00:00Z"
 # Observation timestamps are relative to the real clock so the Server's
 # freshness window (120s) and liveness window behave deterministically.
@@ -288,6 +292,10 @@ with sqlite3.connect(path) as db:
                 (agent_id, "network_tx_bytes_per_sec", sampled_at, sampled_at, tx),
             ],
         )
+    # Issue #247: the longer Metric Windows read the aggregate tiers, which
+    # ingestion writes and the fixture therefore writes too - eight days of
+    # 5-minute buckets and seven hours of 1-minute buckets at a 5s cadence.
+    metric_buckets.seed(db, node_a, agent_id)
 
     # Node B: RPC collection failed but last-good sync values remain visible
     # (the Server preserves last-good semantics; the WebUI must keep showing
@@ -755,7 +763,7 @@ PY
 # one-minute chart samples survive the whole fixed-viewport matrix (a cold CI
 # runner can exceed 20 minutes), and self-terminates when the suite's
 # temporary state directory is gone.
-timeout 3600 python3 - "$STATE_DIR/platpulse.db" > /dev/null 2>&1 <<'REFRESH' &
+timeout 3600 python3 - "$STATE_DIR/platpulse.db" "$WEB_DIR/e2e" > /dev/null 2>&1 <<'REFRESH' &
 import sqlite3
 import sys
 import time
@@ -763,6 +771,9 @@ import traceback
 from datetime import datetime, timedelta, timezone
 
 path = sys.argv[1]
+sys.path.insert(0, sys.argv[2])
+sys.dont_write_bytecode = True
+import metric_buckets
 node_a = "0195f2a1-0014-4014-8014-000000000014"
 agent_a = "0195f2a1-0011-4011-8011-000000000011"
 while True:
@@ -854,6 +865,11 @@ while True:
                 agent_a,
                 ("network_rx_bytes_per_sec", "network_tx_bytes_per_sec"),
             )
+            # Issue #247: keep the newest aggregate buckets advancing with the
+            # clock, as ingestion would, so the longer windows stay continuous
+            # and end in an open bucket for the whole run.
+            now_utc = datetime.now(timezone.utc) - timedelta(seconds=5)
+            metric_buckets.fill_buckets(db, node_a, agent_a, now_utc - timedelta(minutes=15), now_utc)
     except sqlite3.OperationalError:
         # A transient SQLITE_BUSY must not kill the long-run fixture refresher;
         # otherwise the one-minute chart samples age out during the CI matrix.

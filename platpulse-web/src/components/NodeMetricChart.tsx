@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ECharts } from 'echarts/core'
 import { cn } from '../lib/utils'
 import { useIsDark } from '../lib/useIsDark'
+import type { MetricWindowText } from '../metricWindow'
 import { loadECharts } from './echartsCore'
 import { metricChartMaxBands, type MetricAxisRule } from './metricChartAxis'
 import {
@@ -53,6 +54,11 @@ export type NodeMetricChartProps = {
    *  the option stable across renders. */
   valueFormat: (value: number) => string
   seconds: number
+  /** The Metric Window's own words (ADR 0012). Absent, the chart speaks of the
+   *  latest `seconds` exactly as the Live deck always has. */
+  windowText?: MetricWindowText
+  /** Time-axis label and tooltip instant of the window. */
+  timeFormat?: (value: number) => string
   /** Replaces the empty-state sentence while history is still loading. */
   message?: string
   /** What the curve cannot show, read out by assistive technology. */
@@ -65,7 +71,9 @@ export type NodeMetricChartProps = {
   className?: string
 }
 
-const CHART_HEIGHT = 'h-[132px] md:h-[168px] lg:h-[192px]'
+/** The pinned plot heights; a card that mounts no chart holds the same box. */
+export const NODE_METRIC_CHART_HEIGHT = 'h-[132px] md:h-[168px] lg:h-[192px]'
+const CHART_HEIGHT = NODE_METRIC_CHART_HEIGHT
 
 export default function NodeMetricChart({
   label,
@@ -76,6 +84,8 @@ export default function NodeMetricChart({
   axis,
   valueFormat,
   seconds,
+  windowText,
+  timeFormat,
   message,
   description,
   showLegend = false,
@@ -99,7 +109,10 @@ export default function NodeMetricChart({
   const points = series.reduce((total, entry) => total + entry.segments.reduce((count, segment) => count + segment.length, 0), 0)
   const runs = series.reduce((total, entry) => total + entry.segments.filter((segment) => segment.length > 0).length, 0)
   const hasSamples = points > 0
-  const emptyMessage = message ?? 'No samples in the last minute'
+  const emptyMessage = message ?? windowText?.empty ?? 'No samples in the last minute'
+  const span = windowText
+    ? (retained ? 'a retained ' + windowText.adjective + ' window' : windowText.span)
+    : (retained ? 'a retained ' + seconds + '-second window' : 'the last ' + seconds + ' seconds')
 
   // Bar width follows the samples the window actually has, so sixty one-second
   // observations cannot overlap and four observations do not read as hairlines.
@@ -114,8 +127,8 @@ export default function NodeMetricChart({
   const scale = useMemo(() => axis(peak, maxBands), [axis, peak, maxBands])
 
   const option = useMemo(
-    () => metricChartOption({ kind, from, to, max: scale.max, interval: scale.interval, series, dark, axisFormat: scale.format, valueFormat, barWidth, showLegend, yAxisName: scale.name }),
-    [kind, from, to, scale, series, dark, valueFormat, barWidth, showLegend],
+    () => metricChartOption({ kind, from, to, max: scale.max, interval: scale.interval, series, dark, axisFormat: scale.format, valueFormat, barWidth, showLegend, yAxisName: scale.name, ...(timeFormat ? { timeFormat } : {}) }),
+    [kind, from, to, scale, series, dark, valueFormat, barWidth, showLegend, timeFormat],
   )
   optionRef.current = option
 
@@ -178,7 +191,7 @@ export default function NodeMetricChart({
         data-points={points}
         data-chart-error={failed ? 'load' : undefined}
         role="img"
-        aria-label={label + ' ' + kind + ' chart over ' + (retained ? 'a retained ' + seconds + '-second window' : 'the last ' + seconds + ' seconds')}
+        aria-label={label + ' ' + kind + ' chart over ' + span}
         aria-describedby={descriptionId}
         className={cn('relative min-w-0 w-full', CHART_HEIGHT)}
       >

@@ -3648,11 +3648,49 @@ export type PublicGeoInsight = {
 };
 
 /**
+ * What one aggregate bucket of a longer Metric Window holds (ADR 0012).
+ *
+ * A bucket stores a count, extremes and its newest value but no sum, so there
+ * is no mean to draw: the point's `value` is the bucket's maximum, which is
+ * the reading a monitor must not hide, and the rest of the bucket is stated
+ * here for the tooltip.
+ */
+export type PublicMetricBucket = {
+    /**
+     * ...and its end, exclusive.
+     */
+    end: string;
+    firstObservedAt: string;
+    grainSeconds: number;
+    lastObservedAt: string;
+    /**
+     * The newest observation the bucket counted.
+     */
+    lastValue: number;
+    maxValue: number;
+    minValue: number;
+    /**
+     * The newest bucket, whose interval the answer has not reached the end of
+     * yet: it is still accumulating, so a later answer can widen it.
+     */
+    open: boolean;
+    /**
+     * Observations the bucket counted. A replay never advances it.
+     */
+    sampleCount: number;
+    /**
+     * The bucket's own interval: its UTC-aligned start, inclusive...
+     */
+    start: string;
+};
+
+/**
  * One stretch of the window with no observation in it.
  *
- * Only a collection gap can be named here: the latest-60-second answer holds no
- * protection pause, so what it reports is always a silence the series itself
- * proved (the Server names a pause only where it recorded one).
+ * The latest-60-second answer holds no protection pause, so what it reports is
+ * always a collection gap the series itself proved. A longer Metric Window is
+ * judged by the Admin long-history rule, which names a protection pause where
+ * the Server recorded one (ADR 0012).
  */
 export type PublicMetricGap = {
     /**
@@ -3673,7 +3711,18 @@ export type PublicMetricGap = {
 };
 
 export type PublicMetricPoint = {
+    /**
+     * Present only on a point of an aggregated window: the bucket the point
+     * stands for. A raw observation, including every Live point, has none.
+     */
+    bucket?: PublicMetricBucket;
+    /**
+     * The observation instant, or a bucket's start.
+     */
     sampledAt: string;
+    /**
+     * The observed value, or a bucket's maximum.
+     */
     value: number;
 };
 
@@ -3782,6 +3831,37 @@ export type PublicMetricSeriesCoverage = {
     unobservedTailSeconds: number;
 };
 
+/**
+ * The Node Detail Metric Window (ADR 0012): the fixed presets the Public
+ * metrics route answers. Never an arbitrary range: the enum is what bounds
+ * the cost of an anonymous request.
+ */
+export type PublicMetricWindow = 'live' | '1h' | '6h' | '24h' | '7d';
+
+/**
+ * Which Metric Window an answer is for, and at what grain the Server read
+ * it. Absent from a Live answer, which keeps its latest-60-second shape field
+ * for field.
+ */
+export type PublicMetricWindowAnswer = {
+    /**
+     * `raw`, `1m` or `5m`: the one tier the whole window was read from.
+     */
+    grain: string;
+    /**
+     * The bucket width, 0 for raw observations.
+     */
+    grainSeconds: number;
+    /**
+     * The series this window does not provide, by response field name. The
+     * two block series have no aggregate tier yet (issue #248), so outside
+     * Live they are absent from the answer and named here, never answered as
+     * an empty series that would read as nothing observed.
+     */
+    unavailableSeries: Array<string>;
+    window: PublicMetricWindow;
+};
+
 export type PublicNetwork = {
     displayName: string;
     geo: PublicGeoInsight;
@@ -3870,9 +3950,16 @@ export type PublicNodeDetail = PublicNode & {
 };
 
 export type PublicNodeMetricHistory = {
-    blockIntervalMs: Array<PublicMetricPoint>;
+    /**
+     * Absent outside Live: see `metricWindow.unavailableSeries`.
+     */
+    blockIntervalMs?: Array<PublicMetricPoint>;
     dataDirectoryPercent: Array<PublicMetricPoint>;
     from: string;
+    /**
+     * The Metric Window of a longer preset (ADR 0012). Absent from Live.
+     */
+    metricWindow?: PublicMetricWindowAnswer;
     networkRxBytesPerSec: Array<PublicMetricPoint>;
     networkTxBytesPerSec: Array<PublicMetricPoint>;
     peerInboundCount: Array<PublicMetricPoint>;
@@ -3883,11 +3970,15 @@ export type PublicNodeMetricHistory = {
      * The same nine series, judged: which of them were observed, where the
      * silences are, and how much of the window is covered. One entry per
      * series, in the order above, so `series` is the contract a chart reads
-     * before it draws a line (issue #225).
+     * before it draws a line (issue #225). A longer window judges only the
+     * series it provides.
      */
     series: Array<PublicMetricSeriesCoverage>;
     to: string;
-    transactionCount: Array<PublicMetricPoint>;
+    /**
+     * Absent outside Live: see `metricWindow.unavailableSeries`.
+     */
+    transactionCount?: Array<PublicMetricPoint>;
     windowSeconds: number;
 };
 
@@ -7789,11 +7880,17 @@ export type PublicNodeMetricsData = {
     path: {
         node_id: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * Metric Window preset; Live when absent
+         */
+        window?: PublicMetricWindow;
+    };
     url: '/api/public/v1/nodes/{node_id}/metrics';
 };
 
 export type PublicNodeMetricsErrors = {
+    400: ApiErrorBody;
     404: ApiErrorBody;
     503: ApiErrorBody;
 };

@@ -1203,11 +1203,132 @@ struct PublicHistoryRow {
 
 const PUBLIC_NODE_METRIC_WINDOW_SECONDS: i64 = 60;
 
+/// The most points one series of a longer Metric Window may carry. The
+/// presets bound every answer by themselves - an hour of one-second raw
+/// samples is 3,601 points and seven days of 5-minute buckets 2,017 - so the
+/// limit is a guard, not a page size, and when it applies the newest are kept.
+const PUBLIC_METRIC_WINDOW_POINT_LIMIT: i64 = 4_000;
+
+/// The Node Detail Metric Window (ADR 0012): the fixed presets the Public
+/// metrics route answers. Never an arbitrary range: the enum is what bounds
+/// the cost of an anonymous request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub(crate) enum PublicMetricWindow {
+    /// The latest 60 seconds, answered exactly as before the Metric Window.
+    #[serde(rename = "live")]
+    Live,
+    /// The latest hour, from raw observations.
+    #[serde(rename = "1h")]
+    OneHour,
+    /// The latest six hours, from 1-minute buckets.
+    #[serde(rename = "6h")]
+    SixHours,
+    /// The latest 24 hours, from 5-minute buckets.
+    #[serde(rename = "24h")]
+    TwentyFourHours,
+    /// The latest seven days, from 5-minute buckets.
+    #[serde(rename = "7d")]
+    SevenDays,
+}
+
+impl PublicMetricWindow {
+    /// The preset a request names. No parameter is Live; anything outside the
+    /// enum is refused rather than answered as a nearby window.
+    pub(crate) fn parse(raw: Option<&str>) -> Option<Self> {
+        match raw {
+            None | Some("live") => Some(Self::Live),
+            Some("1h") => Some(Self::OneHour),
+            Some("6h") => Some(Self::SixHours),
+            Some("24h") => Some(Self::TwentyFourHours),
+            Some("7d") => Some(Self::SevenDays),
+            Some(_) => None,
+        }
+    }
+
+    pub(crate) fn seconds(self) -> i64 {
+        match self {
+            Self::Live => PUBLIC_NODE_METRIC_WINDOW_SECONDS,
+            Self::OneHour => 3_600,
+            Self::SixHours => 6 * 3_600,
+            Self::TwentyFourHours => 24 * 3_600,
+            Self::SevenDays => 7 * 86_400,
+        }
+    }
+
+    /// The tier the Server answers each longer preset from. Live is answered by
+    /// its own latest-60-second read and never reaches a tier.
+    pub(crate) fn tier(self) -> crate::metric_history::WindowTier {
+        use crate::metric_history::WindowTier;
+        match self {
+            Self::Live | Self::OneHour => WindowTier::Raw,
+            Self::SixHours => WindowTier::OneMinute,
+            Self::TwentyFourHours | Self::SevenDays => WindowTier::FiveMinute,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct PublicNodeMetricsQuery {
+    pub window: Option<String>,
+}
+
+/// What one aggregate bucket of a longer Metric Window holds (ADR 0012).
+///
+/// A bucket stores a count, extremes and its newest value but no sum, so there
+/// is no mean to draw: the point's `value` is the bucket's maximum, which is
+/// the reading a monitor must not hide, and the rest of the bucket is stated
+/// here for the tooltip.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PublicMetricBucket {
+    /// The bucket's own interval: its UTC-aligned start, inclusive...
+    pub start: String,
+    /// ...and its end, exclusive.
+    pub end: String,
+    pub grain_seconds: i64,
+    pub min_value: f64,
+    pub max_value: f64,
+    /// The newest observation the bucket counted.
+    pub last_value: f64,
+    /// Observations the bucket counted. A replay never advances it.
+    pub sample_count: i64,
+    pub first_observed_at: String,
+    pub last_observed_at: String,
+    /// The newest bucket, whose interval the answer has not reached the end of
+    /// yet: it is still accumulating, so a later answer can widen it.
+    pub open: bool,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PublicMetricPoint {
+    /// The observation instant, or a bucket's start.
     pub sampled_at: String,
+    /// The observed value, or a bucket's maximum.
     pub value: f64,
+    /// Present only on a point of an aggregated window: the bucket the point
+    /// stands for. A raw observation, including every Live point, has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub bucket: Option<PublicMetricBucket>,
+}
+
+/// Which Metric Window an answer is for, and at what grain the Server read
+/// it. Absent from a Live answer, which keeps its latest-60-second shape field
+/// for field.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PublicMetricWindowAnswer {
+    pub window: PublicMetricWindow,
+    /// `raw`, `1m` or `5m`: the one tier the whole window was read from.
+    pub grain: String,
+    /// The bucket width, 0 for raw observations.
+    pub grain_seconds: i64,
+    /// The series this window does not provide, by response field name. The
+    /// two block series have no aggregate tier yet (issue #248), so outside
+    /// Live they are absent from the answer and named here, never answered as
+    /// an empty series that would read as nothing observed.
+    pub unavailable_series: Vec<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1223,19 +1344,31 @@ pub(crate) struct PublicNodeMetricHistory {
     pub network_tx_bytes_per_sec: Vec<PublicMetricPoint>,
     pub peer_inbound_count: Vec<PublicMetricPoint>,
     pub peer_outbound_count: Vec<PublicMetricPoint>,
-    pub block_interval_ms: Vec<PublicMetricPoint>,
-    pub transaction_count: Vec<PublicMetricPoint>,
+    /// Absent outside Live: see `metricWindow.unavailableSeries`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub block_interval_ms: Option<Vec<PublicMetricPoint>>,
+    /// Absent outside Live: see `metricWindow.unavailableSeries`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub transaction_count: Option<Vec<PublicMetricPoint>>,
     /// The same nine series, judged: which of them were observed, where the
     /// silences are, and how much of the window is covered. One entry per
     /// series, in the order above, so `series` is the contract a chart reads
-    /// before it draws a line (issue #225).
+    /// before it draws a line (issue #225). A longer window judges only the
+    /// series it provides.
     pub series: Vec<PublicMetricSeriesCoverage>,
+    /// The Metric Window of a longer preset (ADR 0012). Absent from Live.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub metric_window: Option<PublicMetricWindowAnswer>,
 }
 /// One stretch of the window with no observation in it.
 ///
-/// Only a collection gap can be named here: the latest-60-second answer holds no
-/// protection pause, so what it reports is always a silence the series itself
-/// proved (the Server names a pause only where it recorded one).
+/// The latest-60-second answer holds no protection pause, so what it reports is
+/// always a collection gap the series itself proved. A longer Metric Window is
+/// judged by the Admin long-history rule, which names a protection pause where
+/// the Server recorded one (ADR 0012).
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PublicMetricGap {
@@ -1486,6 +1619,7 @@ fn push_metric_point(history: &mut PublicNodeMetricHistory, row: MetricHistoryRo
     let point = PublicMetricPoint {
         sampled_at: row.sampled_at,
         value: row.value,
+        bucket: None,
     };
     match row.metric.as_str() {
         "process_cpu_percent" => history.process_cpu_percent.push(point),
@@ -1551,6 +1685,24 @@ const PUBLIC_METRIC_SERIES: [&str; 9] = [
     "transactionCount",
 ];
 
+/// The sample series of the response a longer window fills, by response field
+/// name. The two block series are not among them: outside Live they are absent.
+fn public_metric_points_mut<'a>(
+    history: &'a mut PublicNodeMetricHistory,
+    metric: &str,
+) -> Option<&'a mut Vec<PublicMetricPoint>> {
+    Some(match metric {
+        "processCpuPercent" => &mut history.process_cpu_percent,
+        "processMemoryPercent" => &mut history.process_memory_percent,
+        "dataDirectoryPercent" => &mut history.data_directory_percent,
+        "networkRxBytesPerSec" => &mut history.network_rx_bytes_per_sec,
+        "networkTxBytesPerSec" => &mut history.network_tx_bytes_per_sec,
+        "peerInboundCount" => &mut history.peer_inbound_count,
+        "peerOutboundCount" => &mut history.peer_outbound_count,
+        _ => return None,
+    })
+}
+
 /// The observations a series of the response carries, by response field name.
 fn public_metric_points<'a>(
     history: &'a PublicNodeMetricHistory,
@@ -1564,8 +1716,8 @@ fn public_metric_points<'a>(
         "networkTxBytesPerSec" => &history.network_tx_bytes_per_sec,
         "peerInboundCount" => &history.peer_inbound_count,
         "peerOutboundCount" => &history.peer_outbound_count,
-        "blockIntervalMs" => &history.block_interval_ms,
-        "transactionCount" => &history.transaction_count,
+        "blockIntervalMs" => history.block_interval_ms.as_deref()?,
+        "transactionCount" => history.transaction_count.as_deref()?,
         _ => return None,
     })
 }
@@ -1715,9 +1867,13 @@ fn public_metric_coverage(
     get,
     path = "/api/public/v1/nodes/{node_id}/metrics",
     tag = "public",
-    params(("node_id" = String, Path)),
+    params(
+        ("node_id" = String, Path),
+        ("window" = Option<PublicMetricWindow>, Query, description = "Metric Window preset; Live when absent")
+    ),
     responses(
         (status = 200, body = PublicNodeMetricHistory),
+        (status = 400, body = crate::http::ApiErrorBody),
         (status = 404, body = crate::http::ApiErrorBody),
         (status = 503, body = crate::http::ApiErrorBody)
     )
@@ -1725,8 +1881,24 @@ fn public_metric_coverage(
 pub(crate) async fn public_node_metrics(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
+    params: Result<Query<PublicNodeMetricsQuery>, axum::extract::rejection::QueryRejection>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
+    // The preset is checked before the Node, as the history route checks its
+    // range: a malformed request is refused the same way for every Node ID,
+    // including a query string the extractor cannot read (a repeated
+    // `window`), which is answered with the same error body.
+    let window = params
+        .ok()
+        .and_then(|Query(params)| PublicMetricWindow::parse(params.window.as_deref()));
+    let Some(window) = window else {
+        return error_response(
+            &request_id.0,
+            StatusCode::BAD_REQUEST,
+            "invalid_metric_window",
+            "metric window must be one of live, 1h, 6h, 24h, 7d",
+        );
+    };
     let agent_id = sqlx::query_scalar::<_, String>(
         "SELECT agent_id FROM nodes WHERE node_id=? AND lifecycle='active'",
     )
@@ -1752,6 +1924,17 @@ pub(crate) async fn public_node_metrics(
             );
         }
     };
+    if window != PublicMetricWindow::Live {
+        return match public_window_metrics(&state, &node_id, &agent_id, window).await {
+            Ok(history) => Json(history).into_response(),
+            Err(_) => error_response(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            ),
+        };
+    }
 
     let to = crate::auth::now_utc();
     let from = to - time::Duration::seconds(PUBLIC_NODE_METRIC_WINDOW_SECONDS);
@@ -1814,13 +1997,16 @@ pub(crate) async fn public_node_metrics(
         network_tx_bytes_per_sec: Vec::new(),
         peer_inbound_count: Vec::new(),
         peer_outbound_count: Vec::new(),
-        block_interval_ms: Vec::new(),
-        transaction_count: Vec::new(),
+        block_interval_ms: None,
+        transaction_count: None,
         series: Vec::new(),
+        metric_window: None,
     };
     for row in metric_rows {
         push_metric_point(&mut history, row);
     }
+    let mut block_interval_ms = Vec::new();
+    let mut transaction_count = Vec::new();
 
     // Height is not time here. A block accepted late keeps its own height but
     // carries the instant it was really observed, so ordering by height can end
@@ -1833,10 +2019,12 @@ pub(crate) async fn public_node_metrics(
         let interval = row.block_interval_ms.map(|value| PublicMetricPoint {
             sampled_at: row.sampled_at.clone(),
             value: value as f64,
+            bucket: None,
         });
         let transactions = PublicMetricPoint {
             sampled_at: row.sampled_at.clone(),
             value: row.transaction_count as f64,
+            bucket: None,
         };
         if row.sampled_at < from {
             if interval.is_some() {
@@ -1845,17 +2033,19 @@ pub(crate) async fn public_node_metrics(
             prior_transactions = Some(transactions);
         } else {
             if let Some(interval) = interval {
-                history.block_interval_ms.push(interval);
+                block_interval_ms.push(interval);
             }
-            history.transaction_count.push(transactions);
+            transaction_count.push(transactions);
         }
     }
     if let Some(point) = prior_interval {
-        history.block_interval_ms.insert(0, point);
+        block_interval_ms.insert(0, point);
     }
     if let Some(point) = prior_transactions {
-        history.transaction_count.insert(0, point);
+        transaction_count.insert(0, point);
     }
+    history.block_interval_ms = Some(block_interval_ms);
+    history.transaction_count = Some(transaction_count);
     // The coverage is judged after the payload is whole: the rule answers about
     // the observations this answer really carries, and the last-good point that
     // precedes the window is one of them.
@@ -1874,6 +2064,216 @@ pub(crate) async fn public_node_metrics(
     history.series = series;
 
     Json(history).into_response()
+}
+
+/// The series a longer window does not provide, by response field name.
+const WINDOW_UNAVAILABLE_SERIES: [&str; 2] = ["blockIntervalMs", "transactionCount"];
+
+/// The older end of a longer window. A bucket tier starts at a bucket edge, so
+/// the oldest bucket the window holds is answered whole rather than straddling
+/// the start, and the axis still spans the whole requested window.
+fn window_start(window: PublicMetricWindow, to: time::OffsetDateTime) -> time::OffsetDateTime {
+    let from = to - time::Duration::seconds(window.seconds());
+    let grain = window.tier().grain_seconds();
+    if grain <= 0 {
+        return from;
+    }
+    let aligned = from.unix_timestamp().div_euclid(grain) * grain;
+    time::OffsetDateTime::from_unix_timestamp(aligned).unwrap_or(from)
+}
+
+/// One point of a longer window: a raw observation as itself, a bucket by its
+/// maximum with the rest of the bucket beside it. A bucket whose start is not
+/// a usable instant has no interval to state and no place on the axis, so it is
+/// left out rather than answered with an empty end.
+fn window_point(
+    point: crate::metric_history::MetricRangePoint,
+    to: time::OffsetDateTime,
+) -> Option<PublicMetricPoint> {
+    if point.grain == crate::metric_history::GRAIN_RAW {
+        return Some(PublicMetricPoint {
+            sampled_at: point.instant,
+            value: point.value,
+            bucket: None,
+        });
+    }
+    // A bucket point's cadence is its own width (`bucket_range_point`).
+    let grain_seconds = point.cadence_seconds;
+    let end = crate::auth::parse_rfc3339(&point.instant)? + time::Duration::seconds(grain_seconds);
+    Some(PublicMetricPoint {
+        sampled_at: point.instant.clone(),
+        value: point.max_value,
+        bucket: Some(PublicMetricBucket {
+            start: point.instant,
+            end: format_rfc3339(end),
+            grain_seconds,
+            min_value: point.min_value,
+            max_value: point.max_value,
+            last_value: point.value,
+            sample_count: point.sample_count,
+            first_observed_at: point.first_observed_at,
+            last_observed_at: point.last_observed_at,
+            open: end > to,
+        }),
+    })
+}
+
+/// Judge one series of a longer window from the fixed-tier answer.
+///
+/// The silences and the coverage are the Admin long-history rule's own
+/// (`crate::metric_history::load_window`); this only states them in the
+/// Public coverage vocabulary. Dating follows the Live rule: the answer's own
+/// points while it carries any, the value-less ledger when it carries none, and
+/// never an instant the window has not reached.
+fn public_window_coverage(
+    metric: &str,
+    range: &crate::metric_history::MetricRange,
+    tier: crate::metric_history::WindowTier,
+    to: &str,
+) -> PublicMetricSeriesCoverage {
+    let reached: Vec<&crate::metric_history::MetricRangePoint> = range
+        .points
+        .iter()
+        .filter(|point| point.first_observed_at.as_str() <= to)
+        .collect();
+    let first_observed_at = reached
+        .iter()
+        .map(|point| point.first_observed_at.as_str())
+        .min()
+        .map(str::to_owned);
+    let last_observed_at = reached
+        .iter()
+        .map(|point| point.last_observed_at.as_str())
+        .filter(|instant| *instant <= to)
+        .max()
+        .map(str::to_owned);
+    let (first_observed_at, last_observed_at) = match (first_observed_at, last_observed_at) {
+        (Some(first), Some(last)) => (Some(first), Some(last)),
+        _ => match range
+            .ledger
+            .as_ref()
+            .filter(|ledger| ledger.last_observed_at.as_str() <= to)
+        {
+            Some(ledger) => (
+                Some(ledger.first_observed_at.clone()),
+                Some(ledger.last_observed_at.clone()),
+            ),
+            None => (None, None),
+        },
+    };
+    let grain_seconds = tier.grain_seconds();
+    let cadence_seconds = if grain_seconds == 0 {
+        range
+            .points
+            .first()
+            .map_or(0, |point| point.cadence_seconds)
+    } else {
+        range
+            .points
+            .last()
+            .map_or(0, |point| point.judged_cadence_seconds)
+    };
+    PublicMetricSeriesCoverage {
+        metric: metric.to_owned(),
+        observed: last_observed_at.is_some(),
+        never_observed_proven: metric_series_has_ledger(metric),
+        observation_count: range.points.iter().map(|point| point.sample_count).sum(),
+        first_observed_at,
+        last_observed_at: last_observed_at.clone(),
+        cadence_seconds,
+        gap_threshold_seconds: if cadence_seconds > 0 {
+            crate::metric_history::window_silence_threshold_seconds(cadence_seconds, grain_seconds)
+        } else {
+            0
+        },
+        covered_seconds: range.coverage_seconds,
+        unobserved_tail_seconds: unobserved_tail_seconds(last_observed_at.as_deref(), to),
+        gaps: range
+            .gaps
+            .iter()
+            .map(|gap| PublicMetricGap {
+                from: gap.from.clone(),
+                to: gap.to.clone(),
+                seconds: gap.seconds,
+                kind: gap.kind.as_str().to_owned(),
+            })
+            .collect(),
+    }
+}
+
+/// Answer a longer Metric Window (ADR 0012, issue #247).
+///
+/// Every series is read from the one tier the preset fixes; the two block
+/// series are absent and named as unavailable. The window ends at the clock,
+/// so a later request answers a later window.
+async fn public_window_metrics(
+    state: &AppState,
+    node_id: &str,
+    agent_id: &str,
+    window: PublicMetricWindow,
+) -> Result<PublicNodeMetricHistory, sqlx::Error> {
+    let now = crate::auth::now_utc();
+    let to_instant = time::OffsetDateTime::from_unix_timestamp(now.unix_timestamp()).unwrap_or(now);
+    let from_instant = window_start(window, to_instant);
+    let from = format_rfc3339(from_instant);
+    let to = format_rfc3339(to_instant);
+    let tier = window.tier();
+    let mut history = PublicNodeMetricHistory {
+        from: from.clone(),
+        to: to.clone(),
+        window_seconds: window.seconds(),
+        process_cpu_percent: Vec::new(),
+        process_memory_percent: Vec::new(),
+        data_directory_percent: Vec::new(),
+        network_rx_bytes_per_sec: Vec::new(),
+        network_tx_bytes_per_sec: Vec::new(),
+        peer_inbound_count: Vec::new(),
+        peer_outbound_count: Vec::new(),
+        block_interval_ms: None,
+        transaction_count: None,
+        series: Vec::new(),
+        metric_window: Some(PublicMetricWindowAnswer {
+            window,
+            grain: tier.grain_label().to_owned(),
+            grain_seconds: tier.grain_seconds(),
+            unavailable_series: WINDOW_UNAVAILABLE_SERIES
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+        }),
+    };
+    // The same seven sample series the Live answer reads, named by the one
+    // table both answers share; a Host series belongs to the Node's Agent.
+    for (stored, name) in METRIC_STORED_NAMES {
+        let scope = if crate::metric_history::is_node_metric(stored) {
+            crate::metric_history::SeriesScope::node(node_id, stored)
+        } else {
+            crate::metric_history::SeriesScope::host(agent_id, stored, "")
+        };
+        let range = crate::metric_history::load_window(
+            state.db().pool(),
+            crate::metric_history::WindowQuery {
+                scope,
+                from: from_instant,
+                to: to_instant,
+                tier,
+                limit: PUBLIC_METRIC_WINDOW_POINT_LIMIT,
+            },
+        )
+        .await?;
+        history
+            .series
+            .push(public_window_coverage(name, &range, tier, &to));
+        if let Some(series) = public_metric_points_mut(&mut history, name) {
+            series.extend(
+                range
+                    .points
+                    .into_iter()
+                    .filter_map(|point| window_point(point, to_instant)),
+            );
+        }
+    }
+    Ok(history)
 }
 
 #[utoipa::path(
@@ -4733,6 +5133,7 @@ mod tests {
         let response = public_node_metrics(
             State(state.clone()),
             Path("node-public".to_owned()),
+            Ok(Query(PublicNodeMetricsQuery::default())),
             Extension(RequestId(std::sync::Arc::from("metric-history-test"))),
         )
         .await;
@@ -4751,16 +5152,486 @@ mod tests {
         let legacy_private = public_node_metrics(
             State(state),
             Path("node-private".to_owned()),
+            Ok(Query(PublicNodeMetricsQuery::default())),
             Extension(RequestId(std::sync::Arc::from("metric-history-active"))),
         )
         .await;
         assert_eq!(legacy_private.status(), StatusCode::OK);
     }
 
+    // ---- Issue #247 / ADR 0012: the Node Detail Metric Window ----
+
+    /// Call the real handler with a window parameter and read its JSON body.
+    async fn metric_window_answer(
+        state: &AppState,
+        window: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = public_node_metrics(
+            State(state.clone()),
+            Path("node-public".to_owned()),
+            Ok(Query(PublicNodeMetricsQuery {
+                window: window.map(str::to_owned),
+            })),
+            Extension(RequestId(std::sync::Arc::from("metric-window-test"))),
+        )
+        .await;
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    /// One observation counted the way ingestion counts it: into both aggregate
+    /// tiers, in a receipt transaction. No raw row is written, so a window that
+    /// still answered from raw samples would find nothing here.
+    async fn count_observation(
+        state: &AppState,
+        node_scoped: bool,
+        metric: &str,
+        observed_at: &str,
+        value: f64,
+    ) {
+        let scope = if node_scoped {
+            crate::metric_history::SeriesScope::node("node-public", metric)
+        } else {
+            crate::metric_history::SeriesScope::host("agent-public-test", metric, "")
+        };
+        let mut tx = state.db().pool().begin().await.unwrap();
+        crate::metric_history::record_aggregates(&mut tx, &scope, observed_at, observed_at, value)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    async fn keep_raw_sample(state: &AppState, metric: &str, observed_at: &str, value: f64) {
+        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ('node-public', ?, ?, ?, ?)")
+            .bind(metric)
+            .bind(observed_at)
+            .bind(observed_at)
+            .bind(value)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+    }
+
+    /// The current instant, waited past a bucket edge when one is about to
+    /// arrive, so a test that seeds the open bucket and then asks for the window
+    /// cannot watch that bucket close in between.
+    async fn settled_now(grain_seconds: i64) -> time::OffsetDateTime {
+        loop {
+            let now = crate::auth::now_utc();
+            if grain_seconds - now.unix_timestamp().rem_euclid(grain_seconds) > 5 {
+                return time::OffsetDateTime::from_unix_timestamp(now.unix_timestamp()).unwrap();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
+
+    fn bucket_floor(instant: time::OffsetDateTime, grain_seconds: i64) -> time::OffsetDateTime {
+        time::OffsetDateTime::from_unix_timestamp(
+            instant.unix_timestamp().div_euclid(grain_seconds) * grain_seconds,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_metric_window_is_a_fixed_enum_with_a_server_owned_tier() {
+        use crate::metric_history::WindowTier;
+        assert_eq!(
+            PublicMetricWindow::parse(None),
+            Some(PublicMetricWindow::Live)
+        );
+        assert_eq!(
+            PublicMetricWindow::parse(Some("live")),
+            Some(PublicMetricWindow::Live)
+        );
+        for (raw, window, seconds, tier) in [
+            ("1h", PublicMetricWindow::OneHour, 3_600, WindowTier::Raw),
+            (
+                "6h",
+                PublicMetricWindow::SixHours,
+                21_600,
+                WindowTier::OneMinute,
+            ),
+            (
+                "24h",
+                PublicMetricWindow::TwentyFourHours,
+                86_400,
+                WindowTier::FiveMinute,
+            ),
+            (
+                "7d",
+                PublicMetricWindow::SevenDays,
+                604_800,
+                WindowTier::FiveMinute,
+            ),
+        ] {
+            assert_eq!(PublicMetricWindow::parse(Some(raw)), Some(window), "{raw}");
+            assert_eq!(window.seconds(), seconds, "{raw}");
+            assert_eq!(window.tier(), tier, "{raw}");
+        }
+        assert_eq!(PublicMetricWindow::Live.seconds(), 60);
+        // No arbitrary range, no 30-day preset, no spelling variants.
+        for raw in ["", "LIVE", "1H", "2h", "30d", "720h", "3600", " 1h", "1h "] {
+            assert_eq!(PublicMetricWindow::parse(Some(raw)), None, "{raw:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unknown_metric_window_is_refused_before_the_node_is_read() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let (status, body) = metric_window_answer(&state, Some("30d")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "invalid_metric_window");
+        // A repeated parameter the extractor cannot read is refused with the
+        // same error body, not the framework's plain-text rejection.
+        let repeated = Query::<PublicNodeMetricsQuery>::try_from_uri(
+            &"http://platpulse.test/metrics?window=1h&window=6h"
+                .parse()
+                .unwrap(),
+        );
+        assert!(repeated.is_err());
+        let response = public_node_metrics(
+            State(state.clone()),
+            Path("node-public".to_owned()),
+            repeated,
+            Extension(RequestId(std::sync::Arc::from("metric-window-repeated"))),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "invalid_metric_window");
+        // A missing Node is still a 404 for a valid window, and a 400 for an
+        // invalid one: the refusal does not depend on which Node was named.
+        let response = public_node_metrics(
+            State(state.clone()),
+            Path("node-missing".to_owned()),
+            Ok(Query(PublicNodeMetricsQuery {
+                window: Some("bogus".to_owned()),
+            })),
+            Extension(RequestId(std::sync::Arc::from("metric-window-missing"))),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = public_node_metrics(
+            State(state),
+            Path("node-missing".to_owned()),
+            Ok(Query(PublicNodeMetricsQuery {
+                window: Some("6h".to_owned()),
+            })),
+            Extension(RequestId(std::sync::Arc::from("metric-window-missing"))),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Live is answered field for field as before the Metric Window: the same
+    /// keys, no window descriptor, no bucket on any point, and the two block
+    /// series still present.
+    #[tokio::test]
+    async fn the_live_window_keeps_its_answer_field_for_field() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = settled_now(60).await;
+        let recent = format_rfc3339(now - time::Duration::seconds(10));
+        keep_raw_sample(&state, "process_cpu_percent", &recent, 20.0).await;
+        count_observation(&state, true, "process_cpu_percent", &recent, 20.0).await;
+        seed_block_summary(&state, "node-public", 100, 7).await;
+        for window in [None, Some("live")] {
+            let (status, body) = metric_window_answer(&state, window).await;
+            assert_eq!(status, StatusCode::OK);
+            let mut keys: Vec<&str> = body
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(
+                keys,
+                [
+                    "blockIntervalMs",
+                    "dataDirectoryPercent",
+                    "from",
+                    "networkRxBytesPerSec",
+                    "networkTxBytesPerSec",
+                    "peerInboundCount",
+                    "peerOutboundCount",
+                    "processCpuPercent",
+                    "processMemoryPercent",
+                    "series",
+                    "to",
+                    "transactionCount",
+                    "windowSeconds",
+                ]
+            );
+            assert_eq!(body["windowSeconds"], 60);
+            assert_eq!(body["series"].as_array().unwrap().len(), 9);
+            let cpu = body["processCpuPercent"].as_array().unwrap();
+            assert_eq!(cpu.len(), 1);
+            let mut point_keys: Vec<&str> = cpu[0]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            point_keys.sort_unstable();
+            assert_eq!(point_keys, ["sampledAt", "value"]);
+            assert_eq!(body["transactionCount"][0]["value"], 7.0);
+        }
+    }
+
+    /// 6h is answered from 1-minute buckets alone: a raw sample the window
+    /// still holds is not drawn, a bucket is drawn by its maximum with the rest
+    /// of it beside the point, the newest bucket is open, and the block series
+    /// are named as unavailable rather than answered empty.
+    #[tokio::test]
+    async fn a_six_hour_window_reads_one_minute_buckets_by_their_maximum() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = settled_now(60).await;
+        let current = bucket_floor(now, 60);
+        let previous = current - time::Duration::seconds(60);
+        let at = |base: time::OffsetDateTime, seconds: i64| {
+            format_rfc3339(base + time::Duration::seconds(seconds))
+        };
+        // The previous minute: three observations, a spike in the middle.
+        for (seconds, value) in [(5, 10.0), (25, 90.0), (45, 30.0)] {
+            count_observation(
+                &state,
+                true,
+                "process_cpu_percent",
+                &at(previous, seconds),
+                value,
+            )
+            .await;
+        }
+        // The current, still-accumulating minute.
+        count_observation(
+            &state,
+            true,
+            "process_cpu_percent",
+            &format_rfc3339(current),
+            12.0,
+        )
+        .await;
+        // A raw sample with no bucket: the 6h answer must not borrow it.
+        keep_raw_sample(&state, "process_memory_percent", &at(previous, 10), 44.0).await;
+        count_observation(
+            &state,
+            false,
+            "network_rx_bytes_per_sec",
+            &at(previous, 5),
+            2048.0,
+        )
+        .await;
+
+        let (status, body) = metric_window_answer(&state, Some("6h")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["windowSeconds"], 21_600);
+        assert_eq!(body["metricWindow"]["window"], "6h");
+        assert_eq!(body["metricWindow"]["grain"], "1m");
+        assert_eq!(body["metricWindow"]["grainSeconds"], 60);
+        assert_eq!(
+            body["metricWindow"]["unavailableSeries"],
+            serde_json::json!(["blockIntervalMs", "transactionCount"])
+        );
+        assert!(body.get("blockIntervalMs").is_none());
+        assert!(body.get("transactionCount").is_none());
+        let metrics: Vec<&str> = body["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["metric"].as_str().unwrap())
+            .collect();
+        assert!(!metrics.contains(&"blockIntervalMs"));
+        assert_eq!(metrics.len(), 7);
+        // The window starts on a bucket edge and spans the whole six hours.
+        let from = crate::auth::parse_rfc3339(body["from"].as_str().unwrap()).unwrap();
+        let to = crate::auth::parse_rfc3339(body["to"].as_str().unwrap()).unwrap();
+        assert_eq!(from.unix_timestamp() % 60, 0);
+        assert!((to - from).whole_seconds() >= 21_600);
+
+        let cpu = body["processCpuPercent"].as_array().unwrap();
+        assert_eq!(cpu.len(), 2, "{cpu:?}");
+        assert_eq!(cpu[0]["sampledAt"], format_rfc3339(previous));
+        assert_eq!(cpu[0]["value"], 90.0, "a bucket is drawn by its maximum");
+        let bucket = &cpu[0]["bucket"];
+        assert_eq!(bucket["start"], format_rfc3339(previous));
+        assert_eq!(bucket["end"], format_rfc3339(current));
+        assert_eq!(bucket["grainSeconds"], 60);
+        assert_eq!(bucket["minValue"], 10.0);
+        assert_eq!(bucket["maxValue"], 90.0);
+        assert_eq!(bucket["lastValue"], 30.0);
+        assert_eq!(bucket["sampleCount"], 3);
+        assert_eq!(bucket["open"], false);
+        assert_eq!(cpu[1]["bucket"]["open"], true, "the newest minute is open");
+        assert_eq!(cpu[1]["bucket"]["sampleCount"], 1);
+        let cpu_coverage = body["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["metric"] == "processCpuPercent")
+            .unwrap();
+        assert_eq!(cpu_coverage["observed"], true);
+        assert_eq!(cpu_coverage["observationCount"], 4);
+        assert_eq!(cpu_coverage["gaps"], serde_json::json!([]));
+
+        // Raw-only evidence is unobserved at this grain: no point, no zero.
+        assert_eq!(body["processMemoryPercent"], serde_json::json!([]));
+        let rx = body["networkRxBytesPerSec"].as_array().unwrap();
+        assert_eq!(rx.len(), 1);
+        assert_eq!(rx[0]["value"], 2048.0);
+    }
+
+    /// 1h is answered from raw samples - exactly the stored observations, with
+    /// no bucket - and 24h/7d from 5-minute buckets, across the raw/aggregate
+    /// boundary: each preset reads its own tier, never the other one.
+    #[tokio::test]
+    async fn each_longer_window_reads_only_its_own_tier() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = settled_now(300).await;
+        let recent = format_rfc3339(now - time::Duration::seconds(2));
+        let older = format_rfc3339(now - time::Duration::seconds(30 * 60));
+        let two_days = format_rfc3339(now - time::Duration::days(2));
+        for (instant, value) in [(&older, 3.0), (&recent, 4.0)] {
+            keep_raw_sample(&state, "peer_inbound_count", instant, value).await;
+            count_observation(&state, true, "peer_inbound_count", instant, value).await;
+        }
+        count_observation(&state, true, "peer_inbound_count", &two_days, 9.0).await;
+
+        let (_, hour) = metric_window_answer(&state, Some("1h")).await;
+        assert_eq!(hour["metricWindow"]["grain"], "raw");
+        assert_eq!(hour["metricWindow"]["grainSeconds"], 0);
+        let points = hour["peerInboundCount"].as_array().unwrap();
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0]["sampledAt"], older.as_str());
+        assert_eq!(points[1]["value"], 4.0);
+        assert!(points.iter().all(|point| point.get("bucket").is_none()));
+        let hour_coverage = &hour["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["metric"] == "peerInboundCount")
+            .unwrap()
+            .clone();
+        // Two observations 28 minutes apart are a silence by the long-history
+        // rule (the cadence is capped, the floor is two minutes).
+        assert_eq!(hour_coverage["gaps"].as_array().unwrap().len(), 1);
+        assert_eq!(hour_coverage["gaps"][0]["kind"], "collection_gap");
+
+        let (_, day) = metric_window_answer(&state, Some("24h")).await;
+        assert_eq!(day["metricWindow"]["grain"], "5m");
+        let points = day["peerInboundCount"].as_array().unwrap();
+        assert_eq!(points.len(), 2, "two days ago is outside 24h: {points:?}");
+        assert!(
+            points
+                .iter()
+                .all(|point| point["bucket"]["grainSeconds"] == 300)
+        );
+        assert_eq!(points[1]["bucket"]["open"], true);
+
+        let (_, week) = metric_window_answer(&state, Some("7d")).await;
+        assert_eq!(week["metricWindow"]["grain"], "5m");
+        assert_eq!(week["windowSeconds"], 604_800);
+        let points = week["peerInboundCount"].as_array().unwrap();
+        assert_eq!(points.len(), 3);
+        assert_eq!(points[0]["value"], 9.0);
+        // Two days ago to half an hour ago, and half an hour ago to now: the
+        // windows between those buckets were never written, so both are gaps.
+        let week_gaps = week["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["metric"] == "peerInboundCount")
+            .unwrap()["gaps"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(week_gaps, 2);
+    }
+
+    /// A missing bucket inside the window is a gap, never a line and never a
+    /// zero; a series observed only before the tiers existed (raw rows, no
+    /// buckets) is unobserved at an aggregate grain even though its ledger dates
+    /// it.
+    #[tokio::test]
+    async fn a_missing_bucket_is_a_gap_and_pre_tier_history_is_unobserved() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = settled_now(300).await;
+        let current = bucket_floor(now, 300);
+        // Two neighbouring 5-minute buckets, then one missing, then the open one.
+        for back in [4, 3, 1] {
+            let start = current - time::Duration::seconds(300 * back);
+            for offset in (0..300).step_by(60) {
+                count_observation(
+                    &state,
+                    false,
+                    "network_tx_bytes_per_sec",
+                    &format_rfc3339(start + time::Duration::seconds(offset)),
+                    100.0 + offset as f64,
+                )
+                .await;
+            }
+        }
+        // Pre-#214 history: a raw sample and its ledger row, no bucket at all.
+        let before_tiers = format_rfc3339(now - time::Duration::hours(3));
+        keep_raw_sample(&state, "process_cpu_percent", &before_tiers, 50.0).await;
+        sqlx::query("INSERT INTO node_metric_series_state (node_id, metric, first_observed_at, last_observed_at, last_received_at, observation_count, updated_at) VALUES ('node-public', 'process_cpu_percent', ?, ?, ?, 1, ?)")
+            .bind(&before_tiers)
+            .bind(&before_tiers)
+            .bind(&before_tiers)
+            .bind(&before_tiers)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let (status, body) = metric_window_answer(&state, Some("24h")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let tx = body["networkTxBytesPerSec"].as_array().unwrap();
+        assert_eq!(tx.len(), 3);
+        assert!(tx.iter().all(|point| point["value"] == 340.0));
+        let coverage = |metric: &str| {
+            body["series"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["metric"] == metric)
+                .unwrap()
+                .clone()
+        };
+        let tx_coverage = coverage("networkTxBytesPerSec");
+        let gaps = tx_coverage["gaps"].as_array().unwrap();
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        let second = current - time::Duration::seconds(300 * 3);
+        assert_eq!(
+            gaps[0]["from"],
+            format_rfc3339(second + time::Duration::seconds(240))
+        );
+        assert_eq!(
+            gaps[0]["to"],
+            format_rfc3339(current - time::Duration::seconds(300))
+        );
+
+        assert_eq!(body["processCpuPercent"], serde_json::json!([]));
+        let cpu = coverage("processCpuPercent");
+        assert_eq!(cpu["observed"], true, "the ledger still dates the series");
+        assert_eq!(cpu["observationCount"], 0);
+        assert_eq!(cpu["lastObservedAt"], before_tiers.as_str());
+        // Never observed at all: no ledger, no bucket, nothing drawn.
+        let memory = coverage("processMemoryPercent");
+        assert_eq!(memory["observed"], false);
+        assert_eq!(memory["neverObservedProven"], true);
+    }
+
     fn public_metric_point(sampled_at: &str, value: f64) -> PublicMetricPoint {
         PublicMetricPoint {
             sampled_at: sampled_at.to_owned(),
             value,
+            bucket: None,
         }
     }
 
@@ -5076,6 +5947,7 @@ mod tests {
         let response = public_node_metrics(
             State(state.clone()),
             Path("node-public".to_owned()),
+            Ok(Query(PublicNodeMetricsQuery::default())),
             Extension(RequestId(std::sync::Arc::from("metric-block-order-test"))),
         )
         .await;
@@ -5142,6 +6014,7 @@ mod tests {
         let response = public_node_metrics(
             State(state.clone()),
             Path("node-public".to_owned()),
+            Ok(Query(PublicNodeMetricsQuery::default())),
             Extension(RequestId(std::sync::Arc::from("metric-ledger-test"))),
         )
         .await;
@@ -5203,6 +6076,7 @@ mod tests {
                 let response = public_node_metrics(
                     State(state),
                     Path("node-public".to_owned()),
+                    Ok(Query(PublicNodeMetricsQuery::default())),
                     Extension(RequestId(std::sync::Arc::from("metric-block-expired-test"))),
                 )
                 .await;
@@ -5290,6 +6164,7 @@ mod tests {
         let response = public_node_metrics(
             State(state.clone()),
             Path("node-public".to_owned()),
+            Ok(Query(PublicNodeMetricsQuery::default())),
             Extension(RequestId(std::sync::Arc::from("metric-coverage-test"))),
         )
         .await;

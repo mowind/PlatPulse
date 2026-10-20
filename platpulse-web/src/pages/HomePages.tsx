@@ -1,7 +1,7 @@
 import { ArrowLeft, Check, ChevronDown, ChevronUp, Copy } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Link, useLocation, useParams } from 'react-router'
+import { Link, useLocation, useParams, useSearchParams } from 'react-router'
 import {
   usePublicNode,
   usePublicNodeHistory,
@@ -20,7 +20,17 @@ import { formatNodeDataBytes } from '../formatBytes'
 import { formatDuration } from '../formatDuration'
 import { nodeDataProgress } from '../nodeData'
 import { coverageNotes, coverageSegments, metricCoverage } from '../metricCoverage'
-import NodeMetricChart from '../components/NodeMetricChart'
+import NodeMetricChart, { NODE_METRIC_CHART_HEIGHT } from '../components/NodeMetricChart'
+import { MetricWindowSelector } from '../components/MetricWindowSelector'
+import {
+  METRIC_WINDOW_PARAM,
+  metricAxisTimeFormat,
+  metricWindowSearch,
+  metricWindowText,
+  readMetricWindow,
+  type MetricWindow,
+  type MetricWindowText,
+} from '../metricWindow'
 import { METRIC_SERIES_COLORS, type MetricChartSeriesInput, type MetricSeriesKey } from '../components/nodeMetricChartOption'
 import {
   countAxis,
@@ -69,7 +79,12 @@ export function NodePage() {
   const { generation, resetting, realtime } = useHomeRealtimeContext()
   const nodeQuery = usePublicNode(nodeId, generation)
   const historyQuery = usePublicNodeHistory(nodeId, generation)
-  const metricsQuery = usePublicNodeMetrics(nodeId, generation)
+  // The Metric Window lives in the URL (§15.38): refresh, back/forward and a
+  // shared link restore it. Live writes no parameter, and a value outside the
+  // enum falls back to Live and is rewritten in place, adding no history entry.
+  const [search, setSearch] = useSearchParams()
+  const { window: metricWindow, canonical: metricWindowCanonical } = readMetricWindow(search.get(METRIC_WINDOW_PARAM))
+  const metricsQuery = usePublicNodeMetrics(nodeId, generation, metricWindow)
   // The same-tab return (#224): Home's Node links record where the reader was
   // reading, and every way back hands that departure on again — rebuilt into an
   // ordinary Home URL through Home's own filter vocabulary, never navigated to
@@ -77,6 +92,14 @@ export function NodePage() {
   const location = useLocation()
   const departure = readHomeReturn(location.state, homeReturnTab())
   const returnState = departure === null ? undefined : { homeReturn: departure }
+  useEffect(() => {
+    if (metricWindowCanonical) return
+    // The departure rides the history entry's state, so the rewrite keeps it.
+    setSearch(metricWindowSearch(search, 'live'), { replace: true, state: location.state })
+  }, [metricWindowCanonical, search, setSearch, location.state])
+  const selectMetricWindow = (next: MetricWindow) => {
+    setSearch(metricWindowSearch(search, next), { state: location.state })
+  }
 
   if (resetting) return <section className={PAGE}><RealtimeNotice realtime={realtime} /><p role="status" className="mt-3 text-sm text-muted-foreground">Revalidating Node access…</p></section>
   if (nodeQuery.isPending) return <section className={cn(PAGE, 'relative min-h-32')}><RealtimeNotice realtime={realtime} /><Spinner label="Loading Node"><span className="text-sm text-muted-foreground">Loading Node…</span></Spinner></section>
@@ -96,7 +119,12 @@ export function NodePage() {
     ? latestBlockInterval(historyQuery.data)
     : { value: 'Unknown', detail: historyQuery.isPending ? 'Loading block history…' : 'Block history unavailable' }
   const blockIntervalDetail = historyQuery.isRefetchError ? blockInterval.detail + ' · Block history update failed' : blockInterval.detail
-  const metricHistory = metricsQuery.data
+  // An answer is drawn only for the window it answers: a newly selected window
+  // never shows the previous window's data, it shows its own loading state.
+  const metricHistory = metricsQuery.data && (metricsQuery.data.metricWindow?.window ?? 'live') === metricWindow
+    ? metricsQuery.data
+    : undefined
+  const metricText = metricWindowText(metricWindow, metricWindowSeconds(metricHistory))
   // A background refresh failed but the last successful window is still held:
   // it keeps its own from/to and samples, and the page says it is retained
   // rather than letting it pass for the latest window.
@@ -104,7 +132,7 @@ export function NodePage() {
   const metricHistoryMessage = metricHistory
     ? undefined
     : metricsQuery.isPending
-      ? 'Loading metric history…'
+      ? metricText.loading
       : metricsQuery.error
         ? 'Metric history unavailable'
         : undefined
@@ -112,8 +140,12 @@ export function NodePage() {
   // the Home card's Disk column and the Home Disk sort read (#242) instead of
   // guarding the same two fields a second time.
   const nodeDataProgressValue = nodeDataProgress(node.nodeDataDirectorySizeBytes, node.nodeDataDirectoryCapacityBytes)
-  const metricWindowTitle = describeMetricWindow(metricHistory, metricHistoryRetained)
+  const metricWindowTitle = metricHistoryRetained ? 'Retained ' + metricText.adjective + ' window' : metricText.title
   const validatorNode = nodeUsesValidatorComposition(node)
+  // Live keeps the deck exactly as it was; a longer window brings its own axis
+  // labels and words, and the two block charts state that they are Live only.
+  const longWindow = metricWindow !== 'live'
+  const windowText = longWindow ? metricText : undefined
 
   return <section className={PAGE}>
     <div data-slot="node-detail-breadcrumb" className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
@@ -165,15 +197,20 @@ export function NodePage() {
     {validatorNode && <LinkedValidatorSection node={node} variant="detail" />}
 
     <section data-slot="node-metrics-section" className="mt-4" aria-labelledby="node-metrics-title">
-      <header className="mb-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-        <h2 id="node-metrics-title" className="m-0 text-lg font-semibold">{metricWindowTitle}</h2>
-        {metricHistoryRetained && metricHistory && <div className="flex min-w-0 items-center">
-          <span role="status" data-slot="node-metrics-refresh-error" className="text-xs text-warning-foreground dark:text-warning">History update failed · Showing previous window</span>
-          <InfoHint label="Retained window times">
-            <p className="m-0">The charts show the last window that loaded successfully, not the latest 60 seconds.</p>
-            <p className="m-0" data-slot="node-metrics-retained-window">From {formatUtcDateTime(metricHistory.from)} to {formatUtcDateTime(metricHistory.to)}</p>
-          </InfoHint>
-        </div>}
+      {/* The window selector sits where the window is named: beside the title
+          from md, on its own full-width row under the title on phones. */}
+      <header data-slot="node-metrics-header" className="mb-2 flex min-w-0 flex-col gap-y-1 md:flex-row md:items-center md:justify-between md:gap-x-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+          <h2 id="node-metrics-title" className="m-0 text-lg font-semibold">{metricWindowTitle}</h2>
+          {metricHistoryRetained && metricHistory && <div className="flex min-w-0 items-center">
+            <span role="status" data-slot="node-metrics-refresh-error" className="text-xs text-warning-foreground dark:text-warning">History update failed · Showing previous window</span>
+            <InfoHint label="Retained window times">
+              <p className="m-0">The charts show the last window that loaded successfully, not the {metricText.title.toLowerCase()}.</p>
+              <p className="m-0" data-slot="node-metrics-retained-window">From {formatUtcDateTime(metricHistory.from)} to {formatUtcDateTime(metricHistory.to)}</p>
+            </InfoHint>
+          </div>}
+        </div>
+        <MetricWindowSelector value={metricWindow} onChange={selectMetricWindow} className="flex w-full md:w-auto md:shrink-0" />
       </header>
       {/* Keyed by Node: legend choices belong to one Node's charts and never
           travel to the next Node opened on the same route. */}
@@ -188,6 +225,7 @@ export function NodePage() {
           valueFormat={formatPercentSample}
           historyMessage={metricHistoryMessage}
           retained={metricHistoryRetained}
+          windowText={windowText}
         />
         <NodeMetricCard
           label="Process memory"
@@ -199,6 +237,7 @@ export function NodePage() {
           valueFormat={formatPercentSample}
           historyMessage={metricHistoryMessage}
           retained={metricHistoryRetained}
+          windowText={windowText}
         />
         <NodeMetricCard
           label="Host network"
@@ -219,6 +258,7 @@ export function NodePage() {
           valueFormat={formatRateSample}
           historyMessage={metricHistoryMessage}
           retained={metricHistoryRetained}
+          windowText={windowText}
         />
         <NodeMetricCard
           label="Peer connections"
@@ -234,10 +274,12 @@ export function NodePage() {
           valueFormat={formatCountSample}
           historyMessage={metricHistoryMessage}
           retained={metricHistoryRetained}
+          windowText={windowText}
         />
         <NodeMetricCard
           label="Block interval"
           kind="bar"
+          liveOnly={longWindow}
           value={blockInterval.value}
           detail={blockIntervalDetail}
           series={[{ key: 'blockInterval', label: 'Block interval', points: metricHistory?.blockIntervalMs ?? [], coverage: metricCoverage(metricHistory, 'blockIntervalMs') }]}
@@ -246,10 +288,12 @@ export function NodePage() {
           valueFormat={formatMillisecondsSample}
           historyMessage={metricHistoryMessage}
           retained={metricHistoryRetained}
+          windowText={windowText}
         />
         <NodeMetricCard
           label="Transactions / block"
           kind="bar"
+          liveOnly={longWindow}
           value={formatNumber(node.latestBlockTransactionCount)}
           series={[{ key: 'transactions', label: 'Transactions / block', points: metricHistory?.transactionCount ?? [], coverage: metricCoverage(metricHistory, 'transactionCount') }]}
           history={metricHistory}
@@ -257,6 +301,7 @@ export function NodePage() {
           valueFormat={formatCountSample}
           historyMessage={metricHistoryMessage}
           retained={metricHistoryRetained}
+          windowText={windowText}
         />
       </div>
     </section>
@@ -504,7 +549,7 @@ type MetricChartKind = 'line' | 'bar'
 /** One current reading of a two-direction card. */
 type MetricReading = { label: string; value: string; direction: 'up' | 'down'; color: string }
 
-function NodeMetricCard({ label, value, readings, detail, kind = 'line', series, showLegend = false, history, axis, valueFormat, historyMessage, retained = false, className = '' }: {
+function NodeMetricCard({ label, value, readings, detail, kind = 'line', series, showLegend = false, history, axis, valueFormat, historyMessage, retained = false, windowText, liveOnly = false, className = '' }: {
   label: string
   /** The current value beside the title; its unit is part of the value
    *  ("12.3%"), so the title never repeats it. */
@@ -524,12 +569,26 @@ function NodeMetricCard({ label, value, readings, detail, kind = 'line', series,
   historyMessage?: string
   /** The window is the last successful one, held after a failed refresh. */
   retained?: boolean
+  /** A longer Metric Window's own words (ADR 0012); absent for Live, whose
+   *  sentences stay exactly as they were. */
+  windowText?: MetricWindowText
+  /** The series has no aggregate tier yet (#248): outside Live the card keeps
+   *  its title and current value and states that the chart is Live only,
+   *  mounting no chart at all. */
+  liveOnly?: boolean
   className?: string
 }) {
   const seconds = metricWindowSeconds(history)
   const fromMs = history ? Date.parse(history.from) : Number.NaN
   const toMs = history ? Date.parse(history.to) : Number.NaN
   const validWindow = Number.isFinite(fromMs) && Number.isFinite(toMs) && toMs > fromMs
+  const selectedWindow = history?.metricWindow?.window ?? 'live'
+  // One formatter per window and bounds, so the chart option is not rebuilt on
+  // every render; Live keeps the chart's own clock labels.
+  const timeFormat = useMemo(
+    () => (windowText && validWindow ? metricAxisTimeFormat(selectedWindow, toMs) : undefined),
+    [windowText, validWindow, selectedWindow, toMs],
+  )
   // A direction series that has no retained sample must not disappear behind
   // its available partner: name it explicitly while the partner keeps plotting.
   const missingDirections = series.length > 1 && series.some((item) => item.points.length > 0)
@@ -556,11 +615,14 @@ function NodeMetricCard({ label, value, readings, detail, kind = 'line', series,
   // directions, over which real window, and what the Server measured missing.
   // It is also the only place the coverage sentence is written down now: the
   // card draws no small print for it, but a screen reader still hears it.
+  const adjective = windowText?.adjective ?? seconds + '-second'
   const description = (observations.length > 0
     ? series.map((item) => item.label).join(' and ') + (retained
-      ? ' values from a retained ' + seconds + '-second window, ' + formatUtcDateTime(history?.from) + ' to ' + formatUtcDateTime(history?.to) + '; the latest history update failed'
-      : ' values from ' + seconds + ' seconds ago to now')
-    : label + ': ' + (historyMessage ?? 'No samples in the last minute'))
+      ? ' values from a retained ' + adjective + ' window, ' + formatUtcDateTime(history?.from) + ' to ' + formatUtcDateTime(history?.to) + '; the latest history update failed'
+      : windowText
+        ? ' values over ' + windowText.span + (observations.some((point) => point.bucket) ? ', drawn through each bucket\'s maximum' : '')
+        : ' values from ' + seconds + ' seconds ago to now')
+    : label + ': ' + (historyMessage ?? windowText?.empty ?? 'No samples in the last minute'))
     + (coverageText ? '. ' + coverageText : '')
   return (
     // Emerald's card, with its own header used for the header: `size="small"` gives
@@ -605,20 +667,24 @@ function NodeMetricCard({ label, value, readings, detail, kind = 'line', series,
         {detail && <p className="m-0 break-words text-[11px] leading-4 text-muted-foreground">{detail}</p>}
         {missingDirections.length > 0 && <p className="m-0 text-[11px] italic text-muted-foreground">{missingDirections.join(' and ')} unavailable in this window</p>}
       </div>
-      <NodeMetricChart
-        label={label}
-        kind={kind}
-        from={fromMs}
-        to={toMs}
-        series={plots}
-        axis={axis}
-        valueFormat={valueFormat}
-        seconds={seconds}
-        message={historyMessage}
-        description={description}
-        retained={retained}
-        showLegend={showLegend}
-      />
+      {liveOnly
+        ? <p data-slot="node-metric-chart-live-only" className={cn('m-0 mt-auto flex items-center justify-center text-center text-[13px] text-muted-foreground', NODE_METRIC_CHART_HEIGHT)}>Block charts show the Live window only</p>
+        : <NodeMetricChart
+            label={label}
+            kind={kind}
+            from={fromMs}
+            to={toMs}
+            series={plots}
+            axis={axis}
+            valueFormat={valueFormat}
+            seconds={seconds}
+            {...(windowText ? { windowText } : {})}
+            {...(timeFormat ? { timeFormat } : {})}
+            message={historyMessage}
+            description={description}
+            retained={retained}
+            showLegend={showLegend}
+          />}
     </CardX>
   )
 }
@@ -646,12 +712,6 @@ function metricWindowSeconds(history: PublicNodeMetricHistory | undefined): numb
   return seconds !== undefined && Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds) : 60
 }
 
-/** "Latest 60 seconds" only while the window really is the latest one; a window
- *  held after a failed refresh is titled as retained, never as current. */
-function describeMetricWindow(history: PublicNodeMetricHistory | undefined, retained = false): string {
-  const seconds = metricWindowSeconds(history)
-  return retained ? 'Retained ' + seconds + '-second window' : 'Latest ' + seconds + ' seconds'
-}
 
 
 function latestBlockInterval(history: NonNullable<ReturnType<typeof usePublicNodeHistory>['data']>): { value: string; detail: string } {

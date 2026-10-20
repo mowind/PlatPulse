@@ -436,7 +436,7 @@ GET  /api/public/v1/reward-wallet
 GET  /api/public/v1/nodes/{node_id}
 GET  /api/public/v1/nodes/{node_id}/history
 GET  /api/public/v1/nodes/{node_id}/history/export
-GET  /api/public/v1/nodes/{node_id}/metrics
+GET  /api/public/v1/nodes/{node_id}/metrics?window=live|1h|6h|24h|7d
 GET  /api/public/v1/nodes/{node_id}/peer-history
 ~~~
 
@@ -668,6 +668,10 @@ Server 启动时解析可选的 `[capacity]` 段（crates/platpulse-server/src/c
 **这是一次可共享的取证复用，不是新的采集面。** 挂载系列属于本节开头的共享 Host 家族：Host 数据按 Agent 采集一次并被它的所有 Node 共享（Story 51），这份清单只是把已经存下来的证据重新读一遍，没有新增采样、没有新增保留 family；所以它的容量与性能报告仍然是已采集的那一套 Host 序列（Story 46、Story 50）。
 
 **WebUI 表面（细节见 docs/design/webui.md 第 15.18 节）。** Agent 详情页第 06 节 `Host resource history` 现在以 `Storage by mount path` 卡片开场（platpulse-web/src/pages/StorageMountsPanel.tsx:69-78），表格给出 Mount path、Observation、Used、Capacity 与一列逐行读取的按钮（platpulse-web/src/pages/StorageMountsPanel.tsx:129-192），点某一行就把下面的 Host 历史面板切到该路径当前所选的那个存储 metric（默认 `disk_used_bytes`，切到 `disk_total_bytes` 则读容量系列；platpulse-web/src/pages/AdminAgents.tsx:1618-1633）；Node 页不给清单，仍然只接受逐字键入的挂载路径（platpulse-web/src/pages/metricHistoryPanel.tsx:750-773 的注释：清单只提供已经存有证据的路径，服务端还没有存的路径仍按它的原样拼写询问）。卡片有三处文案与 Server 一致：清单取自存储下来的证据「而不是设备身份」（`rather than from a device identity`，platpulse-web/src/pages/StorageMountsPanel.tsx:25-26）、节奏测不出时不声明静默、`truncated` 时显式说明最旧的路径不在本次答案里。
+
+**Public Node Detail 的 Metric Window（ADR 0012；第一期 #247 已实现，第二期 #248 待实现）。** 1m/5m 聚合层在 ingestion 时对每条被计入的观测累加，因此 Public Node Detail 六图不再只能回答最近 60 秒：Public metrics 路由接受固定枚举 `window=live|1h|6h|24h|7d`（不接受任意 from/to，不新增 30 天档），tier 由 Server 按档位固定——Live 与 1h 读 raw，6h 读 1m 桶，24h 与 7d 读 5m 桶——读取时不派生新粒度；聚合桶按 `max_value` 绘制（桶无 sum，取 last 会漏掉尖峰），断档沿用本节 Admin 长历史的连续性规则（`MIN_GAP_SECONDS` 与桶的 `max_gap_seconds`），未观测即为空、绝不为 0。Block interval 与 Transactions / block 来自 `block_summaries`，没有聚合层，读取时临时分桶既违反「读取时不派生」也会让匿名请求扫描约 60 万行/Node/7 天，因此分两期：第一期这两张图在非 Live 档就地说明只支持 Live，第二期新增遵守 Block history 去重（Replay 不累加、仅 `OpenRecoverableGap` 回补可累加）、纳入 retention catalog 且不回填的块聚合层（1m/5m：块数、间隔 min/max、交易总数）。Admin `Metric history` 面板不变。WebUI 契约见 docs/design/webui.md §15.38。
+
+第一期的实现（#247）：`window` 缺省即 Live，非法值返回 400 `invalid_metric_window`（先于 Node 查询判定）；Live 走原有的最近 60 秒读取，响应逐字段不变（新增字段在 Live 中全部省略）。更长档位由 `metric_history::load_window`（crates/platpulse-server/src/metric_history.rs）只读档位固定的那一个 tier：raw 档按观测时刻读取，桶档读 `bucket_start ∈ [from, to]` 的桶，`from` 向下对齐到桶边界，因此最早那个桶整桶回答、横轴仍跨满整个窗口；断档由与 Admin 长历史同一个 `continuity_from`（`MIN_GAP_SECONDS` 下限、桶的 `max_gap_seconds`、相邻桶未写窗口即断档）连同记录下的 protection pause 判定，桶档没有 raw 窗口可测节奏，于是按 Admin 对"无 raw 窗口段"的同一规则用桶宽 / 样本数作为节奏。桶点的 `value` 是 `max_value`，并附 `bucket`（区间、min/max/last、样本数、首末观测时刻、`open` = 桶终点晚于本次 `to`）；raw 点不带 `bucket`。非 Live 响应带 `metricWindow`（档位、grain、`unavailableSeries`），`blockIntervalMs` 与 `transactionCount` 缺席而不是空数组，`series` 只判断提供的 7 条样本序列。早于 #214 的时段没有桶，因此答为未观测（账本仍可给出最后观测时刻）。
 
 ### 11.7 同步与共识的证据：五个数值系列与一份状态变更日志（issue #217）
 

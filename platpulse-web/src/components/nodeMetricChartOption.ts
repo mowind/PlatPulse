@@ -130,6 +130,9 @@ export type MetricChartOptionInput = {
   /** Y-axis title carrying the unit ("Speed (MiB/s)"), placed above the tick
    *  column like Emerald's "CPU %". */
   yAxisName?: string
+  /** Time-axis label and tooltip instant. Live's `HH:mm:ss` clock when absent;
+   *  a longer Metric Window passes its own (see metricAxisTimeFormat). */
+  timeFormat?: (value: number) => string
 }
 
 /** Where the axis title starts, measured from the chart's left edge. Emerald
@@ -194,27 +197,69 @@ function escapeText(value: string): string {
  * without becoming the rounded reading the card's own value prints; the instant
  * is the observation's own timestamp.
  */
+/** The bucket an aggregated point carries, read back from its data item. */
+type TooltipBucket = { start: number; end: number; minValue: number; maxValue: number; sampleCount: number; open: boolean }
+
+function tooltipBucket(entry: Record<string, unknown>): TooltipBucket | undefined {
+  const bucket = record(record(entry.data)?.bucket)
+  if (!bucket) return undefined
+  const start = typeof bucket.start === 'string' ? Date.parse(bucket.start) : Number.NaN
+  const end = typeof bucket.end === 'string' ? Date.parse(bucket.end) : Number.NaN
+  const minValue = typeof bucket.minValue === 'number' ? bucket.minValue : Number.NaN
+  const maxValue = typeof bucket.maxValue === 'number' ? bucket.maxValue : Number.NaN
+  const sampleCount = typeof bucket.sampleCount === 'number' ? bucket.sampleCount : Number.NaN
+  return { start, end, minValue, maxValue, sampleCount, open: bucket.open === true }
+}
+
+/** A data item's [instant, value]: the item itself for a raw sample, its
+ *  `value` for a bucket item that carries the bucket beside it. */
+function tooltipPair(entry: Record<string, unknown>): unknown[] {
+  if (Array.isArray(entry.data)) return entry.data
+  const value = record(entry.data)?.value
+  if (Array.isArray(value)) return value
+  return Array.isArray(entry.value) ? entry.value : []
+}
+
 function tooltipFormatter(input: MetricChartOptionInput) {
   const theme = input.dark ? METRIC_CHART_THEME.dark : METRIC_CHART_THEME.light
+  const time = input.timeFormat ?? clockTime
   return (raw: unknown): string => {
     const entries = (Array.isArray(raw) ? raw : [raw]).map(record).filter((entry) => entry !== undefined)
     const first = entries[0]
     const at = typeof first?.axisValue === 'number' ? first.axisValue : undefined
-    const header = '<div style="font-weight:600;margin-bottom:6px;color:' + theme.textSecondary + '">' + (at === undefined ? '' : clockTime(at)) + '</div>'
+    // A bucket is named by its own interval, never by a single instant it does
+    // not stand for, and the newest, still-accumulating one says so.
+    const firstBucket = first ? tooltipBucket(first) : undefined
+    const instant = firstBucket && Number.isFinite(firstBucket.start) && Number.isFinite(firstBucket.end)
+      ? time(firstBucket.start) + ' – ' + time(firstBucket.end) + (firstBucket.open ? ' · Open bucket' : '')
+      : at === undefined ? '' : time(at)
+    const header = '<div style="font-weight:600;margin-bottom:6px;color:' + theme.textSecondary + '">' + escapeText(instant) + '</div>'
     const rows = entries.map((entry) => {
       const seriesName = typeof entry.seriesName === 'string' ? entry.seriesName : ''
-      const data = Array.isArray(entry.data) ? entry.data : []
+      const data = tooltipPair(entry)
       const value = typeof data[1] === 'number' ? data[1] : Number.NaN
       const color = typeof entry.color === 'string' ? entry.color : 'currentColor'
       if (!Number.isFinite(value)) return ''
+      const bucket = tooltipBucket(entry)
+      const detail = bucket
+        ? '<div style="padding-left:16px;line-height:18px;color:' + theme.textSecondary + ';font-variant-numeric:tabular-nums">'
+          + escapeText('min ' + input.valueFormat(bucket.minValue) + ' · max ' + input.valueFormat(bucket.maxValue) + ' · ' + bucket.sampleCount + (bucket.sampleCount === 1 ? ' sample' : ' samples'))
+          + '</div>'
+        : ''
       return '<div style="display:flex;align-items:center;line-height:20px">'
         + '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + color + ';margin-right:8px;flex-shrink:0"></span>'
-        + '<span style="flex:1 1 auto;white-space:nowrap">' + escapeText(seriesName) + '</span>'
+        + '<span style="flex:1 1 auto;white-space:nowrap">' + escapeText(seriesName) + (bucket ? ' (max)' : '') + '</span>'
         + '<span style="margin-left:auto;font-weight:600;padding-left:16px;font-variant-numeric:tabular-nums">' + escapeText(input.valueFormat(value)) + '</span>'
-        + '</div>'
+        + '</div>' + detail
     })
     return header + '<div style="display:flex;flex-direction:column;gap:4px">' + rows.join('') + '</div>'
   }
+}
+
+/** One plotted point: Live's bare [instant, value] pair, or a bucket item that
+ *  keeps the bucket beside the pair for the tooltip. */
+function dataItem(point: MetricObservation) {
+  return point.bucket ? { value: [point.sampledAt, point.value], bucket: point.bucket } : [point.sampledAt, point.value]
 }
 
 /** Which directions the reader has hidden or shown through the native legend,
@@ -269,7 +314,7 @@ export function metricChartOption(input: MetricChartOptionInput): EChartsOption 
     return validSegments.map((segment) => ({
       type: 'line' as const,
       name: entry.label,
-      data: segment.map((point) => [point.sampledAt, point.value]),
+      data: segment.map(dataItem),
       // An isolated observation is still evidence: it is drawn as its own
       // marker instead of disappearing as a zero-length polyline.
       showSymbol: segment.length === 1,
@@ -335,7 +380,7 @@ export function metricChartOption(input: MetricChartOptionInput): EChartsOption 
         color: theme.textSecondary,
         margin: 12,
         hideOverlap: true,
-        formatter: (value: number) => clockTime(value),
+        formatter: input.timeFormat ?? ((value: number) => clockTime(value)),
       },
       axisTick: { show: false },
       axisLine: { show: true, lineStyle: { color: theme.axisLine, width: 1 } },

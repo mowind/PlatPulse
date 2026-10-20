@@ -1909,31 +1909,14 @@ pub async fn load_range(
             point_count: samples.len() as i64,
             truncated: segment_truncated,
         });
-        points.extend(samples.into_iter().map(|sample| {
-            let MetricSample {
-                observed_at,
-                received_at,
-                value,
-            } = sample;
-            MetricRangePoint {
-                grain: GRAIN_RAW,
-                source: SOURCE_RAW,
-                min_value: value,
-                max_value: value,
-                sample_count: 1,
-                last_observed_at: observed_at.clone(),
-                received_at,
-                first_observed_at: observed_at.clone(),
-                max_gap_seconds: 0,
-                cadence_seconds: cadence,
-                // Filled in once the whole answer is known: the cadence the gap
-                // and coverage rule judges this point by may come from a raw
-                // window this tier was not read with.
-                judged_cadence_seconds: 0,
-                instant: observed_at,
-                value,
-            }
-        }));
+        // The judged cadence is filled in once the whole answer is known: the
+        // cadence the gap and coverage rule judges this point by may come from
+        // a raw window this tier was not read with.
+        points.extend(
+            samples
+                .into_iter()
+                .map(|sample| raw_range_point(sample, cadence)),
+        );
         stopped = segment_truncated;
     }
 
@@ -2035,21 +2018,7 @@ pub async fn load_range(
             point_count: buckets.len() as i64,
             truncated: segment_truncated,
         });
-        points.extend(buckets.into_iter().map(|bucket| MetricRangePoint {
-            instant: bucket.bucket_start,
-            grain: grain_label(bucket.grain_seconds),
-            source: SOURCE_AGGREGATE,
-            value: bucket.last_value,
-            min_value: bucket.min_value,
-            max_value: bucket.max_value,
-            sample_count: bucket.sample_count,
-            last_observed_at: bucket.last_observed_at,
-            received_at: bucket.last_received_at,
-            first_observed_at: bucket.first_observed_at,
-            max_gap_seconds: bucket.max_gap_seconds,
-            cadence_seconds: bucket.grain_seconds,
-            judged_cadence_seconds: 0,
-        }));
+        points.extend(buckets.into_iter().map(bucket_range_point));
         stopped = segment_truncated;
     }
 
@@ -2072,11 +2041,91 @@ pub async fn load_range(
     for point in &mut points {
         point.judged_cadence_seconds = match measured_cadence {
             Some(cadence) => cadence,
-            None if point.grain == GRAIN_RAW => point.cadence_seconds,
-            None => (point.cadence_seconds / point.sample_count.max(1)).max(1),
+            None => unmeasured_judged_cadence(point),
         };
     }
-    let judged: Vec<JudgedPoint<'_>> = points
+    let judged = judged_points(&points);
+    let window_end = if query.before.is_some() {
+        aggregate_ceiling.as_str()
+    } else {
+        to_text.as_str()
+    };
+    let continuity = continuity_from(&judged, &pauses, &from_text, window_end, MIN_GAP_SECONDS);
+    let ledger = load_ledger(pool, &query.scope).await?;
+    Ok(MetricRange {
+        points,
+        segments,
+        ledger,
+        gaps: continuity.gaps,
+        coverage_seconds: continuity.coverage_seconds,
+        truncated,
+        continuation,
+    })
+}
+
+/// One stored observation as a point of a range answer. The judged cadence is
+/// left at 0 for the reader to decide once its whole answer is known.
+fn raw_range_point(sample: MetricSample, cadence_seconds: i64) -> MetricRangePoint {
+    let MetricSample {
+        observed_at,
+        received_at,
+        value,
+    } = sample;
+    MetricRangePoint {
+        grain: GRAIN_RAW,
+        source: SOURCE_RAW,
+        min_value: value,
+        max_value: value,
+        sample_count: 1,
+        last_observed_at: observed_at.clone(),
+        received_at,
+        first_observed_at: observed_at.clone(),
+        max_gap_seconds: 0,
+        cadence_seconds,
+        judged_cadence_seconds: 0,
+        instant: observed_at,
+        value,
+    }
+}
+
+/// One stored bucket as a point of a range answer: its coordinate is the
+/// bucket start, its `cadence_seconds` the bucket width.
+fn bucket_range_point(bucket: MetricAggregate) -> MetricRangePoint {
+    MetricRangePoint {
+        instant: bucket.bucket_start,
+        grain: grain_label(bucket.grain_seconds),
+        source: SOURCE_AGGREGATE,
+        value: bucket.last_value,
+        min_value: bucket.min_value,
+        max_value: bucket.max_value,
+        sample_count: bucket.sample_count,
+        last_observed_at: bucket.last_observed_at,
+        received_at: bucket.last_received_at,
+        first_observed_at: bucket.first_observed_at,
+        max_gap_seconds: bucket.max_gap_seconds,
+        cadence_seconds: bucket.grain_seconds,
+        judged_cadence_seconds: 0,
+    }
+}
+
+/// The cadence a point is judged by when its answer measured none from raw
+/// samples: a raw sample's own, and for a bucket the coarsest spacing it proves
+/// itself, its width divided by the observations it counted.
+fn unmeasured_judged_cadence(point: &MetricRangePoint) -> i64 {
+    if point.grain == GRAIN_RAW {
+        point.cadence_seconds
+    } else {
+        (point.cadence_seconds / point.sample_count.max(1)).max(1)
+    }
+}
+
+/// The points of an answer as the gap and coverage rule judges them.
+///
+/// One mapping for every reader of the merged point sequence, so the Admin
+/// range answer and the fixed Public windows (ADR 0012) cannot drift apart on
+/// what a point testifies to.
+fn judged_points(points: &[MetricRangePoint]) -> Vec<JudgedPoint<'_>> {
+    points
         .iter()
         .map(|point| JudgedPoint {
             from: &point.first_observed_at,
@@ -2096,14 +2145,145 @@ pub async fn load_range(
             // between them were counted at all.
             bucket_start: (point.grain != GRAIN_RAW).then_some(point.instant.as_str()),
         })
-        .collect();
-    let window_end = if query.before.is_some() {
-        aggregate_ceiling.as_str()
-    } else {
-        to_text.as_str()
-    };
-    let continuity = continuity_from(&judged, &pauses, &from_text, window_end, MIN_GAP_SECONDS);
+        .collect()
+}
+
+/// The one tier a fixed Public Metric Window is answered from (ADR 0012).
+///
+/// The Admin range reader picks a tier by the age of each stretch. A Public
+/// window is a preset instead, and the Server fixes its grain: the whole window
+/// is read from exactly one tier, so a 6-hour answer is one-minute buckets even
+/// though the raw window still holds those hours, and no grain is derived at
+/// read time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowTier {
+    /// Stored observations.
+    Raw,
+    /// The 1-minute buckets.
+    OneMinute,
+    /// The 5-minute buckets.
+    FiveMinute,
+}
+
+impl WindowTier {
+    /// The bucket width this tier is read at, 0 for raw observations.
+    pub fn grain_seconds(self) -> i64 {
+        match self {
+            WindowTier::Raw => 0,
+            WindowTier::OneMinute => ONE_MINUTE_SECONDS,
+            WindowTier::FiveMinute => FIVE_MINUTE_SECONDS,
+        }
+    }
+
+    /// The grain label an answer carries for this tier.
+    pub fn grain_label(self) -> &'static str {
+        match self {
+            WindowTier::Raw => GRAIN_RAW,
+            WindowTier::OneMinute => GRAIN_ONE_MINUTE,
+            WindowTier::FiveMinute => GRAIN_FIVE_MINUTE,
+        }
+    }
+}
+
+/// Everything the fixed-tier reader needs to answer one Public window.
+#[derive(Debug, Clone)]
+pub struct WindowQuery<'a> {
+    pub scope: SeriesScope<'a>,
+    /// The window's older end, inclusive. For a bucket tier the caller passes a
+    /// bucket boundary, so the oldest bucket the window holds is answered whole
+    /// instead of straddling the window's start.
+    pub from: OffsetDateTime,
+    /// The window's newer end, inclusive: the instant the answer is judged at.
+    pub to: OffsetDateTime,
+    pub tier: WindowTier,
+    /// The largest number of points the answer may carry; the newest are kept.
+    pub limit: i64,
+}
+
+/// Answer one fixed window from exactly one tier (ADR 0012, issue #247).
+///
+/// The points are what that tier stored - raw observations, or the buckets the
+/// Server wrote while the observations arrived - and nothing else: a stretch
+/// the tier holds nothing for, including every stretch from before the tiers
+/// existed (issue #214 backfilled nothing), is answered as unobserved, never as
+/// zero and never by borrowing a finer tier. Silence is judged by the same rule
+/// the Admin long history uses: the merged-sequence continuity rule with the
+/// `MIN_GAP_SECONDS` floor, each bucket's own `max_gap_seconds`, and the
+/// unwritten-window check between two buckets, with the protection pauses the
+/// Server recorded for the series.
+///
+/// A bucket is judged by the spacing it proves itself (its width divided by
+/// the observations it counted), because a fixed-tier answer reads no raw
+/// window to measure a cadence from: it is the Admin reader's own rule for a
+/// stretch it answers without a raw window.
+pub async fn load_window(
+    pool: &SqlitePool,
+    query: WindowQuery<'_>,
+) -> Result<MetricRange, sqlx::Error> {
+    let limit = query.limit.max(0);
+    let from_text = format_rfc3339(query.from);
+    let to_text = format_rfc3339(query.to);
     let ledger = load_ledger(pool, &query.scope).await?;
+    if from_text > to_text {
+        return Ok(MetricRange {
+            points: Vec::new(),
+            segments: Vec::new(),
+            ledger,
+            gaps: Vec::new(),
+            coverage_seconds: 0,
+            truncated: false,
+            continuation: None,
+        });
+    }
+    let grain_seconds = query.tier.grain_seconds();
+    let (points, truncated) = if grain_seconds == 0 {
+        let (samples, truncated) =
+            read_raw_samples(pool, &query.scope, &from_text, &to_text, limit).await?;
+        let cadence = observed_cadence_seconds(&samples);
+        let points: Vec<MetricRangePoint> = samples
+            .into_iter()
+            .map(|sample| raw_range_point(sample, cadence))
+            .collect();
+        (points, truncated)
+    } else {
+        // The bucket table bounds a tier by bucket start with an exclusive
+        // ceiling; the window's own end is inclusive, so the ceiling is the
+        // second after it and a bucket that opened exactly at `to` is answered.
+        let ceiling = format_rfc3339(query.to + time::Duration::seconds(1));
+        let (buckets, truncated) = read_aggregates(
+            pool,
+            &query.scope,
+            grain_seconds,
+            &from_text,
+            &ceiling,
+            limit,
+        )
+        .await?;
+        let points: Vec<MetricRangePoint> = buckets.into_iter().map(bucket_range_point).collect();
+        (points, truncated)
+    };
+    // No raw window is read beside the tier, so every point is judged by the
+    // cadence it proves itself, exactly as the Admin reader judges a stretch it
+    // answers without a raw window.
+    let mut points = points;
+    for point in &mut points {
+        point.judged_cadence_seconds = unmeasured_judged_cadence(point);
+    }
+    let pauses = load_pauses(pool, &query.scope, &from_text, &to_text).await?;
+    let judged = judged_points(&points);
+    let continuity = continuity_from(&judged, &pauses, &from_text, &to_text, MIN_GAP_SECONDS);
+    let segments = vec![MetricRangeSegment {
+        grain: query.tier.grain_label(),
+        source: if grain_seconds == 0 {
+            SOURCE_RAW
+        } else {
+            SOURCE_AGGREGATE
+        },
+        from: from_text,
+        to: to_text,
+        point_count: points.len() as i64,
+        truncated,
+    }];
     Ok(MetricRange {
         points,
         segments,
@@ -2111,8 +2291,15 @@ pub async fn load_range(
         gaps: continuity.gaps,
         coverage_seconds: continuity.coverage_seconds,
         truncated,
-        continuation,
+        continuation: None,
     })
+}
+
+/// The silence two consecutive points of a fixed window must span before the
+/// window calls it a gap: the cadence rule with the long-history floor, never
+/// shorter than one bucket width plus one cadence between two buckets.
+pub fn window_silence_threshold_seconds(cadence_seconds: i64, grain_seconds: i64) -> i64 {
+    silence_threshold_seconds(cadence_seconds, grain_seconds, MIN_GAP_SECONDS)
 }
 
 /// The stored observations of the raw window, oldest first.

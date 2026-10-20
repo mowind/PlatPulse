@@ -7412,6 +7412,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "description": "Metric Window preset; Live when absent",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PublicMetricWindow"
+            }
           }
         ],
         "responses": {
@@ -7421,6 +7430,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PublicNodeMetricHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
                 }
               }
             }
@@ -16305,9 +16324,67 @@
           }
         }
       },
+      "PublicMetricBucket": {
+        "type": "object",
+        "description": "What one aggregate bucket of a longer Metric Window holds (ADR 0012).\n\nA bucket stores a count, extremes and its newest value but no sum, so there\nis no mean to draw: the point's `value` is the bucket's maximum, which is\nthe reading a monitor must not hide, and the rest of the bucket is stated\nhere for the tooltip.",
+        "required": [
+          "start",
+          "end",
+          "grainSeconds",
+          "minValue",
+          "maxValue",
+          "lastValue",
+          "sampleCount",
+          "firstObservedAt",
+          "lastObservedAt",
+          "open"
+        ],
+        "properties": {
+          "end": {
+            "type": "string",
+            "description": "...and its end, exclusive."
+          },
+          "firstObservedAt": {
+            "type": "string"
+          },
+          "grainSeconds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lastObservedAt": {
+            "type": "string"
+          },
+          "lastValue": {
+            "type": "number",
+            "format": "double",
+            "description": "The newest observation the bucket counted."
+          },
+          "maxValue": {
+            "type": "number",
+            "format": "double"
+          },
+          "minValue": {
+            "type": "number",
+            "format": "double"
+          },
+          "open": {
+            "type": "boolean",
+            "description": "The newest bucket, whose interval the answer has not reached the end of\nyet: it is still accumulating, so a later answer can widen it."
+          },
+          "sampleCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Observations the bucket counted. A replay never advances it."
+          },
+          "start": {
+            "type": "string",
+            "description": "The bucket's own interval: its UTC-aligned start, inclusive..."
+          }
+        }
+      },
       "PublicMetricGap": {
         "type": "object",
-        "description": "One stretch of the window with no observation in it.\n\nOnly a collection gap can be named here: the latest-60-second answer holds no\nprotection pause, so what it reports is always a silence the series itself\nproved (the Server names a pause only where it recorded one).",
+        "description": "One stretch of the window with no observation in it.\n\nThe latest-60-second answer holds no protection pause, so what it reports is\nalways a collection gap the series itself proved. A longer Metric Window is\njudged by the Admin long-history rule, which names a protection pause where\nthe Server recorded one (ADR 0012).",
         "required": [
           "from",
           "to",
@@ -16340,12 +16417,18 @@
           "value"
         ],
         "properties": {
+          "bucket": {
+            "$ref": "#/components/schemas/PublicMetricBucket",
+            "description": "Present only on a point of an aggregated window: the bucket the point\nstands for. A raw observation, including every Live point, has none."
+          },
           "sampledAt": {
-            "type": "string"
+            "type": "string",
+            "description": "The observation instant, or a bucket's start."
           },
           "value": {
             "type": "number",
-            "format": "double"
+            "format": "double",
+            "description": "The observed value, or a bucket's maximum."
           }
         }
       },
@@ -16421,6 +16504,48 @@
             "type": "integer",
             "format": "int64",
             "description": "The seconds between the newest observation and the end of the window, so\nthe chart knows the line must not be extended through them. It can exceed\nthe window when the newest observation is the older last-good point: the\nseries really has been quiet that long."
+          }
+        }
+      },
+      "PublicMetricWindow": {
+        "type": "string",
+        "description": "The Node Detail Metric Window (ADR 0012): the fixed presets the Public\nmetrics route answers. Never an arbitrary range: the enum is what bounds\nthe cost of an anonymous request.",
+        "enum": [
+          "live",
+          "1h",
+          "6h",
+          "24h",
+          "7d"
+        ]
+      },
+      "PublicMetricWindowAnswer": {
+        "type": "object",
+        "description": "Which Metric Window an answer is for, and at what grain the Server read\nit. Absent from a Live answer, which keeps its latest-60-second shape field\nfor field.",
+        "required": [
+          "window",
+          "grain",
+          "grainSeconds",
+          "unavailableSeries"
+        ],
+        "properties": {
+          "grain": {
+            "type": "string",
+            "description": "`raw`, `1m` or `5m`: the one tier the whole window was read from."
+          },
+          "grainSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The bucket width, 0 for raw observations."
+          },
+          "unavailableSeries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The series this window does not provide, by response field name. The\ntwo block series have no aggregate tier yet (issue #248), so outside\nLive they are absent from the answer and named here, never answered as\nan empty series that would read as nothing observed."
+          },
+          "window": {
+            "$ref": "#/components/schemas/PublicMetricWindow"
           }
         }
       },
@@ -16717,8 +16842,6 @@
           "networkTxBytesPerSec",
           "peerInboundCount",
           "peerOutboundCount",
-          "blockIntervalMs",
-          "transactionCount",
           "series"
         ],
         "properties": {
@@ -16726,7 +16849,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/PublicMetricPoint"
-            }
+            },
+            "description": "Absent outside Live: see `metricWindow.unavailableSeries`."
           },
           "dataDirectoryPercent": {
             "type": "array",
@@ -16736,6 +16860,10 @@
           },
           "from": {
             "type": "string"
+          },
+          "metricWindow": {
+            "$ref": "#/components/schemas/PublicMetricWindowAnswer",
+            "description": "The Metric Window of a longer preset (ADR 0012). Absent from Live."
           },
           "networkRxBytesPerSec": {
             "type": "array",
@@ -16778,7 +16906,7 @@
             "items": {
               "$ref": "#/components/schemas/PublicMetricSeriesCoverage"
             },
-            "description": "The same nine series, judged: which of them were observed, where the\nsilences are, and how much of the window is covered. One entry per\nseries, in the order above, so `series` is the contract a chart reads\nbefore it draws a line (issue #225)."
+            "description": "The same nine series, judged: which of them were observed, where the\nsilences are, and how much of the window is covered. One entry per\nseries, in the order above, so `series` is the contract a chart reads\nbefore it draws a line (issue #225). A longer window judges only the\nseries it provides."
           },
           "to": {
             "type": "string"
@@ -16787,7 +16915,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/PublicMetricPoint"
-            }
+            },
+            "description": "Absent outside Live: see `metricWindow.unavailableSeries`."
           },
           "windowSeconds": {
             "type": "integer",

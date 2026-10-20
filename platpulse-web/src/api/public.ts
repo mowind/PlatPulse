@@ -10,9 +10,11 @@ import {
   type PublicBlockHistoryItem,
   type PublicNetwork,
   type PublicNodeDetail,
+  type PublicMetricWindow,
   type PublicNodeMetricHistory,
   type PublicRewardWallet,
 } from './generated'
+import { METRIC_WINDOW_REFRESH_MS } from '../metricWindow'
 import {
   requestGenerated,
   requestHeaders,
@@ -52,6 +54,9 @@ export const publicKeys = {
   node: (nodeId: string) => ['public', 'node', nodeId] as const,
   history: (nodeId: string) => ['public', 'node', nodeId, 'history'] as const,
   metrics: (nodeId: string) => ['public', 'node', nodeId, 'metrics'] as const,
+  /** A longer Metric Window (ADR 0012). Live keeps the `metrics` key itself, so
+   *  the Invalidation Events that refetch Live are exactly the ones they were. */
+  metricsWindow: (nodeId: string, window: Exclude<PublicMetricWindow, 'live'>) => ['public', 'node', nodeId, 'metrics', window] as const,
   validators: ['public', 'validator'] as const,
   rewardWallet: ['public', 'reward-wallet'] as const,
 } as const
@@ -170,10 +175,17 @@ export async function ensureSiteAccessModeKnown(): Promise<SiteAccessMode> {
   return siteAccessModeCache ?? 'private'
 }
 
-export async function fetchNodeMetrics(nodeId: string, signal?: AbortSignal, generation?: number): Promise<PublicNodeMetricHistory> {
+/** One Metric Window of a Node. Live sends no `window` parameter, so its
+ *  request is exactly the one it was before the Metric Window existed. */
+export async function fetchNodeMetrics(nodeId: string, signal?: AbortSignal, generation?: number, window: PublicMetricWindow = 'live'): Promise<PublicNodeMetricHistory> {
   const context = contextOf(signal, generation)
   return requestGenerated(
-    () => publicNodeMetrics({ path: { node_id: nodeId }, signal: context.signal, headers: headersOf(context) }),
+    () => publicNodeMetrics({
+      path: { node_id: nodeId },
+      ...(window === 'live' ? {} : { query: { window } }),
+      signal: context.signal,
+      headers: headersOf(context),
+    }),
     'Unable to load metric history',
   )
 }
@@ -208,12 +220,37 @@ export function usePublicNode(nodeId: string, generation: number) {
   })
 }
 
-export function usePublicNodeMetrics(nodeId: string, generation: number) {
+/** Marks a query refreshed by the clock rather than by Invalidation Events. */
+const CLOCK_REFRESHED = 'clock'
+
+/**
+ * The metric history of one Metric Window.
+ *
+ * Live is refetched by Invalidation Events, as it always was. A longer window
+ * is refetched by the clock at most once per grain (METRIC_WINDOW_REFRESH_MS)
+ * and is never woken by an invalidation, so a busy stream cannot turn a 7-day
+ * read into one request per Report.
+ *
+ * No window keeps a cache once nothing reads it (`gcTime: 0`): a window the
+ * reader switches back to is fetched again and shows its loading state, never
+ * the answer it held minutes ago.
+ */
+export function usePublicNodeMetrics(nodeId: string, generation: number, window: PublicMetricWindow = 'live') {
+  const queryKey = window === 'live'
+    ? [...publicKeys.metrics(nodeId), generation]
+    : [...publicKeys.metricsWindow(nodeId, window), generation]
   return useQuery({
-    queryKey: [...publicKeys.metrics(nodeId), generation],
-    queryFn: ({ signal }) => fetchNodeMetrics(nodeId, signal, generation),
+    queryKey,
+    queryFn: ({ signal }) => fetchNodeMetrics(nodeId, signal, generation, window),
     enabled: nodeId.length > 0,
+    gcTime: 0,
+    refetchInterval: METRIC_WINDOW_REFRESH_MS[window],
+    meta: window === 'live' ? undefined : { refresh: CLOCK_REFRESHED },
   })
+}
+
+function clockRefreshed(meta: Record<string, unknown> | undefined): boolean {
+  return meta?.refresh === CLOCK_REFRESHED
 }
 
 export function usePublicNodeHistory(nodeId: string, generation: number) {
@@ -302,8 +339,9 @@ function flushPublicInvalidations(): void {
     }
     void publicQueryClient.invalidateQueries(
       {
-        predicate: ({ queryKey }) =>
-          samePrefix(queryKey, entry.namespace) && queryKey.at(-1) === entry.generation,
+        // A clock-refreshed Metric Window answers to its own interval only.
+        predicate: ({ queryKey, meta }) =>
+          samePrefix(queryKey, entry.namespace) && queryKey.at(-1) === entry.generation && !clockRefreshed(meta),
         refetchType: 'active',
       },
       { cancelRefetch: false },

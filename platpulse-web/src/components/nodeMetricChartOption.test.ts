@@ -203,6 +203,55 @@ describe('metricChartOption', () => {
     expect(body, 'a rate is never rescaled away from its sample').not.toContain('KiB')
   })
 
+  it('draws a bucket through its maximum and states the whole bucket in the tooltip (ADR 0012)', () => {
+    const bucket = (start: number, max: number, open = false) => ({
+      start: new Date(start).toISOString(),
+      end: new Date(start + 300_000).toISOString(),
+      grainSeconds: 300,
+      minValue: max - 4,
+      maxValue: max,
+      lastValue: max - 1,
+      sampleCount: 60,
+      firstObservedAt: new Date(start).toISOString(),
+      lastObservedAt: new Date(start + 295_000).toISOString(),
+      open,
+    })
+    const first = bucket(at(0), 30)
+    const last = bucket(at(300), 50, true)
+    const timeFormat = (value: number) => 'T' + (value - FROM) / 1000
+    const option = build({
+      to: at(600),
+      timeFormat,
+      series: [{ label: 'Process CPU', color: METRIC_SERIES_COLORS.cpu, segments: [[
+        { sampledAt: at(0), value: 30, bucket: first },
+        { sampledAt: at(300), value: 50, bucket: last },
+      ]] }],
+    })
+    // The plotted pair is the bucket's start and maximum; the bucket rides along.
+    expect(option.series[0].data).toEqual([
+      { value: [at(0), 30], bucket: first },
+      { value: [at(300), 50], bucket: last },
+    ])
+    // The axis is labelled in the window's own format.
+    const formatter = (option.xAxis.axisLabel as { formatter: (value: number) => string }).formatter
+    expect(formatter(at(300))).toBe('T300')
+    const closed = option.tooltip.formatter({ axisValue: at(0), seriesName: 'Process CPU', data: { value: [at(0), 30], bucket: first }, color: METRIC_SERIES_COLORS.cpu })
+    expect(closed).toContain('T0 – T300')
+    expect(closed).not.toContain('Open bucket')
+    expect(closed).toContain('Process CPU (max)')
+    expect(closed).toContain('30%')
+    expect(closed).toContain('min 26% · max 30% · 60 samples')
+    const open = option.tooltip.formatter({ axisValue: at(300), seriesName: 'Process CPU', data: { value: [at(300), 50], bucket: last }, color: METRIC_SERIES_COLORS.cpu })
+    expect(open).toContain('T300 – T600 · Open bucket')
+  })
+
+  it('keeps a raw point a bare pair, so Live draws exactly what it drew before', () => {
+    const option = build()
+    expect(option.series[0].data).toEqual([[at(0), 10]])
+    const formatter = (option.xAxis.axisLabel as { formatter: (value: number) => string }).formatter
+    expect(formatter(at(5))).toBe(clockOf(at(5)))
+  })
+
   it('drops a direction with no finite value and escapes what it prints', () => {
     const option = build()
     const body = option.tooltip.formatter([

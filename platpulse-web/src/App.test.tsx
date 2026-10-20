@@ -3,7 +3,7 @@ import { onlineManager } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { adminQueryClient, resetAdminCache } from './api/admin'
-import { applySiteAccessSettings, resetPublicCache } from './api/public'
+import { applySiteAccessSettings, publicQueryClient, resetPublicCache } from './api/public'
 import { resetRealtimeCursors } from './api/transport'
 import { client } from './api/generated/client.gen'
 import type { PublicNode, PublicValidatorInsight } from './api/generated/types.gen'
@@ -789,9 +789,14 @@ describe('App shell with private Home', () => {
     expect(screen.getAllByText('2.00 KiB/s').length).toBeGreaterThan(0)
     expect(within(hostGroup).getByText('↓ 4.00 KiB/s')).toBeTruthy()
     // The retained-sample explanation opposite the section label is gone; the
-    // label row carries nothing but "Latest 60 seconds".
+    // label row carries nothing but "Latest 60 seconds" and the Metric Window
+    // selector (§15.38), with Live selected by default.
     expect(within(metricsSection).queryByText(/Real retained samples/)).toBeNull()
-    expect(metricsSection.querySelector('header')?.textContent).toBe('Latest 60 seconds')
+    expect(metricsSection.querySelector('header h2')?.textContent).toBe('Latest 60 seconds')
+    const windowSelector = within(metricsSection).getByRole('radiogroup', { name: 'Metric window' })
+    expect(metricsSection.querySelector('header')?.textContent).toBe('Latest 60 seconds' + windowSelector.textContent)
+    expect(within(windowSelector).getAllByRole('radio').map((radio) => radio.textContent)).toEqual(['Live', '1h', '6h', '24h', '7d'])
+    expect(within(windowSelector).getByRole('radio', { checked: true }).textContent).toBe('Live')
     // The Host network header is Emerald's: upload then download on one row,
     // each behind a direction chevron in its curve's colour. The direction names
     // are spoken, not printed as small text under the numbers.
@@ -1339,6 +1344,133 @@ describe('App shell with private Home', () => {
     await waitFor(() => expect(screen.queryByText('History update failed · Showing previous window')).toBeNull())
     expect(screen.getByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeTruthy()
     await waitFor(() => expect(screen.queryByText(/Block history update failed/)).toBeNull())
+  })
+
+  it('switches the Metric Window through the URL without ever drawing the previous window (#247)', async () => {
+    const NODE_BODY = {
+      nodeId: 'node-1', displayName: 'Validator A', networkKey: 'mainnet',
+      health: 'healthy', healthReason: 'rpc reachable', freshness: 'current',
+      rpcState: 'ok', syncState: 'ok', consensusState: 'current', processState: 'running',
+      currentHead: 123, historicalHighWatermark: 120, networkReferenceHead: 123,
+      networkReferenceConfidence: 'high', resyncState: 'idle', resyncProgress: null,
+      hostCpuPercent: 42.5, processCpuPercent: 12.5, peers: { peerCount: 5, freshness: 'fresh', state: 'fresh' },
+    }
+    const live = {
+      from: '2026-08-19T23:59:00Z', to: '2026-08-20T00:00:00Z', windowSeconds: 60,
+      processCpuPercent: [{ sampledAt: '2026-08-19T23:59:30Z', value: 10 }, { sampledAt: '2026-08-19T23:59:50Z', value: 12 }],
+      processMemoryPercent: [], dataDirectoryPercent: [], networkRxBytesPerSec: [], networkTxBytesPerSec: [],
+      peerInboundCount: [], peerOutboundCount: [], blockIntervalMs: [], transactionCount: [],
+    }
+    const bucket = (start: string, end: string, max: number, open = false) => ({
+      sampledAt: start,
+      value: max,
+      bucket: { start, end, grainSeconds: 60, minValue: max - 5, maxValue: max, lastValue: max - 1, sampleCount: 12, firstObservedAt: start, lastObservedAt: start, open },
+    })
+    const sixHours = {
+      from: '2026-08-19T18:00:00Z', to: '2026-08-20T00:00:30Z', windowSeconds: 21_600,
+      processCpuPercent: [bucket('2026-08-19T23:58:00Z', '2026-08-19T23:59:00Z', 40), bucket('2026-08-19T23:59:00Z', '2026-08-20T00:00:00Z', 55), bucket('2026-08-20T00:00:00Z', '2026-08-20T00:01:00Z', 30, true)],
+      processMemoryPercent: [], dataDirectoryPercent: [], networkRxBytesPerSec: [], networkTxBytesPerSec: [],
+      peerInboundCount: [], peerOutboundCount: [], series: [],
+      metricWindow: { window: '6h', grain: '1m', grainSeconds: 60, unavailableSeries: ['blockIntervalMs', 'transactionCount'] },
+    }
+    const requests: string[] = []
+    let releaseSixHours: (() => void) | null = null
+    let sixHourCalls = 0
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1': () => jsonResponse(NODE_BODY, 200),
+      '/api/public/v1/nodes/node-1/history?limit=2': () => jsonResponse([], 200),
+      '/api/public/v1/nodes/node-1/metrics': () => {
+        requests.push('live')
+        return jsonResponse(live, 200)
+      },
+      '/api/public/v1/nodes/node-1/metrics?window=6h': () => {
+        requests.push('6h')
+        sixHourCalls += 1
+        if (sixHourCalls === 2) return jsonResponse({ error: { code: 'unavailable', message: 'failed' } }, 503)
+        return new Promise<Response>((resolve) => { releaseSixHours = () => resolve(jsonResponse(sixHours, 200)) })
+      },
+      '/api/public/v1/nodes/node-1/metrics?window=7d': () => {
+        requests.push('7d')
+        return jsonResponse({ error: { code: 'unavailable', message: 'failed' } }, 503)
+      },
+    })
+    vi.stubGlobal('EventSource', FakeEventSource)
+    // A value outside the enum falls back to Live and is rewritten in place.
+    window.history.replaceState({}, '', '/nodes/node-1?window=30d')
+    const entries = window.history.length
+    render(<App />)
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    expect(await screen.findByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeTruthy()
+    await waitFor(() => expect(window.location.search).toBe(''))
+    expect(window.history.length).toBe(entries)
+    expect(requests).toEqual(['live'])
+    expect(screen.getAllByRole('img', { name: /line chart over the last 60 seconds/ })).toHaveLength(4)
+
+    // Selecting 6h writes the URL and never shows the Live answer meanwhile:
+    // every sample card is loading, and the two block cards state they are Live only.
+    fireEvent.click(screen.getByRole('radio', { name: '6h' }))
+    await waitFor(() => expect(window.location.search).toBe('?window=6h'))
+    expect(await screen.findAllByText('Loading 6-hour window…')).toHaveLength(4)
+    expect(screen.getAllByText('Block charts show the Live window only')).toHaveLength(2)
+    expect(screen.queryAllByRole('img', { name: /over the last 60 seconds/ })).toHaveLength(0)
+    expect(screen.getByRole('radio', { name: '6h' }).getAttribute('aria-checked')).toBe('true')
+    await waitFor(() => expect(releaseSixHours).not.toBeNull())
+    await act(async () => {
+      releaseSixHours?.()
+      await Promise.resolve()
+    })
+    expect(await screen.findByRole('heading', { level: 2, name: 'Latest 6 hours' })).toBeTruthy()
+    expect(screen.getAllByRole('img', { name: /line chart over the last 6 hours/ })).toHaveLength(4)
+    // The block cards keep their title and current value but mount no chart.
+    expect(screen.queryAllByRole('img', { name: /bar chart/ })).toHaveLength(0)
+    const blockCard = screen.getByRole('heading', { level: 3, name: 'Block interval' }).closest('[data-slot="node-metric-card"]')
+    expect(blockCard?.querySelector('[data-slot="node-metric-value"]')?.textContent).toBeTruthy()
+    expect(blockCard?.querySelector('[data-slot="node-metric-chart"]')).toBeNull()
+    const cpuPlot = screen.getByRole('img', { name: 'Process CPU line chart over the last 6 hours' })
+    expect(cpuPlot.getAttribute('data-points')).toBe('3')
+    expect(document.getElementById(cpuPlot.getAttribute('aria-describedby') ?? '')?.textContent).toContain("drawn through each bucket's maximum")
+
+    // A longer window refreshes on the clock, at most once per grain, and is
+    // not woken by an Invalidation Event.
+    const sixHourQuery = publicQueryClient.getQueryCache().findAll({ queryKey: ['public', 'node', 'node-1', 'metrics', '6h'] })[0]
+    expect(sixHourQuery?.observers[0]?.options.refetchInterval).toBe(60_000)
+    await act(async () => {
+      FakeEventSource.latest?.emit('invalidation', JSON.stringify({ version: 1, eventId: 5, resource: 'collection', revision: 5 }))
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    })
+    expect(requests.filter((request) => request === '6h')).toHaveLength(1)
+
+    // A failed refresh keeps the drawn window and names it.
+    await act(async () => {
+      await sixHourQuery?.fetch().catch(() => undefined)
+    })
+    expect(await screen.findByRole('heading', { level: 2, name: 'Retained 6-hour window' })).toBeTruthy()
+    expect(screen.getByText('History update failed · Showing previous window')).toBeTruthy()
+    expect(screen.getAllByRole('img', { name: /line chart over a retained 6-hour window/ })).toHaveLength(4)
+
+    // Arrow keys move the one selection: Right from 6h is 24h... and End is 7d,
+    // whose first failure is the unavailable state, never a retained window.
+    const selected = screen.getByRole('radio', { name: '6h' })
+    expect(selected.tabIndex).toBe(0)
+    expect(screen.getByRole('radio', { name: 'Live' }).tabIndex).toBe(-1)
+    fireEvent.keyDown(selected, { key: 'End' })
+    await waitFor(() => expect(window.location.search).toBe('?window=7d'))
+    expect(document.activeElement).toBe(screen.getByRole('radio', { name: '7d' }))
+    expect(await screen.findAllByText('Metric history unavailable')).toHaveLength(4)
+    expect(screen.queryByRole('heading', { level: 2, name: /Retained/ })).toBeNull()
+    expect(screen.getByRole('heading', { level: 2, name: 'Latest 7 days' })).toBeTruthy()
+
+    // Back to Live: no parameter, and Live is fetched again rather than drawn
+    // from a cache it held before the switch.
+    fireEvent.keyDown(screen.getByRole('radio', { name: '7d' }), { key: 'Home' })
+    await waitFor(() => expect(window.location.search).toBe(''))
+    await waitFor(() => expect(requests.filter((request) => request === 'live')).toHaveLength(2))
+    expect(await screen.findByRole('heading', { level: 2, name: 'Latest 60 seconds' })).toBeTruthy()
   })
 
   it('keeps a first metric-history failure as the empty state rather than a retained window', async () => {
