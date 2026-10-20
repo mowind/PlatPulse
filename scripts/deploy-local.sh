@@ -19,7 +19,11 @@ CONFIG_DIR="${HOME}/.config/platpulse"
 SERVER_UNIT="platpulse-server.service"
 AGENT_UNIT="platpulse-agent.service"
 LISTEN=""
-TIMEOUT=60
+# A cold start replays the migrations and opens the projections before the
+# listener binds, which takes over a minute on a populated database. A tighter
+# budget reports a restart as failed while the services are already healthy, so
+# the default covers a slow host and --timeout lowers or raises it per run.
+TIMEOUT=180
 SKIP_TESTS=0
 SKIP_WEB=0
 SKIP_RUST=0
@@ -46,7 +50,7 @@ Options:
   --skip-rust         Do not rebuild the Rust release binaries
   --no-agent          Leave the Agent service untouched
   --force             Restart the services even when nothing changed
-  --timeout <sec>     Readiness timeout in seconds (default: 60)
+  --timeout <sec>     Readiness timeout in seconds (default: 180)
   --listen <addr>     Server address to probe (default: server.toml listen)
   --config-dir <dir>  PlatPulse configuration directory
                       (default: ~/.config/platpulse)

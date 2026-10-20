@@ -493,8 +493,15 @@ the current build references:
 ```bash
 scripts/deploy-local.sh                 # rebuild, restart if anything changed
 scripts/deploy-local.sh --skip-tests    # skip WebUI lint/typecheck/unit tests
+scripts/deploy-local.sh --timeout 300   # allow a slower /health/ready budget
 scripts/deploy-local.sh --check-only    # report whether the live Server is stale
 ```
+
+The readiness budget defaults to 180 seconds because a cold start replays the
+migrations and opens the projections before the listener binds, which takes over
+a minute on a populated database; a tighter budget reports a failed restart while
+the services are already healthy. Lower it with `--timeout` only when the state
+directory is known to be small.
 
 The restart decision is not limited to "did this run change something": the
 script also probes the running Server and restarts it when the live `index.html`
