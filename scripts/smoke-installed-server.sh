@@ -6,6 +6,10 @@ WEB_ROOT="${PLATPULSE_INSTALLED_WEB_ROOT:-/usr/share/platpulse/web}"
 [[ -x "$SERVER" ]] || { echo "installed Server is not executable: $SERVER" >&2; exit 2; }
 [[ -f "$WEB_ROOT/index.html" ]] || { echo "installed WebUI is missing: $WEB_ROOT" >&2; exit 2; }
 command -v curl >/dev/null 2>&1 || { echo 'curl is required for installed Server smoke' >&2; exit 2; }
+# The Server refuses a state directory that is group/world-writable, and the
+# job umask under `sudo -u` on a hosted runner is 0002, which would make
+# `mkdir -p` create one. Scratch state is private to the smoke either way.
+umask 077
 RUN_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/platpulse-installed-smoke.XXXXXX")"
 SERVER_PID=""
 cleanup() {

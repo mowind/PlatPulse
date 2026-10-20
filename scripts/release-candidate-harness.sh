@@ -2,6 +2,11 @@
 # Reproducibly build and exercise packaged Agent/Server/WebUI artifacts.
 set -euo pipefail
 
+# Scratch state must satisfy the Server's own invariant: a state directory that
+# is group/world-writable is refused, and `sudo -u` on a hosted runner hands
+# the job umask 0002. Keep every directory this harness creates private.
+umask 077
+
 ROOT="$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)"
 unavailable() { printf 'Release-candidate harness: UNAVAILABLE (%s)\n' "$1"; exit 2; }
 required_commands=(awk basename cat cargo chmod cp curl find grep head install jq ln mkdir mktemp node npm openssl python3 realpath rm sed seq sleep stat tail tar)
