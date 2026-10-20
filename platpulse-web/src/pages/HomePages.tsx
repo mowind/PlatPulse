@@ -201,20 +201,19 @@ export function NodePage() {
     {validatorNode && <LinkedValidatorSection node={node} variant="detail" />}
 
     <section data-slot="node-metrics-section" className="mt-4" aria-labelledby="node-metrics-title">
-      {/* The window selector sits where the window is named: beside the title
-          from md, on its own full-width row under the title on phones. */}
-      <header data-slot="node-metrics-header" className="mb-2 flex min-w-0 flex-col gap-y-1 md:flex-row md:items-center md:justify-between md:gap-x-3">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-          <h2 id="node-metrics-title" className="m-0 text-lg font-semibold">{metricWindowTitle}</h2>
-          {metricHistoryRetained && metricHistory && <div className="flex min-w-0 items-center">
-            <span role="status" data-slot="node-metrics-refresh-error" className="text-xs text-warning-foreground dark:text-warning">History update failed · Showing previous window</span>
-            <InfoHint label="Retained window times">
-              <p className="m-0">The charts show the last window that loaded successfully, not the {metricText.title.toLowerCase()}.</p>
-              <p className="m-0" data-slot="node-metrics-retained-window">From {formatUtcDateTime(metricHistory.from)} to {formatUtcDateTime(metricHistory.to)}</p>
-            </InfoHint>
-          </div>}
-        </div>
+      {/* The window selector leads the deck on the left; the selected segment
+          already names the window, so the title is spoken but not printed. On
+          phones the selector takes its own full-width row. */}
+      <header data-slot="node-metrics-header" className="mb-2 flex min-w-0 flex-col gap-y-1 md:flex-row md:items-center md:gap-x-3">
+        <h2 id="node-metrics-title" className="sr-only">{metricWindowTitle}</h2>
         <MetricWindowSelector value={metricWindow} onChange={selectMetricWindow} className="flex w-full md:w-auto md:shrink-0" />
+        {metricHistoryRetained && metricHistory && <div className="flex min-w-0 items-center">
+          <span role="status" data-slot="node-metrics-refresh-error" className="text-xs text-warning-foreground dark:text-warning">History update failed · Showing previous window</span>
+          <InfoHint label="Retained window times">
+            <p className="m-0">The charts show the last window that loaded successfully, not the {metricText.title.toLowerCase()}.</p>
+            <p className="m-0" data-slot="node-metrics-retained-window">From {formatUtcDateTime(metricHistory.from)} to {formatUtcDateTime(metricHistory.to)}</p>
+          </InfoHint>
+        </div>}
       </header>
       {/* Keyed by Node: legend choices belong to one Node's charts and never
           travel to the next Node opened on the same route. */}

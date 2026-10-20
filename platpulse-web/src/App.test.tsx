@@ -789,12 +789,16 @@ describe('App shell with private Home', () => {
     expect(screen.getAllByText('2.00 KiB/s').length).toBeGreaterThan(0)
     expect(within(hostGroup).getByText('↓ 4.00 KiB/s')).toBeTruthy()
     // The retained-sample explanation opposite the section label is gone; the
-    // label row carries nothing but "Latest 60 seconds" and the Metric Window
-    // selector (§15.38), with Live selected by default.
+    // label row carries nothing visible but the left-aligned Metric Window
+    // selector (§15.38), with Live selected by default. "Latest 60 seconds"
+    // still names the section, for assistive technology only.
     expect(within(metricsSection).queryByText(/Real retained samples/)).toBeNull()
-    expect(metricsSection.querySelector('header h2')?.textContent).toBe('Latest 60 seconds')
+    const sectionTitle = metricsSection.querySelector('header h2')
+    expect(sectionTitle?.textContent).toBe('Latest 60 seconds')
+    expect(sectionTitle?.className).toBe('sr-only')
     const windowSelector = within(metricsSection).getByRole('radiogroup', { name: 'Metric window' })
     expect(metricsSection.querySelector('header')?.textContent).toBe('Latest 60 seconds' + windowSelector.textContent)
+    expect(metricsSection.querySelector('header')?.className).not.toContain('justify-between')
     expect(within(windowSelector).getAllByRole('radio').map((radio) => radio.textContent)).toEqual(['Live', '1h', '6h', '24h', '7d'])
     expect(within(windowSelector).getByRole('radio', { checked: true }).textContent).toBe('Live')
     // The Host network header is Emerald's: upload then download on one row,
