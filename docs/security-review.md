@@ -31,6 +31,7 @@ The harness is the executable evidence for the matrix below; the checked-in disp
 - **Release Engineering:** capacity and resource observations remain specific to the recorded artifact, host, profile, and duration.
 - **Server maintainers:** real PlatON RPC behavior and third-party notification providers are not represented by loopback fixtures.
 - **Security owner:** dependency advisories that are not exploitable in the shipped feature set remain tracked by the release dependency gate; they must not be silently presented as clean.
+- **Security owner:** `RUSTSEC-2026-0381` still affects `webpki-roots` 0.26.11, the bundled root store Alloy's WebSocket transport pulls through tokio-tungstenite. The advisory patches only the 1.0 line, and every published tokio-tungstenite/tungstenite release through 0.30 requires `^0.26`, so both audit gates ignore it explicitly (with the reason recorded in deny.toml and deployment.md). A `wss://` endpoint the Agent subscribes to therefore trusts the pre-1.0.10 store until the Alloy fork can be moved to native roots.
 - **Operations owner:** production proxy topology, filesystem ownership, and native package installation must be rechecked for each deployment environment.
 
 A missing environment-dependent check is reported as `NOT_RUN`, never as `PASS`. A release-blocking failure prevents qualification and issue closure.

@@ -584,7 +584,12 @@ skip. `RUSTSEC-2023-0071` is ignored because `rsa` is lockfile-only behind disab
 SQLx features (`cargo tree -i rsa` is empty). `RUSTSEC-2026-0253` is ignored because
 the current `lru` release has no fixed upgrade; `RUSTSEC-2024-0436` (`paste`) is
 ignored only by cargo-deny because Alloy's proc-macro graph has no maintained
-compatible replacement yet. The remaining cargo-audit warnings stay visible in
+compatible replacement yet. `RUSTSEC-2026-0381` (`webpki-roots` 0.26.11, the
+bundled root store Alloy's WebSocket transport pulls through
+tokio-tungstenite) is ignored by both gates: the advisory patches only the 1.0
+line, every published tungstenite release through 0.30 still requires `^0.26`,
+and the workspace's own 1.0 root store is on the patched release. See the
+residual-risk entry in the security review. The remaining cargo-audit warnings stay visible in
 the evidence for release signoff. Checksums and SBOMs are
 integrity and inventory metadata only;
 they are not artifact signatures. Until an artifact-signing workflow is added,
