@@ -272,15 +272,23 @@ test.describe('Node Detail Metric Window (issue #247)', () => {
         await page.unroute(metricsOf('24h'))
       })
       await test.step('open bucket / ' + theme, async () => {
-        // The Server itself marks the newest 5-minute bucket open. The fixture
-        // refresher writes the current bucket every 25s, so just after a bucket
-        // edge the newest one may still be the closed previous bucket; wait for
-        // the real answer to carry an open one.
+        // The Server itself marks the newest 5-minute bucket open: `open` is
+        // "this bucket's end is after the answer's `to`", so it stays true only
+        // until the bucket edge. Waiting for the real answer and then asking the
+        // Server again for the page would re-open that window: a poll that
+        // succeeded a second before the edge hands the page a closed bucket and
+        // the tooltip has nothing to name. Keep the answer that carried the open
+        // bucket and serve the page from it, so the assertion reads the Server's
+        // own open bucket instead of racing the clock for one.
         type Point = { sampledAt: string; bucket?: { open: boolean; firstObservedAt: string; lastObservedAt: string } }
+        let opened: Point[] | undefined
         const newestOpen = async () => {
           const response = await page.request.get('/api/public/v1/nodes/' + PUBLIC_NODE_ID + '/metrics?window=24h')
           const body = (await response.json()) as { processCpuPercent?: Point[] }
-          return body.processCpuPercent?.at(-1)?.bucket?.open === true
+          const points = body.processCpuPercent
+          const open = points?.at(-1)?.bucket?.open === true
+          if (open) opened = points
+          return open
         }
         await expect.poll(newestOpen, { timeout: 45_000, intervals: [2_000] }).toBe(true)
         // A 5-minute bucket is about one pixel wide on a phone's 24h axis, so
@@ -290,7 +298,7 @@ test.describe('Node Detail Metric Window (issue #247)', () => {
         await page.route(metricsOf('24h'), async (route) => {
           const response = await route.fetch()
           const body = (await response.json()) as Record<string, unknown>
-          const points = body.processCpuPercent as Point[]
+          const points = opened ?? (body.processCpuPercent as Point[])
           const older = points[Math.floor(points.length / 4)]
           const newest = points.at(-1)
           body.processCpuPercent = [older, newest].filter((point) => point !== undefined)
