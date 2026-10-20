@@ -4,12 +4,16 @@ WORKDIR /src/platpulse-web
 COPY platpulse-web/package.json platpulse-web/package-lock.json ./
 RUN npm ci
 COPY platpulse-web/ ./
+# The brand mark is imported from the repository-level assets/ directory.
+COPY assets/ /src/assets/
 RUN npm run build
 
 FROM rust:1.95-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS server-build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
+# [patch.crates-io] points libsqlite3-sys at the in-tree crate (see Cargo.toml).
+COPY vendor/ ./vendor/
 RUN cargo build --locked --release -p platpulse-server
 
 FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241

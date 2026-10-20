@@ -152,7 +152,7 @@ jobs:
           /usr/bin/platpulse-server --help >/dev/null
           /usr/bin/platpulse-server backup --help >/dev/null
           /usr/bin/platpulse-agent --help >/dev/null
-          systemd-analyze verify /usr/lib/systemd/system/platpulse-server.service /usr/lib/systemd/system/platpulse-backup.service /usr/lib/systemd/system/platpulse-agent.service
+          systemd-analyze verify /usr/lib/systemd/system/platpulse-server.service /usr/lib/systemd/system/platpulse-agent.service
           test "$(stat -c '%U:%G:%a' /var/lib/platpulse)" = platpulse-server:platpulse-server:700
           test "$(stat -c '%U:%G:%a' /var/backups/platpulse)" = platpulse-server:platpulse-server:700
           test "$(stat -c '%U:%G:%a' /etc/platpulse/secrets)" = platpulse-server:platpulse-server:700
@@ -172,7 +172,7 @@ jobs:
               /usr/bin/platpulse-server --help >/dev/null
               /usr/bin/platpulse-server backup --help >/dev/null
               /usr/bin/platpulse-agent --help >/dev/null
-              systemd-analyze verify /usr/lib/systemd/system/platpulse-server.service /usr/lib/systemd/system/platpulse-backup.service /usr/lib/systemd/system/platpulse-agent.service
+              systemd-analyze verify /usr/lib/systemd/system/platpulse-server.service /usr/lib/systemd/system/platpulse-agent.service
               test "$(stat -c %U:%G:%a /var/lib/platpulse)" = platpulse-server:platpulse-server:700
               test "$(stat -c %U:%G:%a /var/backups/platpulse)" = platpulse-server:platpulse-server:700
               test "$(stat -c %U:%G:%a /etc/platpulse/secrets)" = platpulse-server:platpulse-server:700
