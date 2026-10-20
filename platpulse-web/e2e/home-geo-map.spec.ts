@@ -636,8 +636,13 @@ test.describe('Home compact overview and Peer country map (issue #133)', () => {
     expect(intersects, 'the statistics never sit over the map band').toBe(false)
     expect(statsBox.y, 'the summary starts below the logo bar').toBeGreaterThanOrEqual(headerBox.height - 1)
     expect(mapBox.x, 'the map keeps the right column, clear of the statistics').toBeGreaterThan(statsBox.x + statsBox.width)
+    // #246: the three Node counters fill the first row and the Balance opens
+    // the second, so the four readings span all three columns over two rows.
     const columns = new Set(facts.map((fact) => Math.round(fact.box.x))).size
-    expect(columns, 'the four status counters keep two of the three columns').toBe(2)
+    expect(columns, 'the three counters fill the first row of three columns').toBe(3)
+    const rows = new Set(facts.map((fact) => Math.round(fact.box.y))).size
+    expect(rows, 'the Balance opens the second row').toBe(2)
+    expect(facts.map((fact) => fact.label)).toEqual(['Active Nodes', 'Healthy Nodes', 'Attention', 'Balance'])
 
     // The canvas paints a real world projection rather than a letterboxed band.
     const world = await worldBox(page)
