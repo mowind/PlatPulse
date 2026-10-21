@@ -1938,7 +1938,7 @@ describe('App shell with private Home', () => {
     render(<App />)
     // Settle the shared router at Home/root first: earlier tests left the
     // router on /admin, and an anonymous Guest there now gets the stable
-    // Owner-required panel instead of a redirect (design §12.1).
+    // Owner-required panel instead of a redirect (design §10.2).
     await act(async () => {
       window.history.pushState({}, '', '/')
       window.dispatchEvent(new PopStateEvent('popstate'))

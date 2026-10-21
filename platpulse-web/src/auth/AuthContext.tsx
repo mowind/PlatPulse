@@ -39,7 +39,7 @@ interface AuthContextValue {
    * True once this app instance ever held a session (initial check or
    * login). Lets protected routes distinguish a signed-out user, who is
    * guided back to the login page, from a never-authenticated Guest, who
-   * gets the stable non-leaking Owner-required panel (design §12.1).
+   * gets the stable non-leaking Owner-required panel (design §10.2).
    */
   hadSession: boolean
   login: (username: string, password: string) => Promise<void>

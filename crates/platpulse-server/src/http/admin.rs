@@ -44,7 +44,7 @@ pub(crate) fn mutation_error(
         .into_response()
 }
 
-/// Shared browser mutation trust boundary (design §12.4, webui.md §6.4): a
+/// Shared browser mutation trust boundary (design §10.2, webui.md §6.4): a
 /// JSON content type, a same-origin request, and the session CSRF header are
 /// all required before any Admin mutation parses its body. A malformed body
 /// must never bypass these checks or produce a framework-generated error
@@ -93,7 +93,6 @@ async fn admin_events(
     Sse::new(state.admin_realtime().stream_with_session(
         cursor,
         state.database(),
-        state.auth().clone(),
         _session.0.session_id.clone(),
         _session.0.role.clone(),
     ))
@@ -5658,7 +5657,7 @@ async fn state_history_response(
     };
     // Owner-only Node history is per-session data: it must never be stored by
     // an intermediary or a browser cache and replayed to another session
-    // (design §12.4, webui.md §6.4).
+    // (design §10.2, webui.md §6.4).
     no_store(
         Json(AdminStateHistoryResponse {
             node_id: node_id.to_owned(),
@@ -6338,7 +6337,7 @@ async fn metric_history_response(
     };
     // Owner-only Node history is per-session data: it must never be stored by
     // an intermediary or a browser cache and replayed to another session
-    // (design §12.4, webui.md §6.4).
+    // (design §10.2, webui.md §6.4).
     no_store(
         Json(AdminMetricHistoryResponse {
             scope_kind: identity.scope_kind.to_owned(),

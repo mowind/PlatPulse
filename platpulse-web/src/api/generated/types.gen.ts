@@ -3446,7 +3446,7 @@ export type PeopleResponse = {
 
 /**
  * One allowlisted Person row. Passwords, hashes, and credentials never
- * leave the Server (design §12.1: People review is safe on ordinary
+ * leave the Server (design §10.2: People review is safe on ordinary
  * screens).
  */
 export type Person = {
@@ -4609,7 +4609,7 @@ export type RevokeResponse = {
  * Explicit JSON body for Session revoke mutations. The revoke carries no
  * parameters, but declaring a body keeps the browser trust boundary
  * uniform: every Admin mutation is a JSON request with the synchronizer
- * CSRF header (design §12.4), including bodyless ones.
+ * CSRF header (design §10.2), including bodyless ones.
  */
 export type RevokeSessionRequest = {
     [key: string]: unknown;
@@ -4761,9 +4761,10 @@ export type RuleVersionDto = {
 };
 
 /**
- * One coarse, non-sensitive Session row (design §12.3): creation, last
+ * One coarse, non-sensitive Session row (design §10.2): creation, last
  * activity, expiry, and a coarse client hint — never the token, a full
- * User-Agent, or a raw IP.
+ * User-Agent, or a raw IP. `lastSeenAt` is activity evidence only;
+ * `expiresAt` alone decides when the Session ends.
  */
 export type SessionItem = {
     clientHint: string;
@@ -4788,7 +4789,7 @@ export type SessionProjection = {
 
 /**
  * Non-sensitive session projection plus the synchronizer CSRF token
- * (design §12.3/§12.4). Fields are camelCase per the browser wire rule
+ * (design §10.2). Fields are camelCase per the browser wire rule
  * (§13.3); timestamps are RFC 3339 UTC.
  */
 export type SessionResponse = {

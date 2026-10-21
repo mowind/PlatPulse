@@ -28,7 +28,7 @@ const SESSION_PRIVACY_NOTE =
 const TIME_TD = cn(ADMIN_TD, 'min-w-0 tabular-nums xl:whitespace-nowrap')
 
 /**
- * PAGE-ACCESS-SESSIONS (design §12.3, issue #47): coarse, non-sensitive
+ * PAGE-ACCESS-SESSIONS (design §10.2, issue #47): coarse, non-sensitive
  * Session review and revoke. Only creation, last activity, expiry, and a
  * coarse client hint are shown — never tokens, full User-Agents, or raw
  * IPs. Revoking a Session closes its bound Admin/Public streams and sends

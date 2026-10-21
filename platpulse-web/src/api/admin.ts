@@ -1695,7 +1695,7 @@ export async function revokeSessionEntry(
         path: { session_id: sessionId },
         // The revoke carries no parameters, but the declared JSON body
         // keeps every Admin mutation on the same trust boundary (design
-        // §12.4): JSON content type plus the synchronizer CSRF header.
+        // §10.2): JSON content type plus the synchronizer CSRF header.
         body: {},
         headers: { 'X-CSRF-Token': csrfToken },
       }),

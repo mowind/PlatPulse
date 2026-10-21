@@ -697,14 +697,14 @@ export const cancelOperation = <ThrowOnError extends boolean = false>(options: O
 export const overview = <ThrowOnError extends boolean = false>(options?: Options<OverviewData, ThrowOnError>): RequestResult<OverviewResponses, unknown, ThrowOnError> => (options?.client ?? client).get<OverviewResponses, unknown, ThrowOnError>({ url: '/api/admin/v1/overview', ...options });
 
 /**
- * Owner-only People listing (design §12.1): every human principal with
+ * Owner-only People listing (design §10.2): every human principal with
  * role, disabled state, and active Session count. Passwords and
  * credentials are never projected.
  */
 export const peopleList = <ThrowOnError extends boolean = false>(options?: Options<PeopleListData, ThrowOnError>): RequestResult<PeopleListResponses, PeopleListErrors, ThrowOnError> => (options?.client ?? client).get<PeopleListResponses, PeopleListErrors, ThrowOnError>({ url: '/api/admin/v1/people', ...options });
 
 /**
- * Owner-only user creation (design §12.1: Owners may create accounts; no
+ * Owner-only user creation (design §10.2: Owners may create accounts; no
  * public registration). The password is hashed with Argon2id and never
  * stored or returned in plaintext; the Audit row carries only the
  * username and role.
@@ -719,7 +719,7 @@ export const createPerson = <ThrowOnError extends boolean = false>(options: Opti
 });
 
 /**
- * Owner-only password reset (design §12.1: Owners may reset accounts).
+ * Owner-only password reset (design §10.2: Owners may reset accounts).
  * The new password is hashed and never returned; all Sessions of the
  * user are revoked immediately so old state cannot continue.
  */
@@ -733,7 +733,7 @@ export const resetPersonPassword = <ThrowOnError extends boolean = false>(option
 });
 
 /**
- * Owner-only role change (design §12.1/§12.3). The final valid Owner is
+ * Owner-only role change (design §10.2). The final valid Owner is
  * protected; a role change revokes every Session of the affected user
  * immediately, which closes their bound Public/Admin streams on the next
  * revalidation.
@@ -748,7 +748,7 @@ export const setPersonRole = <ThrowOnError extends boolean = false>(options: Opt
 });
 
 /**
- * Owner-only enable/disable (design §12.1). The final valid Owner cannot
+ * Owner-only enable/disable (design §10.2). The final valid Owner cannot
  * be disabled; disabling a user revokes all of their Sessions
  * immediately, which closes their bound streams.
  */
@@ -854,14 +854,14 @@ export const retentionRun = <ThrowOnError extends boolean = false>(options: Opti
 });
 
 /**
- * Owner-only coarse Session listing (design §12.3). Only active
+ * Owner-only coarse Session listing (design §10.2). Only active
  * (non-revoked) Sessions appear, with creation/last-activity/expiry and
  * the coarse client hint — never tokens, full User-Agents, or raw IPs.
  */
 export const sessionsList = <ThrowOnError extends boolean = false>(options?: Options<SessionsListData, ThrowOnError>): RequestResult<SessionsListResponses, SessionsListErrors, ThrowOnError> => (options?.client ?? client).get<SessionsListResponses, SessionsListErrors, ThrowOnError>({ url: '/api/admin/v1/sessions', ...options });
 
 /**
- * Owner-only "revoke my other Sessions" (design §12.3: keeping the
+ * Owner-only "revoke my other Sessions" (design §10.2: keeping the
  * current Session and revoking all others are distinct operations).
  */
 export const revokeOtherSessions = <ThrowOnError extends boolean = false>(options: Options<RevokeOtherSessionsData, ThrowOnError>): RequestResult<RevokeOtherSessionsResponses, RevokeOtherSessionsErrors, ThrowOnError> => (options.client ?? client).post<RevokeOtherSessionsResponses, RevokeOtherSessionsErrors, ThrowOnError>({
@@ -874,7 +874,7 @@ export const revokeOtherSessions = <ThrowOnError extends boolean = false>(option
 });
 
 /**
- * Owner-only Session revoke (design §12.3: an Owner may revoke any
+ * Owner-only Session revoke (design §10.2: an Owner may revoke any
  * Session). The revoked user's bound Public/Admin streams close on their
  * next revalidation, and their tabs receive the access-generation
  * transition without any token or DTO being broadcast.
@@ -940,7 +940,7 @@ export const publicEvents = <ThrowOnError extends boolean = false>(options?: Opt
 
 /**
  * Login with strict configured-Origin validation, an independent rate
- * limit, and Session ID rotation (design §12.2–§12.4).
+ * limit, and Session ID rotation (design §10.2).
  */
 export const loginHandler = <ThrowOnError extends boolean = false>(options: Options<LoginHandlerData, ThrowOnError>): RequestResult<LoginHandlerResponses, LoginHandlerErrors, ThrowOnError> => (options.client ?? client).post<LoginHandlerResponses, LoginHandlerErrors, ThrowOnError>({
     url: '/api/public/v1/login',
@@ -952,7 +952,7 @@ export const loginHandler = <ThrowOnError extends boolean = false>(options: Opti
 });
 
 /**
- * Logout: revoke the current Session and clear the cookie (design §12.3).
+ * Logout: revoke the current Session and clear the cookie (design §10.2).
  * Revocation and its audit row commit in one transaction; a database
  * failure keeps the session valid and returns 500 instead of pretending
  * the user signed out.
@@ -979,8 +979,9 @@ export const publicNodePeerHistory = <ThrowOnError extends boolean = false>(opti
 export const publicRewardWallet = <ThrowOnError extends boolean = false>(options?: Options<PublicRewardWalletData, ThrowOnError>): RequestResult<PublicRewardWalletResponses, PublicRewardWalletErrors, ThrowOnError> => (options?.client ?? client).get<PublicRewardWalletResponses, PublicRewardWalletErrors, ThrowOnError>({ url: '/api/public/v1/reward-wallet', ...options });
 
 /**
- * Current session projection and CSRF token for the WebUI (design §12.4).
- * `last_seen_at` is refreshed at most once per throttle window.
+ * Current session projection and CSRF token for the WebUI (design §10.2).
+ * `last_seen_at` is refreshed at most once per throttle window; it is
+ * activity evidence only and never decides when the Session expires.
  */
 export const sessionHandler = <ThrowOnError extends boolean = false>(options?: Options<SessionHandlerData, ThrowOnError>): RequestResult<SessionHandlerResponses, SessionHandlerErrors, ThrowOnError> => (options?.client ?? client).get<SessionHandlerResponses, SessionHandlerErrors, ThrowOnError>({ url: '/api/public/v1/session', ...options });
 

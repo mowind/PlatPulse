@@ -62,7 +62,7 @@ function RequireSession({ children }: { children: ReactNode }) {
   const { status, accessLost } = useAuth()
   const location = useLocation()
   // Anonymous Home (Guest) is allowed only when the Owner explicitly
-  // enabled it (design §12.1); the Server still enforces every read. The
+  // enabled it (design §10.2); the Server still enforces every read. The
   // setting is cached and re-checked on Public resets by the Home layout.
   const [siteAccessMode, setSiteAccessMode] = useState<'public' | 'private' | null>(null)
 
@@ -114,7 +114,7 @@ function RequireOwner({ children }: { children: ReactNode }) {
       )
     }
     // Never-authenticated Guests never access Admin, even when anonymous
-    // Home is enabled (design §12.1: Guest uses only the Public
+    // Home is enabled (design §10.2: Guest uses only the Public
     // Projection; webui.md §3.2). The outcome is the same stable,
     // non-leaking panel a Viewer sees.
     return <OwnerRequiredPanel />

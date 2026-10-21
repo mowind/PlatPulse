@@ -5007,7 +5007,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Owner-only People listing (design §12.1): every human principal with\nrole, disabled state, and active Session count. Passwords and\ncredentials are never projected.",
+        "summary": "Owner-only People listing (design §10.2): every human principal with\nrole, disabled state, and active Session count. Passwords and\ncredentials are never projected.",
         "operationId": "people_list",
         "responses": {
           "200": {
@@ -5046,7 +5046,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Owner-only user creation (design §12.1: Owners may create accounts; no\npublic registration). The password is hashed with Argon2id and never\nstored or returned in plaintext; the Audit row carries only the\nusername and role.",
+        "summary": "Owner-only user creation (design §10.2: Owners may create accounts; no\npublic registration). The password is hashed with Argon2id and never\nstored or returned in plaintext; the Audit row carries only the\nusername and role.",
         "operationId": "create_person",
         "requestBody": {
           "content": {
@@ -5117,7 +5117,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Owner-only password reset (design §12.1: Owners may reset accounts).\nThe new password is hashed and never returned; all Sessions of the\nuser are revoked immediately so old state cannot continue.",
+        "summary": "Owner-only password reset (design §10.2: Owners may reset accounts).\nThe new password is hashed and never returned; all Sessions of the\nuser are revoked immediately so old state cannot continue.",
         "operationId": "reset_person_password",
         "parameters": [
           {
@@ -5192,7 +5192,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Owner-only role change (design §12.1/§12.3). The final valid Owner is\nprotected; a role change revokes every Session of the affected user\nimmediately, which closes their bound Public/Admin streams on the next\nrevalidation.",
+        "summary": "Owner-only role change (design §10.2). The final valid Owner is\nprotected; a role change revokes every Session of the affected user\nimmediately, which closes their bound Public/Admin streams on the next\nrevalidation.",
         "operationId": "set_person_role",
         "parameters": [
           {
@@ -5284,7 +5284,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Owner-only enable/disable (design §12.1). The final valid Owner cannot\nbe disabled; disabling a user revokes all of their Sessions\nimmediately, which closes their bound streams.",
+        "summary": "Owner-only enable/disable (design §10.2). The final valid Owner cannot\nbe disabled; disabling a user revokes all of their Sessions\nimmediately, which closes their bound streams.",
         "operationId": "set_person_status",
         "parameters": [
           {
@@ -5773,7 +5773,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Owner-only coarse Session listing (design §12.3). Only active\n(non-revoked) Sessions appear, with creation/last-activity/expiry and\nthe coarse client hint — never tokens, full User-Agents, or raw IPs.",
+        "summary": "Owner-only coarse Session listing (design §10.2). Only active\n(non-revoked) Sessions appear, with creation/last-activity/expiry and\nthe coarse client hint — never tokens, full User-Agents, or raw IPs.",
         "operationId": "sessions_list",
         "responses": {
           "200": {
@@ -5814,7 +5814,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Owner-only \"revoke my other Sessions\" (design §12.3: keeping the\ncurrent Session and revoking all others are distinct operations).",
+        "summary": "Owner-only \"revoke my other Sessions\" (design §10.2: keeping the\ncurrent Session and revoking all others are distinct operations).",
         "operationId": "revoke_other_sessions",
         "requestBody": {
           "content": {
@@ -5865,7 +5865,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Owner-only Session revoke (design §12.3: an Owner may revoke any\nSession). The revoked user's bound Public/Admin streams close on their\nnext revalidation, and their tabs receive the access-generation\ntransition without any token or DTO being broadcast.",
+        "summary": "Owner-only Session revoke (design §10.2: an Owner may revoke any\nSession). The revoked user's bound Public/Admin streams close on their\nnext revalidation, and their tabs receive the access-generation\ntransition without any token or DTO being broadcast.",
         "operationId": "revoke_session",
         "parameters": [
           {
@@ -7039,7 +7039,7 @@
         "tags": [
           "public"
         ],
-        "summary": "Login with strict configured-Origin validation, an independent rate\nlimit, and Session ID rotation (design §12.2–§12.4).",
+        "summary": "Login with strict configured-Origin validation, an independent rate\nlimit, and Session ID rotation (design §10.2).",
         "operationId": "login_handler",
         "requestBody": {
           "content": {
@@ -7110,7 +7110,7 @@
         "tags": [
           "public"
         ],
-        "summary": "Logout: revoke the current Session and clear the cookie (design §12.3).\nRevocation and its audit row commit in one transaction; a database\nfailure keeps the session valid and returns 500 instead of pretending\nthe user signed out.",
+        "summary": "Logout: revoke the current Session and clear the cookie (design §10.2).\nRevocation and its audit row commit in one transaction; a database\nfailure keeps the session valid and returns 500 instead of pretending\nthe user signed out.",
         "operationId": "logout_handler",
         "responses": {
           "204": {
@@ -7542,7 +7542,7 @@
         "tags": [
           "public"
         ],
-        "summary": "Current session projection and CSRF token for the WebUI (design §12.4).\n`last_seen_at` is refreshed at most once per throttle window.",
+        "summary": "Current session projection and CSRF token for the WebUI (design §10.2).\n`last_seen_at` is refreshed at most once per throttle window; it is\nactivity evidence only and never decides when the Session expires.",
         "operationId": "session_handler",
         "responses": {
           "200": {
@@ -15825,7 +15825,7 @@
       },
       "Person": {
         "type": "object",
-        "description": "One allowlisted Person row. Passwords, hashes, and credentials never\nleave the Server (design §12.1: People review is safe on ordinary\nscreens).",
+        "description": "One allowlisted Person row. Passwords, hashes, and credentials never\nleave the Server (design §10.2: People review is safe on ordinary\nscreens).",
         "required": [
           "userId",
           "username",
@@ -18254,7 +18254,7 @@
       },
       "RevokeSessionRequest": {
         "type": "object",
-        "description": "Explicit JSON body for Session revoke mutations. The revoke carries no\nparameters, but declaring a body keeps the browser trust boundary\nuniform: every Admin mutation is a JSON request with the synchronizer\nCSRF header (design §12.4), including bodyless ones."
+        "description": "Explicit JSON body for Session revoke mutations. The revoke carries no\nparameters, but declaring a body keeps the browser trust boundary\nuniform: every Admin mutation is a JSON request with the synchronizer\nCSRF header (design §10.2), including bodyless ones."
       },
       "RevokeSessionResponse": {
         "type": "object",
@@ -18783,7 +18783,7 @@
       },
       "SessionItem": {
         "type": "object",
-        "description": "One coarse, non-sensitive Session row (design §12.3): creation, last\nactivity, expiry, and a coarse client hint — never the token, a full\nUser-Agent, or a raw IP.",
+        "description": "One coarse, non-sensitive Session row (design §10.2): creation, last\nactivity, expiry, and a coarse client hint — never the token, a full\nUser-Agent, or a raw IP. `lastSeenAt` is activity evidence only;\n`expiresAt` alone decides when the Session ends.",
         "required": [
           "sessionId",
           "userId",
@@ -18858,7 +18858,7 @@
       },
       "SessionResponse": {
         "type": "object",
-        "description": "Non-sensitive session projection plus the synchronizer CSRF token\n(design §12.3/§12.4). Fields are camelCase per the browser wire rule\n(§13.3); timestamps are RFC 3339 UTC.",
+        "description": "Non-sensitive session projection plus the synchronizer CSRF token\n(design §10.2). Fields are camelCase per the browser wire rule\n(§13.3); timestamps are RFC 3339 UTC.",
         "required": [
           "session",
           "csrfToken"

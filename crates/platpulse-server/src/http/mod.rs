@@ -8,7 +8,7 @@
 //! P1-01 adds human authentication: public routes (except login) require a
 //! valid human Session because Guest access is disabled by default, Admin
 //! additionally requires the Owner role, and the Agent group is refused
-//! with `setup_required` until the first Owner exists (design §12.2).
+//! with `setup_required` until the first Owner exists (design §10.2).
 
 pub(crate) mod access;
 pub(crate) mod admin;
@@ -1176,7 +1176,7 @@ fn stamp_client_ip(request: &mut Request) {
 }
 
 /// Human session guard for the Admin group: every request must present a
-/// valid session cookie (design §12.2: Guest disabled by default; §13.1:
+/// valid session cookie (design §10.2: Guest disabled by default; §13.1:
 /// Admin requires a Viewer/Owner Session and Owner role on top).
 pub(crate) async fn human_session_guard(
     State(state): State<AppState>,
@@ -1190,7 +1190,7 @@ pub(crate) async fn human_session_guard(
 /// `POST /login` and the anonymous `/access` probe requires a valid
 /// session cookie. When anonymous Home is enabled, GET/HEAD requests of
 /// the read projection routes are additionally allowed for Guests
-/// (design §12.1, §13.1).
+/// (design §10.2, §13.1).
 pub(crate) async fn public_session_guard(
     State(state): State<AppState>,
     request: Request,
@@ -3612,7 +3612,7 @@ mod tests {
         .await
         .unwrap();
 
-        // The session token lives only in the cookie (design §12.3); the
+        // The session token lives only in the cookie (design §10.2); the
         // Server has no logging layer, and no code path ever places a
         // token in a URL. The assertions below pin the remaining surface:
         // JSON bodies — login, 401/404 envelopes, and the Viewer 403.
@@ -3738,7 +3738,7 @@ mod tests {
 
     /// Enabling anonymous Home must allow anonymous GETs of the read
     /// projection routes, never session-bearing routes; disabling restores
-    /// the session requirement immediately (design §12.1, issue #47).
+    /// the session requirement immediately (design §10.2, issue #47).
     #[tokio::test]
     async fn guest_reads_are_allowed_only_when_anonymous_home_is_enabled() {
         let (_, _, state) = test_state().await;

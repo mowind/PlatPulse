@@ -2,7 +2,7 @@
 # Boot a development-mode platpulse-server with a fresh state directory and
 # one Owner plus one Viewer for the Playwright suite. The suite runs against
 # the real Server serving the production WebUI build, so login and the
-# Home/Admin shells are exercised end to end (design §12.1, §12.2, §14.1).
+# Home/Admin shells are exercised end to end (design §10.2, §14.1).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

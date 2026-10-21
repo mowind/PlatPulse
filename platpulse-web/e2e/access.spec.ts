@@ -30,7 +30,7 @@ const ALICE_PASSWORD = 'platpulse-e2e-alice-2026'
  * the session-revocation policy are unchanged. The mutation runs inside
  * the page (like createUserAs) so the browser sends a same-origin Origin
  * header; the Server's mutation guard requires it alongside the CSRF
- * token (design §12.4). */
+ * token (design §10.2). */
 async function setPersonRole(page: Page, username: string, role: string): Promise<void> {
   const csrf = await page.evaluate(async () => {
     const response = await fetch('/api/public/v1/session')

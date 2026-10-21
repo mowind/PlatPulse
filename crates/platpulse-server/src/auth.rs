@@ -1,4 +1,4 @@
-//! Human authentication (design §12): Argon2id passwords, DB-backed opaque
+//! Human authentication (design §10.2): Argon2id passwords, DB-backed opaque
 //! sessions keyed by HMAC digests, synchronizer CSRF tokens, the login rate
 //! limiter, and the identity mutations that create the first Owner.
 //!
@@ -27,7 +27,7 @@ use time::{OffsetDateTime, UtcOffset};
 use crate::database::ServerDatabase;
 use crate::secrets::Pepper;
 
-/// Production session cookie name (design §12.3): `__Host-` prefix requires
+/// Production session cookie name (design §10.2): `__Host-` prefix requires
 /// `Secure`, `Path=/`, and no `Domain`.
 pub const SESSION_COOKIE_PRODUCTION: &str = "__Host-platpulse_session";
 
@@ -41,9 +41,9 @@ pub const SESSION_TOKEN_PREFIX: &str = "pp_session_";
 /// Secret part of the session token: 256 bits, hex-encoded.
 pub const SESSION_SECRET_BYTES: usize = 32;
 
-/// Default idle timeout for human sessions (design §12.3).
-pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(12 * 60 * 60);
-/// Default absolute lifetime for human sessions (design §12.3).
+/// Absolute lifetime for human sessions (design §10.2). This is the only
+/// time boundary on a Session: there is no idle timeout, so a dashboard left
+/// open without interaction stays signed in until `expires_at`.
 pub const DEFAULT_ABSOLUTE_LIFETIME: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// Minimum enforced human password length.
 pub const MIN_PASSWORD_LENGTH: usize = 12;
@@ -55,7 +55,8 @@ pub const LOGIN_MAX_ATTEMPTS: u32 = 5;
 /// Fixed window for the login rate limiter (design §19.4).
 pub const LOGIN_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(15 * 60);
 
-/// `last_seen_at` is written at most this often (design §12.3).
+/// `last_seen_at` is written at most this often (design §10.2). It is
+/// activity evidence shown to Owners, never an input to Session validity.
 pub const SESSION_ACTIVITY_THROTTLE: Duration = Duration::from_secs(60);
 
 /// `server_settings` key controlling the Server-wide Site Access Mode.
@@ -113,12 +114,12 @@ pub async fn authorization_generation(db: &ServerDatabase) -> Result<i64, sqlx::
         .unwrap_or(0))
 }
 
-/// Whether at least one enabled Owner exists (design §12.2).
+/// Whether at least one enabled Owner exists (design §10.2).
 pub async fn has_owner(db: &ServerDatabase) -> Result<bool, sqlx::Error> {
     Ok(count_enabled_owners(db.pool()).await? > 0)
 }
 
-/// Count enabled Owners (design §12.1: the final valid Owner cannot be
+/// Count enabled Owners (design §10.2: the final valid Owner cannot be
 /// disabled or demoted, so the mutation path must know the exact count
 /// before it changes a role or disabled state). Accepts any SQLx executor
 /// so the count runs inside the same transaction as the mutation.
@@ -132,28 +133,26 @@ where
 }
 
 /// Authenticated-session policy: cookie name/attributes, strict origin, and
-/// token lifetimes.
+/// the Session's absolute lifetime.
 #[derive(Debug, Clone)]
 pub struct AuthConfig {
     pub pepper: Pepper,
     pub cookie_name: String,
     pub cookie_secure: bool,
-    /// Exact origin login requests must present (design §12.4).
+    /// Exact origin login requests must present (design §10.2).
     pub origin: String,
-    pub idle_timeout: Duration,
     pub absolute_lifetime: Duration,
 }
 
 impl AuthConfig {
     /// Production policy: `__Host-platpulse_session`, `Secure`, strict
-    /// origin, default lifetimes.
+    /// origin, default absolute lifetime.
     pub fn production(pepper: Pepper, origin: String) -> Self {
         Self {
             pepper,
             cookie_name: SESSION_COOKIE_PRODUCTION.to_owned(),
             cookie_secure: true,
             origin,
-            idle_timeout: DEFAULT_IDLE_TIMEOUT,
             absolute_lifetime: DEFAULT_ABSOLUTE_LIFETIME,
         }
     }
@@ -167,13 +166,12 @@ impl AuthConfig {
             cookie_name: SESSION_COOKIE_DEVELOPMENT.to_owned(),
             cookie_secure: false,
             origin,
-            idle_timeout: DEFAULT_IDLE_TIMEOUT,
             absolute_lifetime: DEFAULT_ABSOLUTE_LIFETIME,
         }
     }
 
     /// Strict Origin validation for login: the request must present the
-    /// configured origin exactly (design §12.4).
+    /// configured origin exactly (design §10.2).
     pub fn origin_matches(&self, request_origin: Option<&HeaderValue>) -> bool {
         request_origin.is_some_and(|value| value.as_bytes() == self.origin.as_bytes())
     }
@@ -194,23 +192,23 @@ pub struct SessionInfo {
 }
 
 /// Return whether the session remains valid for a long-lived stream.
-/// This deliberately rechecks revocation, expiry, idle timeout, user
+/// This deliberately rechecks revocation, absolute-lifetime expiry, user
 /// disablement, and role changes instead of trusting connect-time auth.
+/// Inactivity (`last_seen_at`) never ends a Session.
 pub async fn session_is_current(
     db: &ServerDatabase,
     session_id: &str,
     expected_role: Option<&str>,
-    config: &AuthConfig,
 ) -> bool {
-    let row = sqlx::query_as::<_, (String, String, Option<String>, String, String)>(
-            "SELECT s.last_seen_at, s.expires_at, s.revoked_at, u.role, COALESCE(u.disabled_at, '') FROM sessions s JOIN users u ON u.user_id=s.user_id WHERE s.session_id=?",
+    let row = sqlx::query_as::<_, (String, Option<String>, String, String)>(
+            "SELECT s.expires_at, s.revoked_at, u.role, COALESCE(u.disabled_at, '') FROM sessions s JOIN users u ON u.user_id=s.user_id WHERE s.session_id=?",
         )
         .bind(session_id)
         .fetch_optional(db.pool())
         .await
         .ok()
         .flatten();
-    let Some((last_seen, expires, revoked, role, disabled)) = row else {
+    let Some((expires, revoked, role, disabled)) = row else {
         return false;
     };
     if revoked.is_some() || !disabled.is_empty() || expected_role.is_some_and(|value| role != value)
@@ -218,11 +216,7 @@ pub async fn session_is_current(
         return false;
     }
     let now = now_utc();
-    let expires_at = parse_rfc3339(&expires).unwrap_or(now);
-    let last_seen_at = parse_rfc3339(&last_seen).unwrap_or(now);
-    let idle_cutoff =
-        last_seen_at + time::Duration::try_from(config.idle_timeout).expect("idle timeout fits");
-    if now > expires_at || now > idle_cutoff {
+    if now > session_expiry(&expires) {
         let _ = expire_session(db, session_id).await;
         return false;
     }
@@ -234,9 +228,9 @@ pub enum SessionError {
     /// No cookie or a token that cannot be validated (unknown, malformed,
     /// digest mismatch, revoked).
     Invalid,
-    /// The session is past its absolute lifetime or idle timeout.
+    /// The session is past its absolute lifetime (`expires_at`).
     Expired,
-    /// The owning user has been disabled (design §12.1).
+    /// The owning user has been disabled (design §10.2).
     UserDisabled,
 }
 
@@ -356,7 +350,7 @@ pub fn new_session_token() -> (String, String) {
 }
 
 /// Derive a coarse, non-sensitive client hint from a User-Agent header
-/// (design §12.3: the Server never stores the full User-Agent or a raw IP;
+/// (design §10.2: the Server never stores the full User-Agent or a raw IP;
 /// Session review shows only a coarse browser/platform family). Unknown or
 /// missing agents read as `Unknown`; no version or identifier is kept.
 pub fn client_hint_from_ua(user_agent: Option<&str>) -> String {
@@ -399,7 +393,7 @@ fn split_token(token: &str) -> Option<(&str, &str)> {
 }
 
 /// Derive the synchronizer CSRF token from the session token. Rotating the
-/// session token therefore rotates the CSRF token (design §12.4).
+/// session token therefore rotates the CSRF token (design §10.2).
 fn derive_csrf_token(config: &AuthConfig, full_token: &str) -> String {
     let mut message = b"platpulse-csrf:".to_vec();
     message.extend_from_slice(full_token.as_bytes());
@@ -436,7 +430,7 @@ pub fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     })
 }
 
-/// Build a `Set-Cookie` value for the session cookie (design §12.3/§19.1).
+/// Build a `Set-Cookie` value for the session cookie (design §10.2/§19.1).
 pub fn session_cookie_header(name: &str, value: &str, secure: bool) -> String {
     let mut header = format!("{name}={value}; Path=/; HttpOnly; SameSite=Lax");
     if secure {
@@ -471,7 +465,7 @@ async fn find_user_by_username(
     .await
 }
 
-/// Revoke every active Session of one user (design §12.1/§12.3: password,
+/// Revoke every active Session of one user (design §10.2: password,
 /// role, and disabled changes invalidate the related Sessions immediately).
 /// Returns the number of Sessions actually revoked.
 pub async fn revoke_user_sessions(
@@ -647,7 +641,7 @@ async fn insert_human_user(
     Ok(user_id)
 }
 
-/// A human principal role provisioned from the CLI (design §12.1). Bundles
+/// A human principal role provisioned from the CLI (design §10.2). Bundles
 /// the database role value with its audit event kind so the pairing can
 /// never diverge; the `users` CHECK constraint remains the backstop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -672,7 +666,7 @@ impl HumanRole {
     }
 }
 
-/// Create an Owner from the CLI (design §12.2). Same provisioning seam as
+/// Create an Owner from the CLI (design §10.2). Same provisioning seam as
 /// Viewer creation; only the role and audit event differ.
 pub async fn create_owner(
     db: &ServerDatabase,
@@ -684,7 +678,7 @@ pub async fn create_owner(
         .map(|_| ())
 }
 
-/// Create a Viewer from the CLI (design §12.1/§13.1): a human principal
+/// Create a Viewer from the CLI (design §10.2/§13.1): a human principal
 /// that may use Home but has no administrative authority. The password is
 /// hashed by the caller; the user row and its `viewer_created` audit event
 /// commit atomically, matching the Owner baseline.
@@ -847,11 +841,8 @@ pub async fn authenticate_token(
     }
 
     let now = now_utc();
-    let expires_at = parse_rfc3339(&row.expires_at).unwrap_or(now);
+    let expires_at = session_expiry(&row.expires_at);
     let last_seen_at = parse_rfc3339(&row.last_seen_at).unwrap_or(now);
-    let idle_cutoff = last_seen_at
-        + time::Duration::try_from(config.idle_timeout)
-            .expect("idle timeout fits in time::Duration");
     let expected_digest = config.pepper.hmac_digest(full_token.as_bytes());
     if !bool::from(expected_digest.ct_eq(&row.token_digest)) {
         return Err(SessionError::Invalid);
@@ -862,7 +853,7 @@ pub async fn authenticate_token(
         return Err(SessionError::Invalid);
     }
 
-    if now > expires_at || now > idle_cutoff {
+    if now > expires_at {
         expire_session(db, &row.session_id)
             .await
             .map_err(|_| SessionError::Invalid)?;
@@ -878,6 +869,13 @@ pub async fn authenticate_token(
         expires_at,
         csrf_token,
     })
+}
+
+/// Parse a stored `expires_at`. The absolute lifetime is the only time
+/// boundary on a Session, so an unreadable value fails closed: it is treated
+/// as already past, never as "now" (which would make it never expire).
+fn session_expiry(expires_at: &str) -> OffsetDateTime {
+    parse_rfc3339(expires_at).unwrap_or(OffsetDateTime::UNIX_EPOCH)
 }
 
 /// Mark one expired session revoked and advance authorization generation once.
@@ -901,7 +899,7 @@ async fn expire_session(db: &ServerDatabase, session_id: &str) -> Result<(), sql
 /// Login: verify credentials and create a fresh session. Returns the new
 /// session and its full `pp_session_…` token (placed in the cookie; never
 /// stored). If the request presented an existing valid session token, that
-/// session is revoked so the Session ID rotates on login (design §12.3).
+/// session is revoked so the Session ID rotates on login (design §10.2).
 pub async fn login(
     db: &ServerDatabase,
     config: &AuthConfig,
@@ -1169,7 +1167,7 @@ mod tests {
         let config = test_config(dir.path());
 
         // A Viewer alone must not satisfy the setup gate: the first human
-        // principal is the Owner (design §12.2).
+        // principal is the Owner (design §10.2).
         let hash = hash_password(b"correct horse battery").unwrap();
         create_viewer(&db, "viewer1", &hash).await.unwrap();
         assert!(!has_owner(&db).await.unwrap());
@@ -1202,7 +1200,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_survives_database_reopen_like_a_server_restart() {
-        // Sessions are DB-backed opaque tokens (design §12.3): a normal
+        // Sessions are DB-backed opaque tokens (design §10.2): a normal
         // Server restart (close the database, reopen the same file, reload
         // the pepper from disk) must keep a valid Session valid without
         // any re-login.
@@ -1450,6 +1448,97 @@ mod tests {
             .unwrap()
             .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn session_inactive_for_hours_stays_valid_until_its_absolute_lifetime() {
+        let dir = tempdir().unwrap();
+        let db = test_db(dir.path()).await;
+        create_test_owner(&db).await;
+        let config = test_config(dir.path());
+
+        // A dashboard left open on a wall: the last activity is 13 hours
+        // old, but the absolute lifetime still has 6 days to run. There is
+        // no idle boundary, so the Session must remain current.
+        let now = now_utc();
+        let (token_id, full_token) = insert_owner_session(
+            &db,
+            &config,
+            &format_rfc3339(now - time::Duration::hours(13)),
+            &format_rfc3339(now + time::Duration::days(6)),
+        )
+        .await;
+
+        let before_generation = authorization_generation(&db).await.unwrap();
+
+        assert!(
+            session_is_current(&db, &token_id, Some("owner")).await,
+            "the long-lived stream recheck must not cut an inactive Session"
+        );
+        let session = authenticate_token(&db, &config, &full_token)
+            .await
+            .expect("an inactive Session inside its lifetime stays valid");
+        assert_eq!(session.session_id, token_id);
+        assert_eq!(
+            authorization_generation(&db).await.unwrap(),
+            before_generation,
+            "inactivity alone must not revoke the Session"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_with_unreadable_expiry_fails_closed() {
+        let dir = tempdir().unwrap();
+        let db = test_db(dir.path()).await;
+        create_test_owner(&db).await;
+        let config = test_config(dir.path());
+
+        let now = format_rfc3339(now_utc());
+        let (token_id, full_token) =
+            insert_owner_session(&db, &config, &now, "not-a-timestamp").await;
+        assert!(!session_is_current(&db, &token_id, Some("owner")).await);
+
+        let (_, second_token) = insert_owner_session(&db, &config, &now, "garbage").await;
+        assert_eq!(
+            authenticate_token(&db, &config, &second_token)
+                .await
+                .unwrap_err(),
+            SessionError::Expired
+        );
+        // The first token was lazily revoked by the stream recheck.
+        assert_eq!(
+            authenticate_token(&db, &config, &full_token)
+                .await
+                .unwrap_err(),
+            SessionError::Invalid
+        );
+    }
+
+    /// Insert an Owner Session row with explicit activity and expiry
+    /// timestamps, returning its id and the matching presented token.
+    async fn insert_owner_session(
+        db: &ServerDatabase,
+        config: &AuthConfig,
+        last_seen_at: &str,
+        expires_at: &str,
+    ) -> (String, String) {
+        let (token_id, full_token) = new_session_token();
+        let digest = config.pepper.hmac_digest(full_token.as_bytes());
+        let csrf = derive_csrf_token(config, &full_token);
+        let csrf_digest = config.pepper.hmac_digest(csrf.as_bytes());
+        sqlx::query(
+            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES (?, (SELECT user_id FROM users WHERE username = 'admin'), ?, ?, ?, ?, ?, NULL)",
+        )
+        .bind(&token_id)
+        .bind(digest.to_vec())
+        .bind(csrf_digest.to_vec())
+        .bind(last_seen_at)
+        .bind(last_seen_at)
+        .bind(expires_at)
+        .execute(db.pool())
+        .await
+        .unwrap();
+        (token_id, full_token)
     }
 
     #[tokio::test]

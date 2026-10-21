@@ -299,9 +299,9 @@ impl RealtimeHub {
         tokio_stream::wrappers::ReceiverStream::new(receiver)
     }
     /// Human-bound stream: closes with a `reset` event as soon as the
-    /// bound Session is no longer current — revoked, expired, idle, user
-    /// disabled, or role changed (design §13.5: revoke/disable/role-change
-    /// actively close the bound Human stream). `connected_role` is the
+    /// bound Session is no longer current — revoked, past its absolute
+    /// lifetime, user disabled, or role changed (design §13.5:
+    /// revoke/disable/role-change actively close the bound Human stream). `connected_role` is the
     /// role the stream was opened with, so any role change closes it even
     /// when the route group itself would still accept the session.
     /// Build the access-reset event that closes a bound stream: an
@@ -325,7 +325,6 @@ impl RealtimeHub {
         &self,
         last_event_id: Option<u64>,
         db: std::sync::Arc<crate::database::ServerDatabase>,
-        auth: crate::auth::AuthConfig,
         session_id: String,
         connected_role: String,
     ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static + use<> {
@@ -338,13 +337,13 @@ impl RealtimeHub {
             loop {
                 tokio::select! {
                     _ = check.tick() => {
-                        if !crate::auth::session_is_current(&db, &session_id, Some(&connected_role), &auth).await {
+                        if !crate::auth::session_is_current(&db, &session_id, Some(&connected_role)).await {
                             let _ = sender.send(Self::reset_event()).await;
                             break;
                         }
                     }
                     result = async {
-                        if !crate::auth::session_is_current(&db, &session_id, Some(&connected_role), &auth).await {
+                        if !crate::auth::session_is_current(&db, &session_id, Some(&connected_role)).await {
                             let _ = sender.send(Self::reset_event()).await;
                             return true;
                         }
@@ -605,7 +604,6 @@ mod tests {
         let mut stream = Box::pin(hub.stream_with_session(
             None,
             Arc::clone(&db),
-            config.clone(),
             session.session_id.clone(),
             session.role.clone(),
         ));
@@ -618,13 +616,7 @@ mod tests {
             .expect("stream must stay open");
         assert!(item.is_ok(), "the reset event must not be an error");
         assert!(
-            !crate::auth::session_is_current(
-                &db,
-                &session.session_id,
-                Some(&session.role),
-                &config
-            )
-            .await,
+            !crate::auth::session_is_current(&db, &session.session_id, Some(&session.role)).await,
             "the revoked session must no longer be current"
         );
         assert!(
@@ -654,7 +646,6 @@ mod tests {
         let mut stream = Box::pin(hub.stream_with_session(
             None,
             Arc::clone(&db),
-            config.clone(),
             session.session_id.clone(),
             session.role.clone(),
         ));
@@ -668,13 +659,7 @@ mod tests {
             .expect("stream must stay open");
         assert!(item.is_ok(), "the reset event must not be an error");
         assert!(
-            !crate::auth::session_is_current(
-                &db,
-                &session.session_id,
-                Some(&session.role),
-                &config
-            )
-            .await,
+            !crate::auth::session_is_current(&db, &session.session_id, Some(&session.role)).await,
             "the changed role must no longer satisfy the bound role"
         );
     }

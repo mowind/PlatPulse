@@ -12,7 +12,7 @@ import { cn } from '../lib/utils'
 import platpulseMark from '../../../assets/platpulse-mark.png'
 
 /**
- * Login page (design §12.2/§12.4): username + password form with labels,
+ * Login page (design §10.2): username + password form with labels,
  * keyboard submission, a live error region, and no admin controls. After
  * login the user returns to the route that required authentication.
  *

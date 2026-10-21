@@ -1,5 +1,5 @@
 //! `/api/public/v1` route group — the Home Public Projection and human
-//! session lifecycle (design §12.3/§12.4, §13.1).
+//! session lifecycle (design §10.2, §13.1).
 //!
 //! Middleware and DTO namespace are independent from Admin and Agent: DTOs
 //! live in this module and are never reused as Admin DTOs by runtime field
@@ -70,7 +70,6 @@ pub(crate) async fn public_events(
         Some(Extension(session)) => Box::pin(state.public_realtime().stream_with_session(
             cursor,
             state.database(),
-            state.auth().clone(),
             session.0.session_id.clone(),
             session.0.role.clone(),
         )),
@@ -101,7 +100,7 @@ pub struct LoginRequest {
 }
 
 /// Non-sensitive session projection plus the synchronizer CSRF token
-/// (design §12.3/§12.4). Fields are camelCase per the browser wire rule
+/// (design §10.2). Fields are camelCase per the browser wire rule
 /// (§13.3); timestamps are RFC 3339 UTC.
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -140,7 +139,7 @@ fn session_response(session: &crate::auth::SessionInfo) -> SessionResponse {
 }
 
 /// Login with strict configured-Origin validation, an independent rate
-/// limit, and Session ID rotation (design §12.2–§12.4).
+/// limit, and Session ID rotation (design §10.2).
 #[utoipa::path(
     post,
     path = "/api/public/v1/login",
@@ -161,7 +160,7 @@ pub(crate) async fn login_handler(
     Extension(client): Extension<ClientIp>,
     body: Bytes,
 ) -> Response {
-    // 1. Strict Origin validation (design §12.4): login carries no existing
+    // 1. Strict Origin validation (design §10.2): login carries no existing
     //    session, so the configured origin is the only acceptable one. Parse
     //    only after this check so malformed input cannot bypass the boundary.
     if !state.auth().origin_matches(headers.get(header::ORIGIN)) {
@@ -184,7 +183,7 @@ pub(crate) async fn login_handler(
         }
     };
 
-    // 2. Setup gate (design §12.2): no Owner, no login.
+    // 2. Setup gate (design §10.2): no Owner, no login.
     match crate::auth::has_owner(state.db()).await {
         Ok(true) => {}
         Ok(false) => {
@@ -305,7 +304,7 @@ pub(crate) async fn login_handler(
     }
 }
 
-/// Logout: revoke the current Session and clear the cookie (design §12.3).
+/// Logout: revoke the current Session and clear the cookie (design §10.2).
 /// Revocation and its audit row commit in one transaction; a database
 /// failure keeps the session valid and returns 500 instead of pretending
 /// the user signed out.
@@ -379,8 +378,9 @@ pub(crate) async fn logout_handler(
         .into_response()
 }
 
-/// Current session projection and CSRF token for the WebUI (design §12.4).
-/// `last_seen_at` is refreshed at most once per throttle window.
+/// Current session projection and CSRF token for the WebUI (design §10.2).
+/// `last_seen_at` is refreshed at most once per throttle window; it is
+/// activity evidence only and never decides when the Session expires.
 #[utoipa::path(
     get,
     path = "/api/public/v1/session",

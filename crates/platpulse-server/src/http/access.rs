@@ -1,4 +1,4 @@
-//! Owner-only access management (issue #47, design §12.1/§12.3, §13.1):
+//! Owner-only access management (issue #47, design §10.2, §13.1):
 //! People and role controls, coarse Human Session review and revoke, the
 //! immutable redacted Audit listing, and the anonymous Home (Guest) toggle.
 //!
@@ -29,7 +29,7 @@ use crate::http::admin::{mutation_error, mutation_guard_ok};
 use crate::http::{AppState, AuthenticatedSession, ROUTE_GROUP_HEADER, RequestId};
 
 /// One allowlisted Person row. Passwords, hashes, and credentials never
-/// leave the Server (design §12.1: People review is safe on ordinary
+/// leave the Server (design §10.2: People review is safe on ordinary
 /// screens).
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -75,9 +75,10 @@ pub struct ResetPasswordRequest {
     pub password: String,
 }
 
-/// One coarse, non-sensitive Session row (design §12.3): creation, last
+/// One coarse, non-sensitive Session row (design §10.2): creation, last
 /// activity, expiry, and a coarse client hint — never the token, a full
-/// User-Agent, or a raw IP.
+/// User-Agent, or a raw IP. `lastSeenAt` is activity evidence only;
+/// `expiresAt` alone decides when the Session ends.
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionItem {
@@ -101,7 +102,7 @@ pub struct SessionsResponse {
 /// Explicit JSON body for Session revoke mutations. The revoke carries no
 /// parameters, but declaring a body keeps the browser trust boundary
 /// uniform: every Admin mutation is a JSON request with the synchronizer
-/// CSRF header (design §12.4), including bodyless ones.
+/// CSRF header (design §10.2), including bodyless ones.
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RevokeSessionRequest {}
@@ -186,7 +187,7 @@ fn person_dto(row: PersonRow) -> Person {
     }
 }
 
-/// Owner-only People listing (design §12.1): every human principal with
+/// Owner-only People listing (design §10.2): every human principal with
 /// role, disabled state, and active Session count. Passwords and
 /// credentials are never projected.
 #[utoipa::path(
@@ -224,7 +225,7 @@ pub(crate) async fn people_list(
     }
 }
 
-/// Owner-only user creation (design §12.1: Owners may create accounts; no
+/// Owner-only user creation (design §10.2: Owners may create accounts; no
 /// public registration). The password is hashed with Argon2id and never
 /// stored or returned in plaintext; the Audit row carries only the
 /// username and role.
@@ -348,7 +349,7 @@ enum RevokeOutcome {
 }
 
 /// Load a user row inside a transaction and apply the final-Owner guard:
-/// the last enabled Owner cannot be disabled or demoted (design §12.1).
+/// the last enabled Owner cannot be disabled or demoted (design §10.2).
 /// Returns `None` when the user does not exist.
 async fn load_user_for_mutation(
     tx: &mut sqlx::SqliteConnection,
@@ -380,7 +381,7 @@ async fn person_after_mutation(state: &AppState, user_id: &str) -> Option<Person
     .map(person_dto)
 }
 
-/// Owner-only role change (design §12.1/§12.3). The final valid Owner is
+/// Owner-only role change (design §10.2). The final valid Owner is
 /// protected; a role change revokes every Session of the affected user
 /// immediately, which closes their bound Public/Admin streams on the next
 /// revalidation.
@@ -516,7 +517,7 @@ pub(crate) async fn set_person_role(
     }
 }
 
-/// Owner-only enable/disable (design §12.1). The final valid Owner cannot
+/// Owner-only enable/disable (design §10.2). The final valid Owner cannot
 /// be disabled; disabling a user revokes all of their Sessions
 /// immediately, which closes their bound streams.
 #[utoipa::path(
@@ -654,7 +655,7 @@ pub(crate) async fn set_person_status(
     }
 }
 
-/// Owner-only password reset (design §12.1: Owners may reset accounts).
+/// Owner-only password reset (design §10.2: Owners may reset accounts).
 /// The new password is hashed and never returned; all Sessions of the
 /// user are revoked immediately so old state cannot continue.
 #[utoipa::path(
@@ -775,7 +776,7 @@ pub(crate) async fn reset_person_password(
     }
 }
 
-/// Owner-only coarse Session listing (design §12.3). Only active
+/// Owner-only coarse Session listing (design §10.2). Only active
 /// (non-revoked) Sessions appear, with creation/last-activity/expiry and
 /// the coarse client hint — never tokens, full User-Agents, or raw IPs.
 #[utoipa::path(
@@ -851,7 +852,7 @@ pub(crate) async fn sessions_list(
     }
 }
 
-/// Owner-only Session revoke (design §12.3: an Owner may revoke any
+/// Owner-only Session revoke (design §10.2: an Owner may revoke any
 /// Session). The revoked user's bound Public/Admin streams close on their
 /// next revalidation, and their tabs receive the access-generation
 /// transition without any token or DTO being broadcast.
@@ -968,7 +969,7 @@ pub(crate) async fn revoke_session(
     }
 }
 
-/// Owner-only "revoke my other Sessions" (design §12.3: keeping the
+/// Owner-only "revoke my other Sessions" (design §10.2: keeping the
 /// current Session and revoking all others are distinct operations).
 #[utoipa::path(
     post,
@@ -1509,7 +1510,7 @@ mod tests {
                 .unwrap();
 
         // Give ops an active Session, then demote them: the Session must be
-        // revoked immediately (design §12.3: role changes revoke sessions).
+        // revoked immediately (design §10.2: role changes revoke sessions).
         sqlx::query(
             "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES ('ops-session', ?, x'01', x'02', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', NULL)",
         )

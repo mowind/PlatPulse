@@ -1,5 +1,5 @@
 // Thin typed wrapper over the generated browser client for the human
-// session lifecycle (design §12.3/§12.4). Business code never copies DTO
+// session lifecycle (design §10.2). Business code never copies DTO
 // interfaces (design §13.4); it maps transport/API failures onto a single
 // error type keyed by the Server's stable `code`.
 
