@@ -10,7 +10,7 @@ PlatPulse is a Server–Agent–WebUI monitoring suite for PlatON nodes, develop
 
 ## Tech stack
 
-- **Rust** (Agent + Server): Tokio, Axum + Tower, Reqwest (Rustls), Serde, SQLx SQLite, Alloy (Agent only), sysinfo, Clap + TOML, tracing, utoipa, Argon2id, time.
+- **Rust** (Agent + Server): Tokio, Axum + Tower, Reqwest (Rustls), Serde, SQLx SQLite (Agent and Server) and PostgreSQL (Server only, in progress), Alloy (Agent only), sysinfo, Clap + TOML, tracing, utoipa, Argon2id, time.
 - **Node.js** (WebUI): React, TypeScript strict, Vite, React Router, TanStack Query, native EventSource and fetch.
 - No ORM, gRPC, Kafka, NATS, Redis, workflow engine, or global DI container. Dependencies are injected through explicit constructors.
 
@@ -35,6 +35,8 @@ platpulse-web/          # React SPA; generated API client lives in src/api/gener
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
+# Server tests on PostgreSQL (0.3.0 target; not yet available — the shared test helper is specified in ADR 0013; names may still change before it lands)
+# PLATPULSE_TEST_STORAGE=postgres cargo test --workspace   # SQLite remains the default (PLATPULSE_TEST_STORAGE=sqlite)
 cargo deny check && cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2026-0381
 
 # Design references: "design §X.Y" = docs/design/platpulse.md, "webui.md §X.Y" = docs/design/webui.md
@@ -50,7 +52,8 @@ CI also runs Playwright across fixed projects: `phone-360-touch` (360×800), `ph
 
 ## Engineering conventions
 
-- **SQLite via SQLx with typed SQL** — no ORM, no per-table repository traits; tests use real temp SQLite. Agent and Server keep independent schemas/migrations.
+- **SQLx with typed SQL** — no ORM, no per-table repository traits. The Server uses SQLx typed SQL on SQLite (default) or PostgreSQL ([ADR 0013](docs/adr/0013-postgresql-server-storage-backend.md); PostgreSQL is a 0.3.0 target, in progress, not yet implemented); the Agent is SQLite-only. Tests use real temp SQLite and real PostgreSQL, no mocks. Agent and Server keep independent schemas/migrations.
+- **Any Server schema change ships migrations for both backends in the same change** — SQLite and PostgreSQL share one logical schema version and must stay logically equivalent (tables, columns, constraints, indexes). This takes effect once the PostgreSQL migration baseline lands (0.3.0 target).
 - **`platpulse-core` is I/O-free** — no Axum/SQLx/Alloy dependencies; no Server rows or Public/Admin DTOs.
 - **Scope observations per Node, not per Agent** — block, transaction, consensus, peer and error state must never merge into an Agent-level chain view. One Agent may monitor multiple Nodes; one Node has exactly one Endpoint (no failover).
 - **Host observation is collected once per Agent** and referenced by Node views; do not duplicate resource accounting.

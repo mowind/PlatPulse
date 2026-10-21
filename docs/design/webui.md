@@ -36,7 +36,7 @@ These are current-surface exclusions. §15.1–§15.3 already route Agent enroll
 - RPC Endpoint editing, RPC Endpoint failover, remote commands, restart, upgrade, Docker control, or terminal access;
 - TUI, arbitrary scripts, SQL/DSL alert rules, or remote-control UI;
 - Validator/Restore/Node Transfer/People/Recovery/Rotation management pages (their Server/API operations exist but are not currently routed); Notification test and Event/Delivery history are routed (§15.9); the routed Agent enrollment/metadata/removal/attention surfaces (§15.1–§15.3), the Incident history and detail pages (§15.6), the Operations ledger, Task detail, and Doctor pages (§15.11, issue #208), the Backup artifact surface (§15.12, issue #209), the Retention policy surface (§15.13, issue #210), the retention-execution and cancellation surface (§15.14, issue #211), the storage capacity and low-space protection panel (§15.15, issue #212), the Node metric history surface (§15.16, issues #213 and #214), the shared Host resource history carried by the Node detail and Agent detail pages (§15.17, issue #215), the `Storage by mount path` list on the Agent detail page (§15.18, issue #216), and the recorded sync and consensus state history of the Node detail page (§15.19, issue #217) are the standing exceptions, and Geo provider selection and the global Geo refresh are both routed on Settings;
-- raw Peer identity/addresses, complete Peer Snapshot browsing, multi-tenant, HA, PostgreSQL, SSO/OIDC/TOTP/WebAuthn;
+- raw Peer identity/addresses, complete Peer Snapshot browsing, multi-tenant, HA, clustering, SSO/OIDC/TOTP/WebAuthn;
 - runtime theme/script injection or a second frontend framework.
 
 ## 2. Authorities and vocabulary

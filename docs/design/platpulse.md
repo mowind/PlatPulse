@@ -74,7 +74,7 @@
 5. 采集、上报或接收失败不会静默覆盖最后成功值，也不会重复写历史；Report Receipt 可以对 Node 和样本给出部分结果。
 6. Server 重启后保留 Agent、Node、当前投影、Block History 及已配置的扩展投影。
 7. WebUI 在 360px 手机宽度、平板和桌面宽度下可用。
-8. 初始部署保持 Linux-first、单租户、单 Server、SQLite。
+8. 初始部署保持 Linux-first、单租户、单 Server；Server 存储为 SQLite（默认）或 PostgreSQL，不做 HA。PostgreSQL 后端是 0.3.0 目标，实施中，尚未实现；当前唯一已交付的后端是 SQLite（见 [ADR 0013](../adr/0013-postgresql-server-storage-backend.md)）。
 
 ### 3.2 已实现的 Server/Agent 扩展
 
@@ -82,7 +82,7 @@
 
 ### 3.3 明确未实现或明确排除
 
-以下仍不是当前产品边界：完整交易 Body、Block Explorer/Archive、RPC Endpoint failover、Server 远程控制（命令、重启、升级或脚本下发）、多租户/HA/PostgreSQL/集群、SSO/OIDC/TOTP/WebAuthn，以及非 Linux Agent。当前 SPA 未注册的扩展页面也不应被链接为已存在的页面；这不等于对应的 Server/API 能力不存在。
+以下仍不是当前产品边界：完整交易 Body、Block Explorer/Archive、RPC Endpoint failover、Server 远程控制（命令、重启、升级或脚本下发）、多租户/HA/集群、SSO/OIDC/TOTP/WebAuthn，以及非 Linux Agent。当前 SPA 未注册的扩展页面也不应被链接为已存在的页面；这不等于对应的 Server/API 能力不存在。PostgreSQL 不再属于非目标：它是 Server 可选的第二存储后端（0.3.0 目标，实施中，尚未实现），HA、多实例与集群仍然排除，见 [ADR 0013](../adr/0013-postgresql-server-storage-backend.md)。
 
 ---
 
@@ -612,6 +612,8 @@ Server 仍不会用零值填充缺失区间；Retention 按 data family 分别�
 
 ### 11.5 低空间保护（issue #212）
 
+**后端适用边界。** 本节描述的低空间保护只适用于 SQLite 后端。按 [ADR 0013](../adr/0013-postgresql-server-storage-backend.md)，PostgreSQL 后端（0.3.0 目标，实施中，尚未实现）不提供容量保护：数据库所在磁盘归数据库运维方所有，`[capacity]` 与 PostgreSQL 后端同时配置将在启动时被拒绝，Doctor 的 storage 检查与 Admin 容量面报告“不适用”；磁盘写满时写入失败，Ingestion 返回可重试的 503，而不是静默丢数据。
+
 Server 启动时解析可选的 `[capacity]` 段（crates/platpulse-server/src/config.rs），由 crates/platpulse-server/src/capacity.rs 按 hysteresis 采样挂载点可用空间：
 
 - `enabled = true` 时必须同时给出 `pause_below_bytes` 与 `resume_above_bytes`，不设默认阈值；契约是 `resume_above_bytes >= pause_below_bytes > 0`，采样间隔限 5..86400 秒（默认 60）。缺少阈值时启动直接失败并说明原因，而不是替部署方猜一个 GiB 数字。
@@ -708,7 +710,7 @@ Server 启动时解析可选的 `[capacity]` 段（crates/platpulse-server/src/c
 ## 12. 部署
 
 - Agent：Linux x86_64/aarch64，建议 systemd；每 Host 一个 Agent；独立 state directory；credential 与 SQLite 严格权限；只需访问本地 RPC Endpoint 与 Server HTTPS 地址。仅当 Node 声明 `supervisor` selector 时，Agent 运行用户还需要能执行 `supervisorctl` 并访问 supervisor 的 control socket。
-- Server：单进程、单 SQLite、同源托管 WebUI；`/health/live` 只判 event loop 存活，`/health/ready` 同时检查 `sqlite`、`owner`、`web_assets`、`shutdown`、`critical_workers`、`corruption` 六个组件，并以 200/503 表达整体结果；Backup/Restore 是显式运维流程，不是启动流程。非开发模式下 Server 以 SQLite `locking_mode = EXCLUSIVE` 独占数据库文件，外部 SQLite 连接（含 CLI 写入）会在 Server 运行期间被隔离，因此只能在 Server 停止时执行；开发模式保留 SQLite 常规锁，允许本地工具与 e2e fixture 直接读写运行中的数据库。
+- Server：单进程、单数据库（SQLite 默认；PostgreSQL 为 0.3.0 目标，实施中，尚未实现，见 [ADR 0013](../adr/0013-postgresql-server-storage-backend.md)；不做 HA/多实例）、同源托管 WebUI；`/health/live` 只判 event loop 存活，`/health/ready` 同时检查 `sqlite`（PostgreSQL 后端届时报告为 `postgres`，见 ADR 0013）、`owner`、`web_assets`、`shutdown`、`critical_workers`、`corruption` 六个组件，并以 200/503 表达整体结果；Backup/Restore 是显式运维流程，不是启动流程，且仅适用于 SQLite 后端（PostgreSQL 使用其自身的备份工具，见 ADR 0013）。以下关于独占锁与 CLI 写入的描述同样只适用于 SQLite 后端。非开发模式下 Server 以 SQLite `locking_mode = EXCLUSIVE` 独占数据库文件，外部 SQLite 连接（含 CLI 写入）会在 Server 运行期间被隔离，因此只能在 Server 停止时执行；开发模式保留 SQLite 常规锁，允许本地工具与 e2e fixture 直接读写运行中的数据库。
 - WebUI：React + Vite 构建为静态资源，由 Server 同源托管，生产环境不单独运行 Node.js。
 
 ---

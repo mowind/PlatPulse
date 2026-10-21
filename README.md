@@ -63,7 +63,7 @@ release/                # systemd units, Compose, OCI context, qualification pro
 | --- | --- |
 | `platpulse-core` | I/O-free shared crate: AgentReport v1/v2, wire identity, Observation Envelope, Block Summary, History Gap, receipt/error codes, and wire validation |
 | `platpulse-agent` | Runs on a Host near its PlatON Nodes: config/CLI, Enrollment/Recovery/Rotation, Host/Process/RPC collectors, per-Node Supervisor, Peer Snapshot collection, Report assembler, AgentStore (durable spool), and sender |
-| `platpulse-server` | Ingests reports, maintains SQLite current projections and bounded history, validates Network identity, resolves Peer Geo, evaluates alerts and delivers notifications, serves REST/SSE plus static Web assets, and exposes an optional Prometheus metrics listener |
+| `platpulse-server` | Ingests reports, maintains current projections in its Storage Backend (SQLite today) and bounded history, validates Network identity, resolves Peer Geo, evaluates alerts and delivers notifications, serves REST/SSE plus static Web assets, and exposes an optional Prometheus metrics listener |
 | `platpulse-web` | TypeScript/React SPA: read-only Home Dashboard (Network → Node → Node Detail) and authenticated Admin Dashboard; responsive on desktop, tablet, and mobile |
 
 ## Implemented surfaces
@@ -94,14 +94,14 @@ The Server/Admin API additionally exposes People, Restore validation, Node Trans
 
 ## Tech stack
 
-- **Rust workspace (Agent + Server):** Tokio, Axum + Tower, Reqwest (Rustls), Serde, SQLx SQLite, Alloy (Agent only; pinned fork), sysinfo, Clap + TOML, tracing, utoipa, Argon2id, time
+- **Rust workspace (Agent + Server):** Tokio, Axum + Tower, Reqwest (Rustls), Serde, SQLx SQLite (PostgreSQL for the Server is a 0.3.0 target, in progress — see ADR 0013), Alloy (Agent only; pinned fork), sysinfo, Clap + TOML, tracing, utoipa, Argon2id, time
 - **Node.js (WebUI):** React 19, TypeScript strict, Vite, React Router, TanStack Query, Tailwind CSS, Radix primitives, Apache ECharts, native EventSource and fetch
 - **Testing and tooling:** Vitest + Testing Library, Playwright (fixed viewport projects), `@hey-api/openapi-ts`-generated client, cargo-deny + cargo-audit
 - No ORM, gRPC, Kafka, NATS, Redis, workflow engine, or global DI container; dependencies are injected through explicit constructors.
 
 ## Deployment at a glance
 
-- Linux-first (x86_64 / aarch64), single-tenant, single `platpulse-server`, SQLite (WAL). In non-development mode the Server holds the database exclusively, so CLI backup/restore runs only while the Server is stopped.
+- Linux-first (x86_64 / aarch64), single-tenant, single `platpulse-server`, SQLite (WAL; the only shipped Storage Backend — optional PostgreSQL is a 0.3.0 target, in progress, never HA). In non-development mode the Server holds the database exclusively, so CLI backup/restore runs only while the Server is stopped.
 - Agents and Server communicate over outbound HTTPS only; the Server never connects back to Agents.
 - The WebUI is served same-origin by the Server in production — no Node.js runtime required.
 - The Agent's Node Inventory is authoritative for connection configuration; the Server never pushes endpoints.
@@ -121,7 +121,7 @@ Each phase is independently deployable; no empty abstractions or schemas are add
 
 ## Non-goals
 
-PlatPulse explicitly does **not** include: a TUI, Agent endpoint failover, remote control (no Server-pushed endpoints, commands, restarts, or upgrades), full transaction body/receipt/trace indexing, a block explorer or archive database, multi-tenant/HA/PostgreSQL clustering, SSO/OIDC/TOTP/WebAuthn, or Windows/macOS Agent support. An opt-in PostgreSQL Server storage backend is under design in [ADR 0013](docs/adr/0013-postgresql-server-storage-backend.md) (Proposed, not implemented); SQLite remains the only shipped backend.
+PlatPulse explicitly does **not** include: a TUI, Agent endpoint failover, remote control (no Server-pushed endpoints, commands, restarts, or upgrades), full transaction body/receipt/trace indexing, a block explorer or archive database, multi-tenant/HA/clustering, SSO/OIDC/TOTP/WebAuthn, or Windows/macOS Agent support. An opt-in PostgreSQL Server Storage Backend is a 0.3.0 target, in progress and not yet implemented ([ADR 0013](docs/adr/0013-postgresql-server-storage-backend.md), Accepted); SQLite remains the only shipped backend.
 
 ## Project principles
 
@@ -255,7 +255,7 @@ The Enrollment Token cannot submit Agent Reports or reach human-facing APIs; the
 - [`docs/design/platpulse.md`](docs/design/platpulse.md) — design authority: product boundary, runtime and domain model, observation, Agent and Server design, identity and security, reliability, deployment, the current acceptance baseline, and the accepted management target
 - [`docs/design/webui.md`](docs/design/webui.md) — WebUI page/route contracts and the routed-surface matrix
 - [`CONTEXT.md`](CONTEXT.md) — domain terminology and banned synonyms
-- [`docs/adr/`](docs/adr/) — architecture decision records (Agent Store receipt lifecycle, Emerald visual authority, Admin workspace, Owner removal/Node purge, automatic Validator identity, Home Node Card, Server-managed Inventory Revision, offline backup, receipt body slimming, Home list-selection geo aggregate, Agent-stamped Block Summary identity, Public Node Detail Metric Window, and the proposed PostgreSQL storage backend)
+- [`docs/adr/`](docs/adr/) — architecture decision records (Agent Store receipt lifecycle, Emerald visual authority, Admin workspace, Owner removal/Node purge, automatic Validator identity, Home Node Card, Server-managed Inventory Revision, offline backup, receipt body slimming, Home list-selection geo aggregate, Agent-stamped Block Summary identity, Public Node Detail Metric Window, and the accepted, in-progress PostgreSQL Storage Backend)
 - [`docs/deployment.md`](docs/deployment.md) — release bundles, installation, and the single-process layout
 - [`docs/release-qualification.md`](docs/release-qualification.md) — resilience, recovery rehearsal, and final qualification
 - [`docs/security-review.md`](docs/security-review.md) — Phase 5 security matrix and residual risks

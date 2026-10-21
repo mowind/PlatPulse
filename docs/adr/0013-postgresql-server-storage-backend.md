@@ -1,6 +1,6 @@
 # ADR 0013: PostgreSQL as an opt-in second Server storage backend
 
-**Status:** Proposed (design interview for [issue #226](https://github.com/mowind/PlatPulse/issues/226), in progress; 0.3.0 milestone). Not implemented. On acceptance it supersedes the "PostgreSQL" non-goal in `docs/design/platpulse.md` §2 (line 85), `docs/design/webui.md` (line 39) and `README.md` (Non-goals), and amends the AGENTS.md convention "SQLite via SQLx with typed SQL" for the Server only.
+**Status:** Accepted (design interview for [issue #226](https://github.com/mowind/PlatPulse/issues/226); 0.3.0 target, implementation in progress — PostgreSQL support is not yet implemented). It supersedes the "PostgreSQL" mention in the non-goals of `docs/design/platpulse.md` (§3.3), `docs/design/webui.md` (§1) and `README.md` (Non-goals), and amends the former AGENTS.md convention "SQLite via SQLx with typed SQL" (now "SQLx with typed SQL") for the Server only.
 
 ## Context
 
