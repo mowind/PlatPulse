@@ -1,5 +1,5 @@
 /**
- * The same-tab return from Node detail to Home (#224, design §9).
+ * The same-tab return from Node detail to Home (#224, webui.md §15.25).
  *
  * Home publishes two ordinary surfaces: the Home URL, which carries the public
  * filter, sort, and view selection, and the Node detail route. A reader who

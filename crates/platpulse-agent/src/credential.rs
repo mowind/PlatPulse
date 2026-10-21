@@ -1,4 +1,4 @@
-//! Agent Credential file (design §8.2, §12.6).
+//! Agent Credential file (design §7.1, §10.1).
 //!
 //! The credential is separated from the ordinary TOML configuration and
 //! stored in its own file restricted to the Agent OS user. `enroll` creates
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-/// Agent Credential token prefix (`pp_agent_…`, design §12.5).
+/// Agent Credential token prefix (`pp_agent_…`).
 pub const AGENT_CREDENTIAL_PREFIX: &str = "pp_agent_";
 
 /// Exact length of a valid credential token:
@@ -187,7 +187,7 @@ fn open_nofollow_readonly(path: &Path) -> Result<File, CredentialError> {
 }
 
 /// Open-then-stat: the opened descriptor must be a regular file owned by
-/// the current user with no group/world access bits (design §18.1 policy
+/// the current user with no group/world access bits (design §10.1 policy
 /// applied to the Agent credential).
 #[cfg(unix)]
 fn assert_safe_regular_file(file: &File, path: &Path) -> Result<(), CredentialError> {

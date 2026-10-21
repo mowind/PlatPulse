@@ -1,5 +1,5 @@
 //! Typed Alert Rules, evaluation state machine, Incidents, Silence, and
-//! Maintenance (design §17, issue #48).
+//! Maintenance (issue #48).
 //!
 //! Rules are Server-owned typed conditions over accepted projection facts.
 //! Agents never create Alerts; the Server evaluates. Evaluation state and
@@ -21,7 +21,7 @@ use crate::auth::{format_rfc3339, now_utc, parse_rfc3339};
 /// evaluates the affected subjects in its own transaction.
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
-/// The typed catalog of rule subjects (design §17.1).
+/// The typed catalog of rule subjects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SubjectKind {
@@ -70,7 +70,7 @@ pub fn severity_rank(severity: &str) -> u8 {
     }
 }
 
-/// Typed per-rule condition parameters (design §17.1: `for`, recovery
+/// Typed per-rule condition parameters (`for`, recovery
 /// threshold/hysteresis, and an optional typed threshold). `for_secs` is
 /// the sustained firing duration before an Incident opens;
 /// `recovery_for_secs` is the sustained fresh recovery duration before it
@@ -123,7 +123,7 @@ pub struct ParamSchema {
     pub description: &'static str,
 }
 
-/// One typed catalog entry (design §17.1). The key is the immutable rule
+/// One typed catalog entry. The key is the immutable rule
 /// identity; parameters are validated against `params` at the trust
 /// boundary.
 pub struct RuleDefinition {
@@ -177,7 +177,7 @@ const fn threshold_param(
     }
 }
 
-/// The first rule catalog (design §17.1). `host.*` rules use the Agent's
+/// The first rule catalog. `host.*` rules use the Agent's
 /// host as subject (host observations are collected once per Agent).
 pub static CATALOG: &[RuleDefinition] = &[
     RuleDefinition {
@@ -449,7 +449,7 @@ pub async fn invalidate_recovery_windows_for_network(
 // Evaluation input
 // ---------------------------------------------------------------------------
 
-/// The typed evaluation input (design §17.3). `Known(value)` facts are
+/// The typed evaluation input. `Known(value)` facts are
 /// compared against the rule threshold by the state machine; `Unknown` and
 /// `Stale` never mean recovered; `Unsupported` never alerts.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -508,7 +508,7 @@ impl EvalInput {
     }
 
     /// Whether this input fires against a threshold. Only `Known` values
-    /// are compared (design §17.3).
+    /// are compared.
     pub fn fires(&self, threshold: f64) -> bool {
         match self {
             EvalInput::Known { value, .. } => *value >= threshold,
@@ -560,7 +560,7 @@ pub struct Transition {
     pub note: String,
 }
 
-/// The state machine (design §17.2/§17.3):
+/// The state machine:
 ///
 /// ```text
 /// Normal → Pending → Firing → Recovering → Normal
@@ -779,8 +779,8 @@ impl AlertError {
 // Effective rule resolution (global default + Network/Node overrides)
 // ---------------------------------------------------------------------------
 
-/// The effective rule after Network/Node override resolution (design
-/// §17.1). Node overrides win over Network overrides; unset override fields
+/// The effective rule after Network/Node override resolution. Node
+/// overrides win over Network overrides; unset override fields
 /// inherit from the global rule.
 #[derive(Debug, Clone)]
 pub struct EffectiveRule {
@@ -910,7 +910,7 @@ fn known(value: f64, detail: String) -> EvalInput {
     EvalInput::Known { value, detail }
 }
 
-/// Server-owned staleness bound for evaluation facts (design §17.3: only
+/// Server-owned staleness bound for evaluation facts (only
 /// fresh Known evidence opens or resolves Incidents). Follows the current
 /// `node.observation_stale` threshold so Owners tune one number; defaults
 /// to 120s when the rule is missing or unparseable.
@@ -932,7 +932,7 @@ pub(crate) async fn freshness_bound(
 }
 
 /// Extract the typed evaluation fact for one `(rule, subject)` from the
-/// accepted Current Projection (design §17.3). Every rule maps onto honest
+/// accepted Current Projection. Every rule maps onto honest
 /// projection facts; missing facts are `Unknown`, never zero/Healthy.
 pub async fn extract_input(
     executor: &mut sqlx::SqliteConnection,
@@ -1776,7 +1776,7 @@ fn evidence_json(
 /// Returns the number of state transitions.
 /// Evaluate every catalog rule against the reporting Agent and its owned
 /// Nodes inside the caller's transaction, and record Notification Events
-/// for Incident transitions in the same transaction (design §17.4).
+/// for Incident transitions in the same transaction (design §8.3).
 pub async fn evaluate_report(
     executor: &mut sqlx::SqliteConnection,
 
@@ -1942,7 +1942,7 @@ async fn record_transition_events(
 }
 
 /// The full evaluation sweep: every catalog rule against every active
-/// subject. Runs as a bounded background task (design §17.2: Server
+/// subject. Runs as a bounded background task (Server
 /// restart restores timers from persisted state; the sweep applies current
 /// facts immediately).
 pub async fn sweep(state: &crate::http::AppState) -> Result<usize, AlertError> {
@@ -2042,8 +2042,8 @@ pub struct SuppressionMatch {
     pub reason: String,
     pub starts_at: String,
     pub ends_at: String,
-    /// Maintenance-only: whether this match marks the Incident suppressed
-    /// (design §17.5). Silences never mark Incidents.
+    /// Maintenance-only: whether this match marks the Incident suppressed.
+    /// Silences never mark Incidents.
     pub marks_incident: bool,
 }
 
@@ -2123,8 +2123,8 @@ fn maintenance_matches(
     }
 }
 
-/// All active suppression matches (Silence + Maintenance) for one subject
-/// (design §17.5). Silence suppresses delivery only; Maintenance also marks
+/// All active suppression matches (Silence + Maintenance) for one subject.
+/// Silence suppresses delivery only; Maintenance also marks
 /// expected offline/process/RPC Incidents suppressed. Both reasons stay
 /// visible independently when they overlap.
 pub async fn suppressions_for_subject(

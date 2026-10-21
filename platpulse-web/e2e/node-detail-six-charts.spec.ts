@@ -973,7 +973,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
         expect(Math.abs(layout.map.left - layout.summary.left), step.mode).toBeLessThanOrEqual(1)
       }
       // Uncarded: the map introduces neither a fourth card surface nor a
-      // fourth reading tier (design §11.1).
+      // fourth reading tier (webui.md §11.1).
       expect(layout.mapBackground, step.mode).toBe('rgba(0, 0, 0, 0)')
       expect(layout.mapCardish, step.mode).toBe(false)
 

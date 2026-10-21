@@ -1,4 +1,4 @@
-//! Server configuration (design §18.1).
+//! Server configuration.
 //!
 //! `server.toml` carries paths and policy; it never holds plaintext
 //! passwords or token contents. Every setting can be overridden from the
@@ -29,7 +29,7 @@ pub const DEFAULT_DB_FILE: &str = "platpulse.db";
 
 /// Pepper file name relative to the state directory when the config file
 /// does not point at a dedicated secrets path (production deployments put
-/// it under `/etc/platpulse/secrets/`, design §18.1).
+/// it under `/etc/platpulse/secrets/`).
 pub const DEFAULT_PEPPER_FILE: &str = "server-pepper";
 
 /// Default installed WebUI root for release packages.
@@ -65,7 +65,7 @@ pub struct ServerConfigFile {
     /// `https://platpulse.example.com`. Defaults to `http://<listen>`.
     pub public_base_url: Option<String>,
     /// Explicit development mode: uses a separate non-`__Host-` cookie
-    /// without `Secure` (design §19.1). Production cookies always use
+    /// without `Secure` (design §10.3). Production cookies always use
     /// `__Host-platpulse_session` with `Secure`.
     pub development: Option<bool>,
     /// Explicitly trusted reverse-proxy source CIDRs. Empty means no proxy
@@ -82,18 +82,18 @@ pub struct ServerConfigFile {
     pub geo: Option<GeoSectionFile>,
     /// Optional Server-side Validator Provider configuration.
     pub validator_provider: Option<ValidatorProviderSectionFile>,
-    /// Notification channel configuration (design §17.4). The TOML carries
+    /// Notification channel configuration. The TOML carries
     /// only the token file reference and the destination, never token
     /// contents.
     pub notifications: Option<NotificationsSectionFile>,
     /// Optional dedicated internal Prometheus metrics listener.
     pub metrics: Option<MetricsSectionFile>,
     /// Optional capacity visibility and low-space protection policy
-    /// (design §11.4, issue #212).
+    /// (design §11.5, issue #212).
     pub capacity: Option<CapacitySectionFile>,
 }
 
-/// The optional `[capacity]` section (design §11.4, issue #212).
+/// The optional `[capacity]` section (design §11.5, issue #212).
 ///
 /// Enabling protection requires both thresholds to be declared. The Server
 /// deliberately invents no default here: a free-space floor is a claim about a
@@ -159,7 +159,7 @@ pub struct ValidatorProviderSectionFile {
 
 /// `[notifications.telegram]`: the approved Telegram delivery path. The
 /// provider token lives in a dedicated secret file referenced by
-/// `token_file`; this file never holds the token itself (design §18.1).
+/// `token_file`; this file never holds the token itself.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct TelegramChannelFile {
@@ -221,14 +221,14 @@ pub struct ServerConfig {
     pub geo: Option<PathBuf>,
     /// Resolved optional Validator Provider settings.
     pub validator_provider: Option<ValidatorProviderConfig>,
-    /// Resolved notification channels (design §17.4).
+    /// Resolved notification channels.
     pub notifications: NotificationChannels,
     /// Dedicated internal metrics listener policy.
     pub metrics: MetricsConfig,
     /// Optional mount the backup directory must live on (ADR 0008).
     pub backup_required_mount: Option<PathBuf>,
     /// Resolved capacity visibility and low-space protection policy
-    /// (design §11.4, issue #212).
+    /// (design §11.5, issue #212).
     pub capacity: CapacityConfig,
 }
 
@@ -298,7 +298,7 @@ pub const MAX_DEDUP_RETENTION_SECONDS: u32 = 604_800;
 #[derive(Debug, Clone)]
 pub struct NotificationChannels {
     pub telegram: Option<TelegramChannel>,
-    /// Minimum seconds between accepted Owner test requests (design §17.4).
+    /// Minimum seconds between accepted Owner test requests.
     pub test_cooldown_seconds: u32,
     /// Seconds a Server request/result association stays queryable.
     pub dedup_retention_seconds: u32,

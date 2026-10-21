@@ -98,7 +98,7 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
     await expect(page.getByRole('heading', { level: 1, name: /Node A/ })).toBeVisible({ timeout: 15_000 })
 
     // Overview: lifecycle guidance on its own administrative panel; the
-    // History, Diagnostics and Manage sections are one tab away (§8.7).
+    // History, Diagnostics and Manage sections are one tab away (webui.md §8.7).
     await expect(page.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
     await expect(page.getByText(/never pushes Endpoint or lifecycle changes/)).toBeVisible()
     await expect(page.getByRole('heading', { level: 2, name: 'Node Inventory & lifecycle' })).toBeVisible()

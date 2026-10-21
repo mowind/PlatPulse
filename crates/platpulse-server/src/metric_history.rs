@@ -114,7 +114,7 @@ pub fn is_node_metric(metric: &str) -> bool {
 }
 
 /// The Host metric series the Server stores raw and serves to Admin (issue
-/// #215, design §11.4).
+/// #215, design §11.6).
 ///
 /// They are the readings the Agent already collects for the machine it runs on:
 /// CPU, physical memory, Load 1/5/15, network rate and per-mount storage. A Host
@@ -342,7 +342,7 @@ impl<'q, O> SeriesStatement<'q> for QueryScalar<'q, Sqlite, O, SqliteArguments<'
     }
 }
 
-/// The design's raw window: the most recent 24 hours (§11.4).
+/// The design's raw window: the most recent 24 hours (design §11.4).
 pub const DEFAULT_WINDOW_HOURS: i64 = 24;
 
 /// Samples one range answer carries unless the caller asks for fewer.
@@ -401,7 +401,7 @@ pub const FIVE_MINUTE_SECONDS: i64 = 300;
 pub const ONE_MINUTE_MAX_AGE_DAYS: i64 = 7;
 
 /// The investigation horizon: the oldest age any tier answers, in days
-/// (design §6).
+/// (design §11.6).
 ///
 /// It is also the registered floor of the `five_minute_aggregate` retention
 /// family, so the stretch the tier serves and the window its policy keeps are

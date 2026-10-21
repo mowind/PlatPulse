@@ -519,7 +519,7 @@ describe('Public Home dashboard', () => {
     // A height that cannot be a Block Height — negative or fractional — is not a
     // reading this card restates: like a height that was never observed it stays
     // explicitly Unknown rather than a value a reader could trust, and it
-    // supports no comparison either (design §11.1 item 6, #239).
+    // supports no comparison either (design §11.2, #239).
     { name: 'a negative Node height', change: { currentHead: -1 }, height: 'Unknown', retained: null },
     { name: 'a fractional Node height', change: { currentHead: 120.5 }, height: 'Unknown', retained: null },
   ])('asserts no comparison conclusion for $name (#239)', ({ change, height, retained }) => {
@@ -1465,7 +1465,7 @@ describe('Public Home card and list views', () => {
   }
 
   // A Node whose Peer count was observed once and then retained: the collection
-  // failed and the snapshot went stale (story 6, design §11.1).
+  // failed and the snapshot went stale (story 6, design §11.2).
   const retainedNetwork = {
     ...network,
     networkKey: 'retained',
@@ -1703,7 +1703,7 @@ describe('Public Home toolbar entries', () => {
     const opened = surface('Sort and filters') as HTMLElement
     expect(opened).toBeTruthy()
     // The three controls belong to the surface, so the surface is what this reads
-    // them through rather than the whole page (§12).
+    // them through rather than the whole page.
     const surfaceQueries = within(opened)
     expect(surfaceQueries.getByRole('combobox', { name: 'Sort' })).toBeTruthy()
     expect(surfaceQueries.getByRole('combobox', { name: 'Health filter' })).toBeTruthy()

@@ -32,7 +32,7 @@ import {
 } from './notificationShared'
 import { ADMIN_PAGE_TITLE } from '../components/AdminPage'
 
-/** The Server's fixed delivery-state vocabulary (design §17.4). */
+/** The Server's fixed delivery-state vocabulary. */
 const DELIVERY_STATES = [
   'pending',
   'in_flight',

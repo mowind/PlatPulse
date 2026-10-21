@@ -253,7 +253,7 @@ pub(crate) async fn set_visibility(
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeMetadataRequest {
-    /// Server-owned display name (design §4.2). Required: 1..=128 visible
+    /// Server-owned display name (design §4.4). Required: 1..=128 visible
     /// characters; clearing is a future explicit operation.
     pub display_name: String,
 }
@@ -2147,7 +2147,7 @@ async fn node_diagnostic(
     }
 }
 
-/// Agent-observed Network identity tuple (design §7.1). Never overwrites the
+/// Agent-observed Network identity tuple (design §4.5). Never overwrites the
 /// Registry: it is presented as a typed observation with a match state.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -2175,7 +2175,7 @@ pub struct NodeIdentityStatus {
 /// Compare the observed identity of one Node against its Registry tuple.
 /// The Registry is the only authority: an observation never rewrites it,
 /// and a Node whose identity contradicts the Registry is blocked from
-/// merging history (design §7.1).
+/// merging history (design §4.5).
 async fn node_identity_status(
     state: &AppState,
     node_id: &str,
@@ -2365,7 +2365,7 @@ fn redact_optional_message(value: Option<String>) -> Option<String> {
     value.map(|message| crate::redaction::redact_sensitive(&message))
 }
 
-/// Redacted destination summary (design §9, `PATTERN-REDACTED-DETAIL`):
+/// Redacted destination summary (webui.md §7, §9, `PATTERN-REDACTED-DETAIL`):
 /// scheme and host with the port masked; path, query, and credentials are
 /// never exposed.
 fn redact_endpoint(endpoint: &str) -> String {
@@ -2404,7 +2404,7 @@ fn redact_endpoint(endpoint: &str) -> String {
     result
 }
 
-/// Server-owned lifecycle guidance (design §4.3): the Server never changes
+/// Server-owned lifecycle guidance (design §4.6): the Server never changes
 /// Node lifecycle remotely; the latest valid Agent Inventory is the only
 /// authority for Active/Retired.
 fn lifecycle_guidance(lifecycle: &str) -> &'static str {
@@ -2531,7 +2531,7 @@ async fn admin_nodes(
 
 /// Owner-only Node detail: the full per-Node view with Server-owned
 /// metadata, lifecycle guidance, identity disposition, and the independent
-/// process/RPC/sync/consensus observation dimensions (design §4.1–§4.3).
+/// process/RPC/sync/consensus observation dimensions (design §4.6, §5.1).
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct AdminNodeDetail {
@@ -3002,7 +3002,7 @@ fn dynamic_error(
 /// evidence is for a window, how complete it is, and which boundary explains a
 /// stretch it cannot answer. The evidence itself stays with that family's own
 /// route, so no second copy of the history is served from here and the two can
-/// never drift apart (design §7, §11.4).
+/// never drift apart (design §11.4).
 #[utoipa::path(
     get,
     path = "/api/admin/v1/nodes/{node_id}/investigation",
@@ -3072,7 +3072,7 @@ async fn admin_node_investigation(
         }
         // A purged Node is told apart from an unknown id: its evidence is gone
         // by design, so a window over it can never be answered again (design
-        // §11.5), and saying so is not the same as saying the Server never knew
+        // §15.3), and saying so is not the same as saying the Server never knew
         // the Node.
         Err(crate::investigation::InvestigationError::Purged { deleted_at }) => dynamic_error(
             &request_id.0,
@@ -3146,7 +3146,7 @@ async fn diagnostics(
 
 /// Build one Server-owned Agent diagnostic with identity, liveness,
 /// boot/report state, credential state, Inventory, and collector
-/// diagnostics kept as separate dimensions (design §14.3, §14.4).
+/// diagnostics kept as separate dimensions (design §5.1, §9.2).
 async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnostic {
     let AgentAdminRow {
         agent_id,
@@ -3444,7 +3444,7 @@ fn agent_liveness(last_received_at: Option<&str>) -> &'static str {
 }
 
 /// Browser mutation trust boundary shared by every Admin security
-/// mutation (design §13.1, §19.4): same-origin, JSON content type (when the
+/// mutation (design §10.2, §13.3): same-origin, JSON content type (when the
 /// mutation carries a body), and a CSRF token matching the session —
 /// checked before any body parsing. Bodyless mutations (e.g. revoke) do
 /// not require the JSON content type because the generated browser client
@@ -3478,7 +3478,7 @@ pub(crate) fn mutation_guard(
     None
 }
 
-/// One-time Enrollment Token issued to an Owner (design §4.5, §12.5). The
+/// One-time Enrollment Token issued to an Owner (design §4.3, §15.2). The
 /// full token is delivered exactly once in the success response.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -3566,7 +3566,7 @@ pub(crate) async fn admin_enrollment_token(
 
 /// One-time Recovery Token issued for an existing Agent. Exchanging it
 /// advances the Agent Epoch and rotates the credential without creating a
-/// duplicate Agent (design §4.5).
+/// duplicate Agent (design §4.3).
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct RecoveryTokenResponse {
@@ -3579,7 +3579,7 @@ pub struct RecoveryTokenResponse {
 }
 
 /// Create a single-use Recovery Token for an existing Agent (credential
-/// loss, design §4.5). The response is the Owner's only plaintext copy.
+/// loss, design §4.3). The response is the Owner's only plaintext copy.
 #[utoipa::path(
     post,
     path = "/api/admin/v1/agents/{agent_id}/recover",
@@ -3689,7 +3689,7 @@ pub struct RotationRequest {
 
 /// Rotation result: the new credential secret is shown once; every
 /// previously valid credential either stays valid through `revoke_after`
-/// or was revoked immediately (design §12.6).
+/// or was revoked immediately (design §10.1).
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct RotationResponse {
@@ -3796,7 +3796,7 @@ pub struct RevokeResponse {
     pub request_id: String,
 }
 
-/// Revoke one Agent credential immediately (design §12.6: revoke takes
+/// Revoke one Agent credential immediately (design §10.1: revoke takes
 /// effect immediately). The Audit row records the credential id and
 /// instant only.
 #[utoipa::path(
@@ -3872,7 +3872,7 @@ pub struct AgentAuditResponse {
     pub items: Vec<AgentAuditItem>,
 }
 
-/// Redacted Audit trail scoped to one Agent (design §9, §14.3: security
+/// Redacted Audit trail scoped to one Agent (design §13.3: security
 /// mutations carry a redacted Audit link; immutable event listing).
 #[utoipa::path(
     get,
@@ -5143,7 +5143,7 @@ pub struct AdminAgentStorageMountsResponse {
     /// rather than dropped silently.
     pub truncated: bool,
     /// True while low-space protection has optional history paused (design
-    /// §11.4). The Agent is still reporting and the Server is choosing not to
+    /// §11.5). The Agent is still reporting and the Server is choosing not to
     /// store the readings, so no path is answered as silent: what was already
     /// stored stays, and the age of it is not the Agent going quiet.
     pub collection_paused: bool,
@@ -6364,7 +6364,7 @@ async fn metric_history_response(
         .into_response(),
     )
 }
-/// Owner-only Network Registry projection (design §7.1). The complete
+/// Owner-only Network Registry projection (design §4.5). The complete
 /// validated identity tuple is presented as Server-owned expected identity;
 /// observed Agent text never creates or rewrites Registry entries.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -6595,7 +6595,7 @@ async fn admin_network_detail(
 }
 
 /// Owner-only Registry creation with the complete validated identity tuple
-/// (design §7.1). The Registry is never created from observed Agent text:
+/// (design §4.5). The Registry is never created from observed Agent text:
 /// this explicit Owner mutation is the only Admin insert path.
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -6959,7 +6959,7 @@ pub(crate) async fn update_network(
     .into_response()
 }
 
-/// Owner-authorized two-phase Node Transfer (design §4.4, issue #46). The
+/// Owner-authorized two-phase Node Transfer (design §4.6, issue #46). The
 /// typed status is Server-owned: `pending`, `completed`, `cancelled`,
 /// `expired`, `rejected`, `conflict`, or `identity_mismatch`. A `pending`
 /// row past its Server-authoritative `expires_at` is reported as `expired`
@@ -8345,7 +8345,7 @@ pub fn router() -> Router<AppState> {
         )
         // The one UTC window every evidence route above is read inside (#220):
         // it answers where each family's evidence is and how complete it is,
-        // never a second copy of the evidence itself (design §7, §11.4).
+        // never a second copy of the evidence itself (design §11.4).
         .route(
             "/nodes/{node_id}/investigation",
             get(admin_node_investigation),

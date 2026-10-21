@@ -1,4 +1,4 @@
-//! Network Registry storage (design §7.1): the Server-managed set of
+//! Network Registry storage (design §4.5): the Server-managed set of
 //! expected Network identities.
 //!
 //! Phase 1 provides the registry storage plus local CLI bootstrap
@@ -63,7 +63,7 @@ pub enum NetworkError {
 }
 
 /// Validate the full identity tuple a `network create` invocation must
-/// carry (design §7.1). Returns the canonical key string.
+/// carry (design §4.5). Returns the canonical key string.
 pub fn validate_network_tuple(
     key: &str,
     display_name: &str,
@@ -113,7 +113,7 @@ pub fn validate_network_tuple(
 }
 
 /// Register a Network from the local CLI. The row and its minimal audit
-/// event commit in one transaction (design §7.1, §18.2). The Registry is
+/// event commit in one transaction (design §4.5). The Registry is
 /// never created from Agent input, so this is the only insert path.
 pub async fn create_network(
     db: &ServerDatabase,

@@ -8,7 +8,7 @@
 //! P1-01 adds human authentication: public routes (except login) require a
 //! valid human Session because Guest access is disabled by default, Admin
 //! additionally requires the Owner role, and the Agent group is refused
-//! with `setup_required` until the first Owner exists (design §10.2).
+//! with `setup_required` until the first Owner exists (design §13.3).
 
 pub(crate) mod access;
 pub(crate) mod admin;
@@ -64,7 +64,7 @@ pub(crate) const ROUTE_GROUP_HEADER: HeaderName =
 
 const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
-/// Unified API error envelope (design §13.3): clients depend only on `code`;
+/// Unified API error envelope: clients depend only on `code`;
 /// `message` never leaks SQL, RPC URLs, credentials, or stacks; `requestId`
 /// correlates a response with its request log; `fields` carries per-field
 /// validation details when a later ticket adds them.
@@ -414,7 +414,7 @@ pub struct AppState {
 impl AppState {
     /// Build application state with the given authentication policy. The
     /// Web assets directory is optional: the Server must start without Web
-    /// assets (design §14.1) and report `web_assets_missing` from
+    /// assets (design §12) and report `web_assets_missing` from
     /// `/health/ready` instead. Readiness requires both `index.html` and
     /// the hashed `assets/` directory: an incomplete build must not report
     /// ready.
@@ -505,8 +505,8 @@ impl AppState {
         &self.validator_timezone
     }
 
-    /// Point backup Operations at a dedicated backup directory (design
-    /// §20.1: never inside the Server state directory). `None` keeps the
+    /// Point backup Operations at a dedicated backup directory
+    /// (never inside the Server state directory). `None` keeps the
     /// backup surface honestly NotConfigured.
     pub fn with_backup_dir(mut self, backup_dir: Option<PathBuf>) -> Self {
         self.backup_dir = backup_dir;
@@ -516,7 +516,7 @@ impl AppState {
     /// Build state with the listener's explicit trusted-proxy policy. Proxy
     /// headers are accepted only from a matching peer and only when the
     /// configured asserted scheme is HTTPS. `channels` carries the resolved
-    /// notification channel policy (design §17.4).
+    /// notification channel policy.
     pub fn new_with_proxy_policy(
         db: ServerDatabase,
         web_assets: Option<PathBuf>,
@@ -581,7 +581,7 @@ impl AppState {
     }
 
     /// Override the capacity visibility and low-space protection policy
-    /// (design §11.4, issue #212). The default keeps optional history moving
+    /// (design §11.5, issue #212). The default keeps optional history moving
     /// and reports capacity without pausing anything.
     pub fn with_capacity(mut self, capacity: Arc<crate::capacity::CapacityProtection>) -> Self {
         self.capacity = capacity;
@@ -845,7 +845,7 @@ impl AppState {
     }
 }
 
-/// Content-Security-Policy enforced on every response (design §19.4: no
+/// Content-Security-Policy enforced on every response (no
 /// inline or third-party script). The Vite production bundle only loads
 /// hashed same-origin assets, so `script-src 'self'` holds; style
 /// attributes set through the CSSOM are not blocked by `style-src`.
@@ -919,7 +919,7 @@ pub fn build_app_with_native_tls(state: AppState, native_tls: bool) -> Router {
         .fallback(api_not_found);
 
     // Vite emits hashed assets under `assets/`; they are immutable by name
-    // (design §14.1), so the response is cacheable forever.
+    // so the response is cacheable forever.
     let assets = Router::<AppState>::new()
         .nest_service(
             "/assets",
@@ -1176,7 +1176,7 @@ fn stamp_client_ip(request: &mut Request) {
 }
 
 /// Human session guard for the Admin group: every request must present a
-/// valid session cookie (design §10.2: Guest disabled by default; §13.1:
+/// valid session cookie (design §10.2: Guest disabled by default; design §8.4:
 /// Admin requires a Viewer/Owner Session and Owner role on top).
 pub(crate) async fn human_session_guard(
     State(state): State<AppState>,
@@ -1190,7 +1190,7 @@ pub(crate) async fn human_session_guard(
 /// `POST /login` and the anonymous `/access` probe requires a valid
 /// session cookie. When anonymous Home is enabled, GET/HEAD requests of
 /// the read projection routes are additionally allowed for Guests
-/// (design §10.2, §13.1).
+/// (design §10.2, §8.4).
 pub(crate) async fn public_session_guard(
     State(state): State<AppState>,
     request: Request,
@@ -1269,7 +1269,7 @@ async fn session_guard(
     }
 }
 
-/// Owner role guard for the Admin group (design §13.1: Admin only accepts
+/// Owner role guard for the Admin group (design §8.4: Admin only accepts
 /// Owner Sessions). Runs after the session guard, which is registered
 /// outside it.
 pub(crate) async fn owner_role_guard(
@@ -1301,11 +1301,11 @@ pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// Agent group guard: until the first Owner exists, no Agent Enrollment,
-/// Recovery, or reporting is allowed (design §12.2). `POST /enroll`
+/// Recovery, or reporting is allowed (design §13.3). `POST /enroll`
 /// authenticates an Enrollment Token and `POST /recover` a Recovery Token
 /// in their handlers; every other Agent route requires a valid Agent
 /// Credential, so a one-time token can never submit reports and a Human
-/// Session can never enroll, recover, or report (design §12.6, §13.1).
+/// Session can never enroll, recover, or report (design §10.1, §13.3).
 pub(crate) async fn agent_group_guard(
     State(state): State<AppState>,
     mut request: Request,
@@ -1349,7 +1349,7 @@ pub(crate) async fn agent_group_guard(
             || request.uri().path().ends_with("/recover"));
     if is_token_exchange {
         // The handler authenticates the one-time token and rate-limits
-        // enrollment/recovery independently (design §19.4).
+        // enrollment/recovery independently.
         return next.run(request).await;
     }
 

@@ -300,8 +300,8 @@ impl RealtimeHub {
     }
     /// Human-bound stream: closes with a `reset` event as soon as the
     /// bound Session is no longer current — revoked, past its absolute
-    /// lifetime, user disabled, or role changed (design §13.5:
-    /// revoke/disable/role-change actively close the bound Human stream). `connected_role` is the
+    /// lifetime, user disabled, or role changed
+    /// (revoke/disable/role-change actively close the bound Human stream). `connected_role` is the
     /// role the stream was opened with, so any role change closes it even
     /// when the route group itself would still accept the session.
     /// Build the access-reset event that closes a bound stream: an
@@ -365,7 +365,7 @@ impl RealtimeHub {
 
     /// Guest-bound stream: no Human Session. It stays open only while
     /// anonymous Home is enabled; disabling Guest access closes every
-    /// open Guest stream with a `reset` (design §13.5: anonymous Home
+    /// open Guest stream with a `reset` (anonymous Home
     /// closing actively closes all Guest streams).
     pub(crate) fn stream_with_guest(
         &self,
@@ -585,7 +585,7 @@ mod tests {
     }
 
     /// A revoke must close a bound Human stream with a `reset` event
-    /// (design §13.5, issue #47: Session revoke closes the associated
+    /// (issue #47: Session revoke closes the associated
     /// Admin/Public SSE streams immediately).
     #[tokio::test]
     async fn session_revoke_closes_the_bound_stream_with_reset() {
@@ -628,7 +628,7 @@ mod tests {
     }
 
     /// A role change must close a bound Human stream even when the route
-    /// group itself would still accept the session (design §13.5).
+    /// group itself would still accept the session.
     #[tokio::test]
     async fn role_change_closes_the_bound_stream() {
         let (_dir, db, config) = stream_db().await;
@@ -665,7 +665,7 @@ mod tests {
     }
 
     /// Disabling anonymous Home must close every open Guest stream with a
-    /// reset (design §13.5: anonymous Home closing closes Guest streams).
+    /// reset (anonymous Home closing closes Guest streams).
     #[tokio::test]
     async fn guest_stream_closes_when_anonymous_home_is_disabled() {
         let (_dir, db, _config) = stream_db().await;

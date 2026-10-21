@@ -65,7 +65,7 @@ type HomeDashboardProps = {
   hasLastGood?: boolean
   loading: boolean
   /** True while the projection on screen is being refetched: the reading the
-   *  arrival places the reader in is then still provisional (design §15.25). */
+   *  arrival places the reader in is then still provisional (webui.md §15.25). */
   refreshing?: boolean
   /** The Reward Wallet Balance query (#246). It is independent of the Network
    *  projection above, so it is handed over as its own reading. */
@@ -140,7 +140,7 @@ export default function HomeDashboard({
   rewardWallet = { status: 'loading' },
 }: HomeDashboardProps) {
   const [search, setSearch] = useSearchParams()
-  // An ordinary Home URL is the whole filter state (design §9, #222): the
+  // An ordinary Home URL is the whole filter state (design §9.1, #222): the
   // Network selection, search, and sorting survive a refresh or a direct link,
   // and a value this deployment cannot honour falls back visibly instead of
   // being obeyed or silently dropped.
@@ -922,7 +922,7 @@ export default function HomeDashboard({
                 )}
               </div>
               {/* The card/list choice is part of the same ordinary Home URL contract as
-                  the filters and the sort (design §9). It is the last control of the
+                  the filters and the sort (design §9.1). It is the last control of the
                   right-hand group, so the row's own right edge is this choice's edge
                   at every width. The two choices keep their words rather than gaining
                   icons: a phone row leaves 268px for this control and the Sort &
@@ -1292,7 +1292,7 @@ function HeadComparison({ node }: { node: PublicNode }) {
 }
 
 /** The short mark on a Block Height the Server is not confirming as current
- *  (#239, design §11.1 item 6): the value it publishes is the last one it
+ *  (#239, design §11.2): the value it publishes is the last one it
  *  retained, so the card must not let it read as an ordinary current reading.
  *  The mark can never share the line with a comparison — the Node's own
  *  observation is exactly what a comparison needs — and it borrows the detail
@@ -1668,7 +1668,7 @@ function formatPeerObservation(node: PublicNode): string | undefined {
  * case out in a sentence, and a table cell carries the two words that matter plus
  * the dimensions that are not current. A count the Server never attested stays
  * Unknown with no cue, and a fully current observation carries no cue either
- * (#223, story 73; design §11.1).
+ * (#223, story 73; design §11.2).
  */
 function peerRetentionCue(node: PublicNode): string | undefined {
   const peer = node.peers
@@ -1710,7 +1710,7 @@ function healthLabel(value: string): string {
 function formatNumber(value: number | null | undefined) { return value == null ? 'Unknown' : value.toLocaleString() }
 
 /** How Home names a URL value it refused. It stays a plain, visible sentence:
- *  the reader can see which filter changed and why (design §9, #222). */
+ *  the reader can see which filter changed and why (design §9.1, #222). */
 const REJECTED_FILTER_LABELS: Record<HomeFilterRejection['parameter'], string> = {
   network: 'Network',
   health: 'health',

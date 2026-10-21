@@ -1,4 +1,4 @@
-//! Block-series aggregate tiers (issue #248, ADR 0012, docs/design/webui.md
+//! Block-series aggregate tiers (issue #248, ADR 0012, webui.md
 //! §15.38).
 //!
 //! Block interval and Transactions / block are derived from `block_summaries`,

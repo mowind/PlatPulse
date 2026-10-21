@@ -1,4 +1,4 @@
-//! Read-only Doctor diagnostics (issue #50, design §20.3, webui.md §8.4).
+//! Read-only Doctor diagnostics (issue #50, webui.md §15.11).
 //!
 //! Doctor never auto-fixes, deletes, migrates, or rotates secrets. It runs
 //! bounded read-only checks against live state and reports each one as

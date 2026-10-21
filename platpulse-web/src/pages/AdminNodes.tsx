@@ -111,7 +111,7 @@ import {
 } from '../components/AdminPage'
 
 /**
- * PAGE-ADMIN-NODES and PAGE-ADMIN-NODE-DETAIL (design §4.3, §8.2; webui.md
+ * PAGE-ADMIN-NODES and PAGE-ADMIN-NODE-DETAIL (design §4.6, §9.2; webui.md
  * §8.2): Owner-only Node inventory and administrative diagnostics. Every row
  * is one Node — block, transaction, consensus, peer, and error state never
  * merge across Nodes. Server-owned metadata (display name, lifecycle
@@ -127,7 +127,7 @@ function shortId(value: string): string {
   return value.length > 12 ? value.slice(0, 8) + '…' + value.slice(-4) : value
 }
 
-/** URL-state filters (design §10.1: back/forward preserves them). */
+/** URL-state filters (webui.md §10.1: back/forward preserves them). */
 type NodeFilters = Record<(typeof ADMIN_NODES_FILTER_PARAMS)[number], string>
 
 const NODE_SORTS = ['health', 'name', 'network', 'freshness'] as const
@@ -1571,7 +1571,7 @@ function HealthPanel({ node }: { node: AdminNodeDetailDto }) {
 }
 
 /**
- * PAGE-ADMIN-NODES and PAGE-ADMIN-NODE-DETAIL (design §4.3, §8.2, §11.4, §11.6; webui.md §8.2):
+ * PAGE-ADMIN-NODES and PAGE-ADMIN-NODE-DETAIL (design §4.6, §9.2, §11.4, §11.6; webui.md §8.2):
  * the Node's OWN Process series, charted through the shared metric-history body so this Node's
  * Process and the Host series it shares with its siblings are answered by one implementation.
  */
@@ -1653,7 +1653,7 @@ function SyncConsensusHistoryPanel({ node }: { node: AdminNodeDetailDto }) {
 }
 
 /**
- * The Host series of the Agent this Node belongs to (issue #215, design §11.5): the machine's CPU,
+ * The Host series of the Agent this Node belongs to (issue #215, design §11.6): the machine's CPU,
  * physical memory, load averages, network rate and per-mount storage, stored once per Agent and
  * counted once per Agent. It is not the Node's Process series, so the two never share a chart, and
  * the Agent that owns the evidence is named on the card: a reading two Nodes show is never silent

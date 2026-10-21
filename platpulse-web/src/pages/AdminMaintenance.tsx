@@ -182,7 +182,7 @@ export default function AdminMaintenanceList() {
     }
     setFieldErrors(nextErrors)
     if (nextErrors.scopeValue || nextErrors.reason || nextErrors.startsAt || nextErrors.endsAt) {
-      // §10.3 (webui.md): the page summary and the field-level messages are
+      // webui.md §10.3: the page summary and the field-level messages are
       // both required; the summary keeps the stable wording the Server errors use.
       const message = nextErrors.scopeValue
         ? 'A scope value is required for every Maintenance Window.'
@@ -235,7 +235,7 @@ export default function AdminMaintenanceList() {
     try {
       await cancelMaintenanceEntry(windowId, csrfToken)
       setConfirming(null)
-      // §15.5 (webui.md): an active-only list drops the confirmed row, so move
+      // webui.md §15.5: an active-only list drops the confirmed row, so move
       // focus to the panel heading instead of losing it with the unmounted control.
       headingRef.current?.focus()
       setFeedback({

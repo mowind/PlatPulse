@@ -68,7 +68,7 @@ export function AdminIdentifier({
             {formatIdentifier(full)}
           </code>
         )}
-        {/* §8.6: the complete value stays in the DOM while collapsed. */}
+        {/* webui.md §8.6: the complete value stays in the DOM while collapsed. */}
         {!open && <span className="sr-only">{label + ' ' + full}</span>}
         <Button
           ref={toggleRef}

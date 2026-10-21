@@ -37,6 +37,9 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
 cargo deny check && cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2026-0381
 
+# Design references: "design §X.Y" = docs/design/platpulse.md, "webui.md §X.Y" = docs/design/webui.md
+python3 scripts/check-design-refs.py
+
 # Web (platpulse-web)
 npm run lint && npm run typecheck && npm test && npm run build
 

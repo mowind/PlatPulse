@@ -339,7 +339,7 @@ describe('PAGE-ADMIN-RETENTION (issue #210)', () => {
         [IMPACT_KEY]: () =>
           apiError(
             'retention_out_of_bounds',
-            'Raw Block Summaries cannot be lowered below 1 days (design §11.3 safety bounds)',
+            'Raw Block Summaries cannot be lowered below 1 days (design §11.4 safety bounds)',
             400,
             ['family', 'retentionDays'],
           ),
@@ -438,7 +438,7 @@ describe('PAGE-ADMIN-RETENTION (issue #210)', () => {
         [POLICY_KEY]: () =>
           apiError(
             'retention_out_of_bounds',
-            'Raw Block Summaries must be between 1 and 30 days (design §11.3 safety bounds)',
+            'Raw Block Summaries must be between 1 and 30 days (design §11.4 safety bounds)',
             400,
             ['family', 'retentionDays'],
           ),
@@ -450,7 +450,7 @@ describe('PAGE-ADMIN-RETENTION (issue #210)', () => {
     fireEvent.click(saveButton())
 
     const fieldError = await screen.findByText(
-      'Raw Block Summaries must be between 1 and 30 days (design §11.3 safety bounds)',
+      'Raw Block Summaries must be between 1 and 30 days (design §11.4 safety bounds)',
     )
     expect(fieldError.getAttribute('id')).toBe('retention-days-error')
     expect(screen.getByLabelText('New retention (days)').getAttribute('aria-invalid')).toBe('true')

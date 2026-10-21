@@ -1,4 +1,4 @@
-//! `platpulse-server init` (design §12.2, §18.1): create the state
+//! `platpulse-server init`: create the state
 //! directory, open and migrate the Server SQLite database, generate the
 //! standalone pepper file, and validate file ownership/permissions and
 //! unexpected symlinks before printing the next steps.
@@ -90,7 +90,7 @@ pub async fn run_init(config: &ServerConfig) -> Result<InitReport, InitError> {
 /// Find the first ancestor of `path` (excluding `path` itself) that is a
 /// symlink, walking from the root down. `create_dir_all` and SQLite follow
 /// symlinked ancestors, so `init` must reject them before creating state
-/// (design §18.1: no unexpected symlink substitution).
+/// (no unexpected symlink substitution).
 fn first_symlinked_ancestor(path: &Path) -> Option<PathBuf> {
     let mut current = path;
     loop {
@@ -169,7 +169,7 @@ fn create_state_directory(path: &Path) -> Result<(), InitError> {
 }
 
 /// Refuse to open a database path that is a symlink or owned by another
-/// user (design §18.1's no-follow/open-then-stat policy, applied before
+/// user (the no-follow/open-then-stat policy, applied before
 /// SQLite touches the file).
 fn validate_database_path(path: &Path) -> Result<(), InitError> {
     if let Some(symlink) = first_symlinked_ancestor(path) {
@@ -263,7 +263,7 @@ pub(crate) fn secure_database_file(path: &Path) -> Result<(), InitError> {
 }
 
 /// Run with umask 077 so SQLite WAL/SHM siblings and any other files this
-/// process creates inherit server-user-only permissions (design §18.1).
+/// process creates inherit server-user-only permissions.
 #[cfg(unix)]
 pub(crate) fn restrict_umask() {
     nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));

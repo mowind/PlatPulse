@@ -120,7 +120,7 @@ describe('the reader a departure belongs to', () => {
     expect(accepted()).toBe(true)
 
     // Signing out and signing in as somebody else happens while no Home shell
-    // is mounted (design §15.25), so the boundary that outlives every shell is
+    // is mounted (webui.md §15.25), so the boundary that outlives every shell is
     // the one that has to notice: the entry the first reader left behind must
     // never be read back in front of the reader who replaced them.
     await act(async () => {

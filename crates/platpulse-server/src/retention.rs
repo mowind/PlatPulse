@@ -1,5 +1,5 @@
 //! Retention policies and bounded, safety-protected execution (issue #50,
-//! design §11.3, webui.md §8.4).
+//! design §11.4, webui.md §15.13).
 //!
 //! Phase 1 provided a fixed seven-day raw Block Summary cleanup. Phase 2
 //! adds Owner-configurable per-family policies with fixed safety bounds,
@@ -21,7 +21,7 @@ use sqlx::{Sqlite, SqlitePool, Transaction};
 
 use crate::http::AppState;
 
-/// Phase 1 raw Block Summary retention baseline from design §11.3.
+/// Phase 1 raw Block Summary retention baseline from design §6.3.
 pub const RAW_BLOCK_SUMMARY_RETENTION_DAYS: i64 = 7;
 /// Maximum number of raw rows removed by one cleanup invocation.
 pub const RAW_BLOCK_SUMMARY_CLEANUP_BATCH: i64 = 128;
@@ -142,7 +142,7 @@ pub struct CleanupTarget {
 /// families kept forever).
 const NO_CLEANUP_TARGETS: &[CleanupTarget] = &[];
 
-/// Policy defaults and safety bounds (design §11.3). max_days = 0 means no
+/// Policy defaults and safety bounds (design §11.4). max_days = 0 means no
 /// upper bound (long-term family); retention_days = 0 keeps forever. class
 /// carries the investigation floor, targets the bounded cleanup storage.
 pub struct PolicyDefaults {
@@ -475,7 +475,7 @@ pub const POLICY_CATALOG: [PolicyDefaults; 16] = [
         label: "Raw Metric Samples",
         // The design's raw window: 24 hours of samples the Server actually
         // received. This is the floor the Raw class also enforces, so the
-        // window cannot be edited away (§11.4, issue #213).
+        // window cannot be edited away (design §11.4, issue #213).
         default_days: 1,
         min_days: 1,
         max_days: 30,
@@ -1036,7 +1036,7 @@ pub async fn cleanup_expired_metric_aggregates(
     Ok(removed)
 }
 
-/// Idempotent policy seeding with the design §11.3 defaults. Safe to call
+/// Idempotent policy seeding with the design §11.4 defaults. Safe to call
 /// at startup and from read handlers.
 ///
 /// A family whose stored rows are buckets is the one exception to leave the
@@ -1120,7 +1120,7 @@ pub fn validate_policy_days(family: &str, days: i64) -> Result<(), String> {
             catalog
                 .class
                 .floor_reference()
-                .unwrap_or("design §11.3 safety floor")
+                .unwrap_or("design §11.4 safety floor")
         ));
     }
     if days < 0 {
@@ -1137,13 +1137,13 @@ pub fn validate_policy_days(family: &str, days: i64) -> Result<(), String> {
             }
         } else if days != 0 && days < catalog.min_days {
             return Err(format!(
-                "{} cannot be lowered below {} days (design §11.3 safety floor)",
+                "{} cannot be lowered below {} days (design §11.4 safety floor)",
                 catalog.label, catalog.min_days
             ));
         }
     } else if !(catalog.min_days..=catalog.max_days).contains(&days) {
         return Err(format!(
-            "{} must be between {} and {} days (design §11.3 safety bounds)",
+            "{} must be between {} and {} days (design §11.4 safety bounds)",
             catalog.label, catalog.min_days, catalog.max_days
         ));
     }
@@ -1180,7 +1180,7 @@ pub async fn update_policy(
 
 /// Read-only impact estimate for a proposed policy value: the estimated upper
 /// bound of rows a run at that value could release. Never writes; used by the
-/// edit form before typed confirmation (webui.md §8.4) and by the persisted
+/// edit form before typed confirmation (webui.md §15.13) and by the persisted
 /// preview.
 pub async fn estimate_impact(
     pool: &SqlitePool,

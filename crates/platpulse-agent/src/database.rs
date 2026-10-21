@@ -606,7 +606,7 @@ impl AgentStore {
         config: AgentDatabaseConfig,
         write_permit: AgentStoreWritePermit,
     ) -> Result<Self, AgentDatabaseError> {
-        // Design §8.2: the credential file AND the state DB must only allow
+        // Design §12: the credential file AND the state DB must only allow
         // the Agent OS user to read. Umask 077 keeps SQLite WAL/SHM
         // siblings private; the explicit 0600 chmod below pins the file
         // itself even when a permissive umask was inherited.
@@ -691,7 +691,7 @@ pub(crate) fn secure_store_file(_path: &Path) -> Result<(), AgentDatabaseError> 
 }
 
 /// Run with umask 077 so SQLite WAL/SHM siblings inherit
-/// agent-user-only permissions (design §8.2).
+/// agent-user-only permissions (design §12).
 #[cfg(unix)]
 pub(crate) fn restrict_umask() {
     nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
@@ -990,7 +990,7 @@ mod tests {
 
     #[tokio::test]
     async fn store_file_is_restricted_to_the_agent_user() {
-        // Design §8.2: the state DB must only allow the Agent OS user to
+        // Design §12: the state DB must only allow the Agent OS user to
         // read; opening the store pins the file to 0600.
         #[cfg(unix)]
         {

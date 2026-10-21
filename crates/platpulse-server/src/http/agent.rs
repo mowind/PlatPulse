@@ -2,9 +2,9 @@
 //!
 //! Middleware and DTO namespace are independent from Public and Admin, and
 //! the browser client is never generated from Agent wire DTOs (design
-//! §13.4). Phase 1 adds `POST /enroll`: an Enrollment Token (Bearer) is
+//! §8.4). Phase 1 adds `POST /enroll`: an Enrollment Token (Bearer) is
 //! exchanged once for a stable Agent identity, Agent Epoch, and a fresh
-//! Agent Credential (design §4.5, §12.5). Every other Agent route requires
+//! Agent Credential (design §4.3, §10.1). Every other Agent route requires
 //! an Agent Credential; the guard in `super` enforces that boundary, so a
 //! Human Session can never enroll and an Enrollment Token can never submit
 //! reports or reach human-facing APIs.
@@ -56,8 +56,8 @@ async fn group_middleware(request: Request, next: Next) -> Response {
     response
 }
 
-/// Success payload of one Agent Enrollment (Agent wire: snake_case,
-/// design §9.1). `credential` is the full `pp_agent_…` token and is
+/// Success payload of one Agent Enrollment (Agent wire: snake_case).
+/// `credential` is the full `pp_agent_…` token and is
 /// delivered to the enrolling Agent exactly once; the Server stores only
 /// its pepper-keyed digest.
 #[derive(Debug, Serialize, ToSchema)]
@@ -74,7 +74,7 @@ pub struct EnrollResponse {
 }
 
 /// Success payload of one Recovery exchange (Agent wire: snake_case,
-/// design §4.5). The Agent identity is preserved, the Agent Epoch
+/// design §4.3). The Agent identity is preserved, the Agent Epoch
 /// advances, and `credential` is a fresh `pp_agent_…` token delivered
 /// exactly once.
 #[derive(Debug, Serialize, ToSchema)]
@@ -120,7 +120,7 @@ pub(crate) async fn enroll_handler(
         );
     };
 
-    // Independent enrollment rate limit (design §19.4).
+    // Independent enrollment rate limit.
     let limiter_key = (client.0.as_str(), "enroll");
     if state.enroll_limiter().is_blocked(limiter_key) {
         return error_response(
@@ -196,7 +196,7 @@ pub(crate) async fn enroll_handler(
 }
 
 /// Exchange a single-use Recovery Token for an Epoch advance and a fresh
-/// credential on the SAME Agent identity (design §4.5: Recovery rotates the
+/// credential on the SAME Agent identity (design §4.3: Recovery rotates the
 /// credential and advances the Agent Epoch without creating a duplicate
 /// Agent). The token arrives in the `Authorization: Bearer` header — never
 /// in a URL or body — and the same token can never recover twice.
@@ -227,7 +227,7 @@ pub(crate) async fn recover_handler(
         );
     };
 
-    // Independent recovery rate limit (design §19.4).
+    // Independent recovery rate limit.
     let limiter_key = (client.0.as_str(), "recover");
     if state.recover_limiter().is_blocked(limiter_key) {
         return error_response(

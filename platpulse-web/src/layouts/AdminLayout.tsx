@@ -35,10 +35,10 @@ export const ADMIN_SIDEBAR_QUERY = '(min-width: 64rem)'
 
 /**
  * Admin shell: Owner-only management layout with its own query cache and
- * SSE stream, structurally isolated from Public queries and events (design
+ * SSE stream, structurally isolated from Public queries and events (webui.md
  * §6.2). Every access-generation change closes the old stream, aborts
  * in-flight Admin requests, clears the sensitive Admin cache, and opens a
- * fresh stream under the new authorization (design §3.3).
+ * fresh stream under the new authorization (webui.md §3.3).
  *
  * The chrome follows Emerald's shell: a sticky h-14 header that gains
  * backdrop-blur-xl only after the page scrolls, a shared sidebar/workspace header partition,
@@ -120,7 +120,7 @@ export default function AdminLayout() {
   }, [drawerOpen])
 
   // Drawer opening moves focus inside; closing restores focus to the opener
-  // (design §10.1). The initial mount never steals focus. A drawer that ends
+  // (webui.md §10.1). The initial mount never steals focus. A drawer that ends
   // because the sidebar took over leaves focus where it is: the focused link
   // is now in the visible sidebar, while the opener is hidden at that width.
   const wasDrawerOpen = useRef(false)

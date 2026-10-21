@@ -42,7 +42,7 @@ import HomeDashboard from './components/HomeDashboard'
 import { useHomeRealtimeContext } from './layouts/HomeLayout'
 
 /**
- * Route gates (design §3.2, §3.3): Home and Admin are private by default.
+ * Route gates (webui.md §3.2, §3.3): Home and Admin are private by default.
  * The first protected render is always an explicit access check that never
  * flashes data from a previous session; Guests are guided to the login page
  * (with the requested route preserved) and non-Owners are refused with a
@@ -104,7 +104,7 @@ function RequireOwner({ children }: { children: ReactNode }) {
     if (hadSession) {
       // This app instance previously held a Session (signed out, or the
       // session was lost while Admin was open): go back through the
-      // non-leaking login path, explaining revocations (design §3.3).
+      // non-leaking login path, explaining revocations (webui.md §3.3).
       return (
         <Navigate
           to="/login"
@@ -246,7 +246,7 @@ function HomeIndex() {
   const rewardWallet = usePublicRewardWallet(generation, !resetting)
   // The projection on screen may be the one Home already held while the
   // authoritative refetch is still in flight, so the arrival's landing is
-  // provisional until that reading settles (design §15.25).
+  // provisional until that reading settles (webui.md §15.25).
   return (
     <HomeDashboard
       networks={networks.data ?? []}

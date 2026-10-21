@@ -81,7 +81,7 @@ export function auditDeepLinkNotice(state: {
 }
 
 /**
- * PAGE-ACCESS-AUDIT (design §18.2, issue #47): immutable, redacted Audit
+ * PAGE-ACCESS-AUDIT (issue #47): immutable, redacted Audit
  * review with filtering and detail/link navigation. Events are Server-owned
  * and append-only; the WebUI can never mutate, reopen, or delete them.
  * Details are the stored redacted `after` bodies (ids, instants, and counts

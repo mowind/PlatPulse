@@ -1,5 +1,4 @@
-//! Server pepper: the standalone secret file keying token digests
-//! (design §12.5, §18.1).
+//! Server pepper: the standalone secret file keying token digests.
 //!
 //! The pepper is created once by `init`, lives outside the database, and is
 //! protected with a no-follow open-then-stat policy: `init` and `serve`
@@ -26,7 +25,7 @@ const PEPPER_HEX_CHARS: usize = PEPPER_BYTES * 2;
 pub struct Pepper([u8; PEPPER_BYTES]);
 
 impl Pepper {
-    /// HMAC-SHA-256 of `message` keyed with this pepper (design §12.5).
+    /// HMAC-SHA-256 of `message` keyed with this pepper.
     pub fn hmac_digest(&self, message: &[u8]) -> [u8; PEPPER_BYTES] {
         let mut mac =
             <Hmac<Sha256> as Mac>::new_from_slice(&self.0).expect("HMAC accepts any key length");
@@ -97,7 +96,7 @@ pub fn create_pepper_file(path: &Path) -> Result<(), PepperError> {
 }
 
 /// Load and validate the pepper file with the no-follow open-then-stat
-/// policy from design §18.1.
+/// policy.
 pub fn load_pepper_file(path: &Path) -> Result<Pepper, PepperError> {
     #[cfg(unix)]
     let file = open_nofollow_readonly(path)?;

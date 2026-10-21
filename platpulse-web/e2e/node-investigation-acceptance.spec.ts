@@ -23,7 +23,7 @@ import {
 import { startDisposableServer, type DisposableServer } from "./server-harness";
 
 /**
- * One adjustable UTC window over a Node's own evidence (issue #220, design
+ * One adjustable UTC window over a Node's own evidence (issue #220, webui.md
  * §15.22).
  *
  * The acceptance of this surface is that one window answers every family of the
@@ -70,7 +70,7 @@ const SOURCE_ORDER = [
   "validator",
 ];
 
-/** The clock each family states its own evidence in (design §11.4). */
+/** The clock each family states its own evidence in. */
 const SOURCE_TIME_BASES = [
   "server_record",
   "metric_observation",

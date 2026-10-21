@@ -1,7 +1,7 @@
 //! The Observation Envelope: one uniform status/error/last-good wrapper per
 //! independently collected component.
 //!
-//! Rules (design §5.2):
+//! Rules (design §5.1):
 //! - a collection failure updates `status`/`error` but never overwrites the
 //!   last successful `latest` value;
 //! - a successful authoritative empty result (e.g. an empty list) is still a

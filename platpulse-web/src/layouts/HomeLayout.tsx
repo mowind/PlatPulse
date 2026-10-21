@@ -29,7 +29,7 @@ import platpulseMark from '../../../assets/platpulse-mark.png'
  * read, so this shell only decides whether to render Home or send Guests
  * to the login page. Authorization transitions arrive as Public `reset`
  * events: the shell re-checks the session and the Guest setting before any
- * cached projection can re-render (design §3.3, §6.3).
+ * cached projection can re-render (webui.md §3.3, §6.3).
  *
  * The chrome follows Emerald's shell: a sticky h-14 header that gains
  * backdrop-blur-xl only after the page scrolls, and a max-w-[1280px] content
@@ -80,7 +80,7 @@ function HomeLayoutContent() {
     // A Public reset means an authorization transition: revoke, expiry,
     // role change, Guest disable, or a Public privacy reset. The current
     // projection is cleared BEFORE any recheck so prior data can never
-    // flash while the new authorization resolves (design §3.3).
+    // flash while the new authorization resolves (webui.md §3.3).
     setResetting(true)
     resetPublicCache(generation + 1)
     void Promise.all([recheckSession(), revalidateSiteAccessSettings()])
@@ -110,7 +110,7 @@ function HomeLayoutContent() {
   // them the Node they left from, and lands on it, so the two would otherwise
   // race over the same scroll - the child's reveal runs first and this reset
   // then erases it. One owner per arrival: a bare Home starts at the top, a
-  // return to a known Node is placed on that Node (design §15.25).
+  // return to a known Node is placed on that Node (webui.md §15.25).
   const here = useLocation()
   const navigationType = useNavigationType()
   const previousPath = useRef(here.pathname)
@@ -128,7 +128,7 @@ function HomeLayoutContent() {
     <div data-slot="home-shell" className="flex min-h-screen flex-col">
       <BackgroundDecoration />
       {/* The header outranks everything Home paints under it: an open toolbar
-          surface lifts its own wrapper to md:z-30 (design §15.27), so a row or a
+          surface lifts its own wrapper to md:z-30 (webui.md §15.27), so a row or a
           surface scrolled into the header band has to pass under it. The Radix
           dialog tier (z-50) still covers both. */}
       <header

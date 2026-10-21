@@ -1,4 +1,4 @@
-//! Shared Host resource history at the HTTP boundary (issue #215, design §11.4).
+//! Shared Host resource history at the HTTP boundary (issue #215, design §11.6).
 //!
 //! The unit tests in crate::metric_history drive the scope-aware ledger
 //! directly. This suite drives the same seam the way an Operator and an Agent
@@ -89,7 +89,7 @@ impl Harness {
     async fn boot() -> Self {
         let harness = Self::open(TempDir::new().unwrap()).await;
         // The Agent group refuses every request until the first Owner exists
-        // (design §12.2), so the acceptance path must start here.
+        // (design §13.3), so the acceptance path must start here.
         let hash = auth::hash_password(b"correct horse battery").unwrap();
         auth::create_owner(harness.state.db(), "admin", &hash)
             .await
@@ -355,7 +355,7 @@ fn fixture_report(agent_id: &str, sequence: u64, host: &HostReport, observed_at:
     }
 
     // The mount paths the Agent collected are the dimensions its storage series
-    // are identified by (design §11.5, Story 52).
+    // are identified by (design §11.6, Story 52).
     let mounts: Vec<Value> = host
         .mounts
         .iter()
@@ -1474,7 +1474,7 @@ async fn a_low_space_pause_counts_the_losses_of_each_mount_apart() {
 // ---------------------------------------------------------------------------
 
 /// The Agent page's storage-mount route: the mount paths the Agent's stored
-/// Host evidence is identified by (design §11.5, Stories 46, 51 and 52).
+/// Host evidence is identified by (design §11.6, Stories 46, 51 and 52).
 fn storage_mounts_uri(agent_id: &str) -> String {
     format!("/api/admin/v1/agents/{agent_id}/storage-mounts")
 }

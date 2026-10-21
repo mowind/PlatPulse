@@ -12,7 +12,7 @@
 //! same question, and the two would drift.
 //!
 //! Two rules shape every answer below, and they come straight from the design
-//! (§5.1, §11.6, issue #213/#214/#217):
+//! (design §5.1, §11.6, issue #213/#214/#217):
 //!
 //! * Unknown is never zero. A source with no evidence says so and names why —
 //!   never observed, released by cleanup, before the Agent was enabled, or
@@ -176,7 +176,7 @@ impl ResolvedWindow {
     /// Every bound the answer applied is stated here rather than left for a
     /// client to assume: the answered range, whether it was clipped, the widest
     /// window the Server accepts, how far the raw tier reaches, and the presets
-    /// themselves (design §15.16, story 54).
+    /// themselves (webui.md §15.22, story 54).
     pub fn to_response(&self) -> InvestigationWindowResponse {
         InvestigationWindowResponse {
             preset: self.preset.clone(),
@@ -377,7 +377,7 @@ impl Coverage {
 
 /// The clock a source's timestamps belong to.
 ///
-/// The four clocks of an investigation are not interchangeable (design §11.4):
+/// The four clocks of an investigation are not interchangeable:
 /// a metric observation time is the Agent's clock, a peer bucket is the Server's
 /// receipt clock, an Incident is judged at evaluation time, and a Validator
 /// snapshot carries a third party's own timestamp.

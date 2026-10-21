@@ -790,7 +790,7 @@ describe('App shell with private Home', () => {
     expect(within(hostGroup).getByText('↓ 4.00 KiB/s')).toBeTruthy()
     // The retained-sample explanation opposite the section label is gone; the
     // label row carries nothing visible but the left-aligned Metric Window
-    // selector (§15.38), with Live selected by default. "Latest 60 seconds"
+    // selector (webui.md §15.38), with Live selected by default. "Latest 60 seconds"
     // still names the section, for assistive technology only.
     expect(within(metricsSection).queryByText(/Real retained samples/)).toBeNull()
     const sectionTitle = metricsSection.querySelector('header h2')

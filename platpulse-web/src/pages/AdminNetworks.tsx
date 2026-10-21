@@ -45,7 +45,7 @@ import {
 } from '../components/AdminPage'
 
 /**
- * PAGE-ADMIN-NETWORKS and PAGE-ADMIN-NETWORK-DETAIL (design §4.3, §7.1):
+ * PAGE-ADMIN-NETWORKS and PAGE-ADMIN-NETWORK-DETAIL (design §4.5):
  * the Owner-only Network Registry. The complete validated identity tuple
  * (network_key, display name, genesis hash, chain ID, P2P network ID, and
  * address HRP) is managed through explicit Owner mutations only — observed

@@ -31,7 +31,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
 
-/// The Server-owned Agent Attention kinds (design §8.4.2). Node, Network, and
+/// The Server-owned Agent Attention kinds (design §8.5). Node, Network, and
 /// Settings kinds are never acknowledgeable.
 #[derive(
     Debug,
@@ -122,7 +122,7 @@ impl AttentionSubjectKind {
     }
 }
 
-/// One Server-owned Attention Item (design §8.4.2, §15.6).
+/// One Server-owned Attention Item (design §8.5, §15.6).
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct AttentionItem {

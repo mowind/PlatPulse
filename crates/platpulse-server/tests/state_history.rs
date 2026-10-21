@@ -1,5 +1,5 @@
 //! Recorded synchronization and consensus state history at the HTTP boundary
-//! (issue #217, stories 53 and 59, design §11.4 and §11.6).
+//! (issue #217, stories 53 and 59, design §11.4 and §11.7).
 //!
 //! The unit tests in crate::state_history drive the state vector, the ledger and
 //! the anchor rule directly. This suite drives the same seam the way an Operator
@@ -89,7 +89,7 @@ impl Harness {
     async fn boot() -> Self {
         let harness = Self::open(TempDir::new().unwrap()).await;
         // The Agent group refuses every request until the first Owner exists
-        // (design §12.2), so the acceptance path must start here.
+        // (design §13.3), so the acceptance path must start here.
         let hash = auth::hash_password(b"correct horse battery").unwrap();
         auth::create_owner(harness.state.db(), "admin", &hash)
             .await

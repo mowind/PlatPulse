@@ -1,5 +1,5 @@
-//! Agent Enrollment, Recovery, and credential lifecycle (design §4.5,
-//! §12.5, §12.6).
+//! Agent Enrollment, Recovery, and credential lifecycle (design §4.3,
+//! §10.1).
 //!
 //! An Enrollment Token is a short-lived, single-use secret that can only be
 //! exchanged once for a stable Agent identity (UUID), the Agent Epoch, and
@@ -12,7 +12,7 @@
 //! the credential plaintext ever touches the database, argv, URLs, or error
 //! messages.
 //!
-//! Token formats follow §12.5: `pp_enroll_<token_id>_<secret>`,
+//! Token formats are `pp_enroll_<token_id>_<secret>`,
 //! `pp_recover_<token_id>_<secret>` for recovery, and
 //! `pp_agent_<credential_id>_<secret>` for Agent Credentials. Lookup
 //! happens by the non-sensitive id; the digest is compared in constant
@@ -32,13 +32,13 @@ use crate::auth::{
 use crate::database::ServerDatabase;
 use crate::secrets::Pepper;
 
-/// Enrollment Token prefix from design §12.5.
+/// Enrollment Token prefix.
 pub const ENROLLMENT_TOKEN_PREFIX: &str = "pp_enroll_";
 
-/// Recovery Token prefix from design §12.5.
+/// Recovery Token prefix.
 pub const RECOVERY_TOKEN_PREFIX: &str = "pp_recover_";
 
-/// Agent Credential prefix from design §12.5.
+/// Agent Credential prefix.
 pub const AGENT_CREDENTIAL_PREFIX: &str = "pp_agent_";
 
 /// Secret half of an Agent Credential: 256 bits, hex-encoded.
@@ -74,14 +74,14 @@ pub const CREDENTIAL_OVERLAP_DEFAULT: Duration = Duration::from_secs(24 * 60 * 6
 /// Failed recovery attempts per client inside the window.
 pub const RECOVER_MAX_ATTEMPTS: u32 = 10;
 
-/// Fixed window for the recovery rate limiter (design §19.4: Recovery has
+/// Fixed window for the recovery rate limiter (Recovery has
 /// an independent rate limit, like login/Enrollment/AgentReport).
 pub const RECOVER_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 /// Failed enrollment attempts per client inside the window.
 pub const ENROLL_MAX_ATTEMPTS: u32 = 10;
 
-/// Fixed window for the enrollment rate limiter (design §19.4: Enrollment
+/// Fixed window for the enrollment rate limiter (Enrollment
 /// has an independent rate limit, like login/Recovery/AgentReport).
 pub const ENROLL_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(15 * 60);
 
@@ -188,7 +188,7 @@ fn new_agent_credential() -> (String, String) {
 
 /// Create a single-use Enrollment Token with the given lifetime and store
 /// only its pepper-keyed digest. `actor` names the audit principal (`None`
-/// means a CLI operator, design §18.2). Returns the record including the
+/// means a CLI operator). Returns the record including the
 /// full token; the full token is delivered exactly once.
 pub async fn create_enrollment_token(
     db: &ServerDatabase,
@@ -276,7 +276,7 @@ impl PartialEq for RecoveryError {
     }
 }
 
-/// Create a single-use Recovery Token for an existing Agent (design §4.5:
+/// Create a single-use Recovery Token for an existing Agent (design §4.3:
 /// when credentials are lost, the Owner issues a one-time Recovery Token
 /// for that Agent). Only the digest is stored; the full token is delivered
 /// exactly once.
@@ -354,7 +354,7 @@ pub struct RecoveredAgent {
 }
 
 /// Exchange a single-use Recovery Token for an Epoch advance and a fresh
-/// credential on the SAME Agent identity (design §4.5: Recovery rotates the
+/// credential on the SAME Agent identity (design §4.3: Recovery rotates the
 /// credential and advances the Agent Epoch without creating a duplicate
 /// Agent). All prior credentials are revoked in the same transaction; a
 /// consumed, expired, revoked, or unknown token never touches the Agent.
@@ -682,7 +682,7 @@ impl PartialEq for RotationError {
     }
 }
 
-/// Rotate an Agent credential (design §12.6: overlap rotation supported;
+/// Rotate an Agent credential (design §10.1: overlap rotation supported;
 /// revoke takes effect immediately). A fresh credential is issued; every
 /// currently valid credential either stays valid through an explicit
 /// overlap window or is revoked immediately, per `revoke_previous`.
@@ -829,7 +829,7 @@ impl PartialEq for RevokeError {
     }
 }
 
-/// Revoke one Agent credential immediately (design §12.6: revoke takes
+/// Revoke one Agent credential immediately (design §10.1: revoke takes
 /// effect immediately). The audit row records only the credential id and
 /// instant — never the credential or its digest.
 pub async fn revoke_agent_credential(

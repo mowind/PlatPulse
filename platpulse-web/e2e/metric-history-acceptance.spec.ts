@@ -710,8 +710,8 @@ test.describe('Aggregate Node metric history (issue #214)', () => {
 })
 
 /**
- * Shared Host resource history acceptance (issue #215, design §11.5 and §11.6,
- * WebUI §15.17): the machine an Agent observes is collected once, stored once,
+ * Shared Host resource history acceptance (issue #215, design §11.6,
+ * webui.md §15.17): the machine an Agent observes is collected once, stored once,
  * and counted once, so the Agent page and every Node page of that Agent answer
  * the same series, while the Node's own Process series stays a different thing
  * on the same screen. A storage series is named by the mount path the Agent

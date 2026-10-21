@@ -251,7 +251,7 @@ describe('PAGE-ADMIN-SILENCES (Alerts Silences)', () => {
     expect(matcher.getAttribute('aria-invalid')).toBe('true')
     expect(matcher.getAttribute('aria-describedby')).toBe('silence-matcher-value-error')
     expect(screen.getByText('Enter a matcher value for the selected matcher kind.')).toBeTruthy()
-    // The page summary stays alongside the field-level message (§10.3).
+    // The page summary stays alongside the field-level message (webui.md §10.3).
     expect(
       screen.getByText('A matcher value is required unless the matcher kind is all.'),
     ).toBeTruthy()

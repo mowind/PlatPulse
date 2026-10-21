@@ -1,5 +1,5 @@
 //! Capacity visibility and low-space protection for the Server database
-//! filesystem (issue #212, design §11.4, parent #202 stories 43-46).
+//! filesystem (issue #212, design §11.5, parent #202 stories 43-46).
 //!
 //! The Server writes two very different kinds of data:
 //!

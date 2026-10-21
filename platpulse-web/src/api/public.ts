@@ -298,7 +298,7 @@ function samePrefix(queryKey: readonly unknown[], prefix: readonly unknown[]): b
 }
 
 /**
- * High-frequency invalidations are coalesced (design webui.md §3): the Public
+ * High-frequency invalidations are coalesced (webui.md §6.3): the Public
  * stream can publish a Network change on every Agent report, and one refetch
  * per event cancels the previous in-flight REST read before it can complete.
  * Pending keys are flushed at most once per window, and the flush never cancels

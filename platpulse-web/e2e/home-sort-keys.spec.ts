@@ -44,8 +44,8 @@ const CONVERGENCE_NETWORK_KEY = 'home-convergence'
 const CONVERGENCE_LETTERS = ['H', 'K', 'L', 'M', 'N', 'P']
 
 /** The card grid, the one Node link inside every card, and the Compact list's
- *  own table. The slot markers are contract, not internals: §15.25 publishes
- *  `data-slot="node-link"` and §15.24's card/list acceptance already scopes by
+ *  own table. The slot markers are contract, not internals: webui.md §15.25 publishes
+ *  `data-slot="node-link"` and webui.md §15.24's card/list acceptance already scopes by
  *  the grid it names, so the order below is read the way the delivered Home specs
  *  read it, while every value and every accessible name is read through its role. */
 const nodeGrid = (page: Page) => page.locator('[data-slot="node-grid"]')

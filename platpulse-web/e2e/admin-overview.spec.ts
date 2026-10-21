@@ -318,7 +318,7 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     // either way they never overlap.
     const node = (await nodePreview.boundingBox())!
     const agent = (await agentPreview.boundingBox())!
-    // §8.4.7: side by side on the desktop projects, stacked below them.
+    // webui.md §8.4.7: side by side on the desktop projects, stacked below them.
     if ((page.viewportSize()?.width ?? 0) >= 1280) {
       expect(Math.abs(node.y - agent.y)).toBeLessThan(1)
       expect(agent.x).toBeGreaterThanOrEqual(node.x + node.width - 1)

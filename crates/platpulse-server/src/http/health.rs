@@ -1,4 +1,4 @@
-//! Minimal operational health routes (design §20.3).
+//! Minimal operational health routes (design §12).
 //!
 //! `/health/live` only proves the event loop responds; `/health/ready`
 //! checks the components the Server owns (SQLite migrations, the first

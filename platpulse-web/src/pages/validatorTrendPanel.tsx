@@ -1,5 +1,5 @@
 /**
- * PAGE-ADMIN-VALIDATOR-TREND (design §15.4; webui.md §15.21): the daily
+ * PAGE-ADMIN-VALIDATOR-TREND (design §15.4.1; webui.md §15.21): the daily
  * snapshot trend of one chain identity over a bounded window of the Server's
  * *configured* calendar.
  *

@@ -1,9 +1,9 @@
 //! `/api/public/v1` route group — the Home Public Projection and human
-//! session lifecycle (design §10.2, §13.1).
+//! session lifecycle (design §10.2, §8.4).
 //!
 //! Middleware and DTO namespace are independent from Admin and Agent: DTOs
 //! live in this module and are never reused as Admin DTOs by runtime field
-//! filtering (design §13.1). Guest access is disabled by default, so every
+//! filtering (design §2.1). Guest access is disabled by default, so every
 //! route except `POST /login` requires a valid human Session; the session
 //! guard itself lives in `super` and is attached in `build_app`.
 
@@ -63,7 +63,7 @@ pub(crate) async fn public_events(
     );
     // Human sessions bind the stream to the connected role so revoke,
     // expiry, disable, and role change all close it; anonymous Guests are
-    // bound to the Site Access Mode (design §13.5).
+    // bound to the Site Access Mode (design §10.2).
     let stream: Pin<
         Box<dyn Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>> + Send>,
     > = match session {
@@ -100,8 +100,8 @@ pub struct LoginRequest {
 }
 
 /// Non-sensitive session projection plus the synchronizer CSRF token
-/// (design §10.2). Fields are camelCase per the browser wire rule
-/// (§13.3); timestamps are RFC 3339 UTC.
+/// (design §10.2). Fields are camelCase per the browser wire rule;
+/// timestamps are RFC 3339 UTC.
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionResponse {
@@ -183,7 +183,7 @@ pub(crate) async fn login_handler(
         }
     };
 
-    // 2. Setup gate (design §10.2): no Owner, no login.
+    // 2. Setup gate (design §13.3): no Owner, no login.
     match crate::auth::has_owner(state.db()).await {
         Ok(true) => {}
         Ok(false) => {
@@ -220,7 +220,7 @@ pub(crate) async fn login_handler(
         );
     }
 
-    // 4. Independent login rate limit (design §19.4).
+    // 4. Independent login rate limit (design §10.2).
     let limiter_key = (client.0.as_str(), body.username.as_str());
     if state.login_limiter().is_blocked(limiter_key) {
         return error_response(

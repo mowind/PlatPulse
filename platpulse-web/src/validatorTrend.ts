@@ -1,5 +1,5 @@
 /**
- * Owner Validator daily-trend presentation (issue #219, design §15.4;
+ * Owner Validator daily-trend presentation (issue #219, design §15.4.1;
  * webui.md §15.21).
  *
  * Presentation only: it turns the Server's bounded window into the statements
@@ -60,7 +60,7 @@ export interface ValidatorTrendPreset {
 /**
  * A short window is answered in a single page; a long window is answered as
  * bounded pages the Owner walks with the older-days control, so a longer
- * preset never turns into a longer response (design §15.21).
+ * preset never turns into a longer response (webui.md §15.21).
  */
 export const VALIDATOR_TREND_PRESETS: readonly ValidatorTrendPreset[] = [
   { label: '7 days', days: 7, limit: 8 },

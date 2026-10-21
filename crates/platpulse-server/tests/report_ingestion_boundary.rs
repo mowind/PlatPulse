@@ -58,7 +58,7 @@ impl Harness {
         );
         let state = AppState::new(database, None, auth);
         // The Agent group refuses every request until the first Owner
-        // exists (design §12.2), so the acceptance path must start here.
+        // exists (design §13.3), so the acceptance path must start here.
         let hash = auth::hash_password(b"correct horse battery").unwrap();
         auth::create_owner(state.db(), "admin", &hash)
             .await

@@ -3,7 +3,7 @@
 //! The full document (including the `agent` tag) is exported through the
 //! `--print-openapi` CLI for `docs/openapi/openapi.json`; the browser client
 //! is generated from a filtered copy that drops `agent` operations and their
-//! schemas (design §13.4). Public and Admin routes use independent tags.
+//! schemas (design §8.4). Public and Admin routes use independent tags.
 
 use utoipa::Modify;
 use utoipa::OpenApi;
@@ -12,7 +12,7 @@ use utoipa::openapi::{Components, OpenApi as OpenApiDoc};
 
 use crate::http::health;
 
-/// Document the Agent API's Bearer authentication (design §12.5/§12.6):
+/// Document the Agent API's Bearer authentication (design §10.1):
 /// `POST /api/agent/v1/enroll` authenticates a one-time Enrollment Token
 /// (`pp_enroll_…`), every other Agent route an Agent Credential
 /// (`pp_agent_…`). Human routes use cookie sessions and must stay

@@ -8,7 +8,7 @@ import {
   readMetricWindow,
 } from './metricWindow'
 
-describe('Metric Window (ADR 0012, §15.38)', () => {
+describe('Metric Window (ADR 0012, webui.md §15.38)', () => {
   it('reads the URL parameter and falls back to Live for anything outside the enum', () => {
     expect(readMetricWindow(null)).toEqual({ window: 'live', canonical: true })
     for (const window of ['1h', '6h', '24h', '7d'] as const) {

@@ -21,6 +21,7 @@ Operating blockchain infrastructure requires more than a single process health c
 - **Consensus visibility** — consensus current state and chain progress
 - **Peer insights** — per-Node peer connectivity, presence intervals, and public country distribution
 - **Validator analytics** — Validator Registry/Links, a PlatScan-backed Provider, and ranking/reward metrics and aggregates
+- **Trustworthy history** — 24 hours of raw Node and shared Host metric samples, 1-minute and 5-minute aggregate tiers that answer up to 30 days, a recorded sync/consensus state log, and a one-window Node investigation that names every gap instead of filling it
 - **Alerts** — typed rules, incidents, silences, and maintenance windows with at-least-once notification delivery
 
 ## Architecture
@@ -69,23 +70,27 @@ release/                # systemd units, Compose, OCI context, qualification pro
 
 ### Home (read-only)
 
-- `/` — Active Node dashboard with Network filters, compact summary cards, and the public Peer country map (offline Natural Earth geometry served same-origin; no runtime CDN or tile service)
-- `/nodes/:nodeId` — unified Node Detail: shared Header, six KPIs plus map, Chain state / Process / Host resources, conditionally a compact Validator performance card, and six live charts
+- `/` — Active Node dashboard: six overview tiles (Active Nodes, Healthy Nodes, Attention, Balance, Cumulative blocks, Cumulative rewards), the public Peer country map (offline Natural Earth geometry served same-origin; no runtime CDN or tile service), and a card or list view of the Nodes with search, Health and Validator-status filters, and stable sorts. The whole reading lives in an ordinary URL, and returning from a Node lands back on the Node it was left from.
+- `/nodes/:nodeId` — unified Node Detail: shared Header, six KPIs plus map, Chain state / Process / Host resources, conditionally a compact Validator performance card, and six charts with a Metric Window of `Live · 1h · 6h · 24h · 7d` (ADR 0012) read from the Server's raw samples and aggregate tiers
 - Anonymous reading is gated by the site-level Site Access Mode (`Private` by default; `Public` allows the permitted anonymous GET/SSE paths). Viewer sessions can read Home even in Private mode.
 
 ### Admin (Owner-only)
 
-- `/admin` — Overview with the attention queue and operational summary
-- `/admin/agents`, `/admin/agents/enroll`, `/admin/agents/:agentId` — Agent inventory, onboarding, identity, credential status, and diagnostics
-- `/admin/nodes`, `/admin/nodes/:nodeId` — Node list and the diagnostic subset of the Admin Node Detail
+- `/admin` — Overview with the attention queue (with shared Agent Attention Acknowledgment), Node Health Summary, and Agent inventory previews
+- `/admin/agents`, `/admin/agents/enroll`, `/admin/agents/:agentId` — Agent inventory, onboarding, display name/notes, credential status and revocation, Agent Removal, diagnostics, and shared Host resource history by mount path
+- `/admin/nodes`, `/admin/nodes/:nodeId`, `/admin/nodes/:nodeId/investigation` — Node list, the diagnostic Admin Node Detail with Process, sync/consensus state and Host metric history, Node Purge, and one UTC investigation window over all of a Node's evidence
 - `/admin/networks`, `/admin/networks/:networkKey` — Network Registry metadata and identity/mismatch diagnostics
+- `/admin/validators`, `/admin/validators/:validatorId` — automatic Validator identity, current status, and daily snapshot trends on the configured calendar
+- `/admin/alerts/incidents`, `/admin/alerts/rules`, `/admin/alerts/silences`, `/admin/alerts/maintenance` — Incident history with durable acknowledgment, Alert Rules with Network/Node overrides, Silences, and Maintenance Windows
+- `/admin/notifications` (events, deliveries, channels) — Notification Event/Delivery history, channel test, and explicit safe retry
+- `/admin/operations`, `/admin/doctor`, `/admin/retention`, `/admin/backups` — Operation ledger and storage-capacity protection, Doctor diagnostics, retention policy with bound impact preview and execution, and backup artifact inspection/verification
 - `/admin/settings` — global Block History window, Site Access Mode, and Geo provider (`Disabled` / `Local MMDB` / `IPinfo` / `GeoJS`)
 - `/admin/access/sessions`, `/admin/access/audit` — session review/revoke and immutable redacted audit
 - Unknown paths under `/admin` render the registered Admin fallback, not a legacy page.
 
 ### Server/API and Agent extensions
 
-The Server/Admin API additionally exposes People, Validator management/links/analytics, Alerts (rules, incidents, silences, maintenance), Notifications, Operations, Retention, Backups, Restore, Doctor, Node Transfer, and Agent recovery/credential rotation/revocation/removal. Some of these are DTO/operation surfaces without a dedicated SPA page; availability of an API does not imply a registered page. The Agent adds Enrollment, Recovery, Rotation/Revocation, boot/shutdown lifecycle reporting, spool policy/diagnostics, block resolution, Peer Snapshots, time exchange, and declaration-backed coordinated v1→v2 Inventory cutover.
+The Server/Admin API additionally exposes People, Restore validation, Node Transfer, and Agent Recovery/credential rotation; these have no registered SPA page, and availability of an API does not imply a registered page. Backups are created and restored offline through the CLI (ADR 0008). The Agent adds Enrollment, Recovery, Rotation/Revocation, boot/shutdown lifecycle reporting, spool policy/diagnostics, block resolution, Peer Snapshots, time exchange, and declaration-backed coordinated v1→v2 Inventory cutover.
 
 ## Tech stack
 
@@ -116,7 +121,7 @@ Each phase is independently deployable; no empty abstractions or schemas are add
 
 ## Non-goals
 
-PlatPulse explicitly does **not** include: a TUI, Agent endpoint failover, remote control (no Server-pushed endpoints, commands, restarts, or upgrades), full transaction body/receipt/trace indexing, a block explorer or archive database, multi-tenant/HA/PostgreSQL clustering, SSO/OIDC/TOTP/WebAuthn, or Windows/macOS Agent support.
+PlatPulse explicitly does **not** include: a TUI, Agent endpoint failover, remote control (no Server-pushed endpoints, commands, restarts, or upgrades), full transaction body/receipt/trace indexing, a block explorer or archive database, multi-tenant/HA/PostgreSQL clustering, SSO/OIDC/TOTP/WebAuthn, or Windows/macOS Agent support. An opt-in PostgreSQL Server storage backend is under design in [ADR 0013](docs/adr/0013-postgresql-server-storage-backend.md) (Proposed, not implemented); SQLite remains the only shipped backend.
 
 ## Project principles
 
@@ -139,12 +144,17 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
 cargo deny check && cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2026-0381
 
+# Design section references in code, tests, and Web comments
+python3 scripts/check-design-refs.py
+
 # Web (platpulse-web)
 cd platpulse-web
 npm ci
 npm run lint && npm run typecheck && npm test && npm run build
 npm run test:e2e   # fixed Playwright projects against a temporary dev-mode Server
 ```
+
+Code, tests, and Web comments cite the design documents by section: `design §X.Y` means a heading of [`docs/design/platpulse.md`](docs/design/platpulse.md) and `webui.md §X.Y` a heading of [`docs/design/webui.md`](docs/design/webui.md). `scripts/check-design-refs.py` fails on a cited section that no longer exists, on a line number written as a section, and on a bare `§` without its source; Server migrations and the generated client are excluded.
 
 The e2e suite (`npm run test:e2e`) boots a fresh temporary SQLite Server around the production WebUI build, provisions an Owner and Viewer through the password-from-stdin CLI, seeds independent Nodes, and runs the fixed Playwright projects: `phone-360-touch`, `phone-390-touch`, `tablet-768-touch`, `desktop-1280`, and `desktop-1440` (the Emerald visual-migration acceptance matrix). The state directory is temporary and its seed data is only for the local test process; it is not a production bootstrap path.
 
@@ -176,7 +186,7 @@ scripts/final-release-qualification.sh \
 scripts/deploy-local.sh                     # local dev: rebuild and restart user-level services
 ```
 
-CI lives in `.github/workflows/`: `ci.yml` runs the Rust and WebUI gates, release packaging, the e2e matrix, and the release-candidate harness; `qualification.yml` and `release.yml` run the resilience/profile gates and publish native artifacts. See [`docs/release-qualification.md`](docs/release-qualification.md) and [`docs/security-review.md`](docs/security-review.md).
+CI lives in `.github/workflows/`: `ci.yml` runs the design-reference check, the Rust and WebUI gates (including OpenAPI and generated-client freshness), release packaging, the e2e matrix, and the release-candidate harness; `qualification.yml` and `release.yml` run the resilience/profile gates and publish native artifacts. See [`docs/release-qualification.md`](docs/release-qualification.md) and [`docs/security-review.md`](docs/security-review.md).
 
 ## Server setup and login
 
@@ -198,7 +208,7 @@ platpulse-server viewer create --config /etc/platpulse/server.toml --username vi
 platpulse-server serve --config /etc/platpulse/server.toml
 ```
 
-Until an Owner exists, `/health/live` succeeds while `/health/ready` reports `setup_required`, and no Agent Enrollment is allowed. Home and Admin are private by default: unauthenticated visitors are guided to the login page, and Site Access Mode (Owner-configured under `/admin/settings`) is the single switch that opens read-only Home to anonymous guests.
+Until an Owner exists, `/health/live` succeeds while `/health/ready` reports `setup_required`, and no Agent Enrollment is allowed. Home and Admin are private by default: unauthenticated visitors are guided to the login page, and Site Access Mode (Owner-configured under `/admin/settings`) is the single switch that opens read-only Home to anonymous guests. A human Session has only an absolute lifetime (7 days from creation) and no idle timeout; it ends earlier on logout, Owner revocation, or a password, role, or disabled-state change of its user.
 
 Offline operations run while the Server is stopped:
 
@@ -242,10 +252,10 @@ The Enrollment Token cannot submit Agent Reports or reach human-facing APIs; the
 
 ## Documentation
 
-- [`docs/design/platpulse.md`](docs/design/platpulse.md) — design authority: architecture, invariants, protocol, phases, and acceptance criteria
+- [`docs/design/platpulse.md`](docs/design/platpulse.md) — design authority: product boundary, runtime and domain model, observation, Agent and Server design, identity and security, reliability, deployment, the current acceptance baseline, and the accepted management target
 - [`docs/design/webui.md`](docs/design/webui.md) — WebUI page/route contracts and the routed-surface matrix
 - [`CONTEXT.md`](CONTEXT.md) — domain terminology and banned synonyms
-- [`docs/adr/`](docs/adr/) — architecture decision records (Agent Store receipt lifecycle, Emerald visual authority, Admin workspace, Owner removal/Node purge, automatic Validator identity, Home Node Card, Server-managed Inventory Revision, offline backup, receipt body slimming, Home list-selection geo aggregate)
+- [`docs/adr/`](docs/adr/) — architecture decision records (Agent Store receipt lifecycle, Emerald visual authority, Admin workspace, Owner removal/Node purge, automatic Validator identity, Home Node Card, Server-managed Inventory Revision, offline backup, receipt body slimming, Home list-selection geo aggregate, Agent-stamped Block Summary identity, Public Node Detail Metric Window, and the proposed PostgreSQL storage backend)
 - [`docs/deployment.md`](docs/deployment.md) — release bundles, installation, and the single-process layout
 - [`docs/release-qualification.md`](docs/release-qualification.md) — resilience, recovery rehearsal, and final qualification
 - [`docs/security-review.md`](docs/security-review.md) — Phase 5 security matrix and residual risks

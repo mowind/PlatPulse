@@ -313,7 +313,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Redacted Audit trail scoped to one Agent (design §9, §14.3: security\nmutations carry a redacted Audit link; immutable event listing).",
+        "summary": "Redacted Audit trail scoped to one Agent (design §13.3: security\nmutations carry a redacted Audit link; immutable event listing).",
         "operationId": "admin_agent_audit",
         "parameters": [
           {
@@ -437,7 +437,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Revoke one Agent credential immediately (design §12.6: revoke takes\neffect immediately). The Audit row records the credential id and\ninstant only.",
+        "summary": "Revoke one Agent credential immediately (design §10.1: revoke takes\neffect immediately). The Audit row records the credential id and\ninstant only.",
         "operationId": "admin_revoke_credential",
         "parameters": [
           {
@@ -718,7 +718,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Create a single-use Recovery Token for an existing Agent (credential\nloss, design §4.5). The response is the Owner's only plaintext copy.",
+        "summary": "Create a single-use Recovery Token for an existing Agent (credential\nloss, design §4.3). The response is the Owner's only plaintext copy.",
         "operationId": "admin_recovery_token",
         "parameters": [
           {
@@ -1101,7 +1101,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "PAGE-ADMIN-INCIDENT: one Incident with its immutable evidence, the\ncurrent independent evaluation state of its `(rule, subject)`, and any\noverlapping Silence/Maintenance suppressions (both reasons stay visible\nindependently; webui.md §8.3).",
+        "summary": "PAGE-ADMIN-INCIDENT: one Incident with its immutable evidence, the\ncurrent independent evaluation state of its `(rule, subject)`, and any\noverlapping Silence/Maintenance suppressions (both reasons stay visible\nindependently; webui.md §15.8).",
         "operationId": "alert_incident_detail",
         "parameters": [
           {
@@ -1252,7 +1252,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "POST /api/admin/v1/alerts/maintenance: create a time-bounded\nMaintenance Window for an Agent, Node, or Network scope. Expected\nconditions are a typed allowlist of rule keys; an empty list matches any\nrule. Maintenance marks expected Incidents suppressed and suppresses\nexpected delivery, without changing facts, evaluation, or Node Health\n(design §17.5).",
+        "summary": "POST /api/admin/v1/alerts/maintenance: create a time-bounded\nMaintenance Window for an Agent, Node, or Network scope. Expected\nconditions are a typed allowlist of rule keys; an empty list matches any\nrule. Maintenance marks expected Incidents suppressed and suppresses\nexpected delivery, without changing facts, evaluation, or Node Health.",
         "operationId": "create_maintenance_window",
         "requestBody": {
           "content": {
@@ -1835,7 +1835,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "POST /api/admin/v1/alerts/silences: create a time-bounded delivery\nSilence. It suppresses matching delivery only; evaluation and Incidents\nare untouched (design §17.5, webui.md §8.3).",
+        "summary": "POST /api/admin/v1/alerts/silences: create a time-bounded delivery\nSilence. It suppresses matching delivery only; evaluation and Incidents\nare untouched (webui.md §15.8).",
         "operationId": "create_silence",
         "requestBody": {
           "content": {
@@ -1997,7 +1997,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Owner-only immutable Audit listing (design §18.2, issue #47): newest\nfirst, bounded, with optional `event_kind`/`target_kind` filters and an\n`audit_event_id` cursor for older pages. Details are the redacted\n`after_json` bodies written by construction.",
+        "summary": "Owner-only immutable Audit listing (issue #47): newest\nfirst, bounded, with optional `event_kind`/`target_kind` filters and an\n`audit_event_id` cursor for older pages. Details are the redacted\n`after_json` bodies written by construction.",
         "operationId": "audit_list",
         "parameters": [
           {
@@ -3223,7 +3223,7 @@
           "admin"
         ],
         "summary": "The one window the other evidence routes are read inside.",
-        "description": "This answers coordinates, coverage and boundaries only: where a family's\nevidence is for a window, how complete it is, and which boundary explains a\nstretch it cannot answer. The evidence itself stays with that family's own\nroute, so no second copy of the history is served from here and the two can\nnever drift apart (design §7, §11.4).",
+        "description": "This answers coordinates, coverage and boundaries only: where a family's\nevidence is for a window, how complete it is, and which boundary explains a\nstretch it cannot answer. The evidence itself stays with that family's own\nroute, so no second copy of the history is served from here and the two can\nnever drift apart (design §11.4).",
         "operationId": "admin_node_investigation",
         "parameters": [
           {
@@ -4544,7 +4544,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Explicit, audited retry of a retryable Delivery (issue #207, Stories\n30-33, design webui.md §15.10). It re-arms the same Delivery row for the\nworker: it creates a new Delivery attempt on the next worker pass but\nnever a new Notification Event, Incident, or business transition, and it\nnever rewrites history - the attempt count, the last provider result, and\nevery recorded attempt are kept, and the new pass appends attempt N+1.\nParallel retries racing with a *different* request id are refused\n(409 `delivery_already_queued`), while identical concurrent retries\ncarrying one request id are a single command that replays its recorded\nresult with 200 and `deduplicated: true`; pending and in_flight are\nalready queued, and succeeded, suppressed, and\ncancelled are not retryable (409 `delivery_not_retryable`). The re-armed\nDelivery is still re-checked for suppression and subject deletion right\nbefore channel handoff, so an explicit retry never becomes a blind resend.\nThe body carries the same opaque request id as a test command: a repeated\nid with the same intent replays the recorded Server result, a different\nintent is a conflict, and the result stays reconcilable after a restart.",
+        "summary": "Explicit, audited retry of a retryable Delivery (issue #207, Stories\n30-33, webui.md §15.10). It re-arms the same Delivery row for the\nworker: it creates a new Delivery attempt on the next worker pass but\nnever a new Notification Event, Incident, or business transition, and it\nnever rewrites history - the attempt count, the last provider result, and\nevery recorded attempt are kept, and the new pass appends attempt N+1.\nParallel retries racing with a *different* request id are refused\n(409 `delivery_already_queued`), while identical concurrent retries\ncarrying one request id are a single command that replays its recorded\nresult with 200 and `deduplicated: true`; pending and in_flight are\nalready queued, and succeeded, suppressed, and\ncancelled are not retryable (409 `delivery_not_retryable`). The re-armed\nDelivery is still re-checked for suppression and subject deletion right\nbefore channel handoff, so an explicit retry never becomes a blind resend.\nThe body carries the same opaque request id as a test command: a repeated\nid with the same intent replays the recorded Server result, a different\nintent is a conflict, and the result stays reconcilable after a restart.",
         "operationId": "retry_delivery",
         "parameters": [
           {
@@ -6945,7 +6945,7 @@
         "tags": [
           "agent"
         ],
-        "summary": "Exchange a single-use Recovery Token for an Epoch advance and a fresh\ncredential on the SAME Agent identity (design §4.5: Recovery rotates the\ncredential and advances the Agent Epoch without creating a duplicate\nAgent). The token arrives in the `Authorization: Bearer` header — never\nin a URL or body — and the same token can never recover twice.",
+        "summary": "Exchange a single-use Recovery Token for an Epoch advance and a fresh\ncredential on the SAME Agent identity (design §4.3: Recovery rotates the\ncredential and advances the Agent Epoch without creating a duplicate\nAgent). The token arrives in the `Authorization: Bearer` header — never\nin a URL or body — and the same token can never recover twice.",
         "operationId": "recover_handler",
         "responses": {
           "200": {
@@ -7845,7 +7845,7 @@
           },
           "collectionPaused": {
             "type": "boolean",
-            "description": "True while low-space protection has optional history paused (design\n§11.4). The Agent is still reporting and the Server is choosing not to\nstore the readings, so no path is answered as silent: what was already\nstored stays, and the age of it is not the Agent going quiet."
+            "description": "True while low-space protection has optional history paused (design\n§11.5). The Agent is still reporting and the Server is choosing not to\nstore the readings, so no path is answered as silent: what was already\nstored stays, and the age of it is not the Agent going quiet."
           },
           "mountLimit": {
             "type": "integer",
@@ -8430,7 +8430,7 @@
       },
       "AdminNetwork": {
         "type": "object",
-        "description": "Owner-only Network Registry projection (design §7.1). The complete\nvalidated identity tuple is presented as Server-owned expected identity;\nobserved Agent text never creates or rewrites Registry entries.",
+        "description": "Owner-only Network Registry projection (design §4.5). The complete\nvalidated identity tuple is presented as Server-owned expected identity;\nobserved Agent text never creates or rewrites Registry entries.",
         "required": [
           "network_key",
           "display_name",
@@ -8608,7 +8608,7 @@
       },
       "AdminNodeDetail": {
         "type": "object",
-        "description": "Owner-only Node detail: the full per-Node view with Server-owned\nmetadata, lifecycle guidance, identity disposition, and the independent\nprocess/RPC/sync/consensus observation dimensions (design §4.1–§4.3).",
+        "description": "Owner-only Node detail: the full per-Node view with Server-owned\nmetadata, lifecycle guidance, identity disposition, and the independent\nprocess/RPC/sync/consensus observation dimensions (design §4.6, §5.1).",
         "required": [
           "node_id",
           "agent_id",
@@ -11664,7 +11664,7 @@
       },
       "ApiErrorBody": {
         "type": "object",
-        "description": "Unified API error envelope (design §13.3): clients depend only on `code`;\n`message` never leaks SQL, RPC URLs, credentials, or stacks; `requestId`\ncorrelates a response with its request log; `fields` carries per-field\nvalidation details when a later ticket adds them.",
+        "description": "Unified API error envelope: clients depend only on `code`;\n`message` never leaks SQL, RPC URLs, credentials, or stacks; `requestId`\ncorrelates a response with its request log; `fields` carries per-field\nvalidation details when a later ticket adds them.",
         "required": [
           "error"
         ],
@@ -11745,7 +11745,7 @@
       },
       "AttentionItem": {
         "type": "object",
-        "description": "One Server-owned Attention Item (design §8.4.2, §15.6).",
+        "description": "One Server-owned Attention Item (design §8.5, §15.6).",
         "required": [
           "id",
           "kind",
@@ -11795,7 +11795,7 @@
       },
       "AttentionKind": {
         "type": "string",
-        "description": "The Server-owned Agent Attention kinds (design §8.4.2). Node, Network, and\nSettings kinds are never acknowledgeable.",
+        "description": "The Server-owned Agent Attention kinds (design §8.5). Node, Network, and\nSettings kinds are never acknowledgeable.",
         "enum": [
           "agent_offline",
           "agent_spool_fatal",
@@ -12798,7 +12798,7 @@
       },
       "EnrollResponse": {
         "type": "object",
-        "description": "Success payload of one Agent Enrollment (Agent wire: snake_case,\ndesign §9.1). `credential` is the full `pp_agent_…` token and is\ndelivered to the enrolling Agent exactly once; the Server stores only\nits pepper-keyed digest.",
+        "description": "Success payload of one Agent Enrollment (Agent wire: snake_case).\n`credential` is the full `pp_agent_…` token and is\ndelivered to the enrolling Agent exactly once; the Server stores only\nits pepper-keyed digest.",
         "required": [
           "agent_id",
           "agent_epoch",
@@ -12829,7 +12829,7 @@
       },
       "EnrollmentTokenResponse": {
         "type": "object",
-        "description": "One-time Enrollment Token issued to an Owner (design §4.5, §12.5). The\nfull token is delivered exactly once in the success response.",
+        "description": "One-time Enrollment Token issued to an Owner (design §4.3, §15.2). The\nfull token is delivered exactly once in the success response.",
         "required": [
           "token_id",
           "token",
@@ -14645,7 +14645,7 @@
       },
       "NetworkCreateRequest": {
         "type": "object",
-        "description": "Owner-only Registry creation with the complete validated identity tuple\n(design §7.1). The Registry is never created from observed Agent text:\nthis explicit Owner mutation is the only Admin insert path.",
+        "description": "Owner-only Registry creation with the complete validated identity tuple\n(design §4.5). The Registry is never created from observed Agent text:\nthis explicit Owner mutation is the only Admin insert path.",
         "required": [
           "networkKey",
           "displayName",
@@ -14931,7 +14931,7 @@
         "properties": {
           "displayName": {
             "type": "string",
-            "description": "Server-owned display name (design §4.2). Required: 1..=128 visible\ncharacters; clearing is a future explicit operation."
+            "description": "Server-owned display name (design §4.4). Required: 1..=128 visible\ncharacters; clearing is a future explicit operation."
           }
         }
       },
@@ -15022,7 +15022,7 @@
       },
       "NodeTransfer": {
         "type": "object",
-        "description": "Owner-authorized two-phase Node Transfer (design §4.4, issue #46). The\ntyped status is Server-owned: `pending`, `completed`, `cancelled`,\n`expired`, `rejected`, `conflict`, or `identity_mismatch`. A `pending`\nrow past its Server-authoritative `expires_at` is reported as `expired`\nand never auto-extends.",
+        "description": "Owner-authorized two-phase Node Transfer (design §4.6, issue #46). The\ntyped status is Server-owned: `pending`, `completed`, `cancelled`,\n`expired`, `rejected`, `conflict`, or `identity_mismatch`. A `pending`\nrow past its Server-authoritative `expires_at` is reported as `expired`\nand never auto-extends.",
         "required": [
           "transfer_id",
           "node_id",
@@ -15349,7 +15349,7 @@
       },
       "ObservedNetworkIdentity": {
         "type": "object",
-        "description": "Agent-observed Network identity tuple (design §7.1). Never overwrites the\nRegistry: it is presented as a typed observation with a match state.",
+        "description": "Agent-observed Network identity tuple (design §4.5). Never overwrites the\nRegistry: it is presented as a typed observation with a match state.",
         "properties": {
           "address_hrp": {
             "type": [
@@ -17645,7 +17645,7 @@
       },
       "RecoverResponse": {
         "type": "object",
-        "description": "Success payload of one Recovery exchange (Agent wire: snake_case,\ndesign §4.5). The Agent identity is preserved, the Agent Epoch\nadvances, and `credential` is a fresh `pp_agent_…` token delivered\nexactly once.",
+        "description": "Success payload of one Recovery exchange (Agent wire: snake_case,\ndesign §4.3). The Agent identity is preserved, the Agent Epoch\nadvances, and `credential` is a fresh `pp_agent_…` token delivered\nexactly once.",
         "required": [
           "agent_id",
           "agent_epoch",
@@ -17676,7 +17676,7 @@
       },
       "RecoveryTokenResponse": {
         "type": "object",
-        "description": "One-time Recovery Token issued for an existing Agent. Exchanging it\nadvances the Agent Epoch and rotates the credential without creating a\nduplicate Agent (design §4.5).",
+        "description": "One-time Recovery Token issued for an existing Agent. Exchanging it\nadvances the Agent Epoch and rotates the credential without creating a\nduplicate Agent (design §4.3).",
         "required": [
           "agent_id",
           "agent_epoch",
@@ -17759,7 +17759,7 @@
       },
       "RestoreValidation": {
         "type": "object",
-        "description": "Read-only Restore validation outcome (issue #51, design §20.2): the\nServer re-verifies the artifact file against its recorded manifest\nbefore any confirmation. Checksum and integrity are re-computed from\nthe file; schema compatibility compares the artifact schema with the\ncurrent Server schema (higher unsupported schemas are refused). Checks\nrun in order and short-circuit, so `None` means the check was not\nreached (the first failed check is reported in `error`).",
+        "description": "Read-only Restore validation outcome (issue #51): the\nServer re-verifies the artifact file against its recorded manifest\nbefore any confirmation. Checksum and integrity are re-computed from\nthe file; schema compatibility compares the artifact schema with the\ncurrent Server schema (higher unsupported schemas are refused). Checks\nrun in order and short-circuit, so `None` means the check was not\nreached (the first failed check is reported in `error`).",
         "required": [
           "artifactId",
           "filename",
@@ -18291,7 +18291,7 @@
       },
       "RotationResponse": {
         "type": "object",
-        "description": "Rotation result: the new credential secret is shown once; every\npreviously valid credential either stays valid through `revoke_after`\nor was revoked immediately (design §12.6).",
+        "description": "Rotation result: the new credential secret is shown once; every\npreviously valid credential either stays valid through `revoke_after`\nor was revoked immediately (design §10.1).",
         "required": [
           "agent_id",
           "credential_id",
@@ -18421,7 +18421,7 @@
       },
       "RuleCondition": {
         "type": "object",
-        "description": "Typed per-rule condition parameters (design §17.1: `for`, recovery\nthreshold/hysteresis, and an optional typed threshold). `for_secs` is\nthe sustained firing duration before an Incident opens;\n`recovery_for_secs` is the sustained fresh recovery duration before it\nresolves. Boolean-fact rules fix their internal threshold at 0.5 and do\nnot accept a user threshold.",
+        "description": "Typed per-rule condition parameters (`for`, recovery\nthreshold/hysteresis, and an optional typed threshold). `for_secs` is\nthe sustained firing duration before an Incident opens;\n`recovery_for_secs` is the sustained fresh recovery duration before it\nresolves. Boolean-fact rules fix their internal threshold at 0.5 and do\nnot accept a user threshold.",
         "required": [
           "for_secs",
           "recovery_for_secs"
@@ -18858,7 +18858,7 @@
       },
       "SessionResponse": {
         "type": "object",
-        "description": "Non-sensitive session projection plus the synchronizer CSRF token\n(design §10.2). Fields are camelCase per the browser wire rule\n(§13.3); timestamps are RFC 3339 UTC.",
+        "description": "Non-sensitive session projection plus the synchronizer CSRF token\n(design §10.2). Fields are camelCase per the browser wire rule;\ntimestamps are RFC 3339 UTC.",
         "required": [
           "session",
           "csrfToken"
@@ -19005,7 +19005,7 @@
       },
       "SubjectKind": {
         "type": "string",
-        "description": "The typed catalog of rule subjects (design §17.1).",
+        "description": "The typed catalog of rule subjects.",
         "enum": [
           "agent",
           "host",
@@ -19038,7 +19038,7 @@
           },
           "marksIncident": {
             "type": "boolean",
-            "description": "Maintenance-only: whether this match marks the Incident suppressed\n(design §17.5). Silences never mark Incidents."
+            "description": "Maintenance-only: whether this match marks the Incident suppressed.\nSilences never mark Incidents."
           },
           "reason": {
             "type": "string"

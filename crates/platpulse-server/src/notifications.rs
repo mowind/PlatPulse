@@ -1,4 +1,4 @@
-//! Notification Events and Delivery (issue #49, design §17.4/§17.5).
+//! Notification Events and Delivery (issue #49).
 //!
 //! Notification Events are durable business records of an Incident
 //! transition (or an Owner test action); Notification Deliveries are the
@@ -25,7 +25,7 @@ use sqlx::SqliteConnection;
 use time::OffsetDateTime;
 use utoipa::ToSchema;
 
-/// Delivery worker poll cadence (design §17.4: the worker survives
+/// Delivery worker poll cadence (the worker survives
 /// restarts; a crash mid-send is repaired on the next pass).
 pub const DELIVERY_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -164,7 +164,7 @@ impl DeliveryProvider for DevNullProvider {
     }
 }
 
-/// The real external adapter seam for notification channels (design §20).
+/// The real external adapter seam for notification channels.
 /// The Server's only production implementation is Telegram; tests inject
 /// deterministic doubles through the same seam.
 #[async_trait]
@@ -308,11 +308,11 @@ pub fn message_text(event: &EventRow) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Event + Outbox creation (design §17.4: same transaction as the Incident
+// Event + Outbox creation (design §8.3: same transaction as the Incident
 // transition)
 // ---------------------------------------------------------------------------
 
-/// One Notification Event to record (design §17.4). Test events carry no
+/// One Notification Event to record. Test events carry no
 /// Incident/subject context.
 pub struct NotificationEventInput<'a> {
     pub kind: &'a str,
@@ -325,7 +325,7 @@ pub struct NotificationEventInput<'a> {
 
 /// Create one durable Notification Event plus one Delivery per configured
 /// channel inside the caller's transaction. Active Silence/Maintenance
-/// policies suppress Delivery at creation time (design §17.5): suppressed
+/// policies suppress Delivery at creation time: suppressed
 /// Deliveries are never sent and are not retryable. Returns the Event id.
 pub async fn record_notification_event(
     executor: &mut SqliteConnection,
@@ -515,7 +515,7 @@ pub async fn attempts_for_delivery(
 }
 
 // ---------------------------------------------------------------------------
-// Owner command request ledger (issue #206, design §17.4/§17.5)
+// Owner command request ledger (issue #206, design §15.7)
 // ---------------------------------------------------------------------------
 
 /// Longest accepted Owner-supplied request id; mirrors the ledger CHECK.
@@ -692,7 +692,7 @@ pub async fn process_due_deliveries(
     // Like the evaluation sweep, one pass is a bounded critical unit: the
     // ingestion guard makes graceful shutdown drain the current pass
     // (including an in-flight provider send) before the WAL checkpoint and
-    // database close (design §17.4: sends complete or return to
+    // database close (sends complete or return to
     // RetryScheduled; a Delivery left in_flight is repaired on next boot).
     let Some(_guard) = state.ingestion_guard() else {
         return Ok(0);
@@ -787,7 +787,7 @@ pub async fn process_due_deliveries(
                 }
             }
         }
-        // Pre-handoff suppression re-check (design §17.5, issue #205): a
+        // Pre-handoff suppression re-check (issue #205): a
         // Silence or Maintenance Window can become effective after this
         // Delivery was queued at Incident-transition time. Re-evaluate the
         // same matchers before handing the message to the channel, so a

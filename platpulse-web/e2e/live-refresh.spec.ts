@@ -181,7 +181,7 @@ test.describe('SCN-HOME-RESPONSIVE-ACCESSIBILITY / live refresh transport state'
 
     // Mirror the Server's Provider-refresh invalidation sequence: a changed
     // Validator publishes both a per-Validator event and the Network event
-    // that refreshes Home's Public networks query (design §3.3).
+    // that refreshes Home's Public networks query (webui.md §6.3).
     await emitRealtime(page, 'invalidation', { resource: 'validator', resourceId: '0195f2a1-0070-4070-8070-000000000070', eventId: 2 })
     await emitRealtime(page, 'invalidation', { resource: 'network', resourceId: 'home-convergence', eventId: 3 })
     await expect.poll(() => networksCalls).toBe(1)

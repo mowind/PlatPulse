@@ -2,7 +2,7 @@ import { expect, test, type Locator, type Page, type TestInfo } from '@playwrigh
 import { expectNoHorizontalOverflow, expectVisibleInteractiveTargets } from './helpers'
 
 /**
- * Admin follow-up regression (webui.md §8.5.3, §11.1, §12.3): long non-secret
+ * Admin follow-up regression (webui.md §8.5.3, §11.1, §12): long non-secret
  * identifiers open on demand with copy feedback, and the Sessions list keeps
  * labelled, unclipped cards and confirmations on phones. Runs in every fixed
  * project, so 360/390/768 touch and 1280/1440 pointer widths each assert the

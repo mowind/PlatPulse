@@ -1137,7 +1137,7 @@ async fn state_window_cutoff(tx: &mut Transaction<'_, Sqlite>) -> Result<String,
 /// of raw samples and never connects across a stretch it did not observe.
 ///
 /// Under low-space protection the sample is not written: the Server records the
-/// gap instead of deleting history it already holds (design §11.4, issue #212).
+/// gap instead of deleting history it already holds (design §11.5, issue #212).
 /// The gap record shares the ingestion transaction, so "sample skipped" and
 /// "gap recorded" commit together and a failure rolls the whole Report back.
 /// The series ledger moves in this same transaction.
@@ -1937,7 +1937,7 @@ async fn save_current<I: ReportInventory>(
 }
 
 /// Outcome of evaluating one Agent's Inventory declaration of a Node it does
-/// not yet own (design §4.4). A declaration only wins ownership when a
+/// not yet own (design §4.6). A declaration only wins ownership when a
 /// pending transfer targets the reporting Agent, the declared Network key
 /// matches the registered Node, and the observed Network Identity matches
 /// the Registry tuple; everything else keeps the source Agent authoritative.
@@ -2705,7 +2705,7 @@ async fn ingest_report<I: ReportInventory>(
         if owner.is_some_and(|owner| owner != auth.agent_id) {
             // The reporting Agent declared a Node owned by another Agent.
             // Only a pending transfer targeting this Agent with a validated
-            // Network Identity may switch ownership (design §4.4); every
+            // Network Identity may switch ownership (design §4.6); every
             // other outcome keeps the source authoritative and is a
             // contradiction worth a security event.
             match resolve_node_transfer(&mut tx, &parsed, node, &auth.agent_id, &now_text).await {
@@ -2739,7 +2739,7 @@ async fn ingest_report<I: ReportInventory>(
     // A non-owner declaration without a valid pending transfer (or with a
     // rejected/contradicting transfer) is a security conflict: the source
     // Agent's later submissions after a completed Transfer also land here
-    // and must be visible and auditable (design §4.4). The counter is
+    // and must be visible and auditable (design §4.6). The counter is
     // recorded once per report together with block identity mismatches.
     // Inventory is accepted as a complete set only after structural/network
     // validation. Ownership-invalid Nodes reject only their own current and
@@ -2844,7 +2844,7 @@ async fn ingest_report<I: ReportInventory>(
             }
         };
     if !identity_rejections.is_empty() {
-        // Identity mismatch is a typed, audited outcome (design §7.1): the
+        // Identity mismatch is a typed, audited outcome (design §4.5): the
         // samples are never merged and the Agent's security counter records
         // the contradiction so the Admin surface can surface it.
         ownership_contradiction = true;
@@ -3469,7 +3469,7 @@ async fn ingest_report<I: ReportInventory>(
         return storage_error(&request_id.0, "update agent report state", &update_failure);
     }
     // Alert evaluation runs in the same transaction as the accepted
-    // projection (design §1058: Alert input and invalidation belong to the
+    // projection (design §8.3: Alert input and invalidation belong to the
     // report transaction), so a transition is never observed without its
     // accepted facts. The sweep re-evaluates the remaining subjects. Only
     // Nodes owned by this Agent may be evaluated: a partially accepted or
@@ -6867,7 +6867,7 @@ mod tests {
 
         // The source Agent's later submission of the same Node only rejects
         // that Node entry and records a security event; ownership stays with
-        // the target (design §4.4 step 6).
+        // the target (design §4.6).
         let mut stale_source = source_report.clone();
         stale_source.report_sequence = 2;
         stale_source.report_id = "0195f2a1-0013-4013-8013-000000000301".parse().unwrap();

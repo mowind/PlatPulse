@@ -1,4 +1,4 @@
-//! Owner-only access management (issue #47, design §10.2, §13.1):
+//! Owner-only access management (issue #47, design §10.2, §8.4):
 //! People and role controls, coarse Human Session review and revoke, the
 //! immutable redacted Audit listing, and the anonymous Home (Guest) toggle.
 //!
@@ -1060,7 +1060,7 @@ pub(crate) async fn revoke_other_sessions(
     }
 }
 
-/// Owner-only immutable Audit listing (design §18.2, issue #47): newest
+/// Owner-only immutable Audit listing (issue #47): newest
 /// first, bounded, with optional `event_kind`/`target_kind` filters and an
 /// `audit_event_id` cursor for older pages. Details are the redacted
 /// `after_json` bodies written by construction.

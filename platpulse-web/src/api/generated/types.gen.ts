@@ -103,7 +103,7 @@ export type AdminAgentStorageMountsResponse = {
     capacityMetric: string;
     /**
      * True while low-space protection has optional history paused (design
-     * §11.4). The Agent is still reporting and the Server is choosing not to
+     * §11.5). The Agent is still reporting and the Server is choosing not to
      * store the readings, so no path is answered as silent: what was already
      * stored stays, and the age of it is not the Agent going quiet.
      */
@@ -459,7 +459,7 @@ export type AdminMetricSeries = {
 };
 
 /**
- * Owner-only Network Registry projection (design §7.1). The complete
+ * Owner-only Network Registry projection (design §4.5). The complete
  * validated identity tuple is presented as Server-owned expected identity;
  * observed Agent text never creates or rewrites Registry entries.
  */
@@ -516,7 +516,7 @@ export type AdminNetworkNode = {
 /**
  * Owner-only Node detail: the full per-Node view with Server-owned
  * metadata, lifecycle guidance, identity disposition, and the independent
- * process/RPC/sync/consensus observation dimensions (design §4.1–§4.3).
+ * process/RPC/sync/consensus observation dimensions (design §4.6, §5.1).
  */
 export type AdminNodeDetail = {
     agent_id: string;
@@ -1792,7 +1792,7 @@ export type ApiError = {
 };
 
 /**
- * Unified API error envelope (design §13.3): clients depend only on `code`;
+ * Unified API error envelope: clients depend only on `code`;
  * `message` never leaks SQL, RPC URLs, credentials, or stacks; `requestId`
  * correlates a response with its request log; `fields` carries per-field
  * validation details when a later ticket adds them.
@@ -1826,7 +1826,7 @@ export type AttentionAcknowledgment = {
 };
 
 /**
- * One Server-owned Attention Item (design §8.4.2, §15.6).
+ * One Server-owned Attention Item (design §8.5, §15.6).
  */
 export type AttentionItem = {
     /**
@@ -1856,7 +1856,7 @@ export type AttentionItem = {
 };
 
 /**
- * The Server-owned Agent Attention kinds (design §8.4.2). Node, Network, and
+ * The Server-owned Agent Attention kinds (design §8.5). Node, Network, and
  * Settings kinds are never acknowledgeable.
  */
 export type AttentionKind = 'agent_offline' | 'agent_spool_fatal' | 'agent_spool_overflow' | 'agent_report_gap' | 'agent_security_event' | 'agent_shutdown_incomplete' | 'agent_inventory_rejected' | 'node_unhealthy' | 'node_health_unknown' | 'node_resync' | 'node_identity_mismatch';
@@ -2222,7 +2222,7 @@ export type EffectiveRuleDto = {
 };
 
 /**
- * One-time Enrollment Token issued to an Owner (design §4.5, §12.5). The
+ * One-time Enrollment Token issued to an Owner (design §4.3, §15.2). The
  * full token is delivered exactly once in the success response.
  */
 export type EnrollmentTokenResponse = {
@@ -3074,7 +3074,7 @@ export type MaintenanceMutationResponse = {
 
 /**
  * Owner-only Registry creation with the complete validated identity tuple
- * (design §7.1). The Registry is never created from observed Agent text:
+ * (design §4.5). The Registry is never created from observed Agent text:
  * this explicit Owner mutation is the only Admin insert path.
  */
 export type NetworkCreateRequest = {
@@ -3157,7 +3157,7 @@ export type NodeIdentityStatus = {
 
 export type NodeMetadataRequest = {
     /**
-     * Server-owned display name (design §4.2). Required: 1..=128 visible
+     * Server-owned display name (design §4.4). Required: 1..=128 visible
      * characters; clearing is a future explicit operation.
      */
     displayName: string;
@@ -3202,7 +3202,7 @@ export type NodeSummary = {
 };
 
 /**
- * Owner-authorized two-phase Node Transfer (design §4.4, issue #46). The
+ * Owner-authorized two-phase Node Transfer (design §4.6, issue #46). The
  * typed status is Server-owned: `pending`, `completed`, `cancelled`,
  * `expired`, `rejected`, `conflict`, or `identity_mismatch`. A `pending`
  * row past its Server-authoritative `expires_at` is reported as `expired`
@@ -3303,7 +3303,7 @@ export type NotificationRequestResult = {
 };
 
 /**
- * Agent-observed Network identity tuple (design §7.1). Never overwrites the
+ * Agent-observed Network identity tuple (design §4.5). Never overwrites the
  * Registry: it is presented as a typed observation with a match state.
  */
 export type ObservedNetworkIdentity = {
@@ -4367,7 +4367,7 @@ export type ReadyState = 'ready' | 'not_ready';
 /**
  * One-time Recovery Token issued for an existing Agent. Exchanging it
  * advances the Agent Epoch and rotates the credential without creating a
- * duplicate Agent (design §4.5).
+ * duplicate Agent (design §4.3).
  */
 export type RecoveryTokenResponse = {
     agent_epoch: number;
@@ -4404,7 +4404,7 @@ export type RestoreValidateRequest = {
 };
 
 /**
- * Read-only Restore validation outcome (issue #51, design §20.2): the
+ * Read-only Restore validation outcome (issue #51): the
  * Server re-verifies the artifact file against its recorded manifest
  * before any confirmation. Checksum and integrity are re-computed from
  * the file; schema compatibility compares the artifact schema with the
@@ -4628,7 +4628,7 @@ export type RotationRequest = {
 /**
  * Rotation result: the new credential secret is shown once; every
  * previously valid credential either stays valid through `revoke_after`
- * or was revoked immediately (design §12.6).
+ * or was revoked immediately (design §10.1).
  */
 export type RotationResponse = {
     agent_id: string;
@@ -4657,7 +4657,7 @@ export type RpcDiagnostic = {
 };
 
 /**
- * Typed per-rule condition parameters (design §17.1: `for`, recovery
+ * Typed per-rule condition parameters (`for`, recovery
  * threshold/hysteresis, and an optional typed threshold). `for_secs` is
  * the sustained firing duration before an Incident opens;
  * `recovery_for_secs` is the sustained fresh recovery duration before it
@@ -4789,8 +4789,8 @@ export type SessionProjection = {
 
 /**
  * Non-sensitive session projection plus the synchronizer CSRF token
- * (design §10.2). Fields are camelCase per the browser wire rule
- * (§13.3); timestamps are RFC 3339 UTC.
+ * (design §10.2). Fields are camelCase per the browser wire rule;
+ * timestamps are RFC 3339 UTC.
  */
 export type SessionResponse = {
     csrfToken: string;
@@ -4840,8 +4840,8 @@ export type SuppressionMatch = {
     id: string;
     kind: string;
     /**
-     * Maintenance-only: whether this match marks the Incident suppressed
-     * (design §17.5). Silences never mark Incidents.
+     * Maintenance-only: whether this match marks the Incident suppressed.
+     * Silences never mark Incidents.
      */
     marksIncident: boolean;
     reason: string;

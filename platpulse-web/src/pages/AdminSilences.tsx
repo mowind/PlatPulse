@@ -166,7 +166,7 @@ export default function AdminSilencesList() {
     }
     setFieldErrors(nextErrors)
     if (nextErrors.matcherValue || nextErrors.reason || nextErrors.startsAt || nextErrors.endsAt) {
-      // §10.3 (webui.md): the page summary and the field-level messages are
+      // webui.md §10.3: the page summary and the field-level messages are
       // both required; the summary keeps the stable wording the Server errors use.
       const message = nextErrors.matcherValue
         ? 'A matcher value is required unless the matcher kind is all.'
@@ -214,7 +214,7 @@ export default function AdminSilencesList() {
     try {
       await cancelSilenceEntry(silenceId, csrfToken)
       setConfirming(null)
-      // §15.5 (webui.md): an active-only list drops the confirmed row, so move
+      // webui.md §15.5: an active-only list drops the confirmed row, so move
       // focus to the panel heading instead of losing it with the unmounted control.
       headingRef.current?.focus()
       setFeedback({

@@ -321,7 +321,7 @@ export async function startDisposableServer(
     const notificationConfig: string[] = []
     if (notifications !== undefined) {
       // The provider reads the token lazily, but writing the file keeps the
-      // harness honest about the operator-side secret layout (design §18.1).
+      // harness honest about the operator-side secret layout.
       writeFileSync(tokenPath, HARNESS_TELEGRAM_TOKEN, { mode: 0o600 })
       if (notifications.testCooldownSeconds !== undefined) {
         notificationConfig.push(

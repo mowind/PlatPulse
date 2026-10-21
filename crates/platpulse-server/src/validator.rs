@@ -664,7 +664,7 @@ fn classify_activity(
         // Unknown made a Node taking part in the current round look less
         // confirmed than an idle candidate and made the Home Validator bucket
         // flap, so it classifies as Validator (Owner decision 2026-10-08,
-        // amending CONTEXT.md and ADR 0005; see #168 evidence note §4.2).
+        // amending CONTEXT.md and ADR 0005; see section 4.2 of the #168 evidence note).
         Some("verifying") => (CurrentValidatorStatus::Validator, None),
         _ => (CurrentValidatorStatus::Unknown, None),
     }
@@ -4253,7 +4253,7 @@ mod tests {
         seed_trend_day(db.pool(), "UTC", "2026-01-01", "2026-01-01T00:01:00Z", None).await;
         // Purge removes the Node's Link rows in the same transaction that
         // removes the Node, so the association can no longer be resolved and the
-        // retained Validator history must stay exactly as it is (#219, §15.4).
+        // retained Validator history must stay exactly as it is (#219, design §15.4.1).
         sqlx::query("DELETE FROM node_validator_links WHERE node_id = 'node-1'")
             .execute(db.pool())
             .await

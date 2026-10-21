@@ -119,7 +119,7 @@ function acknowledgmentText(acknowledgment: IncidentAcknowledgment): string {
   return 'Acknowledged by ' + acknowledgment.acknowledgedByUsername + ' at ' + formatObservedAt(acknowledgment.acknowledgedAt)
 }
 
-/** URL-state filters (design §10.1: back/forward preserves them), including the
+/** URL-state filters (webui.md §10.1: back/forward preserves them), including the
  * occurrence range and the Server's continuation cursor: an addressed page reads
  * the same occurrences when it is copied, refreshed or shared. */
 type IncidentFilterState = {
@@ -152,7 +152,7 @@ function readFilters(search: URLSearchParams): IncidentFilterState {
   }
 }
 
-/** Server-owned evidence (design §15.4): the JSON is presented unchanged; the
+/** Server-owned evidence: the JSON is presented unchanged; the
  * WebUI never rewrites an input detail, infers a cause, or fabricates a
  * recovery fact. */
 function EvidenceBlock({ label, value }: { label: string; value: unknown }) {

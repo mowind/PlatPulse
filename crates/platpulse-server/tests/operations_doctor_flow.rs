@@ -1,5 +1,5 @@
 //! Operations and Doctor acceptance through the real router (issue #208,
-//! part of #202 Stories 34/35, design §8.4, webui.md §5.5/§8.4).
+//! part of #202 Stories 34/35, design §8.4, webui.md §5.5/§15.11).
 //!
 //! These tests build the full application with build_app against a temporary
 //! SQLite database and drive it only over HTTP: a real Owner session, real

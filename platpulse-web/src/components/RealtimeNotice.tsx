@@ -13,7 +13,7 @@ type AdminRealtimeStreamLabel = 'Current' | 'Starting' | 'Live updates paused'
 
 /**
  * A public transport notice is only rendered when the transport state changes
- * how the visitor should read the page (design §6.3): an open stream renders no
+ * how the visitor should read the page (design §11.3): an open stream renders no
  * notice at all, because it certifies neither observation freshness nor Node
  * Health and needs no visitor action.
  */

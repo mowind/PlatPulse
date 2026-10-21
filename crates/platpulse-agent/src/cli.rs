@@ -1,4 +1,4 @@
-//! `platpulse-agent` CLI (design §8.2).
+//! `platpulse-agent` CLI (design §7.1).
 use std::collections::HashMap;
 #[cfg(test)]
 use std::future::Future;

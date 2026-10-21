@@ -645,7 +645,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
     const activeNodes = await summaryValue(page, 'Active Nodes')
     const plainHome = page.url()
     // The pill row is the only scroller the toolbar adds: the pills move inside
-    // it while the page itself never pans (design §9, §11.1).
+    // it while the page itself never pans (design §9.3; webui.md §11.1).
     const pillRow = page.locator('div.overflow-x-auto').filter({ has: page.locator('[aria-label="Network filter"]') })
 
     if ((await pillRow.evaluate((row) => row.scrollWidth - row.clientWidth)) > 0) {

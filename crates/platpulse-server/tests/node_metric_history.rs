@@ -1,4 +1,4 @@
-//! Raw Node metric history at the HTTP boundary (issue #213, design §11.4).
+//! Raw Node metric history at the HTTP boundary (issue #213, design §11.6).
 //!
 //! The unit tests in crate::metric_history drive the ledger, the silences and
 //! the coverage arithmetic directly. This suite drives the same seam the way an
@@ -85,7 +85,7 @@ impl Harness {
     async fn boot() -> Self {
         let harness = Self::open(TempDir::new().unwrap()).await;
         // The Agent group refuses every request until the first Owner exists
-        // (design §12.2), so the acceptance path must start here.
+        // (design §13.3), so the acceptance path must start here.
         let hash = auth::hash_password(b"correct horse battery").unwrap();
         auth::create_owner(harness.state.db(), "admin", &hash)
             .await

@@ -77,7 +77,7 @@ export const acknowledgeAgentAttention = <ThrowOnError extends boolean = false>(
 });
 
 /**
- * Redacted Audit trail scoped to one Agent (design §9, §14.3: security
+ * Redacted Audit trail scoped to one Agent (design §13.3: security
  * mutations carry a redacted Audit link; immutable event listing).
  */
 export const adminAgentAudit = <ThrowOnError extends boolean = false>(options: Options<AdminAgentAuditData, ThrowOnError>): RequestResult<AdminAgentAuditResponses, AdminAgentAuditErrors, ThrowOnError> => (options.client ?? client).get<AdminAgentAuditResponses, AdminAgentAuditErrors, ThrowOnError>({ url: '/api/admin/v1/agents/{agent_id}/audit', ...options });
@@ -98,7 +98,7 @@ export const adminRotateCredential = <ThrowOnError extends boolean = false>(opti
 });
 
 /**
- * Revoke one Agent credential immediately (design §12.6: revoke takes
+ * Revoke one Agent credential immediately (design §10.1: revoke takes
  * effect immediately). The Audit row records the credential id and
  * instant only.
  */
@@ -122,7 +122,7 @@ export const adminAgentMetricHistory = <ThrowOnError extends boolean = false>(op
 
 /**
  * Create a single-use Recovery Token for an existing Agent (credential
- * loss, design §4.5). The response is the Owner's only plaintext copy.
+ * loss, design §4.3). The response is the Owner's only plaintext copy.
  */
 export const adminRecoveryToken = <ThrowOnError extends boolean = false>(options: Options<AdminRecoveryTokenData, ThrowOnError>): RequestResult<AdminRecoveryTokenResponses, AdminRecoveryTokenErrors, ThrowOnError> => (options.client ?? client).post<AdminRecoveryTokenResponses, AdminRecoveryTokenErrors, ThrowOnError>({
     url: '/api/admin/v1/agents/{agent_id}/recover',
@@ -200,7 +200,7 @@ export const alertIncidents = <ThrowOnError extends boolean = false>(options?: O
  * PAGE-ADMIN-INCIDENT: one Incident with its immutable evidence, the
  * current independent evaluation state of its `(rule, subject)`, and any
  * overlapping Silence/Maintenance suppressions (both reasons stay visible
- * independently; webui.md §8.3).
+ * independently; webui.md §15.8).
  */
 export const alertIncidentDetail = <ThrowOnError extends boolean = false>(options: Options<AlertIncidentDetailData, ThrowOnError>): RequestResult<AlertIncidentDetailResponses, AlertIncidentDetailErrors, ThrowOnError> => (options.client ?? client).get<AlertIncidentDetailResponses, AlertIncidentDetailErrors, ThrowOnError>({ url: '/api/admin/v1/alerts/incidents/{incident_id}', ...options });
 
@@ -222,8 +222,7 @@ export const alertMaintenance = <ThrowOnError extends boolean = false>(options?:
  * Maintenance Window for an Agent, Node, or Network scope. Expected
  * conditions are a typed allowlist of rule keys; an empty list matches any
  * rule. Maintenance marks expected Incidents suppressed and suppresses
- * expected delivery, without changing facts, evaluation, or Node Health
- * (design §17.5).
+ * expected delivery, without changing facts, evaluation, or Node Health.
  */
 export const createMaintenanceWindow = <ThrowOnError extends boolean = false>(options: Options<CreateMaintenanceWindowData, ThrowOnError>): RequestResult<CreateMaintenanceWindowResponses, CreateMaintenanceWindowErrors, ThrowOnError> => (options.client ?? client).post<CreateMaintenanceWindowResponses, CreateMaintenanceWindowErrors, ThrowOnError>({
     url: '/api/admin/v1/alerts/maintenance',
@@ -312,7 +311,7 @@ export const alertSilences = <ThrowOnError extends boolean = false>(options?: Op
 /**
  * POST /api/admin/v1/alerts/silences: create a time-bounded delivery
  * Silence. It suppresses matching delivery only; evaluation and Incidents
- * are untouched (design §17.5, webui.md §8.3).
+ * are untouched (webui.md §15.8).
  */
 export const createSilence = <ThrowOnError extends boolean = false>(options: Options<CreateSilenceData, ThrowOnError>): RequestResult<CreateSilenceResponses, CreateSilenceErrors, ThrowOnError> => (options.client ?? client).post<CreateSilenceResponses, CreateSilenceErrors, ThrowOnError>({
     url: '/api/admin/v1/alerts/silences',
@@ -333,7 +332,7 @@ export const alertSilenceDetail = <ThrowOnError extends boolean = false>(options
 export const cancelSilence = <ThrowOnError extends boolean = false>(options: Options<CancelSilenceData, ThrowOnError>): RequestResult<CancelSilenceResponses, CancelSilenceErrors, ThrowOnError> => (options.client ?? client).post<CancelSilenceResponses, CancelSilenceErrors, ThrowOnError>({ url: '/api/admin/v1/alerts/silences/{silence_id}/cancel', ...options });
 
 /**
- * Owner-only immutable Audit listing (design §18.2, issue #47): newest
+ * Owner-only immutable Audit listing (issue #47): newest
  * first, bounded, with optional `event_kind`/`target_kind` filters and an
  * `audit_event_id` cursor for older pages. Details are the redacted
  * `after_json` bodies written by construction.
@@ -490,7 +489,7 @@ export const adminNodeHostMetricHistory = <ThrowOnError extends boolean = false>
  * evidence is for a window, how complete it is, and which boundary explains a
  * stretch it cannot answer. The evidence itself stays with that family's own
  * route, so no second copy of the history is served from here and the two can
- * never drift apart (design §7, §11.4).
+ * never drift apart (design §11.4).
  */
 export const adminNodeInvestigation = <ThrowOnError extends boolean = false>(options: Options<AdminNodeInvestigationData, ThrowOnError>): RequestResult<AdminNodeInvestigationResponses, AdminNodeInvestigationErrors, ThrowOnError> => (options.client ?? client).get<AdminNodeInvestigationResponses, AdminNodeInvestigationErrors, ThrowOnError>({ url: '/api/admin/v1/nodes/{node_id}/investigation', ...options });
 
@@ -628,7 +627,7 @@ export const notificationDeliveryDetail = <ThrowOnError extends boolean = false>
 
 /**
  * Explicit, audited retry of a retryable Delivery (issue #207, Stories
- * 30-33, design webui.md §15.10). It re-arms the same Delivery row for the
+ * 30-33, webui.md §15.10). It re-arms the same Delivery row for the
  * worker: it creates a new Delivery attempt on the next worker pass but
  * never a new Notification Event, Incident, or business transition, and it
  * never rewrites history - the attempt count, the last provider result, and

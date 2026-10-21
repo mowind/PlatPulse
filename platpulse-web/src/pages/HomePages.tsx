@@ -83,7 +83,7 @@ export function NodePage() {
   const { generation, resetting, realtime } = useHomeRealtimeContext()
   const nodeQuery = usePublicNode(nodeId, generation)
   const historyQuery = usePublicNodeHistory(nodeId, generation)
-  // The Metric Window lives in the URL (§15.38): refresh, back/forward and a
+  // The Metric Window lives in the URL (webui.md §15.38): refresh, back/forward and a
   // shared link restore it. Live writes no parameter, and a value outside the
   // enum falls back to Live and is rewritten in place, adding no history entry.
   const [search, setSearch] = useSearchParams()

@@ -2,7 +2,7 @@
 # Boot a development-mode platpulse-server with a fresh state directory and
 # one Owner plus one Viewer for the Playwright suite. The suite runs against
 # the real Server serving the production WebUI build, so login and the
-# Home/Admin shells are exercised end to end (design §10.2, §14.1).
+# Home/Admin shells are exercised end to end (design §10.2, §12).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -24,8 +24,7 @@ db_path = "$STATE_DIR/platpulse.db"
 pepper_file = "$STATE_DIR/server-pepper"
 web_root = "$WEB_DIR/dist"
 # Backup artifacts for the Admin backup surface (issue #50) live in a
-# dedicated directory, never inside the Server state directory (design
-# §20.1).
+# dedicated directory, never inside the Server state directory.
 backup_dir = "$BACKUP_DIR"
 listen = "127.0.0.1:$PORT"
 public_base_url = "http://127.0.0.1:$PORT"
@@ -53,7 +52,7 @@ EOF
 
 printf '%s\n' 'fake-e2e-telegram-token' > "$STATE_DIR/telegram-token"
 
-# The Geo database is an operator-provided private file (design §19): copy the
+# The Geo database is an operator-provided private file: copy the
 # licensed test fixture with 0600 permissions so the Server's startup
 # validation accepts it.
 cp "$ROOT/crates/platpulse-server/test-data/GeoIP2-Country-Test.mmdb" "$STATE_DIR/GeoIP2-Country-Test.mmdb"

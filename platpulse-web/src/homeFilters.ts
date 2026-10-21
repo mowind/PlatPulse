@@ -1,6 +1,6 @@
 /**
  * Home list search, filters, sort, view, and their ordinary navigation URL
- * (#222, #223, design §9). The Server already answers Home with the complete
+ * (#222, #223, design §9.1). The Server already answers Home with the complete
  * Public projection of every Active Node, so Home searches, filters, sorts and
  * views that collection locally: no pagination, no new Server query, and no
  * field the Public projection does not carry.
@@ -9,7 +9,7 @@
  * whole Home reading. Search, health, and Validator-status filters narrow the
  * result list, and once they do, the four attributable overview counters and
  * the Peer country map read that list selection too, through the Node Selection
- * Geo Aggregate (#233, design §9); the two cumulative Validator cells keep the
+ * Geo Aggregate (#233, design §9.1); the two cumulative Validator cells keep the
  * Network selection and say so on their face. `selectHomeRecords` returns both
  * Node sets, so the band and the map can never disagree with the list about
  * which Nodes they read. While nothing is narrowed the two sets are equal and
@@ -194,7 +194,7 @@ export function homeNetworkScope(
 
 /**
  * The public values Home searches: the public Node display name, the public Node
- * ID, and the Network display name (design §9). Nothing else is reachable from a
+ * ID, and the Network display name (design §9.1). Nothing else is reachable from a
  * Home URL — not Agent notes or names, not Host paths, not endpoints or
  * credentials, and not a linked Validator's identity.
  */
@@ -367,7 +367,7 @@ function compareHomeNodes(left: PublicNode, right: PublicNode, sort: HomeSort): 
  * The Network scope and the matching list, both read at once. Network selection
  * scopes both; search, health, and Validator-status filters narrow `matching`,
  * which while it is narrower than `scoped` is also what the overview counters
- * and the Peer country map read (#233, design §9). `scoped` stays the scope of
+ * and the Peer country map read (#233, design §9.1). `scoped` stays the scope of
  * the cumulative Validator cells and of the unfiltered readings.
  */
 export function selectHomeRecords<T extends HomeNodeRecord>(

@@ -123,7 +123,7 @@ impl From<crate::restore::RestoreError> for OperationError {
 
 /// Create an Operation row and its creating Audit Event in one transaction.
 /// Returns the operation id; the caller keeps the audit link for the
-/// success response (design §8.4: Operation history links to Audit).
+/// success response (Operation history links to Audit).
 ///
 /// This entry point queues unconditionally: it is for commands whose repeat is
 /// harmless or impossible. A command a browser can re-send (issue #211) goes

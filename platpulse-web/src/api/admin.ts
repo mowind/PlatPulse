@@ -1,4 +1,4 @@
-// Typed Admin adapter and query/realtime layer (design §6.1–§6.3).
+// Typed Admin adapter and query/realtime layer (webui.md §6.1–§6.3).
 //
 // The generated OpenAPI client is imported through the project client
 // singleton; this module owns request normalization, the dedicated Admin
@@ -234,7 +234,7 @@ import {
 /**
  * Dedicated Admin query cache. Public queries never share this object or
  * its keys, so authorization boundaries cannot cross through runtime cache
- * state (design §6.2, §7 `PATTERN-AUTH-GENERATION`).
+ * state (webui.md §6.2, §7 `PATTERN-AUTH-GENERATION`).
  */
 export const adminQueryClient = new QueryClient({
   defaultOptions: {
@@ -1043,7 +1043,7 @@ export async function cancelNodeTransfer(
   }
 }
 
-/** Owner-only Network Registry projection (design §7.1). */
+/** Owner-only Network Registry projection (design §4.5). */
 export async function fetchAdminNetworks(signal?: AbortSignal): Promise<AdminNetwork[]> {
   return requestAdmin(
     () => adminNetworks({ signal }),
@@ -1416,7 +1416,7 @@ export async function acknowledgeAgentAttention(
 }
 
 /** Register a Network with the complete validated identity tuple. The
- * Registry is never created from observed Agent text (design §7.1). */
+ * Registry is never created from observed Agent text (design §4.5). */
 export async function createNetworkEntry(
   request: NetworkCreateRequest,
   csrfToken: string,
@@ -1453,7 +1453,7 @@ export async function updateNetworkEntry(
   return response
 }
 
-/** Create a one-time Enrollment Token (design §4.5). The secret appears
+/** Create a one-time Enrollment Token (design §4.3). The secret appears
  * only in the success response; the caller renders it exactly once. */
 export async function createEnrollmentToken(
   csrfToken: string,
@@ -1471,7 +1471,7 @@ export async function createEnrollmentToken(
   return response
 }
 
-/** Create a one-time Recovery Token for an existing Agent (design §4.5).
+/** Create a one-time Recovery Token for an existing Agent (design §4.3).
  * Exchange advances the Agent Epoch without a duplicate Agent. */
 export async function createRecoveryToken(
   agentId: string,
@@ -1492,7 +1492,7 @@ export async function createRecoveryToken(
 }
 
 /** Rotate an Agent credential: fresh credential with an explicit overlap
- * window and optional immediate old-credential revocation (design §12.6). */
+ * window and optional immediate old-credential revocation (design §10.1). */
 export async function rotateAgentCredential(
   agentId: string,
   csrfToken: string,
@@ -1512,7 +1512,7 @@ export async function rotateAgentCredential(
   return response
 }
 
-/** Revoke one Agent credential immediately (design §12.6). */
+/** Revoke one Agent credential immediately (design §10.1). */
 export async function revokeAgentCredential(
   agentId: string,
   credentialId: string,
@@ -2049,7 +2049,7 @@ function applyAdminInvalidation(resource: string, resourceId: string | undefined
 }
 
 /**
- * High-frequency invalidations are coalesced (design webui.md §3): report
+ * High-frequency invalidations are coalesced (webui.md §6.3): report
  * ingestion publishes a Node/Peer/Geo signal for every accepted report, and one
  * refetch per event cancels the previous in-flight REST read before it can
  * complete. Pending resources are flushed at most once per window, and the
@@ -3061,7 +3061,7 @@ export function useAdminRetention(generation: number) {
 }
 
 /** Read-only impact preview: never writes and never audits. The edit form
- * calls this before typed confirmation (webui.md §8.4). It is still a
+ * calls this before typed confirmation (webui.md §15.13). It is still a
  * CSRF-guarded POST (JSON body), so it carries the session token. */
 export function useRetentionImpact(generation: number, family: string, days: number, csrfToken: string) {
   return useQuery({
@@ -3134,7 +3134,7 @@ export async function updateRetentionPolicyEntry(
 }
 
 /** A fresh opaque Owner command identity for one retention confirmation
- * (webui.md §15.9, issue #211). The Server, not the browser busy state, is
+ * (webui.md §15.14, issue #211). The Server, not the browser busy state, is
  * authoritative for dedup: re-sending this id for the same preview reconciles
  * to the recorded run, so the caller keeps it across retries and mints a new
  * one only for a different preview. */
@@ -3235,7 +3235,7 @@ export async function verifyBackupEntry(
 }
 
 /**
- * Read-only Restore validation (issue #51, webui.md §8.4): fresh
+ * Read-only Restore validation (issue #51): fresh
  * checksum, integrity, and schema compatibility of the artifact file,
  * computed by the Server before any typed confirmation. Never writes and
  * never audits.

@@ -1,5 +1,5 @@
 //! Backup artifact creation and verification (issue #50, ADR 0008,
-//! webui.md §8.4).
+//! webui.md §15.12).
 //!
 //! Backups are consistent SQLite snapshots produced with `VACUUM INTO`
 //! (temp + fsync + atomic rename, never a copy of live `-wal`/`-shm`),
@@ -164,7 +164,7 @@ async fn create_snapshot(
             .await?;
 
     // fsync before the atomic rename so a crash never leaves a zero-length
-    // or partial artifact under the final name (design §20.1).
+    // or partial artifact under the final name.
     sync_file(temp_path)?;
     std::fs::rename(temp_path, final_path)?;
 
@@ -737,7 +737,7 @@ async fn verify_artifact(
 }
 
 /// Validate or create the configured backup directory with strict
-/// permissions (design §20.1: backups rely on OS ownership/permission
+/// permissions (backups rely on OS ownership/permission
 /// protection). Returns a sanitized failure message on invalid layout.
 fn prepare_backup_dir(path: &Path) -> Result<(), String> {
     crate::file_security::ensure_private_directory(path).map_err(|_| {

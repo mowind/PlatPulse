@@ -24,7 +24,7 @@ pub const SUPPORTED_PROTOCOL_MAJORS: &[u64] = &[PROTOCOL_VERSION, PROTOCOL_VERSI
 /// Hard upper bound on a single AgentReport body, enforced by the Server
 /// before deserialization. Agents flush early when approaching 2 MiB or the
 /// sample threshold, and enter a degraded/fatal state rather than exceeding
-/// this limit (see design §8.5).
+/// this limit (see design §7.3).
 pub const MAX_REPORT_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// Maximum number of Nodes in one complete Inventory.

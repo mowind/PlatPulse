@@ -23,7 +23,7 @@ import {
 import { startDisposableServer, type DisposableServer } from './server-harness'
 
 /**
- * The automatic Validator identity of a Node (issue #218, design §15.8).
+ * The automatic Validator identity of a Node (issue #218, design §15.4).
  *
  * Identity on this surface is a chain correspondence the Server *resolves from
  * evidence*: the Network Identity and the full P2P public key an Agent observed,

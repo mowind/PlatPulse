@@ -351,7 +351,7 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
       `the row displays its own field exactly while the room left in it holds one (${Math.round(room)}px)`,
     ).toBe(room >= HOME_SEARCH_TRACK)
 
-    // §15.33's line discipline is asserted rather than assumed, because the room
+    // webui.md §15.33's line discipline is asserted rather than assumed, because the room
     // read above is the room left on the row's own line: above the phone widths
     // the two ends are drawn on one line, and a phone row gives each group a line
     // of its own.
@@ -420,7 +420,7 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
     await expectVisibleInteractiveTargets(page)
   })
 
-  /** §15.33: the row's right-hand end is one group of three controls, and that
+  /** webui.md §15.33: the row's right-hand end is one group of three controls, and that
    *  group is never squeezed narrower than the controls it holds. A deployment
    *  whose Networks are many and long is exactly the case the arrangement is for
    *  — the pills own a scroller of their own and the three controls keep their
@@ -490,7 +490,7 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
     // A row whose Network names have outgrown it is a row with no room for a field:
     // the shortage reaches the slot, which hands the field back to its entry, rather
     // than the group leaving its own box to keep a field in a row that cannot hold
-    // one (§15.30).
+    // one (webui.md §15.30).
     expect(geometry.slot.width, 'a pressed row gives the field back to the entry').toBeLessThan(HOME_SEARCH_TRACK)
     expect(geometry.inlineShape, 'the entry is the shape a pressed row displays').toBe('none')
   })
@@ -546,7 +546,7 @@ test.describe('Public Home toolbar entries (issue #232)', () => {
   })
 
   /** The sticky header keeps its own pixels over anything Home paints below it. An
-   *  open toolbar surface lifts its own wrapper to `md:z-30` (design §15.27), so
+   *  open toolbar surface lifts its own wrapper to `md:z-30` (webui.md §15.27), so
    *  the header has to outrank that tier: a row — or the surface hanging off its
    *  entry — that is scrolled into the header band must pass under the brand, the
    *  theme toggle and the Admin link rather than paint over them. */

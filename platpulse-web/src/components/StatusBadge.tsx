@@ -1,7 +1,7 @@
 import { Check, X, Clock, CircleHelp, Ban, TriangleAlert, CircleMinus, Ellipsis, Pause, RotateCw, ArrowRight, Circle, type LucideIcon } from 'lucide-react'
 import { Badge } from './ui/badge'
 
-// Status display with text plus icon (design §2.1, §10.3): color is
+// Status display with text plus icon (webui.md §2.1, §10.3): color is
 // supplementary, never the only channel. WebUI-owned dimensions map onto the
 // fixed vocabulary; Server-owned summary words (Node Health severity,
 // attention severity) are presented as the Server sends them (webui.md §5.4).
@@ -22,7 +22,7 @@ const STATUS_ICONS: Record<string, LucideIcon> = {
   'You are offline': X,
   // Server-owned words are presented as the Server sends them (webui.md
   // §5.4): the positive realtime state, the Node Health Summary severity,
-  // the attention severity, Operation states (§5.5), and Doctor check
+  // the attention severity, Operation states (webui.md §5.5), and Doctor check
   // states are not WebUI dimensions.
   Connected: Check,
   Healthy: Check,
@@ -132,7 +132,7 @@ export function formatUtcDateTime(value: Date | string | null | undefined): stri
 
 /**
  * Emerald chip: the Badge primitive with a leading status glyph. Text carries
- * the meaning and colour only supplements it (design §2.1, §10.3).
+ * the meaning and colour only supplements it (webui.md §2.1, §10.3).
  */
 export function StatusBadge({
   status,

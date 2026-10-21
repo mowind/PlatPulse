@@ -114,7 +114,7 @@ test('capture Emerald migration evidence', async ({ page }, testInfo) => {
   // The Node Peer Country View first row: the wider map track beside the four
   // summary tiles, with the map's in-scope figure agreeing with the Peer Count
   // tile because both read the same retained Peer records. The locator capture
-  // is the reviewable evidence for the approved §11.1 composition.
+  // is the reviewable evidence for the approved webui.md §11.1 composition.
   const peerCountries = page.getByRole('region', { name: 'Node Peer countries' })
   await expect(peerCountries).toBeVisible()
   const peerRecords = peerCountries.getByRole('note')

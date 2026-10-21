@@ -23,7 +23,7 @@ export type AuthStatus =
 interface AuthContextValue {
   status: AuthStatus
   /**
-   * Access generation (design §3.3). Every authorization transition
+   * Access generation (webui.md §3.3). Every authorization transition
    * (login, logout, expiry/revocation, role change) bumps it so Admin
    * surfaces can close streams, abort requests, clear sensitive cache,
    * and discard older-generation responses.
@@ -91,7 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // A departure belongs to the reader who wrote it (design §15.25): the token
+  // A departure belongs to the reader who wrote it (webui.md §15.25): the token
   // that carries it is bound here, at the boundary that outlives every shell
   // drawing a reading, because signing out and signing in as somebody else
   // happens while no such shell is mounted — an old history entry would
@@ -114,7 +114,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionEpochRef.current += 1
     const response = await apiLogin(username, password)
     // Synchronously retire any cached Admin data from an earlier session
-    // before the new session can render (design §3.3).
+    // before the new session can render (webui.md §3.3).
     setGeneration((value) => {
       resetAdminCache(value + 1)
       resetPublicCache(value + 1)

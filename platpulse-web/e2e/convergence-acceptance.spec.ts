@@ -291,7 +291,7 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
       }
     }
 
-    // Touch drawer keyboard cycle (design §10.1): Enter opens the drawer and
+    // Touch drawer keyboard cycle (webui.md §10.1): Enter opens the drawer and
     // moves focus to the first Admin link; Escape closes it and restores
     // focus to the Menu opener, both with a visible focus ring.
     const adminNav = page.getByRole('navigation', { name: 'Admin' })
@@ -367,7 +367,7 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
 
   test('Unknown, Stale, Error and paused-live states remain semantically visible', async ({ page }) => {
     // A blocked Admin SSE stream surfaces the paused-live notice on every
-    // Admin route while REST data keeps rendering (design §6.3).
+    // Admin route while REST data keeps rendering (webui.md §6.3).
     await page.route('**/api/admin/v1/events**', (route) => route.abort())
     await openAdmin(page)
     await openAdminNavLink(page, 'Nodes')

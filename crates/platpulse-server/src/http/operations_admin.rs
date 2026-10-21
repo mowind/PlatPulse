@@ -1,5 +1,5 @@
 //! Owner-only Operations, retention, backup, and Doctor surfaces
-//! (issue #50, design §11.3/§20.1/§20.3, webui.md §4.4/§4.5/§5.5/§8.4).
+//! (issue #50, design §11.4, webui.md §5.5, §15.11–§15.13).
 //!
 //! Every mutation returns immediately with an Operation reference and an
 //! Audit Event link. REST is authoritative and the operation queue is
@@ -620,7 +620,7 @@ pub struct RestoreValidateRequest {
     pub artifact_id: String,
 }
 
-/// Read-only Restore validation outcome (issue #51, design §20.2): the
+/// Read-only Restore validation outcome (issue #51): the
 /// Server re-verifies the artifact file against its recorded manifest
 /// before any confirmation. Checksum and integrity are re-computed from
 /// the file; schema compatibility compares the artifact schema with the
@@ -1995,7 +1995,7 @@ pub(crate) async fn backup_verify(
 }
 
 // ---------------------------------------------------------------------------
-// Restore (issue #51, design §20.2, webui.md §8.4)
+// Restore (issue #51)
 // ---------------------------------------------------------------------------
 
 /// Read-only Restore validation: identity selection plus fresh checksum,
@@ -2436,7 +2436,7 @@ pub(crate) async fn capacity_overview(
         }),
         sampled_at: status.sampled_at.clone(),
         // Reasons cross the trust boundary as sanitized text: the sources are
-        // raw path and OS error strings (design §561; WebUI contract §1218).
+        // raw path and OS error strings (design §10.3; webui.md §15.15).
         sampling_error: status
             .sampling_error
             .as_deref()

@@ -2,7 +2,7 @@
 //! sessions keyed by HMAC digests, synchronizer CSRF tokens, the login rate
 //! limiter, and the identity mutations that create the first Owner.
 //!
-//! Tokens follow §12.5: `pp_session_<token_id>_<secret>`. The Server stores
+//! Tokens have the form `pp_session_<token_id>_<secret>`. The Server stores
 //! only `HMAC-SHA-256(server_pepper, full_token)` and never the plaintext;
 //! the CSRF token is derived from the session token so the WebUI can fetch
 //! it from `GET /api/public/v1/session` without the Server storing another
@@ -31,11 +31,11 @@ use crate::secrets::Pepper;
 /// `Secure`, `Path=/`, and no `Domain`.
 pub const SESSION_COOKIE_PRODUCTION: &str = "__Host-platpulse_session";
 
-/// Explicit development-mode cookie (design §19.1): separately named so a
+/// Explicit development-mode cookie (design §10.3): separately named so a
 /// `__Host-` cookie is never emitted without `Secure`.
 pub const SESSION_COOKIE_DEVELOPMENT: &str = "platpulse_dev_session";
 
-/// Session token prefix from design §12.5.
+/// Session token prefix.
 pub const SESSION_TOKEN_PREFIX: &str = "pp_session_";
 
 /// Secret part of the session token: 256 bits, hex-encoded.
@@ -52,7 +52,7 @@ pub const MAX_PASSWORD_LENGTH: usize = 1024;
 
 /// Failed login attempts per (client, username) inside the window.
 pub const LOGIN_MAX_ATTEMPTS: u32 = 5;
-/// Fixed window for the login rate limiter (design §19.4).
+/// Fixed window for the login rate limiter (design §10.2).
 pub const LOGIN_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 /// `last_seen_at` is written at most this often (design §10.2). It is
@@ -157,7 +157,7 @@ impl AuthConfig {
         }
     }
 
-    /// Explicit development policy (design §19.1): separate non-`__Host-`
+    /// Explicit development policy (design §10.3): separate non-`__Host-`
     /// cookie without `Secure`, so local HTTP testing never emits an
     /// invalid or misleading production cookie.
     pub fn development(pepper: Pepper, origin: String) -> Self {
@@ -257,7 +257,7 @@ pub enum IdentityError {
 }
 
 /// A fixed-window attempt limiter. One instance per protected endpoint kind
-/// (design §19.4: login, Enrollment, Recovery, AgentReport are independent).
+/// (login, Enrollment, Recovery, AgentReport are independent).
 pub struct RateLimiter {
     inner: Mutex<HashMap<(String, String), (Instant, u32)>>,
     max_attempts: u32,
@@ -303,7 +303,7 @@ fn key_tuple(key: (&str, &str)) -> (String, String) {
     (key.0.to_owned(), key.1.to_owned())
 }
 
-/// Hash a human password with Argon2id (design §12.5).
+/// Hash a human password with Argon2id (design §10.2).
 pub fn hash_password(password: &[u8]) -> Result<String, argon2::password_hash::Error> {
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
@@ -350,7 +350,7 @@ pub fn new_session_token() -> (String, String) {
 }
 
 /// Derive a coarse, non-sensitive client hint from a User-Agent header
-/// (design §10.2: the Server never stores the full User-Agent or a raw IP;
+/// (the Server never stores the full User-Agent or a raw IP;
 /// Session review shows only a coarse browser/platform family). Unknown or
 /// missing agents read as `Unknown`; no version or identifier is kept.
 pub fn client_hint_from_ua(user_agent: Option<&str>) -> String {
@@ -430,7 +430,7 @@ pub fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     })
 }
 
-/// Build a `Set-Cookie` value for the session cookie (design §10.2/§19.1).
+/// Build a `Set-Cookie` value for the session cookie (design §10.2, §10.3).
 pub fn session_cookie_header(name: &str, value: &str, secure: bool) -> String {
     let mut header = format!("{name}={value}; Path=/; HttpOnly; SameSite=Lax");
     if secure {
@@ -507,7 +507,7 @@ pub async fn bump_authorization_generation(
     })
 }
 
-/// Insert an identity mutation into the bounded audit sink (design §18.2).
+/// Insert an identity mutation into the bounded audit sink (design §13.3).
 /// Accepts any SQLx executor so identity mutations and their audit rows
 /// commit in the same transaction. CLI mutations use `actor = None`
 /// (`local-cli`).
@@ -678,7 +678,7 @@ pub async fn create_owner(
         .map(|_| ())
 }
 
-/// Create a Viewer from the CLI (design §10.2/§13.1): a human principal
+/// Create a Viewer from the CLI (design §10.2): a human principal
 /// that may use Home but has no administrative authority. The password is
 /// hashed by the caller; the user row and its `viewer_created` audit event
 /// commit atomically, matching the Owner baseline.

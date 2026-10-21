@@ -1,4 +1,4 @@
-//! Agent Enrollment client (design §4.5, §8.2, §12.5/§12.6).
+//! Agent Enrollment client (design §4.3, §7.1, §10.1).
 //!
 //! `enroll_agent` exchanges a single-use Enrollment Token (read from the
 //! TTY/stdin by the CLI, never argv) for the stable Agent identity, Agent
@@ -59,7 +59,7 @@ pub enum EnrollError {
     IdentityPersist(#[source] sqlx::Error),
 }
 
-/// Server enrollment response (Agent wire: snake_case, design §9.1).
+/// Server enrollment response (Agent wire: snake_case).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct EnrollResponse {

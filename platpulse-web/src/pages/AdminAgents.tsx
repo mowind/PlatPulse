@@ -97,10 +97,10 @@ import {
 
 /**
  * PAGE-ADMIN-AGENTS, PAGE-ADMIN-AGENT-DETAIL, PAGE-ADMIN-ENROLL,
- * PAGE-ADMIN-AGENT-RECOVER, and PAGE-ADMIN-AGENT-ROTATE (design §4.3, §8.2):
+ * PAGE-ADMIN-AGENT-RECOVER, and PAGE-ADMIN-AGENT-ROTATE (design §4.3, §10.1):
  * Owner-only Agent lifecycle operations. Identity, liveness, boot/report
  * state, Inventory, credential state, and diagnostics are separate
- * dimensions (design §14.3). One-time secrets follow PATTERN-SECRET-ONCE:
+ * dimensions (design §5.1, §9.2). One-time secrets follow PATTERN-SECRET-ONCE:
  * they appear only in the success response, live only in component state,
  * and are gone when the view is left — never in URLs, history, or Audit.
  */
@@ -1602,7 +1602,7 @@ function AgentRemovalPanel({
 }
 
 /**
- * The Host series of this Agent (issue #215, design §11.5): the machine's CPU, physical memory,
+ * The Host series of this Agent (issue #215, design §11.6): the machine's CPU, physical memory,
  * load averages, network rate and per-mount storage. The Agent observes its Host once and the
  * Server stores that observation once, so every Node this Agent reports reads the same series
  * instead of a copy of it, and the Agent is named on the card so a shared reading is never
@@ -2120,7 +2120,7 @@ export function AdminAgentEnroll() {
 
 /** PAGE-ADMIN-AGENT-RECOVER: one-time Recovery Token for an existing Agent.
  * Exchange advances the Agent Epoch and rotates the credential without a
- * duplicate Agent (design §4.5). */
+ * duplicate Agent (design §4.3). */
 export function AdminAgentRecover() {
   const { agentId = '' } = useParams()
   const { status, generation } = useAuth()
@@ -2246,7 +2246,7 @@ export function AdminAgentRecover() {
 }
 
 /** PAGE-ADMIN-AGENT-ROTATE: credential rotation with an explicit overlap
- * window and optional old-credential revocation (design §12.6). Distinct
+ * window and optional old-credential revocation (design §10.1). Distinct
  * from recovery: the Agent Epoch is untouched. */
 export function AdminAgentRotate() {
   const { agentId = '' } = useParams()

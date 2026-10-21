@@ -3,7 +3,7 @@ import { expectNoHorizontalOverflow } from './helpers'
 
 /**
  * Acceptance matrix for the Agents summary, the Audit detail disclosure, and
- * the Overview attention-time labels (design §8.5.6 and §8.6).
+ * the Overview attention-time labels (webui.md §8.5.6 and §8.6).
  *
  * The shared e2e Server seeds one primary Agent plus one no-host Agent, which
  * cannot prove that six columns stay aligned across many different records.

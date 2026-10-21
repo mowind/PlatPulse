@@ -1,4 +1,4 @@
-//! Agent configuration (design §8.2).
+//! Agent configuration (design §7.1).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

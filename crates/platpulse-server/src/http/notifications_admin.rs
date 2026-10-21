@@ -1,4 +1,4 @@
-//! Owner-only Notification operations (issue #49, design §17.4/§17.5,
+//! Owner-only Notification operations (issue #49,
 //! webui.md PAGE-ADMIN-DELIVERIES / PAGE-ADMIN-DELIVERY /
 //! PAGE-ADMIN-CHANNELS).
 //!
@@ -576,7 +576,7 @@ pub(crate) async fn notification_delivery_detail(
 }
 
 /// Explicit, audited retry of a retryable Delivery (issue #207, Stories
-/// 30-33, design webui.md §15.10). It re-arms the same Delivery row for the
+/// 30-33, webui.md §15.10). It re-arms the same Delivery row for the
 /// worker: it creates a new Delivery attempt on the next worker pass but
 /// never a new Notification Event, Incident, or business transition, and it
 /// never rewrites history - the attempt count, the last provider result, and

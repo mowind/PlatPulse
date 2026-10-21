@@ -1,4 +1,4 @@
-//! Restore (issue #51, design §20.2, webui.md §8.4).
+//! Restore (issue #51, design §12).
 //!
 //! Restore is the highest-risk recovery workflow and is strictly offline:
 //! the WebUI workflow selects a backup identity, re-verifies its checksum,
@@ -181,7 +181,7 @@ pub async fn check_artifact(
             format!("cannot open the backup artifact read-only: {error}"),
         )
     })?;
-    // Restore is the highest-risk operation: the design (§20.2) demands a
+    // Restore is the highest-risk operation: it demands a
     // full integrity_check, not just the lighter quick_check used by
     // backup verification.
     let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
@@ -434,7 +434,7 @@ async fn fail_operation(
 // Offline application (`platpulse-server restore`)
 // ---------------------------------------------------------------------------
 
-/// How the destructive apply was confirmed (design §19: destructive
+/// How the destructive apply was confirmed (destructive
 /// commands require the typed confirmation phrase; automation uses an
 /// explicit `--yes`).
 pub enum Confirmation {
@@ -455,7 +455,7 @@ pub async fn apply(
     artifact_id: &str,
     confirmation: Confirmation,
 ) -> Result<ApplyOutcome, RestoreError> {
-    // Exclusive stopped-Server gate (design §19): take ownership before
+    // Exclusive stopped-Server gate (design §12): take ownership before
     // SQLite opens and refuse while a Server is running.
     let _guard = crate::ownership::acquire(&config.db_path).map_err(ownership_failure)?;
 
@@ -840,7 +840,7 @@ pub async fn apply(
 }
 
 /// Insert the restore outcome into `operations` plus its Audit Event in
-/// one transaction. Actor is `local-cli` (design §19: `actor = local-cli`).
+/// one transaction. Actor is `local-cli`.
 /// Returns `Ok(None)` when the target database predates the Operations
 /// schema (the row cannot be recorded there).
 async fn record_outcome(

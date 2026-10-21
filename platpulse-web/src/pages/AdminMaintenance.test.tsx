@@ -262,7 +262,7 @@ describe('PAGE-ADMIN-MAINTENANCE (Alerts Maintenance Windows)', () => {
     expect(scope.getAttribute('aria-invalid')).toBe('true')
     expect(scope.getAttribute('aria-describedby')).toBe('maintenance-scope-value-error')
     expect(screen.getByText('Enter a scope value for this Maintenance Window.')).toBeTruthy()
-    // The page summary stays alongside the field-level message (§10.3).
+    // The page summary stays alongside the field-level message (webui.md §10.3).
     expect(
       screen.getByText('A scope value is required for every Maintenance Window.'),
     ).toBeTruthy()

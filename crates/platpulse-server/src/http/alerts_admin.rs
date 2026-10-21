@@ -1,4 +1,4 @@
-//! Owner-only Alert operations (issue #48, design §17, webui.md §4.4):
+//! Owner-only Alert operations (issue #48, webui.md §15.6–§15.8):
 //! typed Rule review and editing, independent Rule evaluation state,
 //! Incident history (immutable), safe Rule preview, and time-bounded
 //! Silence and Maintenance policies.
@@ -2291,7 +2291,7 @@ pub(crate) async fn alert_incidents(
 /// PAGE-ADMIN-INCIDENT: one Incident with its immutable evidence, the
 /// current independent evaluation state of its `(rule, subject)`, and any
 /// overlapping Silence/Maintenance suppressions (both reasons stay visible
-/// independently; webui.md §8.3).
+/// independently; webui.md §15.8).
 #[utoipa::path(
     get,
     path = "/api/admin/v1/alerts/incidents/{incident_id}",
@@ -2736,7 +2736,7 @@ pub(crate) async fn alert_silences(
 
 /// POST /api/admin/v1/alerts/silences: create a time-bounded delivery
 /// Silence. It suppresses matching delivery only; evaluation and Incidents
-/// are untouched (design §17.5, webui.md §8.3).
+/// are untouched (webui.md §15.8).
 #[utoipa::path(
     post,
     path = "/api/admin/v1/alerts/silences",
@@ -3277,8 +3277,7 @@ pub(crate) async fn alert_maintenance(
 /// Maintenance Window for an Agent, Node, or Network scope. Expected
 /// conditions are a typed allowlist of rule keys; an empty list matches any
 /// rule. Maintenance marks expected Incidents suppressed and suppresses
-/// expected delivery, without changing facts, evaluation, or Node Health
-/// (design §17.5).
+/// expected delivery, without changing facts, evaluation, or Node Health.
 #[utoipa::path(
     post,
     path = "/api/admin/v1/alerts/maintenance",

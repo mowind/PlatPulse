@@ -1,4 +1,4 @@
-//! `platpulse-server` CLI (design §18.2): `init`, `owner create`, and
+//! `platpulse-server` CLI: `init`, `owner create`, and
 //! `serve`. Binary crates keep a thin `main.rs`; all logic lives here so it
 //! can be exercised from tests.
 
@@ -39,13 +39,13 @@ pub enum Command {
     /// Owner account administration.
     #[command(subcommand)]
     Owner(OwnerCommand),
-    /// Viewer account administration (design §12.1).
+    /// Viewer account administration (design §10.2).
     #[command(subcommand)]
     Viewer(ViewerCommand),
-    /// Network Registry administration (design §7.1).
+    /// Network Registry administration (design §4.5).
     #[command(subcommand)]
     Network(NetworkCommand),
-    /// Agent administration (design §18.2).
+    /// Agent administration.
     #[command(subcommand)]
     Agent(AgentCommand),
     /// Create one sanitized backup artifact using the configured backup_dir.
@@ -53,7 +53,7 @@ pub enum Command {
     /// Verify the stopped Server database's physical integrity and exit
     /// non-zero on a corrupt or unreadable database (ADR 0008, issue #194).
     VerifyIntegrity(VerifyIntegrityArgs),
-    /// Offline Restore (design §19/§20.2): the only path that may replace
+    /// Offline Restore (design §12): the only path that may replace
     /// the database. Requires an exclusive stopped-Server condition, the
     /// artifact id, and a typed confirmation phrase (or explicit `--yes`).
     Restore(RestoreArgs),
@@ -194,7 +194,7 @@ pub struct CutoverRollbackArgs {
 
 #[derive(Debug, Args)]
 pub struct InitArgs {
-    /// `server.toml` with at least `state_dir` (design §18.1).
+    /// `server.toml` with at least `state_dir`.
     #[arg(long)]
     pub config: PathBuf,
 }
@@ -221,7 +221,7 @@ pub enum OwnerCommand {
 
 #[derive(Debug, Args)]
 pub struct OwnerCreateArgs {
-    /// `server.toml` (design §18.1).
+    /// `server.toml`.
     #[arg(long)]
     pub config: PathBuf,
     /// Username of the new Owner. Never pass a password on the command
@@ -238,7 +238,7 @@ pub enum ViewerCommand {
 
 #[derive(Debug, Args)]
 pub struct ViewerCreateArgs {
-    /// `server.toml` (design §18.1).
+    /// `server.toml`.
     #[arg(long)]
     pub config: PathBuf,
     /// Username of the new Viewer. Never pass a password on the command
@@ -249,13 +249,13 @@ pub struct ViewerCreateArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum NetworkCommand {
-    /// Register a Network with its complete identity tuple (design §7.1).
+    /// Register a Network with its complete identity tuple (design §4.5).
     Create(NetworkCreateArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct NetworkCreateArgs {
-    /// `server.toml` (design §18.1).
+    /// `server.toml`.
     #[arg(long)]
     pub config: PathBuf,
     /// Stable Registry key, e.g. `platon-mainnet`.
@@ -286,25 +286,25 @@ pub enum AgentCommand {
 
 #[derive(Debug, Args)]
 pub struct EnrollmentTokenCreateArgs {
-    /// `server.toml` (design §18.1).
+    /// `server.toml`.
     #[arg(long)]
     pub config: PathBuf,
-    /// Token lifetime in hours (1..=168; default 24). Short-lived by
-    /// design (§4.5): the token is single-use and must not sit around.
+    /// Token lifetime in hours (1..=168; default 24). Short-lived on purpose
+    /// (design §15.2): the token is single-use and must not sit around.
     #[arg(long)]
     pub expires_in: Option<u64>,
 }
 
 #[derive(Debug, Args)]
 pub struct RestoreArgs {
-    /// `server.toml` (design §18.1).
+    /// `server.toml`.
     #[arg(long)]
     pub config: PathBuf,
     /// The backup artifact id to restore (identity selection).
     #[arg(long)]
     pub artifact_id: String,
     /// Explicit automation marker: skip the typed confirmation phrase
-    /// (design §19: destructive commands require the confirm phrase;
+    /// (destructive commands require the confirm phrase;
     /// automation must pass `--yes`).
     #[arg(long)]
     pub yes: bool,
@@ -327,7 +327,7 @@ pub struct ServeArgs {
     #[arg(long)]
     pub web_assets: Option<PathBuf>,
     /// Dedicated backup directory for Admin-triggered backup artifacts
-    /// (design §20.1; never the Server state directory).
+    /// (never the Server state directory).
     #[arg(long)]
     pub backup_dir: Option<PathBuf>,
     /// Optional operator-provided GeoLite2 Country MMDB. The Server never
@@ -342,7 +342,7 @@ pub struct ServeArgs {
     #[arg(long)]
     pub base_url: Option<String>,
     /// Explicit development mode: separate non-`__Host-` cookie without
-    /// `Secure` (design §19.1).
+    /// `Secure` (design §10.3).
     #[arg(long)]
     pub dev: bool,
     /// PEM certificate chain for direct native Rustls HTTPS.
@@ -396,7 +396,7 @@ pub fn resolve_serve_config(args: &ServeArgs) -> Result<ServerConfig, crate::con
 
 /// Create an Owner. The password is read exclusively from the TTY (hidden,
 /// with confirmation) or from a secure stdin/fd; it never comes from argv
-/// or a default (design §12.2).
+/// or a default.
 pub async fn run_owner_create(
     config: &ServerConfig,
     username: &str,
@@ -412,7 +412,7 @@ pub async fn run_owner_create(
 /// Create a Viewer with the same local provisioning baseline as an Owner:
 /// the password is read exclusively from the TTY (hidden, with
 /// confirmation) or from a secure stdin/fd, never from argv or a default,
-/// and the creation writes its audit event (design §12.1). There is no
+/// and the creation writes its audit event (design §10.2). There is no
 /// public or HTTP registration path.
 pub async fn run_viewer_create(
     config: &ServerConfig,
@@ -465,7 +465,7 @@ async fn open_database_with_new_password(
     ))
 }
 
-/// Register a Network from the local CLI (design §7.1): the command
+/// Register a Network from the local CLI (design §4.5): the command
 /// requires the complete identity tuple and writes the row plus its
 /// minimal audit event in one transaction. The Server never derives
 /// Registry entries from Agent input.
@@ -500,8 +500,8 @@ pub async fn run_network_create(
     Ok(())
 }
 
-/// Create a single-use Enrollment Token from the local CLI (design §4.5,
-/// §12.5). The plaintext token is printed exactly once and never stored;
+/// Create a single-use Enrollment Token from the local CLI (design §4.3).
+/// The plaintext token is printed exactly once and never stored;
 /// the CLI output is the operator's only copy.
 pub async fn run_create_enrollment_token(
     config: &ServerConfig,
@@ -537,7 +537,7 @@ pub async fn run_create_enrollment_token(
     Ok(())
 }
 
-/// Offline Restore (design §19/§20.2, issue #51): the only path that may
+/// Offline Restore (design §12, issue #51): the only path that may
 /// replace the database. Refuses while a Server is running (exclusive
 /// stopped-Server condition), re-validates identity/checksum/integrity/
 /// schema, preserves the current database on every failure, never touches
@@ -887,7 +887,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         config.trusted_proxy_scheme.as_deref(),
     )?;
 
-    // Exclusive stopped-Server detection (design §19, issues #51/#160): the
+    // Exclusive stopped-Server detection (design §12, issues #51/#160): the
     // serving process holds the database ownership guard for its lifetime, so
     // every offline CLI command refuses while a Server is running, and a
     // second Server refuses to start over the same database.
@@ -973,7 +973,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                 crate::redaction::redact_sensitive(&error.to_string())
             );
         }
-        // Retention policies are seeded idempotently with the design §11.3
+        // Retention policies are seeded idempotently with the design §11.4
         // defaults; existing rows are never rewritten.
         if let Err(error) = crate::retention::ensure_seeded(database.pool()).await {
             eprintln!(
@@ -1202,7 +1202,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         }
 
         // Alert evaluation sweep: persists rule state and Incident transitions
-        // for every active subject on a fixed cadence (design §17.2). Report
+        // for every active subject on a fixed cadence. Report
         // ingestion already evaluates its reported subjects in-transaction; the
         // sweep covers time-based facts and restores timers after restart. The
         // loop stops on shutdown and every sweep drains before the WAL
@@ -1241,7 +1241,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             }));
         }
 
-        // Notification delivery worker (design §17.4): sends due Outbox rows
+        // Notification delivery worker: sends due Outbox rows
         // through the configured channels with bounded retry/backoff and
         // Retry-After awareness, reaches DeadLetter after max attempts, and
         // re-arms Deliveries left in_flight by a crash. The loop stops on

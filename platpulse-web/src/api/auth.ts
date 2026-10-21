@@ -1,6 +1,6 @@
 // Thin typed wrapper over the generated browser client for the human
 // session lifecycle (design §10.2). Business code never copies DTO
-// interfaces (design §13.4); it maps transport/API failures onto a single
+// interfaces (design §8.4); it maps transport/API failures onto a single
 // error type keyed by the Server's stable `code`.
 
 import { loginHandler, logoutHandler, sessionHandler } from './generated'

@@ -39,7 +39,7 @@ export const INDETERMINATE_OUTCOME =
   'The request may not have reached the Server, so the outcome is unknown. This request id identifies the command whether or not the Server recorded it, so look it up below to reconcile the result; the browser never re-sends automatically.'
 
 /**
- * Delivery states are Server-owned vocabulary (design §17.4). The word is
+ * Delivery states are Server-owned vocabulary. The word is
  * presented exactly as the Server sends it and only the tone is WebUI-owned.
  */
 const DELIVERY_STATE_TONES: Record<string, 'ok' | 'error' | 'neutral'> = {
@@ -52,7 +52,7 @@ export function deliveryStateTone(state: string): 'ok' | 'error' | 'neutral' {
   return DELIVERY_STATE_TONES[state] ?? 'neutral'
 }
 
-/** The Server accepts a retry only from these states (design §17.4). */
+/** The Server accepts a retry only from these states. */
 export function deliveryIsRetryable(state: string): boolean {
   return state === 'retry_scheduled' || state === 'failed' || state === 'dead_letter'
 }
@@ -84,7 +84,7 @@ export { DetailItem, DetailList }
 const SECTION_LINK =
   'inline-flex min-h-11 items-center rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50'
 
-/** In-page section switch for the notification surface (§15.9). */
+/** In-page section switch for the notification surface (webui.md §15.9). */
 export function NotificationSectionNav() {
   return (
     <nav

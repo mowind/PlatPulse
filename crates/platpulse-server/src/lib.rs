@@ -83,7 +83,7 @@ pub fn startup_version_line() -> String {
 #[derive(thiserror::Error, PartialEq, Eq)]
 pub enum ListenAddressError {
     #[error(
-        "refusing to bind {0}: non-loopback binds require TLS or a trusted reverse proxy (design §19.4)"
+        "refusing to bind {0}: non-loopback binds require TLS or a trusted reverse proxy (design §10.3)"
     )]
     NonLoopback(std::net::SocketAddr),
 }
@@ -94,7 +94,7 @@ impl std::fmt::Debug for ListenAddressError {
     }
 }
 
-/// Startup guard from design §19.4: the Server must not expose plaintext
+/// Startup guard from design §10.3: the Server must not expose plaintext
 /// service on a non-loopback interface until TLS/trusted-proxy
 /// configuration exists (Phase 1).
 pub fn validate_listen_address(addr: std::net::SocketAddr) -> Result<(), ListenAddressError> {
