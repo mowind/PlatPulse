@@ -397,12 +397,20 @@ A stopped-Server period in which a Backup Artifact is created or restored. It su
 _Avoid_: Maintenance Window, Downtime, Outage
 
 **Backup Artifact**:
-A sanitized, consistent copy of the whole Server database, produced as a recovery point. It is not a projection export.
+A sanitized, consistent copy of the whole Server database on the SQLite Storage Backend, produced as a recovery point. It is not a projection export, and the PostgreSQL Storage Backend has none.
 _Avoid_: Snapshot, Database dump, Export
 
 **Storage Snapshot**:
-A copy of the Server state taken by the storage layer, outside the Server process.
+A copy of the Server state taken by the storage layer, outside the Server process, such as a filesystem or volume snapshot or a PostgreSQL Storage Backend's own dumps and point-in-time recovery. It is never sanitized.
 _Avoid_: Backup Artifact, Database snapshot
+
+**Storage Backend**:
+The database engine that holds a Server's durable state, either SQLite (the default) or PostgreSQL; each Server uses exactly one, and its Agents cannot tell which. It is a Server deployment choice, not a property of any Agent, Node, or Network.
+_Avoid_: Database driver, Storage adapter
+
+**Storage Backend Migration**:
+The one-time, one-way, offline move of a Server's complete durable state from SQLite to PostgreSQL, unsanitized and leaving the source untouched. It is neither a Backup Artifact restore nor a schema change.
+_Avoid_: Backup restore, Import, Migration (alone)
 
 **Owner**:
 A human principal allowed to access the Admin Dashboard and manage PlatPulse.
