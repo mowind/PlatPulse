@@ -22,12 +22,14 @@ import { cn } from '../lib/utils'
  * title line, one marker position and one value baseline by construction, and
  * the box is the target the interactive tiles already needed.
  */
-export function SummaryMetricCard({ label, value, icon: Icon, tone = 'green', action, caption, hint, accessibleName, hoverable = true, dataSlot = 'summary-card' }: {
+export function SummaryMetricCard({ label, value, unit, icon: Icon, tone = 'green', action, caption, hint, accessibleName, hoverable = true, dataSlot = 'summary-card' }: {
   label: string
   /** The tile's full accessible name when the face abbreviates what it reads
    *  (the Balance tile's exact amount and full address); defaults to the label. */
   accessibleName?: string
   value: ReactNode
+  /** Unit of measurement (e.g. LAT), displayed in a smaller secondary tier. */
+  unit?: ReactNode
   /** Trailing metric icon; omit it for a read-only tile that carries none. */
   icon?: LucideIcon
   tone?: 'green' | 'red'
@@ -49,16 +51,26 @@ export function SummaryMetricCard({ label, value, icon: Icon, tone = 'green', ac
 }) {
   return <CardX bordered={false} role="article" aria-label={accessibleName ?? label} size="small"
     data-slot={dataSlot} data-tone={tone}
-    className={cn('min-w-0 rounded-md transition-all', hoverable ? SURFACE_CARD : SURFACE_CARD_SUMMARY)}
+    className={cn('min-w-0 rounded-md transition-all', hoverable && 'group', hoverable ? SURFACE_CARD : SURFACE_CARD_SUMMARY)}
     contentClassName="flex h-full min-w-0 flex-col gap-1 !p-3">
     <div className="flex min-h-11 items-start justify-between gap-1">
       <span className="min-w-0 text-xs font-medium tracking-wider text-muted-foreground">{label}</span>
       <span data-slot="summary-marker" className="-mt-3 -mr-2 grid size-11 shrink-0 place-items-center">
-        {action ?? (Icon ? <Icon size={18} strokeWidth={2} className="shrink-0" aria-hidden="true" data-icon={label} /> : null)}
+        {action ?? (Icon ? <Icon size={18} strokeWidth={2} className={cn('shrink-0', hoverable ? 'text-muted-foreground/30 transition-colors motion-reduce:transition-none group-hover:text-foreground' : 'text-muted-foreground')} aria-hidden="true" data-icon={label} /> : null)}
       </span>
     </div>
     <div data-slot="summary-reading" title={hint} className="flex min-w-0 flex-col gap-0.5">
-      <strong data-slot="summary-value" className={cn('text-base font-bold leading-none tracking-tight tabular-nums md:text-2xl [overflow-wrap:anywhere]', tone === 'red' && 'text-destructive')}>{value}</strong>
+      <strong data-slot="summary-value" className={cn('text-base font-bold leading-none tracking-tight tabular-nums md:text-2xl [overflow-wrap:anywhere]', tone === 'red' && 'text-destructive')}>
+        {value}
+        {unit != null && (
+          <>
+            {' '}
+            <span data-slot="summary-unit" className="text-xs font-normal text-muted-foreground md:text-sm">
+              {unit}
+            </span>
+          </>
+        )}
+      </strong>
       <span data-slot="summary-caption" className="min-h-4 text-[11px] leading-4 text-muted-foreground [overflow-wrap:anywhere]">{caption}</span>
     </div>
   </CardX>

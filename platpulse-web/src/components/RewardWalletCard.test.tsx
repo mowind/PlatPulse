@@ -41,6 +41,9 @@ describe('RewardWalletCard', () => {
     expect(name).toContain('last updated')
     expect(card().querySelector('[data-icon="Balance"]')).not.toBeNull()
     expect(card().getAttribute('data-tone')).toBe('green')
+    const unitEl = card().querySelector('[data-slot="summary-unit"]')
+    expect(unitEl?.textContent).toBe('LAT')
+    expect(unitEl?.classList.contains('text-muted-foreground')).toBe(true)
     // No link out and no Breakdown control.
     expect(card().querySelector('a, button')).toBeNull()
   })

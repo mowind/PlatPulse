@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrowserRouter, createMemoryRouter, RouterProvider } from 'react-router'
 import type { PublicNetwork, PublicNode } from '../api/generated'
 import { homeReturnState, homeReturnTab, type HomeReturnState } from '../homeReturn'
-import HomeDashboard from './HomeDashboard'
+import HomeDashboard, { RATE_DIRECTION_CLASSES } from './HomeDashboard'
 import type { RewardWalletReading } from './RewardWalletCard'
 
 const network = {
@@ -383,6 +383,20 @@ describe('Public Home dashboard', () => {
     render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
     expect(within(cardOf(nodeCardLink('Alpha'))).getByText('Speed').nextElementSibling?.textContent).toBe('10Mbps20Mbps')
     expect(within(cardOf(nodeCardLink('Beta'))).getByText('Speed').nextElementSibling?.textContent).toBe('UnknownUnknown')
+  })
+
+  it('applies dark-mode-compatible contrast colors to network upload and download speed labels', () => {
+    const nodes = [{ ...network.nodes[0], hostNetworkTxBytesPerSec: 1_250_000, hostNetworkRxBytesPerSec: 2_500_000 }]
+    render(<BrowserRouter><HomeDashboard networks={[{ ...network, nodes }]} realtimeStatus="connected" online resetting={false} error={null} loading={false} /></BrowserRouter>)
+    const alphaCard = cardOf(nodeCardLink('Alpha'))
+    const uploadEl = within(alphaCard).getByLabelText('Upload 10Mbps')
+    const downloadEl = within(alphaCard).getByLabelText('Download 20Mbps')
+    for (const token of RATE_DIRECTION_CLASSES.upload.split(' ')) {
+      expect(uploadEl.classList.contains(token)).toBe(true)
+    }
+    for (const token of RATE_DIRECTION_CLASSES.download.split(' ')) {
+      expect(downloadEl.classList.contains(token)).toBe(true)
+    }
   })
 
   it('never restates the consensus block heights on the card', () => {

@@ -69,7 +69,8 @@ export function RewardWalletCard({ reading, now = new Date() }: { reading: Rewar
     ? [problem ?? 'PlatScan reading is stale', exact, where, lastGood]
     : [exact, where, lastGood]
   return <SummaryMetricCard label={label} icon={Wallet}
-    value={formatAmountTwoDecimals(balance) + ' ' + unit}
+    value={formatAmountTwoDecimals(balance)}
+    unit={unit}
     caption={stale ? 'stale · ' + sinceLastGood(wallet.lastGoodAt, now) : 'Mainnet · ' + shortAddress(wallet.address)}
     hint={facts.join(' · ')}
     accessibleName={label + ': ' + formatAmountTwoDecimals(balance) + ' ' + unit + (stale ? ', stale' : '') + '. ' + facts.join('. ')} />

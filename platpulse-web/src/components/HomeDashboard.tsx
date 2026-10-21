@@ -1494,6 +1494,11 @@ const DISK_BAR_NAME = 'Disk: Node data directory size as a share of the filesyst
  *  repeats it beside the CPU, Memory and Disk definitions. */
 const HOST_NETWORK_SPEED_NAME = "Host network speed: this Agent Host's own interface throughput, shared with every Node the Host reports for — not a rate attributable to this Node alone"
 
+export const RATE_DIRECTION_CLASSES = {
+  upload: 'text-emerald-600 dark:text-emerald-400',
+  download: 'text-sky-600 dark:text-sky-400',
+} as const
+
 type ResourceMetric = {
   metric: 'process-cpu' | 'process-memory' | 'node-data'
   /** The short name the three-column row can hold; the full source name stays
@@ -1546,8 +1551,8 @@ function ResourceMetrics({ node }: { node: PublicNode }) {
       ))}
       <div className="col-span-3" data-slot="host-network-speed" role="group" aria-label="Host network speed">
         <MetricRow layout="compact" label="Speed" labelTitle={HOST_NETWORK_SPEED_NAME} value={<span className="flex items-center gap-2 whitespace-nowrap">
-          <span aria-label={`Upload ${formatRate(node.hostNetworkTxBytesPerSec)}`} className="inline-flex items-center gap-0.5 text-green-600"><ChevronUp className="size-3 shrink-0" aria-hidden="true" />{formatRate(node.hostNetworkTxBytesPerSec)}</span>
-          <span aria-label={`Download ${formatRate(node.hostNetworkRxBytesPerSec)}`} className="inline-flex items-center gap-0.5 text-blue-600"><ChevronDown className="size-3 shrink-0" aria-hidden="true" />{formatRate(node.hostNetworkRxBytesPerSec)}</span>
+          <span aria-label={`Upload ${formatRate(node.hostNetworkTxBytesPerSec)}`} className={cn('inline-flex items-center gap-0.5', RATE_DIRECTION_CLASSES.upload)}><ChevronUp className="size-3 shrink-0" aria-hidden="true" />{formatRate(node.hostNetworkTxBytesPerSec)}</span>
+          <span aria-label={`Download ${formatRate(node.hostNetworkRxBytesPerSec)}`} className={cn('inline-flex items-center gap-0.5', RATE_DIRECTION_CLASSES.download)}><ChevronDown className="size-3 shrink-0" aria-hidden="true" />{formatRate(node.hostNetworkRxBytesPerSec)}</span>
         </span>} />
       </div>
     </div>

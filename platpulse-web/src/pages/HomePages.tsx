@@ -49,6 +49,7 @@ import { InfoHint } from '../components/InfoHint'
 import { ValidatorActivityBadge } from '../components/ValidatorActivityBadge'
 import { HEAD_COMPARISON_TONE_CLASS, LastReportAge, networkHeadComparison, networkHeadOffset, validHeight } from '../components/NodeDetailObservations'
 import { SummaryMetricCard } from '../components/SummaryMetricCard'
+import { RATE_DIRECTION_CLASSES } from '../components/HomeDashboard'
 import { OverviewBand } from '../components/OverviewBand'
 import { geoMapStatus, nodeGeoOverview } from '../homeGeo'
 import { NODE_PEER_COUNTRIES_HEADING } from '../components/geoPresentation'
@@ -523,7 +524,7 @@ function HostResourcesGroup({ node }: { node: PublicNode }) {
     <p className="m-0">Collected once per Agent and shared by every Node that Agent monitors, so these values describe the whole Host rather than this Node alone.</p>
   </InfoHint>}>
     {resources.map(([label, value]) => finiteNonNegative(value) ? <MetricRow key={label} label={label} value={formatPercent(value)} progress={value} progressStatus="info" /> : null)}
-    {(upload || download) && <MetricRow label="Network" value={<span className="inline-flex flex-wrap items-center justify-end gap-x-2 tabular-nums">{upload && <span>↑ {formatMetricRate(node.hostNetworkTxBytesPerSec)}</span>}{download && <span>↓ {formatMetricRate(node.hostNetworkRxBytesPerSec)}</span>}</span>} />}
+    {(upload || download) && <MetricRow label="Network" value={<span className="inline-flex flex-wrap items-center justify-end gap-x-2 tabular-nums">{upload && <span className={RATE_DIRECTION_CLASSES.upload}>↑ {formatMetricRate(node.hostNetworkTxBytesPerSec)}</span>}{download && <span className={RATE_DIRECTION_CLASSES.download}>↓ {formatMetricRate(node.hostNetworkRxBytesPerSec)}</span>}</span>} />}
     {!resources.some(([, value]) => finiteNonNegative(value)) && !upload && !download && <p className="m-0 text-[11px] text-muted-foreground">Host resources have not been observed yet.</p>}
   </NodeInfoGroup>
 }
