@@ -1299,7 +1299,7 @@ describe('Public Home filter URLs', () => {
     expect(filterNotice()).toBeNull()
   })
 
-  it('narrows the list by search and reads the three counters over that selection', () => {
+  it('narrows the list by search and reads the three counters over that selection', async () => {
     renderHome([network, secondNetwork])
     // The overview counters are the one place Home states how many Nodes it
     // holds: the list itself carries no count line.
@@ -1310,7 +1310,8 @@ describe('Public Home filter URLs', () => {
 
     fireEvent.change(searchbox(), { target: { value: 'Alpha' } })
 
-    expect(nodeHrefs()).toEqual(['/nodes/node-a'])
+    await waitFor(() => expect(nodeHrefs()).toEqual(['/nodes/node-a']))
+    expect(window.location.search).toBe('?q=Alpha')
     // Issue #233: the three attributable counters and the map read the list
     // selection the filters left, while the two cumulative cells keep the
     // Network selection and say so on the card.
@@ -1322,20 +1323,19 @@ describe('Public Home filter URLs', () => {
     expect(screen.getByRole('article', { name: 'Cumulative blocks' }).querySelector('[data-slot="summary-caption"]')?.textContent).toMatch(/^All of 2 Networks · /)
     expect(screen.getByRole('article', { name: 'Cumulative rewards' }).querySelector('[data-slot="summary-caption"]')?.textContent).toMatch(/^All of 2 Networks · /)
     expect(document.body.textContent).not.toContain('Whole Network selection')
-    expect(window.location.search).toBe('?q=Alpha')
   })
 
-  it('searches the public Node name, the Node ID, and the Network name', () => {
+  it('searches the public Node name, the Node ID, and the Network name', async () => {
     renderHome([network, secondNetwork])
 
     fireEvent.change(searchbox(), { target: { value: 'alpha' } })
-    expect(nodeHrefs()).toEqual(['/nodes/node-a'])
+    await waitFor(() => expect(nodeHrefs()).toEqual(['/nodes/node-a']))
 
     fireEvent.change(searchbox(), { target: { value: 'node-b' } })
-    expect(nodeHrefs()).toEqual(['/nodes/node-b'])
+    await waitFor(() => expect(nodeHrefs()).toEqual(['/nodes/node-b']))
 
     fireEvent.change(searchbox(), { target: { value: 'Testnet' } })
-    expect(nodeHrefs()).toEqual(['/nodes/node-c'])
+    await waitFor(() => expect(nodeHrefs()).toEqual(['/nodes/node-c']))
   })
 
   it('takes a search one character at a time and commits the whole text', async () => {
@@ -1418,14 +1418,14 @@ describe('Public Home filter URLs', () => {
     expect(filterNotice()).toBeNull()
   })
 
-  it('writes the reader choices back into an ordinary Home URL', () => {
+  it('writes the reader choices back into an ordinary Home URL', async () => {
     renderHome([network, secondNetwork])
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Testnet' }))
     expect(window.location.search).toBe('?network=testnet')
 
     fireEvent.change(searchbox(), { target: { value: 'Gamma' } })
-    expect(window.location.search).toBe('?network=testnet&q=Gamma')
+    await waitFor(() => expect(window.location.search).toBe('?network=testnet&q=Gamma'))
 
     fireEvent.change(selectNamed('Health filter'), { target: { value: 'healthy' } })
     expect(window.location.search).toBe('?network=testnet&q=Gamma&health=healthy')
@@ -1433,6 +1433,47 @@ describe('Public Home filter URLs', () => {
     fireEvent.change(selectNamed('Validator status filter'), { target: { value: 'unknown' } })
     expect(window.location.search).toBe('?network=testnet&q=Gamma&health=healthy&validator=unknown')
     expect(nodeHrefs()).toEqual(['/nodes/node-c'])
+  })
+
+  it('immediately flushes pending debounced search query when switching another filter', () => {
+    renderHome([network, secondNetwork])
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Testnet' }))
+    expect(window.location.search).toBe('?network=testnet')
+
+    // Type query into searchbox within debounce window
+    fireEvent.change(searchbox(), { target: { value: 'Gamma' } })
+    // Immediately switch Health filter without waiting for debounce timer
+    fireEvent.change(selectNamed('Health filter'), { target: { value: 'healthy' } })
+
+    // Must immediately flush the draft query along with the health filter
+    expect(window.location.search).toBe('?network=testnet&q=Gamma&health=healthy')
+    expect(nodeHrefs()).toEqual(['/nodes/node-c'])
+  })
+
+  it('debounces search query before committing to URL and filter pipeline', async () => {
+    window.history.replaceState({}, '', '/')
+    vi.useFakeTimers()
+    try {
+      renderHome([network, secondNetwork])
+      fireEvent.change(searchbox(), { target: { value: 'Alpha' } })
+
+      // Immediate draft text reflected in input
+      expect(searchbox().value).toBe('Alpha')
+      // URL has not updated yet before debounce
+      expect(window.location.search).toBe('')
+
+      // Advance less than debounce duration (150ms)
+      vi.advanceTimersByTime(100)
+      expect(window.location.search).toBe('')
+
+      // Advance past debounce duration
+      vi.advanceTimersByTime(60)
+      expect(window.location.search).toBe('?q=Alpha')
+    } finally {
+      vi.useRealTimers()
+    }
+    await waitFor(() => expect(nodeHrefs()).toEqual(['/nodes/node-a']))
   })
 
   it('filters by the Server Validator status and keeps unknown separate from not a Validator', () => {
@@ -1947,7 +1988,7 @@ describe('Public Home toolbar entries', () => {
     expect(trigger('Search Active Nodes').getAttribute('aria-describedby')).toBeNull()
   })
 
-  it('reads one query from the row field and from the entry that opens it', () => {
+  it('reads one query from the row field and from the entry that opens it', async () => {
     window.history.replaceState({}, '', '/?network=testnet&q=Gamma')
     renderHome([network, secondNetwork])
 
@@ -1964,7 +2005,7 @@ describe('Public Home toolbar entries', () => {
     // Typing in the row's field is what the entry's field then reads: one
     // query, one filter, one URL — whichever shape the reader was given.
     fireEvent.change(field, { target: { value: 'Alpha' } })
-    expect(window.location.search).toBe('?network=testnet&q=Alpha')
+    await waitFor(() => expect(window.location.search).toBe('?network=testnet&q=Alpha'))
     fireEvent.click(trigger('Search Active Nodes'))
     expect(collapsedField().value).toBe('Alpha')
     expect(inlineField().value).toBe('Alpha')
@@ -1981,6 +2022,7 @@ describe('Public Home toolbar entries', () => {
     fireEvent.click(trigger('Search Active Nodes'))
     fireEvent.change(collapsedField(), { target: { value: 'Beta' } })
     expect(inlineField().value).toBe('Beta')
+    await waitFor(() => expect(window.location.search).toBe('?network=testnet&q=Beta'))
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(inlineField().value).toBe('Beta')
     expect(window.location.search).toBe('?network=testnet&q=Beta')
@@ -2052,7 +2094,7 @@ describe('Public Home toolbar entries', () => {
     await waitFor(() => expect(document.activeElement).toBe(rowField))
     expect(rowField.value).toBe('Gamma')
     expect(surface('Search Active Nodes')).toBeNull()
-    expect(window.location.search).toBe('?q=Gamma')
+    await waitFor(() => expect(window.location.search).toBe('?q=Gamma'))
 
     // And back the other way: the entry speaks for the field that went out of
     // sight and holds the reader's place, without the word being touched.

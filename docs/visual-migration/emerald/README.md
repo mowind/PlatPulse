@@ -65,7 +65,7 @@ call site, because PlatPulse's `countryCode` is uppercase.
 | `ui/input/Input.vue` | `components/ui/input.tsx` (`Input`) | verbatim |
 | `ui/badge/index.ts` | `components/ui/badge.tsx` | verbatim variants |
 | `ui/alert/index.ts` | `components/ui/alert.tsx` | verbatim variants |
-| `ui/card-x/CardX.vue` | `components/ui/card-x.tsx` (`CardX`) | verbatim |
+| `ui/card-x/CardX.vue` | `components/ui/card-x.tsx` (`CardX`) | verbatim (includes `headerExtra` from `header-extra` slot; see deviation 42) |
 | `ui/progress-thin/ProgressThin.vue` | `components/ui/progress-thin.tsx` | verbatim + unknown-percentage rule |
 | `ui/spinner/Spinner.vue` | `components/ui/spinner.tsx` | verbatim |
 | `ui/empty/Empty.vue` | `components/ui/empty.tsx` | verbatim |
@@ -78,12 +78,12 @@ call site, because PlatPulse's `countryCode` is uppercase.
 | `components/Background.vue` | `components/BackgroundDecoration.tsx` | ported verbatim (fixed 1300px wash) |
 | `components/Header.vue` | `layouts/HomeLayout.tsx` header | ported (h-14 sticky, blur on scroll) |
 | `components/Footer.vue` | `components/AppFooter.tsx` | metrics ported, copy replaced |
-| `components/NodeGeneralCards.vue` | `components/HomeDashboard.tsx` top area | ported (12-col: stats left, map right; icon hover tier and unit tier aligned via deviation 41) |
+| `components/NodeGeneralCards.vue` | `components/HomeDashboard.tsx` top area (`OverviewBand`) | ported (12-col: stats left, map right; icon hover tier and unit tier aligned via deviation 41) |
 | `components/NodeGeneralCards.vue` finance tiles | not adopted (no PlatPulse field) | deviation |
-| `components/NodeCard.vue` | `components/HomeDashboard.tsx` `HomeNodeCard` | ported |
+| `components/NodeCard.vue` | `components/HomeNodeCard.tsx` (`HomeNodeCard`) | ported |
 | `components/NodeEarthMaps.vue` + `utils/echartsWorldMap.ts` | `components/GeoWorldMap.tsx` + `components/mapChartOption.ts` on `echarts` | ported (option literal; geometry pinned locally) |
 | `components/NodeEarthGlobe.vue` (`cobe`) | not adopted — `maps` mode only | deviation |
-| `views/HomeView.vue` | `components/HomeDashboard.tsx` | ported |
+| `views/HomeView.vue` | `components/HomeDashboard.tsx`, `components/HomeToolbar.tsx`, `components/HomeNodeList.tsx` | ported (search debounced via deviation 42) |
 | `views/InstanceDetail.vue` | `pages/HomePages.tsx` Node Page | adapted (see deviation 16) |
 | `views/InstanceDetail.vue` LoadChart/PingChart row | `pages/HomePages.tsx` six-chart deck on `echarts` | ported for the load deck (see deviations 28–31); `PingChart` has no PlatPulse counterpart |
 | `src/components/LoadChart.vue` (the six load charts) | `components/NodeMetricChart.tsx` + `components/nodeMetricChartOption.ts` + `components/metricChartAxis.ts` on `echarts` | ported (option literal; colours, gradient, 1.5px stroke and tooltip kept — deviations 28–31) |
@@ -145,6 +145,7 @@ the reason. Nothing here is a silent divergence.
 
 | 40 | **Issue #263:** `ui/back-top` and `ui/sonner` are adopted as `components/ui/back-top.tsx` and `components/ui/sonner.tsx`, and `DataTooltip` adds start/end placements (`bottom-end` for header action controls) with `touch={false}` passthrough. | BackTop is adopted with PlatPulse's 44×44px interactive minimum (deviation 10) and smooth-scroll with `prefers-reduced-motion` support. Sonner provides global transient toasts (mapped to Emerald's `--popover` and theme tokens in `components/ui/sonner.tsx`) while persistent status notices remain intact. DataTooltip supports `bottom-end` placement (`top-full right-0 mt-2`) to prevent horizontal viewport clipping on sticky headers, and `touch={false}` ensures actionable controls trigger immediately without swallowing taps on touch devices. |
 | 41 | **Issue #264:** Overview summary metric card auxiliary icon muted/highlight tier, secondary unit typographic hierarchy, and dark-mode rate label contrast colours (`text-emerald-600 dark:text-emerald-400` / `text-sky-600 dark:text-sky-400`). | Ported from Emerald `NodeGeneralCards.vue`: summary cards (`SummaryMetricCard`) adopt the subtle resting auxiliary icon (`text-muted-foreground/30`) with smooth hover highlight (`group-hover:text-foreground transition-colors motion-reduce:transition-none`) while preserving the non-clickable card surface (no lift or glow, respecting deviation 11/12). A dedicated `unit` tier renders secondary unit labels (such as `LAT` on the Balance tile) in smaller muted typography (`text-xs md:text-sm font-normal text-muted-foreground`) alongside bold tabular-nums values. Network rate directions use Emerald/Sky palette pairs with dark-mode tints to improve contrast across themes. |
+| 42 | **Issue #265:** `CardX` adopts `headerExtra` prop (ported from Emerald `header-extra` slot), and `HomeDashboard` architecture is decoupled into modular subcomponents (`HomeToolbar`, `HomeNodeCard`, `HomeNodeList`, `HomeResourceMetrics`) with 150ms search input debounce. | Ported from Emerald `CardX.vue` (`header-extra` slot): `CardXProps` supports optional `headerExtra?: React.ReactNode` with two-sided alignment alongside `title` or `header` while strictly preserving `HomeNodeCard`'s unpadded identity header and heading levels. Ported from Emerald `HomeView.vue`'s search debounce: search input maintains dual-shape immediate draft synchronization while debouncing external URL and filter pipeline synchronization by 150ms, with immediate flush on filter switches (Network, Sort, Health, Validator, View) and immediate clear on `Clear search`. `HomeDashboard` decomposes into `HomeToolbar` (adaptive dual-shape search and sort/filter popover), `HomeNodeCard` (compact card with identity, resync, head comparison, and validator status), `HomeNodeList` (compact table view), and `HomeResourceMetrics` (CPU/Memory/Disk progress and host network speed). |
 
 ## 5. Screenshot evidence
 

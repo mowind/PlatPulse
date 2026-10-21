@@ -12,13 +12,14 @@ type CardSize = 'small' | 'medium' | 'large'
  * optional header/footer separators and the hoverable rule are the upstream
  * literals.
  */
-export type CardXProps = React.ComponentProps<'div'> & {
+export type CardXProps = Omit<React.ComponentProps<'div'>, 'title'> & {
   size?: CardSize
   hoverable?: boolean
   bordered?: boolean
   segmented?: boolean
   title?: React.ReactNode
   header?: React.ReactNode
+  headerExtra?: React.ReactNode
   footer?: React.ReactNode
   headerClassName?: string
   contentClassName?: string
@@ -45,6 +46,7 @@ export function CardX({
   segmented = false,
   title,
   header,
+  headerExtra,
   footer,
   headerClassName,
   contentClassName,
@@ -52,7 +54,7 @@ export function CardX({
   children,
   ...props
 }: CardXProps) {
-  const hasHeader = Boolean(header || title)
+  const hasHeader = Boolean(header || title || headerExtra)
   return (
     <div
       data-slot="card-x"
@@ -74,7 +76,29 @@ export function CardX({
             headerClassName,
           )}
         >
-          {header ?? <div className="min-w-0 flex-1 truncate text-sm font-medium">{title}</div>}
+          {header ? (
+            headerExtra ? (
+              <>
+                <div className="min-w-0 flex-1">{header}</div>
+                <div data-slot="card-x-header-extra" className="ml-auto flex shrink-0 items-center gap-2">
+                  {headerExtra}
+                </div>
+              </>
+            ) : (
+              header
+            )
+          ) : (
+            <>
+              {title !== undefined && title !== null && (
+                <div className="min-w-0 flex-1 truncate text-sm font-medium">{title}</div>
+              )}
+              {headerExtra && (
+                <div data-slot="card-x-header-extra" className="ml-auto flex shrink-0 items-center gap-2">
+                  {headerExtra}
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
       <div
