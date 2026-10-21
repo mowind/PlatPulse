@@ -2014,7 +2014,9 @@ describe('Admin MVP route inventory (issue #92)', () => {
     ['/admin/access/audit', /Audit log/],
   ]
 
-  it('reaches every MVP Admin page through the production router', async () => {
+  // Rendering 30 Admin routes one after another is an integration-scale walk,
+  // not a single page's unit test: it needs room on a loaded CI runner.
+  it('reaches every MVP Admin page through the production router', { timeout: 30_000 }, async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
       '/api/admin/v1/access-mode': () =>

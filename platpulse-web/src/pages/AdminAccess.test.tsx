@@ -548,8 +548,13 @@ describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     await waitFor(() => expect(rowIds()).toEqual(['event-7', 'event-6']), SLOW)
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.queryByRole('button', { name: /Try again|Trying again/ })).toBeNull()
-    // Focus lands on the events the retry brought back.
-    expect(document.activeElement).toBe(document.querySelector('[data-slot="audit-table"]'))
+    // Focus lands on the events the retry brought back. Focus is moved by an
+    // effect, so it is waited for instead of read in the same tick: a slow
+    // flush would otherwise fail a page that behaves correctly.
+    await waitFor(
+      () => expect(document.activeElement).toBe(document.querySelector('[data-slot="audit-table"]')),
+      SLOW,
+    )
   })
 
   it('A: moves focus to the empty result when a retry succeeds with no events', async () => {
@@ -670,7 +675,11 @@ describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     expect(rowIds()).toEqual(['event-7', 'event-6', 'event-5'])
     expect(count()).toBe('3 loaded')
     expect(screen.getByRole('region', { name: 'Redacted details for Audit event 7' })).toBeTruthy()
-    expect(document.activeElement).toBe(document.querySelector('[data-slot="audit-table"]'))
+    // As above: focus moves in an effect once the retry's result is shown.
+    await waitFor(
+      () => expect(document.activeElement).toBe(document.querySelector('[data-slot="audit-table"]')),
+      SLOW,
+    )
   })
 })
 

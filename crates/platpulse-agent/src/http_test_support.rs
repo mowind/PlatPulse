@@ -123,3 +123,68 @@ async fn serve(mut socket: TcpStream, body: &str, delay: Duration, observed: &Mu
         }
     }
 }
+
+/// A loopback address reserved for one test.
+///
+/// A test that needs a concrete address — one it can hand to an Agent config
+/// and reuse when it stops and restarts a Server — cannot just bind
+/// 127.0.0.1:0, read the port, and drop the probe: the kernel may hand the
+/// released port to any other test in this process that binds port 0 before
+/// the Server binds it, and the suite fails with AddrInUse at a line that has
+/// nothing to do with the test that lost the race.
+///
+/// The port is taken out of circulation for as long as this value lives, so
+/// the bind that follows always gets it. The port is released rather than kept
+/// listening, because a Server that is stopped has to refuse connections: a
+/// listener held open for the downtime would accept them into a backlog no one
+/// reads, and the Agent would wait forever instead of failing fast.
+pub(crate) struct ReservedAddress {
+    addr: std::net::SocketAddr,
+}
+
+/// The loopback ports the tests in this process have taken out of circulation.
+static RESERVED_PORTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<u16>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+impl ReservedAddress {
+    /// Take a loopback port out of circulation until this value is dropped.
+    pub(crate) fn reserve() -> Self {
+        loop {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0")
+                .expect("a free loopback port for the test");
+            let addr = probe.local_addr().expect("the reserved address");
+            drop(probe);
+            let mut reserved = RESERVED_PORTS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if reserved.insert(addr.port()) {
+                return Self { addr };
+            }
+        }
+    }
+
+    /// The address the test's Server runs on.
+    pub(crate) fn addr(&self) -> std::net::SocketAddr {
+        self.addr
+    }
+
+    /// Bind this address for one Server run.
+    ///
+    /// A test that restarts its Server calls this again after stopping it, so
+    /// the restarted Server and the Agent config that points at it share one
+    /// address.
+    pub(crate) async fn listener(&self) -> tokio::net::TcpListener {
+        tokio::net::TcpListener::bind(self.addr)
+            .await
+            .expect("the reserved loopback port binds")
+    }
+}
+
+impl Drop for ReservedAddress {
+    fn drop(&mut self) {
+        RESERVED_PORTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.addr.port());
+    }
+}

@@ -1351,7 +1351,9 @@ describe('Public Home filter URLs', () => {
 
     expect(box.value).toBe('Gamma')
     await waitFor(() => expect(window.location.search).toBe('?q=Gamma'))
-    expect(nodeHrefs()).toEqual(['/nodes/node-c'])
+    // The committed URL and the list it selects are two renders: the list is
+    // waited for, exactly like the single-change searches above.
+    await waitFor(() => expect(nodeHrefs()).toEqual(['/nodes/node-c']))
   })
 
   it('combines the search with the health filter and reads an empty selection as empty', () => {

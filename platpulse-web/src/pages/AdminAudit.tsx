@@ -225,10 +225,16 @@ export default function AdminAudit() {
     if (state === 'initial-failed' || state === 'refresh-failed') retryHadFocus.current = false
     // A first page that arrived is merged into the list one render later.
     if (retryPending || state === 'initial-loading' || !retryHadFocus.current) return
+    // Wait for the render that mounts the results: focusing nothing here would
+    // leave focus on the page and never move it again.
+    const target = tableRef.current ?? emptyRef.current
+    if (target === null) return
     retryHadFocus.current = false
     const active = document.activeElement
-    if (active === null || active === document.body) (tableRef.current ?? emptyRef.current)?.focus()
-  }, [retryPending, state])
+    if (active === null || active === document.body) target.focus()
+    // The results arriving is what this move waits for, so their identity is
+    // part of the effect's inputs.
+  }, [retryPending, state, itemIds, settled])
 
   const toggle = (id: number) => {
     setExpanded((current) => {

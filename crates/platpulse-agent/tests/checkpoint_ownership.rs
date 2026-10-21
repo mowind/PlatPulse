@@ -91,9 +91,11 @@ async fn checkpoint_create_succeeds_after_a_real_preparation() {
     use tokio_util::sync::CancellationToken;
 
     let dir = TempDir::new().unwrap();
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = probe.local_addr().unwrap();
-    drop(probe);
+    // The listener is bound once and handed to the Server below: probing a
+    // port and releasing it before the Server binds it lets another test take
+    // the port in between and fail this one with `AddrInUse`.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
 
     // In-process frozen-v1 Server.
     let database = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
@@ -126,7 +128,6 @@ async fn checkpoint_create_succeeds_after_a_real_preparation() {
     )
     .await
     .unwrap();
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     let state = AppState::new(database, None, auth);
     let shutdown = CancellationToken::new();
     let served = state.clone();

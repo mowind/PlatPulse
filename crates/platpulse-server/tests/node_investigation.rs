@@ -668,6 +668,10 @@ async fn the_window_is_a_preset_or_an_explicit_range_and_an_unusable_one_is_refu
     // Everything the Server cannot answer is refused with one code and a reason.
     let oldest = auth::format_rfc3339(auth::now_utc() - time::Duration::days(31));
     let now_text = auth::format_rfc3339(auth::now_utc());
+    // A start this far ahead stays in the future however long the request
+    // takes: the Server compares whole seconds, so a start pinned to "now"
+    // is only in the future until the clock ticks past it.
+    let after_now = auth::format_rfc3339(auth::now_utc() + time::Duration::hours(1));
     let refusals = [
         ("window=bogus".to_owned(), "an unknown preset"),
         (format!("from={from_text}"), "half a range"),
@@ -681,7 +685,7 @@ async fn the_window_is_a_preset_or_an_explicit_range_and_an_unusable_one_is_refu
             "a range wider than the horizon",
         ),
         (
-            format!("from={now_text}&to={future}"),
+            format!("from={after_now}&to={future}"),
             "a range that starts in the future",
         ),
     ];

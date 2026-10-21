@@ -44,6 +44,10 @@ struct Harness {
 
 impl Harness {
     async fn boot() -> Self {
+        // Install the process-wide log capture before the first request, so
+        // every callsite the handler logs through is registered while a
+        // subscriber is already active.
+        let _ = captured_logs();
         let dir = TempDir::new().unwrap();
         let database = database::initialize(database::ServerDatabaseConfig::new(
             dir.path().join("server.db"),
@@ -561,51 +565,81 @@ impl std::io::Write for LogSinkWriter {
     }
 }
 
+impl LogSink {
+    /// Everything captured so far, as one text block.
+    fn text(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).expect("captured lines are UTF-8")
+    }
+
+    /// The captured lines as JSON objects, one per diagnostic.
+    fn lines(&self) -> Vec<Value> {
+        self.text()
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("each line is JSON"))
+            .collect()
+    }
+}
+
+/// The one log capture this test process installs.
+///
+/// The Server installs one subscriber for its whole process, and these tests
+/// read that egress, so they install one capture the same way. A capture
+/// installed per test and dropped with it would be one of several live
+/// dispatchers, and `tracing` caches every callsite's interest across all of
+/// them: a callsite first registered while no subscriber was active stays
+/// disabled, and a later test then reads only part of its request's lines.
+/// One capture, installed before the first request of the process, keeps each
+/// callsite's interest stable.
+fn captured_logs() -> &'static LogSink {
+    static CAPTURE: std::sync::OnceLock<LogSink> = std::sync::OnceLock::new();
+    CAPTURE.get_or_init(|| {
+        use platpulse_server::logging::{LogConfig, LogFormat, subscriber};
+
+        let sink = LogSink::default();
+        let writer = {
+            let inner = std::sync::Arc::clone(&sink.0);
+            move || LogSinkWriter(std::sync::Arc::clone(&inner))
+        };
+        let config = LogConfig {
+            level: Some(tracing::level_filters::LevelFilter::DEBUG),
+            format: LogFormat::Json,
+        };
+        let (subscriber, _) = subscriber(&config, None, writer);
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("the test process installs one log capture");
+        sink
+    })
+}
+
 /// Issue #250: every diagnostic one Agent report produces on the Server
 /// carries the request id the response echoes in `x-request-id`, plus the
 /// trusted Agent/report identity, and never the credential.
 #[tokio::test]
 async fn one_report_logs_under_the_request_id_echoed_in_x_request_id() {
-    use platpulse_server::logging::{LogConfig, LogFormat, subscriber};
-
+    let logs = captured_logs();
     let harness = Harness::boot().await;
     let session = owner_session(&harness).await;
     let (agent_id, credential) = enroll_agent(&harness, &session).await;
     let report = fixture_report(&agent_id, 1);
     let body = serde_json::to_vec(&report).unwrap();
 
-    let sink = LogSink::default();
-    let writer = {
-        let inner = std::sync::Arc::clone(&sink.0);
-        move || LogSinkWriter(std::sync::Arc::clone(&inner))
-    };
-    let config = LogConfig {
-        level: Some(tracing::level_filters::LevelFilter::DEBUG),
-        format: LogFormat::Json,
-    };
-    let (subscriber, _) = subscriber(&config, None, writer);
-    let guard = tracing::subscriber::set_default(subscriber);
     let response = harness
         .send(bearer_post("/api/agent/v1/reports", &credential, body))
         .await;
-    drop(guard);
     assert_eq!(response.status(), StatusCode::OK);
     let request_id = response.headers()["x-request-id"]
         .to_str()
         .unwrap()
         .to_owned();
 
-    let output = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+    let output = logs.text();
     assert!(!output.contains(&credential), "credential leaked: {output}");
-    let lines: Vec<Value> = output
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("each line is JSON"))
-        .collect();
+    let lines = logs.lines();
     let correlated: Vec<&Value> = lines
         .iter()
         .filter(|line| line["request_id"] == request_id.as_str())
         .collect();
-    assert!(correlated.len() >= 2, "{output}");
+    assert!(correlated.len() >= 2, "{correlated:?}");
     for line in &correlated {
         assert_eq!(line["route_group"], "agent", "{line}");
         assert_eq!(line["agent_id"], agent_id.as_str(), "{line}");
@@ -613,7 +647,7 @@ async fn one_report_logs_under_the_request_id_echoed_in_x_request_id() {
     let completion = correlated
         .iter()
         .find(|line| line["message"] == "report ingested")
-        .unwrap_or_else(|| panic!("no completion line: {output}"));
+        .unwrap_or_else(|| panic!("no completion line: {correlated:?}"));
     assert_eq!(completion["outcome"], "accepted");
     assert_eq!(completion["status"], 200);
     assert_eq!(completion["report_id"], report.report_id.to_string());
@@ -625,23 +659,11 @@ async fn one_report_logs_under_the_request_id_echoed_in_x_request_id() {
 /// A refused report names its reason at warn level under the same request id.
 #[tokio::test]
 async fn a_refused_report_logs_its_reason_at_warn() {
-    use platpulse_server::logging::{LogConfig, LogFormat, subscriber};
-
+    let logs = captured_logs();
     let harness = Harness::boot().await;
     let session = owner_session(&harness).await;
     let (_agent_id, credential) = enroll_agent(&harness, &session).await;
 
-    let sink = LogSink::default();
-    let writer = {
-        let inner = std::sync::Arc::clone(&sink.0);
-        move || LogSinkWriter(std::sync::Arc::clone(&inner))
-    };
-    let config = LogConfig {
-        level: None,
-        format: LogFormat::Json,
-    };
-    let (subscriber, _) = subscriber(&config, None, writer);
-    let guard = tracing::subscriber::set_default(subscriber);
     let response = harness
         .send(bearer_post(
             "/api/agent/v1/reports",
@@ -649,17 +671,19 @@ async fn a_refused_report_logs_its_reason_at_warn() {
             b"{not json".to_vec(),
         ))
         .await;
-    drop(guard);
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let request_id = response.headers()["x-request-id"].to_str().unwrap();
-    let output = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
-    let refusal = output
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap())
-        .find(|line| line["message"] == "report refused")
-        .unwrap_or_else(|| panic!("no refusal line: {output}"));
+    let request_id = response.headers()["x-request-id"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let lines = logs.lines();
+    let refusal = lines
+        .iter()
+        .find(|line| {
+            line["request_id"] == request_id.as_str() && line["message"] == "report refused"
+        })
+        .unwrap_or_else(|| panic!("no refusal line for request {request_id}"));
     assert_eq!(refusal["level"], "WARN");
-    assert_eq!(refusal["request_id"], request_id);
     assert_eq!(refusal["outcome"], "invalid_report");
     assert_eq!(refusal["status"], 400);
 }

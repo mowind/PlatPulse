@@ -2597,6 +2597,7 @@ mod backlog_recovery_tests {
     use crate::collector::{CollectionError, SpoolPolicy, guard_startup_inventory_declaration};
     use crate::config::{AgentConfig, BackfillConfig, SpoolConfig};
     use crate::database::{AgentDatabaseConfig, AgentStore, AgentStoreWritePermit};
+    use crate::http_test_support::ReservedAddress;
     use crate::inventory_declaration::{InventoryDeclarationConflict, read_inventory_declaration};
 
     const REPORT_COUNT: u64 = 6;
@@ -2671,8 +2672,10 @@ mod backlog_recovery_tests {
         }
     }
 
-    /// Boot a real Server on `addr` from the shared state directory.
-    async fn boot_server(addr: std::net::SocketAddr, dir: &Path) -> (RunningServer, String) {
+    /// Boot a real Server on the reserved listener from the shared state
+    /// directory.
+    async fn boot_server(listener: tokio::net::TcpListener, dir: &Path) -> (RunningServer, String) {
+        let addr = listener.local_addr().unwrap();
         let first_boot = !dir.join("server.db").exists();
         let db = initialize(ServerDatabaseConfig::new(dir.join("server.db")))
             .await
@@ -2707,7 +2710,6 @@ mod backlog_recovery_tests {
             .await
             .unwrap();
         }
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
         let state = AppState::new(db, None, auth);
         let shutdown = CancellationToken::new();
         let served = state.clone();
@@ -2733,11 +2735,10 @@ mod backlog_recovery_tests {
         let dir = TempDir::new().unwrap();
         // Reserve a concrete port so the stopped Server and the restarted
         // Server share one address, exactly like a service restart.
-        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = probe.local_addr().unwrap();
-        drop(probe);
+        let address = ReservedAddress::reserve();
+        let addr = address.addr();
 
-        let (server, token) = boot_server(addr, dir.path()).await;
+        let (server, token) = boot_server(address.listener().await, dir.path()).await;
         let config = agent_config(dir.path(), &format!("http://{addr}"));
         let enrolled = crate::enroll::enroll_agent(&config, &token).await.unwrap();
         let agent_id = enrolled.agent_id.to_string();
@@ -2786,7 +2787,7 @@ mod backlog_recovery_tests {
             "a failed delivery must keep every report"
         );
 
-        let (restarted, _token) = boot_server(addr, dir.path()).await;
+        let (restarted, _token) = boot_server(address.listener().await, dir.path()).await;
         // One tick must clear the whole backlog: catching up has to be faster
         // than the collection cadence, otherwise the queue never empties.
         let delivered = deliver_periodic(&mut store, &transport, &policy)
@@ -2833,11 +2834,10 @@ mod backlog_recovery_tests {
     #[tokio::test]
     async fn inventory_content_change_without_a_bump_is_refused_then_heals() {
         let dir = TempDir::new().unwrap();
-        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = probe.local_addr().unwrap();
-        drop(probe);
+        let address = ReservedAddress::reserve();
+        let addr = address.addr();
 
-        let (server, token) = boot_server(addr, dir.path()).await;
+        let (server, token) = boot_server(address.listener().await, dir.path()).await;
         let config = agent_config(dir.path(), &format!("http://{addr}"));
         let enrolled = crate::enroll::enroll_agent(&config, &token).await.unwrap();
         let agent_id = enrolled.agent_id.to_string();
@@ -3015,10 +3015,9 @@ mod backlog_recovery_tests {
     #[tokio::test]
     async fn v2_server_managed_inventory_revisions_follow_content_and_never_regress() {
         let dir = TempDir::new().unwrap();
-        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = probe.local_addr().unwrap();
-        drop(probe);
-        let (server, token) = boot_server(addr, dir.path()).await;
+        let address = ReservedAddress::reserve();
+        let addr = address.addr();
+        let (server, token) = boot_server(address.listener().await, dir.path()).await;
         let config = agent_config(dir.path(), &format!("http://{addr}"));
         let enrolled = crate::enroll::enroll_agent(&config, &token).await.unwrap();
         let agent_id = enrolled.agent_id.to_string();
@@ -3229,11 +3228,10 @@ mod backlog_recovery_tests {
     #[tokio::test]
     async fn a_v2_agent_declares_while_the_server_is_offline_and_drains_after_restart() {
         let dir = TempDir::new().unwrap();
-        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = probe.local_addr().unwrap();
-        drop(probe);
+        let address = ReservedAddress::reserve();
+        let addr = address.addr();
 
-        let (server, token) = boot_server(addr, dir.path()).await;
+        let (server, token) = boot_server(address.listener().await, dir.path()).await;
         let config = agent_config(dir.path(), &format!("http://{addr}"));
         let enrolled = crate::enroll::enroll_agent(&config, &token).await.unwrap();
         let agent_id = enrolled.agent_id.to_string();
@@ -3306,7 +3304,7 @@ mod backlog_recovery_tests {
             "a failed delivery must keep every queued Report"
         );
 
-        let (restarted, _token) = boot_server(addr, dir.path()).await;
+        let (restarted, _token) = boot_server(address.listener().await, dir.path()).await;
         let delivered = deliver_periodic(&mut store, &transport, &policy)
             .await
             .unwrap();
@@ -3359,10 +3357,9 @@ mod backlog_recovery_tests {
     #[tokio::test]
     async fn a_lost_v2_receipt_is_replayed_exactly_without_duplicating_effects() {
         let dir = TempDir::new().unwrap();
-        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = probe.local_addr().unwrap();
-        drop(probe);
-        let (server, token) = boot_server(addr, dir.path()).await;
+        let address = ReservedAddress::reserve();
+        let addr = address.addr();
+        let (server, token) = boot_server(address.listener().await, dir.path()).await;
         let config = agent_config(dir.path(), &format!("http://{addr}"));
         let enrolled = crate::enroll::enroll_agent(&config, &token).await.unwrap();
         let agent_id = enrolled.agent_id.to_string();

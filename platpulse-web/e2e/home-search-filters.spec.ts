@@ -87,13 +87,22 @@ function summaryCard(page: Page, label: string) {
   return summary(page).getByRole('article', { name: label === 'Balance' ? /^Balance:/ : label, exact: true })
 }
 
-/** Read one Home summary statistic as a number. */
-async function summaryValue(page: Page, label: string): Promise<number> {
+/** Read one Home summary statistic, or null while the card has not settled on
+ *  a number. A polled read must not assert: a summary that is briefly Unknown
+ *  while a filter change refetches would fail the poll instead of being
+ *  retried, so reading and asserting are kept apart. */
+async function summaryNumber(page: Page, label: string): Promise<number | null> {
   const card = summaryCard(page, label)
   const text = await card.locator('[data-slot="summary-value"]').innerText()
   const digits = text.replace(/[^0-9]/g, '')
-  expect(digits, `the ${label} statistic must be a number, never Unknown`).not.toBe('')
-  return Number(digits)
+  return digits === '' ? null : Number(digits)
+}
+
+/** Read one Home summary statistic as a number. */
+async function summaryValue(page: Page, label: string): Promise<number> {
+  const value = await summaryNumber(page, label)
+  expect(value, `the ${label} statistic must be a number, never Unknown`).not.toBeNull()
+  return value!
 }
 
 /** Read one Home summary statistic exactly as the card presents it. */
@@ -113,7 +122,7 @@ async function expectListedNodes(page: Page, count: number): Promise<string[]> {
 /** Wait for one Home summary statistic to settle on `value`. */
 async function expectSummaryValue(page: Page, label: string, value: number) {
   await expect
-    .poll(() => summaryValue(page, label), { message: `the ${label} statistic settles on ${value}` })
+    .poll(() => summaryNumber(page, label), { message: `the ${label} statistic settles on ${value}` })
     .toBe(value)
 }
 
@@ -125,8 +134,13 @@ async function expectSummaryValue(page: Page, label: string, value: number) {
 async function expectListAgreesWithSummary(page: Page) {
   const reading = async () => {
     const matching = await nodeGrid(page).locator('a[href^="/nodes/"]').count()
-    const activeNodes = await summaryValue(page, 'Active Nodes')
-    return { matching, cards: matching, activeNodes, agrees: matching === activeNodes }
+    const activeNodes = await summaryNumber(page, 'Active Nodes')
+    return {
+      matching,
+      cards: matching,
+      activeNodes,
+      agrees: activeNodes !== null && matching === activeNodes,
+    }
   }
   await expect
     .poll(() => reading().then((settled) => settled.agrees), {
@@ -705,7 +719,12 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
       // the Node list all follow it.
       await expect(tab(page, secondPill!.trim())).toHaveAttribute('aria-selected', 'true')
       await expect(page).toHaveURL(/[?&]network=/)
-      await expect.poll(() => summaryValue(page, 'Active Nodes')).not.toBe(activeNodes)
+      await expect
+        .poll(async () => {
+          const settled = await summaryNumber(page, 'Active Nodes')
+          return settled !== null && settled !== activeNodes
+        })
+        .toBe(true)
 
       await tapPill('All Networks')
       await expect(tab(page, 'All Networks')).toHaveAttribute('aria-selected', 'true')

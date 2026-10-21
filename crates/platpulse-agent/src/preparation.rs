@@ -802,6 +802,7 @@ mod tests {
 
     use super::*;
     use crate::database::{AgentDatabaseConfig, AgentStore};
+    use crate::http_test_support::ReservedAddress;
     use crate::reporting::{
         HttpReportTransport, ReportStoreError, ReportTransport, deliver_one,
         persist_immutable_report,
@@ -842,7 +843,8 @@ mod tests {
         }
     }
 
-    async fn boot_server(addr: std::net::SocketAddr, dir: &Path) -> (RunningServer, String) {
+    async fn boot_server(listener: tokio::net::TcpListener, dir: &Path) -> (RunningServer, String) {
+        let addr = listener.local_addr().unwrap();
         let db = initialize(ServerDatabaseConfig::new(dir.join("server.db")))
             .await
             .unwrap();
@@ -872,7 +874,6 @@ mod tests {
         )
         .await
         .unwrap();
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
         let state = AppState::new(db, None, auth);
         let shutdown = CancellationToken::new();
         let served = state.clone();
@@ -1048,10 +1049,9 @@ mod tests {
     #[tokio::test]
     async fn preparation_drains_the_backlog_and_closes_with_verified_evidence() {
         let dir = TempDir::new().unwrap();
-        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = probe.local_addr().unwrap();
-        drop(probe);
-        let (server, token) = boot_server(addr, dir.path()).await;
+        let address = ReservedAddress::reserve();
+        let addr = address.addr();
+        let (server, token) = boot_server(address.listener().await, dir.path()).await;
         let path = write_agent_config(
             dir.path(),
             &format!("http://{addr}"),
@@ -1144,10 +1144,9 @@ mod tests {
     #[tokio::test]
     async fn preparation_resumes_a_closing_whose_receipt_was_lost() {
         let dir = TempDir::new().unwrap();
-        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = probe.local_addr().unwrap();
-        drop(probe);
-        let (server, token) = boot_server(addr, dir.path()).await;
+        let address = ReservedAddress::reserve();
+        let addr = address.addr();
+        let (server, token) = boot_server(address.listener().await, dir.path()).await;
         let path = write_agent_config(
             dir.path(),
             &format!("http://{addr}"),
@@ -1186,10 +1185,9 @@ mod tests {
     #[tokio::test]
     async fn preparation_closes_an_empty_queue_boot() {
         let dir = TempDir::new().unwrap();
-        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = probe.local_addr().unwrap();
-        drop(probe);
-        let (server, token) = boot_server(addr, dir.path()).await;
+        let address = ReservedAddress::reserve();
+        let addr = address.addr();
+        let (server, token) = boot_server(address.listener().await, dir.path()).await;
         let path = write_agent_config(
             dir.path(),
             &format!("http://{addr}"),
@@ -1213,10 +1211,9 @@ mod tests {
     #[tokio::test]
     async fn preparation_stops_on_a_rejected_closing() {
         let dir = TempDir::new().unwrap();
-        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = probe.local_addr().unwrap();
-        drop(probe);
-        let (server, token) = boot_server(addr, dir.path()).await;
+        let address = ReservedAddress::reserve();
+        let addr = address.addr();
+        let (server, token) = boot_server(address.listener().await, dir.path()).await;
         let path = write_agent_config(
             dir.path(),
             &format!("http://{addr}"),
@@ -1267,10 +1264,9 @@ mod tests {
     #[tokio::test]
     async fn preparation_refuses_a_modified_server_baseline() {
         let dir = TempDir::new().unwrap();
-        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = probe.local_addr().unwrap();
-        drop(probe);
-        let (server, token) = boot_server(addr, dir.path()).await;
+        let address = ReservedAddress::reserve();
+        let addr = address.addr();
+        let (server, token) = boot_server(address.listener().await, dir.path()).await;
         let path = write_agent_config(
             dir.path(),
             &format!("http://{addr}"),
@@ -1433,10 +1429,9 @@ mod tests {
     #[tokio::test]
     async fn preparation_cli_entry_completes_and_verifies() {
         let dir = TempDir::new().unwrap();
-        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = probe.local_addr().unwrap();
-        drop(probe);
-        let (server, token) = boot_server(addr, dir.path()).await;
+        let address = ReservedAddress::reserve();
+        let addr = address.addr();
+        let (server, token) = boot_server(address.listener().await, dir.path()).await;
         let path = write_agent_config(
             dir.path(),
             &format!("http://{addr}"),
