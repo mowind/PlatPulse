@@ -37,3 +37,6 @@ platpulse-web/playwright-report/
 /emerald.jpg
 /emerald-maps.jpg
 /platpulse-emerald.jpg
+
+# Python bytecode (scripts/)
+__pycache__/
