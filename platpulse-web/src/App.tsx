@@ -35,6 +35,8 @@ import AdminNotificationDeliveries, {
 import AdminNotificationChannels from './pages/AdminNotificationChannels'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { ThemeProvider } from './theme/ThemeProvider'
+import { Toaster } from './components/ui/sonner'
+import { BackTop } from './components/ui/back-top'
 import { ensureSiteAccessModeKnown, subscribeSiteAccessMode, usePublicRewardWallet } from './api/public'
 import { CardX } from './components/ui/card-x'
 import { SURFACE_CARD_STATIC } from './lib/surface'
@@ -234,6 +236,8 @@ export default function App() {
     <ThemeProvider>
       <AuthProvider>
         <RouterProvider router={router} />
+        <Toaster richColors closeButton position="top-center" />
+        <BackTop />
       </AuthProvider>
     </ThemeProvider>
   )

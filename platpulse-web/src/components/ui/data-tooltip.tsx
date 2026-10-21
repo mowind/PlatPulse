@@ -3,13 +3,25 @@ import type * as React from 'react'
 
 import { cn } from '../../lib/utils'
 
-type Placement = 'top' | 'bottom' | 'left' | 'right'
+export type Placement =
+  | 'top'
+  | 'bottom'
+  | 'left'
+  | 'right'
+  | 'bottom-end'
+  | 'bottom-start'
+  | 'top-end'
+  | 'top-start'
 
 const PLACEMENT: Record<Placement, string> = {
   top: 'bottom-full left-1/2 mb-2 -translate-x-1/2',
   bottom: 'top-full left-1/2 mt-2 -translate-x-1/2',
   left: 'top-1/2 right-full mr-2 -translate-y-1/2',
   right: 'top-1/2 left-full ml-2 -translate-y-1/2',
+  'bottom-end': 'top-full right-0 mt-2',
+  'bottom-start': 'top-full left-0 mt-2',
+  'top-end': 'bottom-full right-0 mb-2',
+  'top-start': 'bottom-full left-0 mb-2',
 }
 
 /**
@@ -32,6 +44,7 @@ export function DataTooltip({
   as: As = 'div',
   className,
   contentClassName,
+  touch = true,
   children,
 }: {
   content?: string
@@ -42,6 +55,7 @@ export function DataTooltip({
   as?: React.ElementType
   className?: string
   contentClassName?: string
+  touch?: boolean
   children?: React.ReactNode
 }) {
   const rootRef = useRef<HTMLElement | null>(null)
@@ -53,7 +67,7 @@ export function DataTooltip({
   const hasTooltip = Boolean(content || contentNode)
 
   useEffect(() => {
-    if (!open) return
+    if (!open && !hoverOpen) return
     const onPointerDown = (event: PointerEvent) => {
       const root = rootRef.current
       if (!root || !event.target || root.contains(event.target as Node)) return
@@ -71,7 +85,7 @@ export function DataTooltip({
       document.removeEventListener('pointerdown', onPointerDown, true)
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [open])
+  }, [open, hoverOpen])
 
   useEffect(() => {
     if (hasTooltip) return
@@ -90,7 +104,7 @@ export function DataTooltip({
       data-state={open ? 'open' : 'closed'}
       className={cn('group/data-tooltip relative inline-block', className)}
       onPointerDownCapture={(event: React.PointerEvent) => {
-        if (!hasTooltip) return
+        if (!hasTooltip || !touch) return
         const coarse =
           typeof window !== 'undefined' &&
           typeof window.matchMedia === 'function' &&
@@ -105,6 +119,7 @@ export function DataTooltip({
       onFocus={() => hasTooltip && setHoverOpen(true)}
       onBlur={() => setHoverOpen(false)}
       onClick={(event: React.MouseEvent) => {
+        if (!touch) return
         if (stopNextClick.current && Date.now() - lastTouchOpenAt.current < 800) {
           event.stopPropagation()
         }

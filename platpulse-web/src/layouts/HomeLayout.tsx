@@ -18,6 +18,7 @@ import AppFooter from '../components/AppFooter'
 import ThemeToggle from '../components/ThemeToggle'
 import { EmeraldActionIcon } from '../components/EmeraldActionIcon'
 import { Alert, AlertDescription } from '../components/ui/alert'
+import { DataTooltip } from '../components/ui/data-tooltip'
 import { buttonVariants } from '../components/ui/button'
 import { useIsScrolled } from '../hooks/use-is-scrolled'
 import { cn } from '../lib/utils'
@@ -146,15 +147,21 @@ function HomeLayoutContent() {
           <div className="flex items-center gap-2">
             <ThemeToggle />
             {isOwner && (
-              <Link
-                to="/admin"
-                aria-label="Admin"
-                title="Open Admin dashboard"
-                data-slot="admin-action"
-                className={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'border-[6px] border-transparent bg-clip-padding p-0')}
+              <DataTooltip
+                content="Open Admin dashboard"
+                placement="bottom-end"
+                contentClassName="whitespace-nowrap text-[11px] px-2"
+                touch={false}
               >
-                <EmeraldActionIcon name="setting" />
-              </Link>
+                <Link
+                  to="/admin"
+                  aria-label="Admin"
+                  data-slot="admin-action"
+                  className={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'border-[6px] border-transparent bg-clip-padding p-0')}
+                >
+                  <EmeraldActionIcon name="setting" />
+                </Link>
+              </DataTooltip>
             )}
           </div>
         </div>

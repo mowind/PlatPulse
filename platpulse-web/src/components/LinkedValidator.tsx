@@ -11,6 +11,7 @@ import { formatUtcDateTime } from './StatusBadge'
 import { SURFACE_CARD_STATIC } from '../lib/surface'
 import { Disclosure } from './ui/disclosure'
 import { DataTooltip } from './ui/data-tooltip'
+import { toast } from './ui/sonner'
 import { cn } from '../lib/utils'
 
 /**
@@ -454,6 +455,7 @@ function ValidatorDetail({ node, validator }: { node: PublicNode; validator: Pub
     try {
       await navigator.clipboard.writeText(identifier)
       setCopyStatus('Validator identifier copied.')
+      toast.success('Validator identifier copied.')
     } catch {
       setIdentifierOpen(true)
       setCopyStatus('Copy failed. Select the full identifier to copy it manually.')

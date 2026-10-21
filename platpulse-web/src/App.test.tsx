@@ -2247,7 +2247,7 @@ describe('Theme lifecycle (issue #146)', () => {
 
   function changeSystemTheme(dark: boolean) {
     system.matches = dark
-    for (const listener of [...system.listeners]) listener()
+    for (const listener of [...system.listeners]) (listener as (e?: { matches: boolean }) => void)({ matches: dark })
   }
 
   function themeButton() {

@@ -1,6 +1,7 @@
 import { useTheme } from '../theme/ThemeProvider'
 import { EmeraldActionIcon } from './EmeraldActionIcon'
 import { buttonVariants } from './ui/button'
+import { DataTooltip } from './ui/data-tooltip'
 import { cn } from '../lib/utils'
 
 /**
@@ -12,16 +13,22 @@ export default function ThemeToggle() {
   const { mode, toggleLabel, cycleTheme } = useTheme()
 
   return (
-    <button
-      type="button"
-      data-slot="theme-toggle"
-      className={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'compact-action border-[6px] border-transparent bg-clip-padding p-0')}
-      onClick={cycleTheme}
-      aria-label={toggleLabel}
-      title={toggleLabel}
-      data-theme-mode={mode}
+    <DataTooltip
+      content={toggleLabel}
+      placement="bottom-end"
+      contentClassName="whitespace-nowrap text-[11px] px-2"
+      touch={false}
     >
-      <EmeraldActionIcon name={mode === 'auto' ? 'dark-mode' : mode === 'light' ? 'sun-one' : 'moon'} />
-    </button>
+      <button
+        type="button"
+        data-slot="theme-toggle"
+        className={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'compact-action border-[6px] border-transparent bg-clip-padding p-0')}
+        onClick={cycleTheme}
+        aria-label={toggleLabel}
+        data-theme-mode={mode}
+      >
+        <EmeraldActionIcon name={mode === 'auto' ? 'dark-mode' : mode === 'light' ? 'sun-one' : 'moon'} />
+      </button>
+    </DataTooltip>
   )
 }

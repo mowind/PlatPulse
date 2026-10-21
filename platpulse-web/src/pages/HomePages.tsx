@@ -57,6 +57,7 @@ import { Alert, AlertDescription } from '../components/ui/alert'
 import { Spinner } from '../components/ui/spinner'
 import { SURFACE_CARD_STATIC } from '../lib/surface'
 import { DataTooltip } from '../components/ui/data-tooltip'
+import { toast } from '../components/ui/sonner'
 import { Button } from '../components/ui/button'
 import { cn } from '../lib/utils'
 
@@ -437,6 +438,7 @@ function NodeIdLine({ nodeId }: { nodeId: string }) {
     try {
       await navigator.clipboard.writeText(nodeId)
       setCopied(true)
+      toast.success('Node ID copied.')
       window.setTimeout(() => setCopied(false), 2000)
     } catch {
       // Clipboard access can be denied; the full identifier stays selectable.
