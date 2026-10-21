@@ -639,10 +639,7 @@ impl CapacityProtection {
                 _ = ticker.tick() => {}
             }
             if let Err(error) = self.check_now(&pool).await {
-                eprintln!(
-                    "capacity protection transition could not be recorded: {}",
-                    crate::redaction::redact_sensitive(&error.to_string())
-                );
+                tracing::warn!(error = %error, "capacity protection transition could not be recorded");
             }
         }
     }

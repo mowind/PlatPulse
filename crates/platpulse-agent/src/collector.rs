@@ -304,9 +304,9 @@ pub(crate) fn store_block_summary_result(
 /// surrounding collection (issue #243). The sample is dropped, so its height
 /// stays a hole in the reported history; everything else keeps flowing.
 pub(crate) fn report_dropped_block_summary(error: &BlockSummaryStoreError) {
-    eprintln!(
-        "Dropped a Block Summary outside the AgentReport v1 contract: {}",
-        crate::redaction::redact_sensitive(&error.to_string())
+    tracing::warn!(
+        error = %error,
+        "Dropped a Block Summary outside the AgentReport v1 contract"
     );
 }
 

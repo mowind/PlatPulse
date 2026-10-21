@@ -206,6 +206,9 @@ fn rejected(
     code: platpulse_core::RejectionCode,
     reason: &str,
 ) -> ReportReceipt {
+    // A whole-report rejection is answered inside a 200 receipt, so its reason
+    // code is logged here; the completion line only says "rejected".
+    tracing::warn!(outcome = code.as_str(), "report rejected: {reason}");
     ReportReceipt {
         report_id,
         disposition: ReceiptDisposition::Rejected,
@@ -227,6 +230,9 @@ fn error(
     code: &'static str,
     message: &'static str,
 ) -> Response {
+    // Every refusal names its reason under the request span (issue #250); a
+    // retrying Agent repeats it, which is exactly what an operator must see.
+    tracing::warn!(status = status.as_u16(), outcome = code, "report refused");
     (
         status,
         Json(crate::http::ApiErrorBody::new(code, message, request_id)),
@@ -246,10 +252,7 @@ fn storage_error(request_id: &str, operation: &str, failure: &sqlx::Error) -> Re
         sqlx::Error::Database(database)
             if database.is_unique_violation() || database.is_check_violation()
     );
-    eprintln!(
-        "report ingestion storage error [{operation}] request_id={request_id}: {}",
-        crate::redaction::redact_sensitive(&failure.to_string())
-    );
+    tracing::error!(error = %failure, "report ingestion storage error during {operation}");
     if constraint {
         return error(
             request_id,
@@ -2196,6 +2199,10 @@ async fn ingest_report<I: ReportInventory>(
     body: Bytes,
     parsed: AgentReport<I>,
 ) -> Response {
+    // Only the authenticated Agent identity is trusted before validation; the
+    // report identity is attached once the report validated and matched it.
+    let span = tracing::Span::current();
+    span.record("agent_id", auth.agent_id.as_str());
     if state.is_shutting_down() {
         return error(
             &request_id.0,
@@ -2241,6 +2248,13 @@ async fn ingest_report<I: ReportInventory>(
             "Agent identity is not authorized",
         );
     }
+    span.record("boot_id", tracing::field::display(&parsed.boot_id));
+    span.record("report_id", tracing::field::display(&parsed.report_id));
+    span.record("report_sequence", parsed.report_sequence);
+    tracing::debug!(
+        "report received with {} Node observation(s)",
+        parsed.nodes.len()
+    );
     // Issue #192: a converted deployment stays gated until the explicit cutover
     // resume. No collection/ingestion, Admin mutation or external-effect worker
     // is authorized before then, so a converted database can never be served as
@@ -3525,10 +3539,7 @@ async fn ingest_report<I: ReportInventory>(
         crate::retention::cleanup_raw_block_summaries(state.db().pool(), crate::auth::now_utc())
             .await
     {
-        eprintln!(
-            "raw block retention cleanup deferred after ingestion: {}",
-            crate::redaction::redact_sensitive(&error.to_string())
-        );
+        tracing::warn!(error = %error, "raw block retention cleanup deferred after ingestion");
     }
     // Issue #213: raw metric samples are expired by policy instead of by a
     // fixed per-series cap, so the same bounded-after-every-Report guard keeps
@@ -3537,10 +3548,7 @@ async fn ingest_report<I: ReportInventory>(
         crate::retention::cleanup_expired_metric_samples(state.db().pool(), crate::auth::now_utc())
             .await
     {
-        eprintln!(
-            "raw metric retention cleanup deferred after ingestion: {}",
-            crate::redaction::redact_sensitive(&error.to_string())
-        );
+        tracing::warn!(error = %error, "raw metric retention cleanup deferred after ingestion");
     }
     // Issue #217: the recorded sync/consensus states are bounded the same way
     // and by the same guard, so the state log cannot grow without limit on a
@@ -3551,10 +3559,7 @@ async fn ingest_report<I: ReportInventory>(
     )
     .await
     {
-        eprintln!(
-            "state retention cleanup deferred after ingestion: {}",
-            crate::redaction::redact_sensitive(&error.to_string())
-        );
+        tracing::warn!(error = %error, "state retention cleanup deferred after ingestion");
     }
     // Issue #214: the aggregate tiers are bounded by their own windows the same
     // way, and by the same guard. Each Report that accumulated buckets also gets
@@ -3566,10 +3571,7 @@ async fn ingest_report<I: ReportInventory>(
     )
     .await
     {
-        eprintln!(
-            "aggregate metric retention cleanup deferred after ingestion: {}",
-            crate::redaction::redact_sensitive(&error.to_string())
-        );
+        tracing::warn!(error = %error, "aggregate metric retention cleanup deferred after ingestion");
     }
     // Every committed report can change the Owner-side Node/Agent health
     // projection (including host-only reports), while the Public projection

@@ -394,10 +394,7 @@ pub async fn run_worker(state: AppState) {
                     .publish("geo", None::<String>, revision);
             }
             Ok(_) => {}
-            Err(error) => eprintln!(
-                "geo backfill deferred: {}",
-                crate::redaction::redact_sensitive(&error.to_string())
-            ),
+            Err(error) => tracing::warn!(error = %error, "geo backfill deferred"),
         }
     }
 }

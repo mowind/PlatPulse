@@ -42,6 +42,9 @@ cargo deny check && cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026
 # Design references: "design §X.Y" = docs/design/platpulse.md, "webui.md §X.Y" = docs/design/webui.md
 python3 scripts/check-design-refs.py
 
+# Logging discipline: no bare eprintln!/dbg!, stdout only in main.rs/cli.rs, log fields from the vocabulary (docs/design/logging.md)
+python3 scripts/check-logging.py
+
 # Web (platpulse-web)
 npm run lint && npm run typecheck && npm test && npm run build
 

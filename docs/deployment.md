@@ -180,6 +180,31 @@ without either native TLS or this trusted-proxy policy is refused at startup.
 Development mode is separate and remains loopback-only HTTP with its
 development cookie policy; it cannot be combined with native TLS.
 
+## Diagnostic logs
+
+Both binaries log to **stderr** (the journal under systemd); stdout carries only
+machine-readable and CLI result output. Every subcommand accepts:
+
+- `--log-level <error|warn|info|debug|trace>` — default `info`; overrides
+  `RUST_LOG`. Without it, `RUST_LOG` uses env-filter syntax, e.g.
+  `RUST_LOG=platpulse_server=debug`.
+- `--log-format <text|json>` — default `text`
+  (`ts LEVEL target message key=value …`); `json` writes one object per line.
+
+Values are redacted at the log egress (credentials, tokens, cookies, URL
+userinfo; IP literals on the Server). Every line written while serving a
+request carries `request_id`, the same value as the `x-request-id` response
+header and the error body's `request_id`:
+
+```sh
+journalctl -u platpulse-server | grep 'request_id=<id from x-request-id>'
+```
+
+The startup line `listening listen=<addr>` replaces the former stdout line
+`listening on <addr>`. Accepted reports and individual requests are `debug`, so
+the default level stays quiet in steady state. See
+[docs/design/logging.md](design/logging.md) for the field vocabulary and levels.
+
 ## Internal operational metrics
 
 The optional `[metrics]` section exposes only `GET /metrics` on a dedicated

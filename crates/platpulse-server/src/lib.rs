@@ -36,6 +36,7 @@ pub(crate) mod geo_test_support;
 pub mod http;
 pub mod init;
 pub mod investigation;
+pub mod logging;
 pub mod metric_history;
 pub mod metrics;
 pub mod migration;

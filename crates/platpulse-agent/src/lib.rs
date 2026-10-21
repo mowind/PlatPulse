@@ -20,6 +20,7 @@ pub mod database;
 pub mod enroll;
 pub mod http_client;
 pub mod inventory_declaration;
+pub mod logging;
 pub mod preparation;
 pub mod process;
 pub mod recover;

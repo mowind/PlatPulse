@@ -340,10 +340,10 @@ pub async fn refresh_once(
 ) -> Result<bool, sqlx::Error> {
     let outcome = source.fetch().await;
     if let Err(failure) = &outcome {
-        eprintln!(
-            "warning: Reward Wallet refresh failed ({}): {}",
-            failure.category.as_str(),
-            crate::redaction::redact_sensitive(&failure.detail)
+        tracing::warn!(
+            outcome = failure.category.as_str(),
+            error = %failure.detail,
+            "Reward Wallet refresh failed"
         );
     }
     let outcome = outcome.as_deref().map_err(|failure| failure.category);
@@ -388,10 +388,7 @@ async fn run_worker(state: AppState, source: PlatScanBalanceSource) {
             _ = state.shutdown_signal() => break,
             result = refresh_once(&state, &source) => {
                 if let Err(error) = result {
-                    eprintln!(
-                        "warning: Reward Wallet refresh not recorded: {}",
-                        crate::redaction::redact_sensitive(&error.to_string())
-                    );
+                    tracing::warn!(error = %error, "Reward Wallet refresh not recorded");
                 }
             }
         }

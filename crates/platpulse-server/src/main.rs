@@ -13,7 +13,13 @@ use platpulse_server::init::run_init;
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    match run().await {
+    let cli = Cli::parse();
+    // Diagnostics go to stderr; stdout stays for OpenAPI and CLI results.
+    platpulse_server::logging::init(&(&cli.log).into());
+    let result = run(cli).await;
+    // Flush queued diagnostics before the final error line.
+    platpulse_server::logging::flush();
+    match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             // Returning the error from `main` would print its `Debug`, hiding
@@ -25,9 +31,7 @@ async fn main() -> std::process::ExitCode {
     }
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
-
+async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if cli.print_openapi {
         println!("{}", platpulse_server::openapi::spec_json());
         return Ok(());

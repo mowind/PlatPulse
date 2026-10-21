@@ -14,6 +14,7 @@ use clap::{Args, Parser, Subcommand};
 use platpulse_core::identity::NodeId;
 use sqlx::Connection;
 use thiserror::Error;
+use tracing::Instrument as _;
 
 use crate::block::WebSocketBlockTransport;
 use crate::collector::{
@@ -30,6 +31,8 @@ use crate::rpc::AlloyRpcAdapter;
     about = "PlatPulse collector agent that monitors PlatON nodes on one Host"
 )]
 pub struct Cli {
+    #[command(flatten)]
+    pub log: crate::logging::LogArgs,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -549,6 +552,9 @@ async fn run_report_collection_loop(
     .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     let mut tick = periodic_interval(Duration::from_secs(config.collection_interval_seconds));
     let mut inventory_conflict = RepeatingMessage::new();
+    // A deferred collection repeats every tick until its cause clears, so it is
+    // summarized like the other repeating conditions (issue #250).
+    let mut deferrals = RepeatingMessage::new();
     let result = loop {
         tokio::select! {
             _ = cancel.cancelled() => break Ok(()),
@@ -588,15 +594,15 @@ async fn run_report_collection_loop(
                         if let Some(printed) =
                             inventory_conflict.observe(&line, Instant::now())
                         {
-                            eprintln!("{printed}");
+                            tracing::warn!("{printed}");
                         }
                         continue;
                     }
                     if crate::collector::is_deferrable_collection(&error) {
-                        eprintln!(
-                            "Agent report collection deferred: {}",
-                            crate::redaction::redact_sensitive(&error.to_string())
-                        );
+                        let line = format!("Agent report collection deferred: {error}");
+                        if let Some(printed) = deferrals.observe(&line, Instant::now()) {
+                            tracing::warn!("{printed}");
+                        }
                         continue;
                     }
                     break Err(AgentCliError::Collection(error.to_string()));
@@ -605,6 +611,7 @@ async fn run_report_collection_loop(
                 // conflict is gone: a later one is a new occurrence, not a
                 // continuation of the old count.
                 inventory_conflict.clear();
+                deferrals.clear();
             }
         }
     };
@@ -632,6 +639,9 @@ async fn run_delivery_loop(
     let policy = config.spool.policy();
     let mut tick = periodic_interval(Duration::from_secs(1));
     let mut rejections = RepeatingMessage::new();
+    // The delivery tick is 1s: an unreachable Server must not write a line
+    // per second (issue #250).
+    let mut deferrals = RepeatingMessage::new();
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -654,25 +664,25 @@ async fn run_delivery_loop(
                             // error arm below. Without this the console stays
                             // silent while every report is refused and the
                             // projections freeze (issue #177).
-                            let line = format!(
-                                "Agent report rejected by Server: {}",
-                                crate::redaction::redact_sensitive(rejection)
-                            );
+                            let line = format!("Agent report rejected by Server: {rejection}");
                             if let Some(printed) = rejections.observe(&line, Instant::now()) {
-                                eprintln!("{printed}");
+                                tracing::warn!(outcome = "rejected", "{printed}");
                             }
                         }
                         // An accepted report proves the Server takes this
                         // Agent's reports again, so a later refusal is a new
                         // condition. An idle tick is no evidence either way.
-                        None if outcome.applied > 0 => rejections.clear(),
+                        None if outcome.applied > 0 => {
+                            rejections.clear();
+                            deferrals.clear();
+                        }
                         None => {}
                     },
                     Err(error) => {
-                        eprintln!(
-                            "Agent report delivery deferred: {}",
-                            crate::redaction::redact_sensitive(&error.to_string())
-                        );
+                        let line = format!("Agent report delivery deferred: {error}");
+                        if let Some(printed) = deferrals.observe(&line, Instant::now()) {
+                            tracing::warn!("{printed}");
+                        }
                     }
                 }
             }
@@ -684,7 +694,14 @@ async fn run_delivery_loop(
         .map_err(|error| AgentCliError::Collection(error.to_string()))
 }
 
+/// Per-Node workers run inside this span, so every line they log is scoped to
+/// its Node (observations are per Node, never merged per Agent).
+fn node_span(node_id: &NodeId) -> tracing::Span {
+    tracing::error_span!("node", node_id = %node_id)
+}
+
 pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
+    tracing::info!("{} starting", crate::startup_version_line());
     let config = AgentConfig::resolve(&args.config)?;
     let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
@@ -742,12 +759,15 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
     for node in &validated.inventory.nodes {
         let (sender, receiver) = tokio::sync::watch::channel(None);
         rpc_snapshots.push((node.rpc_endpoint.as_str().to_owned(), receiver));
-        rpc_workers.spawn(run_rpc_snapshot_worker(
-            node.rpc_endpoint.clone(),
-            rpc_period,
-            sender,
-            cancel.clone(),
-        ));
+        rpc_workers.spawn(
+            run_rpc_snapshot_worker(
+                node.rpc_endpoint.clone(),
+                rpc_period,
+                sender,
+                cancel.clone(),
+            )
+            .instrument(node_span(&node.node_id)),
+        );
     }
 
     let mut data_directory_workers = tokio::task::JoinSet::new();
@@ -761,23 +781,26 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
         let (sender, receiver) = tokio::sync::watch::channel(initial);
         data_directory_snapshots.push((node.node_id, receiver));
         if let Some(path) = validated.data_directories.get(&node.node_id) {
-            data_directory_workers.spawn(run_data_directory_worker(
-                path.clone(),
-                sender,
-                cancel.clone(),
-            ));
+            data_directory_workers.spawn(
+                run_data_directory_worker(path.clone(), sender, cancel.clone())
+                    .instrument(node_span(&node.node_id)),
+            );
         }
     }
 
     let mut block_workers = tokio::task::JoinSet::new();
     for node in validated.inventory.nodes.iter().cloned() {
-        block_workers.spawn(run_node_block_worker(
-            config.clone(),
-            node,
-            WebSocketBlockTransport::default(),
-            cancel.clone(),
-            write_permit.clone(),
-        ));
+        let span = node_span(&node.node_id);
+        block_workers.spawn(
+            run_node_block_worker(
+                config.clone(),
+                node,
+                WebSocketBlockTransport::default(),
+                cancel.clone(),
+                write_permit.clone(),
+            )
+            .instrument(span),
+        );
     }
 
     let shutdown_write_permit = write_permit.clone();
@@ -865,7 +888,7 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
         match tokio::time::timeout_at(block_deadline, &mut report_worker).await {
             Ok(_) => {}
             Err(_) => {
-                eprintln!(
+                tracing::warn!(
                     "Agent report collection worker join exceeded the shutdown deadline; aborting after the write fence"
                 );
                 let _shutdown_write_guard = acquire_shutdown_write_fence(
@@ -884,7 +907,7 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
         match tokio::time::timeout_at(block_deadline, rpc_workers.join_next()).await {
             Ok(Some(Ok(()))) | Ok(None) => {}
             Ok(Some(Err(error))) => {
-                eprintln!("Node RPC snapshot worker join failed during shutdown: {error}");
+                tracing::warn!(error = %error, "Node RPC snapshot worker join failed during shutdown");
             }
             Err(_) => {
                 rpc_workers.abort_all();
@@ -897,12 +920,13 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
         match tokio::time::timeout_at(block_deadline, data_directory_workers.join_next()).await {
             Ok(Some(Ok(()))) | Ok(None) => {}
             Ok(Some(Err(error))) => {
-                eprintln!("Node data-directory worker join failed during shutdown: {error}");
+                tracing::warn!(error = %error, "Node data-directory worker join failed during shutdown");
             }
             Err(_) => {
-                eprintln!(
+                tracing::error!(
                     "Node data-directory scan exceeded the shutdown deadline; terminating fail-closed"
                 );
+                crate::logging::flush();
                 std::process::exit(1);
             }
         }
@@ -913,21 +937,21 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
             Ok(Some(Ok(exit))) => {
                 if runtime_result.is_ok() {
                     if let Some(error) = exit.error {
-                        eprintln!(
-                            "Node block worker stopped with error during shutdown: {}",
-                            crate::redaction::redact_sensitive(&error.to_string())
+                        tracing::warn!(
+                            error = %error,
+                            "Node block worker stopped with error during shutdown"
                         );
                     }
                 }
                 subscriptions.push(exit.subscription);
             }
             Ok(Some(Err(error))) => {
-                eprintln!("Node block worker join failed during shutdown: {error}");
+                tracing::warn!(error = %error, "Node block worker join failed during shutdown");
             }
             Ok(None) => break,
             Err(_) => {
                 block_workers_timed_out = true;
-                eprintln!(
+                tracing::warn!(
                     "Node block worker join exceeded the shutdown deadline; aborting its supervisor"
                 );
                 let _shutdown_write_guard = acquire_shutdown_write_fence(
@@ -948,7 +972,7 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
             persist_abandoned_block_worker_gaps(&config, &node_ids, shutdown_write_permit.clone())
                 .await
         {
-            eprintln!("Could not persist abandoned block worker gaps: {error}");
+            tracing::error!(error = %error, "Could not persist abandoned block worker gaps");
         }
     }
     for node_id in node_ids {
@@ -967,7 +991,7 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
             Ok(Ok(Err(error))) if runtime_result.is_ok() => delivery_error = Some(error),
             Ok(Ok(Err(_))) | Ok(Err(_)) => {}
             Err(_) => {
-                eprintln!(
+                tracing::warn!(
                     "Agent delivery worker join exceeded the shutdown deadline; aborting after the write fence"
                 );
                 let _shutdown_write_guard = acquire_shutdown_write_fence(
@@ -993,9 +1017,10 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
     )
     .await
     .map_err(|error| AgentCliError::Collection(error.to_string()))?;
-    println!(
-        "Agent stopped with shutdown state {} (report {}).",
-        outcome.shutdown_state, outcome.report_id
+    tracing::info!(
+        report_id = %outcome.report_id,
+        outcome = %outcome.shutdown_state,
+        "Agent stopped"
     );
     if let Some(error) = delivery_error {
         return Err(error);
@@ -1014,9 +1039,10 @@ async fn acquire_shutdown_write_fence(
     match tokio::time::timeout_at(deadline, write_permit.acquire()).await {
         Ok(permit) => permit,
         Err(_) => {
-            eprintln!(
+            tracing::error!(
                 "Agent {worker_name} could not reach a write-safe shutdown point before the deadline; terminating fail-closed"
             );
+            crate::logging::flush();
             std::process::exit(1);
         }
     }
@@ -1051,9 +1077,11 @@ async fn purge_out_of_contract_block_summaries(
             .map(|(node_id, count)| format!("{node_id}: {count}"))
             .collect::<Vec<_>>()
             .join(", ");
-        eprintln!(
+        tracing::warn!(
             "Purged {} Block Summary sample(s) outside the AgentReport v1 contract ({}), declared as {} History Gap range(s). Check that every Node runs with --http.ethcompatible.",
-            purge.purged, per_node, purge.declared_gaps
+            purge.purged,
+            per_node,
+            purge.declared_gaps
         );
     }
     store

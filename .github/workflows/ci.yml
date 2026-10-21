@@ -21,6 +21,12 @@ jobs:
       - name: Check design section references
         run: python3 scripts/check-design-refs.py
 
+      # Diagnostics leave the Agent/Server only through the redacting tracing
+      # egress: no bare eprintln!/dbg!, stdout only for CLI results, and log
+      # fields from the shared vocabulary (issue #250).
+      - name: Check logging discipline
+        run: python3 scripts/check-logging.py
+
   rust:
     name: Rust workspace
     runs-on: ubuntu-latest

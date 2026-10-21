@@ -545,3 +545,121 @@ async fn agent_preparation_baseline_is_authenticated_and_read_only() {
     assert_eq!(body["active_boot_status"], "active");
     assert_eq!(body["last_report_sequence"], 1);
 }
+
+#[derive(Clone, Default)]
+struct LogSink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+struct LogSinkWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogSinkWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Issue #250: every diagnostic one Agent report produces on the Server
+/// carries the request id the response echoes in `x-request-id`, plus the
+/// trusted Agent/report identity, and never the credential.
+#[tokio::test]
+async fn one_report_logs_under_the_request_id_echoed_in_x_request_id() {
+    use platpulse_server::logging::{LogConfig, LogFormat, subscriber};
+
+    let harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (agent_id, credential) = enroll_agent(&harness, &session).await;
+    let report = fixture_report(&agent_id, 1);
+    let body = serde_json::to_vec(&report).unwrap();
+
+    let sink = LogSink::default();
+    let writer = {
+        let inner = std::sync::Arc::clone(&sink.0);
+        move || LogSinkWriter(std::sync::Arc::clone(&inner))
+    };
+    let config = LogConfig {
+        level: Some(tracing::level_filters::LevelFilter::DEBUG),
+        format: LogFormat::Json,
+    };
+    let (subscriber, _) = subscriber(&config, None, writer);
+    let guard = tracing::subscriber::set_default(subscriber);
+    let response = harness
+        .send(bearer_post("/api/agent/v1/reports", &credential, body))
+        .await;
+    drop(guard);
+    assert_eq!(response.status(), StatusCode::OK);
+    let request_id = response.headers()["x-request-id"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+
+    let output = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+    assert!(!output.contains(&credential), "credential leaked: {output}");
+    let lines: Vec<Value> = output
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line is JSON"))
+        .collect();
+    let correlated: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["request_id"] == request_id.as_str())
+        .collect();
+    assert!(correlated.len() >= 2, "{output}");
+    for line in &correlated {
+        assert_eq!(line["route_group"], "agent", "{line}");
+        assert_eq!(line["agent_id"], agent_id.as_str(), "{line}");
+    }
+    let completion = correlated
+        .iter()
+        .find(|line| line["message"] == "report ingested")
+        .unwrap_or_else(|| panic!("no completion line: {output}"));
+    assert_eq!(completion["outcome"], "accepted");
+    assert_eq!(completion["status"], 200);
+    assert_eq!(completion["report_id"], report.report_id.to_string());
+    assert_eq!(completion["boot_id"], report.boot_id.to_string());
+    assert_eq!(completion["report_sequence"], report.report_sequence);
+    assert!(completion["duration_ms"].is_u64(), "{completion}");
+}
+
+/// A refused report names its reason at warn level under the same request id.
+#[tokio::test]
+async fn a_refused_report_logs_its_reason_at_warn() {
+    use platpulse_server::logging::{LogConfig, LogFormat, subscriber};
+
+    let harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (_agent_id, credential) = enroll_agent(&harness, &session).await;
+
+    let sink = LogSink::default();
+    let writer = {
+        let inner = std::sync::Arc::clone(&sink.0);
+        move || LogSinkWriter(std::sync::Arc::clone(&inner))
+    };
+    let config = LogConfig {
+        level: None,
+        format: LogFormat::Json,
+    };
+    let (subscriber, _) = subscriber(&config, None, writer);
+    let guard = tracing::subscriber::set_default(subscriber);
+    let response = harness
+        .send(bearer_post(
+            "/api/agent/v1/reports",
+            &credential,
+            b"{not json".to_vec(),
+        ))
+        .await;
+    drop(guard);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let request_id = response.headers()["x-request-id"].to_str().unwrap();
+    let output = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+    let refusal = output
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|line| line["message"] == "report refused")
+        .unwrap_or_else(|| panic!("no refusal line: {output}"));
+    assert_eq!(refusal["level"], "WARN");
+    assert_eq!(refusal["request_id"], request_id);
+    assert_eq!(refusal["outcome"], "invalid_report");
+    assert_eq!(refusal["status"], 400);
+}

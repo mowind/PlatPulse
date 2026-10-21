@@ -348,3 +348,72 @@ fn a_real_production_server_subprocess_owns_the_database_until_it_stops() {
         "the CLI did not release the ownership guard"
     );
 }
+
+/// Issue #250: stdout carries only machine-readable/CLI result output, so a
+/// serving process writes nothing there; its lifecycle goes to the diagnostic
+/// stream (stderr), one JSON object per line under `--log-format json`.
+#[cfg(unix)]
+#[test]
+fn serve_logs_lifecycle_as_json_on_stderr_and_leaves_stdout_empty() {
+    let deployment = Deployment::new();
+    assert!(deployment.run(&["init"]).status.success());
+    let port = free_port();
+    deployment.append_listen(port);
+
+    let stdout_path = deployment.state.join("serve.stdout");
+    let stderr_path = deployment.state.join("serve.stderr");
+    let mut server = Command::new(env!("CARGO_BIN_EXE_platpulse-server"))
+        .args(["--log-format", "json", "serve", "--config"])
+        .arg(&deployment.config)
+        .stdout(Stdio::from(fs::File::create(&stdout_path).unwrap()))
+        .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()))
+        .spawn()
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(
+            Instant::now() < deadline,
+            "Server never listened: {}",
+            fs::read_to_string(&stderr_path).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let signalled = Command::new("kill")
+        .args(["-TERM", &server.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(signalled.success());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = server.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "Server did not stop on SIGTERM");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let stderr = fs::read_to_string(&stderr_path).unwrap();
+    assert!(status.success(), "graceful shutdown failed: {stderr}");
+    assert_eq!(
+        fs::read_to_string(&stdout_path).unwrap(),
+        "",
+        "stdout must stay empty"
+    );
+
+    let lines: Vec<serde_json::Value> = stderr
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|_| panic!("not JSON: {line}")))
+        .collect();
+    let listening = lines
+        .iter()
+        .find(|line| line["message"] == "listening")
+        .unwrap_or_else(|| panic!("no listening line: {stderr}"));
+    assert_eq!(listening["level"], "INFO");
+    assert_eq!(listening["listen"], format!("127.0.0.1:{port}"));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line["message"] == "shutdown complete"),
+        "{stderr}"
+    );
+}

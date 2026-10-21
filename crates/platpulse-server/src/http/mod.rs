@@ -198,11 +198,29 @@ async fn request_metrics_middleware(
 }
 
 async fn request_id_middleware(mut request: Request, next: Next) -> Response {
+    use tracing::Instrument as _;
+
     let id = uuid::Uuid::new_v4().to_string();
+    let path = request.uri().path().to_owned();
+    let route_group = route_group(&path);
+    // The span is error-level so it stays attached to warnings even when the
+    // operator lowers the level; the identity fields are filled in by the
+    // Agent handlers once they are authenticated and validated (issue #250).
+    let span = tracing::error_span!(
+        "request",
+        request_id = %id,
+        route_group,
+        route = %path,
+        agent_id = tracing::field::Empty,
+        boot_id = tracing::field::Empty,
+        report_id = tracing::field::Empty,
+        report_sequence = tracing::field::Empty,
+    );
     request
         .extensions_mut()
         .insert(RequestId(Arc::from(id.as_str())));
-    let mut response = next.run(request).await;
+    let started = std::time::Instant::now();
+    let mut response = next.run(request).instrument(span.clone()).await;
     match response.headers_mut().get_mut(&X_REQUEST_ID) {
         Some(value) => *value = HeaderValue::from_str(&id).expect("uuid is a valid header value"),
         None => {
@@ -212,7 +230,65 @@ async fn request_id_middleware(mut request: Request, next: Next) -> Response {
             );
         }
     }
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    span.in_scope(|| log_request_completion(&path, &response, duration_ms));
     response
+}
+
+/// Coarse route group for log filtering; never derived from user input beyond
+/// the fixed prefixes.
+fn route_group(path: &str) -> &'static str {
+    if path.starts_with("/api/agent/") {
+        "agent"
+    } else if path.starts_with("/api/admin/") {
+        "admin"
+    } else if path.starts_with("/api/public/") {
+        "public"
+    } else if path.starts_with("/health/") {
+        "health"
+    } else if path.starts_with("/api/") {
+        "api"
+    } else {
+        "web"
+    }
+}
+
+/// One completion line per request. A report's receipt is the interesting
+/// fact: an accepted report is routine (debug, so a collection interval does
+/// not flood the journal), a partial acceptance is info and a whole-report
+/// rejection is a warning. Any other request is debug unless the Server failed
+/// it (5xx = warn).
+fn log_request_completion(path: &str, response: &Response, duration_ms: u64) {
+    let status = response.status().as_u16();
+    let disposition = response
+        .extensions()
+        .get::<platpulse_core::ReceiptDisposition>()
+        .copied();
+    if let Some(disposition) = disposition
+        && (path == platpulse_core::protocol::AGENT_API_REPORTS_PATH
+            || path == platpulse_core::protocol::AGENT_API_REPORTS_PATH_V2)
+    {
+        match disposition {
+            platpulse_core::ReceiptDisposition::Accepted => {
+                tracing::debug!(status, duration_ms, outcome = "accepted", "report ingested");
+            }
+            platpulse_core::ReceiptDisposition::PartiallyAccepted => tracing::info!(
+                status,
+                duration_ms,
+                outcome = "partially_accepted",
+                "report ingested"
+            ),
+            platpulse_core::ReceiptDisposition::Rejected => {
+                tracing::warn!(status, duration_ms, outcome = "rejected", "report ingested");
+            }
+        }
+        return;
+    }
+    if response.status().is_server_error() {
+        tracing::warn!(status, duration_ms, "request failed");
+    } else {
+        tracing::debug!(status, duration_ms, "request completed");
+    }
 }
 
 /// Capture the route group's realtime cursor before a REST handler reads its

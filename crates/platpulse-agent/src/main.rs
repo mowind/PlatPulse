@@ -9,6 +9,15 @@ use platpulse_agent::cli::{
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    // Diagnostics go to stderr; stdout stays for CLI results.
+    platpulse_agent::logging::init(&(&cli.log).into());
+    let result = run(cli).await;
+    // Flush queued diagnostics before the final error is printed.
+    platpulse_agent::logging::flush();
+    result
+}
+
+async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let Some(command) = cli.command else {
         let mut cmd = Cli::command();
         cmd.print_help()?;

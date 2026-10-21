@@ -28,6 +28,12 @@ pub fn redact_json_value(value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
+/// Whether a structured log field *name* is itself a credential key, so its
+/// value is replaced whatever its type (the log egress calls this per field).
+pub fn is_sensitive_field(name: &str) -> bool {
+    sensitive_json_key(name)
+}
+
 fn sensitive_json_key(key: &str) -> bool {
     let normalized = key
         .chars()
@@ -73,7 +79,13 @@ pub fn redact_peer_identity(input: &str) -> String {
 }
 
 pub fn redact_sensitive(input: &str) -> String {
-    let mut output = input.to_owned();
+    redact_ip_literals(&redact_credentials(input))
+}
+
+/// Remove keyed secrets and URL userinfo but keep IP literals. Only for
+/// operator-supplied configuration such as the listen address.
+pub fn redact_credentials(input: &str) -> String {
+    let mut output = redact_auth_scheme_tokens(input);
     for key in [
         "password",
         "password_hash",
@@ -108,7 +120,71 @@ pub fn redact_sensitive(input: &str) -> String {
     ] {
         output = redact_key_value(&output, key);
     }
-    redact_url_credentials(&redact_ip_literals(&output))
+    redact_url_credentials(&output)
+}
+
+/// Mask the credential that follows an HTTP auth scheme word
+/// (`Bearer <token>`, `Basic <b64>`). Keyed redaction stops at the first space,
+/// so `authorization=Bearer abc` would otherwise keep `abc`.
+fn redact_auth_scheme_tokens(input: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    let bytes = input.as_bytes();
+    let mut output = String::with_capacity(input.len());
+    let mut cursor = 0;
+    let mut search = 0;
+    loop {
+        let next = ["bearer ", "basic "]
+            .iter()
+            .filter_map(|scheme| {
+                lower[search..]
+                    .find(scheme)
+                    .map(|at| (search + at, scheme.len()))
+            })
+            .min_by_key(|(at, _)| *at);
+        let Some((start, scheme_len)) = next else {
+            break;
+        };
+        // Only a scheme in header position counts: at the start, or after
+        // `=`, `:` or a quote. Prose such as "basic auth" is left alone.
+        let header_position = input[..start]
+            .trim_end_matches(' ')
+            .as_bytes()
+            .last()
+            .is_none_or(|byte| matches!(byte, b'=' | b':' | b'"' | b'\''));
+        if !header_position {
+            search = start + scheme_len;
+            continue;
+        }
+        let mut token_start = start + scheme_len;
+        while token_start < bytes.len() && bytes[token_start] == b' ' {
+            token_start += 1;
+        }
+        let mut token_end = token_start;
+        while token_end < bytes.len()
+            && !matches!(
+                bytes[token_end],
+                b' ' | b'\t' | b'\n' | b'\r' | b',' | b'"' | b'}' | b'&'
+            )
+        {
+            token_end += 1;
+        }
+        let token = &input[token_start..token_end];
+        // `Basic` carries base64 credentials; prose such as "Basic config"
+        // is not one, so only a base64-shaped token of credential length is.
+        let credential_shaped = scheme_len != "basic ".len()
+            || (token.len() >= 8
+                && token.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')
+                }));
+        if !token.is_empty() && token != "[REDACTED]" && credential_shaped {
+            output.push_str(&input[cursor..token_start]);
+            output.push_str("[REDACTED]");
+            cursor = token_end;
+        }
+        search = token_end.max(start + scheme_len);
+    }
+    output.push_str(&input[cursor..]);
+    output
 }
 
 fn redact_url_credentials(input: &str) -> String {
@@ -122,7 +198,8 @@ fn redact_url_credentials(input: &str) -> String {
             .find(['/', '?', '#', ' ', '\n', '\r', '\t'])
             .map(|offset| authority_start + offset)
             .unwrap_or(input.len());
-        if let Some(at_relative) = input[authority_start..authority_end].find('@') {
+        // The last '@' ends the userinfo: a password may itself contain '@'.
+        if let Some(at_relative) = input[authority_start..authority_end].rfind('@') {
             let at = authority_start + at_relative;
             output.push_str(&input[cursor..authority_start]);
             output.push_str("[REDACTED]@");
@@ -325,6 +402,21 @@ mod tests {
     }
 
     #[test]
+    fn redacts_the_token_after_an_auth_scheme() {
+        let redacted = redact_sensitive(
+            "authorization=Bearer abc.def Authorization: Basic dXNlcjpw basic auth",
+        );
+        assert!(!redacted.contains("abc.def"), "{redacted}");
+        assert!(
+            redacted.ends_with("basic auth"),
+            "prose is untouched: {redacted}"
+        );
+        let prose = redact_sensitive("reason: Basic config");
+        assert_eq!(prose, "reason: Basic config");
+        assert!(!redacted.contains("dXNlcjpw"), "{redacted}");
+    }
+
+    #[test]
     fn redacts_camel_case_credential_keys() {
         let value = serde_json::json!({
             "accessToken": "access-secret",
@@ -396,6 +488,8 @@ mod tests {
             "RPC failed at wss://user:password@203.0.113.7:443 and enode://pubkey@198.51.100.4:30303",
         );
         assert!(!redacted.contains("user:password"));
+        let at_in_password = redact_sensitive("wss://user:p@ss@node.example/ws");
+        assert_eq!(at_in_password, "wss://[REDACTED]@node.example/ws");
         assert!(!redacted.contains("203.0.113.7"));
         assert!(!redacted.contains("198.51.100.4"));
     }

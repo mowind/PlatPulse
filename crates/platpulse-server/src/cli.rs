@@ -28,6 +28,8 @@ pub struct Cli {
     /// Print the OpenAPI 3 document as JSON and exit.
     #[arg(long)]
     pub print_openapi: bool,
+    #[command(flatten)]
+    pub log: crate::logging::LogArgs,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -869,7 +871,7 @@ pub async fn run_verify_integrity(config: &ServerConfig) -> Result<(), Box<dyn s
 /// assets until shutdown.
 pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::Error>> {
     crate::init::restrict_umask();
-    println!("{}", crate::startup_version_line());
+    tracing::info!("{} starting", crate::startup_version_line());
     let native_tls = match config.tls.as_ref() {
         Some(tls) => Some(crate::transport::load_rustls_config(tls).await?),
         None => None,
@@ -910,7 +912,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     // inspect the deployment without any write or external side effect.
     let cutover_blocked = database.inventory_cutover().business_writes_blocked();
     if cutover_blocked {
-        eprintln!(
+        tracing::warn!(
             "Inventory cutover not resumed: serving read-only diagnostics only. No collection, ingestion, Admin mutation or external-effect worker will start. Run 'platpulse-server cutover resume' against the converted deployment."
         );
     }
@@ -920,7 +922,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     // deployment, which does no I/O for it — so a violated contract is visible
     // before any policy or cleanup surface is served.
     if let Err(violation) = crate::retention::audit_catalog() {
-        eprintln!("retention catalog contract violated: {violation}");
+        tracing::error!(error = %violation, "retention catalog contract violated");
     }
     if !cutover_blocked {
         // Retention is a fixed, bounded startup task. Re-running after a crash
@@ -930,10 +932,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             crate::retention::cleanup_raw_block_summaries(database.pool(), crate::auth::now_utc())
                 .await
         {
-            eprintln!(
-                "raw block retention cleanup deferred: {}",
-                crate::redaction::redact_sensitive(&error.to_string())
-            );
+            tracing::warn!(error = %error, "raw block retention cleanup deferred");
         }
         if let Err(error) = crate::retention::cleanup_expired_metric_samples(
             database.pool(),
@@ -941,10 +940,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         )
         .await
         {
-            eprintln!(
-                "raw metric retention cleanup deferred: {}",
-                crate::redaction::redact_sensitive(&error.to_string())
-            );
+            tracing::warn!(error = %error, "raw metric retention cleanup deferred");
         }
         // Issue #217: the recorded synchronization and consensus states expire
         // by the same fixed, bounded startup task.
@@ -954,10 +950,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         )
         .await
         {
-            eprintln!(
-                "state retention cleanup deferred: {}",
-                crate::redaction::redact_sensitive(&error.to_string())
-            );
+            tracing::warn!(error = %error, "state retention cleanup deferred");
         }
         // Issue #214: each aggregate tier expires by its own window, so the
         // 1-minute buckets a widened read can no longer be served leave while
@@ -968,18 +961,12 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         )
         .await
         {
-            eprintln!(
-                "aggregate metric retention cleanup deferred: {}",
-                crate::redaction::redact_sensitive(&error.to_string())
-            );
+            tracing::warn!(error = %error, "aggregate metric retention cleanup deferred");
         }
         // Retention policies are seeded idempotently with the design §11.4
         // defaults; existing rows are never rewritten.
         if let Err(error) = crate::retention::ensure_seeded(database.pool()).await {
-            eprintln!(
-                "retention policy seeding deferred: {}",
-                crate::redaction::redact_sensitive(&error.to_string())
-            );
+            tracing::warn!(error = %error, "retention policy seeding deferred");
         }
     }
     let geo_loader = std::sync::Arc::new(crate::geo::GeoLoader::new(config.geo.clone()));
@@ -1012,10 +999,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     // anything, so a database that was briefly unreadable at startup cannot
     // quietly leave optional history running.
     if let Err(error) = capacity.reconcile(state.db().pool()).await {
-        eprintln!(
-            "capacity protection reconcile deferred until the next sample: {}",
-            crate::redaction::redact_sensitive(&error.to_string())
-        );
+        tracing::warn!(error = %error, "capacity protection reconcile deferred until the next sample");
     }
     state = state.with_capacity(std::sync::Arc::clone(&capacity));
     // The durable Geo provider selection is resolved once per installation
@@ -1034,10 +1018,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         match crate::geo::ensure_provider_selection(state.db().pool(), config.geo.is_some()).await {
             Ok(selection) => selection,
             Err(error) => {
-                eprintln!(
-                    "Geo provider selection deferred: {}",
-                    crate::redaction::redact_sensitive(&error.to_string())
-                );
+                tracing::warn!(error = %error, "Geo provider selection deferred");
                 crate::geo::GeoSelection {
                     provider: crate::geo::GeoProvider::Disabled,
                     generation: 0,
@@ -1061,10 +1042,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                     .with_validator_provider(std::sync::Arc::new(provider))
                     .with_validator_freshness_seconds(provider_config.stale_after_seconds());
             }
-            Err(error) => eprintln!(
-                "Validator Provider disabled: {}",
-                crate::redaction::redact_sensitive(&error)
-            ),
+            Err(error) => tracing::warn!(error = %error, "Validator Provider disabled"),
         }
     }
     // Development mode never touches a real provider: the e2e suite and
@@ -1146,10 +1124,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                         {
                             Ok(removed) => removed > 0,
                             Err(error) => {
-                                eprintln!(
-                                    "geo cache cleanup deferred: {}",
-                                    crate::redaction::redact_sensitive(&error.to_string())
-                                );
+                                tracing::warn!(error = %error, "geo cache cleanup deferred");
                                 false
                             }
                         }
@@ -1195,10 +1170,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         if let Err(error) =
             crate::operations::requeue_interrupted_operations(state.db().pool()).await
         {
-            eprintln!(
-                "operation re-arm deferred: {}",
-                crate::redaction::redact_sensitive(&error.to_string())
-            );
+            tracing::warn!(error = %error, "operation re-arm deferred");
         }
 
         // Alert evaluation sweep: persists rule state and Incident transitions
@@ -1231,10 +1203,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                         }
                         Ok(_) => {}
                         Err(error) => {
-                            eprintln!(
-                                "alert evaluation sweep deferred: {}",
-                                crate::redaction::redact_sensitive(&error.to_string())
-                            );
+                            tracing::warn!(error = %error, "alert evaluation sweep deferred");
                         }
                     }
                 }
@@ -1270,10 +1239,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                     {
                         Ok(_) => {}
                         Err(error) => {
-                            eprintln!(
-                                "notification delivery deferred: {}",
-                                crate::redaction::redact_sensitive(&error.to_string())
-                            );
+                            tracing::warn!(error = %error, "notification delivery deferred");
                         }
                     }
                 }
@@ -1303,10 +1269,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                     match crate::operations::process_operations(&worker_state).await {
                         Ok(_) => {}
                         Err(error) => {
-                            eprintln!(
-                                "operation worker deferred: {}",
-                                crate::redaction::redact_sensitive(&error.to_string())
-                            );
+                            tracing::warn!(error = %error, "operation worker deferred");
                         }
                     }
                 }
@@ -1376,10 +1339,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                         }
                         Ok(_) => {}
                         Err(error) => {
-                            eprintln!(
-                                "Validator identity discovery deferred: {}",
-                                crate::redaction::redact_sensitive(&error.to_string())
-                            );
+                            tracing::warn!(error = %error, "Validator identity discovery deferred");
                         }
                     }
                     if !provider_configured {
@@ -1432,10 +1392,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                         }
                         Ok(_) => {}
                         Err(error) => {
-                            eprintln!(
-                                "Validator Provider refresh deferred: {}",
-                                crate::redaction::redact_sensitive(&error.to_string())
-                            );
+                            tracing::warn!(error = %error, "Validator Provider refresh deferred");
                         }
                     }
                 }
@@ -1454,14 +1411,11 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                     worker_handles.push(worker);
                 }
             }
-            Err(error) => eprintln!(
-                "Reward Wallet refresher disabled: {}",
-                crate::redaction::redact_sensitive(&error)
-            ),
+            Err(error) => tracing::warn!(error = %error, "Reward Wallet refresher disabled"),
         }
     }
 
-    println!("listening on {}", config.listen);
+    tracing::info!(listen = %config.listen, "listening");
     if let Some(tls_config) = native_tls {
         let handle = axum_server::Handle::new();
         let server = axum_server::tls_rustls::bind_rustls(config.listen, tls_config)
@@ -1471,6 +1425,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         tokio::select! {
             result = &mut server => result?,
             _ = wait_for_shutdown_signal() => {
+                tracing::info!("shutdown signal received; draining for up to 10s");
                 state.begin_shutdown();
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
                 handle.graceful_shutdown(Some(Duration::from_secs(10)));
@@ -1506,6 +1461,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         tokio::select! {
             result = &mut server => result?,
             _ = wait_for_shutdown_signal() => {
+                tracing::info!("shutdown signal received; draining for up to 10s");
                 state.begin_shutdown();
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
                 let _ = shutdown_tx.send(());
@@ -1527,6 +1483,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             }
         }
     }
+    tracing::info!(outcome = "complete", "shutdown complete");
     Ok(())
 }
 

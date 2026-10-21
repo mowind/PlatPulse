@@ -723,10 +723,7 @@ pub async fn apply(
             .and_then(|copy| rollback_to_safety_copy(&config.db_path, copy));
         sanitize_or_remove(safety_copy.as_ref().expect("safety copy exists")).await;
         if let Err(rollback_error) = rollback {
-            eprintln!(
-                "restore rollback failed: {}",
-                crate::redaction::redact_sensitive(&rollback_error.to_string())
-            );
+            tracing::error!(error = %rollback_error, "restore rollback failed");
         }
         let _ = std::fs::remove_file(&temp_db);
         return Err(RestoreError::domain(ERROR_IO, error));
@@ -770,13 +767,10 @@ pub async fn apply(
             if let Err(rollback_error) =
                 rollback_to_safety_copy(&config.db_path, safety_copy.as_ref().unwrap())
             {
-                eprintln!(
-                    "{}",
-                    crate::redaction::redact_sensitive(&format!(
-                        "restore rollback failed (manual recovery from {} needed): {}",
-                        safety_copy.as_ref().unwrap().display(),
-                        rollback_error
-                    ))
+                tracing::error!(
+                    error = %rollback_error,
+                    "restore rollback failed; manual recovery from {} is needed",
+                    safety_copy.as_ref().unwrap().display()
                 );
             }
             sanitize_or_remove(safety_copy.as_ref().unwrap()).await;
@@ -816,10 +810,7 @@ pub async fn apply(
             // The restore itself is complete; only the record failed. The
             // operator is told honestly; a later Server start shows the
             // restored data without a synthetic success record.
-            eprintln!(
-                "restore applied but the outcome could not be recorded: {}",
-                crate::redaction::redact_sensitive(&error.to_string())
-            );
+            tracing::warn!(error = %error, "restore applied but the outcome could not be recorded");
             false
         }
     };
