@@ -32,6 +32,11 @@ pub const STATUS_WARNING: &str = "warning";
 pub const STATUS_FAIL: &str = "fail";
 pub const STATUS_NOT_CONFIGURED: &str = "not_configured";
 pub const STATUS_SKIPPED: &str = "skipped";
+/// The check does not apply to the selected Storage Backend (ADR 0013).
+/// Distinct from `skipped` (nothing to look at yet) and from `not_configured`
+/// (understood but absent), so the Admin never shows a PostgreSQL deployment
+/// as merely unconfigured for a surface the backend does not have.
+pub const STATUS_NOT_APPLICABLE: &str = "not_applicable";
 
 /// Run every Doctor check and persist the report on the `doctor_run`
 /// Operation. The Operation succeeds when all checks pass and reports
@@ -267,57 +272,20 @@ fn storage_capacity_check(state: &AppState) -> DoctorCheck {
 async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Error> {
     let mut checks = Vec::new();
     let pool = state.db().pool();
+    // ADR 0013 splits the check set by Storage Backend: SQLite keeps the
+    // file-oriented checks, while PostgreSQL reports the ones it cannot have
+    // as NOT_APPLICABLE and proves its own surface instead.
+    let postgres = state.db().storage_backend() == "postgres";
 
-    // 1. Database integrity (read-only, bounded quick check; never repairs).
-    //    Budget exhaustion is reported as exhausted, distinctly from a failed
-    //    check; the authoritative whole-database verdict is the offline
-    //    `verify-integrity` command (ADR 0008, issue #194).
-    checks.push(
-        match state
-            .db()
-            .bounded_integrity_check(IntegrityScope::Quick, DOCTOR_INTEGRITY_BUDGET)
-            .await
-        {
-            IntegrityVerdict::Consistent => DoctorCheck {
-                check_id: "database_integrity".to_owned(),
-                label: "Database integrity".to_owned(),
-                status: STATUS_PASS,
-                detail: "SQLite quick_check reports a consistent database".to_owned(),
-            },
-            IntegrityVerdict::Inconsistent(result) => DoctorCheck {
-                check_id: "database_integrity".to_owned(),
-                label: "Database integrity".to_owned(),
-                status: STATUS_FAIL,
-                detail: format!("SQLite quick_check failed: {result}"),
-            },
-            IntegrityVerdict::Exhausted => DoctorCheck {
-                check_id: "database_integrity".to_owned(),
-                label: "Database integrity".to_owned(),
-                status: STATUS_WARNING,
-                detail: "SQLite quick_check did not finish within its budget; run `platpulse-server verify-integrity` offline for an authoritative verdict".to_owned(),
-            },
-            // An unavailable check is reported as not configured. It is never
-            // shown as a pass (preserve last-good semantics, ADR 0013).
-            IntegrityVerdict::Unsupported => DoctorCheck {
-                check_id: "database_integrity".to_owned(),
-                label: "Database integrity".to_owned(),
-                status: STATUS_NOT_CONFIGURED,
-                detail: "the PostgreSQL Storage Backend has no bounded in-process integrity check; the offline verify command covers SQLite only (0.3.0 S5)".to_owned(),
-            },
-            IntegrityVerdict::Failed(error) => {
-                state.note_database_error(&error);
-                DoctorCheck {
-                    check_id: "database_integrity".to_owned(),
-                    label: "Database integrity".to_owned(),
-                    status: STATUS_FAIL,
-                    detail: format!(
-                        "SQLite quick_check failed: {}",
-                        crate::redaction::redact_sensitive(&error.to_string())
-                    ),
-                }
-            }
-        },
-    );
+    // 1. Database integrity. SQLite verifies itself in process; the
+    //    PostgreSQL Storage Backend has no check the Server may run, so it is
+    //    proved by connection, version, collation and ownership instead
+    //    (ADR 0013). An unavailable check is never shown as a pass.
+    if postgres {
+        checks.extend(postgres_checks(state).await);
+    } else {
+        checks.push(sqlite_integrity_check(state).await);
+    }
 
     // 2. Schema version matches the Server binary.
     let schema: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
@@ -389,80 +357,90 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
         detail: format!("{policy_count} of {expected} retention policy families are seeded"),
     });
 
-    // 6. Backup storage: configured, present, and strictly permissioned.
-    match state.backup_dir() {
-        None => checks.push(DoctorCheck {
-            check_id: "backup_storage".to_owned(),
-            label: "Backup storage".to_owned(),
-            status: STATUS_NOT_CONFIGURED,
-            detail: "no backup directory configured; backup Operations will fail".to_owned(),
-        }),
-        Some(dir) => match std::fs::symlink_metadata(dir) {
-            Ok(metadata) if metadata.is_dir() => {
-                let safe = crate::file_security::validate_private_directory(dir).is_ok();
-                checks.push(DoctorCheck {
-                    check_id: "backup_storage".to_owned(),
-                    label: "Backup storage".to_owned(),
-                    status: if safe { STATUS_PASS } else { STATUS_FAIL },
-                    detail: if safe {
-                        "backup directory exists with strict ownership and permissions".to_owned()
-                    } else {
-                        "backup directory is not private and owned by the Server user".to_owned()
-                    },
-                });
-            }
-            Ok(_) => checks.push(DoctorCheck {
+    // 6-9. ADR 0008 backups are SQLite-only. On the PostgreSQL Storage
+    //      Backend there is no Backup Artifact, no artifact age, and no
+    //      residue the Server could inspect, so the four checks are reported
+    //      NOT_APPLICABLE instead of passing or warning about something the
+    //      backend does not have (ADR 0013).
+    if postgres {
+        checks.extend(backup_checks_not_applicable());
+    } else {
+        // 6. Backup storage: configured, present, and strictly permissioned.
+        match state.backup_dir() {
+            None => checks.push(DoctorCheck {
                 check_id: "backup_storage".to_owned(),
                 label: "Backup storage".to_owned(),
-                status: STATUS_FAIL,
-                detail: "configured backup path is not a directory".to_owned(),
+                status: STATUS_NOT_CONFIGURED,
+                detail: "no backup directory configured; backup Operations will fail".to_owned(),
             }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                checks.push(DoctorCheck {
+            Some(dir) => match std::fs::symlink_metadata(dir) {
+                Ok(metadata) if metadata.is_dir() => {
+                    let safe = crate::file_security::validate_private_directory(dir).is_ok();
+                    checks.push(DoctorCheck {
+                        check_id: "backup_storage".to_owned(),
+                        label: "Backup storage".to_owned(),
+                        status: if safe { STATUS_PASS } else { STATUS_FAIL },
+                        detail: if safe {
+                            "backup directory exists with strict ownership and permissions"
+                                .to_owned()
+                        } else {
+                            "backup directory is not private and owned by the Server user"
+                                .to_owned()
+                        },
+                    });
+                }
+                Ok(_) => checks.push(DoctorCheck {
                     check_id: "backup_storage".to_owned(),
                     label: "Backup storage".to_owned(),
-                    status: STATUS_WARNING,
-                    detail: "backup directory does not exist yet; the first backup creates it"
-                        .to_owned(),
-                })
-            }
-            Err(_) => checks.push(DoctorCheck {
-                check_id: "backup_storage".to_owned(),
-                label: "Backup storage".to_owned(),
-                status: STATUS_FAIL,
-                detail: "cannot access backup directory".to_owned(),
-            }),
-        },
-    }
-
-    // 7. Latest backup artifact integrity (skipped when nothing exists).
-    let latest = crate::backup::latest_artifact(pool).await?;
-    checks.push(match latest {
-        Some((artifact_id, _filename, _bytes, verification, _created_at)) => DoctorCheck {
-            check_id: "latest_backup".to_owned(),
-            label: "Latest backup".to_owned(),
-            status: match verification.as_str() {
-                "ok" => STATUS_PASS,
-                "failed" => STATUS_FAIL,
-                _ => STATUS_WARNING,
+                    status: STATUS_FAIL,
+                    detail: "configured backup path is not a directory".to_owned(),
+                }),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    checks.push(DoctorCheck {
+                        check_id: "backup_storage".to_owned(),
+                        label: "Backup storage".to_owned(),
+                        status: STATUS_WARNING,
+                        detail: "backup directory does not exist yet; the first backup creates it"
+                            .to_owned(),
+                    })
+                }
+                Err(_) => checks.push(DoctorCheck {
+                    check_id: "backup_storage".to_owned(),
+                    label: "Backup storage".to_owned(),
+                    status: STATUS_FAIL,
+                    detail: "cannot access backup directory".to_owned(),
+                }),
             },
-            detail: match verification.as_str() {
-                "ok" => format!("backup artifact {artifact_id} is verified"),
-                "failed" => format!("backup artifact {artifact_id} failed verification"),
-                _ => format!("backup artifact {artifact_id} has not been verified yet"),
-            },
-        },
-        None => DoctorCheck {
-            check_id: "latest_backup".to_owned(),
-            label: "Latest backup".to_owned(),
-            status: STATUS_SKIPPED,
-            detail: "no backup artifact exists yet; nothing to verify".to_owned(),
-        },
-    });
+        }
 
-    // 8. Age of the last successful Backup Artifact. ADR 0008 makes RPO
-    //    operator-defined, so Doctor reports the age instead of judging it.
-    checks.push(match crate::backup::latest_artifact(pool).await? {
+        // 7. Latest backup artifact integrity (skipped when nothing exists).
+        let latest = crate::backup::latest_artifact(pool).await?;
+        checks.push(match latest {
+            Some((artifact_id, _filename, _bytes, verification, _created_at)) => DoctorCheck {
+                check_id: "latest_backup".to_owned(),
+                label: "Latest backup".to_owned(),
+                status: match verification.as_str() {
+                    "ok" => STATUS_PASS,
+                    "failed" => STATUS_FAIL,
+                    _ => STATUS_WARNING,
+                },
+                detail: match verification.as_str() {
+                    "ok" => format!("backup artifact {artifact_id} is verified"),
+                    "failed" => format!("backup artifact {artifact_id} failed verification"),
+                    _ => format!("backup artifact {artifact_id} has not been verified yet"),
+                },
+            },
+            None => DoctorCheck {
+                check_id: "latest_backup".to_owned(),
+                label: "Latest backup".to_owned(),
+                status: STATUS_SKIPPED,
+                detail: "no backup artifact exists yet; nothing to verify".to_owned(),
+            },
+        });
+
+        // 8. Age of the last successful Backup Artifact. ADR 0008 makes RPO
+        //    operator-defined, so Doctor reports the age instead of judging it.
+        checks.push(match crate::backup::latest_artifact(pool).await? {
         Some((artifact_id, _filename, _bytes, _verification, created_at)) => {
             match crate::auth::parse_rfc3339(&created_at) {
                 Some(created_at) => DoctorCheck {
@@ -492,10 +470,10 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
         },
     });
 
-    // 9. Residue in the backup directory: a killed or disk-full attempt can
-    //    leave a half-written `.part` and its `.part-journal`, and ADR 0008
-    //    reclaims nothing automatically.
-    checks.push(match state.backup_dir() {
+        // 9. Residue in the backup directory: a killed or disk-full attempt can
+        //    leave a half-written `.part` and its `.part-journal`, and ADR 0008
+        //    reclaims nothing automatically.
+        checks.push(match state.backup_dir() {
         None => DoctorCheck {
             check_id: "backup_residue".to_owned(),
             label: "Backup residue".to_owned(),
@@ -532,6 +510,7 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
             },
         },
     });
+    }
 
     // 10. Notification channel configuration (never token contents).
     let telegram = state.channels().telegram.as_ref();
@@ -558,28 +537,27 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
     // 11. Sensitive state files and optional Geo database are checked through
     // descriptor-based no-follow validation; failures are actionable but do
     // not include filesystem paths in the Admin response.
-    // A file-permission check applies only to the SQLite backend: the
-    // PostgreSQL backend stores no Server file, so there is nothing to check.
-    let database_safe = match state.db().path() {
-        Some(path) => crate::file_security::validate_file(path).is_ok(),
-        None => true,
-    };
-    checks.push(DoctorCheck {
-        check_id: "database_storage".to_owned(),
-        label: "Database storage".to_owned(),
-        status: if database_safe {
-            STATUS_PASS
-        } else {
-            STATUS_FAIL
+    // The file-permission check exists only on SQLite: PostgreSQL stores no
+    // Server file, and the database disk belongs to the database operator.
+    checks.push(match state.db().path() {
+        None => DoctorCheck {
+            check_id: "database_storage".to_owned(),
+            label: "Database storage".to_owned(),
+            status: STATUS_NOT_APPLICABLE,
+            detail: "the PostgreSQL Storage Backend stores no Server file; the database disk belongs to the database operator".to_owned(),
         },
-        detail: match (database_safe, state.db().path()) {
-            (false, _) => "Server database ownership or permissions are unsafe".to_owned(),
-            (true, Some(_)) => {
-                "Server database is a private regular file owned by the Server user".to_owned()
-            }
-            (true, None) => {
-                "the PostgreSQL Storage Backend stores no Server database file".to_owned()
-            }
+        Some(path) if crate::file_security::validate_file(path).is_ok() => DoctorCheck {
+            check_id: "database_storage".to_owned(),
+            label: "Database storage".to_owned(),
+            status: STATUS_PASS,
+            detail: "Server database is a private regular file owned by the Server user"
+                .to_owned(),
+        },
+        Some(_) => DoctorCheck {
+            check_id: "database_storage".to_owned(),
+            label: "Database storage".to_owned(),
+            status: STATUS_FAIL,
+            detail: "Server database ownership or permissions are unsafe".to_owned(),
         },
     });
     checks.push(match state.geo().path() {
@@ -606,7 +584,16 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
     // 12. Capacity and low-space protection state (issue #212): the same
     // state the Operations page shows, so an Operator reading Doctor is not
     // left guessing why optional history stopped.
-    checks.push(storage_capacity_check(state));
+    checks.push(if postgres {
+        DoctorCheck {
+            check_id: "storage_capacity".to_owned(),
+            label: "Storage capacity".to_owned(),
+            status: STATUS_NOT_APPLICABLE,
+            detail: "the database disk belongs to the database operator, so the Server neither measures nor protects it and refuses a [capacity] policy on this Storage Backend".to_owned(),
+        }
+    } else {
+        storage_capacity_check(state)
+    });
 
     // 13. Sensitive file discipline is a unix property; elsewhere skipped.
     #[cfg(unix)]
@@ -630,6 +617,199 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
     Ok(checks)
 }
 
+/// SQLite's in-process integrity check, reported with budget exhaustion kept
+/// distinct from a failed or inconsistent result; the authoritative
+/// whole-database verdict is the offline `verify-integrity` command (ADR 0008,
+/// issue #194).
+async fn sqlite_integrity_check(state: &AppState) -> DoctorCheck {
+    match state
+        .db()
+        .bounded_integrity_check(IntegrityScope::Quick, DOCTOR_INTEGRITY_BUDGET)
+        .await
+    {
+        IntegrityVerdict::Consistent => DoctorCheck {
+            check_id: "database_integrity".to_owned(),
+            label: "Database integrity".to_owned(),
+            status: STATUS_PASS,
+            detail: "SQLite quick_check reports a consistent database".to_owned(),
+        },
+        IntegrityVerdict::Inconsistent(result) => DoctorCheck {
+            check_id: "database_integrity".to_owned(),
+            label: "Database integrity".to_owned(),
+            status: STATUS_FAIL,
+            detail: format!("SQLite quick_check failed: {result}"),
+        },
+        IntegrityVerdict::Exhausted => DoctorCheck {
+            check_id: "database_integrity".to_owned(),
+            label: "Database integrity".to_owned(),
+            status: STATUS_WARNING,
+            detail: "SQLite quick_check did not finish within its budget; run `platpulse-server verify-integrity` offline for an authoritative verdict".to_owned(),
+        },
+        // An unavailable check is reported as not configured, never as a pass
+        // (preserve last-good semantics, ADR 0013).
+        IntegrityVerdict::Unsupported => DoctorCheck {
+            check_id: "database_integrity".to_owned(),
+            label: "Database integrity".to_owned(),
+            status: STATUS_NOT_CONFIGURED,
+            detail: "this Storage Backend has no bounded in-process integrity check".to_owned(),
+        },
+        IntegrityVerdict::Failed(error) => {
+            state.note_database_error(&error);
+            DoctorCheck {
+                check_id: "database_integrity".to_owned(),
+                label: "Database integrity".to_owned(),
+                status: STATUS_FAIL,
+                detail: format!(
+                    "SQLite quick_check failed: {}",
+                    crate::redaction::redact_sensitive(&error.to_string())
+                ),
+            }
+        }
+    }
+}
+
+/// The PostgreSQL replacement for the SQLite integrity check (ADR 0013):
+/// connection, server version, collation, and the ownership lock. Integrity
+/// is proved by the database operator's own backup and dump tooling, so
+/// Doctor reports the live facts it can observe instead of a check the Server
+/// may not run. Every value is re-read on each run rather than reused from
+/// startup, so an upgraded or misconfigured server stays visible.
+async fn postgres_checks(state: &AppState) -> Vec<DoctorCheck> {
+    let db = state.db();
+    let mut checks = Vec::new();
+
+    checks.push(match db.ping().await {
+        Ok(()) => DoctorCheck {
+            check_id: "postgres_connection".to_owned(),
+            label: "Database connection".to_owned(),
+            status: STATUS_PASS,
+            detail: "the Server answered a live query on its work connection".to_owned(),
+        },
+        Err(error) => {
+            state.note_database_error(&error);
+            DoctorCheck {
+                check_id: "postgres_connection".to_owned(),
+                label: "Database connection".to_owned(),
+                status: STATUS_FAIL,
+                detail: format!(
+                    "the work connection to PostgreSQL failed: {}",
+                    crate::redaction::redact_sensitive(&error.to_string())
+                ),
+            }
+        }
+    });
+
+    checks.push(match db.postgres_server_version().await {
+        Ok((number, display)) => DoctorCheck {
+            check_id: "postgres_server_version".to_owned(),
+            label: "PostgreSQL server version".to_owned(),
+            status: if number >= crate::database::MIN_SERVER_VERSION_NUM {
+                STATUS_PASS
+            } else {
+                STATUS_FAIL
+            },
+            detail: format!(
+                "the server reports PostgreSQL {display} (server_version_num {number}); the supported minimum is PostgreSQL 15"
+            ),
+        },
+        Err(error) => {
+            state.note_database_error(&error);
+            DoctorCheck {
+                check_id: "postgres_server_version".to_owned(),
+                label: "PostgreSQL server version".to_owned(),
+                status: STATUS_WARNING,
+                detail: format!(
+                    "the server version could not be read: {}",
+                    crate::redaction::redact_sensitive(&error.to_string())
+                ),
+            }
+        }
+    });
+
+    checks.push(match db.postgres_collation_report(10).await {
+        Ok((0, _)) => DoctorCheck {
+            check_id: "postgres_collation".to_owned(),
+            label: "PostgreSQL collation".to_owned(),
+            status: STATUS_PASS,
+            detail: "every text column uses the byte-order \"C\" collation".to_owned(),
+        },
+        Ok((count, columns)) => DoctorCheck {
+            check_id: "postgres_collation".to_owned(),
+            label: "PostgreSQL collation".to_owned(),
+            status: STATUS_FAIL,
+            detail: format!(
+                "{count} text column(s) do not use the byte-order \"C\" collation: {}; recreate the schema with COLLATE \"C\" (ADR 0013)",
+                columns.join(", ")
+            ),
+        },
+        Err(error) => {
+            state.note_database_error(&error);
+            DoctorCheck {
+                check_id: "postgres_collation".to_owned(),
+                label: "PostgreSQL collation".to_owned(),
+                status: STATUS_WARNING,
+                detail: format!(
+                    "the collation of the text columns could not be read: {}",
+                    crate::redaction::redact_sensitive(&error.to_string())
+                ),
+            }
+        }
+    });
+
+    // The session advisory lock is the PostgreSQL ownership check: the Server
+    // stops rather than serving without it, so a lost lock here means this
+    // report is being produced by a Server that is already shutting down.
+    checks.push(DoctorCheck {
+        check_id: "postgres_ownership".to_owned(),
+        label: "Database ownership".to_owned(),
+        status: if db.ownership_held() {
+            STATUS_PASS
+        } else {
+            STATUS_FAIL
+        },
+        detail: if db.ownership_held() {
+            "this Server holds the session advisory lock for the database".to_owned()
+        } else {
+            "the session advisory lock was lost; only one Server may serve a database at a time"
+                .to_owned()
+        },
+    });
+
+    checks
+}
+
+/// The four ADR 0008 backup checks on the PostgreSQL Storage Backend, which
+/// has no Backup Artifact, no artifact age, and no residue for the Server to
+/// inspect: the database operator owns the disk and its dumps (ADR 0013).
+fn backup_checks_not_applicable() -> Vec<DoctorCheck> {
+    vec![
+        DoctorCheck {
+            check_id: "backup_storage".to_owned(),
+            label: "Backup storage".to_owned(),
+            status: STATUS_NOT_APPLICABLE,
+            detail: "the PostgreSQL Storage Backend has no Server backup directory; the database operator owns the database disk".to_owned(),
+        },
+        DoctorCheck {
+            check_id: "latest_backup".to_owned(),
+            label: "Latest backup".to_owned(),
+            status: STATUS_NOT_APPLICABLE,
+            detail: "the PostgreSQL Storage Backend produces no Backup Artifact for the Server to verify".to_owned(),
+        },
+        DoctorCheck {
+            check_id: "backup_age".to_owned(),
+            label: "Backup age".to_owned(),
+            status: STATUS_NOT_APPLICABLE,
+            detail: "backup age is the database operator's own dumps and snapshots to report, not the Server's".to_owned(),
+        },
+        DoctorCheck {
+            check_id: "backup_residue".to_owned(),
+            label: "Backup residue".to_owned(),
+            status: STATUS_NOT_APPLICABLE,
+            detail: "the PostgreSQL Storage Backend leaves no partial backup files for the Server to clean up".to_owned(),
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -650,6 +830,30 @@ mod tests {
         assert_eq!(human_bytes(2048), "2.0 KiB");
         assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MiB");
         assert_eq!(human_bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
+    }
+
+    /// The PostgreSQL Storage Backend keeps no Server file, so the four ADR 0008
+    /// backup checks keep their identity but state that they do not apply: an
+    /// Operator must not read a missing artifact (or a fabricated 0 B age) as a
+    /// real finding (issue #256).
+    #[test]
+    fn backup_checks_are_not_applicable_without_a_server_backup_file() {
+        let checks = backup_checks_not_applicable();
+        let ids: Vec<&str> = checks.iter().map(|check| check.check_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "backup_storage",
+                "latest_backup",
+                "backup_age",
+                "backup_residue"
+            ]
+        );
+        for check in &checks {
+            assert_eq!(check.status, STATUS_NOT_APPLICABLE);
+            assert!(!check.label.is_empty());
+            assert!(!check.detail.is_empty());
+        }
     }
 
     #[test]

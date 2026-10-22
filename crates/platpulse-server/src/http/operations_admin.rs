@@ -2318,6 +2318,10 @@ pub struct CapacityIntervalDto {
 pub struct CapacityOverview {
     pub enabled: bool,
     pub protected: bool,
+    /// Set when the Storage Backend has no capacity surface at all, so the
+    /// Operator reads "does not apply" instead of "disabled". Null on the
+    /// SQLite backend, where the policy is meaningful even when it is off.
+    pub not_applicable_reason: Option<String>,
     /// Null when the policy is disabled, because nothing is invented in its place.
     pub pause_below_bytes: Option<u64>,
     pub resume_above_bytes: Option<u64>,
@@ -2382,9 +2386,19 @@ pub(crate) async fn capacity_overview(
         }
     };
     let config = capacity.config();
+    // PostgreSQL refuses a [capacity] policy in the configuration file, so on
+    // that backend the policy is not merely off: it does not apply, and the
+    // Server never measures or protects a disk that belongs to the database
+    // operator (ADR 0013).
+    let not_applicable_reason = (state.db().storage_backend() == "postgres").then(|| {
+        "the PostgreSQL Storage Backend leaves the database disk to the database operator, "
+            .to_string()
+            + "so the Server neither measures nor protects it against low space"
+    });
     Json(CapacityOverview {
         enabled: status.enabled,
         protected: status.protected,
+        not_applicable_reason,
         pause_below_bytes: config.pause_below_bytes(),
         resume_above_bytes: config.resume_above_bytes(),
         sample_interval_seconds: config.sample_interval_seconds(),
@@ -2444,6 +2458,91 @@ fn capacity_interval_dto(record: crate::capacity::CapacityIntervalRecord) -> Cap
             .collect(),
     }
 }
+// ---------------------------------------------------------------------------
+// Storage Backend (issue #256, ADR 0013)
+// ---------------------------------------------------------------------------
+
+/// Where the Server keeps its data, for the Owner-only Operations screens.
+///
+/// Doctor, Capacity and Settings each need the Storage Backend's identity, so
+/// it has one read-only surface instead of being spread across their responses.
+/// Nothing here reaches a Public Projection, a Public DTO, or SSE: the backend,
+/// its database host, and its version are Operator knowledge, and the Admin
+/// offers no switch between backends (ADR 0013).
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageOverview {
+    /// "sqlite" or "postgres".
+    pub backend: String,
+    /// The Server SQLite database file. Null on the PostgreSQL Storage
+    /// Backend, which stores no Server file for the Server to name.
+    pub database_path: Option<String>,
+    /// The PostgreSQL connection facts, null on the SQLite backend.
+    pub postgres: Option<PostgresStorageDto>,
+}
+
+/// The PostgreSQL server the Storage Backend talks to.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PostgresStorageDto {
+    /// The configured host name, address, or Unix socket directory.
+    pub host: String,
+    pub port: u16,
+    pub database: String,
+    /// The role the Server connects as, which holds the ownership lock.
+    pub user: String,
+    /// The version the server reports right now, null when it cannot be read:
+    /// an unreadable version is never published as a plausible default.
+    pub server_version: Option<String>,
+    /// The same version as `server_version_num`, null when unreadable.
+    pub server_version_num: Option<i64>,
+    /// The oldest version this Server supports (ADR 0013), so the surface can
+    /// say what it requires instead of hard-coding it in the WebUI.
+    pub minimum_server_version_num: i64,
+}
+
+/// The Storage Backend in use (issue #256, ADR 0013).
+///
+/// Read-only: the backend is chosen in the configuration file, and no Admin
+/// surface offers to switch it.
+#[utoipa::path(
+    get,
+    path = "/api/admin/v1/storage",
+    tag = "admin",
+    responses((status = 200, body = StorageOverview))
+)]
+pub(crate) async fn storage_overview(
+    State(state): State<AppState>,
+    Extension(_principal): Extension<AuthenticatedSession>,
+) -> Response {
+    let db = state.db();
+    let facts = db.storage_facts();
+    let postgres = match facts.postgres {
+        None => None,
+        Some(facts) => {
+            // Re-read instead of reusing the value the open path validated:
+            // the Operator opens this surface to see the server that is
+            // answering now.
+            let version = db.postgres_server_version().await.ok();
+            Some(PostgresStorageDto {
+                host: facts.host,
+                port: facts.port,
+                database: facts.database,
+                user: facts.user,
+                server_version: version.as_ref().map(|(_, display)| display.clone()),
+                server_version_num: version.as_ref().map(|(number, _)| *number),
+                minimum_server_version_num: crate::database::MIN_SERVER_VERSION_NUM,
+            })
+        }
+    };
+    Json(StorageOverview {
+        backend: facts.backend.to_string(),
+        database_path: db.path().map(|path| path.display().to_string()),
+        postgres,
+    })
+    .into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Shared mutation plumbing
 // ---------------------------------------------------------------------------
@@ -2544,6 +2643,7 @@ pub fn router() -> Router<AppState> {
         .route("/restore", axum::routing::post(restore_submit))
         .route("/doctor", get(doctor_overview).post(doctor_run))
         .route("/capacity", get(capacity_overview))
+        .route("/storage", get(storage_overview))
 }
 
 // ---------------------------------------------------------------------------
@@ -3663,6 +3763,13 @@ mod tests {
     }
 
     #[tokio::test]
+    // Backup artifacts are a SQLite-only surface: the PostgreSQL Storage
+    // Backend keeps them with the database operator, so every backup check
+    // reports not_applicable instead of reading this artifact table.
+    #[cfg_attr(
+        storage_postgres,
+        ignore = "backup artifact checks are not applicable on the PostgreSQL Storage Backend"
+    )]
     async fn doctor_reports_backup_age_and_partial_residue_without_touching_readiness() {
         let (dir, state) = test_state().await;
         let backups = dir.path().join("backups");
@@ -3749,17 +3856,37 @@ mod tests {
             .iter()
             .map(|check| check["status"].as_str().unwrap())
             .collect();
+        let postgres = state.db().storage_backend() == "postgres";
         assert!(statuses.contains("pass"));
-        assert!(statuses.contains("warning")); // backup dir missing at this point
-        assert!(statuses.contains("not_configured")); // no notification channels
-        assert!(statuses.contains("skipped")); // no backup artifact yet
+        if postgres {
+            // Backup artifacts and capacity protection belong to the database
+            // operator, so the checks that could warn about them declare
+            // themselves inapplicable instead of inventing a warning.
+            assert!(statuses.contains("not_applicable"));
+            assert!(statuses.contains("not_configured")); // no notification channels
+            assert!(
+                !statuses.contains("skipped"),
+                "a skipped backup check is a SQLite-only claim: {body}"
+            );
+        } else {
+            assert!(statuses.contains("warning")); // backup dir missing at this point
+            assert!(statuses.contains("not_configured")); // no notification channels
+            assert!(statuses.contains("skipped")); // no backup artifact yet
+        }
         // Capacity protection is reported here as well, in the disabled shape a
         // deployment without the policy truthfully has.
         let capacity = checks
             .iter()
             .find(|check| check["checkId"] == "storage_capacity")
             .expect("the capacity check is part of every run");
-        assert_eq!(capacity["status"], "not_configured");
+        assert_eq!(
+            capacity["status"],
+            if postgres {
+                "not_applicable"
+            } else {
+                "not_configured"
+            }
+        );
         // The run itself never writes business data.
         let audits: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_events")
             .fetch_one(pool)
@@ -3767,6 +3894,8 @@ mod tests {
             .unwrap();
         // one creation audit + one completion audit
         assert_eq!(audits, 2);
+        // A check that is not Pass is a warning for the run itself, and both
+        // backends here run at least one check that is not Pass.
         assert_eq!(body["lastRun"]["status"], "succeeded_with_warnings");
     }
 

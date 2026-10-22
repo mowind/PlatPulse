@@ -28,6 +28,7 @@ import {
   type FormFeedback,
 } from './operationsShared'
 import { ADMIN_PAGE_TITLE } from '../components/AdminPage'
+import { StorageBackendFacts } from './storageShared'
 
 /**
  * PAGE-ADMIN-DOCTOR (webui.md §15.11, issue #208). Doctor diagnoses and
@@ -128,6 +129,13 @@ export default function AdminDoctor() {
       </div>
 
       <RunPanel onQueued={onQueued} feedback={feedback} />
+
+      {/* The backend shapes what Doctor can even check: on PostgreSQL the
+          backup and capacity checks do not apply, so the report above is read
+          against this identity rather than in the abstract (issue #256). */}
+      <CardX size="medium" className={CARD_SURFACE} title="Storage Backend">
+        <StorageBackendFacts generation={generation} />
+      </CardX>
 
       {!overview && doctor.isPending && (
         <p role="status" className="text-sm">

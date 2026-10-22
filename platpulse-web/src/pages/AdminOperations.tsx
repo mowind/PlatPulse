@@ -75,6 +75,13 @@ function readLimit(search: URLSearchParams): number {
  */
 function capacityStateNote(overview: CapacityOverview): string {
   switch (capacityPresentation(overview).state) {
+    case 'not_applicable':
+      // The Server sends its own reason, so the page repeats it instead of
+      // describing a policy that this Storage Backend refuses to have.
+      return (
+        overview.notApplicableReason ??
+        'This Storage Backend leaves the database disk to the database operator, so the Server declares no low-space policy here.'
+      )
     case 'disabled':
       return 'No low-space policy is declared, so optional history is never paused and no threshold is assumed.'
     case 'unknown':
@@ -148,171 +155,187 @@ function CapacityPanel() {
               The last protection transition could not be recorded: {overview.transitionError}
             </p>
           )}
-          <DetailList>
-            <DetailItem label="Policy declared in">
-              {overview.policyOrigin ?? 'Not read from a configuration file'}
-            </DetailItem>
-            <DetailItem label="Pause floor">
-              {overview.pauseBelowBytes == null
-                ? 'Not declared'
-                : formatBytesUnknown(overview.pauseBelowBytes)}
-            </DetailItem>
-            <DetailItem label="Resume level">
-              {overview.resumeAboveBytes == null
-                ? 'Not declared'
-                : formatBytesUnknown(overview.resumeAboveBytes)}
-            </DetailItem>
-            <DetailItem label="Sampling cadence">
-              {String(overview.sampleIntervalSeconds) + ' seconds'}
-            </DetailItem>
-            <DetailItem label="Measured directory">{overview.mountPath ?? 'Unknown'}</DetailItem>
-            <DetailItem label="Last measurement">
-              {overview.sampledAt ? formatObservedAt(overview.sampledAt) : 'Never measured'}
-            </DetailItem>
-            <DetailItem label="Filesystem">
-              {overview.sample
-                ? formatBytesUnknown(overview.sample.availableBytes) +
-                  ' available of ' +
-                  formatBytesUnknown(overview.sample.totalBytes)
-                : 'Unknown'}
-            </DetailItem>
-            <DetailItem label="Active interval">
-              {overview.activeIntervalId ?? 'None'}
-            </DetailItem>
-          </DetailList>
-          {intervals.length === 0 ? (
+          {capacityPresentation(overview).state === 'not_applicable' ? (
             <p className="text-sm text-muted-foreground">
-              The Server has recorded no protection interval, so optional history has never been paused here.
+              This Storage Backend leaves the database disk to the database operator, so the Server holds
+              no policy, threshold, measurement, or protection interval for it here. Capacity protection
+              belongs to whoever operates that database, which is why the Server refuses a [capacity]
+              policy in its configuration file on this Storage Backend.
             </p>
           ) : (
-            <div className="space-y-3">
-              <div className="overflow-x-auto">
-                <table data-stack data-slot="capacity-intervals-table" className="w-full text-sm">
-                  <caption className="sr-only">Recorded protection intervals</caption>
-                  <thead>
-                    <tr className="border-b">
-                      <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
-                        Started
-                      </th>
-                      <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
-                        Opened available
-                      </th>
-                      <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
-                        Pause floor
-                      </th>
-                      <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
-                        Skipped readings
-                      </th>
-                      <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
-                        Series affected
-                      </th>
-                      <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
-                        Ended
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {intervals.map((interval) => (
-                      <tr key={interval.intervalId} className="border-b border-border/60 align-top">
-                        <th scope="row" data-label="Started" className="min-w-0 px-3 py-3 text-left font-normal">
-                          {formatObservedAt(interval.startedAt)}
-                          <span className="block text-xs text-muted-foreground">
-                            {capacityIntervalReasonLabel(interval.startedReason)}
-                          </span>
-                          {/* Which volume this window belongs to: a mount can be
-                              relocated, so a historical row has to name its own. */}
-                          <span className="block text-xs text-muted-foreground">
-                            {interval.sourceMount}
-                          </span>
-                        </th>
-                        <td data-label="Opened available" className="min-w-0 px-3 py-3">
-                          {formatBytesUnknown(interval.openedAvailableBytes) +
-                            ' of ' +
-                            formatBytesUnknown(interval.openedTotalBytes)}
-                        </td>
-                        <td data-label="Pause floor" className="min-w-0 px-3 py-3">
-                          {formatBytesUnknown(interval.pauseBelowBytes)}
-                        </td>
-                        <td data-label="Skipped readings" className="min-w-0 px-3 py-3">
-                          {String(interval.skippedSampleCount)}
-                        </td>
-                        <td data-label="Series affected" className="min-w-0 px-3 py-3">
-                          {String(interval.skippedSeriesTotal)}
-                        </td>
-                        <td data-label="Ended" className="min-w-0 px-3 py-3">
-                          {interval.endedAt
-                            ? formatObservedAt(interval.endedAt) +
-                              ' · ' +
-                              capacityIntervalReasonLabel(interval.endedReason) +
-                              (interval.resumedAvailableBytes == null
-                                ? ''
-                                : ' at ' +
-                                  formatBytesUnknown(interval.resumedAvailableBytes) +
-                                  (interval.resumedTotalBytes == null
-                                    ? ' available'
-                                    : ' of ' +
-                                      formatBytesUnknown(interval.resumedTotalBytes) +
-                                      ' available'))
-                            : 'Still active'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {intervals.map((interval) =>
-                interval.skippedSeries.length === 0 ? null : (
-                  <div key={interval.intervalId + '-gap'} className="space-y-1 text-sm">
-                    <p className="text-xs font-medium tracking-wider text-muted-foreground">
-                      Gap in optional history · interval {interval.intervalId}
-                    </p>
-                    <ul data-slot="capacity-skipped-series" className="space-y-1">
-                      {interval.skippedSeries.map((series) => (
-                        <li
-                          key={
-                            series.scopeKind +
-                            series.scopeKey +
-                            series.metric +
-                            series.dimension
-                          }
-                          className="min-w-0 break-words"
-                        >
-                          <span className="font-mono text-xs">
-                            {series.scopeKind + ':' + series.scopeKey}
-                          </span>{' '}
-                          {/* Two mounts of one Host are two series: the mount path
-                              is part of the identity, so a shared key or a label
-                              that stops at the metric would merge them. */}
-                          <span className="text-muted-foreground">
-                            {series.dimension === ''
-                              ? series.metric
-                              : series.metric + ' · ' + series.dimension}
-                          </span>{' '}
-                          <span>{String(series.skippedCount) + ' skipped'}</span>
-                          <span className="block text-xs text-muted-foreground">
-                            {formatObservedAt(series.firstSkippedAt) +
-                              ' → ' +
-                              formatObservedAt(series.lastSkippedAt)}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                    {interval.skippedSeriesTotal > interval.skippedSeries.length && (
-                      <p className="text-xs text-muted-foreground">
-                        The Server lists the worst {String(interval.skippedSeries.length)} series;{' '}
-                        {String(interval.skippedSeriesTotal)} series lost readings in total.
-                      </p>
-                    )}
+            <>
+              <DetailList>
+                <DetailItem label="Policy declared in">
+                  {overview.policyOrigin ?? 'Not read from a configuration file'}
+                </DetailItem>
+                <DetailItem label="Pause floor">
+                  {overview.pauseBelowBytes == null
+                    ? 'Not declared'
+                    : formatBytesUnknown(overview.pauseBelowBytes)}
+                </DetailItem>
+                <DetailItem label="Resume level">
+                  {overview.resumeAboveBytes == null
+                    ? 'Not declared'
+                    : formatBytesUnknown(overview.resumeAboveBytes)}
+                </DetailItem>
+                <DetailItem label="Sampling cadence">
+                  {String(overview.sampleIntervalSeconds) + ' seconds'}
+                </DetailItem>
+                <DetailItem label="Measured directory">{overview.mountPath ?? 'Unknown'}</DetailItem>
+                <DetailItem label="Last measurement">
+                  {overview.sampledAt ? formatObservedAt(overview.sampledAt) : 'Never measured'}
+                </DetailItem>
+                <DetailItem label="Filesystem">
+                  {overview.sample
+                    ? formatBytesUnknown(overview.sample.availableBytes) +
+                      ' available of ' +
+                      formatBytesUnknown(overview.sample.totalBytes)
+                    : 'Unknown'}
+                </DetailItem>
+                <DetailItem label="Active interval">
+                  {overview.activeIntervalId ?? 'None'}
+                </DetailItem>
+              </DetailList>
+              {intervals.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  The Server has recorded no protection interval, so optional history has never been paused here.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  <div className="overflow-x-auto">
+                    <table data-stack data-slot="capacity-intervals-table" className="w-full text-sm">
+                      <caption className="sr-only">Recorded protection intervals</caption>
+                      <thead>
+                        <tr className="border-b">
+                          <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                            Started
+                          </th>
+                          <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                            Opened available
+                          </th>
+                          <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                            Pause floor
+                          </th>
+                          <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                            Skipped readings
+                          </th>
+                          <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                            Series affected
+                          </th>
+                          <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                            Ended
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {intervals.map((interval) => (
+                          <tr key={interval.intervalId} className="border-b border-border/60 align-top">
+                            <th scope="row" data-label="Started" className="min-w-0 px-3 py-3 text-left font-normal">
+                              {formatObservedAt(interval.startedAt)}
+                              <span className="block text-xs text-muted-foreground">
+                                {capacityIntervalReasonLabel(interval.startedReason)}
+                              </span>
+                              {/* Which volume this window belongs to: a mount can be
+                                  relocated, so a historical row has to name its own. */}
+                              <span className="block text-xs text-muted-foreground">
+                                {interval.sourceMount}
+                              </span>
+                            </th>
+                            <td data-label="Opened available" className="min-w-0 px-3 py-3">
+                              {formatBytesUnknown(interval.openedAvailableBytes) +
+                                ' of ' +
+                                formatBytesUnknown(interval.openedTotalBytes)}
+                            </td>
+                            <td data-label="Pause floor" className="min-w-0 px-3 py-3">
+                              {formatBytesUnknown(interval.pauseBelowBytes)}
+                            </td>
+                            <td data-label="Skipped readings" className="min-w-0 px-3 py-3">
+                              {String(interval.skippedSampleCount)}
+                            </td>
+                            <td data-label="Series affected" className="min-w-0 px-3 py-3">
+                              {String(interval.skippedSeriesTotal)}
+                            </td>
+                            <td data-label="Ended" className="min-w-0 px-3 py-3">
+                              {interval.endedAt
+                                ? formatObservedAt(interval.endedAt) +
+                                  ' · ' +
+                                  capacityIntervalReasonLabel(interval.endedReason) +
+                                  (interval.resumedAvailableBytes == null
+                                    ? ''
+                                    : ' at ' +
+                                      formatBytesUnknown(interval.resumedAvailableBytes) +
+                                      (interval.resumedTotalBytes == null
+                                        ? ' available'
+                                        : ' of ' +
+                                          formatBytesUnknown(interval.resumedTotalBytes) +
+                                          ' available'))
+                                : 'Still active'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
-                ),
+                  {intervals.map((interval) =>
+                    interval.skippedSeries.length === 0 ? null : (
+                      <div key={interval.intervalId + '-gap'} className="space-y-1 text-sm">
+                        <p className="text-xs font-medium tracking-wider text-muted-foreground">
+                          Gap in optional history · interval {interval.intervalId}
+                        </p>
+                        <ul data-slot="capacity-skipped-series" className="space-y-1">
+                          {interval.skippedSeries.map((series) => (
+                            <li
+                              key={
+                                series.scopeKind +
+                                series.scopeKey +
+                                series.metric +
+                                series.dimension
+                              }
+                              className="min-w-0 break-words"
+                            >
+                              <span className="font-mono text-xs">
+                                {series.scopeKind + ':' + series.scopeKey}
+                              </span>{' '}
+                              {/* Two mounts of one Host are two series: the mount path
+                                  is part of the identity, so a shared key or a label
+                                  that stops at the metric would merge them. */}
+                              <span className="text-muted-foreground">
+                                {series.dimension === ''
+                                  ? series.metric
+                                  : series.metric + ' · ' + series.dimension}
+                              </span>{' '}
+                              <span>{String(series.skippedCount) + ' skipped'}</span>
+                              <span className="block text-xs text-muted-foreground">
+                                {formatObservedAt(series.firstSkippedAt) +
+                                  ' → ' +
+                                  formatObservedAt(series.lastSkippedAt)}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                        {interval.skippedSeriesTotal > interval.skippedSeries.length && (
+                          <p className="text-xs text-muted-foreground">
+                            The Server lists the worst {String(interval.skippedSeries.length)} series;{' '}
+                            {String(interval.skippedSeriesTotal)} series lost readings in total.
+                          </p>
+                        )}
+                      </div>
+                    ),
+                  )}
+                </div>
               )}
-            </div>
+            </>
           )}
-          <p className="text-xs text-muted-foreground">
-            Protection pauses optional history only. Reports still arrive, and their core projection, receipt,
-            and retry semantics are unchanged; a skipped sample is counted here instead of being written, and
-            nothing is deleted to make room, because the Server never prunes history to fit a floor.
-          </p>
+          {/* This Storage Backend declares no policy, so describing what
+              protection does to optional history would be a claim about a
+              mechanism the Server refused to configure here. */}
+          {capacityPresentation(overview).state !== 'not_applicable' && (
+            <p className="text-xs text-muted-foreground">
+              Protection pauses optional history only. Reports still arrive, and their core projection, receipt,
+              and retry semantics are unchanged; a skipped sample is counted here instead of being written, and
+              nothing is deleted to make room, because the Server never prunes history to fit a floor.
+            </p>
+          )}
         </>
       )}
     </CardX>

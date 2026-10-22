@@ -106,6 +106,16 @@ const DISABLED_CAPACITY = {
   recentIntervals: [],
 }
 
+/** PostgreSQL: capacity protection does not apply, so nothing is measured. */
+const NOT_APPLICABLE_CAPACITY = {
+  ...DISABLED_CAPACITY,
+  mountPath: null,
+  sample: null,
+  sampledAt: null,
+  notApplicableReason:
+    'the PostgreSQL Storage Backend leaves the database disk to the database operator, so the Server neither measures nor protects it against low space',
+}
+
 /** A Server protecting itself: the interval and the skipped series are the
  * Server's own gap record, and the recovery measurement closed it. */
 const PROTECTED_CAPACITY = {
@@ -616,6 +626,33 @@ describe('PAGE-ADMIN-OPERATIONS (task ledger)', () => {
     expect(text).toContain('80.0 GiB available of 100 GiB')
     expect(text).toContain('2026-08-12 09:00:00 UTC')
     expect(text).toContain('never been paused here')
+  })
+
+  it('says capacity protection does not apply on the PostgreSQL Storage Backend', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/capacity': () => jsonResponse(NOT_APPLICABLE_CAPACITY, 200),
+      '/api/admin/v1/operations*': () => jsonResponse([RUNNING_OPERATION], 200),
+    })
+    await renderAt('/admin/operations')
+
+    const title = await screen.findByText('Storage capacity and low-space protection')
+    const card = title.closest('[data-slot="card-x"]')
+    expect(card).not.toBeNull()
+    const text = card?.textContent ?? ''
+    // The Server's own reason is repeated, and the card never invents a
+    // disabled policy, a threshold, a mount, or a measurement it does not have.
+    expect(text).toContain('Does not apply')
+    expect(text).toContain('leaves the database disk to the database operator')
+    expect(text).not.toContain('Not declared')
+    expect(text).not.toContain('Disabled')
+    expect(text).not.toContain('/var/lib/platpulse')
+    expect(text).not.toContain('available of')
+    // The protection interval table is a Server gap record, not a backend fact.
+    expect(document.querySelector('[data-slot="capacity-intervals-table"]')).toBeNull()
+    // Nothing describes what pausing optional history would do: this backend
+    // declares no policy, so the mechanism is not configured here at all.
+    expect(text).not.toContain('Protection pauses optional history only')
   })
 
   it('shows the recorded gap while low-space protection is active', async () => {

@@ -411,6 +411,23 @@ impl MetricsRegistry {
             &[],
             snapshot.sqlite_wal_bytes,
         );
+        // The PostgreSQL Storage Backend has no page accounting the Server may
+        // read, but `pg_database_size` reports the database size. The series is
+        // omitted when the server cannot answer, never published as zero
+        // (ADR 0013).
+        metric_header(
+            &mut output,
+            "platpulse_storage_database_bytes",
+            "Bytes the Storage Backend database occupies.",
+            "gauge",
+        );
+        metric_optional_gauge(
+            &mut output,
+            "platpulse_storage_database_bytes",
+            "Bytes the Storage Backend database occupies.",
+            &[],
+            snapshot.storage_database_bytes,
+        );
         metric_header(
             &mut output,
             "platpulse_sqlite_pool_size",
@@ -521,6 +538,10 @@ pub struct MetricsSnapshot {
     pub sqlite_page_count: Option<u64>,
     pub sqlite_freelist_pages: Option<u64>,
     pub sqlite_wal_bytes: Option<u64>,
+    /// Size of the PostgreSQL database, from `pg_database_size`. Unknown on
+    /// SQLite, which reports page accounting instead, and unknown when the
+    /// server cannot answer (ADR 0013).
+    pub storage_database_bytes: Option<u64>,
     pub sqlite_pool_size: u64,
     pub sqlite_pool_idle: u64,
     /// Latest measurement of the filesystem that holds Server state, taken by
@@ -703,6 +724,10 @@ async fn collect_snapshot(state: &AppState) -> MetricsSnapshot {
             .ok()
             .map(|value| value.len())
     });
+    snapshot.storage_database_bytes = db
+        .storage_database_bytes()
+        .await
+        .and_then(|bytes| u64::try_from(bytes).ok());
     snapshot.sqlite_pool_size = pool.size() as u64;
     snapshot.sqlite_pool_idle = pool.num_idle() as u64;
     let capacity = state.capacity().status();
@@ -844,6 +869,42 @@ mod tests {
         registry.set_readiness("sqlite", true);
         let text = registry.render(&MetricsSnapshot::default());
         assert!(text.contains("platpulse_ready 1"), "{text}");
+    }
+
+    /// `pg_database_size` is the only storage figure the PostgreSQL backend has
+    /// (issue #256): page and freelist samples do not apply there, and a server
+    /// that cannot answer the size publishes no sample at all instead of a zero
+    /// the Operator would read as an empty database (ADR 0013).
+    #[test]
+    fn the_postgres_database_size_is_published_only_when_it_is_known() {
+        let registry = MetricsRegistry::new();
+        let known = MetricsSnapshot {
+            storage_database_bytes: Some(70_254_592),
+            ..MetricsSnapshot::default()
+        };
+        let text = registry.render(&known);
+        // Exactly one sample line, which is what a scraper reads as the size.
+        let samples = text
+            .lines()
+            .filter(|line| line.starts_with("platpulse_storage_database_bytes"))
+            .collect::<Vec<_>>();
+        assert_eq!(samples, vec!["platpulse_storage_database_bytes 70254592"]);
+        assert_eq!(
+            text.matches("# HELP platpulse_storage_database_bytes ")
+                .count(),
+            1
+        );
+
+        // The HELP and TYPE lines stay in the exposition so a scraper keeps its
+        // descriptor, but no sample line may appear: an unreadable size is a
+        // missing reading, not a zero-byte database.
+        let unknown = registry.render(&MetricsSnapshot::default());
+        assert!(
+            !unknown
+                .lines()
+                .any(|line| line.starts_with("platpulse_storage_database_bytes")),
+            "an unreadable database size must not be published: {unknown}"
+        );
     }
 
     #[test]

@@ -82,6 +82,12 @@ const GEO_STATUS = {
   refresh_unavailable_reason: 'Geo is Disabled, so no Peer address is resolved',
 }
 
+const SQLITE_STORAGE = {
+  backend: 'sqlite',
+  databasePath: '/var/lib/platpulse/server.sqlite',
+  postgres: null,
+}
+
 const TEST_ORIGIN = 'http://platpulse.test'
 
 type RouteHandler = (request: Request) => Response | Promise<Response>
@@ -124,6 +130,9 @@ function successfulRoutes(overrides: Record<string, RouteHandler> = {}) {
     },
     '/api/admin/v1/access-mode': () => response({ mode: 'private', authorizationGeneration: 0 }),
     '/api/admin/v1/geo': () => response(GEO_STATUS),
+    // The Settings page always states which Storage Backend holds the data
+    // (issue #256); a 404 here would render the card's load error instead.
+    '/api/admin/v1/storage': () => response(SQLITE_STORAGE),
     ...overrides,
   }
 }
@@ -158,10 +167,18 @@ describe('Admin Settings workflows', () => {
 
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
     const cards = screen.getAllByRole('article')
-    expect(cards).toHaveLength(3)
+    expect(cards).toHaveLength(4)
     expect(within(cards[0]).getByRole('heading', { level: 2, name: 'History Window' })).toBeTruthy()
     expect(within(cards[1]).getByRole('heading', { level: 2, name: 'Site Access Mode' })).toBeTruthy()
     expect(within(cards[2]).getByRole('heading', { level: 2, name: 'Geo provider' })).toBeTruthy()
+    // The Storage Backend is stated, never switched: a configuration choice
+    // with no Admin control (issue #256).
+    const storageCard = within(cards[3])
+    expect(storageCard.getByRole('heading', { level: 2, name: 'Storage Backend' })).toBeTruthy()
+    expect(storageCard.getByText('SQLite')).toBeTruthy()
+    expect(storageCard.getByText('/var/lib/platpulse/server.sqlite')).toBeTruthy()
+    expect(storageCard.queryAllByRole('button')).toHaveLength(0)
+    expect(storageCard.queryAllByRole('combobox')).toHaveLength(0)
 
     // The ordered Settings cards are read-only containers: the static working
     // surface without hover glow, opacity change, or lift (issue #199).

@@ -136,6 +136,7 @@ import {
   cancelOperation as cancelOperationApi,
   capacityOverview,
   doctorOverview,
+  storageOverview,
   doctorRun as doctorRunApi,
   operationDetail,
   operationsList,
@@ -158,6 +159,7 @@ import {
   type RetentionPolicyDto,
   type RetentionPreviewDto,
   type RetentionRunResponse,
+  type StorageOverview,
   type ChannelDto,
   type ChannelTestResponse,
   type DeliveryRetryResponse,
@@ -356,6 +358,7 @@ const adminKeys = {
     ['admin', 'restore', 'validate', artifactId] as const,
   doctor: ['admin', 'doctor'] as const,
   capacity: ['admin', 'capacity'] as const,
+  storage: ['admin', 'storage'] as const,
 }
 
 /** Immutable Audit listing filters (issue #47). */
@@ -3366,6 +3369,8 @@ export function doctorCheckStatusLabel(status: string | null | undefined): strin
       return 'Fail'
     case 'not_configured':
       return 'Not configured'
+    case 'not_applicable':
+      return 'Does not apply'
     case 'skipped':
       return 'Skipped'
     default:
@@ -3390,6 +3395,7 @@ export function doctorCheckTone(
     case 'fail':
       return 'error'
     case 'skipped':
+    case 'not_applicable':
       return 'neutral'
     default:
       return 'neutral'
@@ -3427,8 +3433,37 @@ export function useAdminCapacity(generation: number) {
   })
 }
 
+/**
+ * The Storage Backend in use and, on PostgreSQL, the server it talks to
+ * (issue #256, ADR 0013). Read-only by design: the backend is chosen in the
+ * configuration file and no Admin surface offers to switch it.
+ */
+export async function fetchAdminStorage(signal?: AbortSignal): Promise<StorageOverview> {
+  return requestAdmin(
+    () => storageOverview({ signal }),
+    'Unable to load the Storage Backend',
+  )
+}
+
+/**
+ * The Storage Backend changes only when the Server restarts against a
+ * different configuration, so this surface is read once per session rather
+ * than polled.
+ */
+export function useAdminStorage(generation: number) {
+  return useQuery({
+    queryKey: [...adminKeys.storage, generation],
+    queryFn: ({ signal }) => fetchAdminStorage(signal),
+  })
+}
+
 /** The protection states the Operations page presents. */
-export type CapacityState = 'disabled' | 'unknown' | 'monitoring' | 'protecting'
+export type CapacityState =
+  | 'not_applicable'
+  | 'disabled'
+  | 'unknown'
+  | 'monitoring'
+  | 'protecting'
 
 /** One protection state with the words and badge tone it is shown with. */
 export interface CapacityPresentation {
@@ -3444,12 +3479,21 @@ export interface CapacityPresentation {
  * last good one. Neither is optional history being written normally, and a
  * stale or unmeasured state must not read as Healthy. Disabled is a declared
  * absence of policy, which is neither a failure nor a pass, so it stays neutral.
+ *
+ * "Does not apply" differs from Disabled once more: on the PostgreSQL Storage
+ * Backend the Server refuses a [capacity] policy outright, because the database
+ * disk belongs to the database operator. The page says so from the Server's own
+ * reason instead of presenting the policy as switched off and waiting to be
+ * enabled (issue #256, ADR 0013).
  */
 export function capacityPresentation(
   overview: CapacityOverview | null | undefined,
 ): CapacityPresentation {
   if (!overview) {
     return { state: 'unknown', label: 'Unknown', tone: 'neutral' }
+  }
+  if (overview.notApplicableReason) {
+    return { state: 'not_applicable', label: 'Does not apply', tone: 'neutral' }
   }
   if (!overview.enabled) {
     return { state: 'disabled', label: 'Disabled', tone: 'neutral' }

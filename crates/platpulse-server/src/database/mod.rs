@@ -24,6 +24,10 @@ use thiserror::Error;
 mod postgres;
 mod sqlite;
 
+/// The oldest supported PostgreSQL major version, re-exported for the Doctor
+/// version check (ADR 0013).
+pub(crate) use postgres::MIN_SERVER_VERSION_NUM;
+
 pub use postgres::{
     DEFAULT_CONNECT_TIMEOUT as POSTGRES_DEFAULT_CONNECT_TIMEOUT,
     DEFAULT_OWNERSHIP_HEARTBEAT as POSTGRES_DEFAULT_OWNERSHIP_HEARTBEAT,
@@ -67,6 +71,33 @@ impl StorageConfig {
             Self::Postgres(_) => "postgres",
         }
     }
+}
+
+/// The Storage Backend a running Server uses, in the shape the Owner-only
+/// Admin Doctor and Settings surfaces show it (ADR 0013).
+///
+/// Nothing here belongs to a Public Projection, a Public DTO, or SSE: the
+/// backend, the server version, and the connection target are Operator
+/// knowledge, and the Admin offers no switch between backends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageBackendFacts {
+    /// The backend in use: "sqlite" or "postgres".
+    pub backend: &'static str,
+    /// The PostgreSQL connection the Server was configured with. `None` on the
+    /// SQLite backend, which has no connection target to name.
+    pub postgres: Option<PostgresFacts>,
+}
+
+/// Where the Server connects on the PostgreSQL backend: host, port, database
+/// and role, never the password.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostgresFacts {
+    /// The configured host name or address, or the Unix-domain socket
+    /// directory.
+    pub host: String,
+    pub port: u16,
+    pub database: String,
+    pub user: String,
 }
 
 /// The latest migration version compiled into the Server binary.
@@ -383,6 +414,9 @@ pub struct ServerDatabase {
     backend: Backend,
     /// The SQLite file backing this database; `None` on PostgreSQL.
     path: Option<PathBuf>,
+    /// The PostgreSQL connection target, resolved from configuration once at
+    /// startup. `None` on the SQLite backend.
+    postgres: Option<PostgresFacts>,
     /// The runtime Inventory protocol mode, resolved once at startup from the
     /// durable conversion/cutover markers (issue #192). It is fixed for the
     /// process lifetime because resuming the cutover requires a stopped Server.
@@ -421,18 +455,32 @@ impl ServerDatabase {
         config: StorageConfig,
         create_if_missing: bool,
     ) -> Result<Self, ServerDatabaseError> {
-        let (pool, backend, path) = match &config {
+        let (pool, backend, path, postgres) = match &config {
             StorageConfig::Sqlite(sqlite_config) => {
                 let (pool, backend) = sqlite::open(sqlite_config, create_if_missing).await?;
                 (
                     pool,
                     Backend::Sqlite(Box::new(backend)),
                     Some(sqlite_config.path().to_owned()),
+                    None,
                 )
             }
             StorageConfig::Postgres(postgres_config) => {
                 let (pool, backend) = postgres::open(postgres_config).await?;
-                (pool, Backend::Postgres(backend), None)
+                (
+                    pool,
+                    Backend::Postgres(backend),
+                    None,
+                    Some(PostgresFacts {
+                        host: match postgres_config.host() {
+                            PostgresHost::Tcp(host) => host.clone(),
+                            PostgresHost::Socket(path) => path.display().to_string(),
+                        },
+                        port: postgres_config.port(),
+                        database: postgres_config.database().to_owned(),
+                        user: postgres_config.user().to_owned(),
+                    }),
+                )
             }
         };
         match Self::prepare(&pool, &backend, &config, create_if_missing).await {
@@ -440,6 +488,7 @@ impl ServerDatabase {
                 pool,
                 backend,
                 path,
+                postgres,
                 inventory_cutover,
             }),
             Err(error) => {
@@ -521,6 +570,55 @@ impl ServerDatabase {
             Backend::Sqlite(_) => "sqlite",
             Backend::Postgres(_) => "postgres",
         }
+    }
+
+    /// The Storage Backend facts the Owner-only Admin surfaces show. Public
+    /// Projections, Public DTOs and SSE never carry them (ADR 0013).
+    pub fn storage_facts(&self) -> StorageBackendFacts {
+        StorageBackendFacts {
+            backend: self.storage_backend(),
+            postgres: self.postgres.clone(),
+        }
+    }
+
+    /// A live `SELECT 1` probe: Doctor's connection check on the PostgreSQL
+    /// backend, where no in-process integrity check exists.
+    pub(crate) async fn ping(&self) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT 1")
+            .fetch_optional(&self.pool)
+            .await
+            .map(|_| ())
+    }
+
+    /// The bytes the Storage Backend occupies, as `pg_database_size` reports
+    /// them. `None` on SQLite, which publishes page accounting instead, and
+    /// `None` when the server cannot answer: a missing figure is never
+    /// published as zero (ADR 0013).
+    pub(crate) async fn storage_database_bytes(&self) -> Option<i64> {
+        match &self.backend {
+            Backend::Sqlite(_) => None,
+            Backend::Postgres(_) => postgres::database_bytes(&self.pool).await.ok(),
+        }
+    }
+
+    /// The PostgreSQL server version, re-read at Doctor time instead of
+    /// reusing the value the open path validated. PostgreSQL backend only.
+    pub(crate) async fn postgres_server_version(&self) -> Result<(i64, String), sqlx::Error> {
+        postgres::server_version(&self.pool).await
+    }
+
+    /// The text columns that do not use COLLATE "C", re-read at Doctor time:
+    /// the offending count plus one description per column, capped so a
+    /// single Doctor detail stays readable. PostgreSQL backend only.
+    pub(crate) async fn postgres_collation_report(
+        &self,
+        limit: usize,
+    ) -> Result<(usize, Vec<String>), sqlx::Error> {
+        let wrong = postgres::collation_violations(&self.pool).await?;
+        Ok((
+            wrong.len(),
+            postgres::describe_collation_violations(&wrong, limit),
+        ))
     }
 
     /// Whether this process still exclusively owns the Storage Backend.

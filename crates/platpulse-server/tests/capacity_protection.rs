@@ -906,6 +906,10 @@ async fn skipped_counting_advances_only_on_a_reading_newer_than_the_mark() {
 /// stops being measurable is not Healthy. The retained measurement still
 /// explains the protection decision, and Doctor reports the unknown state as a
 /// warning instead of passing on stale evidence.
+#[cfg_attr(
+    storage_postgres,
+    ignore = "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)"
+)]
 #[tokio::test]
 async fn doctor_warns_when_the_state_filesystem_cannot_be_measured() {
     let mut harness = Harness::boot().await;

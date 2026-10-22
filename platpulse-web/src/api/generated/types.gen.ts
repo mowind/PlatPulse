@@ -2002,6 +2002,12 @@ export type CapacityOverview = {
      */
     mountPath?: string | null;
     /**
+     * Set when the Storage Backend has no capacity surface at all, so the
+     * Operator reads "does not apply" instead of "disabled". Null on the
+     * SQLite backend, where the policy is meaningful even when it is off.
+     */
+    notApplicableReason?: string | null;
+    /**
      * Null when the policy is disabled, because nothing is invented in its place.
      */
     pauseBelowBytes?: number | null;
@@ -3469,6 +3475,36 @@ export type PersonStatusRequest = {
     disabled: boolean;
 };
 
+/**
+ * The PostgreSQL server the Storage Backend talks to.
+ */
+export type PostgresStorageDto = {
+    database: string;
+    /**
+     * The configured host name, address, or Unix socket directory.
+     */
+    host: string;
+    /**
+     * The oldest version this Server supports (ADR 0013), so the surface can
+     * say what it requires instead of hard-coding it in the WebUI.
+     */
+    minimumServerVersionNum: number;
+    port: number;
+    /**
+     * The version the server reports right now, null when it cannot be read:
+     * an unreadable version is never published as a plausible default.
+     */
+    serverVersion?: string | null;
+    /**
+     * The same version as `server_version_num`, null when unreadable.
+     */
+    serverVersionNum?: number | null;
+    /**
+     * The role the Server connects as, which holds the ownership lock.
+     */
+    user: string;
+};
+
 export type PreviewInput = {
     detail: string;
     kind: string;
@@ -4830,6 +4866,28 @@ export type SilenceListResponse = {
 export type SilenceMutationResponse = {
     auditEventId: number;
     silence: SilenceDto;
+};
+
+/**
+ * Where the Server keeps its data, for the Owner-only Operations screens.
+ *
+ * Doctor, Capacity and Settings each need the Storage Backend's identity, so
+ * it has one read-only surface instead of being spread across their responses.
+ * Nothing here reaches a Public Projection, a Public DTO, or SSE: the backend,
+ * its database host, and its version are Operator knowledge, and the Admin
+ * offers no switch between backends (ADR 0013).
+ */
+export type StorageOverview = {
+    /**
+     * "sqlite" or "postgres".
+     */
+    backend: string;
+    /**
+     * The Server SQLite database file. Null on the PostgreSQL Storage
+     * Backend, which stores no Server file for the Server to name.
+     */
+    databasePath?: string | null;
+    postgres?: null | PostgresStorageDto;
 };
 
 /**
@@ -7355,6 +7413,19 @@ export type RevokeSessionResponses = {
 };
 
 export type RevokeSessionResponse2 = RevokeSessionResponses[keyof RevokeSessionResponses];
+
+export type StorageOverviewData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/v1/storage';
+};
+
+export type StorageOverviewResponses = {
+    200: StorageOverview;
+};
+
+export type StorageOverviewResponse = StorageOverviewResponses[keyof StorageOverviewResponses];
 
 export type AdminTransferDetailData = {
     body?: never;

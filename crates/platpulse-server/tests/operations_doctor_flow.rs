@@ -479,3 +479,81 @@ async fn queued_work_survives_a_restart_and_interrupted_work_fails_honestly() {
     assert_eq!(body["lastRun"]["operationId"], queued_id);
     assert_eq!(body["lastRun"]["status"], "succeeded_with_warnings");
 }
+/// Doctor states the Storage Backend boundary instead of inventing a SQLite
+/// answer (issue #256, ADR 0013). On PostgreSQL the backup and capacity checks
+/// are NOT_APPLICABLE and the in-process integrity check is replaced by live
+/// connection, server version, collation, and ownership checks; on SQLite none
+/// of those PostgreSQL checks exist and the SQLite checks answer normally.
+#[tokio::test]
+async fn doctor_states_the_storage_backend_boundary() {
+    let harness = Harness::boot().await;
+    let owner = login(&harness, OWNER_LOGIN_BODY).await;
+    start_doctor_run(&harness, &owner).await;
+    drain(&harness).await;
+
+    let response = harness
+        .send(admin_get("/api/admin/v1/doctor", &owner))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let checks = body["checks"].as_array().unwrap();
+    let status_of = |check_id: &str| -> String {
+        checks
+            .iter()
+            .find(|check| check["checkId"] == check_id)
+            .map(|check| check["status"].as_str().unwrap().to_owned())
+            .unwrap_or_else(|| panic!("Doctor reported no {check_id} check: {body}"))
+    };
+
+    if harness.state.db().storage_backend() == "postgres" {
+        // Nothing the Server cannot observe is reported as healthy or missing.
+        for check_id in [
+            "backup_storage",
+            "latest_backup",
+            "backup_age",
+            "backup_residue",
+            "storage_capacity",
+            "database_storage",
+        ] {
+            assert_eq!(status_of(check_id), "not_applicable", "{check_id}: {body}");
+        }
+        for check_id in [
+            "postgres_connection",
+            "postgres_server_version",
+            "postgres_collation",
+            "postgres_ownership",
+        ] {
+            assert_eq!(status_of(check_id), "pass", "{check_id}: {body}");
+        }
+        assert!(
+            checks.iter().all(|c| c["checkId"] != "database_integrity"),
+            "the SQLite integrity check must not run on PostgreSQL: {body}"
+        );
+        let version = checks
+            .iter()
+            .find(|c| c["checkId"] == "postgres_server_version")
+            .unwrap();
+        assert!(
+            version["detail"].as_str().unwrap().contains("PostgreSQL"),
+            "{body}"
+        );
+    } else {
+        assert_eq!(status_of("database_integrity"), "pass", "{body}");
+        for check_id in [
+            "backup_storage",
+            "latest_backup",
+            "backup_age",
+            "backup_residue",
+            "database_storage",
+        ] {
+            assert_ne!(status_of(check_id), "not_applicable", "{check_id}: {body}");
+        }
+        assert!(
+            checks.iter().all(|c| !c["checkId"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("postgres_")),
+            "the PostgreSQL checks must not run on SQLite: {body}"
+        );
+    }
+}

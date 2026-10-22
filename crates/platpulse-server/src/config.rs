@@ -466,6 +466,10 @@ pub enum ConfigError {
         "db_path must not be set in {path} when the PostgreSQL Storage Backend is selected: the SQLite file path selects nothing on PostgreSQL (ADR 0013). Remove db_path or select `backend = \"sqlite\"`"
     )]
     StorageDbPathConflict { path: PathBuf },
+    #[error(
+        "`[capacity]` is refused in {path} when the PostgreSQL Storage Backend is selected: the database disk belongs to the database operator, so the Server neither measures nor protects it (ADR 0013). Delete the `[capacity]` section, or select `backend = \"sqlite\"`"
+    )]
+    CapacityWithPostgres { path: PathBuf },
 }
 
 impl ServerConfigFile {
@@ -646,6 +650,19 @@ impl ServerConfig {
         let db_path_declared =
             cli.db_path.is_some() || file.and_then(|value| value.db_path.as_ref()).is_some();
         let storage = resolve_storage(file, db_path_declared, config_path.as_deref())?;
+        // Low-space protection measures the filesystem holding the Server's own
+        // database file (ADR 0012). On PostgreSQL that disk belongs to the
+        // database operator, so the policy has nothing it may pause on and is
+        // refused rather than accepted as an inert section (ADR 0013).
+        if matches!(storage, StorageSettings::Postgres(_))
+            && file.and_then(|value| value.capacity.as_ref()).is_some()
+        {
+            return Err(ConfigError::CapacityWithPostgres {
+                path: config_path
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from("<cli>")),
+            });
+        }
 
         Ok(Self {
             config_path,
@@ -1726,6 +1743,39 @@ password_file = \"/etc/platpulse/postgres-password\"
         )
         .unwrap_err();
         assert!(matches!(error, ConfigError::StorageDbPathConflict { .. }));
+    }
+
+    #[test]
+    fn storage_postgres_refuses_capacity_protection() {
+        let dir = tempdir().unwrap();
+        // No capacity policy works on PostgreSQL: the database disk belongs to
+        // the database operator, so the section is refused instead of being
+        // accepted as an inert one (ADR 0013).
+        let error = storage_config(
+            dir.path(),
+            &format!(
+                "{SOCKET_SECTION}[capacity]\nenabled = true\npause_below_bytes = 1073741824\nresume_above_bytes = 2147483648\n"
+            ),
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(
+            matches!(error, ConfigError::CapacityWithPostgres { .. }),
+            "expected a refused [capacity] section, got {message}"
+        );
+        assert!(message.contains("database operator"), "{message}");
+
+        // The same policy is accepted on the SQLite backend.
+        assert!(
+            ServerConfig::resolve(
+                Some(&write_config(
+                    dir.path(),
+                    "state_dir = \"/srv/platpulse\"\n[capacity]\nenabled = true\npause_below_bytes = 1073741824\nresume_above_bytes = 2147483648\n",
+                )),
+                &CliOverrides::default(),
+            )
+            .is_ok()
+        );
     }
 
     #[test]

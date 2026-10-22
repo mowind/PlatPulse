@@ -7,6 +7,7 @@ import {
   useAdminBackup,
   useAdminBackups,
   useAdminOperation,
+  useAdminStorage,
   verifyBackupEntry,
 } from '../api/admin'
 import type { BackupArtifactSummary } from '../api/generated'
@@ -60,6 +61,18 @@ export default function AdminBackupsList() {
   // this page is open.
   const backups = useAdminBackups(generation)
   const rows = backups.data ?? []
+  // On the PostgreSQL Storage Backend the empty list is not an invitation to
+  // run an offline backup: the backend keeps no Backup Artifacts at all, and
+  // the database operator's own tooling owns them (ADR 0013, issue #256).
+  const storage = useAdminStorage(generation)
+  const backendKeepsNoArtifacts = storage.data?.backend === 'postgres'
+  // An unresolved Storage Backend is not SQLite: describing offline backup
+  // runs there would claim an artifact surface this Server may not have.
+  const emptyDescription = backendKeepsNoArtifacts
+    ? "This Storage Backend keeps no Backup Artifacts. The Server schema lives in PostgreSQL, so backups, restores, and integrity checks belong to the database operator's own offline tooling — this page has nothing to list, verify, or restore."
+    : storage.data?.backend === 'sqlite'
+      ? 'No backup artifact is recorded yet. Artifacts appear here after an offline backup run on the Server host.'
+      : 'No backup artifact is recorded yet. This page could not confirm which Storage Backend holds them, so it does not describe how they would be created.'
 
   return (
     <section className="w-full min-w-0 space-y-4">
@@ -91,7 +104,7 @@ export default function AdminBackupsList() {
       )}
       {backups.data && rows.length === 0 && (
         <CardX size="medium" className={CARD_SURFACE}>
-          <Empty description="No backup artifact is recorded yet. Artifacts appear here after an offline backup run on the Server host." />
+          <Empty description={emptyDescription} />
         </CardX>
       )}
       {backups.data && rows.length > 0 && (

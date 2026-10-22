@@ -32,6 +32,7 @@ import { Input, Radio } from '../components/ui/input'
 import { SURFACE_CARD_STATIC } from '../lib/surface'
 import { cn } from '../lib/utils'
 import { ADMIN_SECTION_TITLE, AdminPageHeader } from '../components/AdminPage'
+import { StorageBackendFacts } from './storageShared'
 
 /** The ordered Settings cards are read-only containers: the working surface
  * tier with no hover glow, opacity change, or lift (webui.md §11.1). The form
@@ -81,8 +82,42 @@ export default function AdminSettings() {
         <HistoryWindowSettings generation={generation} csrfToken={csrfToken} />
         <SiteAccessSettings generation={generation} csrfToken={csrfToken} />
         <GeoProviderSettings generation={generation} csrfToken={csrfToken} />
+        <StorageBackendSettings generation={generation} />
       </div>
     </section>
+  )
+}
+
+/**
+ * The Storage Backend is reported, not configured: it is chosen in the Server
+ * configuration file and no Admin surface switches it at runtime (issue #256,
+ * ADR 0013). It belongs on this page because it decides which of the other
+ * settings even apply — capacity protection and Backup Artifacts exist on
+ * SQLite only.
+ */
+function StorageBackendSettings({ generation }: { generation: number }) {
+  return (
+    <CardX
+      role="article"
+      data-slot="settings-block"
+      aria-labelledby="storage-backend-heading"
+      bordered={false}
+      className={CARD}
+      header={
+        <div className={CARD_HEADER}>
+          <div className="min-w-0">
+            <h2 id="storage-backend-heading" className={ADMIN_SECTION_TITLE}>
+              Storage Backend
+            </h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Where the Server keeps its data. Read-only: the backend is a configuration choice.
+            </p>
+          </div>
+        </div>
+      }
+    >
+      <StorageBackendFacts generation={generation} />
+    </CardX>
   )
 }
 

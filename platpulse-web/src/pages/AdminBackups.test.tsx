@@ -50,6 +50,28 @@ const CORRUPT_ARTIFACT = {
 }
 const CHECKSUM_REASON = 'artifact checksum mismatch'
 
+/** The Storage Backend facts the Server publishes to the Owner only. */
+const PG_STORAGE = {
+  backend: 'postgres',
+  databasePath: null,
+  postgres: {
+    host: 'db.internal',
+    port: 5432,
+    database: 'platpulse',
+    user: 'platpulse',
+    serverVersion: '18.6',
+    serverVersionNum: 180006,
+    minimumServerVersionNum: 150000,
+  },
+}
+
+/** The default backend: one file the Server owns and can back up itself. */
+const SQLITE_STORAGE = {
+  backend: 'sqlite',
+  databasePath: '/var/lib/platpulse/server.sqlite',
+  postgres: null,
+}
+
 function detailOf(artifact: Record<string, unknown>, verificationError: string | null = null) {
   return { artifact, verificationError }
 }
@@ -115,6 +137,9 @@ function mockFetch(
         return handler(request)
       }
     }
+    // The artifact list asks which Storage Backend is in use, so an unmocked
+    // storage read answers with the SQLite default instead of a 404.
+    if (url === '/api/admin/v1/storage') return jsonResponse(SQLITE_STORAGE, 200)
     return jsonResponse({ error: { code: 'not_found' } }, 404)
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -187,6 +212,22 @@ describe('PAGE-ADMIN-BACKUPS (recorded backup artifacts)', () => {
     await renderAt('/admin/backups')
 
     await screen.findByText(/No backup artifact is recorded yet/)
+    expect(document.querySelector('table[data-slot="backups-table"]')).toBeNull()
+  })
+
+  it('says the Storage Backend keeps no artifacts instead of showing an empty list', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/backups*': () => jsonResponse([], 200),
+      '/api/admin/v1/storage': () => jsonResponse(PG_STORAGE, 200),
+    })
+    await renderAt('/admin/backups')
+
+    // An empty list from a backend that cannot have artifacts is not the same
+    // claim as a backend that simply recorded none yet.
+    await screen.findByText(/keeps no Backup Artifacts/)
+    expect(screen.getByText(/belong to the database operator/)).toBeTruthy()
+    expect(screen.queryByText(/No backup artifact is recorded yet/)).toBeNull()
     expect(document.querySelector('table[data-slot="backups-table"]')).toBeNull()
   })
 

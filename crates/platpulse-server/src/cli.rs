@@ -490,7 +490,7 @@ pub fn require_sqlite_storage(
 ) -> Result<(), Box<dyn std::error::Error>> {
     if config.uses_postgres() {
         return Err(format!(
-            "`platpulse-server {command}` operates on the Server SQLite database file and is not available on the PostgreSQL Storage Backend (ADR 0013); run it against a SQLite deployment"
+            "`platpulse-server {command}` operates on the Server SQLite database file and is not available on the PostgreSQL Storage Backend (ADR 0013); back that database up and restore it with the PostgreSQL tooling that owns it (pg_basebackup, pg_dump, pg_restore, pg_verifybackup), or run this command against a SQLite deployment"
         )
         .into());
     }
@@ -1774,7 +1774,78 @@ fn read_password() -> Result<String, HumanCreateError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DrainOutcome, ShutdownCause, finish_shutdown};
+    use super::{DrainOutcome, ShutdownCause, finish_shutdown, require_sqlite_storage};
+    use crate::config::{CliOverrides, ServerConfig};
+
+    /// A minimal PostgreSQL Storage Backend over a Unix-domain socket: it
+    /// resolves without a reachable server, so the refusal paths can be
+    /// exercised on any machine.
+    const POSTGRES_CONFIG: &str = "\
+state_dir = \"/srv/platpulse\"
+[storage]
+backend = \"postgres\"
+[storage.postgres]
+host = \"/run/postgresql\"
+database = \"platpulse\"
+user = \"platpulse\"
+password_file = \"/etc/platpulse/postgres-password\"
+";
+
+    fn postgres_config() -> (tempfile::TempDir, ServerConfig) {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("platpulse.toml");
+        std::fs::write(&path, POSTGRES_CONFIG).expect("the configuration file is writable");
+        let config = ServerConfig::resolve(Some(&path), &CliOverrides::default())
+            .expect("a PostgreSQL section resolves without a server");
+        (dir, config)
+    }
+
+    #[test]
+    fn file_operations_refuse_to_run_on_the_postgresql_storage_backend() {
+        let (_dir, config) = postgres_config();
+        for command in [
+            "init",
+            "backup",
+            "restore",
+            "verify-integrity",
+            "checkpoint create",
+            "cutover status",
+            "cutover resume",
+        ] {
+            let error = require_sqlite_storage(&config, command)
+                .expect_err("a SQLite file operation must refuse on PostgreSQL");
+            let message = error.to_string();
+            assert!(
+                message.contains(command),
+                "{command} is not named: {message}"
+            );
+            assert!(
+                message.contains("PostgreSQL Storage Backend (ADR 0013)"),
+                "{command} does not name the Storage Backend: {message}"
+            );
+            // The refusal points at the tooling that owns that database
+            // instead of leaving the Operator to guess (ADR 0013 Q10/Q11).
+            assert!(
+                message.contains("pg_basebackup") && message.contains("pg_dump"),
+                "{command} does not point at the PostgreSQL tooling: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sqlite_deployment_keeps_its_file_operations() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("platpulse.toml");
+        std::fs::write(&path, "state_dir = \"/srv/platpulse\"\n").expect("writable");
+        let config = ServerConfig::resolve(Some(&path), &CliOverrides::default())
+            .expect("the default SQLite backend resolves");
+        for command in ["backup", "restore", "verify-integrity", "checkpoint create"] {
+            assert!(
+                require_sqlite_storage(&config, command).is_ok(),
+                "{command} must stay available on SQLite"
+            );
+        }
+    }
 
     fn drained() -> DrainOutcome {
         DrainOutcome {

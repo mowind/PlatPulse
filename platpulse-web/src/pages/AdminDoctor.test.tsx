@@ -45,6 +45,27 @@ const QUEUED_RUN = {
   auditEventId: 32,
 }
 
+/** The Storage Backend facts the Server publishes to the Owner only. */
+const PG_STORAGE = {
+  backend: 'postgres',
+  databasePath: null,
+  postgres: {
+    host: 'db.internal',
+    port: 5432,
+    database: 'platpulse',
+    user: 'platpulse',
+    serverVersion: '18.6',
+    serverVersionNum: 180006,
+    minimumServerVersionNum: 150000,
+  },
+}
+
+const SQLITE_STORAGE = {
+  backend: 'sqlite',
+  databasePath: '/var/lib/platpulse/server.sqlite',
+  postgres: null,
+}
+
 const CHECKS = [
   {
     checkId: 'retention.last_run',
@@ -86,6 +107,9 @@ function mockFetch(
         return handler(request)
       }
     }
+    // The Storage Backend card mounts on this page, so an unmocked storage
+    // read answers with the SQLite default instead of a 404.
+    if (url === '/api/admin/v1/storage') return jsonResponse(SQLITE_STORAGE, 200)
     return jsonResponse({ error: { code: 'not_found' } }, 404)
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -134,6 +158,52 @@ describe('PAGE-ADMIN-DOCTOR (diagnostics)', () => {
     expect(
       screen.getAllByRole('link', { name: /0195f2a1/ })[0].getAttribute('href'),
     ).toBe('/admin/operations/' + LAST_RUN_ID)
+  })
+
+  it('names the Storage Backend and shows a check that does not apply', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/doctor': () =>
+        jsonResponse(
+          {
+            lastRun: LAST_RUN,
+            currentRun: null,
+            checks: [
+              ...CHECKS,
+              {
+                checkId: 'backup_age',
+                label: 'Latest backup is recent',
+                status: 'not_applicable',
+                detail: 'the database disk belongs to the database operator',
+              },
+            ],
+          },
+          200,
+        ),
+      '/api/admin/v1/storage': () => jsonResponse(PG_STORAGE, 200),
+    })
+    await renderAt('/admin/doctor')
+
+    const table = await screen.findByRole('table', {
+      name: /Checks from the last recorded Doctor report/,
+    })
+    expect(table.textContent).toContain('Does not apply')
+    // A check the Storage Backend cannot answer keeps the detail the Server
+    // recorded instead of being dropped from the report.
+    expect(table.textContent).toContain('the database disk belongs to the database operator')
+
+    // The Owner-only surface names the backend, its server version, and the
+    // connection identity the Server actually uses.
+    const version = await screen.findByText('Server version')
+    const card = version.closest('[data-slot="card-x"]')
+    expect(card).not.toBeNull()
+    const text = card?.textContent ?? ''
+    expect(text).toContain('PostgreSQL')
+    expect(text).toContain('18.6')
+    expect(text).toContain('db.internal:5432')
+    expect(text).toContain('platpulse')
+    expect(text).not.toContain('password')
+    expect(text).not.toContain('postgres://')
   })
 
   it('keeps a queued run visible beside the previous report after a refresh', async () => {

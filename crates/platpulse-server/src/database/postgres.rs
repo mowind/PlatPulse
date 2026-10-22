@@ -598,15 +598,24 @@ async fn hold_ownership(
     }
 }
 
+/// The version query startup validation and Doctor both read, so the two
+/// cannot drift apart.
+const SERVER_VERSION_SQL: &str =
+    "SELECT current_setting('server_version_num'), current_setting('server_version')";
+
+/// `server_version_num` as an integer. An unparsable value counts as 0 so the
+/// comparison against the minimum still refuses a server it cannot read.
+fn server_version_num(number: &str) -> i64 {
+    number.trim().parse().unwrap_or(0)
+}
+
 /// Refuse a server older than the supported minimum.
 async fn check_server(connection: &mut PgConnection) -> Result<(), ServerDatabaseError> {
-    let (number, display): (String, String) = sqlx::query_as(
-        "SELECT current_setting('server_version_num'), current_setting('server_version')",
-    )
-    .fetch_one(&mut *connection)
-    .await
-    .map_err(ServerDatabaseError::Connect)?;
-    let number: i64 = number.trim().parse().unwrap_or(0);
+    let (number, display): (String, String) = sqlx::query_as(SERVER_VERSION_SQL)
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(ServerDatabaseError::Connect)?;
+    let number = server_version_num(&number);
     if number < MIN_SERVER_VERSION_NUM {
         return Err(ServerDatabaseError::Unsupported(format!(
             "PostgreSQL server version {display} is older than the supported minimum 15"
@@ -640,6 +649,67 @@ async fn check_schema_owner(connection: &mut PgConnection) -> Result<(), ServerD
     }
 }
 
+/// The server's reported version, as (server_version_num, server_version).
+///
+/// Doctor re-reads it on every run instead of caching the value the open path
+/// validated, so an upgraded or downgraded server stays visible to the
+/// Operator.
+pub(super) async fn server_version(pool: &AnyPool) -> Result<(i64, String), sqlx::Error> {
+    let (number, display): (String, String) =
+        sqlx::query_as(SERVER_VERSION_SQL).fetch_one(pool).await?;
+    Ok((server_version_num(&number), display))
+}
+
+/// Every text column that does not use the byte-order "C" collation, as
+/// (table, column, collation), with an empty collation for the database
+/// default. Startup refuses them; Doctor reports them (ADR 0013).
+pub(super) async fn collation_violations(
+    pool: &AnyPool,
+) -> Result<Vec<(String, String, String)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT c.relname::text, a.attname::text, COALESCE(co.collname::text, '') \
+         FROM pg_attribute a \
+         JOIN pg_class c ON c.oid = a.attrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         LEFT JOIN pg_collation co ON co.oid = a.attcollation \
+         WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p') \
+           AND a.attnum > 0 AND NOT a.attisdropped \
+           AND a.atttypid IN ('text'::regtype, 'varchar'::regtype, 'bpchar'::regtype) \
+           AND c.relname <> '_sqlx_migrations' \
+           AND COALESCE(co.collname::text, '') <> 'C' \
+         ORDER BY 1, 2",
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// The size of the connected database in bytes, from `pg_database_size`.
+pub(super) async fn database_bytes(pool: &AnyPool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT pg_database_size(current_database())")
+        .fetch_one(pool)
+        .await
+}
+
+/// The offending columns a Doctor detail names, capped so one report line
+/// stays readable.
+pub(super) fn describe_collation_violations(
+    wrong: &[(String, String, String)],
+    limit: usize,
+) -> Vec<String> {
+    wrong
+        .iter()
+        .take(limit)
+        .map(|(table, column, collation)| {
+            let collation = if collation.is_empty() {
+                "default"
+            } else {
+                collation.as_str()
+            };
+            format!("{table}.{column} ({collation})")
+        })
+        .collect()
+}
+
 /// Checks after migrations: every table the Server needs exists, and every
 /// text column uses the byte-order "C" collation the SQLite schema has.
 pub(super) async fn verify_startup(pool: &AnyPool) -> Result<(), ServerDatabaseError> {
@@ -662,35 +732,11 @@ pub(super) async fn verify_startup(pool: &AnyPool) -> Result<(), ServerDatabaseE
         )));
     }
 
-    let wrong: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT c.relname::text, a.attname::text, COALESCE(co.collname::text, '') \
-         FROM pg_attribute a \
-         JOIN pg_class c ON c.oid = a.attrelid \
-         JOIN pg_namespace n ON n.oid = c.relnamespace \
-         LEFT JOIN pg_collation co ON co.oid = a.attcollation \
-         WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p') \
-           AND a.attnum > 0 AND NOT a.attisdropped \
-           AND a.atttypid IN ('text'::regtype, 'varchar'::regtype, 'bpchar'::regtype) \
-           AND c.relname <> '_sqlx_migrations' \
-           AND COALESCE(co.collname::text, '') <> 'C' \
-         ORDER BY 1, 2",
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(ServerDatabaseError::IntegrityQuery)?;
+    let wrong = collation_violations(pool)
+        .await
+        .map_err(ServerDatabaseError::IntegrityQuery)?;
     if !wrong.is_empty() {
-        let columns: Vec<String> = wrong
-            .iter()
-            .take(10)
-            .map(|(table, column, collation)| {
-                let collation = if collation.is_empty() {
-                    "default"
-                } else {
-                    collation
-                };
-                format!("{table}.{column} ({collation})")
-            })
-            .collect();
+        let columns = describe_collation_violations(&wrong, 10);
         return Err(ServerDatabaseError::Collation(format!(
             "{} text column(s) do not use COLLATE \"C\": {}",
             wrong.len(),

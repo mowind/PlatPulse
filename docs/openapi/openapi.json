@@ -5942,6 +5942,28 @@
         }
       }
     },
+    "/api/admin/v1/storage": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "The Storage Backend in use (issue #256, ADR 0013).",
+        "description": "Read-only: the backend is chosen in the configuration file, and no Admin\nsurface offers to switch it.",
+        "operationId": "storage_overview",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorageOverview"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/v1/transfers/{transfer_id}": {
       "get": {
         "tags": [
@@ -12137,6 +12159,13 @@
             ],
             "description": "The directory that is measured, null when it cannot be resolved."
           },
+          "notApplicableReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set when the Storage Backend has no capacity surface at all, so the\nOperator reads \"does not apply\" instead of \"disabled\". Null on the\nSQLite backend, where the policy is meaningful even when it is off."
+          },
           "pauseBelowBytes": {
             "type": [
               "integer",
@@ -15879,6 +15908,55 @@
           }
         }
       },
+      "PostgresStorageDto": {
+        "type": "object",
+        "description": "The PostgreSQL server the Storage Backend talks to.",
+        "required": [
+          "host",
+          "port",
+          "database",
+          "user",
+          "minimumServerVersionNum"
+        ],
+        "properties": {
+          "database": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string",
+            "description": "The configured host name, address, or Unix socket directory."
+          },
+          "minimumServerVersionNum": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The oldest version this Server supports (ADR 0013), so the surface can\nsay what it requires instead of hard-coding it in the WebUI."
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "serverVersion": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The version the server reports right now, null when it cannot be read:\nan unreadable version is never published as a plausible default."
+          },
+          "serverVersionNum": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The same version as `server_version_num`, null when unreadable."
+          },
+          "user": {
+            "type": "string",
+            "description": "The role the Server connects as, which holds the ownership lock."
+          }
+        }
+      },
       "PreviewInput": {
         "type": "object",
         "required": [
@@ -19000,6 +19078,37 @@
           },
           "silence": {
             "$ref": "#/components/schemas/SilenceDto"
+          }
+        }
+      },
+      "StorageOverview": {
+        "type": "object",
+        "description": "Where the Server keeps its data, for the Owner-only Operations screens.\n\nDoctor, Capacity and Settings each need the Storage Backend's identity, so\nit has one read-only surface instead of being spread across their responses.\nNothing here reaches a Public Projection, a Public DTO, or SSE: the backend,\nits database host, and its version are Operator knowledge, and the Admin\noffers no switch between backends (ADR 0013).",
+        "required": [
+          "backend"
+        ],
+        "properties": {
+          "backend": {
+            "type": "string",
+            "description": "\"sqlite\" or \"postgres\"."
+          },
+          "databasePath": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Server SQLite database file. Null on the PostgreSQL Storage\nBackend, which stores no Server file for the Server to name."
+          },
+          "postgres": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PostgresStorageDto",
+                "description": "The PostgreSQL connection facts, null on the SQLite backend."
+              }
+            ]
           }
         }
       },
