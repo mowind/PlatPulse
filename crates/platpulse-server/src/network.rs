@@ -206,18 +206,11 @@ pub async fn find_network_by_key(
 
 #[cfg(test)]
 mod tests {
-    use tempfile::tempdir;
-
-    use crate::database::{ServerDatabaseConfig, initialize};
 
     use super::*;
 
     async fn test_db() -> (tempfile::TempDir, ServerDatabase) {
-        let dir = tempdir().unwrap();
-        let db = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
-            .await
-            .unwrap();
-        (dir, db)
+        crate::test_support::test_database().await
     }
 
     fn genesis() -> &'static str {

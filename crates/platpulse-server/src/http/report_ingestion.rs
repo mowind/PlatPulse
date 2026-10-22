@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use sqlx::{FromRow, Sqlite, Transaction};
+use sqlx::{Any, FromRow, Transaction};
 
 use crate::enrollment::AgentAuthInfo;
 use crate::http::{AppState, ROUTE_GROUP_HEADER, RequestId};
@@ -275,7 +275,7 @@ fn receipt_response(receipt: IngestReceipt) -> Response {
 
 async fn store_rejected<I: ReportInventory>(
     state: &AppState,
-    mut tx: Transaction<'_, Sqlite>,
+    mut tx: Transaction<'_, Any>,
     report: &AgentReport<I>,
     hash: Sha256Hex,
     receipt: ReportReceipt,
@@ -330,7 +330,7 @@ async fn store_rejected<I: ReportInventory>(
 }
 
 async fn record_security_event(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     agent_id: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE agents SET security_event_count=security_event_count+1 WHERE agent_id=$1")
@@ -364,7 +364,7 @@ pub(crate) fn component_storage_key(key: ComponentKey) -> String {
 
 #[allow(clippy::too_many_arguments)]
 async fn save_component<T: serde::Serialize>(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     agent_id: &str,
     scope: &str,
     scope_key: &str,
@@ -392,7 +392,7 @@ async fn save_component<T: serde::Serialize>(
 }
 
 async fn save_peer_presence(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     node_id: &str,
     snapshot: &PeerSnapshot,
     received_at: &str,
@@ -480,7 +480,7 @@ async fn save_peer_presence(
 }
 
 async fn save_current_peers(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     node_id: &str,
     component: &ComponentObservation<PeerSnapshot>,
     received_at: &str,
@@ -568,7 +568,7 @@ async fn save_current_peers(
 }
 
 async fn open_coverage_gap(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     node_id: &str,
     from_height: u64,
     to_height: u64,
@@ -592,7 +592,7 @@ async fn open_coverage_gap(
 }
 
 async fn append_coverage_height(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     node_id: &str,
     height: u64,
     created_at: &str,
@@ -615,7 +615,7 @@ async fn append_coverage_height(
 }
 
 async fn coverage_allows_backfill(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     node_id: &str,
     height: u64,
 ) -> Result<Option<i64>, sqlx::Error> {
@@ -624,7 +624,7 @@ async fn coverage_allows_backfill(
 }
 
 async fn close_coverage_height(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     coverage_id: i64,
     height: u64,
     now_text: &str,
@@ -668,7 +668,7 @@ async fn close_coverage_height(
 const REFERENCE_SOURCE_FRESHNESS_SECONDS: i64 = 120;
 
 async fn update_network_references(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     network_keys: &[String],
     observed_at: &str,
 ) -> Result<(), sqlx::Error> {
@@ -678,8 +678,10 @@ async fn update_network_references(
         // is never fresh.
         let fresh_since = crate::auth::parse_rfc3339(observed_at)
             .map(|instant| instant - time::Duration::seconds(REFERENCE_SOURCE_FRESHNESS_SECONDS));
+        // A Node whose head was never observed is not a source: its NULL head
+        // must not stand in as block 0 (the native SQLite decode once did).
         let rows = sqlx::query_as::<_, (String, i64, Option<String>, Option<String>)>(
-            "SELECT n.node_id, c.current_block, h.resync_state, a.last_received_at FROM nodes n JOIN agents a ON a.agent_id=n.agent_id JOIN current_node_chain_observations c ON c.node_id=n.node_id LEFT JOIN block_history_state h ON h.node_id=n.node_id WHERE n.network_key=$1 AND n.lifecycle='active' ORDER BY c.current_block DESC",
+            "SELECT n.node_id, c.current_block, h.resync_state, a.last_received_at FROM nodes n JOIN agents a ON a.agent_id=n.agent_id JOIN current_node_chain_observations c ON c.node_id=n.node_id LEFT JOIN block_history_state h ON h.node_id=n.node_id WHERE n.network_key=$1 AND n.lifecycle='active' AND c.current_block IS NOT NULL ORDER BY c.current_block DESC",
         )
         .bind(network_key)
         .fetch_all(&mut **tx)
@@ -911,7 +913,7 @@ impl StampedIdentityKey {
 /// Samples whose stamped Network Identity contradicts the Registry, keyed by
 /// Node and stamp, each carrying the differing fields plus the diagnosed cause.
 async fn block_network_identity_rejections<I: ReportInventory>(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     report: &AgentReport<I>,
     purged_nodes: &std::collections::HashSet<platpulse_core::identity::NodeId>,
 ) -> Result<std::collections::HashMap<StampedIdentityKey, BlockIdentityRejection>, sqlx::Error> {
@@ -967,7 +969,7 @@ async fn block_network_identity_rejections<I: ReportInventory>(
 }
 
 async fn observe_block_identity(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     sample: &platpulse_core::block::BlockSummary,
     received_at: &str,
 ) -> Result<bool, sqlx::Error> {
@@ -1125,7 +1127,7 @@ fn host_series_samples(
 /// family the post-ingestion cleanup reads, and it is read through the open
 /// ingestion transaction: ingestion holds the Server's single write connection,
 /// so a pool read here would wait on the caller's own transaction (issue #213).
-async fn metric_window_cutoff(tx: &mut Transaction<'_, Sqlite>) -> Result<String, sqlx::Error> {
+async fn metric_window_cutoff(tx: &mut Transaction<'_, Any>) -> Result<String, sqlx::Error> {
     let days = crate::retention::metric_sample_retention_days_tx(tx).await?;
     Ok(crate::auth::format_rfc3339(
         crate::retention::family_cutoff(crate::auth::now_utc(), days),
@@ -1137,7 +1139,7 @@ async fn metric_window_cutoff(tx: &mut Transaction<'_, Sqlite>) -> Result<String
 /// The state log is its own retention family (issue #217), so its floor comes
 /// from its own policy and is read through the open ingestion transaction for
 /// the same reason the raw window is (issue #213).
-async fn state_window_cutoff(tx: &mut Transaction<'_, Sqlite>) -> Result<String, sqlx::Error> {
+async fn state_window_cutoff(tx: &mut Transaction<'_, Any>) -> Result<String, sqlx::Error> {
     let days = crate::retention::state_retention_days_tx(tx).await?;
     Ok(crate::auth::format_rfc3339(
         crate::retention::family_cutoff(crate::auth::now_utc(), days),
@@ -1166,7 +1168,7 @@ async fn state_window_cutoff(tx: &mut Transaction<'_, Sqlite>) -> Result<String,
 /// "gap recorded" commit together and a failure rolls the whole Report back.
 /// The series ledger moves in this same transaction.
 async fn save_metric_sample(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     history: &crate::capacity::HistoryGate,
     scope: &crate::metric_history::SeriesScope<'_>,
     observed_at: Rfc3339,
@@ -1256,7 +1258,7 @@ async fn save_metric_sample(
 }
 
 async fn save_current<I: ReportInventory>(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     history: &crate::capacity::HistoryGate,
     report: &AgentReport<I>,
     received_at: &str,
@@ -2004,7 +2006,7 @@ enum TransferResolution {
 /// `nodes.agent_id` in the same transaction that accepts the report, so the
 /// source stays authoritative until the switch is atomic (issue #46).
 async fn resolve_node_transfer<I: ReportInventory>(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     report: &AgentReport<I>,
     node: &platpulse_core::inventory::InventoryNode,
     reporting_agent: &str,
@@ -2022,7 +2024,7 @@ async fn resolve_node_transfer<I: ReportInventory>(
     .execute(&mut **tx)
     .await?;
     if expired.rows_affected() > 0 {
-        let _ = crate::auth::insert_audit_event(
+        crate::auth::insert_audit_event(
             &mut **tx,
             None,
             "node_transfer_expired",
@@ -2030,7 +2032,7 @@ async fn resolve_node_transfer<I: ReportInventory>(
             &node.node_id.to_string(),
             Some(&serde_json::json!({ "expired_at": now_text })),
         )
-        .await;
+        .await?;
     }
     let pending = sqlx::query_as::<_, (String, String)>(
         "SELECT transfer_id, source_agent_id FROM node_transfers WHERE node_id=$1 AND target_agent_id=$2 AND status='pending' AND expires_at > $3 ORDER BY created_at DESC LIMIT 1",
@@ -2061,7 +2063,7 @@ async fn resolve_node_transfer<I: ReportInventory>(
         .bind(&transfer_id)
         .execute(&mut **tx)
         .await?;
-        let _ = crate::auth::insert_audit_event(
+        crate::auth::insert_audit_event(
             &mut **tx,
             None,
             "node_transfer_rejected",
@@ -2072,7 +2074,7 @@ async fn resolve_node_transfer<I: ReportInventory>(
                 "rejection_code": "network_key_mismatch",
             })),
         )
-        .await;
+        .await?;
         return Ok(TransferResolution::NetworkKeyMismatch);
     }
     // The identity authority is the report's own Node observation: a
@@ -2110,7 +2112,7 @@ async fn resolve_node_transfer<I: ReportInventory>(
         .bind(&transfer_id)
         .execute(&mut **tx)
         .await?;
-        let _ = crate::auth::insert_audit_event(
+        crate::auth::insert_audit_event(
             &mut **tx,
             None,
             "node_transfer_identity_mismatch",
@@ -2121,7 +2123,7 @@ async fn resolve_node_transfer<I: ReportInventory>(
                 "mismatched_fields": mismatched_fields,
             })),
         )
-        .await;
+        .await?;
         return Ok(TransferResolution::IdentityMismatch);
     }
     sqlx::query(
@@ -2137,9 +2139,7 @@ async fn resolve_node_transfer<I: ReportInventory>(
     // sides must move in this transaction; FK enforcement is deferred to
     // the commit so the parent and child rows switch atomically (and the
     // pragma resets automatically when the transaction ends).
-    sqlx::query("PRAGMA defer_foreign_keys=ON")
-        .execute(&mut **tx)
-        .await?;
+    crate::database::defer_foreign_keys(tx).await?;
     sqlx::query("UPDATE nodes SET agent_id=$1, updated_at=$2 WHERE node_id=$3")
         .bind(reporting_agent)
         .bind(now_text)
@@ -2163,7 +2163,7 @@ async fn resolve_node_transfer<I: ReportInventory>(
         now_text,
     )
     .await?;
-    let _ = crate::auth::insert_audit_event(
+    crate::auth::insert_audit_event(
         &mut **tx,
         None,
         "node_transfer_completed",
@@ -2175,7 +2175,7 @@ async fn resolve_node_transfer<I: ReportInventory>(
             "target_agent_id": reporting_agent,
         })),
     )
-    .await;
+    .await?;
     Ok(TransferResolution::Completed)
 }
 
@@ -2308,7 +2308,7 @@ async fn ingest_report<I: ReportInventory>(
     let mut tx = match state.db().pool().begin().await {
         Ok(tx) => tx,
         Err(db_error) => {
-            state.note_sqlite_error(&db_error);
+            state.note_database_error(&db_error);
             return error(
                 &request_id.0,
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -2327,7 +2327,7 @@ async fn ingest_report<I: ReportInventory>(
     {
         Ok(row) => row,
         Err(db_error) => {
-            state.note_sqlite_error(&db_error);
+            state.note_database_error(&db_error);
             return error(
                 &request_id.0,
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -2481,22 +2481,24 @@ async fn ingest_report<I: ReportInventory>(
     }
 
     let inventory_hash = parsed.inventory.accepted_sha256();
-    let prior_inventory_hash: Option<String> =
-        match sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id=$1")
-            .bind(&auth.agent_id)
-            .fetch_optional(&mut *tx)
-            .await
-        {
-            Ok(hash) => hash,
-            Err(_) => {
-                return error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
-            }
-        };
+    // An Agent without an accepted Inventory stores NULL: no prior hash.
+    let prior_inventory_hash: Option<String> = match sqlx::query_scalar::<_, Option<String>>(
+        "SELECT inventory_sha256 FROM agents WHERE agent_id=$1",
+    )
+    .bind(&auth.agent_id)
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(hash) => hash.flatten(),
+        Err(_) => {
+            return error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Server database is unavailable",
+            );
+        }
+    };
     if let Some(declared) = declared_revision {
         if declared == agent.last_inventory_revision as u64
             && prior_inventory_hash.is_some()
@@ -2607,7 +2609,9 @@ async fn ingest_report<I: ReportInventory>(
                     .as_deref()
                     != Some(active.as_str())
             {
-                let _ = record_security_event(&mut tx, &auth.agent_id).await;
+                if let Err(failure) = record_security_event(&mut tx, &auth.agent_id).await {
+                    return storage_error(&request_id.0, "record security event", &failure);
+                }
                 return store_rejected(
                     &state,
                     tx,
@@ -2624,7 +2628,9 @@ async fn ingest_report<I: ReportInventory>(
                 .await;
             }
             if agent.active_boot_status != "closed" {
-                let _ = record_security_event(&mut tx, &auth.agent_id).await;
+                if let Err(failure) = record_security_event(&mut tx, &auth.agent_id).await {
+                    return storage_error(&request_id.0, "record security event", &failure);
+                }
                 return store_rejected(
                     &state,
                     tx,
@@ -2666,14 +2672,20 @@ async fn ingest_report<I: ReportInventory>(
         && parsed.boot_id.to_string() == agent.active_boot_id.as_deref().unwrap_or_default()
         && parsed.report_sequence > (last as u64).saturating_add(1)
     {
-        let _ = sqlx::query("INSERT INTO report_sequence_gaps (agent_id, boot_id, from_sequence, to_sequence, created_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING")
+        // Every statement in the ingestion transaction must succeed: a backend
+        // that aborts the transaction on a failed statement (ADR 0013) would
+        // otherwise fail the whole commit later with no clue why.
+        if let Err(failure) = sqlx::query("INSERT INTO report_sequence_gaps (agent_id, boot_id, from_sequence, to_sequence, created_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING")
             .bind(&auth.agent_id)
             .bind(parsed.boot_id.to_string())
             .bind(last.saturating_add(1))
             .bind(parsed.report_sequence.saturating_sub(1) as i64)
             .bind(now().to_string())
             .execute(&mut *tx)
-            .await;
+            .await
+        {
+            return storage_error(&request_id.0, "record report sequence gap", &failure);
+        }
     }
     let now_text = now().to_string();
     let capabilities =
@@ -2902,20 +2914,26 @@ async fn ingest_report<I: ReportInventory>(
         ownership_contradiction = true;
     }
     if ownership_contradiction {
-        let _ = record_security_event(&mut tx, &auth.agent_id).await;
+        if let Err(failure) = record_security_event(&mut tx, &auth.agent_id).await {
+            return storage_error(&request_id.0, "record security event", &failure);
+        }
     }
     let mut outside_open_gap: std::collections::HashSet<(platpulse_core::identity::NodeId, u64)> =
         std::collections::HashSet::new();
     for sample in &parsed.block_summaries {
-        if sample.source == platpulse_core::block::BlockSource::GapBackfill
-            && coverage_allows_backfill(&mut tx, &sample.node_id.to_string(), sample.block_number)
-                .await
-                .map_err(|_| ())
-                .ok()
-                .flatten()
-                .is_none()
+        if sample.source != platpulse_core::block::BlockSource::GapBackfill {
+            continue;
+        }
+        match coverage_allows_backfill(&mut tx, &sample.node_id.to_string(), sample.block_number)
+            .await
         {
-            outside_open_gap.insert((sample.node_id, sample.block_number));
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                outside_open_gap.insert((sample.node_id, sample.block_number));
+            }
+            Err(failure) => {
+                return storage_error(&request_id.0, "check open gap coverage", &failure);
+            }
         }
     }
     let mut replay_samples: std::collections::HashSet<(platpulse_core::identity::NodeId, u64)> =
@@ -3402,7 +3420,7 @@ async fn ingest_report<I: ReportInventory>(
                 }
             }
         }
-        state.note_sqlite_error(&insert_failure);
+        state.note_database_error(&insert_failure);
         return storage_error(&request_id.0, "store report receipt", &insert_failure);
     }
     let lifecycle_status = match parsed.boot_transition {
@@ -3499,26 +3517,28 @@ async fn ingest_report<I: ReportInventory>(
         .bind(&auth.agent_id)
         .execute(&mut *tx)
         .await;
+    if let Err(update_failure) = updated {
+        return storage_error(&request_id.0, "update agent report state", &update_failure);
+    }
     if should_activate_new_boot {
-        sqlx::query("UPDATE agents SET active_boot_status='active', previous_boot_id=$1, close_applied_at=$2 WHERE agent_id=$3")
+        if let Err(failure) = sqlx::query("UPDATE agents SET active_boot_status='active', previous_boot_id=$1, close_applied_at=$2 WHERE agent_id=$3")
             .bind(parsed.previous_boot_id.map(|v| v.to_string()))
             .bind(&now_text)
             .bind(&auth.agent_id)
             .execute(&mut *tx)
             .await
-            .map_err(|_| ())
-            .ok();
-        sqlx::query("UPDATE agent_boots SET status='closed', closed_at=$1, updated_at=$2 WHERE agent_id=$3 AND agent_epoch=$4 AND boot_id=$5")
+        {
+            return storage_error(&request_id.0, "activate new boot", &failure);
+        }
+        if let Err(failure) = sqlx::query("UPDATE agent_boots SET status='closed', closed_at=$1, updated_at=$2 WHERE agent_id=$3 AND agent_epoch=$4 AND boot_id=$5")
             .bind(&now_text).bind(&now_text).bind(&auth.agent_id)
             .bind(parsed.agent_epoch as i64)
             .bind(parsed.previous_boot_id.map(|v| v.to_string()))
             .execute(&mut *tx)
             .await
-            .map_err(|_| ())
-            .ok();
-    }
-    if let Err(update_failure) = updated {
-        return storage_error(&request_id.0, "update agent report state", &update_failure);
+        {
+            return storage_error(&request_id.0, "close previous boot", &failure);
+        }
     }
     // Alert evaluation runs in the same transaction as the accepted
     // projection (design §8.3: Alert input and invalidation belong to the
@@ -3528,11 +3548,17 @@ async fn ingest_report<I: ReportInventory>(
     // hostile report must never advance another Agent's Node alert state.
     // Fail safe: without ownership proof no reported Node is evaluated here;
     // the sweep re-evaluates owned subjects on its own schedule.
-    let owned: Vec<String> = sqlx::query_scalar("SELECT node_id FROM nodes WHERE agent_id = $1")
-        .bind(&auth.agent_id)
-        .fetch_all(&mut *tx)
-        .await
-        .unwrap_or_default();
+    let owned: Vec<String> =
+        match sqlx::query_scalar("SELECT node_id FROM nodes WHERE agent_id = $1")
+            .bind(&auth.agent_id)
+            .fetch_all(&mut *tx)
+            .await
+        {
+            Ok(owned) => owned,
+            Err(failure) => {
+                return storage_error(&request_id.0, "load owned nodes", &failure);
+            }
+        };
     let node_ids: Vec<String> = parsed
         .nodes
         .iter()
@@ -3789,9 +3815,7 @@ mod tests {
 
     async fn state_with_agent() -> (TempDir, AppState, String) {
         let dir = TempDir::new().unwrap();
-        let database = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
-            .await
-            .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         create_pepper_file(&pepper_path).unwrap();
         let auth = AuthConfig::development(
@@ -3817,9 +3841,7 @@ mod tests {
     /// Reopen the same database file the way a restarted Server does: the same
     /// schema, the same rows, and nothing carried over in process memory.
     async fn restart(dir: &TempDir) -> AppState {
-        let database = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
-            .await
-            .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         let auth = AuthConfig::development(
             load_pepper_file(&pepper_path).unwrap(),
@@ -4085,9 +4107,7 @@ mod tests {
             .await
             .unwrap();
         state.db().close().await;
-        let database = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
-            .await
-            .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let auth = AuthConfig::development(
             load_pepper_file(&dir.path().join("pepper")).unwrap(),
             "http://127.0.0.1:8080".to_owned(),
@@ -4565,11 +4585,7 @@ mod tests {
         );
     }
 
-    async fn metric_ledger(
-        pool: &sqlx::SqlitePool,
-        node_id: &str,
-        metric: &str,
-    ) -> (i64, i64, i64) {
+    async fn metric_ledger(pool: &sqlx::AnyPool, node_id: &str, metric: &str) -> (i64, i64, i64) {
         sqlx::query_as(
             "SELECT observation_count, replayed_count, corrected_count FROM node_metric_series_state WHERE node_id = ? AND metric = ?",
         )
@@ -5544,9 +5560,7 @@ mod tests {
         );
 
         state.db().close().await;
-        let database = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
-            .await
-            .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         let auth = AuthConfig::development(
             load_pepper_file(&pepper_path).unwrap(),
@@ -8679,9 +8693,7 @@ mod tests {
         let fingerprint = v2_acceptance(&first).fingerprint;
         state.db().close().await;
 
-        let database = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
-            .await
-            .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let auth = AuthConfig::development(
             load_pepper_file(&dir.path().join("pepper")).unwrap(),
             "http://127.0.0.1:8080".to_owned(),

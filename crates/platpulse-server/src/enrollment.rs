@@ -1067,15 +1067,13 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::auth::format_rfc3339;
-    use crate::database::{ServerDatabaseConfig, initialize};
+
     use crate::secrets::{create_pepper_file, load_pepper_file};
 
     use super::*;
 
     async fn test_db(dir: &Path) -> ServerDatabase {
-        initialize(ServerDatabaseConfig::new(dir.join("server.db")))
-            .await
-            .unwrap()
+        crate::test_support::test_database_in(dir).await
     }
 
     fn test_pepper(dir: &Path) -> Pepper {

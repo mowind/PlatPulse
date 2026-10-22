@@ -17,7 +17,7 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use serde_json::Value;
-use sqlx::{Column, Row, SqlitePool};
+use sqlx::{AnyPool, Column, Row};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -29,7 +29,7 @@ use platpulse_server::notifications::{
     DeliveryProvider, NotificationEventInput, SendError, process_due_deliveries,
     record_notification_event,
 };
-use platpulse_server::{AppState, auth, database, http, network, secrets};
+use platpulse_server::{AppState, auth, http, network, secrets};
 
 const NETWORK_KEY: &str = "platon-mainnet";
 const NETWORK_GENESIS: &str = "0x0000000000000000000000000000000000000000000000000000000000000001";
@@ -77,11 +77,7 @@ struct Harness {
 impl Harness {
     async fn boot() -> Self {
         let dir = TempDir::new().unwrap();
-        let database = database::initialize(database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = platpulse_server::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("server-pepper");
         secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = auth::AuthConfig::development(
@@ -133,7 +129,7 @@ impl Harness {
         }
     }
 
-    fn pool(&self) -> &SqlitePool {
+    fn pool(&self) -> &AnyPool {
         self.state.db().pool()
     }
 
@@ -792,7 +788,7 @@ async fn delivery_worker_never_hands_a_deleted_subjects_message_to_a_provider() 
     assert_eq!(delivery_state(&harness, &live_event).await.0, "succeeded");
 }
 
-async fn snapshot_table(pool: &SqlitePool, sql: &str) -> Vec<String> {
+async fn snapshot_table(pool: &AnyPool, sql: &str) -> Vec<String> {
     let rows = sqlx::query(sql).fetch_all(pool).await.unwrap();
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {

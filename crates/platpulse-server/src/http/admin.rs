@@ -4271,7 +4271,7 @@ impl AdminOverviewSummary {
 /// are present. Retired Nodes and retained last-good values behind a failed,
 /// disabled, unsupported, starting, or otherwise non-ok component do not
 /// contribute.
-async fn overview_network_summary(pool: &sqlx::SqlitePool) -> Result<NetworkSummary, sqlx::Error> {
+async fn overview_network_summary(pool: &sqlx::AnyPool) -> Result<NetworkSummary, sqlx::Error> {
     let (total, with_identity_mismatch) = sqlx::query_as::<_, (i64, i64)>(
         "SELECT (SELECT COUNT(*) FROM networks), (SELECT COUNT(*) FROM networks n WHERE EXISTS (SELECT 1 FROM nodes nd JOIN current_node_chain_observations c ON c.node_id = nd.node_id JOIN component_status identity ON identity.node_id = nd.node_id AND identity.component_key = 'network_identity' WHERE nd.network_key = n.network_key AND nd.lifecycle = 'active' AND identity.state = 'ok' AND identity.value_revision > 0 AND c.network_genesis_hash IS NOT NULL AND c.network_chain_id IS NOT NULL AND c.network_p2p_network_id IS NOT NULL AND c.network_address_hrp IS NOT NULL AND (c.network_genesis_hash != n.genesis_hash OR c.network_chain_id != n.chain_id OR c.network_p2p_network_id != n.p2p_network_id OR c.network_address_hrp != n.address_hrp)))",
     )
@@ -7067,7 +7067,7 @@ const TRANSFER_COLUMNS: &str = "transfer_id, node_id, source_agent_id, target_ag
 /// Materialize expired pending Transfers of one Node (write + one Audit
 /// event each) so the Admin timeline never shows a stale pending row.
 async fn materialize_expired_node_transfers(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
     node_id: &str,
     now_text: &str,
 ) -> Result<(), sqlx::Error> {
@@ -7086,7 +7086,7 @@ async fn materialize_expired_node_transfers(
         .bind(&transfer_id)
         .execute(&mut **tx)
         .await?;
-        let _ = crate::auth::insert_audit_event(
+        crate::auth::insert_audit_event(
             &mut **tx,
             None,
             "node_transfer_expired",
@@ -7097,14 +7097,14 @@ async fn materialize_expired_node_transfers(
                 "expired_at": now_text,
             })),
         )
-        .await;
+        .await?;
     }
     Ok(())
 }
 
 /// Materialize one expired pending Transfer (used by cancel/detail).
 async fn materialize_expired_transfer(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
     transfer_id: &str,
     now_text: &str,
 ) -> Result<Option<String>, sqlx::Error> {
@@ -7124,7 +7124,7 @@ async fn materialize_expired_transfer(
             .bind(transfer_id)
             .fetch_one(&mut **tx)
             .await?;
-    let _ = crate::auth::insert_audit_event(
+    crate::auth::insert_audit_event(
         &mut **tx,
         None,
         "node_transfer_expired",
@@ -7135,7 +7135,7 @@ async fn materialize_expired_transfer(
             "expired_at": now_text,
         })),
     )
-    .await;
+    .await?;
     Ok(Some(node_id))
 }
 
@@ -8400,11 +8400,7 @@ mod tests {
     #[tokio::test]
     async fn admin_geo_status_exposes_safe_metadata_only() {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(
@@ -8455,11 +8451,7 @@ mod tests {
     /// permissions and loads it, so the mutation path is exercised against a
     /// real MMDB rather than a stub.
     async fn geo_admin_state(dir: &tempfile::TempDir, with_database: bool) -> AppState {
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(
@@ -9129,11 +9121,7 @@ mod tests {
     #[tokio::test]
     async fn a_configured_but_unusable_database_is_visible_before_it_is_selected() {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(
@@ -9233,11 +9221,7 @@ mod tests {
     #[tokio::test]
     async fn visibility_mutation_accepts_json_parameters_and_updates_node() {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(
@@ -9300,11 +9284,7 @@ mod tests {
     #[tokio::test]
     async fn visibility_mutation_rejects_security_failures_with_uniform_envelope_before_json() {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(
@@ -9411,11 +9391,7 @@ mod tests {
     #[tokio::test]
     async fn host_diagnostics_include_failure_and_freshness_fields() {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(
@@ -9491,11 +9467,7 @@ mod tests {
     #[tokio::test]
     async fn overview_reports_server_owned_attention_and_summary() {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(
@@ -9597,11 +9569,7 @@ mod tests {
     #[tokio::test]
     async fn overview_flags_offline_agents_spool_loss_and_unknown_nodes() {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(
@@ -9732,11 +9700,7 @@ mod tests {
     #[tokio::test]
     async fn overview_network_summary_counts_distinct_eligible_networks() {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(
@@ -9867,11 +9831,7 @@ mod tests {
     #[tokio::test]
     async fn overview_counts_retired_nodes_outside_health_buckets() {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(
@@ -9932,11 +9892,7 @@ mod tests {
     /// Test state with an Owner user and one enrolled Agent row.
     async fn lifecycle_state() -> (tempfile::TempDir, AppState) {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(
@@ -11360,11 +11316,7 @@ mod tests {
     /// the source Agent — everything a Transfer workflow needs.
     async fn transfer_state() -> (tempfile::TempDir, AppState) {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(

@@ -442,7 +442,7 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::auth::{AuthConfig, hash_password};
-    use crate::database::{ServerDatabase, ServerDatabaseConfig, initialize};
+    use crate::database::ServerDatabase;
     use crate::secrets::{create_pepper_file, load_pepper_file};
 
     use super::*;
@@ -566,11 +566,7 @@ mod tests {
 
     async fn stream_db() -> (tempfile::TempDir, Arc<ServerDatabase>, AuthConfig) {
         let dir = tempdir().unwrap();
-        let db = Arc::new(
-            initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
-                .await
-                .unwrap(),
-        );
+        let db = Arc::new(crate::test_support::test_database_in(dir.path()).await);
         let pepper_path = dir.path().join("pepper");
         create_pepper_file(&pepper_path).unwrap();
         let config = AuthConfig::development(

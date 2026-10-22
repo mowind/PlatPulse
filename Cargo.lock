@@ -3551,6 +3551,7 @@ dependencies = [
  "maxminddb",
  "nix",
  "platpulse-core",
+ "platpulse-server",
  "rand_core 0.6.4",
  "reqwest 0.12.28",
  "rpassword",

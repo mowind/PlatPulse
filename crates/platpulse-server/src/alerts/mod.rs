@@ -339,7 +339,7 @@ pub fn validate_condition(rule_key: &str, condition: &RuleCondition) -> Result<(
 
 /// Insert the typed catalog into a fresh database. Idempotent: existing
 /// rows (possibly Owner-edited) are never overwritten.
-pub async fn seed_catalog(executor: &mut sqlx::SqliteConnection) -> Result<(), sqlx::Error> {
+pub async fn seed_catalog(executor: &mut sqlx::AnyConnection) -> Result<(), sqlx::Error> {
     let created = format_rfc3339(now_utc());
     for rule in CATALOG {
         let condition =
@@ -376,7 +376,7 @@ pub async fn seed_catalog(executor: &mut sqlx::SqliteConnection) -> Result<(), s
 /// Open Incidents, their evidence, and their acknowledgments are untouched
 /// (issue #203 review B2).
 pub async fn invalidate_recovery_windows_on_startup(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE alert_rule_state SET recovering_since = NULL, evaluation_unavailable = 1 \
@@ -398,7 +398,7 @@ pub async fn invalidate_recovery_windows_on_startup(
 /// observed (issue #203 review R1). Incidents, their evidence, and their
 /// acknowledgments are untouched.
 pub async fn invalidate_recovery_windows_for_rule(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     rule_key: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
@@ -413,7 +413,7 @@ pub async fn invalidate_recovery_windows_for_rule(
 /// Same as invalidate_recovery_windows_for_rule, limited to one Node subject
 /// (Network/Node override scope_kind = "node").
 pub async fn invalidate_recovery_windows_for_subject(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     rule_key: &str,
     subject_key: &str,
 ) -> Result<(), sqlx::Error> {
@@ -431,7 +431,7 @@ pub async fn invalidate_recovery_windows_for_subject(
 /// Network (override scope_kind = "network") — the subjects such an override
 /// resolves for.
 pub async fn invalidate_recovery_windows_for_network(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     rule_key: &str,
     network_key: &str,
 ) -> Result<(), sqlx::Error> {
@@ -795,12 +795,12 @@ pub struct EffectiveRule {
 /// Network override through the node's registered Network; Host/Agent
 /// subjects only have the global rule.
 pub async fn effective_rule(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     rule_key: &str,
     subject_kind: SubjectKind,
     subject_key: &str,
 ) -> Result<Option<EffectiveRule>, sqlx::Error> {
-    let row = sqlx::query_as::<_, (bool, String, i64, String)>(
+    let row = sqlx::query_as::<_, (i64, String, i64, String)>(
         "SELECT enabled, severity, version, condition_json FROM alert_rules WHERE rule_key = $1",
     )
     .bind(rule_key)
@@ -809,7 +809,8 @@ pub async fn effective_rule(
     let Some((enabled, severity, version, condition_json)) = row else {
         return Ok(None);
     };
-    let mut enabled = enabled;
+    // Flags are stored as 0/1 integers on every Storage Backend.
+    let mut enabled = enabled != 0;
     let mut severity = severity;
     let mut condition: RuleCondition = match serde_json::from_str(&condition_json) {
         Ok(condition) => condition,
@@ -828,7 +829,7 @@ pub async fn effective_rule(
     };
     if let Some(network_key) = network_key {
         if let Some((override_enabled, override_severity, override_condition_json)) =
-            sqlx::query_as::<_, (Option<bool>, Option<String>, Option<String>)>(
+            sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>)>(
                 "SELECT enabled, severity, condition_json FROM alert_rule_overrides WHERE rule_key = $1 AND scope_kind = 'network' AND scope_value = $2",
             )
             .bind(rule_key)
@@ -840,7 +841,7 @@ pub async fn effective_rule(
                 &mut enabled,
                 &mut severity,
                 &mut condition,
-                override_enabled,
+                override_enabled.map(|flag| flag != 0),
                 override_severity,
                 override_condition_json.as_deref(),
             );
@@ -848,7 +849,7 @@ pub async fn effective_rule(
     }
     if subject_kind == SubjectKind::Node {
         if let Some((override_enabled, override_severity, override_condition_json)) =
-            sqlx::query_as::<_, (Option<bool>, Option<String>, Option<String>)>(
+            sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>)>(
                 "SELECT enabled, severity, condition_json FROM alert_rule_overrides WHERE rule_key = $1 AND scope_kind = 'node' AND scope_value = $2",
             )
             .bind(rule_key)
@@ -860,7 +861,7 @@ pub async fn effective_rule(
                 &mut enabled,
                 &mut severity,
                 &mut condition,
-                override_enabled,
+                override_enabled.map(|flag| flag != 0),
                 override_severity,
                 override_condition_json.as_deref(),
             );
@@ -915,7 +916,7 @@ fn known(value: f64, detail: String) -> EvalInput {
 /// `node.observation_stale` threshold so Owners tune one number; defaults
 /// to 120s when the rule is missing or unparseable.
 pub(crate) async fn freshness_bound(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
 ) -> Result<i64, sqlx::Error> {
     let json: Option<String> = sqlx::query_scalar(
         "SELECT condition_json FROM alert_rules WHERE rule_key = 'node.observation_stale'",
@@ -935,7 +936,7 @@ pub(crate) async fn freshness_bound(
 /// accepted Current Projection. Every rule maps onto honest
 /// projection facts; missing facts are `Unknown`, never zero/Healthy.
 pub async fn extract_input(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
 
     rule_key: &str,
     subject_kind: SubjectKind,
@@ -1227,7 +1228,7 @@ pub async fn extract_input(
 }
 
 async fn validator_alert_detail(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     rule_key: &str,
     validator_id: &str,
     current_state: &str,
@@ -1464,7 +1465,7 @@ fn consensus_input(
 /// Only a complete four-field observation can match or mismatch; partial
 /// observations stay `unknown`.
 async fn network_identity_input(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
 
     subject_key: &str,
 ) -> Result<EvalInput, sqlx::Error> {
@@ -1536,7 +1537,7 @@ pub struct EvaluationOutcome {
 }
 
 async fn load_state(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     rule_key: &str,
     subject_key: &str,
 ) -> Result<Option<RuleState>, sqlx::Error> {
@@ -1544,7 +1545,7 @@ async fn load_state(
 }
 
 pub(crate) async fn load_state_public(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     rule_key: &str,
     subject_key: &str,
 ) -> Result<Option<RuleState>, sqlx::Error> {
@@ -1552,7 +1553,7 @@ pub(crate) async fn load_state_public(
 }
 
 async fn load_state_inner(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     rule_key: &str,
     subject_key: &str,
 ) -> Result<Option<RuleState>, sqlx::Error> {
@@ -1566,7 +1567,7 @@ async fn load_state_inner(
         Option<f64>,
         Option<String>,
         Option<String>,
-        bool,
+        i64,
         String,
     )>(
         "SELECT state, since, pending_since, firing_since, recovering_since, input_kind, input_value, input_detail, evidence_json, evaluation_unavailable, last_evaluated_at FROM alert_rule_state WHERE rule_key = $1 AND subject_key = $2",
@@ -1598,7 +1599,7 @@ async fn load_state_inner(
             input_value,
             input_detail,
             evidence_json,
-            evaluation_unavailable,
+            evaluation_unavailable: evaluation_unavailable != 0,
             last_evaluated_at,
         },
     ))
@@ -1610,7 +1611,7 @@ async fn load_state_inner(
 /// invalidated so re-enabling cannot resolve on pre-disable continuity. The
 /// Incident, its evidence, and its acknowledgment history are never deleted.
 pub async fn evaluate_rule(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
 
     rule_key: &str,
     subject_kind: SubjectKind,
@@ -1778,7 +1779,7 @@ fn evidence_json(
 /// Nodes inside the caller's transaction, and record Notification Events
 /// for Incident transitions in the same transaction (design §8.3).
 pub async fn evaluate_report(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
 
     agent_id: &str,
     node_ids: &[String],
@@ -1844,7 +1845,7 @@ pub async fn evaluate_validator(
 /// Evaluate Validator rules on an existing transaction so provider projection,
 /// Incident transitions, and notification outbox rows commit atomically.
 pub async fn evaluate_validator_in_transaction(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     validator_id: &str,
     channels: &crate::config::NotificationChannels,
     now: OffsetDateTime,
@@ -1880,7 +1881,7 @@ pub async fn evaluate_validator_in_transaction(
 /// transaction next to the transition itself. A manual retry never re-runs
 /// this: it re-arms the existing Delivery row.
 async fn record_transition_events(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     outcome: &EvaluationOutcome,
     rule: &RuleDefinition,
     subject_kind: SubjectKind,
@@ -2055,7 +2056,7 @@ struct SubjectContext {
 }
 
 async fn subject_context(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
 
     subject_kind: SubjectKind,
     subject_key: &str,
@@ -2128,7 +2129,7 @@ fn maintenance_matches(
 /// expected offline/process/RPC Incidents suppressed. Both reasons stay
 /// visible independently when they overlap.
 pub async fn suppressions_for_subject(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     rule_key: &str,
     subject_kind: SubjectKind,
     subject_key: &str,
@@ -2207,7 +2208,7 @@ pub async fn suppressions_for_subject(
 mod tests {
     use super::*;
     use crate::auth::format_rfc3339;
-    use sqlx::SqlitePool;
+    use sqlx::AnyPool;
     use tempfile::tempdir;
     use time::macros::datetime;
 
@@ -2215,18 +2216,14 @@ mod tests {
         datetime!(2026-03-01 00:00:00 UTC)
     }
 
-    async fn test_pool() -> (tempfile::TempDir, SqlitePool) {
+    async fn test_pool() -> (tempfile::TempDir, AnyPool) {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool().clone();
         (dir, pool)
     }
 
-    async fn seed_subject(pool: &SqlitePool, agent_id: &str, node_id: &str) {
+    async fn seed_subject(pool: &AnyPool, agent_id: &str, node_id: &str) {
         sqlx::query("INSERT INTO users (user_id, username, role, password_hash, created_at, updated_at) VALUES ('owner', 'owner', 'owner', 'hash', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
             .execute(pool).await.unwrap();
         sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES (?, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
@@ -2241,7 +2238,7 @@ mod tests {
     }
 
     async fn set_rpc_state(
-        pool: &SqlitePool,
+        pool: &AnyPool,
         agent_id: &str,
         node_id: &str,
         state: &str,
@@ -2265,7 +2262,7 @@ mod tests {
             .unwrap();
     }
 
-    async fn update_condition(pool: &SqlitePool, rule_key: &str, condition: RuleCondition) {
+    async fn update_condition(pool: &AnyPool, rule_key: &str, condition: RuleCondition) {
         let json = serde_json::to_string(&condition).unwrap();
         sqlx::query("UPDATE alert_rules SET condition_json = ? WHERE rule_key = ?")
             .bind(json)
@@ -2275,7 +2272,7 @@ mod tests {
             .unwrap();
     }
 
-    async fn count_incidents(pool: &SqlitePool, rule_key: &str, subject_key: &str) -> (i64, i64) {
+    async fn count_incidents(pool: &AnyPool, rule_key: &str, subject_key: &str) -> (i64, i64) {
         let open: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM alert_incidents WHERE rule_key = ? AND subject_key = ? AND state = 'open'",
         )
@@ -2296,7 +2293,7 @@ mod tests {
     }
 
     async fn evaluate(
-        pool: &SqlitePool,
+        pool: &AnyPool,
         rule_key: &str,
         subject_kind: SubjectKind,
         subject_key: &str,
@@ -2309,7 +2306,7 @@ mod tests {
     }
 
     async fn extract(
-        pool: &SqlitePool,
+        pool: &AnyPool,
         rule_key: &str,
         subject_kind: SubjectKind,
         subject_key: &str,
@@ -2322,7 +2319,7 @@ mod tests {
     }
 
     async fn effective(
-        pool: &SqlitePool,
+        pool: &AnyPool,
         rule_key: &str,
         subject_kind: SubjectKind,
         subject_key: &str,
@@ -2335,7 +2332,7 @@ mod tests {
     }
 
     async fn suppressions(
-        pool: &SqlitePool,
+        pool: &AnyPool,
         rule_key: &str,
         subject_kind: SubjectKind,
         subject_key: &str,
@@ -2348,7 +2345,7 @@ mod tests {
     }
 
     async fn report_eval(
-        pool: &SqlitePool,
+        pool: &AnyPool,
         agent_id: &str,
         node_ids: &[String],
         now: OffsetDateTime,

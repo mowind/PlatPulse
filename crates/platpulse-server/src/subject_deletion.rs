@@ -10,7 +10,7 @@
 //! exactly as they are. Other subjects, including a shared Validator subject,
 //! are never touched.
 
-use sqlx::SqliteConnection;
+use sqlx::AnyConnection;
 
 use crate::alerts::SubjectKind;
 
@@ -42,7 +42,7 @@ impl SubjectRetirement {
 /// is cancelled instead of sent. Network/Validator/Server subjects are shared
 /// and are never Owner-deleted.
 pub async fn subject_is_deleted(
-    connection: &mut SqliteConnection,
+    connection: &mut AnyConnection,
     subject_kind: SubjectKind,
     subject_key: &str,
 ) -> Result<bool, sqlx::Error> {
@@ -72,7 +72,7 @@ pub async fn subject_is_deleted(
 /// current problem, and cancel its not-yet-sent Deliveries. Already-delivered
 /// facts and every other subject are deliberately left untouched.
 pub async fn retire_subject(
-    connection: &mut SqliteConnection,
+    connection: &mut AnyConnection,
     subject_kind: SubjectKind,
     subject_key: &str,
     deleted_at: &str,
@@ -115,16 +115,12 @@ pub async fn retire_subject(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::SqlitePool;
+    use sqlx::AnyPool;
     use tempfile::tempdir;
 
-    async fn test_pool() -> (tempfile::TempDir, SqlitePool) {
+    async fn test_pool() -> (tempfile::TempDir, AnyPool) {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool().clone();
         (dir, pool)
     }

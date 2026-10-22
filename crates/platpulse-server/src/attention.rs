@@ -29,7 +29,7 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{AnyPool, FromRow};
 
 /// The Server-owned Agent Attention kinds (design §8.5). Node, Network, and
 /// Settings kinds are never acknowledgeable.
@@ -514,7 +514,7 @@ pub enum AcknowledgeOutcome {
 /// (for example the same shutdown state after a genuine recovery) be mistaken
 /// for the occurrence the Owner already reviewed.
 pub async fn evaluate_agent(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     row: &AgentAttentionRow,
 ) -> Result<Vec<AttentionItem>, sqlx::Error> {
     let items = row.items();
@@ -566,7 +566,7 @@ pub async fn evaluate_agent(
 /// The Audit Event records which boundaries were acknowledged and which were
 /// skipped; no raw diagnostic payload is stored.
 pub async fn acknowledge(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     agent_id: &str,
     requested: &[AttentionAcknowledgment],
     actor_user_id: Option<&str>,

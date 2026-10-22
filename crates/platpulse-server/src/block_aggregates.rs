@@ -18,7 +18,7 @@
 //! tier and judges its silences with the same long-history rule the sample
 //! series use (`metric_history::judge_fixed_window`).
 
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Any, AnyPool, Transaction};
 use time::OffsetDateTime;
 
 use crate::auth::format_rfc3339;
@@ -67,7 +67,7 @@ fn interval_ms(block_timestamp_ms: i64, parent_timestamp_ms: i64) -> Option<i64>
 }
 
 async fn held_block_times(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     node_id: &str,
     block_number: i64,
 ) -> Result<Option<(i64, String)>, sqlx::Error> {
@@ -95,7 +95,7 @@ async fn held_block_times(
 /// An observation instant that is not canonical contributes no bucket (the
 /// alignment refuses it); stored instants are canonical by construction.
 pub async fn record_accepted_block(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     block: AcceptedBlock<'_>,
     received_at: &str,
 ) -> Result<(), sqlx::Error> {
@@ -309,7 +309,7 @@ fn judged_range(
 /// stretch the tier holds nothing for - including everything from before
 /// migration 0075, which backfilled nothing - is answered as unobserved.
 pub async fn load_block_window(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     query: BlockWindowQuery<'_>,
 ) -> Result<BlockWindow, sqlx::Error> {
     let limit = query.limit.max(0);

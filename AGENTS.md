@@ -35,7 +35,8 @@ platpulse-web/          # React SPA; generated API client lives in src/api/gener
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
-# Server tests on PostgreSQL (0.3.0 target; not yet available — the shared test helper is specified in ADR 0013; names may still change before it lands)
+# Server tests pick their Storage Backend through the shared helper platpulse_server::test_support (ADR 0013).
+# PostgreSQL is a 0.3.0 target and not yet available; the helper refuses `postgres` until it lands.
 # PLATPULSE_TEST_STORAGE=postgres cargo test --workspace   # SQLite remains the default (PLATPULSE_TEST_STORAGE=sqlite)
 cargo deny check && cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2026-0381
 
@@ -57,6 +58,7 @@ CI also runs Playwright across fixed projects: `phone-360-touch` (360×800), `ph
 
 - **SQLx with typed SQL** — no ORM, no per-table repository traits. The Server uses SQLx typed SQL on SQLite (default) or PostgreSQL ([ADR 0013](docs/adr/0013-postgresql-server-storage-backend.md); PostgreSQL is a 0.3.0 target, in progress, not yet implemented); the Agent is SQLite-only. Tests use real temp SQLite and real PostgreSQL, no mocks. Agent and Server keep independent schemas/migrations.
 - **Server domain SQL is written in the portable form** (ADR 0013, #252) — `$N` placeholders (a statement composed from optional `?` fragments is numbered once with `database::number_placeholders`), `ON CONFLICT DO NOTHING` instead of `INSERT OR IGNORE`, `RETURNING` instead of `last_insert_rowid()`, primary-key batching instead of `rowid`, `CASE` instead of scalar `MIN`/`MAX`, no `julianday`. SQLite-only operations paths (backup, restore, checkpoint, PRAGMA/integrity) are the exception.
+- **Server domain code runs on the `sqlx::Any` seam** (ADR 0013, #254) — business modules take `AnyPool`/`AnyConnection`/`Transaction<'_, Any>` and never name `sqlx::sqlite` types; backend-specific operations live under `database/` (and the offline backup/restore/checkpoint/migration tools). `Any` is strict: decode 0/1 flags as `i64` (or `database::NullableFlag` for an `Option<bool>` `FromRow` field), decode a nullable column as `Option<_>`, and never ignore a failed statement inside a transaction.
 - **Any Server schema change ships migrations for both backends in the same change** — SQLite and PostgreSQL share one logical schema version and must stay logically equivalent (tables, columns, constraints, indexes). This takes effect once the PostgreSQL migration baseline lands (0.3.0 target).
 - **`platpulse-core` is I/O-free** — no Axum/SQLx/Alloy dependencies; no Server rows or Public/Admin DTOs.
 - **Scope observations per Node, not per Agent** — block, transaction, consensus, peer and error state must never merge into an Agent-level chain view. One Agent may monitor multiple Nodes; one Node has exactly one Endpoint (no failover).

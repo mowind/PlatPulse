@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
+use sqlx::{Any, AnyPool, FromRow, Transaction};
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 
@@ -279,7 +279,7 @@ fn merge_rows(existing: &DbAggregateRow, incoming: &AggregateValues) -> Aggregat
 /// Public Geo Insight applies, so both Public projections of one cache agree.
 /// Beyond the boundary the result is no longer retained and counts as unknown.
 async fn country_for_peer(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     remote_ip: Option<&str>,
     received_at: &str,
     provider: crate::geo::GeoProvider,
@@ -301,7 +301,7 @@ async fn country_for_peer(
 }
 
 async fn aggregate_values(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     snapshot: &PeerSnapshot,
     received_at: &str,
     local_head: Option<u64>,
@@ -375,7 +375,7 @@ async fn aggregate_values(
 }
 
 async fn upsert_family(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     family: AggregateFamily,
     node_id: &str,
     bucket: &str,
@@ -455,7 +455,7 @@ async fn upsert_family(
 /// families. The caller must invoke this inside the report receipt
 /// transaction, after current Peer/Geo projections have been updated.
 pub(crate) async fn record_successful_snapshot(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     node_id: &str,
     snapshot: &PeerSnapshot,
     received_at: &str,
@@ -472,7 +472,7 @@ pub(crate) async fn record_successful_snapshot(
 }
 
 async fn load_family(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     node_id: &str,
     family: AggregateFamily,
     limit: i64,
@@ -487,7 +487,7 @@ async fn load_family(
 
 /// Attach the retained country counts of every bucket a read returned.
 async fn attach_countries(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     node_id: &str,
     family: AggregateFamily,
     db_rows: Vec<DbAggregateRow>,
@@ -654,7 +654,7 @@ fn expected_buckets(from: &str, to: &str, grain_seconds: i64) -> Option<i64> {
 /// zero-day policy keeps every row forever. A range that ends at or before this
 /// horizon was released by cleanup, so the Server cannot tell a quiet stretch
 /// from a stretch it no longer holds.
-async fn retention_horizon(pool: &SqlitePool, family: &str) -> Result<Option<String>, sqlx::Error> {
+async fn retention_horizon(pool: &AnyPool, family: &str) -> Result<Option<String>, sqlx::Error> {
     let days = crate::retention::list_policies(pool)
         .await?
         .into_iter()
@@ -705,7 +705,7 @@ fn collection_state(
 /// The Peer component's reported state and, when it reports a successful
 /// collection, how many peers the current projection holds.
 async fn component_status(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     node_id: &str,
 ) -> Result<(Option<String>, Option<i64>), sqlx::Error> {
     let status: Option<(String, i64)> = sqlx::query_as(
@@ -743,7 +743,7 @@ async fn component_status(
 /// rather than as an empty era, because the Server no longer holds those
 /// receipts and cannot prove the quiet.
 pub(crate) async fn load_range(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     node_id: &str,
     request: &PeerRangeRequest,
 ) -> Result<PeerRangeAnswer, sqlx::Error> {
@@ -878,7 +878,7 @@ fn row_is_empty(row: &PeerAggregateRow) -> bool {
 /// history is `unknown`; a current collection error remains `error` while the
 /// last-good aggregate rows stay available to the caller.
 pub(crate) async fn load_history(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     node_id: &str,
 ) -> Result<PeerHistory, sqlx::Error> {
     let (component_state, current_peer_count) = component_status(pool, node_id).await?;
@@ -927,7 +927,7 @@ mod tests {
 
     #[tokio::test]
     async fn retained_last_good_countries_resolve_beyond_the_ttl_but_within_retention() {
-        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = crate::test_support::unmigrated_sqlite_pool(None).await;
         sqlx::query(crate::geo::CACHE_TABLE_DDL)
             .execute(&pool)
             .await

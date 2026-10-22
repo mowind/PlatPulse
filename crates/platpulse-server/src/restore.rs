@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use sha2::Digest;
-use sqlx::SqlitePool;
+use sqlx::AnyPool;
 use thiserror::Error;
 
 use crate::config::ServerConfig;
@@ -104,7 +104,7 @@ pub struct ApplyOutcome {
 
 /// Load the artifact identity row; `None` is an invalid identity.
 pub async fn load_identity(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     artifact_id: &str,
 ) -> Result<Option<ArtifactIdentity>, RestoreError> {
     let row = sqlx::query_as::<_, (String, i64, String, i64, String, String)>(
@@ -175,12 +175,14 @@ pub async fn check_artifact(
     let options = sqlx::sqlite::SqliteConnectOptions::new()
         .filename(path)
         .read_only(true);
-    let pool = SqlitePool::connect_with(options).await.map_err(|error| {
-        RestoreError::domain(
-            ERROR_INTEGRITY,
-            format!("cannot open the backup artifact read-only: {error}"),
-        )
-    })?;
+    let pool = sqlx::SqlitePool::connect_with(options)
+        .await
+        .map_err(|error| {
+            RestoreError::domain(
+                ERROR_INTEGRITY,
+                format!("cannot open the backup artifact read-only: {error}"),
+            )
+        })?;
     // Restore is the highest-risk operation: it demands a
     // full integrity_check, not just the lighter quick_check used by
     // backup verification.
@@ -835,7 +837,7 @@ pub async fn apply(
 /// Returns `Ok(None)` when the target database predates the Operations
 /// schema (the row cannot be recorded there).
 async fn record_outcome(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     artifact_id: &str,
     filename: &str,
     status: &str,
@@ -917,7 +919,7 @@ fn failure_parts(error: &RestoreError) -> (&'static str, String) {
 /// preserve the current database and report the typed failure through
 /// REST). Never fails the restore on a recording problem.
 async fn record_failure(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     artifact_id: &str,
     filename: &str,
     code: &'static str,
@@ -1017,7 +1019,7 @@ async fn sanitize_or_remove(path: &Path) {
 }
 
 async fn vacuum_into(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     destination: &Path,
     sanitize: bool,
 ) -> Result<(), RestoreError> {
@@ -1205,11 +1207,7 @@ mod tests {
     #[tokio::test]
     async fn check_artifact_rejects_checksum_integrity_and_newer_schema() {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let snapshot = dir.path().join("snapshot.db");
         sqlx::query(&format!("VACUUM INTO '{}'", snapshot.to_str().unwrap()))
             .execute(database.pool())

@@ -44,7 +44,7 @@
 
 use platpulse_core::Rfc3339;
 use platpulse_core::component::{ComponentObservation, ComponentStatus};
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Any, AnyPool, Transaction};
 
 use crate::auth;
 use crate::capacity::{HistoryGate, SkippedScope};
@@ -138,6 +138,7 @@ pub struct StateVector {
     /// The failure the Agent reported, when the collection failed.
     pub error_code: Option<String>,
     /// The sync flag the value carries, kept only for a successful collection.
+    #[sqlx(try_from = "crate::database::NullableFlag")]
     pub syncing: Option<bool>,
 }
 
@@ -219,7 +220,7 @@ impl StateObservation {
 /// projection is what the Owner actually sees: an attempt that failed without
 /// carrying a value leaves the projection untouched, and the log says so.
 pub async fn retained_value_at(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     agent_id: &str,
     node_id: &str,
     component: &str,
@@ -260,7 +261,7 @@ pub async fn retained_value_at(
 /// instant is counted without being stored again — writing the row back would
 /// claim coverage the Server deliberately stopped holding.
 pub async fn record_state(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     history: &HistoryGate,
     node_id: &str,
     component: &str,
@@ -517,7 +518,7 @@ async fn fetch_ledger<'e, E>(
     component: &str,
 ) -> Result<Option<StateLedger>, sqlx::Error>
 where
-    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query_as::<_, StateLedger>(
         "SELECT first_observed_at, last_observed_at, last_received_at, last_collection_state, \
@@ -533,7 +534,7 @@ where
 }
 
 async fn fetch_entry(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     node_id: &str,
     component: &str,
     observed_at: &str,
@@ -568,12 +569,12 @@ struct RetainedState {
 /// by evidence that came after it and would drop a transition the delivery is the
 /// only evidence of.
 async fn fetch_predecessor(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     node_id: &str,
     component: &str,
     observed_at: &str,
 ) -> Result<Option<RetainedState>, sqlx::Error> {
-    let row = sqlx::query_as::<_, (String, String, String, Option<String>, Option<bool>)>(
+    let row = sqlx::query_as::<_, (String, String, String, Option<String>, Option<i64>)>(
         "SELECT observed_at, collection_state, value_source, error_code, syncing \
          FROM node_state_observations \
          WHERE node_id = $1 AND component = $2 AND observed_at < $3 \
@@ -591,7 +592,7 @@ async fn fetch_predecessor(
                 collection_state,
                 value_source,
                 error_code,
-                syncing,
+                syncing: syncing.map(|flag| flag != 0),
             },
         },
     ))
@@ -610,7 +611,7 @@ async fn fetch_predecessor(
 /// correction instead of the replay it is, and a failed collection would keep
 /// reporting a syncing flag it did not observe.
 async fn store_entry(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     node_id: &str,
     component: &str,
     kind: &str,
@@ -659,7 +660,7 @@ async fn store_entry(
 /// before it does not hold: the log cannot do better, and dropping it would lose
 /// the only record of a transition it never held.
 async fn store_ledger(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     node_id: &str,
     component: &str,
     observation: &StateObservation,
@@ -764,6 +765,7 @@ pub struct StateEntry {
     /// The failure the Agent reported.
     pub error_code: Option<String>,
     /// The sync flag, present only where a collection succeeded.
+    #[sqlx(try_from = "crate::database::NullableFlag")]
     pub syncing: Option<bool>,
 }
 
@@ -799,6 +801,7 @@ pub struct StateLedger {
     /// The failure the newest counted delivery reported.
     pub last_error_code: Option<String>,
     /// The sync flag of the newest counted delivery.
+    #[sqlx(try_from = "crate::database::NullableFlag")]
     pub last_syncing: Option<bool>,
     /// The newest instant that has a state row; None when none is retained.
     pub last_entry_at: Option<String>,
@@ -902,7 +905,7 @@ pub struct StateRange {
 /// after the newest entry is claimed, because a state is not a constant that
 /// extends until the next report.
 pub async fn load_range(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     query: &StateRangeQuery<'_>,
 ) -> Result<StateRange, sqlx::Error> {
     let fetch = query.limit.saturating_add(1);
@@ -1020,7 +1023,7 @@ pub async fn load_range(
 ///
 /// Returns the instant of the row it wrote, if it wrote one.
 async fn repair_late_insert(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     node_id: &str,
     component: &str,
     ledger: Option<&StateLedger>,

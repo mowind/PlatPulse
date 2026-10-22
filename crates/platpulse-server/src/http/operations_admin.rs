@@ -717,7 +717,7 @@ fn operation_summary_row(
 }
 
 async fn load_operation_summary(
-    pool: &sqlx::SqlitePool,
+    pool: &sqlx::AnyPool,
     operation_id: &str,
 ) -> Result<Option<OperationSummary>, sqlx::Error> {
     let row = sqlx::query_as::<_, OperationRow>(
@@ -730,7 +730,7 @@ async fn load_operation_summary(
 }
 
 async fn load_operation_detail(
-    pool: &sqlx::SqlitePool,
+    pool: &sqlx::AnyPool,
     operation_id: &str,
 ) -> Result<Option<OperationDetail>, sqlx::Error> {
     let Some(summary) = load_operation_summary(pool, operation_id).await? else {
@@ -2498,7 +2498,7 @@ async fn queue_operation(
 }
 
 async fn last_operation_of_kind(
-    pool: &sqlx::SqlitePool,
+    pool: &sqlx::AnyPool,
     kind: &str,
 ) -> Result<Option<OperationSummary>, sqlx::Error> {
     let row = sqlx::query_as::<_, OperationRow>(
@@ -2563,11 +2563,7 @@ mod tests {
 
     async fn test_state() -> (tempfile::TempDir, AppState) {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         crate::retention::ensure_seeded(database.pool())
             .await
             .unwrap();
@@ -3635,11 +3631,7 @@ mod tests {
     #[tokio::test]
     async fn offline_backup_requires_a_configured_directory() {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(

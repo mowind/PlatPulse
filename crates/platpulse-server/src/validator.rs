@@ -13,7 +13,7 @@ use chrono_tz::Tz;
 use reqwest::StatusCode;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::{FromRow, Sqlite, Transaction};
+use sqlx::{Any, FromRow, Transaction};
 use std::sync::Arc;
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -1590,7 +1590,7 @@ pub async fn list_validators(
 }
 
 async fn link_overlaps(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     node_id: &str,
     valid_from: &str,
     valid_until: Option<&str>,
@@ -1615,7 +1615,7 @@ async fn link_overlaps(
 }
 
 async fn validate_link_parentage(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     node_id: &str,
     validator_id: &str,
 ) -> Result<(), ValidatorError> {
@@ -2643,7 +2643,7 @@ struct StoredDay {
 /// stored rows together with the day it was addressed to, so the caller can
 /// place same-cycle ranking evidence on exactly that day (#219).
 async fn record_daily_snapshot(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     validator_id: &str,
     source: &str,
     observation: &ValidatorObservation,
@@ -2692,7 +2692,7 @@ async fn record_daily_snapshot(
 /// touched, and a missing row for the requested day is a no-op because a
 /// ranking answer never invents a day nobody observed.
 async fn record_snapshot_rank(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     validator_id: &str,
     timezone: &str,
     rank: Option<i64>,
@@ -2715,7 +2715,7 @@ async fn record_snapshot_rank(
 }
 
 async fn rebuild_monthly_aggregate(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     validator_id: &str,
     timezone: &str,
     month_key: &str,
@@ -3281,7 +3281,7 @@ fn close_interval_boundary(now: &str, valid_from: &str) -> Result<String, Valida
 }
 
 async fn insert_automatic_link(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     node_id: &str,
     validator_id: &str,
     valid_from: &str,
@@ -3336,7 +3336,7 @@ struct AppliedDetail {
 }
 
 async fn apply_provider_result(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     source: &str,
     validator_id: &str,
     result: ValidatorProviderResult,
@@ -3550,7 +3550,7 @@ async fn apply_provider_result(
 /// attempt leaves the stored reading untouched, exactly like the current-state
 /// columns above it.
 async fn apply_ranking_result(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     validator_id: &str,
     lookup: NetworkRankingLookup,
     timezone: &str,
@@ -3785,9 +3785,7 @@ mod tests {
 
     async fn test_db() -> (tempfile::TempDir, ServerDatabase) {
         let dir = tempdir().unwrap();
-        let db = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
-            .await
-            .unwrap();
+        let db = crate::test_support::test_database_in(dir.path()).await;
         create_network(
             &db,
             "platon-mainnet",
@@ -3836,7 +3834,7 @@ mod tests {
 
     /// One Validator on the test Node under the automatic-identity model, so a
     /// trend answer has an association it can still resolve (#173, #219).
-    async fn seed_trend_validator(pool: &sqlx::SqlitePool) {
+    async fn seed_trend_validator(pool: &sqlx::AnyPool) {
         sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ('validator-1', 'platon-mainnet', '0x01', 'First', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
             .execute(pool)
             .await
@@ -3851,7 +3849,7 @@ mod tests {
     /// configured local date, and sample_at is the Provider timestamp when the
     /// observation carried one and the receipt time otherwise.
     async fn seed_trend_day(
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::AnyPool,
         timezone: &str,
         local_date: &str,
         received_at: &str,
@@ -5777,22 +5775,22 @@ mod tests {
             .unwrap();
         assert!(counter_evidence.contains("123456789012345678901234567890"));
         assert!(counter_evidence.contains("123456789012345678901234567889"));
-        let ranking_state: (bool, String) = sqlx::query_as(
+        let ranking_state: (i64, String) = sqlx::query_as(
             "SELECT evaluation_unavailable, input_kind FROM alert_rule_state WHERE rule_key = 'validator.ranking_changed' AND subject_key = ?",
         )
         .bind(&validator.validator_id)
         .fetch_one(db.pool())
         .await
         .unwrap();
-        assert_eq!(ranking_state, (false, "known".to_owned()));
-        let counter_state: (bool, String) = sqlx::query_as(
+        assert_eq!(ranking_state, (0, "known".to_owned()));
+        let counter_state: (i64, String) = sqlx::query_as(
             "SELECT evaluation_unavailable, input_kind FROM alert_rule_state WHERE rule_key = 'validator.counter_reset' AND subject_key = ?",
         )
         .bind(&validator.validator_id)
         .fetch_one(db.pool())
         .await
         .unwrap();
-        assert_eq!(counter_state, (false, "known".to_owned()));
+        assert_eq!(counter_state, (0, "known".to_owned()));
         refresh_all(&db, &provider).await.unwrap();
         let failed = load_insight(&db, &validator.validator_id)
             .await
@@ -5816,7 +5814,7 @@ mod tests {
             .unwrap(),
             2
         );
-        let unavailable: Vec<(bool, String)> = sqlx::query_as(
+        let unavailable: Vec<(i64, String)> = sqlx::query_as(
             "SELECT evaluation_unavailable, input_kind FROM alert_rule_state WHERE subject_key = ? AND rule_key LIKE 'validator.%' ORDER BY rule_key",
         )
         .bind(&validator.validator_id)
@@ -5825,10 +5823,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             unavailable,
-            vec![
-                (true, "unsupported".to_owned()),
-                (true, "unsupported".to_owned())
-            ]
+            vec![(1, "unsupported".to_owned()), (1, "unsupported".to_owned())]
         );
     }
 
@@ -5885,16 +5880,7 @@ mod tests {
     async fn candidate_activity_migration_preserves_existing_last_good_rows() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("server.db");
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(
-                sqlx::sqlite::SqliteConnectOptions::new()
-                    .filename(&path)
-                    .create_if_missing(true)
-                    .foreign_keys(true),
-            )
-            .await
-            .unwrap();
+        let pool = crate::test_support::unmigrated_sqlite_pool(Some(&path)).await;
         // Build the schema immediately before 0060, then seed a last-good
         // Validator insight exactly as the pre-split Server would have stored it.
         migrator_through(59).run(&pool).await.unwrap();
@@ -6185,9 +6171,7 @@ mod tests {
         assert_eq!(candidate.candidate_rank, Some(2));
         assert_eq!(history_count(&db, &validator.validator_id).await, 0);
         db.close().await;
-        let db = initialize(ServerDatabaseConfig::new(_dir.path().join("server.db")))
-            .await
-            .unwrap();
+        let db = crate::test_support::test_database_in(_dir.path()).await;
 
         // A consecutive successful list confirms the change across restart.
         refresh_all(&db, &provider).await.unwrap();
@@ -6759,9 +6743,7 @@ mod tests {
 
         // A Server restart must not replay or duplicate the accepted sample.
         db.close().await;
-        let db = initialize(ServerDatabaseConfig::new(_dir.path().join("server.db")))
-            .await
-            .unwrap();
+        let db = crate::test_support::test_database_in(_dir.path()).await;
         refresh_all_with_channels_in_timezone(&db, &provider, &channels, "America/Los_Angeles")
             .await
             .unwrap();
@@ -7014,8 +6996,6 @@ mod tests {
 
     #[tokio::test]
     async fn migration_0046_adds_the_delegation_percentage_without_backfilling_legacy_rows() {
-        use sqlx::sqlite::SqlitePoolOptions;
-
         // Build the schema exactly as it existed immediately before migration
         // 0046, seed one last-good row, then apply 0046 directly. The full
         // startup path also runs the destructive #174 cutover (0053), which
@@ -7023,16 +7003,7 @@ mod tests {
         // keeps it about 0046.
         let dir = tempdir().unwrap();
         let path = dir.path().join("server.db");
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(
-                sqlx::sqlite::SqliteConnectOptions::new()
-                    .filename(&path)
-                    .create_if_missing(true)
-                    .foreign_keys(true),
-            )
-            .await
-            .unwrap();
+        let pool = crate::test_support::unmigrated_sqlite_pool(Some(&path)).await;
         migrator_through(45).run(&pool).await.unwrap();
         sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('platon-mainnet', 'Mainnet', '0x0', 1, 1, 'lat', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')")
             .execute(&pool)
@@ -7100,9 +7071,7 @@ mod tests {
         let validator_id = validator.validator_id.clone();
         drop(db);
 
-        let reopened = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
-            .await
-            .unwrap();
+        let reopened = crate::test_support::test_database_in(dir.path()).await;
         let insight = load_insight(&reopened, &validator_id)
             .await
             .unwrap()
@@ -7263,9 +7232,7 @@ mod tests {
 
         // Restart persistence: the rate rows survive a database reopen.
         drop(db);
-        let reopened = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
-            .await
-            .unwrap();
+        let reopened = crate::test_support::test_database_in(dir.path()).await;
         let insight = load_insight(&reopened, &validator_id)
             .await
             .unwrap()
@@ -7347,9 +7314,7 @@ mod tests {
 
         // The percentage survives a Server restart (database reopen).
         drop(db);
-        let reopened = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
-            .await
-            .unwrap();
+        let reopened = crate::test_support::test_database_in(dir.path()).await;
         let insight = load_insight(&reopened, &validator_id)
             .await
             .unwrap()
@@ -7831,24 +7796,13 @@ mod tests {
 
     #[tokio::test]
     async fn migration_0047_clears_the_untrusted_legacy_detail_rank() {
-        use sqlx::sqlite::SqlitePoolOptions;
-
         // Build the schema immediately before 0047, seed the old detail-alias
         // rank, then apply 0047 directly. The full startup path also runs the
         // destructive #174 cutover (0053), which removes an unlinked legacy
         // Validator, so scoping this test to 0047 keeps it about 0047.
         let dir = tempdir().unwrap();
         let path = dir.path().join("server.db");
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(
-                sqlx::sqlite::SqliteConnectOptions::new()
-                    .filename(&path)
-                    .create_if_missing(true)
-                    .foreign_keys(true),
-            )
-            .await
-            .unwrap();
+        let pool = crate::test_support::unmigrated_sqlite_pool(Some(&path)).await;
         migrator_through(46).run(&pool).await.unwrap();
         sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('platon-mainnet', 'Mainnet', '0x0', 1, 1, 'lat', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')")
             .execute(&pool)
@@ -8426,17 +8380,8 @@ mod tests {
 
     /// A raw pool at the schema immediately before the one-time #174 Validator
     /// model cutover (0053), for seeding a legacy generation.
-    async fn schema_before_validator_model_migration(path: &std::path::Path) -> sqlx::SqlitePool {
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(
-                sqlx::sqlite::SqliteConnectOptions::new()
-                    .filename(path)
-                    .create_if_missing(true)
-                    .foreign_keys(true),
-            )
-            .await
-            .unwrap();
+    async fn schema_before_validator_model_migration(path: &std::path::Path) -> sqlx::AnyPool {
+        let pool = crate::test_support::unmigrated_sqlite_pool(Some(path)).await;
         migrator_through(52).run(&pool).await.unwrap();
         pool
     }
@@ -8445,7 +8390,7 @@ mod tests {
     /// the legacy `manual` model or the automatic #173 model, plus a current
     /// snapshot, ranking/counter history and daily/monthly aggregates.
     async fn seed_validator_generation(
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::AnyPool,
         validator_id: &str,
         key: &str,
         origin: &str,
@@ -8518,7 +8463,7 @@ mod tests {
             .unwrap();
     }
 
-    async fn seed_legacy_network_agent_and_node(pool: &sqlx::SqlitePool) {
+    async fn seed_legacy_network_agent_and_node(pool: &sqlx::AnyPool) {
         let now = "2026-01-01T00:00:00Z";
         sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('platon-mainnet', 'Mainnet', '0x0', 1, 1, 'lat', ?, ?)")
             .bind(now)
@@ -8785,15 +8730,7 @@ mod tests {
             crate::database::ServerDatabaseError::Migration(_)
         ));
 
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(
-                sqlx::sqlite::SqliteConnectOptions::new()
-                    .filename(&path)
-                    .foreign_keys(true),
-            )
-            .await
-            .unwrap();
+        let pool = crate::test_support::unmigrated_sqlite_pool(Some(&path)).await;
         let version: i64 =
             sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
                 .fetch_one(&pool)

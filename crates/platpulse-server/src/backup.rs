@@ -16,9 +16,11 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use sha2::Digest;
+use sqlx::AnyPool;
 use sqlx::Row;
-use sqlx::SqlitePool;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
+};
 use thiserror::Error;
 
 use crate::http::AppState;
@@ -751,7 +753,7 @@ fn prepare_backup_dir(path: &Path) -> Result<(), String> {
 /// Read-only metadata query for the Admin surface: last verified artifact
 /// summary used by the Data overview (sanitized; never file contents).
 pub async fn latest_artifact(
-    pool: &SqlitePool,
+    pool: &AnyPool,
 ) -> Result<Option<(String, String, i64, String, String)>, sqlx::Error> {
     let row = sqlx::query_as::<_, (String, String, i64, String, String)>(
         "SELECT artifact_id, filename, bytes, verification, created_at FROM backup_artifacts ORDER BY created_at DESC LIMIT 1",
@@ -953,11 +955,7 @@ mod tests {
     #[tokio::test]
     async fn sanitized_snapshot_drops_provider_keyed_geo_cache_and_peer_addresses() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
         sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', '8.8.4.4', 'US', 'current', ?, ?, ?, ?, ?)")
             .bind(&now)
@@ -1080,11 +1078,7 @@ mod tests {
     #[tokio::test]
     async fn verify_detects_checksum_and_integrity_failures_read_only() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         // Corrupt bytes cannot match any real sha256.
         let path = dir.path().join("snapshot.db");
         std::fs::write(&path, b"not a database").unwrap();

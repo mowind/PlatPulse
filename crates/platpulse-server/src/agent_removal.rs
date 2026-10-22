@@ -24,7 +24,7 @@
 
 use std::collections::BTreeSet;
 
-use sqlx::{FromRow, SqliteConnection, SqlitePool};
+use sqlx::{AnyConnection, AnyPool, FromRow};
 
 use crate::node_purge::{self, NodePurgeCounts};
 
@@ -146,7 +146,7 @@ pub enum AgentRemovalOutcome {
 /// Read the Agent identity and the complete removal impact. Returns Ok(None)
 /// when the Agent does not exist or already carries the removal marker.
 pub async fn measure(
-    connection: &mut SqliteConnection,
+    connection: &mut AnyConnection,
     agent_id: &str,
 ) -> Result<Option<AgentRemovalImpact>, sqlx::Error> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
@@ -256,7 +256,7 @@ pub async fn measure(
 
 /// Load the removal impact without any mutation.
 pub async fn preview(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     agent_id: &str,
 ) -> Result<Option<AgentRemovalImpact>, sqlx::Error> {
     let mut connection = pool.acquire().await?;
@@ -272,7 +272,7 @@ pub async fn preview(
 /// path, marks the Agent removed, and appends one Audit Event before the
 /// commit makes the removal durable.
 pub async fn execute(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     agent_id: &str,
     confirmed_node_ids: &[String],
     actor_user_id: &str,

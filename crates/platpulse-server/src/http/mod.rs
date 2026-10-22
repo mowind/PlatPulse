@@ -693,10 +693,7 @@ impl AppState {
     /// nothing - the frames are already in the main file and any remaining WAL
     /// content is replayed on the next start.
     pub async fn checkpoint_wal(&self) -> Result<(), sqlx::Error> {
-        sqlx::query("PRAGMA wal_checkpoint(FULL)")
-            .execute(self.db.pool())
-            .await
-            .map(|_| ())
+        self.db.checkpoint_wal().await
     }
 
     pub(crate) fn ingestion_guard(&self) -> Option<IngestionGuard<'_>> {
@@ -711,12 +708,13 @@ impl AppState {
     pub(crate) fn is_corrupt(&self) -> bool {
         self.runtime.corrupt.load(Ordering::Acquire)
     }
-    /// Latch runtime corruption from an `SQLITE_CORRUPT` observed on a real
-    /// query. The latch never clears: once a page is corrupt, a later
+    /// Latch runtime corruption when the Storage Backend classifies a real
+    /// query's error as corruption (`SQLITE_CORRUPT`/`SQLITE_NOTADB` on
+    /// SQLite). The latch never clears: once a page is corrupt, a later
     /// successful query must not let readiness claim health again (ADR 0008,
     /// issue #194). Cold tables are covered by the offline checks.
-    pub(crate) fn note_sqlite_error(&self, error: &sqlx::Error) {
-        if health::is_corruption_error(error) {
+    pub(crate) fn note_database_error(&self, error: &sqlx::Error) {
+        if crate::database::is_corruption_error(error) {
             self.runtime.corrupt.store(true, Ordering::Release);
         }
     }
@@ -1529,9 +1527,7 @@ mod tests {
     /// plain HTTP test requests behave like the e2e server.
     async fn test_state_with_files(web_files: &[(&str, &[u8])]) -> (TempDir, TempDir, AppState) {
         let db_dir = TempDir::new().unwrap();
-        let database = initialize(ServerDatabaseConfig::new(db_dir.path().join("server.db")))
-            .await
-            .unwrap();
+        let database = crate::test_support::test_database_in(db_dir.path()).await;
         let web_dir = TempDir::new().unwrap();
         for (path, contents) in web_files {
             let path = web_dir.path().join(path);
@@ -1798,10 +1794,10 @@ mod tests {
             .fetch_one(state.db().pool())
             .await
             .unwrap_err();
-        assert!(health::is_corruption_error(&error));
+        assert!(crate::database::is_corruption_error(&error));
         // The observed error is the only producer of the runtime latch; there
         // is no periodic scan (ADR 0008, issue #194).
-        state.note_sqlite_error(&error);
+        state.note_database_error(&error);
         let (status, value) = json(get(build_app(state.clone()), "/health/ready").await).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{value}");
         assert_eq!(component(&value, "corruption")["status"], "not_ready");
@@ -1874,9 +1870,7 @@ mod tests {
     #[tokio::test]
     async fn ready_reports_web_assets_missing_without_assets() {
         let db_dir = TempDir::new().unwrap();
-        let database = initialize(ServerDatabaseConfig::new(db_dir.path().join("server.db")))
-            .await
-            .unwrap();
+        let database = crate::test_support::test_database_in(db_dir.path()).await;
         let state = AppState::new(database, None, test_auth(db_dir.path()));
         seed_owner(&state).await;
 
@@ -2255,9 +2249,7 @@ mod tests {
     #[tokio::test]
     async fn production_policy_emits_host_secure_cookie() {
         let (db_dir, _, _) = test_state().await;
-        let database = initialize(ServerDatabaseConfig::new(db_dir.path().join("server.db")))
-            .await
-            .unwrap();
+        let database = crate::test_support::test_database_in(db_dir.path()).await;
         let state = AppState::new(
             database,
             None,

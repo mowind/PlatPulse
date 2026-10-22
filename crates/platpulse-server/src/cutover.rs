@@ -28,7 +28,7 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use sqlx::{Connection, SqliteConnection, SqlitePool};
+use sqlx::{Connection, SqliteConnection};
 use thiserror::Error;
 
 use crate::checkpoint::{CHECKPOINT_MANIFEST, CheckpointSummary, SERVER_DIRECTORY};
@@ -164,7 +164,9 @@ struct CutoverRow {
 }
 
 /// Resolve the runtime Inventory protocol mode from a Server database pool.
-pub async fn detect_inventory_cutover(pool: &SqlitePool) -> Result<InventoryCutover, sqlx::Error> {
+pub async fn detect_inventory_cutover(
+    pool: &sqlx::AnyPool,
+) -> Result<InventoryCutover, sqlx::Error> {
     let migrated_table: Option<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'inventory_migration'",
     )

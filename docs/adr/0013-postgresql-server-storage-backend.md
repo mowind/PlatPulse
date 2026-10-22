@@ -45,6 +45,8 @@ The Server was designed and built SQLite-only: a single-connection pool carries 
 
   S5 and S6 may proceed in parallel after S4.
 
+- The seam is `sqlx::Any` (S2), which hides the native SQLite handle. An interruptible SQLite integrity check (startup `integrity_check`, Doctor `quick_check`, issue #194) therefore runs as a maintenance session (S3). The session closes the pool's only connection and holds a gate so that no replacement can configure itself. It opens a native connection with a progress handler, closes it, and then reopens the gate. At no point are two connections open, so the session cannot meet the two-connection precondition of the WAL-reset bug (docs/research/server-db-corruption-investigation.md). What we accept: closing the last connection checkpoints the WAL the way a clean shutdown does. Between the close and the native open there is a brief window in which another process could take the file lock. If it holds the lock past the busy timeout, the check fails and the pool reconnects on the next request. This is the issue #137 exposure, limited to an operator-triggered Doctor run or startup. It does not apply to the serving path.
+
 ## Considered options
 
 - **PostgreSQL replaces SQLite.** Rejected: SQLite stays the zero-dependency single-host deployment.

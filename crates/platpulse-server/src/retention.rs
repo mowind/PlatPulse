@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Any, AnyPool, Transaction};
 
 use crate::http::AppState;
 
@@ -674,7 +674,7 @@ fn slim_receipt_body(body: &[u8]) -> Option<Vec<u8>> {
 /// coordinated checkpoint and the conversion verification compare that body
 /// byte-for-byte, so it must stay verbatim (ADR 0009).
 async fn slim_receipt_body_batch(
-    conn: &mut sqlx::SqliteConnection,
+    conn: &mut sqlx::AnyConnection,
     cutoff: &str,
     now: &str,
 ) -> Result<u64, sqlx::Error> {
@@ -779,7 +779,7 @@ pub fn raw_block_summary_cutoff(now: time::OffsetDateTime) -> time::OffsetDateTi
 /// Read the current global Block History window. The constant remains the
 /// bootstrap/default fallback for pre-policy fixtures; live Server cleanup
 /// always uses the persisted Owner setting.
-pub async fn raw_block_summary_retention_days(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+pub async fn raw_block_summary_retention_days(pool: &AnyPool) -> Result<i64, sqlx::Error> {
     Ok(sqlx::query_scalar::<_, i64>(
         "SELECT retention_days FROM retention_policies WHERE family = $1",
     )
@@ -806,7 +806,7 @@ pub const RAW_BLOCK_SUMMARY_CLEANUP_SQL: &str = "DELETE FROM block_summaries WHE
 /// single cleanup transaction unbounded. The tables that preserve dedup and
 /// recovery state are not joined or deleted here.
 pub async fn cleanup_raw_block_summaries(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     now: time::OffsetDateTime,
 ) -> Result<u64, sqlx::Error> {
     let retention_days = raw_block_summary_retention_days(pool).await?;
@@ -822,7 +822,7 @@ pub async fn cleanup_raw_block_summaries(
 /// Read the raw metric-sample window. The catalog default is the 24-hour
 /// window of design §11.4; a persisted Owner setting can only widen it, because
 /// the catalog declares the Raw class floor as this family's minimum.
-pub async fn metric_sample_retention_days(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+pub async fn metric_sample_retention_days(pool: &AnyPool) -> Result<i64, sqlx::Error> {
     let fallback = catalog_family(FAMILY_RAW_METRIC_SAMPLE)
         .map(|policy| policy.default_days)
         .unwrap_or(MIN_INVESTIGATION_RAW_DAYS);
@@ -843,7 +843,7 @@ pub async fn metric_sample_retention_days(pool: &SqlitePool) -> Result<i64, sqlx
 /// guarantee: no policy edit can land between the read and the samples it
 /// classifies, because an edit needs that same connection.
 pub async fn metric_sample_retention_days_tx(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
 ) -> Result<i64, sqlx::Error> {
     let fallback = catalog_family(FAMILY_RAW_METRIC_SAMPLE)
         .map(|policy| policy.default_days)
@@ -870,7 +870,7 @@ pub async fn metric_sample_retention_days_tx(
 /// observed stays knowable after the samples themselves expire, which is how the
 /// Admin surface tells "expired" apart from "never observed".
 pub async fn cleanup_expired_metric_samples(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     now: time::OffsetDateTime,
 ) -> Result<u64, sqlx::Error> {
     let retention_days = metric_sample_retention_days(pool).await?;
@@ -906,7 +906,7 @@ pub async fn cleanup_expired_metric_samples(
 /// The catalog default is the fallback for a database that has not been seeded
 /// yet, exactly as the raw families do it: the policy table is the single place
 /// an Operator can see, so the window is read rather than assumed.
-pub async fn observation_state_retention_days(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+pub async fn observation_state_retention_days(pool: &AnyPool) -> Result<i64, sqlx::Error> {
     let fallback = catalog_family(FAMILY_OBSERVATION_STATE)
         .map(|policy| policy.default_days)
         .unwrap_or(MIN_INVESTIGATION_AGGREGATE_DAYS);
@@ -927,7 +927,7 @@ pub async fn observation_state_retention_days(pool: &SqlitePool) -> Result<i64, 
 /// release. Reading the window inside the ingestion transaction is also the
 /// stronger guarantee: no policy edit can land between the read and the states
 /// it classifies, because an edit needs that same connection.
-pub async fn state_retention_days_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<i64, sqlx::Error> {
+pub async fn state_retention_days_tx(tx: &mut Transaction<'_, Any>) -> Result<i64, sqlx::Error> {
     let fallback = catalog_family(FAMILY_OBSERVATION_STATE)
         .map(|policy| policy.default_days)
         .unwrap_or(MIN_INVESTIGATION_AGGREGATE_DAYS);
@@ -948,7 +948,7 @@ pub async fn state_retention_days_tx(tx: &mut Transaction<'_, Sqlite>) -> Result
 /// bounded batch at a time (issue #217). Nothing here touches the series ledger,
 /// and nothing infers a state from the entry that survives an expiry.
 pub async fn cleanup_expired_observation_state(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     now: time::OffsetDateTime,
 ) -> Result<u64, sqlx::Error> {
     let retention_days = observation_state_retention_days(pool).await?;
@@ -980,7 +980,7 @@ pub async fn cleanup_expired_observation_state(
 /// yet, exactly as the raw families do it: a tier whose window is fixed cannot
 /// have been widened by an edit, but it must still be read rather than assumed,
 /// because the policy table is the single place an Operator can see.
-async fn aggregate_retention_days(pool: &SqlitePool, family: &str) -> Result<i64, sqlx::Error> {
+async fn aggregate_retention_days(pool: &AnyPool, family: &str) -> Result<i64, sqlx::Error> {
     let Some(catalog) = catalog_family(family) else {
         return Ok(0);
     };
@@ -1012,7 +1012,7 @@ async fn aggregate_retention_days(pool: &SqlitePool, family: &str) -> Result<i64
 /// grain (design §11.6, issue #214). Nothing here touches the raw samples, the
 /// series ledger, or the aggregate rows the reader can still be served.
 pub async fn cleanup_expired_metric_aggregates(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     now: time::OffsetDateTime,
 ) -> Result<u64, sqlx::Error> {
     let mut removed = 0;
@@ -1045,7 +1045,7 @@ pub async fn cleanup_expired_metric_aggregates(
 /// the four columns the contract is made of. What an operator chose stays
 /// visible in the audit trail, and a window the update path would refuse cannot
 /// be kept alive by a row that predates the tier.
-pub async fn ensure_seeded(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+pub async fn ensure_seeded(pool: &AnyPool) -> Result<(), sqlx::Error> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let mut tx = pool.begin().await?;
     for policy in POLICY_CATALOG {
@@ -1067,7 +1067,7 @@ pub async fn ensure_seeded(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     tx.commit().await
 }
 
-pub async fn list_policies(pool: &SqlitePool) -> Result<Vec<PolicyRow>, sqlx::Error> {
+pub async fn list_policies(pool: &AnyPool) -> Result<Vec<PolicyRow>, sqlx::Error> {
     let rows = sqlx::query_as::<_, (String, i64, i64, i64, i64, i64, String, Option<String>)>(
         "SELECT family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by FROM retention_policies ORDER BY family",
     )
@@ -1153,7 +1153,7 @@ pub fn validate_policy_days(family: &str, days: i64) -> Result<(), String> {
 /// Apply a validated policy change. The caller writes the Audit row in the
 /// same transaction (mutation handlers audit every policy change).
 pub async fn update_policy(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     family: &str,
     retention_days: i64,
     actor_user_id: &str,
@@ -1183,7 +1183,7 @@ pub async fn update_policy(
 /// edit form before typed confirmation (webui.md §15.13) and by the persisted
 /// preview.
 pub async fn estimate_impact(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     family: &str,
     retention_days: i64,
     now: time::OffsetDateTime,
@@ -1202,7 +1202,7 @@ pub async fn estimate_impact(
 /// cutoff frozen and the estimated upper bound counted now. retention_days = 0
 /// (keep forever) and families without cleanup targets produce nothing.
 pub async fn plan_family_targets(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     family: &str,
     retention_days: i64,
     now: time::OffsetDateTime,
@@ -1219,7 +1219,7 @@ pub async fn plan_family_targets(
 /// Count what each declared target may release at one frozen cutoff. The SQL is
 /// the target's own estimate statement, never request input.
 async fn count_targets(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     family: &str,
     cutoff: &str,
 ) -> Result<Vec<PlanEntry>, sqlx::Error> {
@@ -1431,7 +1431,7 @@ fn skip_reason(family: &str, row: Option<&PolicyRow>) -> Option<(&'static str, S
 /// to retained data: it writes the preview row itself, prunes expired previews,
 /// and writes no Audit Event — the audited act is the run it authorizes.
 pub async fn create_preview(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     created_by: &str,
     families: Option<Vec<String>>,
     now: time::OffsetDateTime,
@@ -1564,7 +1564,7 @@ fn preview_id(version: &str, scope_json: &str, created_at: &str) -> String {
 /// Load a stored preview and prove it still binds to the current policy
 /// versions, scope, and cutoffs. Anything else fails closed (Story 38).
 pub async fn load_preview_for_run(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     preview_id: &str,
     now: time::OffsetDateTime,
 ) -> Result<PreviewLoad, sqlx::Error> {
@@ -1706,7 +1706,7 @@ fn push_reason(reasons: &mut Vec<String>, reason: &str) {
 /// The latest preview that is still executable, if any, so an Owner can return
 /// to the surface and execute the same reviewed plan.
 pub async fn latest_live_preview(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     now: time::OffsetDateTime,
 ) -> Result<Option<RetentionPreview>, sqlx::Error> {
     let preview_id = sqlx::query_scalar::<_, String>(
@@ -1938,7 +1938,7 @@ pub async fn execute_step(
         Ok(rows) => apply_batch(&mut plan[index], rows),
         Err(error) => {
             let _ = tx.rollback().await;
-            state.note_sqlite_error(&error);
+            state.note_database_error(&error);
             let _ = crate::operations::add_error(
                 state,
                 operation_id,
@@ -2182,7 +2182,7 @@ async fn preview_binding_mismatch(
         match load_preview_for_run(state.db().pool(), preview_id, crate::auth::now_utc()).await {
             Ok(loaded) => loaded,
             Err(error) => {
-                state.note_sqlite_error(&error);
+                state.note_database_error(&error);
                 return Ok(Some("the stored preview could not be read".to_owned()));
             }
         };
@@ -2348,7 +2348,7 @@ mod tests {
     /// preview's frozen plan, its policy version, and the families it will not
     /// act on.
     async fn queue_retention_run(
-        pool: &SqlitePool,
+        pool: &AnyPool,
         operation_id: &str,
         request_id: &str,
         preview: &RetentionPreview,
@@ -2385,11 +2385,7 @@ mod tests {
     #[tokio::test]
     async fn receipt_body_slimming_clears_detail_but_keeps_identity_and_closing_receipts() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
         let old = crate::auth::format_rfc3339(now - time::Duration::days(31));
@@ -2520,11 +2516,7 @@ mod tests {
     #[tokio::test]
     async fn cleanup_is_bounded_and_preserves_dedup_state_in_temp_sqlite() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
         let old =
@@ -2602,11 +2594,7 @@ mod tests {
     #[tokio::test]
     async fn cleanup_plan_is_index_backed_and_never_scans_the_whole_table() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(&format!(
             "EXPLAIN QUERY PLAN {RAW_BLOCK_SUMMARY_CLEANUP_SQL}"
         ))
@@ -2653,11 +2641,7 @@ mod tests {
     #[tokio::test]
     async fn peer_presence_retention_deletes_only_old_closed_intervals() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = crate::auth::now_utc();
         let now_text = crate::auth::format_rfc3339(now);
@@ -2774,11 +2758,7 @@ mod tests {
     #[tokio::test]
     async fn aggregate_retention_deletes_old_five_minute_rows_and_keeps_hourly_forever() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = crate::auth::now_utc();
         let now_text = crate::auth::format_rfc3339(now);
@@ -2928,11 +2908,7 @@ mod tests {
     #[tokio::test]
     async fn seeding_is_idempotent_and_impact_counts_only_old_rows() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         ensure_seeded(pool).await.unwrap();
         ensure_seeded(pool).await.unwrap();
@@ -2979,11 +2955,7 @@ mod tests {
         );
 
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = crate::auth::now_utc();
         let now_text = crate::auth::format_rfc3339(now);
@@ -3083,11 +3055,7 @@ mod tests {
             );
         }
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = crate::auth::now_utc();
         let now_text = crate::auth::format_rfc3339(now);
@@ -3159,11 +3127,7 @@ mod tests {
         );
 
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = crate::auth::now_utc();
         let now_text = crate::auth::format_rfc3339(now);
@@ -3258,11 +3222,7 @@ mod tests {
     #[tokio::test]
     async fn seeding_restores_the_tier_contract_and_keeps_the_operator_record() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         ensure_seeded(pool).await.unwrap();
         sqlx::query(
@@ -3376,11 +3336,7 @@ mod tests {
     #[tokio::test]
     async fn expired_raw_metric_samples_are_released_and_the_series_ledger_survives() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
         let fresh = crate::auth::format_rfc3339(now - time::Duration::hours(1));
@@ -3468,11 +3424,7 @@ mod tests {
     #[tokio::test]
     async fn one_cleanup_call_drains_a_maximal_reports_worth_of_node_samples() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
         let fresh = crate::auth::format_rfc3339(now - time::Duration::hours(1));
@@ -3574,11 +3526,7 @@ mod tests {
     #[tokio::test]
     async fn one_cleanup_call_drains_a_maximal_reports_worth_of_state_entries() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
         let fresh = crate::auth::format_rfc3339(now - time::Duration::hours(1));
@@ -3709,11 +3657,7 @@ mod tests {
     #[tokio::test]
     async fn preview_freezes_policy_scope_and_cutoff_and_turns_stale_on_edit() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
         let preview = create_preview(
@@ -3794,11 +3738,7 @@ mod tests {
     #[tokio::test]
     async fn preview_rejects_unknown_scopes_and_reports_skips() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = crate::auth::now_utc();
         match create_preview(pool, "owner-1", Some(vec!["nope".to_owned()]), now).await {
@@ -3848,11 +3788,7 @@ mod tests {
     #[tokio::test]
     async fn expired_or_unknown_previews_are_never_executable() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = crate::auth::now_utc();
         let preview = create_preview(pool, "owner-1", None, now).await.unwrap();
@@ -3915,11 +3851,7 @@ mod tests {
     #[tokio::test]
     async fn a_run_releases_what_the_frozen_cutoff_covers_not_what_the_estimate_said() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = crate::auth::now_utc();
         let now_text = crate::auth::format_rfc3339(now);
@@ -4035,11 +3967,7 @@ mod tests {
     #[tokio::test]
     async fn a_release_and_the_accounting_of_it_commit_together() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = crate::auth::now_utc();
         let now_text = crate::auth::format_rfc3339(now);
@@ -4163,11 +4091,7 @@ mod tests {
     #[tokio::test]
     async fn a_run_without_a_stored_plan_fails_closed() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         sqlx::query("INSERT INTO operations (operation_id, kind, status, request_id, params_json, warnings_json, errors_json, created_at) VALUES ('empty-plan-operation', 'retention_run', 'queued', 'empty-plan-request', '{}', '[]', '[]', ?)")
             .bind(crate::auth::format_rfc3339(crate::auth::now_utc()))

@@ -14,11 +14,11 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use serde_json::Value;
-use sqlx::SqlitePool;
+use sqlx::AnyPool;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-use platpulse_server::{AppState, auth, database, http, network, secrets, validator};
+use platpulse_server::{AppState, auth, http, network, secrets, validator};
 
 const NETWORK_KEY: &str = "platon-mainnet";
 const NETWORK_GENESIS: &str = "0x0000000000000000000000000000000000000000000000000000000000000001";
@@ -72,11 +72,7 @@ impl Harness {
     }
 
     async fn open(dir: TempDir, timezone: &str) -> Self {
-        let database = database::initialize(database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = platpulse_server::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("server-pepper");
         if !pepper_path.exists() {
             secrets::create_pepper_file(&pepper_path).unwrap();
@@ -180,7 +176,7 @@ impl Harness {
             .unwrap();
     }
 
-    fn pool(&self) -> &SqlitePool {
+    fn pool(&self) -> &AnyPool {
         self.state.db().pool()
     }
 

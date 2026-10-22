@@ -15,7 +15,7 @@
 //! reported as a completed deletion because the row removal, the deletion
 //! identity, and the Audit Event commit together.
 
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::{AnyConnection, AnyPool};
 
 /// The Node identity an Owner is about to delete, read fresh inside the
 /// purge transaction.
@@ -184,7 +184,7 @@ pub struct NodePurgeOutcome {
 /// Read the Node identity and count everything a Purge would remove. Returns
 /// Ok(None) when the Node does not exist (already purged, or never seen).
 pub async fn measure(
-    connection: &mut SqliteConnection,
+    connection: &mut AnyConnection,
     node_id: &str,
 ) -> Result<Option<NodePurgeImpact>, sqlx::Error> {
     let target = sqlx::query_as::<_, (String, String, String, Option<String>, String, String, i64, String, String, String)>(
@@ -289,7 +289,7 @@ pub async fn measure(
 const NODE_SCOPED_ROWS: &str = "scope_kind = 'node' AND scope_key = $1";
 
 async fn count(
-    connection: &mut SqliteConnection,
+    connection: &mut AnyConnection,
     table: &'static str,
     node_id: &str,
 ) -> Result<i64, sqlx::Error> {
@@ -297,7 +297,7 @@ async fn count(
 }
 
 async fn delete(
-    connection: &mut SqliteConnection,
+    connection: &mut AnyConnection,
     table: &'static str,
     node_id: &str,
 ) -> Result<(), sqlx::Error> {
@@ -305,7 +305,7 @@ async fn delete(
 }
 
 async fn count_where(
-    connection: &mut SqliteConnection,
+    connection: &mut AnyConnection,
     table: &'static str,
     predicate: &'static str,
     node_id: &str,
@@ -319,7 +319,7 @@ async fn count_where(
 }
 
 async fn delete_where(
-    connection: &mut SqliteConnection,
+    connection: &mut AnyConnection,
     table: &'static str,
     predicate: &'static str,
     node_id: &str,
@@ -347,7 +347,7 @@ async fn delete_where(
 /// intervals are this Node's own place over time, so they go with it, while the
 /// Agent, Host, Network and Validator history they point at is shared and
 /// survives (issue #221).
-pub async fn remove(connection: &mut SqliteConnection, node_id: &str) -> Result<(), sqlx::Error> {
+pub async fn remove(connection: &mut AnyConnection, node_id: &str) -> Result<(), sqlx::Error> {
     for table in [
         // Composite children first.
         "current_node_peer_capabilities",
@@ -416,7 +416,7 @@ pub async fn remove(connection: &mut SqliteConnection, node_id: &str) -> Result<
 /// admission boundary (issue #170) that refuses every later declaration. The
 /// caller supplies the Server-owned deletion instant.
 pub async fn record_deletion_identity(
-    connection: &mut SqliteConnection,
+    connection: &mut AnyConnection,
     target: &NodePurgeTarget,
     deleted_by_user_id: &str,
     deleted_at: &str,
@@ -443,7 +443,7 @@ pub async fn record_deletion_identity(
 /// subject-deleted, and cancelling its not-yet-sent notifications. The caller
 /// supplies the Server-owned deletion instant.
 pub async fn record_deletion(
-    connection: &mut SqliteConnection,
+    connection: &mut AnyConnection,
     target: &NodePurgeTarget,
     deleted_by_user_id: &str,
     deleted_at: &str,
@@ -463,10 +463,7 @@ pub async fn record_deletion(
 /// Report ingestion reads this inside its receipt transaction and rejects the
 /// Node per entry instead of reconstructing its projection (issue #170). The
 /// table's shape and the boundary live here so ingestion never has to know it.
-pub async fn is_purged(
-    connection: &mut SqliteConnection,
-    node_id: &str,
-) -> Result<bool, sqlx::Error> {
+pub async fn is_purged(connection: &mut AnyConnection, node_id: &str) -> Result<bool, sqlx::Error> {
     Ok(
         sqlx::query_scalar::<_, String>("SELECT node_id FROM deleted_nodes WHERE node_id = $1")
             .bind(node_id)
@@ -479,7 +476,7 @@ pub async fn is_purged(
 /// Load the impact scope without any mutation. The preview and the mutation
 /// share this measurement so they cannot disagree about what is Node-owned.
 pub async fn preview(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     node_id: &str,
 ) -> Result<Option<NodePurgeImpact>, sqlx::Error> {
     let mut connection = pool.acquire().await?;
@@ -491,7 +488,7 @@ pub async fn preview(
 /// and append the Audit Event. Returns Ok(None) when the Node no longer
 /// exists, so a replayed or raced mutation cannot delete an unseen scope.
 pub async fn execute(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     node_id: &str,
     actor_user_id: &str,
 ) -> Result<Option<NodePurgeOutcome>, sqlx::Error> {

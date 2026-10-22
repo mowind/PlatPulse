@@ -6,7 +6,7 @@
 //! internal counts.
 //!
 //! Runtime corruption is latched from an `SQLITE_CORRUPT` observed on a real
-//! query (`AppState::note_sqlite_error`). The authoritative whole-database
+//! query (`AppState::note_database_error`). The authoritative whole-database
 //! verdict is an offline operation (ADR 0008, issue #194).
 
 use axum::Json;
@@ -17,17 +17,6 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::http::AppState;
-
-/// Whether an error carries SQLite's primary or extended `SQLITE_CORRUPT` /
-/// `SQLITE_NOTADB` result code.
-pub(crate) fn is_corruption_error(error: &sqlx::Error) -> bool {
-    error
-        .as_database_error()
-        .and_then(|error| error.code())
-        .and_then(|code| code.parse::<i32>().ok())
-        // SQLite primary and extended SQLITE_CORRUPT / SQLITE_NOTADB codes.
-        .is_some_and(|code| matches!(code & 0xff, 11 | 26))
-}
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct LiveResponse {
@@ -103,7 +92,7 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
             Ok(_) => ReadyComponent::not_ready("sqlite", "migration_pending"),
             Err(error) => {
                 if let Some(error) = error.as_sqlx() {
-                    state.note_sqlite_error(error);
+                    state.note_database_error(error);
                 }
                 ReadyComponent::not_ready("sqlite", "unavailable")
             }
@@ -113,7 +102,7 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
         Ok(true) => ReadyComponent::ready("owner"),
         Ok(false) => ReadyComponent::not_ready("owner", "setup_required"),
         Err(error) => {
-            state.note_sqlite_error(&error);
+            state.note_database_error(&error);
             ReadyComponent::not_ready("owner", "unavailable")
         }
     };

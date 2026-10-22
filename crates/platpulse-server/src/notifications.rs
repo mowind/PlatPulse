@@ -20,8 +20,8 @@ use crate::auth::{format_rfc3339, insert_audit_event, now_utc, parse_rfc3339};
 use crate::config::{NotificationChannels, TelegramChannel};
 use async_trait::async_trait;
 use serde::Serialize;
+use sqlx::AnyConnection;
 use sqlx::FromRow;
-use sqlx::SqliteConnection;
 use time::OffsetDateTime;
 use utoipa::ToSchema;
 
@@ -328,7 +328,7 @@ pub struct NotificationEventInput<'a> {
 /// policies suppress Delivery at creation time: suppressed
 /// Deliveries are never sent and are not retryable. Returns the Event id.
 pub async fn record_notification_event(
-    executor: &mut SqliteConnection,
+    executor: &mut AnyConnection,
     input: NotificationEventInput<'_>,
     channels: &NotificationChannels,
     now: OffsetDateTime,
@@ -388,7 +388,7 @@ pub async fn record_notification_event(
 /// action, never derived from an Incident transition, and always audited
 /// by the caller. Test Deliveries are never suppressed.
 pub async fn record_test_event(
-    executor: &mut SqliteConnection,
+    executor: &mut AnyConnection,
     severity: &str,
     summary: &str,
     channels: &NotificationChannels,
@@ -427,7 +427,7 @@ pub enum RetryError {
 /// retries are refused by the Server (pending/in_flight rows are already
 /// queued). Suppressed and succeeded Deliveries are not retryable.
 pub async fn rearm_delivery(
-    executor: &mut SqliteConnection,
+    executor: &mut AnyConnection,
     delivery_id: &str,
     now: OffsetDateTime,
 ) -> Result<DeliveryRow, RetryError> {
@@ -463,7 +463,7 @@ pub async fn rearm_delivery(
 }
 
 pub async fn load_delivery(
-    executor: &mut SqliteConnection,
+    executor: &mut AnyConnection,
     delivery_id: &str,
 ) -> Result<Option<DeliveryRow>, sqlx::Error> {
     let row = sqlx::query_as::<_, DeliveryRow>(
@@ -476,7 +476,7 @@ pub async fn load_delivery(
 }
 
 pub async fn load_event(
-    executor: &mut SqliteConnection,
+    executor: &mut AnyConnection,
     event_id: &str,
 ) -> Result<Option<EventRow>, sqlx::Error> {
     let row = sqlx::query_as::<_, EventRow>(
@@ -489,7 +489,7 @@ pub async fn load_event(
 }
 
 pub async fn deliveries_for_event(
-    executor: &mut SqliteConnection,
+    executor: &mut AnyConnection,
     event_id: &str,
 ) -> Result<Vec<DeliveryRow>, sqlx::Error> {
     let rows = sqlx::query_as::<_, DeliveryRow>(
@@ -502,7 +502,7 @@ pub async fn deliveries_for_event(
 }
 
 pub async fn attempts_for_delivery(
-    executor: &mut SqliteConnection,
+    executor: &mut AnyConnection,
     delivery_id: &str,
 ) -> Result<Vec<AttemptRow>, sqlx::Error> {
     let rows = sqlx::query_as::<_, AttemptRow>(
@@ -556,7 +556,7 @@ pub fn validate_request_id(request_id: &str) -> bool {
 /// Delete request rows whose result is no longer queryable. Called inside an
 /// accepted command's transaction, so pruning never races a lookup.
 pub async fn prune_expired_notification_requests(
-    executor: &mut SqliteConnection,
+    executor: &mut AnyConnection,
     now: OffsetDateTime,
 ) -> Result<u64, sqlx::Error> {
     let result = sqlx::query("DELETE FROM notification_requests WHERE expires_at <= $1")
@@ -569,7 +569,7 @@ pub async fn prune_expired_notification_requests(
 /// Load a still-queryable request row. An expired row reads as absent, so a
 /// read-only result lookup never has to write.
 pub async fn load_notification_request(
-    executor: &mut SqliteConnection,
+    executor: &mut AnyConnection,
     request_id: &str,
     now: OffsetDateTime,
 ) -> Result<Option<NotificationRequestRow>, sqlx::Error> {
@@ -585,7 +585,7 @@ pub async fn load_notification_request(
 /// Insert one request row inside the caller's transaction.
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_notification_request(
-    executor: &mut SqliteConnection,
+    executor: &mut AnyConnection,
     request_id: &str,
     command_kind: &str,
     intent_fingerprint: &str,
@@ -614,7 +614,7 @@ pub async fn insert_notification_request(
 /// The most recent accepted test command time (the durable cooldown clock).
 /// `created_at` is RFC3339 UTC, so the lexical maximum is chronological.
 pub async fn last_test_request_created_at(
-    executor: &mut SqliteConnection,
+    executor: &mut AnyConnection,
 ) -> Result<Option<String>, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT MAX(created_at) FROM notification_requests WHERE command_kind = 'test'",
@@ -646,7 +646,7 @@ pub fn cooldown_remaining_seconds(
 /// before handing it off, which is a different situation from a row already in
 /// flight when the deletion commits.
 pub async fn cancel_unsent_for_subject(
-    executor: &mut SqliteConnection,
+    executor: &mut AnyConnection,
     subject_kind: SubjectKind,
     subject_key: &str,
     cancelled_at: &str,
@@ -1251,7 +1251,7 @@ mod tests {
     use super::*;
     use crate::auth::format_rfc3339;
     use crate::config::TelegramChannel;
-    use sqlx::SqlitePool;
+    use sqlx::AnyPool;
     use tempfile::tempdir;
     use time::OffsetDateTime;
     use time::macros::datetime;
@@ -1260,20 +1260,16 @@ mod tests {
         datetime!(2026-03-01 00:00:00 UTC)
     }
 
-    async fn test_pool() -> (tempfile::TempDir, SqlitePool) {
+    async fn test_pool() -> (tempfile::TempDir, AnyPool) {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool().clone();
         (dir, pool)
     }
 
     /// `notification_events.incident_id` references `alert_incidents`;
     /// tests that attach an Event to an Incident seed the Incident first.
-    async fn seed_incident(pool: &SqlitePool) {
+    async fn seed_incident(pool: &AnyPool) {
         sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ('inc-1', 'node.rpc_unreachable', 1, 'node', 'node-a', 'critical', 'open', '2026-03-01T00:00:00Z', '2026-03-01T00:00:00Z', '{}') ON CONFLICT(incident_id) DO NOTHING")
             .execute(pool)
             .await

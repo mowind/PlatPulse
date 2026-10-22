@@ -19,7 +19,7 @@
 //! recorded Agent interval is the Host relation's evidence too: a Node whose
 //! reporting Agent changed cannot silently change its Host mid-window.
 
-use sqlx::{FromRow, SqliteConnection, SqlitePool};
+use sqlx::{AnyConnection, AnyPool, FromRow};
 use time::{Duration, OffsetDateTime};
 
 use crate::auth::{format_rfc3339, parse_rfc3339};
@@ -213,7 +213,7 @@ impl RecordedRelations {
 /// Returns the kinds whose recorded relation changed. A repeated Report that
 /// changes nothing writes nothing.
 pub async fn record_relations(
-    connection: &mut SqliteConnection,
+    connection: &mut AnyConnection,
     node_id: &str,
     agent_key: &str,
     network_key: &str,
@@ -272,7 +272,7 @@ pub async fn record_relations(
 }
 
 async fn insert_interval(
-    connection: &mut SqliteConnection,
+    connection: &mut AnyConnection,
     node_id: &str,
     relation_kind: &str,
     related_key: &str,
@@ -298,7 +298,7 @@ async fn insert_interval(
 /// Every recorded interval of a Node, oldest first, including ones outside the
 /// caller's window.
 pub async fn load_intervals(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     node_id: &str,
 ) -> Result<Vec<RelationshipInterval>, sqlx::Error> {
     sqlx::query_as::<_, RelationshipInterval>(&format!(

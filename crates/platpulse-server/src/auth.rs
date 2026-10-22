@@ -125,7 +125,7 @@ pub async fn has_owner(db: &ServerDatabase) -> Result<bool, sqlx::Error> {
 /// so the count runs inside the same transaction as the mutation.
 pub async fn count_enabled_owners<'e, E>(executor: E) -> Result<i64, sqlx::Error>
 where
-    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE role = 'owner' AND disabled_at IS NULL")
         .fetch_one(executor)
@@ -469,7 +469,7 @@ async fn find_user_by_username(
 /// role, and disabled changes invalidate the related Sessions immediately).
 /// Returns the number of Sessions actually revoked.
 pub async fn revoke_user_sessions(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     user_id: &str,
 ) -> Result<u64, sqlx::Error> {
     let result = sqlx::query(
@@ -488,7 +488,7 @@ pub async fn revoke_user_sessions(
 /// Advance the durable authorization generation inside the caller's
 /// transaction. The generation is a transition signal, never a bearer token.
 pub async fn bump_authorization_generation(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar::<_, String>(
         "UPDATE server_settings
@@ -522,7 +522,7 @@ pub async fn insert_audit_event<'e, E>(
     after_json: Option<&serde_json::Value>,
 ) -> Result<i64, sqlx::Error>
 where
-    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
 {
     insert_audit_change(
         executor,
@@ -549,7 +549,7 @@ pub async fn insert_audit_change<'e, E>(
     after_json: Option<&serde_json::Value>,
 ) -> Result<i64, sqlx::Error>
 where
-    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
 {
     let created_at = format_rfc3339(now_utc());
     let before_json = before_json.map(crate::redaction::redact_json_value);
@@ -769,7 +769,7 @@ async fn insert_session<'e, E>(
     client_hint: &str,
 ) -> Result<(SessionInfo, String), sqlx::Error>
 where
-    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
 {
     let (token_id, full_token) = new_session_token();
     let token_digest = config.pepper.hmac_digest(full_token.as_bytes());
@@ -1025,15 +1025,12 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use crate::database::{ServerDatabaseConfig, initialize};
     use crate::secrets::{create_pepper_file, load_pepper_file};
 
     use super::*;
 
     async fn test_db(dir: &Path) -> ServerDatabase {
-        initialize(ServerDatabaseConfig::new(dir.join("server.db")))
-            .await
-            .unwrap()
+        crate::test_support::test_database_in(dir).await
     }
 
     fn test_config(dir: &Path) -> AuthConfig {

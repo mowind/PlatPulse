@@ -42,7 +42,7 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use sqlx::SqlitePool;
+use sqlx::AnyPool;
 
 use crate::geo::{GeoConfig, GeoLookup, GeoProvider};
 use crate::http::AppState;
@@ -198,7 +198,7 @@ pub struct RefreshScope {
 /// Malformed, private, loopback, link-local, and reserved values are skipped
 /// by the same trust-boundary rule the resolution path applies, and an address
 /// referenced by several records or several Nodes is one entry.
-pub async fn refresh_scope(pool: &SqlitePool) -> Result<RefreshScope, sqlx::Error> {
+pub async fn refresh_scope(pool: &AnyPool) -> Result<RefreshScope, sqlx::Error> {
     let rows = sqlx::query_as::<_, (String, i64)>(
         "SELECT remote_ip, COUNT(*) FROM current_node_peers WHERE remote_ip IS NOT NULL GROUP BY remote_ip",
     )
@@ -704,11 +704,7 @@ mod tests {
         with_database: bool,
         provider: GeoProvider,
     ) -> AppState {
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(
@@ -1065,11 +1061,7 @@ mod tests {
         // MMDB, so a refresh is refused for the same reason the option is
         // unavailable.
         let other = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            other.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(other.path()).await;
         let pepper_path = other.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(

@@ -26,7 +26,7 @@ use platpulse_core::{
     AgentReport, NodeCurrentDisposition, ReceiptDisposition, RejectionCode, ReportReceipt,
     SampleDispositionKind,
 };
-use platpulse_server::{AppState, auth, database, http, network, secrets};
+use platpulse_server::{AppState, auth, http, network, secrets};
 
 /// Registered Network tuple for the `platon-mainnet` key the report fixture
 /// declares, matching the unit-test registry exactly.
@@ -49,11 +49,7 @@ impl Harness {
         // subscriber is already active.
         let _ = captured_logs();
         let dir = TempDir::new().unwrap();
-        let database = database::initialize(database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = platpulse_server::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("server-pepper");
         secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = auth::AuthConfig::development(

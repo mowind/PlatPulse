@@ -12,11 +12,11 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use serde_json::Value;
-use sqlx::SqlitePool;
+use sqlx::AnyPool;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-use platpulse_server::{AppState, auth, database, http, operations, secrets};
+use platpulse_server::{AppState, auth, http, operations, secrets};
 
 const DEVELOPMENT_ORIGIN: &str = "http://127.0.0.1:8080";
 const OWNER_LOGIN_BODY: &str = r#"{"username":"admin","password":"correct horse battery"}"#;
@@ -50,11 +50,7 @@ impl Harness {
     /// restart case drops the previous pool first so the exclusive SQLite lock
     /// is released before this second opener arrives.
     async fn open(dir: TempDir) -> Self {
-        let database = database::initialize(database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = platpulse_server::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("server-pepper");
         if !pepper_path.exists() {
             secrets::create_pepper_file(&pepper_path).unwrap();
@@ -76,7 +72,7 @@ impl Harness {
         Self::open(dir).await
     }
 
-    fn pool(&self) -> &SqlitePool {
+    fn pool(&self) -> &AnyPool {
         self.state.db().pool()
     }
 

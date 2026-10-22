@@ -22,7 +22,7 @@ use tower::ServiceExt;
 
 use platpulse_server::AppState;
 use platpulse_server::capacity::{CapacityConfig, CapacityProtection};
-use platpulse_server::{auth, database, http, network, secrets};
+use platpulse_server::{auth, http, network, secrets};
 
 /// Registered Network tuple for the platon-mainnet key the report fixture
 /// declares, matching the unit-test registry exactly.
@@ -55,11 +55,7 @@ struct Harness {
 
 impl Harness {
     async fn open(dir: TempDir) -> Self {
-        let database = database::initialize(database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = platpulse_server::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("server-pepper");
         if !pepper_path.exists() {
             secrets::create_pepper_file(&pepper_path).unwrap();
@@ -106,7 +102,7 @@ impl Harness {
         self.app = http::build_app(self.state.clone());
     }
 
-    fn pool(&self) -> &sqlx::SqlitePool {
+    fn pool(&self) -> &sqlx::AnyPool {
         self.state.db().pool()
     }
 

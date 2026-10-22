@@ -27,7 +27,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use maxminddb::Reader;
 use sha2::{Digest, Sha256};
-use sqlx::SqlitePool;
+use sqlx::AnyPool;
 
 /// Identifiers of the Geo providers this Server can select. `ipinfo` and
 /// `geojs` are the External Geo Providers implemented by
@@ -582,7 +582,7 @@ pub(crate) const CACHE_TABLE_DDL: &str = "CREATE TABLE geo_location_cache (provi
 /// serve, so cleanup only applies the hard boundary, the current-reference
 /// rule, and the size bound.
 pub async fn cleanup_cache(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     now: &str,
     active_provider: GeoProvider,
 ) -> Result<u64, sqlx::Error> {
@@ -612,7 +612,7 @@ pub async fn cleanup_cache(
 /// hard-age cleanup remains the authoritative retention limit for those rows.
 pub async fn trim_cache<'e, E>(executor: E) -> Result<u64, sqlx::Error>
 where
-    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
 {
     Ok(sqlx::query(
         "DELETE FROM geo_location_cache WHERE (provider, canonical_ip) IN (SELECT cache.provider, cache.canonical_ip FROM geo_location_cache cache WHERE NOT EXISTS (SELECT 1 FROM current_node_peers current WHERE current.remote_ip = cache.canonical_ip) ORDER BY cache.last_referenced_at ASC, cache.last_attempt_at ASC, cache.provider ASC, cache.canonical_ip ASC LIMIT CASE WHEN (SELECT COUNT(*) FROM geo_location_cache) > $1 THEN (SELECT COUNT(*) FROM geo_location_cache) - $1 ELSE 0 END)",
@@ -640,7 +640,7 @@ pub async fn read_provider_selection<'e, E>(
     executor: E,
 ) -> Result<Option<GeoSelection>, sqlx::Error>
 where
-    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
 {
     let rows = sqlx::query_as::<_, (String, String)>(
         "SELECT setting_key, setting_value FROM server_settings WHERE setting_key IN ($1, $2)",
@@ -669,7 +669,7 @@ where
 /// concurrent Owner changes can never persist the same generation.
 pub async fn bump_provider_generation<'e, E>(executor: E, now: &str) -> Result<u64, sqlx::Error>
 where
-    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
 {
     let value: i64 = sqlx::query_scalar(
         "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ($1, '1', $2) ON CONFLICT(setting_key) DO UPDATE SET setting_value = CAST(CAST(setting_value AS INTEGER) + 1 AS TEXT), updated_at = excluded.updated_at RETURNING CAST(setting_value AS INTEGER)",
@@ -690,7 +690,7 @@ pub async fn write_provider_selection<'e, E>(
     now: &str,
 ) -> Result<(), sqlx::Error>
 where
-    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
         "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ($1, $2, $3), ($4, $5, $6) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value, updated_at=excluded.updated_at",
@@ -712,7 +712,7 @@ where
 /// installation without one stays Disabled. Neither branch adds outbound
 /// traffic, so an upgrade never changes the privacy boundary by itself.
 pub async fn ensure_provider_selection(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     mmdb_configured: bool,
 ) -> Result<GeoSelection, sqlx::Error> {
     if let Some(selection) = read_provider_selection(pool).await? {
@@ -771,7 +771,6 @@ pub fn cache_refresh_window(existing_created_at: Option<&str>, now: &str) -> (St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
 
     #[test]
     fn rejects_private_and_reserved_ranges() {
@@ -807,11 +806,7 @@ mod tests {
 
     #[tokio::test]
     async fn trims_cache_to_the_configured_bound() {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
+        let pool = crate::test_support::unmigrated_sqlite_pool(None).await;
         sqlx::query(CACHE_TABLE_DDL).execute(&pool).await.unwrap();
         for index in 0..=MAX_PEER_IP_CACHE_ROWS {
             let ip = format!("198.18.{}.{}", index / 256, index % 256);

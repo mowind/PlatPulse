@@ -1,9 +1,15 @@
-//! Server-local SQLite startup and migration harness.
+//! The Server's storage seam (ADR 0013).
 //!
-//! The Server opens and validates its database before the HTTP listener is
-//! constructed. The write pool is intentionally one connection so a future
-//! report-ingestion path can make its SQLite transaction boundary explicit
-//! without introducing per-table repositories or a hidden write queue.
+//! [`ServerDatabase`] is the only way the Server reaches its database. The
+//! domain modules see a backend-neutral [`sqlx::AnyPool`] and write portable
+//! SQL; everything that depends on the Storage Backend in use (file ownership,
+//! connection PRAGMAs, integrity checks, result-code classification, page
+//! accounting) is dispatched to a per-backend module. SQLite is the only
+//! backend in this slice ([`sqlite`]); PostgreSQL is a 0.3.0 target.
+//!
+//! The pool is intentionally one connection so the report-ingestion path can
+//! make its transaction boundary explicit without introducing per-table
+//! repositories or a hidden write queue.
 
 use std::{
     path::{Path, PathBuf},
@@ -11,11 +17,12 @@ use std::{
 };
 
 use sqlx::migrate::{MigrateError, Migrator};
-use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteJournalMode, SqliteLockingMode, SqlitePool, SqlitePoolOptions,
-    SqliteSynchronous,
-};
+use sqlx::{AnyConnection, AnyPool};
 use thiserror::Error;
+
+mod sqlite;
+
+pub use sqlite::{JournalMode, SqlitePragmas};
 
 /// The Server's embedded migration source. It is not shared with the Agent.
 pub static SERVER_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
@@ -23,7 +30,7 @@ pub static SERVER_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 /// The latest migration version compiled into the Server binary.
 pub const SERVER_SCHEMA_VERSION: i64 = 75;
 
-/// The Server currently serializes all SQLite operations through one pool
+/// The Server currently serializes all database operations through one pool
 /// connection. Read scaling can be added with a concrete query need; it is
 /// not hidden in a repository abstraction.
 pub const SERVER_WRITE_CONNECTIONS: u32 = 1;
@@ -156,37 +163,6 @@ impl ServerDatabaseConfig {
     }
 }
 
-/// The SQLite settings required by the Server startup harness.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SqlitePragmas {
-    /// `PRAGMA foreign_keys` (`1` means enabled).
-    pub foreign_keys: bool,
-    /// Effective journal mode, normally `wal` for a file database.
-    pub journal_mode: JournalMode,
-    /// `PRAGMA busy_timeout` in milliseconds.
-    pub busy_timeout_ms: u64,
-    /// Numeric SQLite synchronous mode (`2` is FULL).
-    pub synchronous: i64,
-}
-
-impl SqlitePragmas {
-    /// Whether all durability/concurrency settings required by PlatPulse are
-    /// active for this connection.
-    pub fn satisfy_requirements(self) -> bool {
-        self.foreign_keys
-            && self.journal_mode == JournalMode::Wal
-            && self.busy_timeout_ms > 0
-            && self.synchronous == 2
-    }
-}
-
-/// The journal mode reported by SQLite.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JournalMode {
-    Wal,
-    Other,
-}
-
 /// Errors that stop Server startup before an HTTP listener can be built.
 #[derive(Debug, Error)]
 pub enum ServerDatabaseError {
@@ -211,8 +187,8 @@ pub enum ServerDatabaseError {
 }
 
 impl ServerDatabaseError {
-    /// The underlying SQLite error, when this failure came from a query. Used
-    /// to latch runtime corruption from an observed `SQLITE_CORRUPT`.
+    /// The underlying database error, when this failure came from a query.
+    /// Used to latch runtime corruption from an observed corruption code.
     pub(crate) fn as_sqlx(&self) -> Option<&sqlx::Error> {
         match self {
             Self::Connect(error) | Self::PragmaQuery(error) | Self::IntegrityQuery(error) => {
@@ -223,10 +199,83 @@ impl ServerDatabaseError {
     }
 }
 
+/// How much of the database a bounded integrity check covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IntegrityScope {
+    /// Every page and index (`PRAGMA integrity_check` on SQLite).
+    Full,
+    /// The cheaper structural check, stopping at the first problem
+    /// (`PRAGMA quick_check(1)` on SQLite).
+    Quick,
+}
+
+/// Outcome of one bounded integrity check.
+#[derive(Debug)]
+pub(crate) enum IntegrityVerdict {
+    /// The check completed and found nothing wrong.
+    Consistent,
+    /// The check completed and reported a problem.
+    Inconsistent(String),
+    /// The budget ran out and the check was interrupted: no verdict.
+    Exhausted,
+    /// The database returned an error before any verdict.
+    Failed(sqlx::Error),
+}
+
+/// Page accounting of the stored database, when the backend has one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct StoragePages {
+    pub page_count: Option<u64>,
+    pub freelist_pages: Option<u64>,
+}
+
+/// A nullable flag column, decoded from its portable 0/1 INTEGER storage.
+///
+/// Flags are stored as INTEGER on every Storage Backend (ADR 0013): the
+/// backend-neutral driver decodes `bool` only from a native boolean, so a
+/// flag read as `bool` would fail. Plain tuple decodes read the flag as `i64`
+/// and compare with zero; a `FromRow` field of type `Option<bool>` uses
+/// `#[sqlx(try_from = "crate::database::NullableFlag")]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NullableFlag(pub Option<bool>);
+
+impl sqlx::Type<sqlx::Any> for NullableFlag {
+    fn type_info() -> sqlx::any::AnyTypeInfo {
+        <i64 as sqlx::Type<sqlx::Any>>::type_info()
+    }
+
+    fn compatible(ty: &sqlx::any::AnyTypeInfo) -> bool {
+        <i64 as sqlx::Type<sqlx::Any>>::compatible(ty)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Any> for NullableFlag {
+    fn decode(value: sqlx::any::AnyValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
+        use sqlx::ValueRef;
+        if value.is_null() {
+            return Ok(Self(None));
+        }
+        let flag = <i64 as sqlx::Decode<'r, sqlx::Any>>::decode(value)?;
+        Ok(Self(Some(flag != 0)))
+    }
+}
+
+impl From<NullableFlag> for Option<bool> {
+    fn from(flag: NullableFlag) -> Self {
+        flag.0
+    }
+}
+
+/// The Storage Backend behind a [`ServerDatabase`].
+enum Backend {
+    Sqlite(sqlite::SqliteBackend),
+}
+
 /// An initialized Server database whose writes are serialized by one pool
 /// connection.
 pub struct ServerDatabase {
-    pool: SqlitePool,
+    pool: AnyPool,
+    backend: Backend,
     path: PathBuf,
     /// The runtime Inventory protocol mode, resolved once at startup from the
     /// durable conversion/cutover markers (issue #192). It is fixed for the
@@ -260,75 +309,63 @@ impl ServerDatabase {
         config: ServerDatabaseConfig,
         create_if_missing: bool,
     ) -> Result<Self, ServerDatabaseError> {
-        prepare_database_path(&config, create_if_missing)?;
-        let options = sqlite_options(&config, create_if_missing);
-        let pool = connect_serialized(&options, config.busy_timeout()).await?;
-
-        // SQLite creates the main file and WAL sidecars with the process
-        // umask. Secure files created by this startup path before exposing
-        // the database to the rest of the Server; pre-existing unsafe files
-        // were rejected by `prepare_database_path` above.
-        secure_database_files(config.path(), create_if_missing)?;
-
-        if let Err(error) = SERVER_MIGRATOR.run(&pool).await {
-            pool.close().await;
-            return Err(ServerDatabaseError::Migration(error));
+        let (pool, backend) = sqlite::open(&config, create_if_missing).await?;
+        let backend = Backend::Sqlite(backend);
+        match Self::prepare(&pool, &backend, &config, create_if_missing).await {
+            Ok(inventory_cutover) => Ok(Self {
+                pool,
+                backend,
+                path: config.path().to_owned(),
+                inventory_cutover,
+            }),
+            Err(error) => {
+                pool.close().await;
+                Err(error)
+            }
         }
+    }
+
+    /// Migrate, seed and verify a freshly opened pool.
+    async fn prepare(
+        pool: &AnyPool,
+        backend: &Backend,
+        config: &ServerDatabaseConfig,
+        create_if_missing: bool,
+    ) -> Result<crate::cutover::InventoryCutover, ServerDatabaseError> {
+        SERVER_MIGRATOR
+            .run(pool)
+            .await
+            .map_err(ServerDatabaseError::Migration)?;
 
         // Seed the typed Alert Rule catalog (idempotent; Owner-edited rules
         // are never overwritten) right after migrations so every database
         // carries the full catalog from the start.
-        let seed_result = async {
-            let mut conn = pool
-                .acquire()
-                .await
-                .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))?;
-            crate::alerts::seed_catalog(&mut conn)
-                .await
-                .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))?;
-            // A restart is an observation gap; no recovery window may be
-            // carried across it (issue #203 review B2).
-            crate::alerts::invalidate_recovery_windows_on_startup(&mut conn)
-                .await
-                .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))
-        }
-        .await;
-        if let Err(error) = seed_result {
-            pool.close().await;
-            return Err(error);
-        }
-
-        let pragmas = read_pragmas(&pool)
+        let mut conn = pool
+            .acquire()
             .await
-            .map_err(ServerDatabaseError::PragmaQuery)?;
-        if !pragmas.satisfy_requirements() {
-            pool.close().await;
-            return Err(ServerDatabaseError::PragmaMismatch(format!(
-                "foreign_keys={}, journal_mode={:?}, busy_timeout_ms={}, synchronous={}",
-                pragmas.foreign_keys,
-                pragmas.journal_mode,
-                pragmas.busy_timeout_ms,
-                pragmas.synchronous
-            )));
-        }
+            .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))?;
+        crate::alerts::seed_catalog(&mut conn)
+            .await
+            .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))?;
+        // A restart is an observation gap; no recovery window may be
+        // carried across it (issue #203 review B2).
+        crate::alerts::invalidate_recovery_windows_on_startup(&mut conn)
+            .await
+            .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))?;
+        drop(conn);
 
-        if let Err(error) = verify_integrity(&pool).await {
-            pool.close().await;
-            return Err(error);
+        match backend {
+            Backend::Sqlite(backend) => {
+                sqlite::verify_startup(pool, backend, config, create_if_missing).await?;
+            }
         }
-        secure_database_files(config.path(), create_if_missing)?;
         // Resolve the durable Inventory protocol mode once at startup. A
         // converted deployment (issue #191) stays gated until the coordinated
         // cutover is resumed (issue #192); a fresh or pre-conversion
         // deployment keeps the ordinary v1/v2 behaviour.
-        let inventory_cutover = crate::cutover::detect_inventory_cutover(&pool)
+        crate::cutover::detect_inventory_cutover(pool)
             .await
-            .map_err(ServerDatabaseError::IntegrityQuery)?;
-        Ok(Self {
-            pool,
-            path: config.path().to_owned(),
-            inventory_cutover,
-        })
+            .map_err(ServerDatabaseError::IntegrityQuery)
     }
 
     /// Filesystem path of the validated Server database.
@@ -340,16 +377,21 @@ impl ServerDatabase {
     pub fn inventory_cutover(&self) -> crate::cutover::InventoryCutover {
         self.inventory_cutover
     }
+
     /// Access the serialized SQLx pool for typed SQL operations.
-    pub fn pool(&self) -> &SqlitePool {
+    pub fn pool(&self) -> &AnyPool {
         &self.pool
     }
 
-    /// Read the required connection pragmas after startup.
+    /// Read the required connection pragmas after startup. SQLite-only
+    /// inspection (used by the startup tests); the PostgreSQL backend (S4)
+    /// replaces it with its own session checks.
     pub async fn pragmas(&self) -> Result<SqlitePragmas, ServerDatabaseError> {
-        read_pragmas(&self.pool)
-            .await
-            .map_err(ServerDatabaseError::PragmaQuery)
+        match &self.backend {
+            Backend::Sqlite(_) => sqlite::read_pragmas(&self.pool)
+                .await
+                .map_err(ServerDatabaseError::PragmaQuery),
+        }
     }
 
     /// Return the highest migration version recorded in this Server database.
@@ -358,6 +400,36 @@ impl ServerDatabase {
             .fetch_one(&self.pool)
             .await
             .map_err(ServerDatabaseError::IntegrityQuery)
+    }
+
+    /// Run a read-only integrity check under an explicit budget. Budget
+    /// exhaustion is reported distinctly from a failed or inconsistent result
+    /// (ADR 0008, issue #194).
+    pub(crate) async fn bounded_integrity_check(
+        &self,
+        scope: IntegrityScope,
+        budget: Duration,
+    ) -> IntegrityVerdict {
+        match &self.backend {
+            Backend::Sqlite(backend) => {
+                sqlite::bounded_integrity_check(&self.pool, backend, scope, budget).await
+            }
+        }
+    }
+
+    /// Page accounting for the metrics surface.
+    pub(crate) async fn storage_pages(&self) -> StoragePages {
+        match &self.backend {
+            Backend::Sqlite(_) => sqlite::storage_pages(&self.pool).await,
+        }
+    }
+
+    /// Make every committed write durable in the main database file before
+    /// shutdown.
+    pub async fn checkpoint_wal(&self) -> Result<(), sqlx::Error> {
+        match &self.backend {
+            Backend::Sqlite(_) => sqlite::checkpoint_wal(&self.pool).await,
+        }
     }
 
     /// Close the serialized pool. The operation is idempotent and can be
@@ -389,240 +461,24 @@ pub async fn initialize(
     ServerDatabase::open(config).await
 }
 
-fn prepare_database_path(
-    config: &ServerDatabaseConfig,
-    create_if_missing: bool,
-) -> Result<(), ServerDatabaseError> {
-    let path = config.path();
-    let parent = path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    crate::file_security::validate_private_directory(parent)
-        .map_err(|error| ServerDatabaseError::Filesystem(format!("database parent: {error}")))?;
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            if metadata.len() == 0 {
-                return Err(ServerDatabaseError::EmptyDatabase);
-            }
-            if create_if_missing {
-                crate::file_security::validate_owned_regular_file(path).map_err(|error| {
-                    ServerDatabaseError::Filesystem(format!("database file: {error}"))
-                })?;
-            } else {
-                crate::file_security::validate_file(path).map_err(|error| {
-                    ServerDatabaseError::Filesystem(format!("database file: {error}"))
-                })?;
-            };
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound && create_if_missing => {}
-        Err(_) => {
-            return Err(ServerDatabaseError::Filesystem(
-                "cannot inspect the Server SQLite path".to_owned(),
-            ));
-        }
-    }
-    validate_existing_database_sidecars(path)?;
-    Ok(())
-}
-
-fn validate_existing_database_sidecars(path: &Path) -> Result<(), ServerDatabaseError> {
-    for suffix in ["-wal", "-shm"] {
-        let mut sidecar = path.as_os_str().to_owned();
-        sidecar.push(suffix);
-        let sidecar = PathBuf::from(sidecar);
-        match std::fs::symlink_metadata(&sidecar) {
-            Ok(_) => crate::file_security::validate_file(&sidecar).map_err(|error| {
-                ServerDatabaseError::Filesystem(format!("database sidecar: {error}"))
-            })?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => {
-                return Err(ServerDatabaseError::Filesystem(
-                    "cannot inspect the Server SQLite sidecar".to_owned(),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn secure_database_files(path: &Path, created_by_startup: bool) -> Result<(), ServerDatabaseError> {
-    if created_by_startup {
-        crate::file_security::secure_new_file(path)
-            .map_err(|error| ServerDatabaseError::Filesystem(format!("database file: {error}")))?;
-    } else {
-        crate::file_security::validate_file(path)
-            .map_err(|error| ServerDatabaseError::Filesystem(format!("database file: {error}")))?;
-    }
-    for suffix in ["-wal", "-shm"] {
-        let mut sidecar = path.as_os_str().to_owned();
-        sidecar.push(suffix);
-        let sidecar = PathBuf::from(sidecar);
-        if std::fs::symlink_metadata(&sidecar).is_ok() {
-            let result = if created_by_startup {
-                crate::file_security::secure_new_file(&sidecar)
-            } else {
-                crate::file_security::validate_file(&sidecar)
-            };
-            result.map_err(|error| {
-                ServerDatabaseError::Filesystem(format!("database sidecar: {error}"))
-            })?;
-        }
-    }
-    Ok(())
-}
-
-fn sqlite_options(config: &ServerDatabaseConfig, create_if_missing: bool) -> SqliteConnectOptions {
-    let options = SqliteConnectOptions::new()
-        .filename(config.path())
-        .create_if_missing(create_if_missing)
-        .foreign_keys(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .synchronous(SqliteSynchronous::Full)
-        .busy_timeout(config.busy_timeout());
-    if !config.exclusive_locking() {
-        // Development mode deliberately shares the file: local tooling and
-        // the browser e2e fixture refreshers write to a running dev Server.
-        return options;
-    }
-    // A production Server owns its SQLite file: every read and write goes
-    // through the single serialized pool connection. Exclusive locking keeps
-    // that ownership true at the file layer, so no other process can attach
-    // to the write-ahead log shared memory. Without it a concurrent external
-    // SQLite connection (any sqlite3 invocation, including read-only) can
-    // become the first attacher, and SQLite then truncates -shm to 3 bytes
-    // while this process still has it mapped, raising SIGBUS inside
-    // walFindFrame (issue #137) instead of failing cleanly.
-    options.locking_mode(SqliteLockingMode::Exclusive)
-}
-
-/// Delay between connection-setup retries. The total wait is bounded by the
-/// configured busy timeout, never by an unbounded loop.
-const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(50);
-
-/// SQLite primary result code for "the database file is locked".
-const SQLITE_BUSY: i64 = 5;
-
-/// Open the single-connection write pool, absorbing a transient SQLITE_BUSY.
+/// Whether an error is the Storage Backend reporting a corrupt database
+/// (SQLite: primary or extended `SQLITE_CORRUPT` / `SQLITE_NOTADB`).
 ///
-/// SQLite cannot invoke its busy handler for the exclusive lock that PRAGMA
-/// journal_mode/locking_mode take during connection setup, so a concurrent
-/// external SQLite connection surfaces as an immediate "database is locked"
-/// even though the configured busy timeout would have absorbed it. The retry
-/// is bounded by that same timeout and never hides another error.
-async fn connect_serialized(
-    options: &SqliteConnectOptions,
-    busy_timeout: Duration,
-) -> Result<SqlitePool, ServerDatabaseError> {
-    let deadline = tokio::time::Instant::now() + busy_timeout;
-    loop {
-        let attempt = SqlitePoolOptions::new()
-            .max_connections(SERVER_WRITE_CONNECTIONS)
-            .min_connections(SERVER_WRITE_CONNECTIONS)
-            .connect_with(options.clone())
-            .await;
-        match attempt {
-            Ok(pool) => return Ok(pool),
-            Err(error) if is_database_busy(&error) && tokio::time::Instant::now() < deadline => {
-                tokio::time::sleep(CONNECT_RETRY_INTERVAL).await;
-            }
-            Err(error) => return Err(ServerDatabaseError::Connect(error)),
-        }
-    }
+/// Dispatch is by the error's own driver type: each backend classifies only
+/// errors it can downcast to its native database error, so a PostgreSQL
+/// SQLSTATE that happens to share a numeric code is never read as SQLite.
+pub(crate) fn is_corruption_error(error: &sqlx::Error) -> bool {
+    sqlite::is_corruption_error(error)
 }
 
-/// Whether a SQLx error carries SQLite's SQLITE_BUSY primary result code.
-/// Extended result codes (for example SQLITE_BUSY_SNAPSHOT) share it in
-/// their low byte.
-fn is_database_busy(error: &sqlx::Error) -> bool {
-    match error {
-        sqlx::Error::Database(database) => database
-            .code()
-            .and_then(|code| code.parse::<i64>().ok())
-            .is_some_and(|code| code & 0xff == SQLITE_BUSY),
-        _ => false,
+/// Defer foreign-key enforcement to the commit of the current transaction.
+pub(crate) async fn defer_foreign_keys(connection: &mut AnyConnection) -> Result<(), sqlx::Error> {
+    match connection.backend_name() {
+        sqlite::BACKEND_NAME => sqlite::defer_foreign_keys(connection).await,
+        other => Err(sqlx::Error::Configuration(
+            format!("deferred foreign keys are not implemented for {other}").into(),
+        )),
     }
-}
-
-async fn read_pragmas(pool: &SqlitePool) -> Result<SqlitePragmas, sqlx::Error> {
-    let foreign_keys = sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
-        .fetch_one(pool)
-        .await?
-        != 0;
-    let journal_mode = sqlx::query_scalar::<_, String>("PRAGMA journal_mode")
-        .fetch_one(pool)
-        .await?;
-    let busy_timeout_ms = sqlx::query_scalar::<_, i64>("PRAGMA busy_timeout")
-        .fetch_one(pool)
-        .await?
-        .max(0) as u64;
-    let synchronous = sqlx::query_scalar::<_, i64>("PRAGMA synchronous")
-        .fetch_one(pool)
-        .await?;
-
-    Ok(SqlitePragmas {
-        foreign_keys,
-        journal_mode: if journal_mode.eq_ignore_ascii_case("wal") {
-            JournalMode::Wal
-        } else {
-            JournalMode::Other
-        },
-        busy_timeout_ms,
-        synchronous,
-    })
-}
-
-/// Start-up runs one full integrity check as a fail-closed gate. It is bounded
-/// so a pathological database cannot block start-up silently: budget exhaustion
-/// is an explicit failure, never a silent "healthy" (ADR 0008, issue #194).
-const STARTUP_INTEGRITY_BUDGET: Duration = Duration::from_secs(600);
-
-async fn verify_integrity(pool: &SqlitePool) -> Result<(), ServerDatabaseError> {
-    match crate::sqlite_check::bounded_scalar_query(
-        pool,
-        "PRAGMA integrity_check",
-        STARTUP_INTEGRITY_BUDGET,
-    )
-    .await
-    {
-        crate::sqlite_check::BoundedQuery::Completed(result) if result == "ok" => {}
-        crate::sqlite_check::BoundedQuery::Completed(result) => {
-            return Err(ServerDatabaseError::IntegrityFailed(result));
-        }
-        crate::sqlite_check::BoundedQuery::Exhausted => {
-            return Err(ServerDatabaseError::IntegrityFailed(
-                "the startup integrity check exceeded its budget".to_owned(),
-            ));
-        }
-        crate::sqlite_check::BoundedQuery::Failed(error) => {
-            return Err(ServerDatabaseError::IntegrityQuery(error));
-        }
-    }
-    if sqlx::query("PRAGMA foreign_key_check")
-        .fetch_optional(pool)
-        .await
-        .map_err(ServerDatabaseError::IntegrityQuery)?
-        .is_some()
-    {
-        return Err(ServerDatabaseError::IntegrityFailed(
-            "foreign key violations are present".into(),
-        ));
-    }
-
-    for table in REQUIRED_TABLES {
-        let exists = sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $1")
-            .bind(table)
-            .fetch_optional(pool)
-            .await
-            .map_err(ServerDatabaseError::IntegrityQuery)?
-            .is_some();
-        if !exists {
-            return Err(ServerDatabaseError::IntegrityFailed(format!(
-                "required table {table:?} is missing"
-            )));
-        }
-    }
-    Ok(())
 }
 
 /// Number the positional `?` placeholders of a statement composed at run
@@ -666,7 +522,7 @@ mod tests {
     use std::borrow::Cow;
 
     use sqlx::migrate::Migrator;
-    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
     use tempfile::tempdir;
 
     use super::*;
@@ -737,7 +593,7 @@ mod tests {
         let path = directory.path().join("server.db");
         let pool = SqlitePoolOptions::new()
             .max_connections(SERVER_WRITE_CONNECTIONS)
-            .connect_with(sqlite_options(&config(&path), true))
+            .connect_with(sqlite::connect_options(&config(&path), true))
             .await
             .unwrap();
         // Pin the actual upgrade boundary, not latest_schema - 1.
@@ -800,7 +656,7 @@ mod tests {
         let path = directory.path().join("server.db");
         let pool = SqlitePoolOptions::new()
             .max_connections(SERVER_WRITE_CONNECTIONS)
-            .connect_with(sqlite_options(&config(&path), true))
+            .connect_with(sqlite::connect_options(&config(&path), true))
             .await
             .unwrap();
         migrations_through(71).run(&pool).await.unwrap();
@@ -918,7 +774,7 @@ mod tests {
         let path = directory.path().join("server.db");
         let pool = SqlitePoolOptions::new()
             .max_connections(SERVER_WRITE_CONNECTIONS)
-            .connect_with(sqlite_options(&config(&path), true))
+            .connect_with(sqlite::connect_options(&config(&path), true))
             .await
             .unwrap();
         migrations_through(1).run(&pool).await.unwrap();
@@ -948,7 +804,7 @@ mod tests {
         let path = directory.path().join("server.db");
         let pool = SqlitePoolOptions::new()
             .max_connections(SERVER_WRITE_CONNECTIONS)
-            .connect_with(sqlite_options(&config(&path), true))
+            .connect_with(sqlite::connect_options(&config(&path), true))
             .await
             .unwrap();
         // Pinned to the schema immediately before the provider-keyed cache
@@ -1060,7 +916,7 @@ mod tests {
             let path = directory.path().join("server.db");
             let pool = SqlitePoolOptions::new()
                 .max_connections(SERVER_WRITE_CONNECTIONS)
-                .connect_with(sqlite_options(&config(&path), true))
+                .connect_with(sqlite::connect_options(&config(&path), true))
                 .await
                 .unwrap();
             migrations_through(SCHEMA_BEFORE_AGGREGATE_TIERS)
@@ -1364,7 +1220,7 @@ mod tests {
         let path = directory.path().join("server.db");
         let pool = SqlitePoolOptions::new()
             .max_connections(SERVER_WRITE_CONNECTIONS)
-            .connect_with(sqlite_options(&config(&path), true))
+            .connect_with(sqlite::connect_options(&config(&path), true))
             .await
             .unwrap();
         migrations_through(53).run(&pool).await.unwrap();

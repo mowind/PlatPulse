@@ -55,10 +55,10 @@ pub mod retention;
 /// Reward Wallet Balance refresher and reading (issue #246).
 pub mod reward_wallet;
 pub mod secrets;
-/// Bounded, interruptible SQLite integrity queries (issue #194).
-pub(crate) mod sqlite_check;
 pub mod state_history;
 pub mod subject_deletion;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod transport;
 pub mod validator;
 

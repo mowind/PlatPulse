@@ -198,7 +198,7 @@ enum RequestReplayError {
 /// replay of the same intent; `Err(Conflict)` is a changed intent;
 /// `Ok(None)` means the request id is new.
 async fn resolve_request_replay(
-    tx: &mut sqlx::SqliteConnection,
+    tx: &mut sqlx::AnyConnection,
     request_id: &str,
     fingerprint: &str,
     now: OffsetDateTime,
@@ -1076,11 +1076,7 @@ mod tests {
         channels: crate::config::NotificationChannels,
     ) -> (tempfile::TempDir, AppState, std::sync::Arc<FakeProvider>) {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(
@@ -1138,7 +1134,7 @@ mod tests {
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
     }
 
-    async fn seed_event(pool: &sqlx::SqlitePool) -> String {
+    async fn seed_event(pool: &sqlx::AnyPool) -> String {
         sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ('inc-1', 'node.rpc_unreachable', 1, 'node', 'node-a', 'critical', 'open', '2026-03-01T00:00:00Z', '2026-03-01T00:00:00Z', '{}') ON CONFLICT(incident_id) DO NOTHING")
             .execute(pool)
             .await
@@ -2453,7 +2449,7 @@ mod tests {
     /// fixtures are created at the fixed `base_time()`; the worker's own
     /// `now_utc()` clock decides effectiveness, so the window is anchored
     /// to the real clock.
-    async fn insert_active_silence(pool: &sqlx::SqlitePool, silence_id: &str) {
+    async fn insert_active_silence(pool: &sqlx::AnyPool, silence_id: &str) {
         let now = time::OffsetDateTime::now_utc();
         sqlx::query("INSERT INTO silences (silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at) VALUES (?, 'node', 'node-a', 'planned', ?, ?, 'owner', ?)")
             .bind(silence_id)
@@ -2467,7 +2463,7 @@ mod tests {
 
     /// Insert a Maintenance Window for `node-a` covering the current
     /// instant, expecting `node.rpc_unreachable`.
-    async fn insert_active_maintenance(pool: &sqlx::SqlitePool, window_id: &str) {
+    async fn insert_active_maintenance(pool: &sqlx::AnyPool, window_id: &str) {
         let now = time::OffsetDateTime::now_utc();
         sqlx::query("INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES (?, 'node', 'node-a', '[\"node.rpc_unreachable\"]', 'planned', ?, ?, 'owner', ?)")
             .bind(window_id)
@@ -2630,7 +2626,7 @@ mod tests {
     /// being handed to the channel. The attempt has already passed the
     /// pre-handoff re-check, so it must complete and stay non-retractable.
     struct WindowOpeningProvider {
-        pool: sqlx::SqlitePool,
+        pool: sqlx::AnyPool,
         texts: std::sync::Mutex<Vec<String>>,
     }
 

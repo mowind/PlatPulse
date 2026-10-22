@@ -36,7 +36,7 @@ use std::{
 };
 
 use serde::Serialize;
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Any, AnyPool, Transaction};
 use thiserror::Error;
 
 use crate::auth::{format_rfc3339, now_utc};
@@ -447,10 +447,7 @@ impl CapacityProtection {
     /// optional history, so an open interval is adopted before the first
     /// measurement. The interval keeps the thresholds that were in force when
     /// it opened; today's policy decides whether it may close.
-    pub async fn reconcile(
-        &self,
-        pool: &SqlitePool,
-    ) -> Result<ProtectionTransition, CapacityError> {
+    pub async fn reconcile(&self, pool: &AnyPool) -> Result<ProtectionTransition, CapacityError> {
         self.adopt_open_interval(pool)
             .await
             .map_err(CapacityError::Storage)?;
@@ -464,7 +461,7 @@ impl CapacityProtection {
     /// process that cannot read the record must not conclude that no interval
     /// is open: it would resume optional history under pressure and leave the
     /// recorded interval open forever.
-    async fn adopt_open_interval(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    async fn adopt_open_interval(&self, pool: &AnyPool) -> Result<(), sqlx::Error> {
         let open = load_open_interval(pool).await?;
         let mut state = self
             .state
@@ -490,10 +487,7 @@ impl CapacityProtection {
     /// them leaves an open interval (history stays paused on restart) rather
     /// than a skipped stretch of history with no record of it. If the write
     /// fails the in-memory state is left alone and retried on the next tick.
-    pub async fn check_now(
-        &self,
-        pool: &SqlitePool,
-    ) -> Result<ProtectionTransition, CapacityError> {
+    pub async fn check_now(&self, pool: &AnyPool) -> Result<ProtectionTransition, CapacityError> {
         let _tick = self.tick.lock().await;
         if self.adoption_pending() {
             if let Err(error) = self.adopt_open_interval(pool).await {
@@ -625,7 +619,7 @@ impl CapacityProtection {
     /// The caller supplies the shutdown signal as a future, so this module
     /// never needs to know about Server state; the Server passes its own
     /// shutdown signal.
-    pub async fn run_worker<F>(self: std::sync::Arc<Self>, pool: SqlitePool, shutdown: F)
+    pub async fn run_worker<F>(self: std::sync::Arc<Self>, pool: AnyPool, shutdown: F)
     where
         F: std::future::Future<Output = ()>,
     {
@@ -692,9 +686,7 @@ pub struct OpenIntervalRecord {
 }
 
 /// Read the interval that is still open, if any.
-pub async fn load_open_interval(
-    pool: &SqlitePool,
-) -> Result<Option<OpenIntervalRecord>, sqlx::Error> {
+pub async fn load_open_interval(pool: &AnyPool) -> Result<Option<OpenIntervalRecord>, sqlx::Error> {
     let row = sqlx::query_as::<_, (String, String)>(
         "SELECT interval_id, started_at FROM capacity_protection_intervals WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1",
     )
@@ -715,7 +707,7 @@ pub async fn load_open_interval(
 /// quietly delete rows to stay small (design §11.5, issue #212). A single
 /// statement also means the transition cannot half-commit — the interval row
 /// and the in-memory gate either both move or neither does.
-async fn open_interval(pool: &SqlitePool, open: &OpenInterval<'_>) -> Result<(), sqlx::Error> {
+async fn open_interval(pool: &AnyPool, open: &OpenInterval<'_>) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO capacity_protection_intervals (interval_id, source_mount, started_at, started_reason, opened_total_bytes, opened_available_bytes, pause_below_bytes, resume_above_bytes, ended_at, ended_reason, resumed_total_bytes, resumed_available_bytes, created_at, updated_at) VALUES ($1, $2, $3, 'low_space', $4, $5, $6, $7, NULL, NULL, NULL, NULL, $8, $9)",
     )
@@ -735,7 +727,7 @@ async fn open_interval(pool: &SqlitePool, open: &OpenInterval<'_>) -> Result<(),
 
 /// Record that protection ended, with the measurement that justified it.
 async fn close_interval(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     interval_id: &str,
     reason: &str,
     ended_at: &str,
@@ -774,7 +766,7 @@ async fn close_interval(
 /// from a replay would need one ledger row per skipped reading, costing at
 /// least as much disk as the history the pause is protecting.
 pub async fn record_skipped_series(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     interval_id: &str,
     scope: SkippedScope,
     scope_key: &str,
@@ -799,7 +791,7 @@ pub async fn record_skipped_series(
 
 /// Protection intervals for the Admin surface, newest first.
 pub async fn recent_intervals(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     limit: i64,
 ) -> Result<Vec<CapacityIntervalRecord>, sqlx::Error> {
     type IntervalRow = (
@@ -924,11 +916,7 @@ mod tests {
     }
 
     async fn database(dir: &Path) -> crate::database::ServerDatabase {
-        crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.join("server.db"),
-        ))
-        .await
-        .unwrap()
+        crate::test_support::test_database_in(dir).await
     }
 
     #[test]

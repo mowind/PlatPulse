@@ -31,7 +31,7 @@
 
 use platpulse_core::component::ComponentKey;
 use serde::Serialize;
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{AnyPool, FromRow};
 use time::{Duration, OffsetDateTime};
 
 use crate::auth::format_rfc3339;
@@ -1409,7 +1409,7 @@ const VALIDATOR_GRACE_SECONDS: i64 = 36 * 3600;
 
 /// What every source reader needs that the orchestration resolved once.
 struct SourceContext<'a> {
-    pool: &'a SqlitePool,
+    pool: &'a AnyPool,
     window: &'a ResolvedWindow,
     now: OffsetDateTime,
     node_id: &'a str,
@@ -1736,7 +1736,7 @@ impl TierInstants {
 
 /// One series' ledger as the history engine records it.
 async fn load_metric_ledger(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     schema: &HistorySchema,
     scope_key: &str,
 ) -> Result<(Vec<LedgerRow>, bool), sqlx::Error> {
@@ -2010,7 +2010,7 @@ async fn metric_source(
 
 /// The one interruption a tier's own statistics proved, when it proved one.
 async fn fetch_worst_gap(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     schema: &HistorySchema,
     scope_key: &str,
     grain_seconds: Option<i64>,
@@ -3460,7 +3460,7 @@ impl PauseRow {
 
 /// Every pause the Server refused optional history during, for one Node.
 async fn load_pauses(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     node_id: &str,
     agent_id: &str,
     window: &ResolvedWindow,
@@ -3484,7 +3484,7 @@ async fn load_pauses(
 /// caller gets is where the evidence is; the evidence itself stays with each
 /// family's own endpoint (design §11.4, story 54-59).
 pub async fn investigate_node(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     node_id: &str,
     window: &ResolvedWindow,
     now: OffsetDateTime,
@@ -3660,11 +3660,7 @@ mod tests {
     /// and century edges, and round a sub-second fraction to the nearest second.
     #[tokio::test]
     async fn epoch_of_names_the_unix_second_of_a_canonical_instant() {
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
+        let pool = crate::test_support::unmigrated_sqlite_pool(None).await;
         let statement = format!("SELECT {} FROM (SELECT $1 AS at)", epoch_of("at"));
         for instant in [
             "1970-01-01T00:00:00Z",

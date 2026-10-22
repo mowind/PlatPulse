@@ -18,7 +18,7 @@
 use std::time::Duration;
 
 use serde_json::Value;
-use sqlx::SqlitePool;
+use sqlx::AnyPool;
 use time::OffsetDateTime;
 
 use crate::http::AppState;
@@ -232,7 +232,7 @@ pub struct RewardWalletReading {
 }
 
 async fn load(
-    executor: impl sqlx::SqliteExecutor<'_>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
 ) -> Result<Option<StoredReading>, sqlx::Error> {
     sqlx::query_as::<_, StoredReading>(
         "SELECT balance, last_good_at, last_attempt_at, error_category FROM reward_wallet_balance WHERE address = $1",
@@ -243,10 +243,7 @@ async fn load(
 }
 
 /// Read the stored reading and judge it against `now`.
-pub async fn read(
-    pool: &SqlitePool,
-    now: OffsetDateTime,
-) -> Result<RewardWalletReading, sqlx::Error> {
+pub async fn read(pool: &AnyPool, now: OffsetDateTime) -> Result<RewardWalletReading, sqlx::Error> {
     Ok(reading(load(pool).await?, now))
 }
 
@@ -287,7 +284,7 @@ fn reading(stored: Option<StoredReading>, now: OffsetDateTime) -> RewardWalletRe
 /// the error category, so the last-good balance survives it. Returns whether
 /// the stored row changed; a rolled-back write returns the error instead.
 pub async fn record(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     outcome: Result<&str, ErrorCategory>,
     at: OffsetDateTime,
 ) -> Result<bool, sqlx::Error> {
@@ -486,11 +483,7 @@ mod tests {
     }
 
     async fn test_db() -> (TempDir, ServerDatabase) {
-        let dir = TempDir::new().unwrap();
-        let db = initialize(ServerDatabaseConfig::new(dir.path().join("server.db")))
-            .await
-            .unwrap();
-        (dir, db)
+        crate::test_support::test_database().await
     }
 
     fn test_state(dir: &TempDir, db: ServerDatabase) -> AppState {

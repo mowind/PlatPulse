@@ -18,8 +18,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use sqlx::Any;
 use sqlx::Executor;
-use sqlx::sqlite::Sqlite;
 use time::OffsetDateTime;
 use utoipa::ToSchema;
 
@@ -251,7 +251,7 @@ fn rule_write_version_conflict(request_id: &str) -> Response {
 /// without touching the baseline columns, yet their save still has to
 /// invalidate a concurrent reader's expectedVersion (issue #204, Story 19).
 async fn record_composed_revision(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     rule_key: &str,
     new_version: i64,
     severity: &str,
@@ -618,7 +618,7 @@ pub struct MaintenanceMutationResponse {
 
 async fn open_incident_counts<'e, E>(executor: E) -> Result<Vec<(String, String, i64)>, sqlx::Error>
 where
-    E: Executor<'e, Database = Sqlite>,
+    E: Executor<'e, Database = Any>,
 {
     // A deleted subject's Incidents are retained evidence, not current
     // problems: they never count toward "open" rule/state views (design
@@ -643,7 +643,7 @@ async fn rule_evaluation_summary<'e, E>(
     rule_key: &str,
 ) -> Result<RuleEvaluationSummary, sqlx::Error>
 where
-    E: Executor<'e, Database = Sqlite>,
+    E: Executor<'e, Database = Any>,
 {
     let rows = sqlx::query_as::<_, (String, i64, i64)>(
         "SELECT state, COUNT(*), COALESCE(SUM(evaluation_unavailable), 0) FROM alert_rule_state WHERE rule_key = $1 GROUP BY state",
@@ -678,14 +678,26 @@ async fn load_rule_row<'e, E>(
     rule_key: &str,
 ) -> Result<Option<(bool, String, i64, String, String, String)>, sqlx::Error>
 where
-    E: Executor<'e, Database = Sqlite>,
+    E: Executor<'e, Database = Any>,
 {
-    sqlx::query_as::<_, (bool, String, i64, String, String, String)>(
+    let row = sqlx::query_as::<_, (i64, String, i64, String, String, String)>(
         "SELECT enabled, severity, version, condition_json, created_at, updated_at FROM alert_rules WHERE rule_key = $1",
     )
     .bind(rule_key)
     .fetch_optional(executor)
-    .await
+    .await?;
+    Ok(row.map(
+        |(enabled, severity, version, condition_json, created_at, updated_at)| {
+            (
+                enabled != 0,
+                severity,
+                version,
+                condition_json,
+                created_at,
+                updated_at,
+            )
+        },
+    ))
 }
 
 async fn rule_state_dtos<'e, E>(
@@ -694,7 +706,7 @@ async fn rule_state_dtos<'e, E>(
     open_counts: &[(String, String, i64)],
 ) -> Result<Vec<RuleStateDto>, sqlx::Error>
 where
-    E: Executor<'e, Database = Sqlite>,
+    E: Executor<'e, Database = Any>,
 {
     let rows = sqlx::query_as::<_, (
         String,
@@ -706,7 +718,7 @@ where
         String,
         Option<f64>,
         Option<String>,
-        bool,
+        i64,
         String,
     )>(
         "SELECT subject_kind, subject_key, state, pending_since, firing_since, recovering_since, input_kind, input_value, input_detail, evaluation_unavailable, last_evaluated_at FROM alert_rule_state WHERE rule_key = $1 ORDER BY subject_kind, subject_key",
@@ -746,7 +758,7 @@ where
                     input_kind,
                     input_value,
                     input_detail,
-                    evaluation_unavailable,
+                    evaluation_unavailable: evaluation_unavailable != 0,
                     last_evaluated_at,
                     open_incidents,
                 }
@@ -760,7 +772,7 @@ async fn rule_versions_dto<'e, E>(
     rule_key: &str,
 ) -> Result<Vec<RuleVersionDto>, AlertError>
 where
-    E: Executor<'e, Database = Sqlite>,
+    E: Executor<'e, Database = Any>,
 {
     let rows = sqlx::query_as::<_, (i64, String, String, String)>(
         "SELECT version, severity, condition_json, created_at FROM alert_rule_versions WHERE rule_key = $1 ORDER BY version DESC",
@@ -788,9 +800,9 @@ async fn rule_overrides_dto<'e, E>(
     rule_key: &str,
 ) -> Result<Vec<RuleOverrideDto>, AlertError>
 where
-    E: Executor<'e, Database = Sqlite>,
+    E: Executor<'e, Database = Any>,
 {
-    let rows = sqlx::query_as::<_, (String, String, Option<bool>, Option<String>, Option<String>, String)>(
+    let rows = sqlx::query_as::<_, (String, String, Option<i64>, Option<String>, Option<String>, String)>(
         "SELECT scope_kind, scope_value, enabled, severity, condition_json, updated_at FROM alert_rule_overrides WHERE rule_key = $1 ORDER BY scope_kind, scope_value",
     )
     .bind(rule_key)
@@ -809,7 +821,7 @@ where
                 Ok(RuleOverrideDto {
                     scope_kind,
                     scope_value,
-                    enabled,
+                    enabled: enabled.map(|flag| flag != 0),
                     severity,
                     condition,
                     updated_at,
@@ -1372,7 +1384,7 @@ pub(crate) async fn preview_alert_rule(
                         .flatten();
                 if let Some(network_key) = network_key {
                     if let Some((override_enabled, override_severity, override_condition_json)) =
-                        sqlx::query_as::<_, (Option<bool>, Option<String>, Option<String>)>(
+                        sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>)>(
                             "SELECT enabled, severity, condition_json FROM alert_rule_overrides WHERE rule_key = $1 AND scope_kind = 'network' AND scope_value = $2",
                         )
                         .bind(&rule_key)
@@ -1382,14 +1394,14 @@ pub(crate) async fn preview_alert_rule(
                     {
                         apply_preview_override(
                             &mut effective,
-                            override_enabled,
+                            override_enabled.map(|flag| flag != 0),
                             override_severity,
                             override_condition_json.as_deref(),
                         );
                     }
                 }
                 if let Some((override_enabled, override_severity, override_condition_json)) =
-                    sqlx::query_as::<_, (Option<bool>, Option<String>, Option<String>)>(
+                    sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>)>(
                         "SELECT enabled, severity, condition_json FROM alert_rule_overrides WHERE rule_key = $1 AND scope_kind = 'node' AND scope_value = $2",
                     )
                     .bind(&rule_key)
@@ -1399,7 +1411,7 @@ pub(crate) async fn preview_alert_rule(
                 {
                     apply_preview_override(
                         &mut effective,
-                        override_enabled,
+                        override_enabled.map(|flag| flag != 0),
                         override_severity,
                         override_condition_json.as_deref(),
                     );
@@ -1635,7 +1647,7 @@ pub(crate) async fn upsert_rule_override(
         // just as much as setting one, so the previous value must be read before
         // the upsert to decide whether recovery windows are invalidated (issue
         // #203 review B1).
-        let previous_enabled: Option<Option<bool>> = sqlx::query_scalar(
+        let previous_enabled: Option<Option<i64>> = sqlx::query_scalar(
             "SELECT enabled FROM alert_rule_overrides WHERE rule_key = $1 AND scope_kind = $2 AND scope_value = $3",
         )
         .bind(&rule_key)
@@ -1821,7 +1833,7 @@ pub(crate) async fn delete_rule_override(
         // Whether the removed override could have flipped an effective
         // enabled flag decides whether recovery windows must be invalidated
         // (issue #203 review R1).
-        let existing_enabled: Option<Option<bool>> = sqlx::query_scalar(
+        let existing_enabled: Option<Option<i64>> = sqlx::query_scalar(
             "SELECT enabled FROM alert_rule_overrides WHERE rule_key = $1 AND scope_kind = $2 AND scope_value = $3",
         )
         .bind(&rule_key)
@@ -3661,11 +3673,7 @@ mod tests {
 
     async fn test_state() -> (tempfile::TempDir, AppState) {
         let dir = tempdir().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(
@@ -3711,7 +3719,7 @@ mod tests {
         RequestId(std::sync::Arc::from("req-123"))
     }
 
-    async fn set_rpc_error(pool: &sqlx::SqlitePool, state: &str, observed_at: OffsetDateTime) {
+    async fn set_rpc_error(pool: &sqlx::AnyPool, state: &str, observed_at: OffsetDateTime) {
         let now = format_rfc3339(observed_at);
         sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES ('agent-a', 'node', 'node-a', 'node-a', 'rpc', ?, ?, ?, ?, 1, 1, 'rpc_unreachable', 'connect refused') ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, received_at=excluded.received_at, error_code=excluded.error_code, error_message=excluded.error_message")
             .bind(state)
@@ -3862,7 +3870,7 @@ mod tests {
         .await;
         assert_eq!(first.status(), StatusCode::OK);
         assert_eq!(body_json(first).await["rule"]["version"], 2);
-        let before: (i64, String, bool) = sqlx::query_as(
+        let before: (i64, String, i64) = sqlx::query_as(
             "SELECT version, severity, enabled FROM alert_rules WHERE rule_key = 'agent.offline'",
         )
         .fetch_one(state.db().pool())
@@ -3885,7 +3893,7 @@ mod tests {
             body_json(stale).await["error"]["code"],
             "alert_rule_version_conflict"
         );
-        let after: (i64, String, bool) = sqlx::query_as(
+        let after: (i64, String, i64) = sqlx::query_as(
             "SELECT version, severity, enabled FROM alert_rules WHERE rule_key = 'agent.offline'",
         )
         .fetch_one(state.db().pool())
@@ -4826,7 +4834,7 @@ mod tests {
         let incident_id = open_node_incident(&state, now).await;
         let pool = state.db().pool();
 
-        async fn dump(pool: &sqlx::SqlitePool, sql: &str) -> Vec<String> {
+        async fn dump(pool: &sqlx::AnyPool, sql: &str) -> Vec<String> {
             sqlx::query_scalar::<_, String>(sql)
                 .fetch_all(pool)
                 .await
@@ -5060,7 +5068,7 @@ mod tests {
         .await
         .unwrap();
         drop(conn);
-        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+        let (recovering_since, unavailable): (Option<String>, i64) = sqlx::query_as(
             "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
              WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
         )
@@ -5071,7 +5079,7 @@ mod tests {
             recovering_since.as_deref(),
             Some(format_rfc3339(recovering_at).as_str())
         );
-        assert!(!unavailable);
+        assert_eq!(unavailable, 0);
 
         // Disable through the Admin endpoint. No evaluation runs while the Rule
         // is disabled, so only the configuration change can clear the window.
@@ -5085,7 +5093,7 @@ mod tests {
         )
         .await;
         assert_eq!(disable.status(), StatusCode::OK);
-        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+        let (recovering_since, unavailable): (Option<String>, i64) = sqlx::query_as(
             "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
              WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
         )
@@ -5096,7 +5104,7 @@ mod tests {
             recovering_since.is_none(),
             "disabling without an evaluation invalidates the in-flight window"
         );
-        assert!(unavailable);
+        assert_eq!(unavailable, 1);
 
         // Re-enable, still with no evaluation.
         let enable = update_alert_rule(
@@ -5192,7 +5200,7 @@ mod tests {
         )
         .await;
         assert_eq!(upsert_node.status(), StatusCode::OK);
-        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+        let (recovering_since, unavailable): (Option<String>, i64) = sqlx::query_as(
             "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
              WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
         )
@@ -5203,7 +5211,7 @@ mod tests {
             recovering_since.is_none(),
             "a disabling Node override invalidates the recovery window"
         );
-        assert!(unavailable);
+        assert_eq!(unavailable, 1);
 
         // Deleting the override restores the global enabled flag and clears the
         // window again (still no evaluation in between).
@@ -5220,7 +5228,7 @@ mod tests {
         )
         .await;
         assert_eq!(delete_node.status(), StatusCode::OK);
-        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+        let (recovering_since, unavailable): (Option<String>, i64) = sqlx::query_as(
             "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
              WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
         )
@@ -5228,7 +5236,7 @@ mod tests {
         .await
         .unwrap();
         assert!(recovering_since.is_none());
-        assert!(unavailable);
+        assert_eq!(unavailable, 1);
 
         // A Network override on the subject's Network invalidates it too. The
         // Node upsert and its removal already advanced the composed revision
@@ -5245,7 +5253,7 @@ mod tests {
         )
         .await;
         assert_eq!(upsert_network.status(), StatusCode::OK);
-        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+        let (recovering_since, unavailable): (Option<String>, i64) = sqlx::query_as(
             "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
              WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
         )
@@ -5253,7 +5261,7 @@ mod tests {
         .await
         .unwrap();
         assert!(recovering_since.is_none());
-        assert!(unavailable);
+        assert_eq!(unavailable, 1);
 
         // While the Network override keeps the Rule disabled, a fresh Known
         // observation is skipped and restores no window.
@@ -5270,7 +5278,7 @@ mod tests {
         .await
         .unwrap();
         drop(conn);
-        let (recovering_since, _): (Option<String>, bool) = sqlx::query_as(
+        let (recovering_since, _): (Option<String>, i64) = sqlx::query_as(
             "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
              WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
         )
@@ -5390,7 +5398,7 @@ mod tests {
         .await
         .unwrap();
         drop(conn);
-        let (recovering_since, _): (Option<String>, bool) = sqlx::query_as(
+        let (recovering_since, _): (Option<String>, i64) = sqlx::query_as(
             "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
              WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
         )
@@ -5416,7 +5424,7 @@ mod tests {
         )
         .await;
         assert_eq!(upsert_node_inherit.status(), StatusCode::OK);
-        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+        let (recovering_since, unavailable): (Option<String>, i64) = sqlx::query_as(
             "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
              WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
         )
@@ -5427,7 +5435,7 @@ mod tests {
             recovering_since.is_none(),
             "clearing an explicit enabled override invalidates the recovery window"
         );
-        assert!(unavailable);
+        assert_eq!(unavailable, 1);
 
         // The Incident keeps its original facts and confirmation.
         let response = alert_incident_detail(
@@ -5470,7 +5478,7 @@ mod tests {
         .await
         .unwrap();
         drop(conn);
-        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+        let (recovering_since, unavailable): (Option<String>, i64) = sqlx::query_as(
             "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
              WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
         )
@@ -5481,7 +5489,7 @@ mod tests {
             recovering_since.as_deref(),
             Some(format_rfc3339(recovering_at).as_str())
         );
-        assert!(!unavailable);
+        assert_eq!(unavailable, 0);
 
         // Disable the Rule: evaluation stops and the in-flight window must be
         // invalidated rather than left to mature while nothing is observed.
@@ -5502,7 +5510,7 @@ mod tests {
         .await
         .unwrap();
         drop(conn);
-        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+        let (recovering_since, unavailable): (Option<String>, i64) = sqlx::query_as(
             "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
              WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
         )
@@ -5510,7 +5518,7 @@ mod tests {
         .await
         .unwrap();
         assert!(recovering_since.is_none());
-        assert!(unavailable);
+        assert_eq!(unavailable, 1);
         let response = alert_incident_detail(
             State(state.clone()),
             Path(incident_id.clone()),
@@ -5628,7 +5636,7 @@ mod tests {
         );
         let state = AppState::new(database, None, auth);
 
-        let (recovering_since, unavailable): (Option<String>, bool) = sqlx::query_as(
+        let (recovering_since, unavailable): (Option<String>, i64) = sqlx::query_as(
             "SELECT recovering_since, evaluation_unavailable FROM alert_rule_state \
              WHERE rule_key = 'node.rpc_unreachable' AND subject_key = 'node-a'",
         )
@@ -5636,7 +5644,7 @@ mod tests {
         .await
         .unwrap();
         assert!(recovering_since.is_none());
-        assert!(unavailable);
+        assert_eq!(unavailable, 1);
 
         // The first fresh Known observation after the restart restarts the
         // window; it must not resolve on timestamps from before the gap.

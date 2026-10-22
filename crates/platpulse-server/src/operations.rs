@@ -17,7 +17,7 @@
 //! outright.
 
 use serde_json::Value;
-use sqlx::SqlitePool;
+use sqlx::AnyPool;
 use thiserror::Error;
 
 use crate::http::AppState;
@@ -129,7 +129,7 @@ impl From<crate::restore::RestoreError> for OperationError {
 /// harmless or impossible. A command a browser can re-send (issue #211) goes
 /// through create_operation_once instead.
 pub async fn create_operation(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     kind: &str,
     params: &Value,
     request_id: &str,
@@ -161,7 +161,7 @@ pub async fn create_operation(
 /// writes share one transaction, so a crash cannot leave a queued Operation
 /// without the identity that records it.
 pub async fn create_operation_once(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     kind: &str,
     params: &Value,
     request_id: &str,
@@ -233,7 +233,7 @@ fn prepare_params(params: &Value) -> Result<(Value, String), OperationError> {
 /// Insert the Operation row, its creating Audit Event, and the audit link.
 /// Returns the Operation id and the Audit Event id.
 async fn insert_operation(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     kind: &str,
     params_text: &str,
     sanitized_params: &Value,
@@ -281,7 +281,7 @@ async fn insert_operation(
 /// reconcile to it.
 #[allow(clippy::too_many_arguments)]
 async fn record_operation(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     kind: &str,
     params_text: &str,
     sanitized_params: &Value,
@@ -350,7 +350,7 @@ impl OperationRequestRow {
 /// Look a command up by its request id. An expired row reads as absent, so a
 /// read-only lookup never has to write.
 async fn load_operation_request(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     request_id: &str,
     now: time::OffsetDateTime,
 ) -> Result<Option<OperationRequestRow>, sqlx::Error> {
@@ -366,7 +366,7 @@ async fn load_operation_request(
 /// Look a command up by the intent it was confirmed for, which is what makes a
 /// second tab with its own request id reconcile instead of queueing again.
 async fn load_operation_request_by_intent(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     kind: &str,
     intent_fingerprint: &str,
     now: time::OffsetDateTime,
@@ -383,7 +383,7 @@ async fn load_operation_request_by_intent(
 
 /// Record the command identity beside the Operation it queued.
 async fn insert_operation_request(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     request_id: &str,
     kind: &str,
     intent_fingerprint: &str,
@@ -410,7 +410,7 @@ async fn insert_operation_request(
 
 /// Drop recorded commands whose replay window closed.
 async fn prune_expired_operation_requests(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     now: time::OffsetDateTime,
 ) -> Result<u64, sqlx::Error> {
     let result = sqlx::query("DELETE FROM operation_requests WHERE expires_at <= $1")
@@ -424,7 +424,7 @@ async fn prune_expired_operation_requests(
 /// index in migration 0064 makes the same promise to a concurrent writer, so
 /// this check answers the common case and the index backstops the race.
 async fn open_operation_of_kind(
-    executor: &mut sqlx::SqliteConnection,
+    executor: &mut sqlx::AnyConnection,
     kind: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     sqlx::query_scalar::<_, String>(
@@ -440,7 +440,7 @@ async fn open_operation_of_kind(
 /// Re-read the ledger after a rejected write: whatever won the race is the
 /// honest answer.
 async fn reconcile_recorded_command(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     kind: &str,
     request_id: &str,
     intent_fingerprint: &str,
@@ -455,7 +455,7 @@ async fn reconcile_recorded_command(
 /// same intent under another request id (a second tab) is the same command, not
 /// a second one (issue #211, story 39).
 async fn recorded_command(
-    conn: &mut sqlx::SqliteConnection,
+    conn: &mut sqlx::AnyConnection,
     kind: &str,
     request_id: &str,
     intent_fingerprint: &str,
@@ -479,7 +479,7 @@ async fn recorded_command(
 /// reconciles to the run it recorded even when the preview it named has expired
 /// or its policy has moved since (issue #211, story 39).
 pub async fn replay_recorded_command(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     kind: &str,
     request_id: &str,
     intent_fingerprint: &str,
@@ -500,7 +500,7 @@ pub async fn replay_recorded_command(
 /// recorded identity first, then the destructive-kind exclusion that makes one
 /// confirmation authorize one release.
 async fn recorded_outcome(
-    conn: &mut sqlx::SqliteConnection,
+    conn: &mut sqlx::AnyConnection,
     kind: &str,
     request_id: &str,
     intent_fingerprint: &str,
@@ -521,7 +521,7 @@ async fn recorded_outcome(
 /// Next operation to advance: an in-flight multi-step `running` operation
 /// first (bounded retention batches continue across ticks), otherwise the
 /// oldest queued operation. Terminal rows are never picked up.
-pub async fn next_queued(pool: &SqlitePool) -> Result<Option<String>, OperationError> {
+pub async fn next_queued(pool: &AnyPool) -> Result<Option<String>, OperationError> {
     let row = sqlx::query_as::<_, (String,)>(
         "SELECT operation_id FROM operations WHERE status IN ($1, $2) ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at, operation_id LIMIT 1",
     )
@@ -535,7 +535,7 @@ pub async fn next_queued(pool: &SqlitePool) -> Result<Option<String>, OperationE
 /// Claim a queued operation for execution, or confirm an in-flight
 /// multi-step operation is still running. Returns `false` when the row is
 /// terminal (e.g. cancelled before the worker picked it up).
-pub async fn mark_running(pool: &SqlitePool, operation_id: &str) -> Result<bool, OperationError> {
+pub async fn mark_running(pool: &AnyPool, operation_id: &str) -> Result<bool, OperationError> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let result = sqlx::query(
         "UPDATE operations SET status = $1, started_at = COALESCE(started_at, $2) WHERE operation_id = $3 AND status = $4",
@@ -557,10 +557,7 @@ pub async fn mark_running(pool: &SqlitePool, operation_id: &str) -> Result<bool,
     Ok(status == STATUS_RUNNING)
 }
 
-pub async fn operation_kind(
-    pool: &SqlitePool,
-    operation_id: &str,
-) -> Result<String, OperationError> {
+pub async fn operation_kind(pool: &AnyPool, operation_id: &str) -> Result<String, OperationError> {
     Ok(
         sqlx::query_scalar("SELECT kind FROM operations WHERE operation_id = $1")
             .bind(operation_id)
@@ -569,10 +566,7 @@ pub async fn operation_kind(
     )
 }
 
-pub async fn operation_params(
-    pool: &SqlitePool,
-    operation_id: &str,
-) -> Result<Value, OperationError> {
+pub async fn operation_params(pool: &AnyPool, operation_id: &str) -> Result<Value, OperationError> {
     let text: String =
         sqlx::query_scalar("SELECT params_json FROM operations WHERE operation_id = $1")
             .bind(operation_id)
@@ -737,7 +731,7 @@ pub async fn finalize(
 /// the persisted plan already knows how much of the confirmed work was released,
 /// so the failure reports that instead of leaving the operator to guess whether
 /// the deleted history came back.
-pub async fn requeue_interrupted_operations(pool: &SqlitePool) -> Result<u64, OperationError> {
+pub async fn requeue_interrupted_operations(pool: &AnyPool) -> Result<u64, OperationError> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let interrupted: Vec<String> =
         sqlx::query_scalar("SELECT params_json FROM operations WHERE status = $1 AND kind = $2")
@@ -859,11 +853,7 @@ mod tests {
     #[tokio::test]
     async fn create_operation_links_audit_in_one_transaction() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         sqlx::query("INSERT INTO users (user_id, username, role, password_hash, created_at, updated_at) VALUES ('owner', 'owner', 'owner', 'hash', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
             .execute(database.pool())
             .await
@@ -918,11 +908,7 @@ mod tests {
     #[tokio::test]
     async fn requeue_fails_interrupted_running_operations_and_keeps_queued() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
         sqlx::query("INSERT INTO operations (operation_id, kind, status, created_at, params_json, warnings_json, errors_json) VALUES ('op-a', 'retention_run', 'running', ?, '{}', '[]', '[]')")
@@ -960,11 +946,7 @@ mod tests {
 
     async fn fresh_database() -> (tempfile::TempDir, crate::database::ServerDatabase) {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         sqlx::query("INSERT INTO users (user_id, username, role, password_hash, created_at, updated_at) VALUES ('owner', 'owner', 'owner', 'hash', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
             .execute(database.pool())
             .await
@@ -977,11 +959,7 @@ mod tests {
     #[tokio::test]
     async fn create_operation_once_replays_the_recorded_command_and_refuses_a_reused_identity() {
         let (_dir, database) = fresh_database().await;
-        async fn queue(
-            pool: &sqlx::SqlitePool,
-            request_id: &str,
-            fingerprint: &str,
-        ) -> QueueOutcome {
+        async fn queue(pool: &sqlx::AnyPool, request_id: &str, fingerprint: &str) -> QueueOutcome {
             create_operation_once(
                 pool,
                 KIND_DOCTOR_RUN,

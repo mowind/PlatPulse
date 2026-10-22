@@ -13,7 +13,7 @@ use axum::http::StatusCode;
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use sqlx::SqlitePool;
+use sqlx::AnyPool;
 
 use crate::http::AppState;
 
@@ -666,8 +666,9 @@ async fn collect_snapshot(state: &AppState) -> MetricsSnapshot {
     let registry = state.metrics();
     let db = state.db();
     let pool = db.pool();
-    snapshot.sqlite_page_count = pragma_u64(pool, "PRAGMA page_count").await;
-    snapshot.sqlite_freelist_pages = pragma_u64(pool, "PRAGMA freelist_count").await;
+    let pages = db.storage_pages().await;
+    snapshot.sqlite_page_count = pages.page_count;
+    snapshot.sqlite_freelist_pages = pages.freelist_pages;
     let wal_path = db.path().with_file_name(format!(
         "{}-wal",
         db.path()
@@ -722,15 +723,7 @@ async fn collect_snapshot(state: &AppState) -> MetricsSnapshot {
     snapshot
 }
 
-async fn pragma_u64(pool: &SqlitePool, query: &str) -> Option<u64> {
-    let value = sqlx::query_scalar::<_, i64>(query)
-        .fetch_one(pool)
-        .await
-        .ok()?;
-    u64::try_from(value).ok()
-}
-
-async fn grouped_counts(pool: &SqlitePool, query: &str) -> Option<Vec<(String, u64)>> {
+async fn grouped_counts(pool: &AnyPool, query: &str) -> Option<Vec<(String, u64)>> {
     let rows = sqlx::query_as::<_, (String, i64)>(query)
         .fetch_all(pool)
         .await
@@ -747,7 +740,7 @@ async fn update_readiness(state: &AppState) {
             .fetch_one(state.db().pool())
             .await;
     if let Err(error) = &schema {
-        state.note_sqlite_error(error);
+        state.note_database_error(error);
     }
     let sqlite_ready = schema
         .is_ok_and(|version| version >= crate::database::SERVER_SCHEMA_VERSION)

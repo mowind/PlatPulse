@@ -38,7 +38,7 @@ use platpulse_server::capacity::{
     ADMIN_RECENT_INTERVAL_LIMIT, CapacityConfig, CapacityProtection, ProtectionTransition,
     SkippedScope, recent_intervals, record_skipped_series, sample_filesystem,
 };
-use platpulse_server::{AppState, auth, database, http, network, secrets};
+use platpulse_server::{AppState, auth, http, network, secrets};
 
 /// Registered Network tuple for the platon-mainnet key the report fixture
 /// declares, matching the unit-test registry exactly.
@@ -62,11 +62,7 @@ struct Harness {
 impl Harness {
     async fn boot() -> Self {
         let dir = TempDir::new().unwrap();
-        let database = database::initialize(database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = platpulse_server::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("server-pepper");
         secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = auth::AuthConfig::development(
@@ -106,7 +102,7 @@ impl Harness {
         self.app = http::build_app(self.state.clone());
     }
 
-    fn pool(&self) -> &sqlx::SqlitePool {
+    fn pool(&self) -> &sqlx::AnyPool {
         self.state.db().pool()
     }
 

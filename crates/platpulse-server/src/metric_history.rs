@@ -69,9 +69,9 @@
 //!   silence, so a stretch that straddles a tier boundary is still reported as
 //!   the gap it is.
 
+use sqlx::any::AnyArguments;
 use sqlx::query::{Query, QueryAs, QueryScalar};
-use sqlx::sqlite::SqliteArguments;
-use sqlx::{Sqlite, SqliteConnection, SqlitePool, Transaction};
+use sqlx::{Any, AnyConnection, AnyPool, Transaction};
 use time::OffsetDateTime;
 
 use crate::auth::{format_rfc3339, parse_rfc3339};
@@ -317,7 +317,7 @@ trait SeriesStatement<'q> {
     fn bind_dimension(self, dimension: &'q str) -> Self;
 }
 
-impl<'q> SeriesStatement<'q> for Query<'q, Sqlite, SqliteArguments<'q>> {
+impl<'q> SeriesStatement<'q> for Query<'q, Any, AnyArguments<'q>> {
     fn bind_owner_metric(self, scope_key: &'q str, metric: &'q str) -> Self {
         self.bind(scope_key).bind(metric)
     }
@@ -327,7 +327,7 @@ impl<'q> SeriesStatement<'q> for Query<'q, Sqlite, SqliteArguments<'q>> {
     }
 }
 
-impl<'q, O> SeriesStatement<'q> for QueryAs<'q, Sqlite, O, SqliteArguments<'q>> {
+impl<'q, O> SeriesStatement<'q> for QueryAs<'q, Any, O, AnyArguments<'q>> {
     fn bind_owner_metric(self, scope_key: &'q str, metric: &'q str) -> Self {
         self.bind(scope_key).bind(metric)
     }
@@ -337,7 +337,7 @@ impl<'q, O> SeriesStatement<'q> for QueryAs<'q, Sqlite, O, SqliteArguments<'q>> 
     }
 }
 
-impl<'q, O> SeriesStatement<'q> for QueryScalar<'q, Sqlite, O, SqliteArguments<'q>> {
+impl<'q, O> SeriesStatement<'q> for QueryScalar<'q, Any, O, AnyArguments<'q>> {
     fn bind_owner_metric(self, scope_key: &'q str, metric: &'q str) -> Self {
         self.bind(scope_key).bind(metric)
     }
@@ -1282,7 +1282,7 @@ pub enum Delivery {
 /// floor only ever moves forward, so a carried last-good replayed after a
 /// widening stays a replay instead of being counted a second time.
 pub async fn classify_delivery(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
     observed_at: &str,
     stored_value: Option<f64>,
@@ -1365,7 +1365,7 @@ pub fn outside_retained_window(stored_value: Option<f64>, observed_at: &str, cut
 /// §11.3, issue #213) and a correction is counted as a restatement rather than
 /// as fresh coverage.
 pub async fn record_delivery(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
     observed_at: &str,
     received_at: &str,
@@ -1393,7 +1393,7 @@ pub async fn record_delivery(
 
 /// The value the Server already holds for one observation time, if any.
 pub async fn stored_value(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
     observed_at: &str,
 ) -> Result<Option<f64>, sqlx::Error> {
@@ -1414,7 +1414,7 @@ pub async fn stored_value(
 /// own rows, and a restatement reaches the mount path it names rather than the
 /// first row that shares an instant.
 pub async fn store_sample(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
     observed_at: &str,
     received_at: &str,
@@ -1450,7 +1450,7 @@ pub fn counted_evidence_floor(observed_at: &str) -> Option<String> {
 
 /// Move one series' evidence floor forward, never back.
 pub async fn stamp_evidence_floor(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
     floor: &str,
 ) -> Result<(), sqlx::Error> {
@@ -1530,7 +1530,7 @@ pub(crate) fn candidate_gap_seconds(
 /// canonical by construction (the tables constrain their length), so this is a
 /// guard rather than a policy.
 pub async fn record_aggregates(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
     observed_at: &str,
     received_at: &str,
@@ -1636,7 +1636,7 @@ const BUCKET_CARRY_SQL: &str = "UPDATE {agg} SET min_value = CASE WHEN {agg}.min
 /// The count never changes here: a correction is not a new observation, and the
 /// ledger already counted the instant.
 pub async fn recompute_aggregates(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
     observed_at: &str,
     received_at: &str,
@@ -1784,10 +1784,7 @@ fn earlier(left: &str, right: &str) -> String {
 /// tiers exactly still reports a truncated answer when an older tier holds
 /// evidence, because the answer must never call itself complete while it
 /// dropped one.
-pub async fn load_range(
-    pool: &SqlitePool,
-    query: RangeQuery<'_>,
-) -> Result<MetricRange, sqlx::Error> {
+pub async fn load_range(pool: &AnyPool, query: RangeQuery<'_>) -> Result<MetricRange, sqlx::Error> {
     let limit = query.limit.max(0);
     let from_text = format_rfc3339(query.from);
     let to_text = format_rfc3339(query.to);
@@ -2224,7 +2221,7 @@ pub struct WindowQuery<'a> {
 /// window to measure a cadence from: it is the Admin reader's own rule for a
 /// stretch it answers without a raw window.
 pub async fn load_window(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     query: WindowQuery<'_>,
 ) -> Result<MetricRange, sqlx::Error> {
     let limit = query.limit.max(0);
@@ -2346,7 +2343,7 @@ const RANGE_BUCKET_SQL: &str = "SELECT bucket_start, grain_seconds, sample_count
 /// exists to prevent. The probe is one indexed lookup, never a read of the
 /// stretch itself, and it is served by the aggregate table's primary key like
 /// the read itself.
-const BUCKET_EVIDENCE_EXISTS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM {agg} WHERE {scope} = ? AND metric = ?{dim_predicate} AND grain_seconds = ? AND bucket_start >= ? AND bucket_start < ?)";
+const BUCKET_EVIDENCE_EXISTS_SQL: &str = "SELECT CASE WHEN EXISTS(SELECT 1 FROM {agg} WHERE {scope} = ? AND metric = ?{dim_predicate} AND grain_seconds = ? AND bucket_start >= ? AND bucket_start < ?) THEN 1 ELSE 0 END";
 
 /// What one straddling minute holds on both sides of the tier seam: how many
 /// observations the minute's bucket counted, and how many raw rows the minute
@@ -2368,7 +2365,7 @@ const STRADDLING_MINUTE_LEDGER_SQL: &str = "SELECT COALESCE((SELECT sample_count
 const SERIES_LEDGER_SQL: &str = "SELECT first_observed_at, last_observed_at, last_received_at, observation_count, replayed_count, corrected_count FROM {ledger} WHERE {scope} = ? AND metric = ?{dim_predicate}";
 
 async fn read_raw_samples(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     scope: &SeriesScope<'_>,
     from: &str,
     to: &str,
@@ -2399,7 +2396,7 @@ async fn read_raw_samples(
 /// One observation of the seam: the minute's bucket count (0 when the tier holds
 /// no bucket for the minute) and the number of raw rows the minute still stores.
 async fn straddling_minute_ledger(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     scope: &SeriesScope<'_>,
     grain_seconds: i64,
     minute: &str,
@@ -2423,25 +2420,25 @@ async fn straddling_minute_ledger(
 /// not afford. A spent budget that skipped the raw window's older tiers is
 /// covered by this same probe, so no separate raw-side lookup is needed.
 async fn buckets_hold_evidence(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     scope: &SeriesScope<'_>,
     grain_seconds: i64,
     from: &str,
     to: &str,
 ) -> Result<bool, sqlx::Error> {
     let sql = scope.sql(BUCKET_EVIDENCE_EXISTS_SQL);
-    let (exists,): (bool,) = scope
+    let (exists,): (i64,) = scope
         .bind_series(sqlx::query_as(&sql))
         .bind(grain_seconds)
         .bind(from)
         .bind(to)
         .fetch_one(pool)
         .await?;
-    Ok(exists)
+    Ok(exists != 0)
 }
 
 async fn read_aggregates(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     scope: &SeriesScope<'_>,
     grain_seconds: i64,
     from: &str,
@@ -2495,7 +2492,7 @@ async fn read_aggregates(
 }
 
 async fn load_ledger(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     scope: &SeriesScope<'_>,
 ) -> Result<Option<SeriesLedger>, sqlx::Error> {
     let sql = scope.sql(SERIES_LEDGER_SQL);
@@ -2537,7 +2534,7 @@ const PAUSE_LOOKUP_SQL: &str = "SELECT first_skipped_at, last_skipped_at, skippe
 /// These rows are the positive evidence that a silence was chosen rather than
 /// suffered, so a protected stretch is never reported as an unexplained gap.
 pub(crate) async fn load_pauses(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     scope: &SeriesScope<'_>,
     from: &str,
     to: &str,
@@ -2663,7 +2660,7 @@ pub async fn load_host_metric_coverage<'e, E>(
     limit: i64,
 ) -> Result<(Vec<HostSeriesCoverage>, bool), sqlx::Error>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Any>,
 {
     let limit = limit.max(1);
     let rows = sqlx::query_as::<
@@ -2760,7 +2757,7 @@ pub struct MountCoverage {
 /// longer than the limit the answer states. The caller owns the transaction, so
 /// the one-snapshot property is visible at the call site and testable there.
 pub async fn load_mount_coverage(
-    executor: &mut SqliteConnection,
+    executor: &mut AnyConnection,
     agent_id: &str,
 ) -> Result<MountCoverage, sqlx::Error> {
     let mut used = Vec::new();
@@ -2897,7 +2894,7 @@ pub async fn load_observed_cadence<'e, E>(
     scope: &SeriesScope<'_>,
 ) -> Result<i64, sqlx::Error>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Any>,
 {
     let sql = scope.sql(SERIES_CADENCE_SQL);
     let rows = scope
@@ -3308,11 +3305,7 @@ mod tests {
     #[tokio::test]
     async fn the_pause_lookup_is_index_backed_and_never_scans_the_ledger() {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let rows: Vec<(i64, i64, i64, String)> =
             sqlx::query_as(&format!("EXPLAIN QUERY PLAN {PAUSE_LOOKUP_SQL}"))
                 .fetch_all(database.pool())
@@ -3346,13 +3339,9 @@ mod tests {
 
     /// A real temp SQLite database with one private Node, so every tier test
     /// runs the statements the Server runs against the schema the Server ships.
-    async fn tier_store() -> (tempfile::TempDir, sqlx::SqlitePool) {
+    async fn tier_store() -> (tempfile::TempDir, sqlx::AnyPool) {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool().clone();
         let stamp = "2026-03-31T12:00:00Z";
         sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('tier-network', 'Tier', '0xgenesis', 1, 1, 'lat', ?, ?)")
@@ -3377,7 +3366,7 @@ mod tests {
         (dir, pool)
     }
 
-    async fn record(pool: &sqlx::SqlitePool, observed_at: &str, received_at: &str, value: f64) {
+    async fn record(pool: &sqlx::AnyPool, observed_at: &str, received_at: &str, value: f64) {
         let mut tx = pool.begin().await.unwrap();
         record_aggregates(&mut tx, &tier_scope(), observed_at, received_at, value)
             .await
@@ -3385,7 +3374,7 @@ mod tests {
         tx.commit().await.unwrap();
     }
 
-    async fn correct(pool: &sqlx::SqlitePool, observed_at: &str, received_at: &str, value: f64) {
+    async fn correct(pool: &sqlx::AnyPool, observed_at: &str, received_at: &str, value: f64) {
         let mut tx = pool.begin().await.unwrap();
         recompute_aggregates(&mut tx, &tier_scope(), observed_at, received_at, value)
             .await
@@ -3393,7 +3382,7 @@ mod tests {
         tx.commit().await.unwrap();
     }
 
-    async fn keep_raw(pool: &sqlx::SqlitePool, observed_at: &str, value: f64) {
+    async fn keep_raw(pool: &sqlx::AnyPool, observed_at: &str, value: f64) {
         sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?)")
             .bind(TIER_NODE)
             .bind(TIER_METRIC)
@@ -3407,7 +3396,7 @@ mod tests {
 
     /// sample_count, min, max, last, first_observed_at, last_observed_at
     async fn bucket(
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::AnyPool,
         grain_seconds: i64,
         bucket_start: &str,
     ) -> Option<(i64, f64, f64, f64, String, String)> {
@@ -3421,7 +3410,7 @@ mod tests {
             .unwrap()
     }
 
-    async fn bucket_count(pool: &sqlx::SqlitePool) -> i64 {
+    async fn bucket_count(pool: &sqlx::AnyPool) -> i64 {
         sqlx::query_scalar("SELECT COUNT(*) FROM node_metric_aggregates")
             .fetch_one(pool)
             .await
@@ -3635,7 +3624,7 @@ mod tests {
     }
 
     async fn read_tiers(
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::AnyPool,
         from: &str,
         to: &str,
         before: Option<&str>,
@@ -3662,7 +3651,7 @@ mod tests {
     }
 
     async fn read_at(
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::AnyPool,
         from: &str,
         to: &str,
         now: &str,
@@ -4400,7 +4389,7 @@ mod tests {
     }
 
     async fn record_host(
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::AnyPool,
         mount_path: &'static str,
         observed_at: &str,
         received_at: &str,
@@ -4429,7 +4418,7 @@ mod tests {
     }
 
     async fn correct_host(
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::AnyPool,
         mount_path: &'static str,
         observed_at: &str,
         received_at: &str,
@@ -4449,7 +4438,7 @@ mod tests {
     }
 
     async fn keep_raw_host(
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::AnyPool,
         mount_path: &'static str,
         observed_at: &str,
         value: f64,
@@ -4468,7 +4457,7 @@ mod tests {
 
     /// sample_count, min, max, last, first_observed_at, last_observed_at
     async fn host_bucket(
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::AnyPool,
         mount_path: &'static str,
         grain_seconds: i64,
         bucket_start: &str,
@@ -4484,14 +4473,14 @@ mod tests {
             .unwrap()
     }
 
-    async fn host_bucket_count(pool: &sqlx::SqlitePool) -> i64 {
+    async fn host_bucket_count(pool: &sqlx::AnyPool) -> i64 {
         sqlx::query_scalar("SELECT COUNT(*) FROM host_metric_aggregates")
             .fetch_one(pool)
             .await
             .unwrap()
     }
 
-    async fn host_ledger_count(pool: &sqlx::SqlitePool) -> i64 {
+    async fn host_ledger_count(pool: &sqlx::AnyPool) -> i64 {
         sqlx::query_scalar("SELECT COUNT(*) FROM host_metric_series_state")
             .fetch_one(pool)
             .await
@@ -4499,7 +4488,7 @@ mod tests {
     }
 
     async fn read_host_tiers(
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::AnyPool,
         mount_path: &'static str,
         from: &str,
         to: &str,
@@ -4687,13 +4676,9 @@ mod tests {
 
     /// A real temp SQLite database with one Agent: the mount read answers the
     /// evidence one Agent's own Host series hold.
-    async fn coverage_store() -> (tempfile::TempDir, sqlx::SqlitePool) {
+    async fn coverage_store() -> (tempfile::TempDir, sqlx::AnyPool) {
         let dir = tempfile::TempDir::new().unwrap();
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool().clone();
         let stamp = "2026-04-01T00:00:00Z";
         sqlx::query(
@@ -4711,7 +4696,7 @@ mod tests {
     /// One stored reading of one series, with the ledger entry that keeps it
     /// reachable after the reading itself is released.
     async fn store_mount_reading(
-        pool: &sqlx::SqlitePool,
+        pool: &sqlx::AnyPool,
         metric: &str,
         mount_path: &str,
         observed_at: &str,

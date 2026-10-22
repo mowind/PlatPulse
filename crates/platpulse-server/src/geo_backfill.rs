@@ -24,7 +24,7 @@ use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use sqlx::SqlitePool;
+use sqlx::AnyPool;
 
 use crate::geo::{self, GeoConfig, GeoLookup, GeoProvider, GeoSelection};
 use crate::http::AppState;
@@ -67,7 +67,7 @@ impl BackfillSummary {
 /// Addresses are canonical public literals; ineligible or malformed values
 /// recorded outside the trust boundary are skipped rather than resolved.
 pub async fn pending_addresses(
-    pool: &SqlitePool,
+    pool: &AnyPool,
     provider: GeoProvider,
     now: &str,
     limit: Option<usize>,
@@ -422,11 +422,7 @@ mod tests {
         with_database: bool,
         provider: GeoProvider,
     ) -> AppState {
-        let database = crate::database::initialize(crate::database::ServerDatabaseConfig::new(
-            dir.path().join("server.db"),
-        ))
-        .await
-        .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let pepper_path = dir.path().join("pepper");
         crate::secrets::create_pepper_file(&pepper_path).unwrap();
         let auth = crate::auth::AuthConfig::development(
@@ -940,7 +936,7 @@ mod tests {
 
         // A new Server process over the same state directory.
         let database = crate::database::ServerDatabase::open_existing(
-            crate::database::ServerDatabaseConfig::new(dir.path().join("server.db")),
+            crate::test_support::test_config(dir.path()),
         )
         .await
         .unwrap();
@@ -1430,7 +1426,7 @@ mod tests {
         }
 
         let database = crate::database::ServerDatabase::open_existing(
-            crate::database::ServerDatabaseConfig::new(dir.path().join("server.db")),
+            crate::test_support::test_config(dir.path()),
         )
         .await
         .unwrap();
@@ -1806,7 +1802,7 @@ mod tests {
         }
 
         let database = crate::database::ServerDatabase::open_existing(
-            crate::database::ServerDatabaseConfig::new(dir.path().join("server.db")),
+            crate::test_support::test_config(dir.path()),
         )
         .await
         .unwrap();
