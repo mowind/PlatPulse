@@ -345,7 +345,7 @@ pub async fn seed_catalog(executor: &mut sqlx::SqliteConnection) -> Result<(), s
         let condition =
             serde_json::to_string(&rule.default_condition).expect("catalog conditions serialize");
         sqlx::query(
-            "INSERT OR IGNORE INTO alert_rules (rule_key, enabled, severity, version, condition_json, created_at, updated_at) VALUES (?, 1, ?, 1, ?, ?, ?)",
+            "INSERT INTO alert_rules (rule_key, enabled, severity, version, condition_json, created_at, updated_at) VALUES ($1, 1, $2, 1, $3, $4, $5) ON CONFLICT DO NOTHING",
         )
         .bind(rule.key)
         .bind(rule.default_severity)
@@ -357,7 +357,7 @@ pub async fn seed_catalog(executor: &mut sqlx::SqliteConnection) -> Result<(), s
         // The initial seed is version 1 and belongs in the immutable
         // version history so Incident retention can always be traced.
         sqlx::query(
-            "INSERT OR IGNORE INTO alert_rule_versions (rule_key, version, severity, condition_json, created_at) VALUES (?, 1, ?, ?, ?)",
+            "INSERT INTO alert_rule_versions (rule_key, version, severity, condition_json, created_at) VALUES ($1, 1, $2, $3, $4) ON CONFLICT DO NOTHING",
         )
         .bind(rule.key)
         .bind(rule.default_severity)
@@ -402,7 +402,7 @@ pub async fn invalidate_recovery_windows_for_rule(
     rule_key: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE alert_rule_state SET recovering_since = NULL, evaluation_unavailable = 1 WHERE rule_key = ? AND state = 'recovering'",
+        "UPDATE alert_rule_state SET recovering_since = NULL, evaluation_unavailable = 1 WHERE rule_key = $1 AND state = 'recovering'",
     )
     .bind(rule_key)
     .execute(&mut *executor)
@@ -418,7 +418,7 @@ pub async fn invalidate_recovery_windows_for_subject(
     subject_key: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE alert_rule_state SET recovering_since = NULL, evaluation_unavailable = 1 WHERE rule_key = ? AND subject_key = ? AND state = 'recovering'",
+        "UPDATE alert_rule_state SET recovering_since = NULL, evaluation_unavailable = 1 WHERE rule_key = $1 AND subject_key = $2 AND state = 'recovering'",
     )
     .bind(rule_key)
     .bind(subject_key)
@@ -436,7 +436,7 @@ pub async fn invalidate_recovery_windows_for_network(
     network_key: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE alert_rule_state SET recovering_since = NULL, evaluation_unavailable = 1 WHERE rule_key = ? AND state = 'recovering' AND subject_key IN (SELECT node_id FROM nodes WHERE network_key = ?)",
+        "UPDATE alert_rule_state SET recovering_since = NULL, evaluation_unavailable = 1 WHERE rule_key = $1 AND state = 'recovering' AND subject_key IN (SELECT node_id FROM nodes WHERE network_key = $2)",
     )
     .bind(rule_key)
     .bind(network_key)
@@ -801,7 +801,7 @@ pub async fn effective_rule(
     subject_key: &str,
 ) -> Result<Option<EffectiveRule>, sqlx::Error> {
     let row = sqlx::query_as::<_, (bool, String, i64, String)>(
-        "SELECT enabled, severity, version, condition_json FROM alert_rules WHERE rule_key = ?",
+        "SELECT enabled, severity, version, condition_json FROM alert_rules WHERE rule_key = $1",
     )
     .bind(rule_key)
     .fetch_optional(&mut *executor)
@@ -818,7 +818,7 @@ pub async fn effective_rule(
 
     // Network override applies to Node subjects only; Node override wins.
     let network_key = if subject_kind == SubjectKind::Node {
-        sqlx::query_scalar::<_, Option<String>>("SELECT network_key FROM nodes WHERE node_id = ?")
+        sqlx::query_scalar::<_, Option<String>>("SELECT network_key FROM nodes WHERE node_id = $1")
             .bind(subject_key)
             .fetch_optional(&mut *executor)
             .await?
@@ -829,7 +829,7 @@ pub async fn effective_rule(
     if let Some(network_key) = network_key {
         if let Some((override_enabled, override_severity, override_condition_json)) =
             sqlx::query_as::<_, (Option<bool>, Option<String>, Option<String>)>(
-                "SELECT enabled, severity, condition_json FROM alert_rule_overrides WHERE rule_key = ? AND scope_kind = 'network' AND scope_value = ?",
+                "SELECT enabled, severity, condition_json FROM alert_rule_overrides WHERE rule_key = $1 AND scope_kind = 'network' AND scope_value = $2",
             )
             .bind(rule_key)
             .bind(&network_key)
@@ -849,7 +849,7 @@ pub async fn effective_rule(
     if subject_kind == SubjectKind::Node {
         if let Some((override_enabled, override_severity, override_condition_json)) =
             sqlx::query_as::<_, (Option<bool>, Option<String>, Option<String>)>(
-                "SELECT enabled, severity, condition_json FROM alert_rule_overrides WHERE rule_key = ? AND scope_kind = 'node' AND scope_value = ?",
+                "SELECT enabled, severity, condition_json FROM alert_rule_overrides WHERE rule_key = $1 AND scope_kind = 'node' AND scope_value = $2",
             )
             .bind(rule_key)
             .bind(subject_key)
@@ -946,7 +946,7 @@ pub async fn extract_input(
     match (subject_kind, rule_key) {
         (SubjectKind::Agent, "agent.offline") => {
             let last = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT MAX(received_at) FROM agent_report_receipts WHERE agent_id = ?",
+                "SELECT MAX(received_at) FROM agent_report_receipts WHERE agent_id = $1",
             )
             .bind(subject_key)
             .fetch_one(&mut *executor)
@@ -966,7 +966,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Node, "node.rpc_unreachable") => {
             let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>)>(
-                "SELECT state, error_code, error_message, received_at FROM component_status WHERE node_id = ? AND component_key = 'rpc'",
+                "SELECT state, error_code, error_message, received_at FROM component_status WHERE node_id = $1 AND component_key = 'rpc'",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
@@ -980,7 +980,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Node, "node.head_subscription_disconnected") => {
             let last = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT updated_at FROM block_history_state WHERE node_id = ?",
+                "SELECT updated_at FROM block_history_state WHERE node_id = $1",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
@@ -1000,7 +1000,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Node, "node.observation_stale") => {
             let last = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT MAX(value_received_at) FROM component_status WHERE node_id = ?",
+                "SELECT MAX(value_received_at) FROM component_status WHERE node_id = $1",
             )
             .bind(subject_key)
             .fetch_one(&mut *executor)
@@ -1017,7 +1017,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Node, "node.process_not_running") => {
             let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>)>(
-                "SELECT state, error_code, error_message, received_at FROM component_status WHERE node_id = ? AND component_key = 'process'",
+                "SELECT state, error_code, error_message, received_at FROM component_status WHERE node_id = $1 AND component_key = 'process'",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
@@ -1031,7 +1031,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Node, "node.block_stalled") => {
             let row = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>)>(
-                "SELECT h.current_head, n.network_key, h.updated_at FROM block_history_state h JOIN nodes n ON n.node_id = h.node_id WHERE h.node_id = ?",
+                "SELECT h.current_head, n.network_key, h.updated_at FROM block_history_state h JOIN nodes n ON n.node_id = h.node_id WHERE h.node_id = $1",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
@@ -1061,7 +1061,7 @@ pub async fn extract_input(
                 });
             };
             let reference_head: Option<i64> = sqlx::query_scalar::<_, Option<i64>>(
-                "SELECT block_number FROM network_reference_heads WHERE network_key = ?",
+                "SELECT block_number FROM network_reference_heads WHERE network_key = $1",
             )
             .bind(network_key)
             .fetch_optional(&mut *executor)
@@ -1084,7 +1084,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Node, "node.sync_lag") => {
             let row = sqlx::query_as::<_, SyncRow>(
-                "SELECT s.state, c.syncing, c.current_block, c.highest_block, s.received_at FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = ? AND s.component_key = 'sync'",
+                "SELECT s.state, c.syncing, c.current_block, c.highest_block, s.received_at FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'sync'",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
@@ -1096,7 +1096,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Node, "node.consensus_stalled") => {
             let row = sqlx::query_as::<_, ConsensusRow>(
-                "SELECT s.state, s.error_code, s.error_message, c.consensus_epoch, c.consensus_view_number, c.consensus_highest_commit_block, s.received_at FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = ? AND s.component_key = 'consensus'",
+                "SELECT s.state, s.error_code, s.error_message, c.consensus_epoch, c.consensus_view_number, c.consensus_highest_commit_block, s.received_at FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'consensus'",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
@@ -1106,7 +1106,7 @@ pub async fn extract_input(
         (SubjectKind::Validator, "validator.ranking_changed")
         | (SubjectKind::Validator, "validator.counter_reset") => {
             let row = sqlx::query_as::<_, (String, Option<String>, String, String)>(
-                "SELECT outcome, last_good_received_at, change_state, counter_state FROM current_validator_insights WHERE validator_id = ?",
+                "SELECT outcome, last_good_received_at, change_state, counter_state FROM current_validator_insights WHERE validator_id = $1",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
@@ -1167,7 +1167,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Host, "host.disk_pressure") => {
             let row = sqlx::query_as::<_, (Option<f64>, Option<String>)>(
-                "SELECT MAX(used_bytes * 1.0 / total_bytes), MAX(updated_at) FROM current_host_disk_mounts WHERE agent_id = ?",
+                "SELECT MAX(used_bytes * 1.0 / total_bytes), MAX(updated_at) FROM current_host_disk_mounts WHERE agent_id = $1",
             )
             .bind(subject_key)
             .fetch_one(&mut *executor)
@@ -1196,7 +1196,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Host, "host.memory_pressure") => {
             let row = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<String>)>(
-                "SELECT memory_used_bytes, memory_total_bytes, updated_at FROM current_host_observations WHERE agent_id = ?",
+                "SELECT memory_used_bytes, memory_total_bytes, updated_at FROM current_host_observations WHERE agent_id = $1",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
@@ -1244,7 +1244,7 @@ async fn validator_alert_detail(
             Option<String>,
             Option<String>,
         )>(
-            "SELECT previous_rank, current_rank, observed_at, provider_timestamp, observation_key, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key FROM validator_ranking_history WHERE validator_id = ? ORDER BY observed_at DESC, history_id DESC LIMIT 1",
+            "SELECT previous_rank, current_rank, observed_at, provider_timestamp, observation_key, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key FROM validator_ranking_history WHERE validator_id = $1 ORDER BY observed_at DESC, history_id DESC LIMIT 1",
         )
         .bind(validator_id)
         .fetch_optional(&mut *executor)
@@ -1272,7 +1272,7 @@ async fn validator_alert_detail(
             Option<String>,
             String,
         )>(
-            "SELECT counter_name, previous_value, current_value, provider_timestamp, observed_at FROM validator_counter_history WHERE validator_id = ? ORDER BY observed_at DESC, history_id DESC LIMIT 1",
+            "SELECT counter_name, previous_value, current_value, provider_timestamp, observed_at FROM validator_counter_history WHERE validator_id = $1 ORDER BY observed_at DESC, history_id DESC LIMIT 1",
         )
         .bind(validator_id)
         .fetch_optional(&mut *executor)
@@ -1469,13 +1469,13 @@ async fn network_identity_input(
     subject_key: &str,
 ) -> Result<EvalInput, sqlx::Error> {
     let observed = sqlx::query_as::<_, (Option<String>, Option<i64>, Option<i64>, Option<String>)>(
-        "SELECT network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp FROM current_node_chain_observations WHERE node_id = ?",
+        "SELECT network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp FROM current_node_chain_observations WHERE node_id = $1",
     )
     .bind(subject_key)
     .fetch_optional(&mut *executor)
     .await?;
     let expected = sqlx::query_as::<_, (Option<String>, Option<i64>, Option<i64>, Option<String>)>(
-        "SELECT n.genesis_hash, n.chain_id, n.p2p_network_id, n.address_hrp FROM nodes x JOIN networks n ON n.network_key = x.network_key WHERE x.node_id = ?",
+        "SELECT n.genesis_hash, n.chain_id, n.p2p_network_id, n.address_hrp FROM nodes x JOIN networks n ON n.network_key = x.network_key WHERE x.node_id = $1",
     )
     .bind(subject_key)
     .fetch_optional(&mut *executor)
@@ -1569,7 +1569,7 @@ async fn load_state_inner(
         bool,
         String,
     )>(
-        "SELECT state, since, pending_since, firing_since, recovering_since, input_kind, input_value, input_detail, evidence_json, evaluation_unavailable, last_evaluated_at FROM alert_rule_state WHERE rule_key = ? AND subject_key = ?",
+        "SELECT state, since, pending_since, firing_since, recovering_since, input_kind, input_value, input_detail, evidence_json, evaluation_unavailable, last_evaluated_at FROM alert_rule_state WHERE rule_key = $1 AND subject_key = $2",
     )
     .bind(rule_key)
     .bind(subject_key)
@@ -1630,7 +1630,7 @@ pub async fn evaluate_rule(
         // Incident, its opened evidence, and its acknowledgment are untouched.
         sqlx::query(
             "UPDATE alert_rule_state SET recovering_since = NULL, evaluation_unavailable = 1 \
-             WHERE rule_key = ? AND subject_key = ? AND state = 'recovering'",
+             WHERE rule_key = $1 AND subject_key = $2 AND state = 'recovering'",
         )
         .bind(rule_key)
         .bind(subject_key)
@@ -1671,7 +1671,7 @@ pub async fn evaluate_rule(
 
     if transition.opens_incident {
         let sequence: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM alert_incidents WHERE rule_key = ? AND subject_key = ?",
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM alert_incidents WHERE rule_key = $1 AND subject_key = $2",
         )
         .bind(rule_key)
         .bind(subject_key)
@@ -1681,7 +1681,7 @@ pub async fn evaluate_rule(
         let evidence = evidence_json(&input, &effective, &transition, now);
         let opened_at = format_rfc3339(now);
         sqlx::query(
-            "INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)",
+            "INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, $8, $9)",
         )
         .bind(&incident_id)
         .bind(rule_key)
@@ -1702,7 +1702,7 @@ pub async fn evaluate_rule(
         let resolved_at = format_rfc3339(now);
         let evidence = evidence_json(&input, &effective, &transition, now);
         let result = sqlx::query(
-            "UPDATE alert_incidents SET state = 'resolved', resolved_at = ?, resolved_evidence_json = ? WHERE rule_key = ? AND subject_key = ? AND state = 'open'",
+            "UPDATE alert_incidents SET state = 'resolved', resolved_at = $1, resolved_evidence_json = $2 WHERE rule_key = $3 AND subject_key = $4 AND state = 'open'",
         )
         .bind(&resolved_at)
         .bind(&evidence)
@@ -1729,7 +1729,7 @@ pub async fn evaluate_rule(
     };
     let evidence = evidence_json(&input, &effective, &transition, now);
     sqlx::query(
-        "INSERT INTO alert_rule_state (rule_key, subject_kind, subject_key, state, since, pending_since, firing_since, recovering_since, input_kind, input_value, input_detail, evidence_json, evaluation_unavailable, last_evaluated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(rule_key, subject_key) DO UPDATE SET state=excluded.state, since=excluded.since, pending_since=excluded.pending_since, firing_since=excluded.firing_since, recovering_since=excluded.recovering_since, input_kind=excluded.input_kind, input_value=excluded.input_value, input_detail=excluded.input_detail, evidence_json=excluded.evidence_json, evaluation_unavailable=excluded.evaluation_unavailable, last_evaluated_at=excluded.last_evaluated_at",
+        "INSERT INTO alert_rule_state (rule_key, subject_kind, subject_key, state, since, pending_since, firing_since, recovering_since, input_kind, input_value, input_detail, evidence_json, evaluation_unavailable, last_evaluated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT(rule_key, subject_key) DO UPDATE SET state=excluded.state, since=excluded.since, pending_since=excluded.pending_since, firing_since=excluded.firing_since, recovering_since=excluded.recovering_since, input_kind=excluded.input_kind, input_value=excluded.input_value, input_detail=excluded.input_detail, evidence_json=excluded.evidence_json, evaluation_unavailable=excluded.evaluation_unavailable, last_evaluated_at=excluded.last_evaluated_at",
     )
     .bind(rule_key)
     .bind(subject_kind.as_str())
@@ -2062,7 +2062,7 @@ async fn subject_context(
 ) -> Result<SubjectContext, sqlx::Error> {
     let (agent_id, network_key) = if subject_kind == SubjectKind::Node {
         let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
-            "SELECT agent_id, network_key FROM nodes WHERE node_id = ?",
+            "SELECT agent_id, network_key FROM nodes WHERE node_id = $1",
         )
         .bind(subject_key)
         .fetch_optional(&mut *executor)
@@ -2139,7 +2139,7 @@ pub async fn suppressions_for_subject(
     let mut matches = Vec::new();
 
     let silences = sqlx::query_as::<_, (String, String, Option<String>, String, String, String)>(
-        "SELECT silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at FROM silences WHERE cancelled_at IS NULL AND starts_at <= ? AND ends_at > ? ORDER BY ends_at",
+        "SELECT silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at FROM silences WHERE cancelled_at IS NULL AND starts_at <= $1 AND ends_at > $2 ORDER BY ends_at",
     )
     .bind(&now_text)
     .bind(&now_text)
@@ -2165,7 +2165,7 @@ pub async fn suppressions_for_subject(
     }
 
     let windows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
-        "SELECT window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at FROM maintenance_windows WHERE cancelled_at IS NULL AND starts_at <= ? AND ends_at > ? ORDER BY ends_at",
+        "SELECT window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at FROM maintenance_windows WHERE cancelled_at IS NULL AND starts_at <= $1 AND ends_at > $2 ORDER BY ends_at",
     )
     .bind(&now_text)
     .bind(&now_text)

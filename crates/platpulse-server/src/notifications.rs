@@ -336,7 +336,7 @@ pub async fn record_notification_event(
     let event_id = uuid::Uuid::new_v4().to_string();
     let created_at = format_rfc3339(now);
     sqlx::query(
-        "INSERT INTO notification_events (event_id, event_kind, incident_id, rule_key, subject_kind, subject_key, severity, summary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO notification_events (event_id, event_kind, incident_id, rule_key, subject_kind, subject_key, severity, summary, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(&event_id)
     .bind(input.kind)
@@ -369,7 +369,7 @@ pub async fn record_notification_event(
             None => ("pending", None),
         };
         sqlx::query(
-            "INSERT INTO notification_deliveries (delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at) VALUES (?, ?, 'telegram', ?, ?, 0, NULL, NULL, ?, NULL, NULL, ?, ?)",
+            "INSERT INTO notification_deliveries (delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at) VALUES ($1, $2, 'telegram', $3, $4, 0, NULL, NULL, $5, NULL, NULL, $6, $7)",
         )
         .bind(&delivery_id)
         .bind(&event_id)
@@ -432,7 +432,7 @@ pub async fn rearm_delivery(
     now: OffsetDateTime,
 ) -> Result<DeliveryRow, RetryError> {
     let current: Option<String> =
-        sqlx::query_scalar("SELECT state FROM notification_deliveries WHERE delivery_id = ?")
+        sqlx::query_scalar("SELECT state FROM notification_deliveries WHERE delivery_id = $1")
             .bind(delivery_id)
             .fetch_optional(&mut *executor)
             .await
@@ -448,7 +448,7 @@ pub async fn rearm_delivery(
     }
     let updated_at = format_rfc3339(now);
     sqlx::query(
-        "UPDATE notification_deliveries SET state = 'pending', next_attempt_at = NULL, updated_at = ? WHERE delivery_id = ? AND state = ?",
+        "UPDATE notification_deliveries SET state = 'pending', next_attempt_at = NULL, updated_at = $1 WHERE delivery_id = $2 AND state = $3",
     )
     .bind(&updated_at)
     .bind(delivery_id)
@@ -467,7 +467,7 @@ pub async fn load_delivery(
     delivery_id: &str,
 ) -> Result<Option<DeliveryRow>, sqlx::Error> {
     let row = sqlx::query_as::<_, DeliveryRow>(
-        "SELECT delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at FROM notification_deliveries WHERE delivery_id = ?",
+        "SELECT delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at FROM notification_deliveries WHERE delivery_id = $1",
     )
     .bind(delivery_id)
     .fetch_optional(&mut *executor)
@@ -480,7 +480,7 @@ pub async fn load_event(
     event_id: &str,
 ) -> Result<Option<EventRow>, sqlx::Error> {
     let row = sqlx::query_as::<_, EventRow>(
-        "SELECT event_id, event_kind, incident_id, rule_key, subject_kind, subject_key, severity, summary, created_at FROM notification_events WHERE event_id = ?",
+        "SELECT event_id, event_kind, incident_id, rule_key, subject_kind, subject_key, severity, summary, created_at FROM notification_events WHERE event_id = $1",
     )
     .bind(event_id)
     .fetch_optional(&mut *executor)
@@ -493,7 +493,7 @@ pub async fn deliveries_for_event(
     event_id: &str,
 ) -> Result<Vec<DeliveryRow>, sqlx::Error> {
     let rows = sqlx::query_as::<_, DeliveryRow>(
-        "SELECT delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at FROM notification_deliveries WHERE event_id = ? ORDER BY created_at",
+        "SELECT delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at FROM notification_deliveries WHERE event_id = $1 ORDER BY created_at",
     )
     .bind(event_id)
     .fetch_all(&mut *executor)
@@ -506,7 +506,7 @@ pub async fn attempts_for_delivery(
     delivery_id: &str,
 ) -> Result<Vec<AttemptRow>, sqlx::Error> {
     let rows = sqlx::query_as::<_, AttemptRow>(
-        "SELECT attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds FROM delivery_attempts WHERE delivery_id = ? ORDER BY attempt_number",
+        "SELECT attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds FROM delivery_attempts WHERE delivery_id = $1 ORDER BY attempt_number",
     )
     .bind(delivery_id)
     .fetch_all(&mut *executor)
@@ -559,7 +559,7 @@ pub async fn prune_expired_notification_requests(
     executor: &mut SqliteConnection,
     now: OffsetDateTime,
 ) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query("DELETE FROM notification_requests WHERE expires_at <= ?")
+    let result = sqlx::query("DELETE FROM notification_requests WHERE expires_at <= $1")
         .bind(format_rfc3339(now))
         .execute(&mut *executor)
         .await?;
@@ -574,7 +574,7 @@ pub async fn load_notification_request(
     now: OffsetDateTime,
 ) -> Result<Option<NotificationRequestRow>, sqlx::Error> {
     sqlx::query_as::<_, NotificationRequestRow>(
-        "SELECT request_id, command_kind, intent_fingerprint, event_id, delivery_id, audit_event_id, created_at, expires_at FROM notification_requests WHERE request_id = ? AND expires_at > ?",
+        "SELECT request_id, command_kind, intent_fingerprint, event_id, delivery_id, audit_event_id, created_at, expires_at FROM notification_requests WHERE request_id = $1 AND expires_at > $2",
     )
     .bind(request_id)
     .bind(format_rfc3339(now))
@@ -596,7 +596,7 @@ pub async fn insert_notification_request(
     retention_seconds: i64,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO notification_requests (request_id, command_kind, intent_fingerprint, event_id, delivery_id, audit_event_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO notification_requests (request_id, command_kind, intent_fingerprint, event_id, delivery_id, audit_event_id, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(request_id)
     .bind(command_kind)
@@ -654,12 +654,12 @@ pub async fn cancel_unsent_for_subject(
     let result = sqlx::query(
         "UPDATE notification_deliveries
             SET state = 'cancelled', next_attempt_at = NULL,
-                last_result = ?, last_error_kind = NULL,
-                updated_at = ?
+                last_result = $1, last_error_kind = NULL,
+                updated_at = $2
           WHERE state IN ('pending', 'retry_scheduled')
             AND event_id IN (
                 SELECT event_id FROM notification_events
-                 WHERE subject_kind = ? AND subject_key = ?
+                 WHERE subject_kind = $3 AND subject_key = $4
             )",
     )
     .bind(CANCELLED_SUBJECT_DELETED)
@@ -706,7 +706,7 @@ pub async fn process_due_deliveries(
     {
         let mut tx = state.db().pool().begin().await?;
         sqlx::query(
-            "UPDATE notification_deliveries SET state = 'pending', next_attempt_at = NULL, updated_at = ? WHERE state = 'in_flight'",
+            "UPDATE notification_deliveries SET state = 'pending', next_attempt_at = NULL, updated_at = $1 WHERE state = 'in_flight'",
         )
         .bind(format_rfc3339(now))
         .execute(&mut *tx)
@@ -718,7 +718,7 @@ pub async fn process_due_deliveries(
     let due: Vec<DeliveryRow> = {
         let mut conn = state.db().pool().acquire().await?;
         sqlx::query_as::<_, DeliveryRow>(
-            "SELECT delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at FROM notification_deliveries WHERE state IN ('pending', 'retry_scheduled') AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY created_at LIMIT ?",
+            "SELECT delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at FROM notification_deliveries WHERE state IN ('pending', 'retry_scheduled') AND (next_attempt_at IS NULL OR next_attempt_at <= $1) ORDER BY created_at LIMIT $2",
         )
         .bind(&now_text)
         .bind(BATCH_LIMIT)
@@ -732,7 +732,7 @@ pub async fn process_due_deliveries(
         let claimed = {
             let mut tx = state.db().pool().begin().await?;
             let result = sqlx::query(
-                "UPDATE notification_deliveries SET state = 'in_flight', updated_at = ? WHERE delivery_id = ? AND state IN ('pending', 'retry_scheduled')",
+                "UPDATE notification_deliveries SET state = 'in_flight', updated_at = $1 WHERE delivery_id = $2 AND state IN ('pending', 'retry_scheduled')",
             )
             .bind(&now_text)
             .bind(&delivery.delivery_id)
@@ -774,7 +774,7 @@ pub async fn process_due_deliveries(
                 if deleted {
                     let mut tx = state.db().pool().begin().await?;
                     sqlx::query(
-                        "UPDATE notification_deliveries SET state = 'cancelled', next_attempt_at = NULL, last_result = ?, last_error_kind = NULL, updated_at = ? WHERE delivery_id = ? AND state = 'in_flight'",
+                        "UPDATE notification_deliveries SET state = 'cancelled', next_attempt_at = NULL, last_result = $1, last_error_kind = NULL, updated_at = $2 WHERE delivery_id = $3 AND state = 'in_flight'",
                     )
                     .bind(CANCELLED_SUBJECT_DELETED)
                     .bind(format_rfc3339(now_utc()))
@@ -819,7 +819,7 @@ pub async fn process_due_deliveries(
             if let Some(matched) = matched {
                 let mut tx = state.db().pool().begin().await?;
                 sqlx::query(
-                    "UPDATE notification_deliveries SET state = 'suppressed', next_attempt_at = NULL, last_result = ?, last_error_kind = NULL, updated_at = ? WHERE delivery_id = ? AND state = 'in_flight'",
+                    "UPDATE notification_deliveries SET state = 'suppressed', next_attempt_at = NULL, last_result = $1, last_error_kind = NULL, updated_at = $2 WHERE delivery_id = $3 AND state = 'in_flight'",
                 )
                 .bind(format!("suppressed_by_{}:{}", matched.kind, matched.id))
                 .bind(format_rfc3339(now_utc()))
@@ -910,7 +910,7 @@ pub async fn process_due_deliveries(
         if !is_config_error {
             if let Err(error) = &send_result {
                 sqlx::query(
-                    "INSERT INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES (?, ?, ?, ?, 'failed', ?, ?, NULL, ?)",
+                    "INSERT INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES ($1, $2, $3, $4, 'failed', $5, $6, NULL, $7)",
                 )
                 .bind(uuid::Uuid::new_v4().to_string())
                 .bind(&delivery.delivery_id)
@@ -923,7 +923,7 @@ pub async fn process_due_deliveries(
                 .await?;
             } else {
                 sqlx::query(
-                    "INSERT INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES (?, ?, ?, ?, 'succeeded', 'ok', NULL, NULL, NULL)",
+                    "INSERT INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES ($1, $2, $3, $4, 'succeeded', 'ok', NULL, NULL, NULL)",
                 )
                 .bind(uuid::Uuid::new_v4().to_string())
                 .bind(&delivery.delivery_id)
@@ -939,7 +939,7 @@ pub async fn process_due_deliveries(
             attempt_number
         };
         sqlx::query(
-            "UPDATE notification_deliveries SET state = ?, attempt_count = ?, next_attempt_at = ?, last_attempt_at = ?, last_result = ?, last_error_kind = ?, retry_after_seconds = ?, updated_at = ? WHERE delivery_id = ?",
+            "UPDATE notification_deliveries SET state = $1, attempt_count = $2, next_attempt_at = $3, last_attempt_at = $4, last_result = $5, last_error_kind = $6, retry_after_seconds = $7, updated_at = $8 WHERE delivery_id = $9",
         )
         .bind(next_state)
         .bind(updated_attempt_count)
@@ -1049,14 +1049,14 @@ pub async fn send_test_delivery(
         .await
         .map_err(|_| TestSendError::Unavailable)?;
     let delivery_id: String =
-        sqlx::query_scalar("SELECT delivery_id FROM notification_deliveries WHERE event_id = ?")
+        sqlx::query_scalar("SELECT delivery_id FROM notification_deliveries WHERE event_id = $1")
             .bind(&event_id)
             .fetch_one(&mut *tx)
             .await
             .map_err(|_| TestSendError::Unavailable)?;
     // Audit acceptance in the same transaction as the Event and the ledger,
     // so an Audit-persistence failure fails the command before any send.
-    if insert_audit_event(
+    let audit_event_id = match insert_audit_event(
         &mut *tx,
         Some(actor_user_id),
         "notification_test_sent",
@@ -1070,15 +1070,13 @@ pub async fn send_test_delivery(
         })),
     )
     .await
-    .is_err()
     {
-        let _ = tx.rollback().await;
-        return Err(TestSendError::Unavailable);
-    }
-    let audit_event_id: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|_| TestSendError::Unavailable)?;
+        Ok(id) => id,
+        Err(_) => {
+            let _ = tx.rollback().await;
+            return Err(TestSendError::Unavailable);
+        }
+    };
     insert_notification_request(
         &mut tx,
         request_id,
@@ -1104,7 +1102,7 @@ pub async fn send_test_delivery(
             .await
             .map_err(|_| TestSendError::Unavailable)?;
         let result = sqlx::query(
-            "UPDATE notification_deliveries SET state = 'in_flight', updated_at = ? WHERE delivery_id = ? AND state = 'pending'",
+            "UPDATE notification_deliveries SET state = 'in_flight', updated_at = $1 WHERE delivery_id = $2 AND state = 'pending'",
         )
         .bind(format_rfc3339(now_utc()))
         .bind(&delivery_id)
@@ -1137,7 +1135,7 @@ pub async fn send_test_delivery(
         match &send_result {
             Ok(()) => {
                 sqlx::query(
-                    "INSERT INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES (?, ?, 1, ?, 'succeeded', 'ok', NULL, NULL, NULL)",
+                    "INSERT INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES ($1, $2, 1, $3, 'succeeded', 'ok', NULL, NULL, NULL)",
                 )
                 .bind(uuid::Uuid::new_v4().to_string())
                 .bind(&delivery_id)
@@ -1146,7 +1144,7 @@ pub async fn send_test_delivery(
                 .await
                 .map_err(|_| TestSendError::Unavailable)?;
                 sqlx::query(
-                    "UPDATE notification_deliveries SET state = 'succeeded', attempt_count = 1, next_attempt_at = NULL, last_attempt_at = ?, last_result = 'ok', last_error_kind = NULL, retry_after_seconds = NULL, updated_at = ? WHERE delivery_id = ?",
+                    "UPDATE notification_deliveries SET state = 'succeeded', attempt_count = 1, next_attempt_at = NULL, last_attempt_at = $1, last_result = 'ok', last_error_kind = NULL, retry_after_seconds = NULL, updated_at = $2 WHERE delivery_id = $3",
                 )
                 .bind(&attempted_at)
                 .bind(&attempted_at)
@@ -1157,7 +1155,7 @@ pub async fn send_test_delivery(
             }
             Err(error) => {
                 sqlx::query(
-                    "INSERT INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES (?, ?, 1, ?, 'failed', ?, ?, NULL, ?)",
+                    "INSERT INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES ($1, $2, 1, $3, 'failed', $4, $5, NULL, $6)",
                 )
                 .bind(uuid::Uuid::new_v4().to_string())
                 .bind(&delivery_id)
@@ -1169,7 +1167,7 @@ pub async fn send_test_delivery(
                 .await
                 .map_err(|_| TestSendError::Unavailable)?;
                 sqlx::query(
-                    "UPDATE notification_deliveries SET state = 'failed', attempt_count = 1, next_attempt_at = NULL, last_attempt_at = ?, last_result = ?, last_error_kind = ?, retry_after_seconds = ?, updated_at = ? WHERE delivery_id = ?",
+                    "UPDATE notification_deliveries SET state = 'failed', attempt_count = 1, next_attempt_at = NULL, last_attempt_at = $1, last_result = $2, last_error_kind = $3, retry_after_seconds = $4, updated_at = $5 WHERE delivery_id = $6",
                 )
                 .bind(&attempted_at)
                 .bind(error.provider_result())

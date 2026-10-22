@@ -90,7 +90,7 @@ impl SiteAccessMode {
 /// Read the Server-wide Home policy. Missing or malformed values fail closed.
 pub async fn site_access_mode(db: &ServerDatabase) -> Result<SiteAccessMode, sqlx::Error> {
     let value = sqlx::query_scalar::<_, String>(
-        "SELECT setting_value FROM server_settings WHERE setting_key = ?",
+        "SELECT setting_value FROM server_settings WHERE setting_key = $1",
     )
     .bind(SETTING_SITE_ACCESS_MODE)
     .fetch_optional(db.pool())
@@ -104,7 +104,7 @@ pub async fn site_access_mode(db: &ServerDatabase) -> Result<SiteAccessMode, sql
 /// Read the durable authorization generation, failing closed to generation 0.
 pub async fn authorization_generation(db: &ServerDatabase) -> Result<i64, sqlx::Error> {
     let value = sqlx::query_scalar::<_, String>(
-        "SELECT setting_value FROM server_settings WHERE setting_key = ?",
+        "SELECT setting_value FROM server_settings WHERE setting_key = $1",
     )
     .bind(SETTING_AUTHORIZATION_GENERATION)
     .fetch_optional(db.pool())
@@ -201,7 +201,7 @@ pub async fn session_is_current(
     expected_role: Option<&str>,
 ) -> bool {
     let row = sqlx::query_as::<_, (String, Option<String>, String, String)>(
-            "SELECT s.expires_at, s.revoked_at, u.role, COALESCE(u.disabled_at, '') FROM sessions s JOIN users u ON u.user_id=s.user_id WHERE s.session_id=?",
+            "SELECT s.expires_at, s.revoked_at, u.role, COALESCE(u.disabled_at, '') FROM sessions s JOIN users u ON u.user_id=s.user_id WHERE s.session_id=$1",
         )
         .bind(session_id)
         .fetch_optional(db.pool())
@@ -458,7 +458,7 @@ async fn find_user_by_username(
     username: &str,
 ) -> Result<Option<UserRow>, sqlx::Error> {
     sqlx::query_as::<_, UserRow>(
-        "SELECT user_id, username, role, password_hash, disabled_at FROM users WHERE username = ?",
+        "SELECT user_id, username, role, password_hash, disabled_at FROM users WHERE username = $1",
     )
     .bind(username)
     .fetch_optional(db.pool())
@@ -472,12 +472,13 @@ pub async fn revoke_user_sessions(
     executor: &mut sqlx::SqliteConnection,
     user_id: &str,
 ) -> Result<u64, sqlx::Error> {
-    let result =
-        sqlx::query("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL")
-            .bind(format_rfc3339(now_utc()))
-            .bind(user_id)
-            .execute(&mut *executor)
-            .await?;
+    let result = sqlx::query(
+        "UPDATE sessions SET revoked_at = $1 WHERE user_id = $2 AND revoked_at IS NULL",
+    )
+    .bind(format_rfc3339(now_utc()))
+    .bind(user_id)
+    .execute(&mut *executor)
+    .await?;
     if result.rows_affected() > 0 {
         bump_authorization_generation(&mut *executor).await?;
     }
@@ -492,8 +493,8 @@ pub async fn bump_authorization_generation(
     sqlx::query_scalar::<_, String>(
         "UPDATE server_settings
             SET setting_value = CAST(CAST(setting_value AS INTEGER) + 1 AS TEXT),
-                updated_at = ?
-          WHERE setting_key = ?
+                updated_at = $1
+          WHERE setting_key = $2
         RETURNING setting_value",
     )
     .bind(format_rfc3339(now_utc()))
@@ -510,7 +511,8 @@ pub async fn bump_authorization_generation(
 /// Insert an identity mutation into the bounded audit sink (design §13.3).
 /// Accepts any SQLx executor so identity mutations and their audit rows
 /// commit in the same transaction. CLI mutations use `actor = None`
-/// (`local-cli`).
+/// (`local-cli`). Answers the new event's `audit_event_id`, so a mutation
+/// that records it beside its own rows reads it from the insert itself.
 pub async fn insert_audit_event<'e, E>(
     executor: E,
     actor_user_id: Option<&str>,
@@ -518,7 +520,7 @@ pub async fn insert_audit_event<'e, E>(
     target_kind: &str,
     target_id: &str,
     after_json: Option<&serde_json::Value>,
-) -> Result<(), sqlx::Error>
+) -> Result<i64, sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
@@ -536,7 +538,7 @@ where
 
 /// Insert an Audit Event with explicit before/after values. Both sides are
 /// redacted before persistence so configuration transitions cannot retain
-/// sensitive input by accident.
+/// sensitive input by accident. Answers the new event's `audit_event_id`.
 pub async fn insert_audit_change<'e, E>(
     executor: E,
     actor_user_id: Option<&str>,
@@ -545,7 +547,7 @@ pub async fn insert_audit_change<'e, E>(
     target_id: &str,
     before_json: Option<&serde_json::Value>,
     after_json: Option<&serde_json::Value>,
-) -> Result<(), sqlx::Error>
+) -> Result<i64, sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
@@ -553,8 +555,8 @@ where
     let before_json = before_json.map(crate::redaction::redact_json_value);
     let after_json = after_json.map(crate::redaction::redact_json_value);
     let target_id = crate::redaction::redact_sensitive(target_id);
-    sqlx::query(
-        "INSERT INTO audit_events (actor_user_id, event_kind, target_kind, target_id, before_json, after_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    sqlx::query_scalar(
+        "INSERT INTO audit_events (actor_user_id, event_kind, target_kind, target_id, before_json, after_json, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING audit_event_id",
     )
     .bind(actor_user_id)
     .bind(event_kind)
@@ -563,9 +565,8 @@ where
     .bind(before_json.as_ref().map(serde_json::Value::to_string))
     .bind(after_json.as_ref().map(serde_json::Value::to_string))
     .bind(created_at)
-    .execute(executor)
-    .await?;
-    Ok(())
+    .fetch_one(executor)
+    .await
 }
 
 /// Standalone audit write for events that have no mutation to be atomic
@@ -587,6 +588,7 @@ pub async fn write_audit_event(
         after_json,
     )
     .await
+    .map(|_| ())
 }
 
 /// Insert a human user with the given role. The password is hashed by the
@@ -606,7 +608,7 @@ async fn insert_human_user(
     let mut transaction = db.pool().begin().await?;
 
     let insert = sqlx::query(
-        "INSERT INTO users (user_id, username, role, password_hash, disabled_at, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?)",
+        "INSERT INTO users (user_id, username, role, password_hash, disabled_at, created_at, updated_at) VALUES ($1, $2, $3, $4, NULL, $5, $6)",
     )
     .bind(&user_id)
     .bind(username)
@@ -781,7 +783,7 @@ where
     );
 
     sqlx::query(
-        "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at, client_hint) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+        "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at, client_hint) VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8)",
     )
     .bind(&token_id)
     .bind(user_id)
@@ -823,7 +825,7 @@ pub async fn authenticate_token(
 
     let Some(row) = sqlx::query_as::<_, SessionRow>(
         "SELECT s.session_id, s.token_digest, s.csrf_token_digest, s.created_at, s.last_seen_at, s.expires_at, s.revoked_at, u.user_id, u.username, u.role, u.disabled_at
-         FROM sessions s JOIN users u ON u.user_id = s.user_id WHERE s.session_id = ?",
+         FROM sessions s JOIN users u ON u.user_id = s.user_id WHERE s.session_id = $1",
     )
     .bind(token_id)
     .fetch_optional(db.pool())
@@ -884,7 +886,7 @@ fn session_expiry(expires_at: &str) -> OffsetDateTime {
 async fn expire_session(db: &ServerDatabase, session_id: &str) -> Result<(), sqlx::Error> {
     let mut transaction = db.pool().begin().await?;
     let result = sqlx::query(
-        "UPDATE sessions SET revoked_at = ? WHERE session_id = ? AND revoked_at IS NULL",
+        "UPDATE sessions SET revoked_at = $1 WHERE session_id = $2 AND revoked_at IS NULL",
     )
     .bind(format_rfc3339(now_utc()))
     .bind(session_id)
@@ -942,7 +944,7 @@ pub async fn login(
 
     if let Some(session_id) = presented_session_id {
         sqlx::query(
-            "UPDATE sessions SET revoked_at = ? WHERE session_id = ? AND revoked_at IS NULL",
+            "UPDATE sessions SET revoked_at = $1 WHERE session_id = $2 AND revoked_at IS NULL",
         )
         .bind(format_rfc3339(now_utc()))
         .bind(session_id)
@@ -984,7 +986,7 @@ pub async fn login(
 pub async fn revoke_session(db: &ServerDatabase, session_id: &str) -> Result<bool, sqlx::Error> {
     let mut transaction = db.pool().begin().await?;
     let result = sqlx::query(
-        "UPDATE sessions SET revoked_at = ? WHERE session_id = ? AND revoked_at IS NULL",
+        "UPDATE sessions SET revoked_at = $1 WHERE session_id = $2 AND revoked_at IS NULL",
     )
     .bind(format_rfc3339(now_utc()))
     .bind(session_id)
@@ -1009,7 +1011,7 @@ pub async fn touch_session(
     {
         return Ok(());
     }
-    sqlx::query("UPDATE sessions SET last_seen_at = ? WHERE session_id = ?")
+    sqlx::query("UPDATE sessions SET last_seen_at = $1 WHERE session_id = $2")
         .bind(format_rfc3339(now_utc()))
         .bind(session_id)
         .execute(db.pool())

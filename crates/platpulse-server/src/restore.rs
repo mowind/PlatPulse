@@ -108,7 +108,7 @@ pub async fn load_identity(
     artifact_id: &str,
 ) -> Result<Option<ArtifactIdentity>, RestoreError> {
     let row = sqlx::query_as::<_, (String, i64, String, i64, String, String)>(
-        "SELECT filename, bytes, sha256, schema_version, server_version, created_at FROM backup_artifacts WHERE artifact_id = ?",
+        "SELECT filename, bytes, sha256, schema_version, server_version, created_at FROM backup_artifacts WHERE artifact_id = $1",
     )
     .bind(artifact_id)
     .fetch_optional(pool)
@@ -472,7 +472,7 @@ pub async fn apply(
     // atomic rename but before the record is recovered by re-running: the
     // rename is atomic and the end state is the same artifact.
     let already_matching: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM operations WHERE kind = 'restore' AND status IN (?, ?) AND json_extract(params_json, '$.artifactId') = ?",
+        "SELECT COUNT(*) FROM operations WHERE kind = 'restore' AND status IN ($1, $2) AND json_extract(params_json, '$.artifactId') = $3",
     )
     .bind(crate::operations::STATUS_SUCCEEDED)
     .bind(crate::operations::STATUS_SUCCEEDED_WITH_WARNINGS)
@@ -481,7 +481,7 @@ pub async fn apply(
     .await?;
     if already_matching > 0 {
         let filename: String = sqlx::query_scalar(
-            "SELECT json_extract(result_json, '$.filename') FROM operations WHERE kind = 'restore' AND status IN (?, ?) AND json_extract(params_json, '$.artifactId') = ? ORDER BY created_at DESC LIMIT 1",
+            "SELECT json_extract(result_json, '$.filename') FROM operations WHERE kind = 'restore' AND status IN ($1, $2) AND json_extract(params_json, '$.artifactId') = $3 ORDER BY created_at DESC LIMIT 1",
         )
         .bind(crate::operations::STATUS_SUCCEEDED)
         .bind(crate::operations::STATUS_SUCCEEDED_WITH_WARNINGS)
@@ -868,7 +868,7 @@ async fn record_outcome(
     let result = result.map(crate::redaction::redact_json_value);
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO operations (operation_id, kind, status, progress_percent, progress_label, request_id, params_json, warnings_json, errors_json, result_json, created_at, started_at, finished_at) VALUES (?, 'restore', ?, 100, 'Restored', ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO operations (operation_id, kind, status, progress_percent, progress_label, request_id, params_json, warnings_json, errors_json, result_json, created_at, started_at, finished_at) VALUES ($1, 'restore', $2, 100, 'Restored', $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(&operation_id)
     .bind(status)
@@ -882,7 +882,7 @@ async fn record_outcome(
     .bind(&now)
     .execute(&mut *tx)
     .await?;
-    crate::auth::insert_audit_event(
+    let audit_event_id = crate::auth::insert_audit_event(
         &mut *tx,
         None,
         "restore_applied",
@@ -895,10 +895,7 @@ async fn record_outcome(
         })),
     )
     .await?;
-    let audit_event_id: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await?;
-    sqlx::query("UPDATE operations SET audit_event_id = ? WHERE operation_id = ?")
+    sqlx::query("UPDATE operations SET audit_event_id = $1 WHERE operation_id = $2")
         .bind(audit_event_id)
         .bind(&operation_id)
         .execute(&mut *tx)

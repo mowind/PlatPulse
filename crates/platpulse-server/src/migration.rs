@@ -516,14 +516,14 @@ async fn convert_server_database(
         // Never invent an accepted empty declaration: only the protocol
         // marker is cleared for an Agent that has no accepted Inventory.
         sqlx::query(
-            "UPDATE agents SET inventory_protocol_major = NULL WHERE agent_id = ? AND deleted_at IS NULL AND inventory_sha256 IS NULL",
+            "UPDATE agents SET inventory_protocol_major = NULL WHERE agent_id = $1 AND deleted_at IS NULL AND inventory_sha256 IS NULL",
         )
         .bind(agent_id)
         .execute(&mut *tx)
         .await?;
     } else {
         let updated = sqlx::query(
-            "UPDATE agents SET inventory_sha256 = ?, inventory_protocol_major = 2 WHERE agent_id = ? AND deleted_at IS NULL",
+            "UPDATE agents SET inventory_sha256 = $1, inventory_protocol_major = 2 WHERE agent_id = $2 AND deleted_at IS NULL",
         )
         .bind(conversion.fingerprint_sha256.as_deref())
         .bind(agent_id)
@@ -536,7 +536,7 @@ async fn convert_server_database(
         }
     }
     sqlx::query(
-        "INSERT INTO inventory_migration (singleton, protocol_major, preserved_revision, previous_sha256, fingerprint_sha256, converted_at) VALUES (1, 2, ?, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET protocol_major = 2, preserved_revision = excluded.preserved_revision, previous_sha256 = excluded.previous_sha256, fingerprint_sha256 = excluded.fingerprint_sha256, converted_at = excluded.converted_at",
+        "INSERT INTO inventory_migration (singleton, protocol_major, preserved_revision, previous_sha256, fingerprint_sha256, converted_at) VALUES (1, 2, $1, $2, $3, $4) ON CONFLICT(singleton) DO UPDATE SET protocol_major = 2, preserved_revision = excluded.preserved_revision, previous_sha256 = excluded.previous_sha256, fingerprint_sha256 = excluded.fingerprint_sha256, converted_at = excluded.converted_at",
     )
     .bind(conversion.preserved_revision)
     .bind(conversion.previous_sha256.as_deref())
@@ -583,7 +583,7 @@ async fn convert_agent_store(
         // from the verified Closing, which is the report that made this
         // declaration effective.
         sqlx::query(
-            "INSERT INTO inventory_declaration (singleton, revision, sha256, report_id, adopted_at) VALUES (1, ?, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET sha256 = excluded.sha256",
+            "INSERT INTO inventory_declaration (singleton, revision, sha256, report_id, adopted_at) VALUES (1, $1, $2, $3, $4) ON CONFLICT(singleton) DO UPDATE SET sha256 = excluded.sha256",
         )
         .bind(conversion.preserved_revision)
         .bind(conversion.fingerprint_sha256.as_deref())
@@ -593,7 +593,7 @@ async fn convert_agent_store(
         .await?;
     }
     sqlx::query(
-        "INSERT INTO inventory_migration (singleton, protocol_major, preserved_revision, previous_sha256, fingerprint_sha256, converted_at) VALUES (1, 2, ?, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET protocol_major = 2, preserved_revision = excluded.preserved_revision, previous_sha256 = excluded.previous_sha256, fingerprint_sha256 = excluded.fingerprint_sha256, converted_at = excluded.converted_at",
+        "INSERT INTO inventory_migration (singleton, protocol_major, preserved_revision, previous_sha256, fingerprint_sha256, converted_at) VALUES (1, 2, $1, $2, $3, $4) ON CONFLICT(singleton) DO UPDATE SET protocol_major = 2, preserved_revision = excluded.preserved_revision, previous_sha256 = excluded.previous_sha256, fingerprint_sha256 = excluded.fingerprint_sha256, converted_at = excluded.converted_at",
     )
     .bind(conversion.preserved_revision)
     .bind(conversion.previous_sha256.as_deref())
@@ -623,7 +623,7 @@ async fn verify_converted_server(
         )));
     }
     let row: Option<ConvertedAgentRow> = sqlx::query_as(
-        "SELECT last_inventory_revision, inventory_sha256, inventory_protocol_major, active_boot_id, active_boot_status, close_report_id, last_report_sequence FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+        "SELECT last_inventory_revision, inventory_sha256, inventory_protocol_major, active_boot_id, active_boot_status, close_report_id, last_report_sequence FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
     )
     .bind(&checkpoint_manifest.agent.agent_id)
     .fetch_optional(&mut connection)
@@ -668,18 +668,19 @@ async fn verify_converted_server(
     }
     // The original Closing Receipt and its Report identity survive verbatim.
     let receipt: Option<ClosingReceiptRow> = sqlx::query_as(
-        "SELECT disposition, report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id = ?",
+        "SELECT disposition, report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id = $1",
     )
     .bind(&checkpoint_manifest.agent.closing_report_id)
     .fetch_optional(&mut connection)
     .await?;
-    let deleted: Vec<String> =
-        sqlx::query_scalar("SELECT node_id FROM deleted_nodes WHERE agent_id = ? ORDER BY node_id")
-            .bind(&checkpoint_manifest.agent.agent_id)
-            .fetch_all(&mut connection)
-            .await?;
+    let deleted: Vec<String> = sqlx::query_scalar(
+        "SELECT node_id FROM deleted_nodes WHERE agent_id = $1 ORDER BY node_id",
+    )
+    .bind(&checkpoint_manifest.agent.agent_id)
+    .fetch_all(&mut connection)
+    .await?;
     let boot: Option<String> = sqlx::query_scalar(
-        "SELECT status FROM agent_boots WHERE agent_id = ? AND agent_epoch = ? AND boot_id = ?",
+        "SELECT status FROM agent_boots WHERE agent_id = $1 AND agent_epoch = $2 AND boot_id = $3",
     )
     .bind(&checkpoint_manifest.agent.agent_id)
     .bind(checkpoint_manifest.agent.agent_epoch)

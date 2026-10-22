@@ -334,7 +334,7 @@ pub(crate) async fn logout_handler(
     let result = async {
         let mut transaction = state.db().pool().begin().await?;
         let revoked = sqlx::query(
-            "UPDATE sessions SET revoked_at = ? WHERE session_id = ? AND revoked_at IS NULL",
+            "UPDATE sessions SET revoked_at = $1 WHERE session_id = $2 AND revoked_at IS NULL",
         )
         .bind(crate::auth::format_rfc3339(crate::auth::now_utc()))
         .bind(&session.session_id)
@@ -941,7 +941,7 @@ async fn public_validator_insights(
 ) -> Result<Vec<PublicValidatorInsight>, sqlx::Error> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let rows = sqlx::query_as::<_, PublicValidatorRow>(
-        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.origin = 'automatic' AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.last_good_verdict_outcome, i.last_good_verdict_received_at, i.rank, i.rank_outcome, i.rank_last_good_received_at, i.rank_cohort_size, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = ? AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.origin = 'automatic' AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
+        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.origin = 'automatic' AND l2.valid_from <= $1 AND (l2.valid_until IS NULL OR l2.valid_until > $2) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.last_good_verdict_outcome, i.last_good_verdict_received_at, i.rank, i.rank_outcome, i.rank_last_good_received_at, i.rank_cohort_size, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = $3 AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.origin = 'automatic' AND l.valid_from <= $4 AND (l.valid_until IS NULL OR l.valid_until > $5) AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
     )
     .bind(&now)
     .bind(&now)
@@ -1052,6 +1052,7 @@ async fn effective_public_links(
         sql.push_str(" AND n.network_key = ?");
     }
     sql.push_str(" ORDER BY l.node_id, l.link_id");
+    let sql = crate::database::number_placeholders(&sql);
     let mut query = sqlx::query_as::<_, EffectiveLinkRow>(&sql)
         .bind(&now)
         .bind(&now);
@@ -1534,7 +1535,7 @@ pub(crate) async fn public_node_history(
     // Check lifecycle before reading history so a guessed retired Node ID is
     // indistinguishable from a missing representation.
     let visible = sqlx::query_scalar::<_, i64>(
-        "SELECT 1 FROM nodes WHERE node_id = ? AND lifecycle = 'active'",
+        "SELECT 1 FROM nodes WHERE node_id = $1 AND lifecycle = 'active'",
     )
     .bind(&node_id)
     .fetch_optional(state.db().pool())
@@ -1574,7 +1575,7 @@ pub(crate) async fn public_node_history(
         crate::auth::now_utc(),
         raw_retention_days,
     ));
-    let rows = sqlx::query_as::<_, PublicHistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, protocol_proposer, observed_at, from_height, to_height, gap_kind, divergence_kind FROM (SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END AS protocol_proposer, observed_at, NULL AS from_height, NULL AS to_height, NULL AS gap_kind, NULL AS divergence_kind FROM block_summaries WHERE node_id = ? AND accepted_at >= ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_summaries.node_id AND lifecycle = 'active') UNION ALL SELECT NULL AS block_number, NULL AS block_timestamp_ms, NULL AS transaction_count, NULL AS source, NULL AS coinbase, NULL AS seal_signer_match, NULL AS protocol_proposer, created_at AS observed_at, from_height, to_height, kind AS gap_kind, NULL AS divergence_kind FROM block_history_gaps WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_history_gaps.node_id AND lifecycle = 'active') UNION ALL SELECT NULL AS block_number, NULL AS block_timestamp_ms, NULL AS transaction_count, NULL AS source, NULL AS coinbase, NULL AS seal_signer_match, NULL AS protocol_proposer, retained_observed_at AS observed_at, height AS from_height, height AS to_height, NULL AS gap_kind, 'chain_divergence' AS divergence_kind FROM chain_divergence_observations WHERE node_id = ? AND EXISTS (SELECT 1 FROM nodes WHERE node_id = chain_divergence_observations.node_id AND lifecycle = 'active')) WHERE (? IS NULL OR COALESCE(block_number, to_height) >= ?) AND (? IS NULL OR COALESCE(block_number, from_height) <= ?) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
+    let rows = sqlx::query_as::<_, PublicHistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, protocol_proposer, observed_at, from_height, to_height, gap_kind, divergence_kind FROM (SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END AS protocol_proposer, observed_at, NULL AS from_height, NULL AS to_height, NULL AS gap_kind, NULL AS divergence_kind FROM block_summaries WHERE node_id = $1 AND accepted_at >= $2 AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_summaries.node_id AND lifecycle = 'active') UNION ALL SELECT NULL AS block_number, NULL AS block_timestamp_ms, NULL AS transaction_count, NULL AS source, NULL AS coinbase, NULL AS seal_signer_match, NULL AS protocol_proposer, created_at AS observed_at, from_height, to_height, kind AS gap_kind, NULL AS divergence_kind FROM block_history_gaps WHERE node_id = $3 AND EXISTS (SELECT 1 FROM nodes WHERE node_id = block_history_gaps.node_id AND lifecycle = 'active') UNION ALL SELECT NULL AS block_number, NULL AS block_timestamp_ms, NULL AS transaction_count, NULL AS source, NULL AS coinbase, NULL AS seal_signer_match, NULL AS protocol_proposer, retained_observed_at AS observed_at, height AS from_height, height AS to_height, NULL AS gap_kind, 'chain_divergence' AS divergence_kind FROM chain_divergence_observations WHERE node_id = $4 AND EXISTS (SELECT 1 FROM nodes WHERE node_id = chain_divergence_observations.node_id AND lifecycle = 'active')) WHERE ($5 IS NULL OR COALESCE(block_number, to_height) >= $6) AND ($7 IS NULL OR COALESCE(block_number, from_height) <= $8) ORDER BY COALESCE(block_number, from_height) DESC LIMIT $9")
         .bind(&node_id).bind(&cutoff).bind(&node_id).bind(&node_id)
         .bind(from).bind(from).bind(to).bind(to).bind(limit)
         .fetch_all(state.db().pool()).await;
@@ -1910,7 +1911,7 @@ pub(crate) async fn public_node_metrics(
         );
     };
     let agent_id = sqlx::query_scalar::<_, String>(
-        "SELECT agent_id FROM nodes WHERE node_id=? AND lifecycle='active'",
+        "SELECT agent_id FROM nodes WHERE node_id=$1 AND lifecycle='active'",
     )
     .bind(&node_id)
     .fetch_optional(state.db().pool())
@@ -1951,7 +1952,7 @@ pub(crate) async fn public_node_metrics(
     let from = format_rfc3339(from);
     let to = format_rfc3339(to);
     let metric_rows = sqlx::query_as::<_, MetricHistoryRow>(
-        "SELECT metric, observed_at AS sampled_at, value FROM node_metric_samples AS current WHERE node_id=? AND observed_at<=? AND (received_at>=? OR received_at=(SELECT MAX(received_at) FROM node_metric_samples AS previous WHERE previous.node_id=current.node_id AND previous.metric=current.metric AND previous.observed_at<=? AND previous.received_at<?)) UNION ALL SELECT metric, observed_at AS sampled_at, value FROM host_metric_samples AS current WHERE agent_id=? AND observed_at<=? AND metric IN ('network_rx_bytes_per_sec', 'network_tx_bytes_per_sec') AND (received_at>=? OR received_at=(SELECT MAX(received_at) FROM host_metric_samples AS previous WHERE previous.agent_id=current.agent_id AND previous.metric=current.metric AND previous.observed_at<=? AND previous.received_at<?)) ORDER BY sampled_at, metric",
+        "SELECT metric, observed_at AS sampled_at, value FROM node_metric_samples AS current WHERE node_id=$1 AND observed_at<=$2 AND (received_at>=$3 OR received_at=(SELECT MAX(received_at) FROM node_metric_samples AS previous WHERE previous.node_id=current.node_id AND previous.metric=current.metric AND previous.observed_at<=$4 AND previous.received_at<$5)) UNION ALL SELECT metric, observed_at AS sampled_at, value FROM host_metric_samples AS current WHERE agent_id=$6 AND observed_at<=$7 AND metric IN ('network_rx_bytes_per_sec', 'network_tx_bytes_per_sec') AND (received_at>=$8 OR received_at=(SELECT MAX(received_at) FROM host_metric_samples AS previous WHERE previous.agent_id=current.agent_id AND previous.metric=current.metric AND previous.observed_at<=$9 AND previous.received_at<$10)) ORDER BY sampled_at, metric",
     )
     .bind(&node_id)
     .bind(&to)
@@ -1966,7 +1967,7 @@ pub(crate) async fn public_node_metrics(
     .fetch_all(state.db().pool())
     .await;
     let block_rows = sqlx::query_as::<_, BlockMetricHistoryRow>(
-        "SELECT current.observed_at AS sampled_at, CASE WHEN previous.block_timestamp_ms IS NOT NULL AND current.block_timestamp_ms > previous.block_timestamp_ms THEN current.block_timestamp_ms - previous.block_timestamp_ms ELSE NULL END AS block_interval_ms, current.transaction_count FROM block_summaries AS current LEFT JOIN block_summaries AS previous ON previous.node_id=current.node_id AND previous.block_number=current.block_number-1 WHERE current.node_id=? AND current.observed_at<=? ORDER BY current.block_number DESC LIMIT 200",
+        "SELECT current.observed_at AS sampled_at, CASE WHEN previous.block_timestamp_ms IS NOT NULL AND current.block_timestamp_ms > previous.block_timestamp_ms THEN current.block_timestamp_ms - previous.block_timestamp_ms ELSE NULL END AS block_interval_ms, current.transaction_count FROM block_summaries AS current LEFT JOIN block_summaries AS previous ON previous.node_id=current.node_id AND previous.block_number=current.block_number-1 WHERE current.node_id=$1 AND current.observed_at<=$2 ORDER BY current.block_number DESC LIMIT 200",
     )
     .bind(&node_id)
     .bind(&to)
@@ -1976,7 +1977,7 @@ pub(crate) async fn public_node_metrics(
     // and no value, and retention never prunes it, so an expired series is still
     // dated here instead of being answered as one nobody observed (#225).
     let ledger_rows = sqlx::query_as::<_, MetricSeriesLedgerRow>(
-        "SELECT metric, MIN(first_observed_at) AS first_observed_at, MAX(last_observed_at) AS last_observed_at FROM node_metric_series_state WHERE node_id=? GROUP BY metric UNION ALL SELECT metric, MIN(first_observed_at) AS first_observed_at, MAX(last_observed_at) AS last_observed_at FROM host_metric_series_state WHERE agent_id=? AND metric IN ('network_rx_bytes_per_sec', 'network_tx_bytes_per_sec') GROUP BY metric",
+        "SELECT metric, MIN(first_observed_at) AS first_observed_at, MAX(last_observed_at) AS last_observed_at FROM node_metric_series_state WHERE node_id=$1 GROUP BY metric UNION ALL SELECT metric, MIN(first_observed_at) AS first_observed_at, MAX(last_observed_at) AS last_observed_at FROM host_metric_series_state WHERE agent_id=$2 AND metric IN ('network_rx_bytes_per_sec', 'network_tx_bytes_per_sec') GROUP BY metric",
     )
     .bind(&node_id)
     .bind(&agent_id)
@@ -2337,7 +2338,7 @@ pub(crate) async fn public_node_peer_history(
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
     let visible =
-        sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id=? AND lifecycle='active'")
+        sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id=$1 AND lifecycle='active'")
             .bind(&node_id)
             .fetch_optional(state.db().pool())
             .await;
@@ -3148,6 +3149,7 @@ async fn load_node_geo(
     let sql = format!(
         "SELECT p.node_id, n.network_key, g.country_code, COUNT(*) AS record_count, COALESCE(SUM(CASE WHEN g.country_code IS NOT NULL AND g.created_at > ? THEN 1 ELSE 0 END), 0) AS known_count, COALESCE(SUM(CASE WHEN g.country_code IS NOT NULL AND g.created_at > ? AND (g.expires_at IS NULL OR g.expires_at <= ?) THEN 1 ELSE 0 END), 0) AS stale_count, COALESCE(SUM(CASE WHEN g.country_code IS NULL AND p.remote_ip IS NULL THEN 1 ELSE 0 END), 0) AS unknown_without_remote_ip_count FROM current_node_peers p JOIN nodes n ON n.node_id = p.node_id LEFT JOIN geo_location_cache g ON g.provider = ? AND g.canonical_ip = p.remote_ip WHERE n.lifecycle = 'active'{filter} GROUP BY p.node_id, n.network_key, g.country_code"
     );
+    let sql = crate::database::number_placeholders(&sql);
     let mut rows = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, i64, i64)>(&sql)
         .bind(rebuild_before.as_str())
         .bind(rebuild_before.as_str())
@@ -3162,6 +3164,7 @@ async fn load_node_geo(
     let sql = format!(
         "SELECT n.node_id, n.network_key, COALESCE(SUM(CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN 1 ELSE 0 END), 0) FROM nodes n LEFT JOIN component_status ps ON ps.node_id = n.node_id AND ps.component_key = 'peers' WHERE n.lifecycle = 'active'{filter} GROUP BY n.node_id, n.network_key"
     );
+    let sql = crate::database::number_placeholders(&sql);
     let mut denominator = sqlx::query_as::<_, (String, String, i64)>(&sql);
     if let Some(scope) = scope {
         denominator = denominator.bind(scope.filter().1);
@@ -3483,7 +3486,7 @@ pub(crate) async fn public_node_detail(
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
     let row = sqlx::query_as::<_, PublicNodeRow>(&public_node_query(
-        "n.node_id = ? AND n.lifecycle = 'active'",
+        "n.node_id = $1 AND n.lifecycle = 'active'",
         "n.node_id",
     ))
     .bind(&node_id)

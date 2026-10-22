@@ -610,7 +610,7 @@ async fn verify_integrity(pool: &SqlitePool) -> Result<(), ServerDatabaseError> 
     }
 
     for table in REQUIRED_TABLES {
-        let exists = sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+        let exists = sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $1")
             .bind(table)
             .fetch_optional(pool)
             .await
@@ -625,6 +625,42 @@ async fn verify_integrity(pool: &SqlitePool) -> Result<(), ServerDatabaseError> 
     Ok(())
 }
 
+/// Number the positional `?` placeholders of a statement composed at run
+/// time, in text order, as `$1`, `$2`, ...
+///
+/// Statement text written out in full spells its placeholders as `$N`, a form
+/// both SQLite and PostgreSQL accept (ADR 0013). A statement assembled from
+/// optional fragments cannot know its own numbering while it is written, so its
+/// fragments use `?` and the assembled text is numbered once here, just before
+/// it is prepared. Bind order is unchanged: the n-th `?` becomes `$n`.
+/// Question marks inside quoted SQL text are left alone. The input must not
+/// already contain numbered placeholders.
+pub(crate) fn number_placeholders(sql: &str) -> String {
+    let mut numbered = String::with_capacity(sql.len() + 8);
+    let mut next = 0_usize;
+    let mut quote: Option<char> = None;
+    for character in sql.chars() {
+        match (quote, character) {
+            (Some(open), _) if character == open => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(character),
+            (None, '?') => {
+                next += 1;
+                numbered.push('$');
+                numbered.push_str(&next.to_string());
+                continue;
+            }
+            (None, '$') => debug_assert!(
+                false,
+                "number_placeholders received text that is already numbered: {sql}"
+            ),
+            (None, _) => {}
+        }
+        numbered.push(character);
+    }
+    numbered
+}
+
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
@@ -634,6 +670,47 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn numbers_positional_placeholders_in_text_order() {
+        assert_eq!(
+            number_placeholders("SELECT a FROM t WHERE b = ? AND c IN (?, ?) LIMIT ?"),
+            "SELECT a FROM t WHERE b = $1 AND c IN ($2, $3) LIMIT $4"
+        );
+        assert_eq!(number_placeholders("SELECT 1"), "SELECT 1");
+    }
+
+    #[test]
+    fn leaves_question_marks_inside_quoted_text_alone() {
+        assert_eq!(
+            number_placeholders("SELECT '?', \"a?\", 'it''s ?' FROM t WHERE x = ?"),
+            "SELECT '?', \"a?\", 'it''s ?' FROM t WHERE x = $1"
+        );
+    }
+
+    #[tokio::test]
+    async fn numbered_placeholders_bind_in_the_same_order_as_positional_ones() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let positional: (i64, String, i64) = sqlx::query_as("SELECT ?, ?, ?")
+            .bind(1_i64)
+            .bind("two")
+            .bind(3_i64)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let numbered: (i64, String, i64) = sqlx::query_as(&number_placeholders("SELECT ?, ?, ?"))
+            .bind(1_i64)
+            .bind("two")
+            .bind(3_i64)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(positional, numbered);
+    }
 
     fn config(path: &Path) -> ServerDatabaseConfig {
         ServerDatabaseConfig::new(path).with_busy_timeout(Duration::from_millis(1_234))

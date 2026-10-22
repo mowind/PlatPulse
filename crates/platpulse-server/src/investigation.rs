@@ -1516,13 +1516,38 @@ fn aligned_count(from: OffsetDateTime, to: OffsetDateTime, grain_seconds: i64) -
     to.div_euclid(grain_seconds) - from.div_euclid(grain_seconds) + 1
 }
 
-/// Seconds since the Unix epoch for one instant column, computed inside SQLite.
+/// Seconds since the Unix epoch for one instant column, computed inside the
+/// database.
 ///
 /// The interval between two adjacent observations is what proves a stretch of
 /// silence, and the difference is taken where the rows are: a window of buckets
 /// must never be fetched only to subtract two timestamps in Rust.
+///
+/// Instants are stored as canonical RFC 3339 UTC text
+/// (`YYYY-MM-DDTHH:MM:SS[.fraction]Z`), so the expression reads the fields at
+/// their fixed offsets and counts days from the civil date with integer
+/// arithmetic only (Howard Hinnant's `days_from_civil`, shifting the year to
+/// start in March so the leap day is the year's last). That is SQL both SQLite
+/// and PostgreSQL accept (ADR 0013); a fraction rounds half up to the nearest
+/// second, and an absent instant has no epoch.
 fn epoch_of(column: &str) -> String {
-    format!("CAST(ROUND((julianday({column}) - 2440587.5) * 86400) AS INTEGER)")
+    let field =
+        |start: usize, len: usize| format!("CAST(SUBSTR({column}, {start}, {len}) AS BIGINT)");
+    let (year, month, day) = (field(1, 4), field(6, 2), field(9, 2));
+    let (hour, minute, second) = (field(12, 2), field(15, 2), field(18, 2));
+    // The year a March-based calendar year belongs to: January and February
+    // count with the year before.
+    let march_year = format!("({year} - CASE WHEN {month} <= 2 THEN 1 ELSE 0 END)");
+    let march_month = format!("(CASE WHEN {month} > 2 THEN {month} - 3 ELSE {month} + 9 END)");
+    // 719_468 is the day number of 1970-01-01 counted from 0000-03-01.
+    let days = format!(
+        "(365 * {march_year} + {march_year} / 4 - {march_year} / 100 + {march_year} / 400 \
+          + (153 * {march_month} + 2) / 5 + {day} - 1 - 719468)"
+    );
+    let round_up = format!(
+        "CASE WHEN SUBSTR({column}, 20, 1) = '.' AND SUBSTR({column}, 21, 1) >= '5' THEN 1 ELSE 0 END"
+    );
+    format!("({days} * 86400 + {hour} * 3600 + {minute} * 60 + {second} + {round_up})")
 }
 
 /// The columns that name one series inside a scope.
@@ -1568,7 +1593,9 @@ fn metric_stats_sql(schema: &HistorySchema, tier: Option<i64>) -> String {
     // The widest stretch this tier can prove: a bucket knows the widest silence
     // it counted inside itself as well as the silence before it.
     let widest = if tier.is_some() {
-        format!("max({spacing}, COALESCE(max_gap_seconds, 0))")
+        format!(
+            "CASE WHEN {spacing} >= COALESCE(max_gap_seconds, 0) THEN {spacing} ELSE COALESCE(max_gap_seconds, 0) END"
+        )
     } else {
         spacing.clone()
     };
@@ -2321,7 +2348,7 @@ const STATE_ORDERED_SQL: &str = "\
     SELECT component, observed_at, received_at, \
            LAG(observed_at) OVER (PARTITION BY component ORDER BY observed_at) AS previous \
       FROM node_state_observations \
-     WHERE node_id = ? AND observed_at >= ? AND observed_at <= ?";
+     WHERE node_id = $1 AND observed_at >= $2 AND observed_at <= $3";
 
 /// SQL: what the state entries of one Node hold inside a stretch.
 fn state_stats_sql() -> String {
@@ -2378,7 +2405,7 @@ async fn state_source(ctx: &SourceContext<'_>) -> Result<InvestigationSourceResp
         let row = sqlx::query_as::<_, LedgerRow>(
             "SELECT first_observed_at, last_observed_at, last_received_at, released_before \
                FROM node_state_series_state \
-              WHERE node_id = ? AND component = ?",
+              WHERE node_id = $1 AND component = $2",
         )
         .bind(ctx.node_id)
         .bind(component)
@@ -2524,7 +2551,7 @@ fn peer_gap_sql(table: &str, grain_seconds: i64) -> String {
         "WITH ordered AS (\
              SELECT bucket_start, LAG(bucket_start) OVER (ORDER BY bucket_start) AS previous \
                FROM {table} \
-              WHERE node_id = ? AND bucket_start >= ? AND bucket_start <= ?\
+              WHERE node_id = $1 AND bucket_start >= $2 AND bucket_start <= $3\
          ) \
          SELECT previous, bucket_start AS at, {gap} / {grain_seconds} - 1 AS missing \
            FROM ordered \
@@ -2558,9 +2585,9 @@ async fn peers_source(ctx: &SourceContext<'_>) -> Result<InvestigationSourceResp
     let bounds = sqlx::query_as::<_, PeerBoundsRow>(
         "SELECT MIN(bucket_start) AS first_bucket, MAX(bucket_start) AS last_bucket, \
                 MAX(last_observed_at) AS last_observed \
-           FROM (SELECT bucket_start, last_observed_at FROM peer_aggregate_5m WHERE node_id = ? \
+           FROM (SELECT bucket_start, last_observed_at FROM peer_aggregate_5m WHERE node_id = $1 \
                  UNION ALL \
-                 SELECT bucket_start, last_observed_at FROM peer_aggregate_1h WHERE node_id = ?)",
+                 SELECT bucket_start, last_observed_at FROM peer_aggregate_1h WHERE node_id = $2)",
     )
     .bind(ctx.node_id)
     .bind(ctx.node_id)
@@ -2658,7 +2685,7 @@ async fn peers_source(ctx: &SourceContext<'_>) -> Result<InvestigationSourceResp
                     MIN(bucket_start) AS first_observed_at, \
                     MAX(bucket_start) AS last_observed_at \
                FROM {} \
-              WHERE node_id = ? AND bucket_start >= ? AND bucket_start <= ?",
+              WHERE node_id = $1 AND bucket_start >= $2 AND bucket_start <= $3",
             tier.table
         ))
         .bind(ctx.node_id)
@@ -2902,13 +2929,15 @@ async fn load_incident_stats(
     from: OffsetDateTime,
     to: OffsetDateTime,
 ) -> Result<IncidentStatsRow, sqlx::Error> {
-    sqlx::query_as::<_, IncidentStatsRow>(&incident_stats_sql())
-        .bind(format_rfc3339(to))
-        .bind(format_rfc3339(from))
-        .bind(subject_kind)
-        .bind(subject_key)
-        .fetch_one(ctx.pool)
-        .await
+    sqlx::query_as::<_, IncidentStatsRow>(&crate::database::number_placeholders(
+        &incident_stats_sql(),
+    ))
+    .bind(format_rfc3339(to))
+    .bind(format_rfc3339(from))
+    .bind(subject_kind)
+    .bind(subject_key)
+    .fetch_one(ctx.pool)
+    .await
 }
 
 /// The instants one subject's Incident statistics name, as canonical instants.
@@ -3133,7 +3162,7 @@ struct ValidatorHorizonRow {
 const VALIDATOR_LINK_SQL: &str = "\
     SELECT validator_id, role, origin, valid_from, valid_until \
       FROM node_validator_links \
-     WHERE node_id = ? AND valid_from < ? AND (valid_until IS NULL OR valid_until > ?) \
+     WHERE node_id = $1 AND valid_from < $2 AND (valid_until IS NULL OR valid_until > $3) \
      ORDER BY valid_from DESC";
 
 /// SQL: where the snapshots of those links start and stop.
@@ -3150,8 +3179,8 @@ const VALIDATOR_HORIZON_SQL: &str = "\
       JOIN node_validator_links l ON l.validator_id = s.validator_id \
        AND s.received_at >= l.valid_from \
        AND (l.valid_until IS NULL OR s.received_at < l.valid_until) \
-     WHERE l.node_id = ? AND l.valid_from < ? AND (l.valid_until IS NULL OR l.valid_until > ?) \
-       AND s.timezone = ?";
+     WHERE l.node_id = $1 AND l.valid_from < $2 AND (l.valid_until IS NULL OR l.valid_until > $3) \
+       AND s.timezone = $4";
 
 /// SQL: the days and rows those snapshots hold inside the window's local days.
 ///
@@ -3164,8 +3193,8 @@ const VALIDATOR_GRID_SQL: &str = "\
       JOIN node_validator_links l ON l.validator_id = s.validator_id \
        AND s.received_at >= l.valid_from \
        AND (l.valid_until IS NULL OR s.received_at < l.valid_until) \
-     WHERE l.node_id = ? AND l.valid_from < ? AND (l.valid_until IS NULL OR l.valid_until > ?) \
-       AND s.timezone = ? AND s.local_date >= ? AND s.local_date <= ?";
+     WHERE l.node_id = $1 AND l.valid_from < $2 AND (l.valid_until IS NULL OR l.valid_until > $3) \
+       AND s.timezone = $4 AND s.local_date >= $5 AND s.local_date <= $6";
 
 /// The seconds in one day, for the Validator source's day grid.
 const DAY_SECONDS: i64 = 86_400;
@@ -3375,17 +3404,17 @@ async fn validator_source(
 /// The Node an investigation is about.
 const NODE_SQL: &str = "\
     SELECT node_id, agent_id, display_name, lifecycle, visibility, first_seen_at \
-      FROM nodes WHERE node_id = ?";
+      FROM nodes WHERE node_id = $1";
 
 /// Whether a Node id belongs to a Purge rather than to nothing at all.
 const DELETED_NODE_SQL: &str = "\
-    SELECT deleted_at FROM deleted_nodes WHERE node_id = ? ORDER BY deleted_at DESC LIMIT 1";
+    SELECT deleted_at FROM deleted_nodes WHERE node_id = $1 ORDER BY deleted_at DESC LIMIT 1";
 
 /// The collector rows of one Node and its Agent.
 const COMPONENT_SQL: &str = "\
     SELECT scope, scope_key, component_key, state, error_code, observed_at, received_at \
       FROM component_status \
-     WHERE (scope = 'node' AND scope_key = ?) OR (scope = 'host' AND agent_id = ?) \
+     WHERE (scope = 'node' AND scope_key = $1) OR (scope = 'host' AND agent_id = $2) \
      ORDER BY scope ASC, component_key ASC";
 
 /// The protection pauses that overlap a window, in either scope.
@@ -3395,10 +3424,10 @@ const PAUSE_SQL: &str = "\
            s.first_skipped_at AS first_skipped_at, s.last_skipped_at AS last_skipped_at \
       FROM capacity_skipped_series s \
       JOIN capacity_protection_intervals p ON p.interval_id = s.interval_id \
-     WHERE s.last_skipped_at >= ? AND s.first_skipped_at <= ? \
-       AND ((s.scope_kind = 'node' AND s.scope_key = ?) \
-            OR (s.scope_kind = 'host' AND s.scope_key = ?)) \
-     ORDER BY s.first_skipped_at ASC LIMIT ?";
+     WHERE s.last_skipped_at >= $1 AND s.first_skipped_at <= $2 \
+       AND ((s.scope_kind = 'node' AND s.scope_key = $3) \
+            OR (s.scope_kind = 'host' AND s.scope_key = $4)) \
+     ORDER BY s.first_skipped_at ASC LIMIT $5";
 
 /// How many pauses one investigation lists.
 const PAUSE_ROW_LIMIT: i64 = 512;
@@ -3612,4 +3641,61 @@ pub async fn investigate_node(
         components: components.iter().map(ComponentRow::to_response).collect(),
         notes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use time::format_description::well_known::Rfc3339;
+
+    use super::*;
+
+    /// The Unix second one instant names, a fraction rounding half up.
+    fn parsed_epoch(instant: &str) -> i64 {
+        let parsed = OffsetDateTime::parse(instant, &Rfc3339).unwrap();
+        parsed.unix_timestamp() + i64::from(parsed.nanosecond() >= 500_000_000)
+    }
+
+    /// The epoch expression is plain integer arithmetic over the instant's text,
+    /// so it must agree with the instant itself across leap days, month, year
+    /// and century edges, and round a sub-second fraction to the nearest second.
+    #[tokio::test]
+    async fn epoch_of_names_the_unix_second_of_a_canonical_instant() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let statement = format!("SELECT {} FROM (SELECT $1 AS at)", epoch_of("at"));
+        for instant in [
+            "1970-01-01T00:00:00Z",
+            "1970-03-01T00:00:00Z",
+            "1999-12-31T23:59:59Z",
+            "2000-02-29T12:34:56Z",
+            "2000-03-01T00:00:00Z",
+            "2024-02-28T23:59:59Z",
+            "2024-02-29T00:00:00Z",
+            "2025-02-28T23:59:59Z",
+            "2025-03-01T00:00:00Z",
+            "2026-10-22T02:03:04Z",
+            "2026-12-31T23:59:59Z",
+            "2100-02-28T23:59:59Z",
+            "2100-03-01T00:00:00Z",
+            "2026-10-22T02:03:04.4999Z",
+            "2026-10-22T02:03:04.5Z",
+            "2026-10-22T23:59:59.999999999Z",
+        ] {
+            let epoch: i64 = sqlx::query_scalar(&statement)
+                .bind(instant)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(epoch, parsed_epoch(instant), "{instant}");
+        }
+        let missing: Option<i64> = sqlx::query_scalar(&statement)
+            .bind(None::<String>)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(missing, None, "an absent instant has no epoch");
+    }
 }

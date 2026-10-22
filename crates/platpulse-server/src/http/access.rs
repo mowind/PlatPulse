@@ -356,7 +356,7 @@ async fn load_user_for_mutation(
     user_id: &str,
 ) -> Result<Option<(String, String, Option<String>)>, sqlx::Error> {
     sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT username, role, disabled_at FROM users WHERE user_id = ?",
+        "SELECT username, role, disabled_at FROM users WHERE user_id = $1",
     )
     .bind(user_id)
     .fetch_optional(&mut *tx)
@@ -370,7 +370,7 @@ async fn person_after_mutation(state: &AppState, user_id: &str) -> Option<Person
                 COUNT(s.session_id) AS session_count
            FROM users u
            LEFT JOIN sessions s ON s.user_id = u.user_id AND s.revoked_at IS NULL
-          WHERE u.user_id = ?
+          WHERE u.user_id = $1
           GROUP BY u.user_id",
     )
     .bind(user_id)
@@ -452,7 +452,7 @@ pub(crate) async fn set_person_role(
         {
             return Ok(Some(PersonMutation::Protected));
         }
-        sqlx::query("UPDATE users SET role = ?, updated_at = ? WHERE user_id = ?")
+        sqlx::query("UPDATE users SET role = $1, updated_at = $2 WHERE user_id = $3")
             .bind(&body.role)
             .bind(format_rfc3339(now_utc()))
             .bind(&user_id)
@@ -584,7 +584,7 @@ pub(crate) async fn set_person_status(
         } else {
             None
         };
-        sqlx::query("UPDATE users SET disabled_at = ?, updated_at = ? WHERE user_id = ?")
+        sqlx::query("UPDATE users SET disabled_at = $1, updated_at = $2 WHERE user_id = $3")
             .bind(&disabled_value)
             .bind(format_rfc3339(now_utc()))
             .bind(&user_id)
@@ -722,7 +722,7 @@ pub(crate) async fn reset_person_password(
         let Some((username, _, _)) = load_user_for_mutation(&mut tx, &user_id).await? else {
             return Ok(None);
         };
-        sqlx::query("UPDATE users SET password_hash = ?, updated_at = ? WHERE user_id = ?")
+        sqlx::query("UPDATE users SET password_hash = $1, updated_at = $2 WHERE user_id = $3")
             .bind(&password_hash)
             .bind(format_rfc3339(now_utc()))
             .bind(&user_id)
@@ -892,7 +892,7 @@ pub(crate) async fn revoke_session(
     };
     let outcome: Result<RevokeOutcome, sqlx::Error> = async {
         let username = sqlx::query_scalar::<_, String>(
-            "SELECT u.username FROM sessions s JOIN users u ON u.user_id = s.user_id WHERE s.session_id = ?",
+            "SELECT u.username FROM sessions s JOIN users u ON u.user_id = s.user_id WHERE s.session_id = $1",
         )
         .bind(&session_id)
         .fetch_optional(&mut *tx)
@@ -902,7 +902,7 @@ pub(crate) async fn revoke_session(
         };
         let revoked_at = format_rfc3339(now_utc());
         let result = sqlx::query(
-            "UPDATE sessions SET revoked_at = ? WHERE session_id = ? AND revoked_at IS NULL",
+            "UPDATE sessions SET revoked_at = $1 WHERE session_id = $2 AND revoked_at IS NULL",
         )
         .bind(&revoked_at)
         .bind(&session_id)
@@ -1005,7 +1005,7 @@ pub(crate) async fn revoke_other_sessions(
     };
     let outcome: Result<i64, sqlx::Error> = async {
         let result = sqlx::query(
-            "UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND session_id != ? AND revoked_at IS NULL",
+            "UPDATE sessions SET revoked_at = $1 WHERE user_id = $2 AND session_id != $3 AND revoked_at IS NULL",
         )
         .bind(format_rfc3339(now_utc()))
         .bind(&principal.0.user_id)
@@ -1086,10 +1086,10 @@ pub(crate) async fn audit_list(
     let rows = sqlx::query_as::<_, (i64, String, Option<String>, String, String, String, Option<String>)>(
         "SELECT a.audit_event_id, a.event_kind, u.username, a.target_kind, a.target_id, a.created_at, a.after_json
            FROM audit_events a LEFT JOIN users u ON u.user_id = a.actor_user_id
-          WHERE (?1 IS NULL OR a.event_kind = ?1)
-            AND (?2 IS NULL OR a.target_kind = ?2)
-            AND (?3 IS NULL OR a.audit_event_id < ?3)
-          ORDER BY a.audit_event_id DESC LIMIT ?4",
+          WHERE ($1 IS NULL OR a.event_kind = $1)
+            AND ($2 IS NULL OR a.target_kind = $2)
+            AND ($3 IS NULL OR a.audit_event_id < $3)
+          ORDER BY a.audit_event_id DESC LIMIT $4",
     )
     .bind(params.event_kind.as_deref())
     .bind(params.target_kind.as_deref())
@@ -1234,14 +1234,14 @@ pub(crate) async fn set_access_settings(
     };
     let outcome: Result<Option<i64>, sqlx::Error> = async {
         let current = sqlx::query_scalar::<_, String>(
-            "SELECT setting_value FROM server_settings WHERE setting_key = ?",
+            "SELECT setting_value FROM server_settings WHERE setting_key = $1",
         )
         .bind(crate::auth::SETTING_SITE_ACCESS_MODE)
         .fetch_one(&mut *tx)
         .await?;
         let current = SiteAccessMode::parse(&current).unwrap_or(SiteAccessMode::Private);
         let generation = sqlx::query_scalar::<_, String>(
-            "SELECT setting_value FROM server_settings WHERE setting_key = ?",
+            "SELECT setting_value FROM server_settings WHERE setting_key = $1",
         )
         .bind(crate::auth::SETTING_AUTHORIZATION_GENERATION)
         .fetch_one(&mut *tx)
@@ -1253,7 +1253,7 @@ pub(crate) async fn set_access_settings(
         }
         let now = format_rfc3339(now_utc());
         sqlx::query(
-            "UPDATE server_settings SET setting_value = ?, updated_at = ? WHERE setting_key = ?",
+            "UPDATE server_settings SET setting_value = $1, updated_at = $2 WHERE setting_key = $3",
         )
         .bind(mode.as_str())
         .bind(&now)

@@ -259,7 +259,7 @@ async fn record_composed_revision(
     updated_at: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO alert_rule_versions (rule_key, version, severity, condition_json, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO alert_rule_versions (rule_key, version, severity, condition_json, created_at) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(rule_key)
     .bind(new_version)
@@ -268,7 +268,7 @@ async fn record_composed_revision(
     .bind(updated_at)
     .execute(&mut *executor)
     .await?;
-    sqlx::query("UPDATE alert_rules SET version = ?, updated_at = ? WHERE rule_key = ?")
+    sqlx::query("UPDATE alert_rules SET version = $1, updated_at = $2 WHERE rule_key = $3")
         .bind(new_version)
         .bind(updated_at)
         .bind(rule_key)
@@ -646,7 +646,7 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     let rows = sqlx::query_as::<_, (String, i64, i64)>(
-        "SELECT state, COUNT(*), COALESCE(SUM(evaluation_unavailable), 0) FROM alert_rule_state WHERE rule_key = ? GROUP BY state",
+        "SELECT state, COUNT(*), COALESCE(SUM(evaluation_unavailable), 0) FROM alert_rule_state WHERE rule_key = $1 GROUP BY state",
     )
     .bind(rule_key)
     .fetch_all(executor)
@@ -681,7 +681,7 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as::<_, (bool, String, i64, String, String, String)>(
-        "SELECT enabled, severity, version, condition_json, created_at, updated_at FROM alert_rules WHERE rule_key = ?",
+        "SELECT enabled, severity, version, condition_json, created_at, updated_at FROM alert_rules WHERE rule_key = $1",
     )
     .bind(rule_key)
     .fetch_optional(executor)
@@ -709,7 +709,7 @@ where
         bool,
         String,
     )>(
-        "SELECT subject_kind, subject_key, state, pending_since, firing_since, recovering_since, input_kind, input_value, input_detail, evaluation_unavailable, last_evaluated_at FROM alert_rule_state WHERE rule_key = ? ORDER BY subject_kind, subject_key",
+        "SELECT subject_kind, subject_key, state, pending_since, firing_since, recovering_since, input_kind, input_value, input_detail, evaluation_unavailable, last_evaluated_at FROM alert_rule_state WHERE rule_key = $1 ORDER BY subject_kind, subject_key",
     )
     .bind(rule_key)
     .fetch_all(executor)
@@ -763,7 +763,7 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     let rows = sqlx::query_as::<_, (i64, String, String, String)>(
-        "SELECT version, severity, condition_json, created_at FROM alert_rule_versions WHERE rule_key = ? ORDER BY version DESC",
+        "SELECT version, severity, condition_json, created_at FROM alert_rule_versions WHERE rule_key = $1 ORDER BY version DESC",
     )
     .bind(rule_key)
     .fetch_all(executor)
@@ -791,7 +791,7 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     let rows = sqlx::query_as::<_, (String, String, Option<bool>, Option<String>, Option<String>, String)>(
-        "SELECT scope_kind, scope_value, enabled, severity, condition_json, updated_at FROM alert_rule_overrides WHERE rule_key = ? ORDER BY scope_kind, scope_value",
+        "SELECT scope_kind, scope_value, enabled, severity, condition_json, updated_at FROM alert_rule_overrides WHERE rule_key = $1 ORDER BY scope_kind, scope_value",
     )
     .bind(rule_key)
     .fetch_all(executor)
@@ -1066,7 +1066,7 @@ pub(crate) async fn update_alert_rule(
             );
         }
     };
-    let outcome: Result<RuleWriteOutcome<Box<AlertRuleDetail>>, AlertError> = async {
+    let outcome: Result<RuleWriteOutcome<(Box<AlertRuleDetail>, i64)>, AlertError> = async {
         let Some((current_enabled, current_severity, current_version, current_condition, _, _)) =
             load_rule_row(&mut *tx, &rule_key).await?
         else {
@@ -1089,7 +1089,7 @@ pub(crate) async fn update_alert_rule(
         };
         let updated_at = format_rfc3339(now_utc());
         sqlx::query(
-            "INSERT INTO alert_rule_versions (rule_key, version, severity, condition_json, created_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO alert_rule_versions (rule_key, version, severity, condition_json, created_at) VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(&rule_key)
         .bind(new_version)
@@ -1099,7 +1099,7 @@ pub(crate) async fn update_alert_rule(
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "UPDATE alert_rules SET enabled = ?, severity = ?, version = ?, condition_json = ?, updated_at = ? WHERE rule_key = ?",
+            "UPDATE alert_rules SET enabled = $1, severity = $2, version = $3, condition_json = $4, updated_at = $5 WHERE rule_key = $6",
         )
         .bind(next_enabled)
         .bind(&next_severity)
@@ -1121,7 +1121,7 @@ pub(crate) async fn update_alert_rule(
             "condition": next_condition,
             "version": new_version,
         });
-        crate::auth::insert_audit_event(
+        let audit_event_id = crate::auth::insert_audit_event(
             &mut *tx,
             Some(&principal.0.user_id),
             "alert_rule_updated",
@@ -1131,7 +1131,7 @@ pub(crate) async fn update_alert_rule(
         )
         .await?;
         let created_at: String =
-            sqlx::query_scalar("SELECT created_at FROM alert_rules WHERE rule_key = ?")
+            sqlx::query_scalar("SELECT created_at FROM alert_rules WHERE rule_key = $1")
                 .bind(&rule_key)
                 .fetch_one(&mut *tx)
                 .await?;
@@ -1145,7 +1145,7 @@ pub(crate) async fn update_alert_rule(
             .map(|(_, _, count)| *count)
             .sum();
         let definition = catalog_rule(&rule_key).expect("validated");
-        Ok(RuleWriteOutcome::Updated(Box::new(AlertRuleDetail {
+        Ok(RuleWriteOutcome::Updated((Box::new(AlertRuleDetail {
             rule_key: rule_key.clone(),
             subject_kind: definition.subject_kind.as_str().to_owned(),
             enabled: next_enabled,
@@ -1159,25 +1159,11 @@ pub(crate) async fn update_alert_rule(
             overrides,
             states,
             open_incidents,
-        })))
+        }), audit_event_id)))
     }
     .await;
     match outcome {
-        Ok(RuleWriteOutcome::Updated(detail)) => {
-            let audit_event_id: i64 = match sqlx::query_scalar("SELECT last_insert_rowid()")
-                .fetch_one(&mut *tx)
-                .await
-            {
-                Ok(value) => value,
-                Err(_) => {
-                    return mutation_error(
-                        &request_id.0,
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "unavailable",
-                        "Server database is unavailable",
-                    );
-                }
-            };
+        Ok(RuleWriteOutcome::Updated((detail, audit_event_id))) => {
             if tx.commit().await.is_err() {
                 return mutation_error(
                     &request_id.0,
@@ -1379,7 +1365,7 @@ pub(crate) async fn preview_alert_rule(
             };
             if subject_kind == SubjectKind::Node {
                 let network_key: Option<String> =
-                    sqlx::query_scalar("SELECT network_key FROM nodes WHERE node_id = ?")
+                    sqlx::query_scalar("SELECT network_key FROM nodes WHERE node_id = $1")
                         .bind(&subject_key)
                         .fetch_optional(&mut *tx)
                         .await?
@@ -1387,7 +1373,7 @@ pub(crate) async fn preview_alert_rule(
                 if let Some(network_key) = network_key {
                     if let Some((override_enabled, override_severity, override_condition_json)) =
                         sqlx::query_as::<_, (Option<bool>, Option<String>, Option<String>)>(
-                            "SELECT enabled, severity, condition_json FROM alert_rule_overrides WHERE rule_key = ? AND scope_kind = 'network' AND scope_value = ?",
+                            "SELECT enabled, severity, condition_json FROM alert_rule_overrides WHERE rule_key = $1 AND scope_kind = 'network' AND scope_value = $2",
                         )
                         .bind(&rule_key)
                         .bind(&network_key)
@@ -1404,7 +1390,7 @@ pub(crate) async fn preview_alert_rule(
                 }
                 if let Some((override_enabled, override_severity, override_condition_json)) =
                     sqlx::query_as::<_, (Option<bool>, Option<String>, Option<String>)>(
-                        "SELECT enabled, severity, condition_json FROM alert_rule_overrides WHERE rule_key = ? AND scope_kind = 'node' AND scope_value = ?",
+                        "SELECT enabled, severity, condition_json FROM alert_rule_overrides WHERE rule_key = $1 AND scope_kind = 'node' AND scope_value = $2",
                     )
                     .bind(&rule_key)
                     .bind(&subject_key)
@@ -1601,13 +1587,13 @@ pub(crate) async fn upsert_rule_override(
         );
     }
     let target_exists: Option<i64> = if body.scope_kind == "node" {
-        sqlx::query_scalar("SELECT 1 FROM nodes WHERE node_id = ?")
+        sqlx::query_scalar("SELECT 1 FROM nodes WHERE node_id = $1")
             .bind(&body.scope_value)
             .fetch_one(state.db().pool())
             .await
             .unwrap_or(None)
     } else {
-        sqlx::query_scalar("SELECT 1 FROM networks WHERE network_key = ?")
+        sqlx::query_scalar("SELECT 1 FROM networks WHERE network_key = $1")
             .bind(&body.scope_value)
             .fetch_one(state.db().pool())
             .await
@@ -1650,7 +1636,7 @@ pub(crate) async fn upsert_rule_override(
         // the upsert to decide whether recovery windows are invalidated (issue
         // #203 review B1).
         let previous_enabled: Option<Option<bool>> = sqlx::query_scalar(
-            "SELECT enabled FROM alert_rule_overrides WHERE rule_key = ? AND scope_kind = ? AND scope_value = ?",
+            "SELECT enabled FROM alert_rule_overrides WHERE rule_key = $1 AND scope_kind = $2 AND scope_value = $3",
         )
         .bind(&rule_key)
         .bind(&body.scope_kind)
@@ -1662,7 +1648,7 @@ pub(crate) async fn upsert_rule_override(
             .as_ref()
             .map(|condition| serde_json::to_string(condition).expect("condition serializes"));
         sqlx::query(
-            "INSERT INTO alert_rule_overrides (rule_key, scope_kind, scope_value, enabled, severity, condition_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(rule_key, scope_kind, scope_value) DO UPDATE SET enabled=excluded.enabled, severity=excluded.severity, condition_json=excluded.condition_json, updated_at=excluded.updated_at",
+            "INSERT INTO alert_rule_overrides (rule_key, scope_kind, scope_value, enabled, severity, condition_json, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT(rule_key, scope_kind, scope_value) DO UPDATE SET enabled=excluded.enabled, severity=excluded.severity, condition_json=excluded.condition_json, updated_at=excluded.updated_at",
         )
         .bind(&rule_key)
         .bind(&body.scope_kind)
@@ -1836,7 +1822,7 @@ pub(crate) async fn delete_rule_override(
         // enabled flag decides whether recovery windows must be invalidated
         // (issue #203 review R1).
         let existing_enabled: Option<Option<bool>> = sqlx::query_scalar(
-            "SELECT enabled FROM alert_rule_overrides WHERE rule_key = ? AND scope_kind = ? AND scope_value = ?",
+            "SELECT enabled FROM alert_rule_overrides WHERE rule_key = $1 AND scope_kind = $2 AND scope_value = $3",
         )
         .bind(&rule_key)
         .bind(&scope_kind)
@@ -1844,7 +1830,7 @@ pub(crate) async fn delete_rule_override(
         .fetch_optional(&mut *tx)
         .await?;
         let deleted = sqlx::query(
-            "DELETE FROM alert_rule_overrides WHERE rule_key = ? AND scope_kind = ? AND scope_value = ?",
+            "DELETE FROM alert_rule_overrides WHERE rule_key = $1 AND scope_kind = $2 AND scope_value = $3",
         )
         .bind(&rule_key)
         .bind(&scope_kind)
@@ -1980,6 +1966,7 @@ async fn count_incidents(
     params: &[String],
 ) -> Result<i64, sqlx::Error> {
     let count_sql = format!("SELECT COUNT(*) FROM alert_incidents i{where_clause}");
+    let count_sql = crate::database::number_placeholders(&count_sql);
     let mut query = sqlx::query_scalar::<_, i64>(&count_sql);
     for param in params {
         query = query.bind(param);
@@ -2169,6 +2156,7 @@ pub(crate) async fn alert_incidents(
         "SELECT i.incident_id, i.rule_key, i.rule_version, i.subject_kind, i.subject_key, i.severity, i.state, i.sequence, i.opened_at, i.resolved_at, i.subject_deleted_at, a.acknowledged_by_user_id, a.acknowledged_by_username, a.acknowledged_at FROM alert_incidents i LEFT JOIN incident_acknowledgments a ON a.incident_id = i.incident_id{} ORDER BY i.opened_at DESC, i.incident_id LIMIT ?",
         where_clause(&page_conditions)
     );
+    let sql = crate::database::number_placeholders(&sql);
     let total: i64 = match count_incidents(&state, &where_clause(&conditions), &params).await {
         Ok(count) => count,
         Err(_) => {
@@ -2304,7 +2292,7 @@ pub(crate) async fn alert_incident_detail(
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
     let row = match sqlx::query_as::<_, (String, i64, String, String, String, String, i64, String, Option<String>, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)>(
-        "SELECT i.rule_key, i.rule_version, i.subject_kind, i.subject_key, i.severity, i.state, i.sequence, i.opened_at, i.resolved_at, i.opened_evidence_json, i.resolved_evidence_json, i.subject_deleted_at, a.acknowledged_by_user_id, a.acknowledged_by_username, a.acknowledged_at FROM alert_incidents i LEFT JOIN incident_acknowledgments a ON a.incident_id = i.incident_id WHERE i.incident_id = ?",
+        "SELECT i.rule_key, i.rule_version, i.subject_kind, i.subject_key, i.severity, i.state, i.sequence, i.opened_at, i.resolved_at, i.opened_evidence_json, i.resolved_evidence_json, i.subject_deleted_at, a.acknowledged_by_user_id, a.acknowledged_by_username, a.acknowledged_at FROM alert_incidents i LEFT JOIN incident_acknowledgments a ON a.incident_id = i.incident_id WHERE i.incident_id = $1",
     )
     .bind(&incident_id)
     .fetch_optional(state.db().pool())
@@ -2496,7 +2484,7 @@ pub(crate) async fn acknowledge_incident(
         }
     };
     let exists: Option<(String,)> =
-        match sqlx::query_as("SELECT incident_id FROM alert_incidents WHERE incident_id = ?")
+        match sqlx::query_as("SELECT incident_id FROM alert_incidents WHERE incident_id = $1")
             .bind(&incident_id)
             .fetch_optional(&mut *tx)
             .await
@@ -2523,7 +2511,7 @@ pub(crate) async fn acknowledge_incident(
     // First-write-wins: the primary key makes the first successful confirmation
     // authoritative and every later request a no-op.
     let recorded = match sqlx::query(
-        "INSERT INTO incident_acknowledgments (incident_id, acknowledged_by_user_id, acknowledged_by_username, acknowledged_at) VALUES (?, ?, ?, ?) ON CONFLICT(incident_id) DO NOTHING",
+        "INSERT INTO incident_acknowledgments (incident_id, acknowledged_by_user_id, acknowledged_by_username, acknowledged_at) VALUES ($1, $2, $3, $4) ON CONFLICT(incident_id) DO NOTHING",
     )
     .bind(&incident_id)
     .bind(&principal.0.user_id)
@@ -2543,7 +2531,7 @@ pub(crate) async fn acknowledge_incident(
         }
     };
     let stored = match sqlx::query_as::<_, (Option<String>, String, String)>(
-        "SELECT acknowledged_by_user_id, acknowledged_by_username, acknowledged_at FROM incident_acknowledgments WHERE incident_id = ?",
+        "SELECT acknowledged_by_user_id, acknowledged_by_username, acknowledged_at FROM incident_acknowledgments WHERE incident_id = $1",
     )
     .bind(&incident_id)
     .fetch_one(&mut *tx)
@@ -2566,7 +2554,7 @@ pub(crate) async fn acknowledge_incident(
             "acknowledgedByUsername": &stored.1,
             "acknowledgedAt": &stored.2,
         });
-        if crate::auth::insert_audit_event(
+        match crate::auth::insert_audit_event(
             &mut *tx,
             Some(&principal.0.user_id),
             "incident_acknowledged",
@@ -2575,18 +2563,6 @@ pub(crate) async fn acknowledge_incident(
             Some(&after),
         )
         .await
-        .is_err()
-        {
-            return mutation_error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
-        match sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
-            .fetch_one(&mut *tx)
-            .await
         {
             Ok(id) => Some(id),
             Err(_) => {
@@ -2804,17 +2780,17 @@ pub(crate) async fn create_silence(
             .into_response();
     }
     let target_exists: Option<i64> = match body.matcher_kind.as_str() {
-        "node" => sqlx::query_scalar("SELECT 1 FROM nodes WHERE node_id = ?")
+        "node" => sqlx::query_scalar("SELECT 1 FROM nodes WHERE node_id = $1")
             .bind(body.matcher_value.as_deref().unwrap_or_default())
             .fetch_one(state.db().pool())
             .await
             .unwrap_or(None),
-        "network" => sqlx::query_scalar("SELECT 1 FROM networks WHERE network_key = ?")
+        "network" => sqlx::query_scalar("SELECT 1 FROM networks WHERE network_key = $1")
             .bind(body.matcher_value.as_deref().unwrap_or_default())
             .fetch_one(state.db().pool())
             .await
             .unwrap_or(None),
-        "agent" => sqlx::query_scalar("SELECT 1 FROM agents WHERE agent_id = ?")
+        "agent" => sqlx::query_scalar("SELECT 1 FROM agents WHERE agent_id = $1")
             .bind(body.matcher_value.as_deref().unwrap_or_default())
             .fetch_one(state.db().pool())
             .await
@@ -2843,7 +2819,7 @@ pub(crate) async fn create_silence(
     let now_text = format_rfc3339(now_utc());
     let silence_id = uuid::Uuid::new_v4().to_string();
     if sqlx::query(
-        "INSERT INTO silences (silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO silences (silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(&silence_id)
     .bind(&body.matcher_kind)
@@ -2871,7 +2847,7 @@ pub(crate) async fn create_silence(
         "starts_at": body.starts_at,
         "ends_at": body.ends_at,
     });
-    if crate::auth::insert_audit_event(
+    let audit_event_id = match crate::auth::insert_audit_event(
         &mut *tx,
         Some(&principal.0.user_id),
         "silence_created",
@@ -2880,20 +2856,8 @@ pub(crate) async fn create_silence(
         Some(&after),
     )
     .await
-    .is_err()
     {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
-    }
-    let audit_event_id: i64 = match sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(value) => value,
+        Ok(id) => id,
         Err(_) => {
             return mutation_error(
                 &request_id.0,
@@ -2944,7 +2908,7 @@ pub(crate) async fn alert_silence_detail(
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
     let row = match sqlx::query_as::<_, (String, Option<String>, String, String, String, String, String, Option<String>, Option<String>)>(
-        "SELECT matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at, cancelled_at, cancelled_by FROM silences WHERE silence_id = ?",
+        "SELECT matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at, cancelled_at, cancelled_by FROM silences WHERE silence_id = $1",
     )
     .bind(&silence_id)
     .fetch_optional(state.db().pool())
@@ -3031,7 +2995,7 @@ pub(crate) async fn cancel_silence(
     let now = now_utc();
     let now_text = format_rfc3339(now);
     let row = match sqlx::query_as::<_, (String, Option<String>, String, String, String, String, String, Option<String>, Option<String>)>(
-        "SELECT matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at, cancelled_at, cancelled_by FROM silences WHERE silence_id = ?",
+        "SELECT matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at, cancelled_at, cancelled_by FROM silences WHERE silence_id = $1",
     )
     .bind(&silence_id)
     .fetch_optional(&mut *tx)
@@ -3082,7 +3046,7 @@ pub(crate) async fn cancel_silence(
             "Silence already expired",
         );
     }
-    if sqlx::query("UPDATE silences SET cancelled_at = ?, cancelled_by = ? WHERE silence_id = ?")
+    if sqlx::query("UPDATE silences SET cancelled_at = $1, cancelled_by = $2 WHERE silence_id = $3")
         .bind(&now_text)
         .bind(&principal.0.user_id)
         .bind(&silence_id)
@@ -3097,7 +3061,7 @@ pub(crate) async fn cancel_silence(
             "Server database is unavailable",
         );
     }
-    if crate::auth::insert_audit_event(
+    let audit_event_id = match crate::auth::insert_audit_event(
         &mut *tx,
         Some(&principal.0.user_id),
         "silence_cancelled",
@@ -3106,20 +3070,8 @@ pub(crate) async fn cancel_silence(
         Some(&serde_json::json!({ "cancelled_at": now_text })),
     )
     .await
-    .is_err()
     {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
-    }
-    let audit_event_id: i64 = match sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(value) => value,
+        Ok(id) => id,
         Err(_) => {
             return mutation_error(
                 &request_id.0,
@@ -3356,17 +3308,17 @@ pub(crate) async fn create_maintenance_window(
             .into_response();
     }
     let target_exists: Option<i64> = match body.scope_kind.as_str() {
-        "node" => sqlx::query_scalar("SELECT 1 FROM nodes WHERE node_id = ?")
+        "node" => sqlx::query_scalar("SELECT 1 FROM nodes WHERE node_id = $1")
             .bind(&body.scope_value)
             .fetch_one(state.db().pool())
             .await
             .unwrap_or(None),
-        "network" => sqlx::query_scalar("SELECT 1 FROM networks WHERE network_key = ?")
+        "network" => sqlx::query_scalar("SELECT 1 FROM networks WHERE network_key = $1")
             .bind(&body.scope_value)
             .fetch_one(state.db().pool())
             .await
             .unwrap_or(None),
-        "agent" => sqlx::query_scalar("SELECT 1 FROM agents WHERE agent_id = ?")
+        "agent" => sqlx::query_scalar("SELECT 1 FROM agents WHERE agent_id = $1")
             .bind(&body.scope_value)
             .fetch_one(state.db().pool())
             .await
@@ -3397,7 +3349,7 @@ pub(crate) async fn create_maintenance_window(
     let expected_json =
         serde_json::to_string(&body.expected_rule_keys).expect("rule keys serialize");
     if sqlx::query(
-        "INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(&window_id)
     .bind(&body.scope_kind)
@@ -3419,7 +3371,7 @@ pub(crate) async fn create_maintenance_window(
             "Server database is unavailable",
         );
     }
-    if crate::auth::insert_audit_event(
+    let audit_event_id = match crate::auth::insert_audit_event(
         &mut *tx,
         Some(&principal.0.user_id),
         "maintenance_created",
@@ -3435,20 +3387,8 @@ pub(crate) async fn create_maintenance_window(
         })),
     )
     .await
-    .is_err()
     {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
-    }
-    let audit_event_id: i64 = match sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(value) => value,
+        Ok(id) => id,
         Err(_) => {
             return mutation_error(
                 &request_id.0,
@@ -3501,7 +3441,7 @@ pub(crate) async fn alert_maintenance_detail(
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
     let row = match sqlx::query_as::<_, (String, String, String, String, String, String, String, String, String, Option<String>, Option<String>)>(
-        "SELECT window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at, cancelled_at, cancelled_by FROM maintenance_windows WHERE window_id = ?",
+        "SELECT window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at, cancelled_at, cancelled_by FROM maintenance_windows WHERE window_id = $1",
     )
     .bind(&window_id)
     .fetch_optional(state.db().pool())
@@ -3565,7 +3505,7 @@ pub(crate) async fn cancel_maintenance_window(
     let now = now_utc();
     let now_text = format_rfc3339(now);
     let row = match sqlx::query_as::<_, (String, String, String, String, String, String, String, String, String, Option<String>, Option<String>)>(
-        "SELECT window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at, cancelled_at, cancelled_by FROM maintenance_windows WHERE window_id = ?",
+        "SELECT window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at, cancelled_at, cancelled_by FROM maintenance_windows WHERE window_id = $1",
     )
     .bind(&window_id)
     .fetch_optional(&mut *tx)
@@ -3606,7 +3546,7 @@ pub(crate) async fn cancel_maintenance_window(
         );
     }
     if sqlx::query(
-        "UPDATE maintenance_windows SET cancelled_at = ?, cancelled_by = ? WHERE window_id = ?",
+        "UPDATE maintenance_windows SET cancelled_at = $1, cancelled_by = $2 WHERE window_id = $3",
     )
     .bind(&now_text)
     .bind(&principal.0.user_id)
@@ -3622,7 +3562,7 @@ pub(crate) async fn cancel_maintenance_window(
             "Server database is unavailable",
         );
     }
-    if crate::auth::insert_audit_event(
+    let audit_event_id = match crate::auth::insert_audit_event(
         &mut *tx,
         Some(&principal.0.user_id),
         "maintenance_cancelled",
@@ -3631,20 +3571,8 @@ pub(crate) async fn cancel_maintenance_window(
         Some(&serde_json::json!({ "cancelled_at": now_text })),
     )
     .await
-    .is_err()
     {
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
-    }
-    let audit_event_id: i64 = match sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(value) => value,
+        Ok(id) => id,
         Err(_) => {
             return mutation_error(
                 &request_id.0,

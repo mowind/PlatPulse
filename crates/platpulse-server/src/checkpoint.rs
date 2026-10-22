@@ -812,7 +812,7 @@ async fn collect_server_facts(
     agent_id: &str,
 ) -> Result<ServerFacts, CheckpointError> {
     let row: Option<AgentRow> = sqlx::query_as(
-        "SELECT agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, last_report_sequence, last_inventory_revision, inventory_sha256, inventory_protocol_major FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+        "SELECT agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, last_report_sequence, last_inventory_revision, inventory_sha256, inventory_protocol_major FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
     )
     .bind(agent_id)
     .fetch_optional(&mut *connection)
@@ -826,7 +826,7 @@ async fn collect_server_facts(
     let receipt = match row.close_report_id.as_deref() {
         Some(report_id) => {
             sqlx::query_as::<_, ReceiptRow>(
-                "SELECT disposition, report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id = ?",
+                "SELECT disposition, report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id = $1",
             )
             .bind(report_id)
             .fetch_optional(&mut *connection)
@@ -836,7 +836,7 @@ async fn collect_server_facts(
     };
     let closed_boot_row_status = match row.active_boot_id.as_deref() {
         Some(boot_id) => sqlx::query_scalar::<_, String>(
-            "SELECT status FROM agent_boots WHERE agent_id = ? AND agent_epoch = ? AND boot_id = ?",
+            "SELECT status FROM agent_boots WHERE agent_id = $1 AND agent_epoch = $2 AND boot_id = $3",
         )
         .bind(agent_id)
         .bind(row.agent_epoch)
@@ -845,11 +845,12 @@ async fn collect_server_facts(
         .await?,
         None => None,
     };
-    let deleted_node_ids: Vec<String> =
-        sqlx::query_scalar("SELECT node_id FROM deleted_nodes WHERE agent_id = ? ORDER BY node_id")
-            .bind(agent_id)
-            .fetch_all(&mut *connection)
-            .await?;
+    let deleted_node_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT node_id FROM deleted_nodes WHERE agent_id = $1 ORDER BY node_id",
+    )
+    .bind(agent_id)
+    .fetch_all(&mut *connection)
+    .await?;
 
     Ok(ServerFacts {
         agent_id: agent_id.to_owned(),

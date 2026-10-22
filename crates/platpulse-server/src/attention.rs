@@ -519,7 +519,7 @@ pub async fn evaluate_agent(
 ) -> Result<Vec<AttentionItem>, sqlx::Error> {
     let items = row.items();
     let acknowledgments = sqlx::query_as::<_, AcknowledgmentRow>(
-        "SELECT kind, evidence_key FROM agent_attention_acknowledgments WHERE agent_id = ?",
+        "SELECT kind, evidence_key FROM agent_attention_acknowledgments WHERE agent_id = $1",
     )
     .bind(&row.agent_id)
     .fetch_all(pool)
@@ -534,7 +534,7 @@ pub async fn evaluate_agent(
             acknowledgment.evidence_key.clone(),
         )) {
             sqlx::query(
-                "DELETE FROM agent_attention_acknowledgments WHERE agent_id = ? AND kind = ? AND evidence_key = ?",
+                "DELETE FROM agent_attention_acknowledgments WHERE agent_id = $1 AND kind = $2 AND evidence_key = $3",
             )
             .bind(&row.agent_id)
             .bind(&acknowledgment.kind)
@@ -573,7 +573,7 @@ pub async fn acknowledge(
 ) -> Result<AcknowledgeOutcome, sqlx::Error> {
     let mut tx = pool.begin().await?;
     let row = sqlx::query_as::<_, AgentAttentionRow>(&format!(
-        "{AGENT_ATTENTION_SELECT} AND a.agent_id = ?"
+        "{AGENT_ATTENTION_SELECT} AND a.agent_id = $1"
     ))
     .bind(agent_id)
     .fetch_optional(&mut *tx)
@@ -595,7 +595,7 @@ pub async fn acknowledge(
             request.evidence_key.clone(),
         )) {
             sqlx::query(
-                "INSERT INTO agent_attention_acknowledgments (agent_id, kind, evidence_key, acknowledged_at, acknowledged_by_user_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(agent_id, kind, evidence_key) DO UPDATE SET acknowledged_at = excluded.acknowledged_at, acknowledged_by_user_id = excluded.acknowledged_by_user_id",
+                "INSERT INTO agent_attention_acknowledgments (agent_id, kind, evidence_key, acknowledged_at, acknowledged_by_user_id) VALUES ($1, $2, $3, $4, $5) ON CONFLICT(agent_id, kind, evidence_key) DO UPDATE SET acknowledged_at = excluded.acknowledged_at, acknowledged_by_user_id = excluded.acknowledged_by_user_id",
             )
             .bind(agent_id)
             .bind(request.kind.as_str())

@@ -226,7 +226,7 @@ pub async fn retained_value_at(
 ) -> Result<Option<String>, sqlx::Error> {
     let row = sqlx::query_as::<_, (String,)>(
         "SELECT observed_at FROM component_status \
-         WHERE agent_id = ? AND scope = 'node' AND scope_key = ? AND component_key = ? \
+         WHERE agent_id = $1 AND scope = 'node' AND scope_key = $2 AND component_key = $3 \
          AND value_received_at IS NOT NULL",
     )
     .bind(agent_id)
@@ -379,8 +379,8 @@ pub async fn record_state(
     if released && counted {
         if let Some(floor) = metric_history::counted_evidence_floor(&observed_at) {
             sqlx::query(
-                "UPDATE node_state_series_state SET released_before = MAX(released_before, ?) \
-                 WHERE node_id = ? AND component = ? AND released_before < ?",
+                "UPDATE node_state_series_state SET released_before = CASE WHEN released_before >= $1 THEN released_before ELSE $1 END \
+                 WHERE node_id = $2 AND component = $3 AND released_before < $4",
             )
             .bind(&floor)
             .bind(node_id)
@@ -524,7 +524,7 @@ where
          last_value_source, last_value_observed_at, last_error_code, last_syncing, last_entry_at, \
          last_delivery_at, entry_count, change_count, anchor_count, replayed_count, corrected_count, \
          released_before \
-         FROM node_state_series_state WHERE node_id = ? AND component = ?",
+         FROM node_state_series_state WHERE node_id = $1 AND component = $2",
     )
     .bind(node_id)
     .bind(component)
@@ -541,7 +541,7 @@ async fn fetch_entry(
     sqlx::query_as::<_, StateVector>(
         "SELECT collection_state, value_source, error_code, syncing \
          FROM node_state_observations \
-         WHERE node_id = ? AND component = ? AND observed_at = ?",
+         WHERE node_id = $1 AND component = $2 AND observed_at = $3",
     )
     .bind(node_id)
     .bind(component)
@@ -576,7 +576,7 @@ async fn fetch_predecessor(
     let row = sqlx::query_as::<_, (String, String, String, Option<String>, Option<bool>)>(
         "SELECT observed_at, collection_state, value_source, error_code, syncing \
          FROM node_state_observations \
-         WHERE node_id = ? AND component = ? AND observed_at < ? \
+         WHERE node_id = $1 AND component = $2 AND observed_at < $3 \
          ORDER BY observed_at DESC LIMIT 1",
     )
     .bind(node_id)
@@ -620,7 +620,7 @@ async fn store_entry(
         "INSERT INTO node_state_observations (
             node_id, component, observed_at, received_at, entry_kind, collection_state,
             value_source, value_observed_at, error_code, syncing
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT(node_id, component, observed_at) DO UPDATE SET
             received_at = excluded.received_at,
             entry_kind = excluded.entry_kind,
@@ -681,9 +681,9 @@ async fn store_ledger(
             last_collection_state, last_value_source, last_value_observed_at, last_error_code,
             last_syncing, last_entry_at, last_delivery_at, entry_count, change_count, anchor_count,
             replayed_count, corrected_count, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, 0, 0, ?)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 1, 1, 0, 0, 0, $13)
         ON CONFLICT(node_id, component) DO UPDATE SET
-            first_observed_at = MIN(node_state_series_state.first_observed_at, excluded.first_observed_at),
+            first_observed_at = CASE WHEN node_state_series_state.first_observed_at <= excluded.first_observed_at THEN node_state_series_state.first_observed_at ELSE excluded.first_observed_at END,
             last_received_at = CASE
                 WHEN excluded.last_observed_at >= node_state_series_state.last_observed_at
                     THEN excluded.last_received_at
@@ -714,13 +714,13 @@ async fn store_ledger(
                 WHEN excluded.last_entry_at > node_state_series_state.last_entry_at
                     THEN excluded.last_entry_at
                 ELSE node_state_series_state.last_entry_at END,
-            last_observed_at = MAX(node_state_series_state.last_observed_at, excluded.last_observed_at),
-            last_delivery_at = MAX(node_state_series_state.last_delivery_at, excluded.last_delivery_at),
-            entry_count = node_state_series_state.entry_count + ?,
-            change_count = node_state_series_state.change_count + ?,
-            anchor_count = node_state_series_state.anchor_count + ?,
-            replayed_count = node_state_series_state.replayed_count + ?,
-            corrected_count = node_state_series_state.corrected_count + ?,
+            last_observed_at = CASE WHEN node_state_series_state.last_observed_at >= excluded.last_observed_at THEN node_state_series_state.last_observed_at ELSE excluded.last_observed_at END,
+            last_delivery_at = CASE WHEN node_state_series_state.last_delivery_at >= excluded.last_delivery_at THEN node_state_series_state.last_delivery_at ELSE excluded.last_delivery_at END,
+            entry_count = node_state_series_state.entry_count + $14,
+            change_count = node_state_series_state.change_count + $15,
+            anchor_count = node_state_series_state.anchor_count + $16,
+            replayed_count = node_state_series_state.replayed_count + $17,
+            corrected_count = node_state_series_state.corrected_count + $18,
             updated_at = excluded.updated_at",
     )
     .bind(node_id)
@@ -911,8 +911,8 @@ pub async fn load_range(
             sqlx::query_as::<_, StateEntry>(
                 "SELECT observed_at, received_at, entry_kind, collection_state, value_source, \
                  value_observed_at, error_code, syncing FROM node_state_observations \
-                 WHERE node_id = ? AND component = ? AND observed_at > ? AND observed_at <= ? \
-                 AND observed_at < ? ORDER BY observed_at DESC LIMIT ?",
+                 WHERE node_id = $1 AND component = $2 AND observed_at > $3 AND observed_at <= $4 \
+                 AND observed_at < $5 ORDER BY observed_at DESC LIMIT $6",
             )
             .bind(query.node_id)
             .bind(query.component)
@@ -927,8 +927,8 @@ pub async fn load_range(
             sqlx::query_as::<_, StateEntry>(
                 "SELECT observed_at, received_at, entry_kind, collection_state, value_source, \
                  value_observed_at, error_code, syncing FROM node_state_observations \
-                 WHERE node_id = ? AND component = ? AND observed_at > ? AND observed_at <= ? \
-                 ORDER BY observed_at DESC LIMIT ?",
+                 WHERE node_id = $1 AND component = $2 AND observed_at > $3 AND observed_at <= $4 \
+                 ORDER BY observed_at DESC LIMIT $5",
             )
             .bind(query.node_id)
             .bind(query.component)

@@ -48,14 +48,14 @@ pub async fn subject_is_deleted(
 ) -> Result<bool, sqlx::Error> {
     let deleted = match subject_kind {
         SubjectKind::Node => {
-            sqlx::query_scalar::<_, i64>("SELECT 1 FROM deleted_nodes WHERE node_id = ?")
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM deleted_nodes WHERE node_id = $1")
                 .bind(subject_key)
                 .fetch_optional(connection)
                 .await?
                 .is_some()
         }
         SubjectKind::Agent | SubjectKind::Host => sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM agents WHERE agent_id = ? AND deleted_at IS NOT NULL",
+            "SELECT 1 FROM agents WHERE agent_id = $1 AND deleted_at IS NOT NULL",
         )
         .bind(subject_key)
         .fetch_optional(connection)
@@ -78,8 +78,8 @@ pub async fn retire_subject(
     deleted_at: &str,
 ) -> Result<SubjectRetirement, sqlx::Error> {
     let incidents = sqlx::query(
-        "UPDATE alert_incidents SET subject_deleted_at = ?
-         WHERE subject_kind = ? AND subject_key = ? AND subject_deleted_at IS NULL",
+        "UPDATE alert_incidents SET subject_deleted_at = $1
+         WHERE subject_kind = $2 AND subject_key = $3 AND subject_deleted_at IS NULL",
     )
     .bind(deleted_at)
     .bind(subject_kind.as_str())
@@ -91,7 +91,7 @@ pub async fn retire_subject(
     // it removes the subject from rule state/summary reads without resolving
     // any Incident.
     let states =
-        sqlx::query("DELETE FROM alert_rule_state WHERE subject_kind = ? AND subject_key = ?")
+        sqlx::query("DELETE FROM alert_rule_state WHERE subject_kind = $1 AND subject_key = $2")
             .bind(subject_kind.as_str())
             .bind(subject_key)
             .execute(&mut *connection)

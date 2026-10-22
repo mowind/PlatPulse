@@ -355,7 +355,7 @@ pub(crate) async fn preparation_baseline(
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
     let row = sqlx::query_as::<_, PreparationBaselineRow>(
-        "SELECT a.agent_epoch, a.last_inventory_revision, a.inventory_sha256, a.inventory_protocol_major, a.active_boot_id, a.active_boot_status, a.previous_boot_id, a.close_report_id, a.last_report_sequence, r.disposition AS close_report_disposition FROM agents a LEFT JOIN agent_report_receipts r ON r.report_id = a.close_report_id WHERE a.agent_id = ? AND a.deleted_at IS NULL",
+        "SELECT a.agent_epoch, a.last_inventory_revision, a.inventory_sha256, a.inventory_protocol_major, a.active_boot_id, a.active_boot_status, a.previous_boot_id, a.close_report_id, a.last_report_sequence, r.disposition AS close_report_disposition FROM agents a LEFT JOIN agent_report_receipts r ON r.report_id = a.close_report_id WHERE a.agent_id = $1 AND a.deleted_at IS NULL",
     )
     .bind(&auth.agent_id)
     .fetch_optional(state.db().pool())

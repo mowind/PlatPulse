@@ -136,7 +136,7 @@ pub async fn create_network(
 
     let mut transaction = db.pool().begin().await?;
     let insert = sqlx::query(
-        "INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(&key)
     .bind(display_name)
@@ -197,7 +197,7 @@ pub async fn find_network_by_key(
     key: &str,
 ) -> Result<Option<NetworkRecord>, sqlx::Error> {
     sqlx::query_as::<_, NetworkRecord>(
-        "SELECT network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at FROM networks WHERE network_key = ?",
+        "SELECT network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at FROM networks WHERE network_key = $1",
     )
     .bind(key)
     .fetch_optional(db.pool())

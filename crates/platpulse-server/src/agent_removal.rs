@@ -152,7 +152,7 @@ pub async fn measure(
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let target = sqlx::query_as::<_, AgentTargetRow>(
         "SELECT agent_id, display_name, notes, agent_epoch, last_received_at, created_at, updated_at
-         FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+         FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
     )
     .bind(agent_id)
     .fetch_optional(&mut *connection)
@@ -167,7 +167,7 @@ pub async fn measure(
                 n.display_name, n.lifecycle, n.visibility, n.inventory_revision
          FROM nodes n
          LEFT JOIN networks net ON net.network_key = n.network_key
-         WHERE n.agent_id = ?
+         WHERE n.agent_id = $1
          ORDER BY n.node_id",
     )
     .bind(agent_id)
@@ -188,8 +188,8 @@ pub async fn measure(
     let pending_transfers = sqlx::query_as::<_, PendingTransferRow>(
         "SELECT transfer_id, node_id, source_agent_id, target_agent_id, expires_at
          FROM node_transfers
-         WHERE status = 'pending' AND expires_at > ?
-           AND (source_agent_id = ? OR target_agent_id = ?)
+         WHERE status = 'pending' AND expires_at > $1
+           AND (source_agent_id = $2 OR target_agent_id = $3)
          ORDER BY created_at, transfer_id",
     )
     .bind(&now)
@@ -222,14 +222,14 @@ pub async fn measure(
     }
 
     let credential_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM agent_credentials WHERE agent_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_credentials WHERE agent_id = $1")
             .bind(agent_id)
             .fetch_one(&mut *connection)
             .await?;
     let active_credential_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM agent_credentials
-         WHERE agent_id = ? AND revoked_at IS NULL
-           AND (revoke_after IS NULL OR revoke_after > ?)",
+         WHERE agent_id = $1 AND revoked_at IS NULL
+           AND (revoke_after IS NULL OR revoke_after > $2)",
     )
     .bind(agent_id)
     .bind(&now)
@@ -308,7 +308,7 @@ pub async fn execute(
     // Agent row is marked below in the same transaction, so even a credential
     // that somehow survived would be refused by the removed-Agent boundary.
     let revoked = sqlx::query(
-        "UPDATE agent_credentials SET revoked_at = ? WHERE agent_id = ? AND revoked_at IS NULL",
+        "UPDATE agent_credentials SET revoked_at = $1 WHERE agent_id = $2 AND revoked_at IS NULL",
     )
     .bind(&deleted_at)
     .bind(agent_id)
@@ -317,7 +317,7 @@ pub async fn execute(
     // An outstanding Recovery Token could otherwise mint a fresh credential
     // on the removed identity; revoke it here as well.
     sqlx::query(
-        "UPDATE recovery_tokens SET revoked_at = ? WHERE agent_id = ? AND revoked_at IS NULL",
+        "UPDATE recovery_tokens SET revoked_at = $1 WHERE agent_id = $2 AND revoked_at IS NULL",
     )
     .bind(&deleted_at)
     .bind(agent_id)
@@ -348,8 +348,8 @@ pub async fn execute(
     }
 
     let marked = sqlx::query(
-        "UPDATE agents SET deleted_at = ?, deleted_by_user_id = ?, updated_at = ?
-         WHERE agent_id = ? AND deleted_at IS NULL",
+        "UPDATE agents SET deleted_at = $1, deleted_by_user_id = $2, updated_at = $3
+         WHERE agent_id = $4 AND deleted_at IS NULL",
     )
     .bind(&deleted_at)
     .bind(actor_user_id)

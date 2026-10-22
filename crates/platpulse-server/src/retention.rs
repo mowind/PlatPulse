@@ -167,8 +167,8 @@ impl PolicyDefaults {
 const TARGET_BLOCK_SUMMARIES: &[CleanupTarget] = &[CleanupTarget {
     table: "block_summaries",
     kind: CleanupKind::Delete,
-    count_sql: "SELECT COUNT(*) FROM block_summaries WHERE accepted_at < ?",
-    delete_sql: "DELETE FROM block_summaries WHERE rowid IN (SELECT rowid FROM block_summaries WHERE accepted_at < ? ORDER BY accepted_at, node_id, block_number LIMIT 128)",
+    count_sql: "SELECT COUNT(*) FROM block_summaries WHERE accepted_at < $1",
+    delete_sql: "DELETE FROM block_summaries WHERE (node_id, block_number) IN (SELECT node_id, block_number FROM block_summaries WHERE accepted_at < $1 ORDER BY accepted_at, node_id, block_number LIMIT 128)",
 }];
 
 /// Rows one Node-metric cleanup batch may release.
@@ -210,14 +210,14 @@ const TARGET_RAW_METRIC_SAMPLES: &[CleanupTarget] = &[
     CleanupTarget {
         table: "node_metric_samples",
         kind: CleanupKind::Delete,
-        count_sql: "SELECT COUNT(*) FROM node_metric_samples WHERE observed_at < ?",
-        delete_sql: "DELETE FROM node_metric_samples WHERE rowid IN (SELECT rowid FROM node_metric_samples WHERE observed_at < ? ORDER BY observed_at, node_id, metric LIMIT 4096)",
+        count_sql: "SELECT COUNT(*) FROM node_metric_samples WHERE observed_at < $1",
+        delete_sql: "DELETE FROM node_metric_samples WHERE (node_id, metric, observed_at) IN (SELECT node_id, metric, observed_at FROM node_metric_samples WHERE observed_at < $1 ORDER BY observed_at, node_id, metric LIMIT 4096)",
     },
     CleanupTarget {
         table: "host_metric_samples",
         kind: CleanupKind::Delete,
-        count_sql: "SELECT COUNT(*) FROM host_metric_samples WHERE observed_at < ?",
-        delete_sql: "DELETE FROM host_metric_samples WHERE rowid IN (SELECT rowid FROM host_metric_samples WHERE observed_at < ? ORDER BY observed_at, agent_id, metric LIMIT 512)",
+        count_sql: "SELECT COUNT(*) FROM host_metric_samples WHERE observed_at < $1",
+        delete_sql: "DELETE FROM host_metric_samples WHERE (agent_id, metric, dimension, observed_at) IN (SELECT agent_id, metric, dimension, observed_at FROM host_metric_samples WHERE observed_at < $1 ORDER BY observed_at, agent_id, metric LIMIT 512)",
     },
 ];
 
@@ -283,14 +283,14 @@ const TARGET_ONE_MINUTE_AGGREGATES: &[CleanupTarget] = &[
     CleanupTarget {
         table: "node_metric_aggregates",
         kind: CleanupKind::Delete,
-        count_sql: "SELECT COUNT(*) FROM node_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < ?",
-        delete_sql: "DELETE FROM node_metric_aggregates WHERE rowid IN (SELECT rowid FROM node_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < ? ORDER BY bucket_start LIMIT 4096)",
+        count_sql: "SELECT COUNT(*) FROM node_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < $1",
+        delete_sql: "DELETE FROM node_metric_aggregates WHERE (node_id, metric, grain_seconds, bucket_start) IN (SELECT node_id, metric, grain_seconds, bucket_start FROM node_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < $1 ORDER BY bucket_start LIMIT 4096)",
     },
     CleanupTarget {
         table: "host_metric_aggregates",
         kind: CleanupKind::Delete,
-        count_sql: "SELECT COUNT(*) FROM host_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < ?",
-        delete_sql: "DELETE FROM host_metric_aggregates WHERE rowid IN (SELECT rowid FROM host_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < ? ORDER BY bucket_start LIMIT 2048)",
+        count_sql: "SELECT COUNT(*) FROM host_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < $1",
+        delete_sql: "DELETE FROM host_metric_aggregates WHERE (agent_id, metric, dimension, grain_seconds, bucket_start) IN (SELECT agent_id, metric, dimension, grain_seconds, bucket_start FROM host_metric_aggregates WHERE grain_seconds = 60 AND bucket_start < $1 ORDER BY bucket_start LIMIT 2048)",
     },
     // The block tier (issue #248) is fed by the same Reports and served by the
     // same Public windows, so it expires with this family rather than with one
@@ -298,8 +298,8 @@ const TARGET_ONE_MINUTE_AGGREGATES: &[CleanupTarget] = &[
     CleanupTarget {
         table: "node_block_aggregates",
         kind: CleanupKind::Delete,
-        count_sql: "SELECT COUNT(*) FROM node_block_aggregates WHERE grain_seconds = 60 AND bucket_start < ?",
-        delete_sql: "DELETE FROM node_block_aggregates WHERE rowid IN (SELECT rowid FROM node_block_aggregates WHERE grain_seconds = 60 AND bucket_start < ? ORDER BY bucket_start LIMIT 4096)",
+        count_sql: "SELECT COUNT(*) FROM node_block_aggregates WHERE grain_seconds = 60 AND bucket_start < $1",
+        delete_sql: "DELETE FROM node_block_aggregates WHERE (node_id, grain_seconds, bucket_start) IN (SELECT node_id, grain_seconds, bucket_start FROM node_block_aggregates WHERE grain_seconds = 60 AND bucket_start < $1 ORDER BY bucket_start LIMIT 4096)",
     },
 ];
 
@@ -311,20 +311,20 @@ const TARGET_FIVE_MINUTE_AGGREGATES: &[CleanupTarget] = &[
     CleanupTarget {
         table: "node_metric_aggregates",
         kind: CleanupKind::Delete,
-        count_sql: "SELECT COUNT(*) FROM node_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < ?",
-        delete_sql: "DELETE FROM node_metric_aggregates WHERE rowid IN (SELECT rowid FROM node_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < ? ORDER BY bucket_start LIMIT 4096)",
+        count_sql: "SELECT COUNT(*) FROM node_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < $1",
+        delete_sql: "DELETE FROM node_metric_aggregates WHERE (node_id, metric, grain_seconds, bucket_start) IN (SELECT node_id, metric, grain_seconds, bucket_start FROM node_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < $1 ORDER BY bucket_start LIMIT 4096)",
     },
     CleanupTarget {
         table: "host_metric_aggregates",
         kind: CleanupKind::Delete,
-        count_sql: "SELECT COUNT(*) FROM host_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < ?",
-        delete_sql: "DELETE FROM host_metric_aggregates WHERE rowid IN (SELECT rowid FROM host_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < ? ORDER BY bucket_start LIMIT 2048)",
+        count_sql: "SELECT COUNT(*) FROM host_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < $1",
+        delete_sql: "DELETE FROM host_metric_aggregates WHERE (agent_id, metric, dimension, grain_seconds, bucket_start) IN (SELECT agent_id, metric, dimension, grain_seconds, bucket_start FROM host_metric_aggregates WHERE grain_seconds = 300 AND bucket_start < $1 ORDER BY bucket_start LIMIT 2048)",
     },
     CleanupTarget {
         table: "node_block_aggregates",
         kind: CleanupKind::Delete,
-        count_sql: "SELECT COUNT(*) FROM node_block_aggregates WHERE grain_seconds = 300 AND bucket_start < ?",
-        delete_sql: "DELETE FROM node_block_aggregates WHERE rowid IN (SELECT rowid FROM node_block_aggregates WHERE grain_seconds = 300 AND bucket_start < ? ORDER BY bucket_start LIMIT 4096)",
+        count_sql: "SELECT COUNT(*) FROM node_block_aggregates WHERE grain_seconds = 300 AND bucket_start < $1",
+        delete_sql: "DELETE FROM node_block_aggregates WHERE (node_id, grain_seconds, bucket_start) IN (SELECT node_id, grain_seconds, bucket_start FROM node_block_aggregates WHERE grain_seconds = 300 AND bucket_start < $1 ORDER BY bucket_start LIMIT 4096)",
     },
 ];
 
@@ -352,9 +352,9 @@ const TARGET_FIVE_MINUTE_AGGREGATES: &[CleanupTarget] = &[
 /// whose expired rows sit beyond this pass's bound keeps them for now — the
 /// window can still answer for those instants, and the pass that finally deletes
 /// them is the pass that stamps the series.
-const RAW_METRIC_RELEASED_BEFORE_SQL: &str = "WITH expired AS MATERIALIZED (SELECT node_id, metric FROM node_metric_samples WHERE observed_at < ? ORDER BY observed_at, node_id, metric LIMIT 4096) UPDATE node_metric_series_state SET released_before = ? FROM expired WHERE node_metric_series_state.node_id = expired.node_id AND node_metric_series_state.metric = expired.metric AND node_metric_series_state.released_before < ?";
+const RAW_METRIC_RELEASED_BEFORE_SQL: &str = "WITH expired AS MATERIALIZED (SELECT node_id, metric FROM node_metric_samples WHERE observed_at < $1 ORDER BY observed_at, node_id, metric LIMIT 4096) UPDATE node_metric_series_state SET released_before = $2 FROM expired WHERE node_metric_series_state.node_id = expired.node_id AND node_metric_series_state.metric = expired.metric AND node_metric_series_state.released_before < $3";
 
-const HOST_RAW_METRIC_RELEASED_BEFORE_SQL: &str = "WITH expired AS MATERIALIZED (SELECT agent_id, metric, dimension FROM host_metric_samples WHERE observed_at < ? ORDER BY observed_at, agent_id, metric LIMIT 512) UPDATE host_metric_series_state SET released_before = ? FROM expired WHERE host_metric_series_state.agent_id = expired.agent_id AND host_metric_series_state.metric = expired.metric AND host_metric_series_state.dimension = expired.dimension AND host_metric_series_state.released_before < ?";
+const HOST_RAW_METRIC_RELEASED_BEFORE_SQL: &str = "WITH expired AS MATERIALIZED (SELECT agent_id, metric, dimension FROM host_metric_samples WHERE observed_at < $1 ORDER BY observed_at, agent_id, metric LIMIT 512) UPDATE host_metric_series_state SET released_before = $2 FROM expired WHERE host_metric_series_state.agent_id = expired.agent_id AND host_metric_series_state.metric = expired.metric AND host_metric_series_state.dimension = expired.dimension AND host_metric_series_state.released_before < $3";
 
 /// Rows one recorded-state cleanup batch may release.
 ///
@@ -377,7 +377,7 @@ const _: () = assert!(
 /// Server ability to answer whether that instant was already recorded, so the
 /// cutoff the cleanup applies is written on the series itself and the stamp only
 /// ever moves forward (issue #217).
-const STATE_RELEASED_BEFORE_SQL: &str = "WITH expired AS MATERIALIZED (SELECT node_id, component FROM node_state_observations WHERE observed_at < ? ORDER BY observed_at, node_id, component LIMIT 2048) UPDATE node_state_series_state SET released_before = ? FROM expired WHERE node_state_series_state.node_id = expired.node_id AND node_state_series_state.component = expired.component AND node_state_series_state.released_before < ?";
+const STATE_RELEASED_BEFORE_SQL: &str = "WITH expired AS MATERIALIZED (SELECT node_id, component FROM node_state_observations WHERE observed_at < $1 ORDER BY observed_at, node_id, component LIMIT 2048) UPDATE node_state_series_state SET released_before = $2 FROM expired WHERE node_state_series_state.node_id = expired.node_id AND node_state_series_state.component = expired.component AND node_state_series_state.released_before < $3";
 
 /// Recorded synchronization and consensus states (issue #217).
 ///
@@ -389,15 +389,15 @@ const STATE_RELEASED_BEFORE_SQL: &str = "WITH expired AS MATERIALIZED (SELECT no
 const TARGET_OBSERVATION_STATE: &[CleanupTarget] = &[CleanupTarget {
     table: "node_state_observations",
     kind: CleanupKind::Delete,
-    count_sql: "SELECT COUNT(*) FROM node_state_observations WHERE observed_at < ?",
-    delete_sql: "DELETE FROM node_state_observations WHERE rowid IN (SELECT rowid FROM node_state_observations WHERE observed_at < ? ORDER BY observed_at, node_id, component LIMIT 2048)",
+    count_sql: "SELECT COUNT(*) FROM node_state_observations WHERE observed_at < $1",
+    delete_sql: "DELETE FROM node_state_observations WHERE (node_id, component, observed_at) IN (SELECT node_id, component, observed_at FROM node_state_observations WHERE observed_at < $1 ORDER BY observed_at, node_id, component LIMIT 2048)",
 }];
 
 const TARGET_HISTORY_GAPS: &[CleanupTarget] = &[CleanupTarget {
     table: "block_history_gaps",
     kind: CleanupKind::Delete,
-    count_sql: "SELECT COUNT(*) FROM block_history_gaps WHERE resolved_at IS NOT NULL AND kind != 'permanent_gap' AND resolved_at < ?",
-    delete_sql: "DELETE FROM block_history_gaps WHERE gap_id IN (SELECT gap_id FROM block_history_gaps WHERE resolved_at IS NOT NULL AND kind != 'permanent_gap' AND resolved_at < ? ORDER BY resolved_at LIMIT 128)",
+    count_sql: "SELECT COUNT(*) FROM block_history_gaps WHERE resolved_at IS NOT NULL AND kind != 'permanent_gap' AND resolved_at < $1",
+    delete_sql: "DELETE FROM block_history_gaps WHERE gap_id IN (SELECT gap_id FROM block_history_gaps WHERE resolved_at IS NOT NULL AND kind != 'permanent_gap' AND resolved_at < $1 ORDER BY resolved_at LIMIT 128)",
 }];
 
 /// Divergence evidence spans two tables: the observation row and the block
@@ -406,56 +406,56 @@ const TARGET_DIVERGENCE_EVIDENCE: &[CleanupTarget] = &[
     CleanupTarget {
         table: "chain_divergence_observations",
         kind: CleanupKind::Delete,
-        count_sql: "SELECT COUNT(*) FROM chain_divergence_observations WHERE retained_observed_at < ?",
-        delete_sql: "DELETE FROM chain_divergence_observations WHERE rowid IN (SELECT rowid FROM chain_divergence_observations WHERE retained_observed_at < ? ORDER BY retained_observed_at LIMIT 128)",
+        count_sql: "SELECT COUNT(*) FROM chain_divergence_observations WHERE retained_observed_at < $1",
+        delete_sql: "DELETE FROM chain_divergence_observations WHERE divergence_id IN (SELECT divergence_id FROM chain_divergence_observations WHERE retained_observed_at < $1 ORDER BY retained_observed_at LIMIT 128)",
     },
     CleanupTarget {
         table: "block_identity_window",
         kind: CleanupKind::Delete,
-        count_sql: "SELECT COUNT(*) FROM block_identity_window WHERE retained_until < ?",
-        delete_sql: "DELETE FROM block_identity_window WHERE rowid IN (SELECT rowid FROM block_identity_window WHERE retained_until < ? ORDER BY retained_until LIMIT 128)",
+        count_sql: "SELECT COUNT(*) FROM block_identity_window WHERE retained_until < $1",
+        delete_sql: "DELETE FROM block_identity_window WHERE (node_id, height) IN (SELECT node_id, height FROM block_identity_window WHERE retained_until < $1 ORDER BY retained_until LIMIT 128)",
     },
 ];
 
 const TARGET_AUDIT_EVENTS: &[CleanupTarget] = &[CleanupTarget {
     table: "audit_events",
     kind: CleanupKind::Delete,
-    count_sql: "SELECT COUNT(*) FROM audit_events WHERE created_at < ? AND audit_event_id NOT IN (SELECT audit_event_id FROM operations WHERE audit_event_id IS NOT NULL)",
-    delete_sql: "DELETE FROM audit_events WHERE audit_event_id IN (SELECT audit_event_id FROM audit_events WHERE created_at < ? AND audit_event_id NOT IN (SELECT audit_event_id FROM operations WHERE audit_event_id IS NOT NULL) ORDER BY audit_event_id LIMIT 128)",
+    count_sql: "SELECT COUNT(*) FROM audit_events WHERE created_at < $1 AND audit_event_id NOT IN (SELECT audit_event_id FROM operations WHERE audit_event_id IS NOT NULL)",
+    delete_sql: "DELETE FROM audit_events WHERE audit_event_id IN (SELECT audit_event_id FROM audit_events WHERE created_at < $1 AND audit_event_id NOT IN (SELECT audit_event_id FROM operations WHERE audit_event_id IS NOT NULL) ORDER BY audit_event_id LIMIT 128)",
 }];
 
 const TARGET_NOTIFICATION_EVENTS: &[CleanupTarget] = &[CleanupTarget {
     table: "notification_events",
     kind: CleanupKind::Delete,
-    count_sql: "SELECT COUNT(*) FROM notification_events WHERE created_at < ?",
-    delete_sql: "DELETE FROM notification_events WHERE event_id IN (SELECT event_id FROM notification_events WHERE created_at < ? ORDER BY created_at LIMIT 128)",
+    count_sql: "SELECT COUNT(*) FROM notification_events WHERE created_at < $1",
+    delete_sql: "DELETE FROM notification_events WHERE event_id IN (SELECT event_id FROM notification_events WHERE created_at < $1 ORDER BY created_at LIMIT 128)",
 }];
 
 const TARGET_PEER_PRESENCE_INTERVALS: &[CleanupTarget] = &[CleanupTarget {
     table: "peer_presence_intervals",
     kind: CleanupKind::Delete,
-    count_sql: "SELECT COUNT(*) FROM peer_presence_intervals WHERE closed_at IS NOT NULL AND closed_at < ?",
-    delete_sql: "DELETE FROM peer_presence_intervals WHERE interval_id IN (SELECT interval_id FROM peer_presence_intervals WHERE closed_at IS NOT NULL AND closed_at < ? ORDER BY closed_at, interval_id LIMIT 128)",
+    count_sql: "SELECT COUNT(*) FROM peer_presence_intervals WHERE closed_at IS NOT NULL AND closed_at < $1",
+    delete_sql: "DELETE FROM peer_presence_intervals WHERE interval_id IN (SELECT interval_id FROM peer_presence_intervals WHERE closed_at IS NOT NULL AND closed_at < $1 ORDER BY closed_at, interval_id LIMIT 128)",
 }];
 
 const TARGET_PEER_AGGREGATE_5M: &[CleanupTarget] = &[CleanupTarget {
     table: "peer_aggregate_5m",
     kind: CleanupKind::Delete,
-    count_sql: "SELECT COUNT(*) FROM peer_aggregate_5m WHERE bucket_start < ?",
-    delete_sql: "DELETE FROM peer_aggregate_5m WHERE aggregate_id IN (SELECT aggregate_id FROM peer_aggregate_5m WHERE bucket_start < ? ORDER BY bucket_start, aggregate_id LIMIT 128)",
+    count_sql: "SELECT COUNT(*) FROM peer_aggregate_5m WHERE bucket_start < $1",
+    delete_sql: "DELETE FROM peer_aggregate_5m WHERE aggregate_id IN (SELECT aggregate_id FROM peer_aggregate_5m WHERE bucket_start < $1 ORDER BY bucket_start, aggregate_id LIMIT 128)",
 }];
 
 const TARGET_PEER_AGGREGATE_1H: &[CleanupTarget] = &[CleanupTarget {
     table: "peer_aggregate_1h",
     kind: CleanupKind::Delete,
-    count_sql: "SELECT COUNT(*) FROM peer_aggregate_1h WHERE bucket_start < ?",
-    delete_sql: "DELETE FROM peer_aggregate_1h WHERE aggregate_id IN (SELECT aggregate_id FROM peer_aggregate_1h WHERE bucket_start < ? ORDER BY bucket_start, aggregate_id LIMIT 128)",
+    count_sql: "SELECT COUNT(*) FROM peer_aggregate_1h WHERE bucket_start < $1",
+    delete_sql: "DELETE FROM peer_aggregate_1h WHERE aggregate_id IN (SELECT aggregate_id FROM peer_aggregate_1h WHERE bucket_start < $1 ORDER BY bucket_start, aggregate_id LIMIT 128)",
 }];
 
 const TARGET_RECEIPT_BODIES: &[CleanupTarget] = &[CleanupTarget {
     table: "agent_report_receipts",
     kind: CleanupKind::SlimReceiptBody,
-    count_sql: "SELECT COUNT(*) FROM agent_report_receipts WHERE received_at < ? AND receipt_slimmed_at IS NULL AND report_id NOT IN (SELECT close_report_id FROM agents WHERE close_report_id IS NOT NULL)",
+    count_sql: "SELECT COUNT(*) FROM agent_report_receipts WHERE received_at < $1 AND receipt_slimmed_at IS NULL AND report_id NOT IN (SELECT close_report_id FROM agents WHERE close_report_id IS NOT NULL)",
     delete_sql: "",
 }];
 
@@ -678,35 +678,35 @@ async fn slim_receipt_body_batch(
     cutoff: &str,
     now: &str,
 ) -> Result<u64, sqlx::Error> {
-    let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
-        "SELECT rowid, receipt_body FROM agent_report_receipts \
-         WHERE received_at < ? AND receipt_slimmed_at IS NULL \
+    let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
+        "SELECT report_id, receipt_body FROM agent_report_receipts \
+         WHERE received_at < $1 AND receipt_slimmed_at IS NULL \
            AND report_id NOT IN (SELECT close_report_id FROM agents WHERE close_report_id IS NOT NULL) \
-         ORDER BY received_at LIMIT ?",
+         ORDER BY received_at LIMIT $2",
     )
     .bind(cutoff)
     .bind(RETENTION_BATCH)
     .fetch_all(&mut *conn)
     .await?;
     let mut slimmed = 0u64;
-    for (rowid, body) in rows {
+    for (report_id, body) in rows {
         match slim_receipt_body(&body) {
             Some(slimmed_body) => {
                 sqlx::query(
-                    "UPDATE agent_report_receipts SET receipt_body = ?, receipt_slimmed_at = ? WHERE rowid = ?",
+                    "UPDATE agent_report_receipts SET receipt_body = $1, receipt_slimmed_at = $2 WHERE report_id = $3",
                 )
                 .bind(slimmed_body)
                 .bind(now)
-                .bind(rowid)
+                .bind(&report_id)
                 .execute(&mut *conn)
                 .await?;
             }
             None => {
                 sqlx::query(
-                    "UPDATE agent_report_receipts SET receipt_slimmed_at = ? WHERE rowid = ?",
+                    "UPDATE agent_report_receipts SET receipt_slimmed_at = $1 WHERE report_id = $2",
                 )
                 .bind(now)
-                .bind(rowid)
+                .bind(&report_id)
                 .execute(&mut *conn)
                 .await?;
             }
@@ -781,7 +781,7 @@ pub fn raw_block_summary_cutoff(now: time::OffsetDateTime) -> time::OffsetDateTi
 /// always uses the persisted Owner setting.
 pub async fn raw_block_summary_retention_days(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
     Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT retention_days FROM retention_policies WHERE family = ?",
+        "SELECT retention_days FROM retention_policies WHERE family = $1",
     )
     .bind(FAMILY_RAW_BLOCK_SUMMARY)
     .fetch_optional(pool)
@@ -797,7 +797,7 @@ pub async fn raw_block_summary_retention_days(pool: &SqlitePool) -> Result<i64, 
 /// back to a full table scan: SQLite can still satisfy the delete, but the
 /// scan plus temporary B-tree made report ingestion cost ~124 ms per report on
 /// a 260 MB table even when nothing was expired (issue #137).
-pub const RAW_BLOCK_SUMMARY_CLEANUP_SQL: &str = "DELETE FROM block_summaries WHERE rowid IN (SELECT rowid FROM block_summaries WHERE accepted_at < ? ORDER BY accepted_at, node_id, block_number LIMIT ?)";
+pub const RAW_BLOCK_SUMMARY_CLEANUP_SQL: &str = "DELETE FROM block_summaries WHERE (node_id, block_number) IN (SELECT node_id, block_number FROM block_summaries WHERE accepted_at < $1 ORDER BY accepted_at, node_id, block_number LIMIT $2)";
 
 /// Delete at most one bounded batch of expired raw summaries.
 ///
@@ -827,7 +827,7 @@ pub async fn metric_sample_retention_days(pool: &SqlitePool) -> Result<i64, sqlx
         .map(|policy| policy.default_days)
         .unwrap_or(MIN_INVESTIGATION_RAW_DAYS);
     Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT retention_days FROM retention_policies WHERE family = ?",
+        "SELECT retention_days FROM retention_policies WHERE family = $1",
     )
     .bind(FAMILY_RAW_METRIC_SAMPLE)
     .fetch_optional(pool)
@@ -849,7 +849,7 @@ pub async fn metric_sample_retention_days_tx(
         .map(|policy| policy.default_days)
         .unwrap_or(MIN_INVESTIGATION_RAW_DAYS);
     Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT retention_days FROM retention_policies WHERE family = ?",
+        "SELECT retention_days FROM retention_policies WHERE family = $1",
     )
     .bind(FAMILY_RAW_METRIC_SAMPLE)
     .fetch_optional(&mut **tx)
@@ -911,7 +911,7 @@ pub async fn observation_state_retention_days(pool: &SqlitePool) -> Result<i64, 
         .map(|policy| policy.default_days)
         .unwrap_or(MIN_INVESTIGATION_AGGREGATE_DAYS);
     Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT retention_days FROM retention_policies WHERE family = ?",
+        "SELECT retention_days FROM retention_policies WHERE family = $1",
     )
     .bind(FAMILY_OBSERVATION_STATE)
     .fetch_optional(pool)
@@ -932,7 +932,7 @@ pub async fn state_retention_days_tx(tx: &mut Transaction<'_, Sqlite>) -> Result
         .map(|policy| policy.default_days)
         .unwrap_or(MIN_INVESTIGATION_AGGREGATE_DAYS);
     Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT retention_days FROM retention_policies WHERE family = ?",
+        "SELECT retention_days FROM retention_policies WHERE family = $1",
     )
     .bind(FAMILY_OBSERVATION_STATE)
     .fetch_optional(&mut **tx)
@@ -996,7 +996,7 @@ async fn aggregate_retention_days(pool: &SqlitePool, family: &str) -> Result<i64
         return Ok(catalog.default_days);
     }
     Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT retention_days FROM retention_policies WHERE family = ?",
+        "SELECT retention_days FROM retention_policies WHERE family = $1",
     )
     .bind(family)
     .fetch_optional(pool)
@@ -1050,9 +1050,9 @@ pub async fn ensure_seeded(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
     for policy in POLICY_CATALOG {
         let sql = if aggregate_grain_seconds(policy.family).is_some() {
-            "INSERT INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, 1, ?, 'defaults') ON CONFLICT(family) DO UPDATE SET retention_days = excluded.retention_days, min_days = excluded.min_days, max_days = excluded.max_days, supported = excluded.supported WHERE retention_policies.retention_days <> excluded.retention_days OR retention_policies.min_days <> excluded.min_days OR retention_policies.max_days <> excluded.max_days OR retention_policies.supported <> excluded.supported"
+            "INSERT INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES ($1, $2, $3, $4, $5, 1, $6, 'defaults') ON CONFLICT(family) DO UPDATE SET retention_days = excluded.retention_days, min_days = excluded.min_days, max_days = excluded.max_days, supported = excluded.supported WHERE retention_policies.retention_days <> excluded.retention_days OR retention_policies.min_days <> excluded.min_days OR retention_policies.max_days <> excluded.max_days OR retention_policies.supported <> excluded.supported"
         } else {
-            "INSERT OR IGNORE INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, 1, ?, 'defaults')"
+            "INSERT INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES ($1, $2, $3, $4, $5, 1, $6, 'defaults') ON CONFLICT DO NOTHING"
         };
         sqlx::query(sql)
             .bind(policy.family)
@@ -1161,7 +1161,7 @@ pub async fn update_policy(
     validate_policy_days(family, retention_days)?;
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     sqlx::query(
-        "UPDATE retention_policies SET retention_days = ?, enabled = 1, updated_at = ?, updated_by = ? WHERE family = ?",
+        "UPDATE retention_policies SET retention_days = $1, enabled = 1, updated_at = $2, updated_by = $3 WHERE family = $4",
     )
     .bind(retention_days)
     .bind(&now)
@@ -1521,11 +1521,11 @@ pub async fn create_preview(
     let mut tx = pool.begin().await?;
     // Only live previews matter, so expired rows are pruned in the same
     // transaction — bounded exactly like every other cleanup.
-    sqlx::query("DELETE FROM retention_previews WHERE preview_id IN (SELECT preview_id FROM retention_previews WHERE expires_at <= ? LIMIT 128)")
+    sqlx::query("DELETE FROM retention_previews WHERE preview_id IN (SELECT preview_id FROM retention_previews WHERE expires_at <= $1 LIMIT 128)")
         .bind(&created_at)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO retention_previews (preview_id, created_at, created_by, policy_version, scope_json, entries_json, estimated_rows, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(preview_id) DO UPDATE SET created_at = excluded.created_at, created_by = excluded.created_by, entries_json = excluded.entries_json, estimated_rows = excluded.estimated_rows, expires_at = excluded.expires_at")
+    sqlx::query("INSERT INTO retention_previews (preview_id, created_at, created_by, policy_version, scope_json, entries_json, estimated_rows, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT(preview_id) DO UPDATE SET created_at = excluded.created_at, created_by = excluded.created_by, entries_json = excluded.entries_json, estimated_rows = excluded.estimated_rows, expires_at = excluded.expires_at")
         .bind(&preview_id)
         .bind(&created_at)
         .bind(created_by)
@@ -1569,7 +1569,7 @@ pub async fn load_preview_for_run(
     now: time::OffsetDateTime,
 ) -> Result<PreviewLoad, sqlx::Error> {
     let row = sqlx::query_as::<_, PreviewRow>(
-        "SELECT preview_id, created_at, created_by, policy_version, scope_json, entries_json, estimated_rows, expires_at FROM retention_previews WHERE preview_id = ?",
+        "SELECT preview_id, created_at, created_by, policy_version, scope_json, entries_json, estimated_rows, expires_at FROM retention_previews WHERE preview_id = $1",
     )
     .bind(preview_id)
     .fetch_optional(pool)
@@ -1710,7 +1710,7 @@ pub async fn latest_live_preview(
     now: time::OffsetDateTime,
 ) -> Result<Option<RetentionPreview>, sqlx::Error> {
     let preview_id = sqlx::query_scalar::<_, String>(
-        "SELECT preview_id FROM retention_previews WHERE expires_at > ? ORDER BY created_at DESC, preview_id DESC LIMIT 1",
+        "SELECT preview_id FROM retention_previews WHERE expires_at > $1 ORDER BY created_at DESC, preview_id DESC LIMIT 1",
     )
     .bind(crate::auth::format_rfc3339(now))
     .fetch_optional(pool)
@@ -1794,7 +1794,7 @@ pub async fn execute_step(
             }
         }
         params["warningsRecorded"] = Value::Bool(true);
-        sqlx::query("UPDATE operations SET params_json = ? WHERE operation_id = ?")
+        sqlx::query("UPDATE operations SET params_json = $1 WHERE operation_id = $2")
             .bind(serde_json::to_string(&params)?)
             .bind(operation_id)
             .execute(pool)
@@ -1959,7 +1959,7 @@ pub async fn execute_step(
     }
 
     params["plan"] = serde_json::to_value(&plan)?;
-    sqlx::query("UPDATE operations SET params_json = ? WHERE operation_id = ?")
+    sqlx::query("UPDATE operations SET params_json = $1 WHERE operation_id = $2")
         .bind(serde_json::to_string(&params)?)
         .bind(operation_id)
         .execute(&mut *tx)
@@ -2024,7 +2024,7 @@ async fn finish_run(
         crate::operations::STATUS_SUCCEEDED
     } else {
         let warnings: i64 = sqlx::query_scalar(
-            "SELECT json_array_length(warnings_json) FROM operations WHERE operation_id = ?",
+            "SELECT json_array_length(warnings_json) FROM operations WHERE operation_id = $1",
         )
         .bind(operation_id)
         .fetch_one(state.db().pool())
@@ -2231,6 +2231,17 @@ fn same_binding(left: &PlanEntry, right: &PlanEntry) -> bool {
     left.family == right.family && left.table == right.table && left.cutoff == right.cutoff
 }
 
+/// Whether a cleanup statement binds exactly one value, the cutoff: it names
+/// `$1` and no other numbered or positional placeholder.
+fn binds_exactly_one_cutoff(sql: &str) -> bool {
+    let mut numbers = sql.split('$').skip(1).map(|rest| {
+        rest.chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+    });
+    !sql.contains('?') && sql.contains('$') && numbers.all(|number| number == "1")
+}
+
 /// Catalog self-check (issue #210). Proves the onboarding contract before any
 /// policy or cleanup surface is served: a family cannot carry a bound below its
 /// class floor, an unsupported family cannot declare cleanup storage, and every
@@ -2292,14 +2303,14 @@ pub fn audit_catalog() -> Result<(), String> {
                 ));
             }
             tables.push(target.table);
-            if target.count_sql.matches('?').count() != 1 {
+            if !binds_exactly_one_cutoff(target.count_sql) {
                 return Err(format!(
                     "{}: the {} estimate must bind exactly one cutoff",
                     entry.family, target.table
                 ));
             }
             if target.kind == CleanupKind::Delete {
-                if target.delete_sql.matches('?').count() != 1 {
+                if !binds_exactly_one_cutoff(target.delete_sql) {
                     return Err(format!(
                         "{}: the {} cleanup must bind exactly one cutoff",
                         entry.family, target.table

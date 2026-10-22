@@ -1500,7 +1500,7 @@ pub async fn create_validator(
     let validator_id = uuid::Uuid::new_v4().to_string();
     let mut tx = db.pool().begin().await?;
 
-    let known: Option<i64> = sqlx::query_scalar("SELECT 1 FROM networks WHERE network_key = ?")
+    let known: Option<i64> = sqlx::query_scalar("SELECT 1 FROM networks WHERE network_key = $1")
         .bind(network_key)
         .fetch_optional(&mut *tx)
         .await?;
@@ -1509,7 +1509,7 @@ pub async fn create_validator(
     }
 
     let insert = sqlx::query(
-        "INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(&validator_id)
     .bind(network_key)
@@ -1529,7 +1529,7 @@ pub async fn create_validator(
         return Err(ValidatorError::Database(error));
     }
 
-    insert_audit_event(
+    let audit_id = insert_audit_event(
         &mut *tx,
         Some(actor_user_id),
         "validator_created",
@@ -1542,9 +1542,6 @@ pub async fn create_validator(
         })),
     )
     .await?;
-    let audit_id: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await?;
     tx.commit().await?;
     Ok((
         ValidatorRecord {
@@ -1564,7 +1561,7 @@ pub async fn get_validator(
     validator_id: &str,
 ) -> Result<Option<ValidatorRecord>, ValidatorError> {
     Ok(sqlx::query_as::<_, ValidatorRecord>(
-        "SELECT validator_id, network_key, validator_node_id, display_name, created_at, updated_at FROM validators WHERE validator_id = ?",
+        "SELECT validator_id, network_key, validator_node_id, display_name, created_at, updated_at FROM validators WHERE validator_id = $1",
     )
     .bind(validator_id)
     .fetch_optional(db.pool())
@@ -1577,7 +1574,7 @@ pub async fn list_validators(
 ) -> Result<Vec<ValidatorRecord>, ValidatorError> {
     let rows = if let Some(network_key) = network_key {
         sqlx::query_as::<_, ValidatorRecord>(
-            "SELECT validator_id, network_key, validator_node_id, display_name, created_at, updated_at FROM validators WHERE network_key = ? ORDER BY validator_node_id, validator_id",
+            "SELECT validator_id, network_key, validator_node_id, display_name, created_at, updated_at FROM validators WHERE network_key = $1 ORDER BY validator_node_id, validator_id",
         )
         .bind(network_key)
         .fetch_all(db.pool())
@@ -1606,6 +1603,7 @@ async fn link_overlaps(
         query.push_str(" AND link_id != ?");
     }
     query.push_str(" LIMIT 1");
+    let query = crate::database::number_placeholders(&query);
     let mut statement = sqlx::query_scalar::<_, i64>(&query)
         .bind(node_id)
         .bind(valid_from)
@@ -1622,7 +1620,7 @@ async fn validate_link_parentage(
     validator_id: &str,
 ) -> Result<(), ValidatorError> {
     let node = sqlx::query_as::<_, (String, String)>(
-        "SELECT network_key, lifecycle FROM nodes WHERE node_id = ?",
+        "SELECT network_key, lifecycle FROM nodes WHERE node_id = $1",
     )
     .bind(node_id)
     .fetch_optional(&mut **tx)
@@ -1634,7 +1632,7 @@ async fn validate_link_parentage(
         return Err(ValidatorError::NodeNotActive);
     }
     let validator_network = sqlx::query_scalar::<_, String>(
-        "SELECT network_key FROM validators WHERE validator_id = ?",
+        "SELECT network_key FROM validators WHERE validator_id = $1",
     )
     .bind(validator_id)
     .fetch_optional(&mut **tx)
@@ -1671,7 +1669,7 @@ pub async fn create_link(
         return Err(ValidatorError::LinkOverlap);
     }
     let insert = sqlx::query(
-        "INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(&link_id)
     .bind(node_id)
@@ -1689,7 +1687,7 @@ pub async fn create_link(
         }
         return Err(ValidatorError::Database(error));
     }
-    insert_audit_event(
+    let audit_id = insert_audit_event(
         &mut *tx,
         Some(actor_user_id),
         "node_validator_link_created",
@@ -1704,9 +1702,6 @@ pub async fn create_link(
         })),
     )
     .await?;
-    let audit_id: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await?;
     tx.commit().await?;
     Ok((
         NodeValidatorLinkRecord {
@@ -1729,7 +1724,7 @@ pub async fn get_link(
     link_id: &str,
 ) -> Result<Option<NodeValidatorLinkRecord>, ValidatorError> {
     Ok(sqlx::query_as::<_, NodeValidatorLinkRecord>(
-        "SELECT link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at FROM node_validator_links WHERE link_id = ?",
+        "SELECT link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at FROM node_validator_links WHERE link_id = $1",
     )
     .bind(link_id)
     .fetch_optional(db.pool())
@@ -1755,6 +1750,7 @@ pub async fn list_links(
         sql.push_str(" AND v.network_key = ?");
     }
     sql.push_str(" ORDER BY l.valid_from DESC, l.link_id DESC");
+    let sql = crate::database::number_placeholders(&sql);
     let mut query = sqlx::query_as::<_, NodeValidatorLinkRecord>(&sql);
     if let Some(value) = node_id {
         query = query.bind(value);
@@ -1781,7 +1777,7 @@ pub async fn update_link(
     let now = format_rfc3339(now_utc());
     let mut tx = db.pool().begin().await?;
     let existing = sqlx::query_as::<_, (String, String, String, String, Option<String>)>(
-        "SELECT node_id, validator_id, role, valid_from, valid_until FROM node_validator_links WHERE link_id = ?",
+        "SELECT node_id, validator_id, role, valid_from, valid_until FROM node_validator_links WHERE link_id = $1",
     )
     .bind(link_id)
     .fetch_optional(&mut *tx)
@@ -1808,7 +1804,7 @@ pub async fn update_link(
         return Err(ValidatorError::LinkOverlap);
     }
     sqlx::query(
-        "UPDATE node_validator_links SET valid_until = ?, updated_at = ? WHERE link_id = ?",
+        "UPDATE node_validator_links SET valid_until = $1, updated_at = $2 WHERE link_id = $3",
     )
     .bind(&valid_from)
     .bind(&now)
@@ -1817,7 +1813,7 @@ pub async fn update_link(
     .await?;
     let replacement_id = uuid::Uuid::new_v4().to_string();
     let insert = sqlx::query(
-        "INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(&replacement_id)
     .bind(&node_id)
@@ -1835,7 +1831,7 @@ pub async fn update_link(
         }
         return Err(ValidatorError::Database(error));
     }
-    insert_audit_event(
+    let audit_id = insert_audit_event(
         &mut *tx,
         Some(actor_user_id),
         "node_validator_link_replaced",
@@ -1851,11 +1847,8 @@ pub async fn update_link(
         })),
     )
     .await?;
-    let audit_id: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await?;
     let row = sqlx::query_as::<_, NodeValidatorLinkRecord>(
-        "SELECT link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at FROM node_validator_links WHERE link_id = ?",
+        "SELECT link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at FROM node_validator_links WHERE link_id = $1",
     )
     .bind(&replacement_id)
     .fetch_one(&mut *tx)
@@ -1875,7 +1868,7 @@ pub async fn end_link(
     let end_time = parse_timestamp(&end)?;
     let mut tx = db.pool().begin().await?;
     let valid_from = sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT valid_from, valid_until FROM node_validator_links WHERE link_id = ?",
+        "SELECT valid_from, valid_until FROM node_validator_links WHERE link_id = $1",
     )
     .bind(link_id)
     .fetch_optional(&mut *tx)
@@ -1890,7 +1883,7 @@ pub async fn end_link(
         return Err(ValidatorError::EndBeforeStart);
     }
     sqlx::query(
-        "UPDATE node_validator_links SET valid_until = CASE WHEN valid_until IS NULL OR valid_until > ? THEN ? ELSE valid_until END, updated_at = ? WHERE link_id = ?",
+        "UPDATE node_validator_links SET valid_until = CASE WHEN valid_until IS NULL OR valid_until > $1 THEN $2 ELSE valid_until END, updated_at = $3 WHERE link_id = $4",
     )
     .bind(&end)
     .bind(&end)
@@ -1898,7 +1891,7 @@ pub async fn end_link(
     .bind(link_id)
     .execute(&mut *tx)
     .await?;
-    insert_audit_event(
+    let audit_id = insert_audit_event(
         &mut *tx,
         Some(actor_user_id),
         "node_validator_link_ended",
@@ -1907,11 +1900,8 @@ pub async fn end_link(
         Some(&serde_json::json!({ "valid_until": end })),
     )
     .await?;
-    let audit_id: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await?;
     let row = sqlx::query_as::<_, NodeValidatorLinkRecord>(
-        "SELECT link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at FROM node_validator_links WHERE link_id = ?",
+        "SELECT link_id, node_id, validator_id, role, valid_from, valid_until, created_at, updated_at FROM node_validator_links WHERE link_id = $1",
     )
     .bind(link_id)
     .fetch_one(&mut *tx)
@@ -1963,7 +1953,7 @@ pub struct ValidatorInsightRecord {
 /// The canonical column list for loading one current Validator insight. Kept in
 /// one place so the detail apply, the ranking apply, and direct loads cannot
 /// drift apart.
-const INSIGHT_SELECT: &str = "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, last_good_verdict_outcome, last_good_verdict_received_at, rank, rank_outcome, rank_diagnostic, rank_last_attempt_received_at, rank_last_good_received_at, rank_cohort_size, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = ?";
+const INSIGHT_SELECT: &str = "SELECT validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, last_good_verdict_outcome, last_good_verdict_received_at, rank, rank_outcome, rank_diagnostic, rank_last_attempt_received_at, rank_last_good_received_at, rank_cohort_size, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at FROM current_validator_insights WHERE validator_id = $1";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ValidatorRankingHistoryRecord {
@@ -2075,7 +2065,7 @@ pub async fn list_daily_snapshots(
     limit: i64,
 ) -> Result<Vec<ValidatorDailySnapshotRecord>, ValidatorError> {
     Ok(sqlx::query_as::<_, ValidatorDailySnapshotRecord>(
-        "SELECT snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count FROM validator_daily_snapshots WHERE validator_id = ? ORDER BY sample_at DESC, local_date DESC LIMIT ?",
+        "SELECT snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count FROM validator_daily_snapshots WHERE validator_id = $1 ORDER BY sample_at DESC, local_date DESC LIMIT $2",
     )
     .bind(validator_id)
     .bind(limit)
@@ -2089,7 +2079,7 @@ pub async fn list_monthly_aggregates(
     limit: i64,
 ) -> Result<Vec<ValidatorMonthlyAggregateRecord>, ValidatorError> {
     Ok(sqlx::query_as::<_, ValidatorMonthlyAggregateRecord>(
-        "SELECT aggregate_id, validator_id, timezone, month_key, snapshot_count, first_sample_at, last_sample_at, rank_min, rank_max, rank_last, stake_last, reward_last, reward_rate_last, delegator_count_last, epoch_last, block_count_last, updated_at FROM validator_monthly_aggregates WHERE validator_id = ? ORDER BY month_key DESC, timezone LIMIT ?",
+        "SELECT aggregate_id, validator_id, timezone, month_key, snapshot_count, first_sample_at, last_sample_at, rank_min, rank_max, rank_last, stake_last, reward_last, reward_rate_last, delegator_count_last, epoch_last, block_count_last, updated_at FROM validator_monthly_aggregates WHERE validator_id = $1 ORDER BY month_key DESC, timezone LIMIT $2",
     )
     .bind(validator_id)
     .bind(limit)
@@ -2365,7 +2355,7 @@ pub async fn list_validator_associations(
     limit: i64,
 ) -> Result<Vec<ValidatorAssociationRecord>, ValidatorError> {
     Ok(sqlx::query_as::<_, ValidatorAssociationRecord>(
-        "SELECT l.link_id, l.node_id, l.origin, l.valid_from, l.valid_until, n.display_name AS node_display_name, n.lifecycle AS node_lifecycle FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = ? ORDER BY l.valid_from DESC, l.link_id DESC LIMIT ?",
+        "SELECT l.link_id, l.node_id, l.origin, l.valid_from, l.valid_until, n.display_name AS node_display_name, n.lifecycle AS node_lifecycle FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = $1 ORDER BY l.valid_from DESC, l.link_id DESC LIMIT $2",
     )
     .bind(validator_id)
     .bind(limit)
@@ -2380,7 +2370,7 @@ pub async fn count_deleted_nodes(
     network_key: &str,
 ) -> Result<i64, ValidatorError> {
     Ok(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM deleted_nodes WHERE network_key = ?")
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM deleted_nodes WHERE network_key = $1")
             .bind(network_key)
             .fetch_one(db.pool())
             .await?,
@@ -2447,7 +2437,7 @@ pub async fn load_daily_trend(
         Vec::new()
     } else {
         sqlx::query_as::<_, ValidatorDailySnapshotRecord>(
-            "SELECT snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count FROM validator_daily_snapshots WHERE validator_id = ? AND timezone = ? AND local_date >= ? AND local_date <= ? ORDER BY local_date DESC LIMIT ?",
+            "SELECT snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count FROM validator_daily_snapshots WHERE validator_id = $1 AND timezone = $2 AND local_date >= $3 AND local_date <= $4 ORDER BY local_date DESC LIMIT $5",
         )
         .bind(&query.validator_id)
         .bind(&query.timezone)
@@ -2587,7 +2577,7 @@ pub async fn load_daily_trend(
     let mut foreign_timezones: Vec<String> = Vec::new();
     if answered_days > 0 {
         let foreign: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT timezone, COUNT(*) FROM validator_daily_snapshots WHERE validator_id = ? AND timezone != ? AND local_date >= ? AND local_date <= ? GROUP BY timezone ORDER BY timezone",
+            "SELECT timezone, COUNT(*) FROM validator_daily_snapshots WHERE validator_id = $1 AND timezone != $2 AND local_date >= $3 AND local_date <= $4 GROUP BY timezone ORDER BY timezone",
         )
         .bind(&query.validator_id)
         .bind(&query.timezone)
@@ -2662,7 +2652,7 @@ async fn record_daily_snapshot(
     timezone: &str,
 ) -> Result<(bool, StoredDay), ValidatorError> {
     let (local_date, month_key, sample_at) = analytics_period(observation, received_at, timezone)?;
-    let result = sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id, timezone, local_date) DO UPDATE SET snapshot_id=excluded.snapshot_id, month_key=excluded.month_key, sample_at=excluded.sample_at, received_at=excluded.received_at, provider_timestamp=excluded.provider_timestamp, source=excluded.source, observation_key=excluded.observation_key, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count WHERE excluded.sample_at > validator_daily_snapshots.sample_at OR (excluded.sample_at = validator_daily_snapshots.sample_at AND excluded.observation_key > validator_daily_snapshots.observation_key)")
+    let result = sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) ON CONFLICT(validator_id, timezone, local_date) DO UPDATE SET snapshot_id=excluded.snapshot_id, month_key=excluded.month_key, sample_at=excluded.sample_at, received_at=excluded.received_at, provider_timestamp=excluded.provider_timestamp, source=excluded.source, observation_key=excluded.observation_key, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count WHERE excluded.sample_at > validator_daily_snapshots.sample_at OR (excluded.sample_at = validator_daily_snapshots.sample_at AND excluded.observation_key > validator_daily_snapshots.observation_key)")
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(validator_id)
         .bind(timezone)
@@ -2710,7 +2700,7 @@ async fn record_snapshot_rank(
     now: &str,
 ) -> Result<(), ValidatorError> {
     let stored = sqlx::query(
-        "UPDATE validator_daily_snapshots SET rank = ? WHERE validator_id = ? AND timezone = ? AND local_date = ?",
+        "UPDATE validator_daily_snapshots SET rank = $1 WHERE validator_id = $2 AND timezone = $3 AND local_date = $4",
     )
     .bind(rank)
     .bind(validator_id)
@@ -2732,7 +2722,7 @@ async fn rebuild_monthly_aggregate(
     updated_at: &str,
 ) -> Result<(), ValidatorError> {
     let summary = sqlx::query_as::<_, (i64, String, String, Option<i64>, Option<i64>)>(
-        "SELECT COUNT(*), MIN(sample_at), MAX(sample_at), MIN(rank), MAX(rank) FROM validator_daily_snapshots WHERE validator_id = ? AND timezone = ? AND month_key = ?",
+        "SELECT COUNT(*), MIN(sample_at), MAX(sample_at), MIN(rank), MAX(rank) FROM validator_daily_snapshots WHERE validator_id = $1 AND timezone = $2 AND month_key = $3",
     )
     .bind(validator_id)
     .bind(timezone)
@@ -2744,14 +2734,14 @@ async fn rebuild_monthly_aggregate(
         return Ok(());
     };
     let latest = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
-        "SELECT rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, NULL FROM validator_daily_snapshots WHERE validator_id = ? AND timezone = ? AND month_key = ? ORDER BY sample_at DESC, observation_key DESC LIMIT 1",
+        "SELECT rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, NULL FROM validator_daily_snapshots WHERE validator_id = $1 AND timezone = $2 AND month_key = $3 ORDER BY sample_at DESC, observation_key DESC LIMIT 1",
     )
     .bind(validator_id)
     .bind(timezone)
     .bind(month_key)
     .fetch_one(&mut **tx)
     .await?;
-    sqlx::query("INSERT INTO validator_monthly_aggregates (aggregate_id, validator_id, timezone, month_key, snapshot_count, first_sample_at, last_sample_at, rank_min, rank_max, rank_last, stake_last, reward_last, reward_rate_last, delegator_count_last, epoch_last, block_count_last, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id, timezone, month_key) DO UPDATE SET snapshot_count=excluded.snapshot_count, first_sample_at=excluded.first_sample_at, last_sample_at=excluded.last_sample_at, rank_min=excluded.rank_min, rank_max=excluded.rank_max, rank_last=excluded.rank_last, stake_last=excluded.stake_last, reward_last=excluded.reward_last, reward_rate_last=excluded.reward_rate_last, delegator_count_last=excluded.delegator_count_last, epoch_last=excluded.epoch_last, block_count_last=excluded.block_count_last, updated_at=excluded.updated_at")
+    sqlx::query("INSERT INTO validator_monthly_aggregates (aggregate_id, validator_id, timezone, month_key, snapshot_count, first_sample_at, last_sample_at, rank_min, rank_max, rank_last, stake_last, reward_last, reward_rate_last, delegator_count_last, epoch_last, block_count_last, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) ON CONFLICT(validator_id, timezone, month_key) DO UPDATE SET snapshot_count=excluded.snapshot_count, first_sample_at=excluded.first_sample_at, last_sample_at=excluded.last_sample_at, rank_min=excluded.rank_min, rank_max=excluded.rank_max, rank_last=excluded.rank_last, stake_last=excluded.stake_last, reward_last=excluded.reward_last, reward_rate_last=excluded.reward_rate_last, delegator_count_last=excluded.delegator_count_last, epoch_last=excluded.epoch_last, block_count_last=excluded.block_count_last, updated_at=excluded.updated_at")
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(validator_id)
         .bind(timezone)
@@ -2779,7 +2769,7 @@ pub async fn list_ranking_history(
     limit: i64,
 ) -> Result<Vec<ValidatorRankingHistoryRecord>, ValidatorError> {
     Ok(sqlx::query_as::<_, ValidatorRankingHistoryRecord>(
-        "SELECT history_id, validator_id, previous_rank, current_rank, observed_at, provider_timestamp, observation_key, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key FROM validator_ranking_history WHERE validator_id = ? ORDER BY observed_at DESC, history_id DESC LIMIT ?",
+        "SELECT history_id, validator_id, previous_rank, current_rank, observed_at, provider_timestamp, observation_key, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key FROM validator_ranking_history WHERE validator_id = $1 ORDER BY observed_at DESC, history_id DESC LIMIT $2",
     )
     .bind(validator_id)
     .bind(limit)
@@ -2793,7 +2783,7 @@ pub async fn list_counter_history(
     limit: i64,
 ) -> Result<Vec<ValidatorCounterHistoryRecord>, ValidatorError> {
     Ok(sqlx::query_as::<_, ValidatorCounterHistoryRecord>(
-        "SELECT history_id, validator_id, counter_name, previous_value, current_value, observed_at, provider_timestamp, observation_key FROM validator_counter_history WHERE validator_id = ? ORDER BY observed_at DESC, history_id DESC LIMIT ?",
+        "SELECT history_id, validator_id, counter_name, previous_value, current_value, observed_at, provider_timestamp, observation_key FROM validator_counter_history WHERE validator_id = $1 ORDER BY observed_at DESC, history_id DESC LIMIT $2",
     )
     .bind(validator_id)
     .bind(limit)
@@ -2808,7 +2798,7 @@ pub async fn list_link_context_at(
     active_only: bool,
 ) -> Result<Vec<ValidatorLinkContextRecord>, ValidatorError> {
     let mut sql = String::from(
-        "SELECT l.link_id, l.node_id, l.role, l.valid_from, l.valid_until FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = ? AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?)",
+        "SELECT l.link_id, l.node_id, l.role, l.valid_from, l.valid_until FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = $1 AND l.valid_from <= $2 AND (l.valid_until IS NULL OR l.valid_until > $3)",
     );
     if active_only {
         sql.push_str(" AND n.lifecycle = 'active'");
@@ -2850,7 +2840,7 @@ pub async fn list_insights(
         "SELECT i.validator_id, i.source, i.outcome, i.diagnostic, i.provider_timestamp, i.activity, i.last_attempt_received_at, i.last_good_received_at, i.last_good_provider_timestamp, i.last_good_verdict_outcome, i.last_good_verdict_received_at, i.rank, i.rank_outcome, i.rank_diagnostic, i.rank_last_attempt_received_at, i.rank_last_good_received_at, i.rank_cohort_size, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state, i.change_state, i.candidate_previous_rank, i.candidate_rank, i.candidate_observations, i.candidate_observed_at, i.candidate_provider_timestamp, i.candidate_observation_key, i.last_observation_key, i.updated_at FROM current_validator_insights i JOIN validators v ON v.validator_id = i.validator_id",
     );
     if network_key.is_some() {
-        sql.push_str(" WHERE v.network_key = ?");
+        sql.push_str(" WHERE v.network_key = $1");
     }
     sql.push_str(" ORDER BY v.network_key, v.validator_node_id, i.validator_id");
     let query = sqlx::query_as::<_, ValidatorInsightRecord>(&sql);
@@ -2923,6 +2913,7 @@ pub async fn list_node_validator_identities(
         sql.push_str(" WHERE n.node_id = ?");
     }
     sql.push_str(" ORDER BY n.network_key, n.node_id");
+    let sql = crate::database::number_placeholders(&sql);
     let query = sqlx::query_as::<_, NodeValidatorIdentityRecord>(&sql)
         .bind(&now)
         .bind(&now);
@@ -3183,7 +3174,7 @@ pub async fn discover_automatic_links(
             let key = observed_key
                 .as_deref()
                 .expect("an identified Node always has an observed key");
-            sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?) ON CONFLICT (network_key, validator_node_id) DO NOTHING")
+            sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ($1, $2, $3, NULL, $4, $5) ON CONFLICT (network_key, validator_node_id) DO NOTHING")
                 .bind(uuid::Uuid::new_v4().to_string())
                 .bind(&row.network_key)
                 .bind(key)
@@ -3192,7 +3183,7 @@ pub async fn discover_automatic_links(
                 .execute(&mut *tx)
                 .await?;
             let validator_id: String = sqlx::query_scalar(
-                "SELECT validator_id FROM validators WHERE network_key = ? AND validator_node_id = ?",
+                "SELECT validator_id FROM validators WHERE network_key = $1 AND validator_node_id = $2",
             )
             .bind(&row.network_key)
             .bind(key)
@@ -3200,7 +3191,7 @@ pub async fn discover_automatic_links(
             .await?;
 
             let open: Option<(String, String, String)> = sqlx::query_as(
-                "SELECT link_id, validator_id, valid_from FROM node_validator_links WHERE node_id = ? AND origin = 'automatic' AND (valid_until IS NULL OR valid_until > ?) ORDER BY valid_from DESC, link_id DESC LIMIT 1",
+                "SELECT link_id, validator_id, valid_from FROM node_validator_links WHERE node_id = $1 AND origin = 'automatic' AND (valid_until IS NULL OR valid_until > $2) ORDER BY valid_from DESC, link_id DESC LIMIT 1",
             )
             .bind(&row.node_id)
             .bind(&now)
@@ -3215,7 +3206,7 @@ pub async fn discover_automatic_links(
                     // both happen inside the same second.
                     let close_at = close_interval_boundary(&now, &valid_from)?;
                     sqlx::query(
-                        "UPDATE node_validator_links SET valid_until = ?, updated_at = ? WHERE link_id = ?",
+                        "UPDATE node_validator_links SET valid_until = $1, updated_at = $2 WHERE link_id = $3",
                     )
                     .bind(&close_at)
                     .bind(&now)
@@ -3241,7 +3232,7 @@ pub async fn discover_automatic_links(
             // association is retained and marked stale by Provider freshness.
             if matches!(state, "network_identity_mismatch" | "invalid_public_key") {
                 let open: Option<(String, String)> = sqlx::query_as(
-                    "SELECT link_id, valid_from FROM node_validator_links WHERE node_id = ? AND origin = 'automatic' AND (valid_until IS NULL OR valid_until > ?) ORDER BY valid_from DESC, link_id DESC LIMIT 1",
+                    "SELECT link_id, valid_from FROM node_validator_links WHERE node_id = $1 AND origin = 'automatic' AND (valid_until IS NULL OR valid_until > $2) ORDER BY valid_from DESC, link_id DESC LIMIT 1",
                 )
                 .bind(&row.node_id)
                 .bind(&now)
@@ -3250,7 +3241,7 @@ pub async fn discover_automatic_links(
                 if let Some((link_id, valid_from)) = open {
                     let close_at = close_interval_boundary(&now, &valid_from)?;
                     sqlx::query(
-                        "UPDATE node_validator_links SET valid_until = ?, updated_at = ? WHERE link_id = ?",
+                        "UPDATE node_validator_links SET valid_until = $1, updated_at = $2 WHERE link_id = $3",
                     )
                     .bind(&close_at)
                     .bind(&now)
@@ -3263,7 +3254,7 @@ pub async fn discover_automatic_links(
             summary.unidentified += 1;
         }
 
-        sqlx::query("INSERT INTO node_validator_identity_status (node_id, state, observed_node_key, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET state = excluded.state, observed_node_key = excluded.observed_node_key, updated_at = excluded.updated_at")
+        sqlx::query("INSERT INTO node_validator_identity_status (node_id, state, observed_node_key, updated_at) VALUES ($1, $2, $3, $4) ON CONFLICT(node_id) DO UPDATE SET state = excluded.state, observed_node_key = excluded.observed_node_key, updated_at = excluded.updated_at")
             .bind(&row.node_id)
             .bind(state)
             .bind(observed_key.as_deref())
@@ -3296,7 +3287,7 @@ async fn insert_automatic_link(
     valid_from: &str,
     updated_at: &str,
 ) -> Result<(), ValidatorError> {
-    sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) VALUES (?, ?, ?, NULL, 'automatic', ?, NULL, ?, ?)")
+    sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) VALUES ($1, $2, $3, NULL, 'automatic', $4, NULL, $5, $6)")
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(node_id)
         .bind(validator_id)
@@ -3399,7 +3390,7 @@ async fn apply_provider_result(
                 == Some(key.as_str())
             {
                 sqlx::query(
-                    "UPDATE current_validator_insights SET outcome = 'success', diagnostic = NULL, activity = ?, last_good_verdict_outcome = ?, last_good_verdict_received_at = ?, last_attempt_received_at = ?, last_good_received_at = ?, counter_state = 'normal', updated_at = ? WHERE validator_id = ?",
+                    "UPDATE current_validator_insights SET outcome = 'success', diagnostic = NULL, activity = $1, last_good_verdict_outcome = $2, last_good_verdict_received_at = $3, last_attempt_received_at = $4, last_good_received_at = $5, counter_state = 'normal', updated_at = $6 WHERE validator_id = $7",
                 )
                 .bind(stored_activity)
                 .bind(verdict_outcome)
@@ -3439,7 +3430,7 @@ async fn apply_provider_result(
             };
 
             for (counter_name, previous_value, current_value) in decreases {
-                sqlx::query("INSERT OR IGNORE INTO validator_counter_history (history_id, validator_id, counter_name, previous_value, current_value, observed_at, provider_timestamp, observation_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                sqlx::query("INSERT INTO validator_counter_history (history_id, validator_id, counter_name, previous_value, current_value, observed_at, provider_timestamp, observation_key) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING")
                     .bind(uuid::Uuid::new_v4().to_string())
                     .bind(validator_id)
                     .bind(counter_name)
@@ -3453,7 +3444,7 @@ async fn apply_provider_result(
             }
 
             let source = bounded_source(source);
-            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, last_observation_key, updated_at) VALUES (?, ?, 'success', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=NULL, provider_timestamp=excluded.provider_timestamp, activity=excluded.activity, last_attempt_received_at=excluded.last_attempt_received_at, last_good_received_at=excluded.last_good_received_at, last_good_provider_timestamp=excluded.last_good_provider_timestamp, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegation_reward_percentage=excluded.delegation_reward_percentage, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count, expected_block_count=excluded.expected_block_count, gen_blocks_rate=excluded.gen_blocks_rate, counter_state=excluded.counter_state, last_observation_key=excluded.last_observation_key, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, stake_amount, reward_amount, reward_rate, delegation_reward_percentage, delegator_count, epoch, block_count, expected_block_count, gen_blocks_rate, counter_state, last_observation_key, updated_at) VALUES ($1, $2, 'success', NULL, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=NULL, provider_timestamp=excluded.provider_timestamp, activity=excluded.activity, last_attempt_received_at=excluded.last_attempt_received_at, last_good_received_at=excluded.last_good_received_at, last_good_provider_timestamp=excluded.last_good_provider_timestamp, stake_amount=excluded.stake_amount, reward_amount=excluded.reward_amount, reward_rate=excluded.reward_rate, delegation_reward_percentage=excluded.delegation_reward_percentage, delegator_count=excluded.delegator_count, epoch=excluded.epoch, block_count=excluded.block_count, expected_block_count=excluded.expected_block_count, gen_blocks_rate=excluded.gen_blocks_rate, counter_state=excluded.counter_state, last_observation_key=excluded.last_observation_key, updated_at=excluded.updated_at")
                 .bind(validator_id)
                 .bind(&source)
                 .bind(observation.provider_timestamp.as_deref())
@@ -3475,7 +3466,7 @@ async fn apply_provider_result(
                 .bind(&now)
                 .execute(&mut **tx)
                 .await?;
-            sqlx::query("UPDATE current_validator_insights SET last_good_verdict_outcome = ?, last_good_verdict_received_at = ? WHERE validator_id = ?")
+            sqlx::query("UPDATE current_validator_insights SET last_good_verdict_outcome = $1, last_good_verdict_received_at = $2 WHERE validator_id = $3")
                 .bind(verdict_outcome).bind(verdict_received_at).bind(validator_id)
                 .execute(&mut **tx).await?;
             let (analytics_changed, stored_day) = record_daily_snapshot(
@@ -3520,7 +3511,7 @@ async fn apply_provider_result(
                             || row.last_good_verdict_received_at.as_deref() != Some(now.as_str())))
             });
             let source = bounded_source(source);
-            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, last_attempt_received_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=excluded.diagnostic, last_attempt_received_at=excluded.last_attempt_received_at, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, last_attempt_received_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(validator_id) DO UPDATE SET source=excluded.source, outcome=excluded.outcome, diagnostic=excluded.diagnostic, last_attempt_received_at=excluded.last_attempt_received_at, updated_at=excluded.updated_at")
                 .bind(validator_id)
                 .bind(source)
                 .bind(name)
@@ -3530,7 +3521,7 @@ async fn apply_provider_result(
                 .execute(&mut **tx)
                 .await?;
             if name == "empty" {
-                sqlx::query("UPDATE current_validator_insights SET last_good_verdict_outcome = 'empty', last_good_verdict_received_at = ? WHERE validator_id = ?")
+                sqlx::query("UPDATE current_validator_insights SET last_good_verdict_outcome = 'empty', last_good_verdict_received_at = $1 WHERE validator_id = $2")
                     .bind(&now).bind(validator_id).execute(&mut **tx).await?;
             }
             Ok(AppliedDetail {
@@ -3598,7 +3589,7 @@ async fn apply_ranking_result(
                 // change for the ranking alert. The displayed rank already
                 // adopted it on the first observation.
                 let previous = baseline.unwrap_or(rank);
-                sqlx::query("INSERT OR IGNORE INTO validator_ranking_history (history_id, validator_id, previous_rank, current_rank, observed_at, provider_timestamp, observation_key, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                sqlx::query("INSERT INTO validator_ranking_history (history_id, validator_id, previous_rank, current_rank, observed_at, provider_timestamp, observation_key, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT DO NOTHING")
                     .bind(uuid::Uuid::new_v4().to_string())
                     .bind(validator_id)
                     .bind(previous)
@@ -3638,7 +3629,7 @@ async fn apply_ranking_result(
                 || existing.rank_outcome.as_deref() != Some("success")
                 || existing.rank_cohort_size != Some(cohort_size)
                 || confirmed_ranking_change;
-            sqlx::query("UPDATE current_validator_insights SET rank = ?, rank_outcome = 'success', rank_diagnostic = NULL, rank_last_attempt_received_at = ?, rank_last_good_received_at = ?, rank_cohort_size = ?, change_state = ?, candidate_previous_rank = ?, candidate_rank = ?, candidate_observations = ?, candidate_observed_at = ?, candidate_provider_timestamp = ?, candidate_observation_key = ?, updated_at = ? WHERE validator_id = ?")
+            sqlx::query("UPDATE current_validator_insights SET rank = $1, rank_outcome = 'success', rank_diagnostic = NULL, rank_last_attempt_received_at = $2, rank_last_good_received_at = $3, rank_cohort_size = $4, change_state = $5, candidate_previous_rank = $6, candidate_rank = $7, candidate_observations = $8, candidate_observed_at = $9, candidate_provider_timestamp = $10, candidate_observation_key = $11, updated_at = $12 WHERE validator_id = $13")
                 .bind(stored_rank)
                 .bind(&now)
                 .bind(&now)
@@ -3664,7 +3655,7 @@ async fn apply_ranking_result(
                 || existing.rank_outcome.as_deref() != Some("success")
                 || existing.rank_cohort_size != Some(cohort_size)
                 || existing.change_state != "normal";
-            sqlx::query("UPDATE current_validator_insights SET rank = NULL, rank_outcome = 'success', rank_diagnostic = NULL, rank_last_attempt_received_at = ?, rank_last_good_received_at = ?, rank_cohort_size = ?, change_state = 'normal', candidate_previous_rank = NULL, candidate_rank = NULL, candidate_observations = 0, candidate_observed_at = NULL, candidate_provider_timestamp = NULL, candidate_observation_key = NULL, updated_at = ? WHERE validator_id = ?")
+            sqlx::query("UPDATE current_validator_insights SET rank = NULL, rank_outcome = 'success', rank_diagnostic = NULL, rank_last_attempt_received_at = $1, rank_last_good_received_at = $2, rank_cohort_size = $3, change_state = 'normal', candidate_previous_rank = NULL, candidate_rank = NULL, candidate_observations = 0, candidate_observed_at = NULL, candidate_provider_timestamp = NULL, candidate_observation_key = NULL, updated_at = $4 WHERE validator_id = $5")
                 .bind(&now)
                 .bind(&now)
                 .bind(cohort_size)
@@ -3693,7 +3684,7 @@ async fn apply_ranking_result(
             let invalidated = existing.rank_outcome.as_deref() != Some(name)
                 || existing.rank_diagnostic != diagnostic
                 || existing.change_state != "normal";
-            sqlx::query("UPDATE current_validator_insights SET rank_outcome = ?, rank_diagnostic = ?, rank_last_attempt_received_at = ?, change_state = 'normal', candidate_previous_rank = NULL, candidate_rank = NULL, candidate_observations = 0, candidate_observed_at = NULL, candidate_provider_timestamp = NULL, candidate_observation_key = NULL, updated_at = ? WHERE validator_id = ?")
+            sqlx::query("UPDATE current_validator_insights SET rank_outcome = $1, rank_diagnostic = $2, rank_last_attempt_received_at = $3, change_state = 'normal', candidate_previous_rank = NULL, candidate_rank = NULL, candidate_observations = 0, candidate_observed_at = NULL, candidate_provider_timestamp = NULL, candidate_observation_key = NULL, updated_at = $4 WHERE validator_id = $5")
                 .bind(name)
                 .bind(diagnostic)
                 .bind(&now)

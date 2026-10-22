@@ -170,7 +170,7 @@ async fn create_snapshot(
 
     crate::file_security::validate_file(final_path).map_err(std::io::Error::other)?;
     let inserted = sqlx::query(
-        "INSERT INTO backup_artifacts (artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, data_range_min, data_range_max, verification, create_operation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+        "INSERT INTO backup_artifacts (artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, data_range_min, data_range_max, verification, create_operation_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10)",
     )
     .bind(artifact_id)
     .bind(filename)
@@ -307,12 +307,15 @@ async fn process_snapshot_text_columns(
             }
             let quoted_column = quote_identifier(&name);
             // Keyset pagination over rowid plus a byte-budgeted row limit
-            // keeps the working set bounded regardless of table size.
+            // keeps the working set bounded regardless of table size. The
+            // rowid scan stays: this sanitizer walks every table of an
+            // offline SQLite snapshot, a SQLite-only operations path that the
+            // PostgreSQL Storage Backend refuses (ADR 0013).
             let select = format!(
                 "SELECT rowid AS __rowid, {quoted_column} FROM {quoted_table} \
-                 WHERE typeof({quoted_column})='text' AND rowid > ? ORDER BY rowid LIMIT ?"
+                 WHERE typeof({quoted_column})='text' AND rowid > $1 ORDER BY rowid LIMIT $2"
             );
-            let update = format!("UPDATE {quoted_table} SET {quoted_column}=? WHERE rowid=?");
+            let update = format!("UPDATE {quoted_table} SET {quoted_column}=$1 WHERE rowid=$2");
             let mut after: i64 = 0;
             let mut limit = SNAPSHOT_SCAN_MIN_ROWS;
             loop {
@@ -373,7 +376,7 @@ async fn process_snapshot_receipts(pool: &SqlitePool, sanitize: bool) -> Result<
     loop {
         let rows = sqlx::query(
             "SELECT rowid AS __rowid, receipt_body FROM agent_report_receipts \
-             WHERE rowid > ? ORDER BY rowid LIMIT ?",
+             WHERE rowid > $1 ORDER BY rowid LIMIT $2",
         )
         .bind(after)
         .bind(limit)
@@ -397,7 +400,7 @@ async fn process_snapshot_receipts(pool: &SqlitePool, sanitize: bool) -> Result<
                     "snapshot contains an unredacted receipt".to_owned(),
                 ));
             }
-            sqlx::query("UPDATE agent_report_receipts SET receipt_body=? WHERE rowid=?")
+            sqlx::query("UPDATE agent_report_receipts SET receipt_body=$1 WHERE rowid=$2")
                 .bind(redacted.into_bytes())
                 .bind(row_id)
                 .execute(pool)
@@ -593,7 +596,7 @@ pub async fn verify(state: &AppState, operation_id: &str) -> Result<(), BackupEr
     // `data_range_min` is nullable (an empty chain has no range); decode only
     // the columns this path needs so a NULL never masquerades as a decode error.
     let artifact: Option<(String, String, i64)> = sqlx::query_as(
-        "SELECT filename, sha256, schema_version FROM backup_artifacts WHERE artifact_id = ?",
+        "SELECT filename, sha256, schema_version FROM backup_artifacts WHERE artifact_id = $1",
     )
     .bind(&artifact_id)
     .fetch_optional(pool)
@@ -665,7 +668,7 @@ pub async fn verify(state: &AppState, operation_id: &str) -> Result<(), BackupEr
     };
 
     sqlx::query(
-        "UPDATE backup_artifacts SET verification = ?, verified_at = ?, verification_error = ?, verify_operation_id = ? WHERE artifact_id = ?",
+        "UPDATE backup_artifacts SET verification = $1, verified_at = $2, verification_error = $3, verify_operation_id = $4 WHERE artifact_id = $5",
     )
     .bind(verification)
     .bind(&verified_at)

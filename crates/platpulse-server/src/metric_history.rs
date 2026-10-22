@@ -204,8 +204,12 @@ impl HistorySchema {
     /// order for both scopes, and a dimensioned series cannot be reached through
     /// a statement that forgot its dimension: the predicate is part of the
     /// template, not something each caller has to remember.
+    ///
+    /// Because the dimension fragments add a bind in the middle of a statement,
+    /// templates spell their placeholders as `?` and the rendered statement is
+    /// numbered here (`$1`, `$2`, ...) once the fragments are in place.
     pub fn sql(&self, template: &str) -> String {
-        template
+        let rendered = template
             .replace("{raw}", self.raw_table)
             .replace("{agg}", self.aggregate_table)
             .replace("{ledger}", self.ledger_table)
@@ -226,7 +230,8 @@ impl HistorySchema {
                 } else {
                     ""
                 },
-            )
+            );
+        crate::database::number_placeholders(&rendered)
     }
 }
 
@@ -1370,7 +1375,7 @@ pub async fn record_delivery(
     let is_correction = delivery == Delivery::Correction;
     let is_replay = delivery == Delivery::Replay;
     let sql = scope.sql(
-        "INSERT INTO {ledger} ({scope}, metric{dim_column}, first_observed_at, last_observed_at, last_received_at, observation_count, replayed_count, corrected_count, updated_at) VALUES (?, ?{dim_bind}, ?, ?, ?, 1, 0, 0, ?) ON CONFLICT({scope}, metric{dim_column}) DO UPDATE SET first_observed_at = MIN({ledger}.first_observed_at, excluded.first_observed_at), last_received_at = CASE WHEN excluded.last_observed_at >= {ledger}.last_observed_at THEN excluded.last_received_at ELSE {ledger}.last_received_at END, last_observed_at = MAX({ledger}.last_observed_at, excluded.last_observed_at), observation_count = {ledger}.observation_count + ?, replayed_count = {ledger}.replayed_count + ?, corrected_count = {ledger}.corrected_count + ?, updated_at = excluded.updated_at",
+        "INSERT INTO {ledger} ({scope}, metric{dim_column}, first_observed_at, last_observed_at, last_received_at, observation_count, replayed_count, corrected_count, updated_at) VALUES (?, ?{dim_bind}, ?, ?, ?, 1, 0, 0, ?) ON CONFLICT({scope}, metric{dim_column}) DO UPDATE SET first_observed_at = CASE WHEN {ledger}.first_observed_at <= excluded.first_observed_at THEN {ledger}.first_observed_at ELSE excluded.first_observed_at END, last_received_at = CASE WHEN excluded.last_observed_at >= {ledger}.last_observed_at THEN excluded.last_received_at ELSE {ledger}.last_received_at END, last_observed_at = CASE WHEN {ledger}.last_observed_at >= excluded.last_observed_at THEN {ledger}.last_observed_at ELSE excluded.last_observed_at END, observation_count = {ledger}.observation_count + ?, replayed_count = {ledger}.replayed_count + ?, corrected_count = {ledger}.corrected_count + ?, updated_at = excluded.updated_at",
     );
     scope
         .bind_series(sqlx::query(&sql))
@@ -1450,7 +1455,7 @@ pub async fn stamp_evidence_floor(
     floor: &str,
 ) -> Result<(), sqlx::Error> {
     let sql = scope.sql(
-        "UPDATE {ledger} SET released_before = MAX(released_before, ?) WHERE {scope} = ? AND metric = ?{dim_predicate} AND released_before < ?",
+        "UPDATE {ledger} SET released_before = ? WHERE {scope} = ? AND metric = ?{dim_predicate} AND released_before < ?",
     );
     scope
         .bind_series(sqlx::query(&sql).bind(floor))
@@ -1464,12 +1469,12 @@ pub async fn stamp_evidence_floor(
 /// one counted observation.
 ///
 /// Held as a constant so the ingestion path and the tests beside it run the
-/// same statement. The extremes are folded with SQLite's MIN/MAX over the
+/// same statement. The extremes are folded with `CASE` comparisons over the
 /// canonical instants and values, the newest reading follows the newest
 /// *observation* rather than the newest delivery, and the row's update instant
 /// moves on every accepted observation so a bucket that changed only in count
 /// is still visibly current.
-const AGGREGATE_UPSERT_SQL: &str = "INSERT INTO {agg} ({scope}, metric{dim_column}, grain_seconds, bucket_start, sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at, last_received_at, max_gap_seconds, updated_at) VALUES (?, ?{dim_bind}, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ({scope}, metric{dim_column}, grain_seconds, bucket_start) DO UPDATE SET sample_count = {agg}.sample_count + 1, min_value = MIN({agg}.min_value, excluded.min_value), max_value = MAX({agg}.max_value, excluded.max_value), last_value = CASE WHEN excluded.last_observed_at >= {agg}.last_observed_at THEN excluded.last_value ELSE {agg}.last_value END, first_observed_at = MIN({agg}.first_observed_at, excluded.first_observed_at), last_observed_at = MAX({agg}.last_observed_at, excluded.last_observed_at), last_received_at = CASE WHEN excluded.last_observed_at >= {agg}.last_observed_at THEN excluded.last_received_at ELSE {agg}.last_received_at END, max_gap_seconds = MAX({agg}.max_gap_seconds, excluded.max_gap_seconds), updated_at = excluded.updated_at";
+const AGGREGATE_UPSERT_SQL: &str = "INSERT INTO {agg} ({scope}, metric{dim_column}, grain_seconds, bucket_start, sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at, last_received_at, max_gap_seconds, updated_at) VALUES (?, ?{dim_bind}, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ({scope}, metric{dim_column}, grain_seconds, bucket_start) DO UPDATE SET sample_count = {agg}.sample_count + 1, min_value = CASE WHEN {agg}.min_value <= excluded.min_value THEN {agg}.min_value ELSE excluded.min_value END, max_value = CASE WHEN {agg}.max_value >= excluded.max_value THEN {agg}.max_value ELSE excluded.max_value END, last_value = CASE WHEN excluded.last_observed_at >= {agg}.last_observed_at THEN excluded.last_value ELSE {agg}.last_value END, first_observed_at = CASE WHEN {agg}.first_observed_at <= excluded.first_observed_at THEN {agg}.first_observed_at ELSE excluded.first_observed_at END, last_observed_at = CASE WHEN {agg}.last_observed_at >= excluded.last_observed_at THEN {agg}.last_observed_at ELSE excluded.last_observed_at END, last_received_at = CASE WHEN excluded.last_observed_at >= {agg}.last_observed_at THEN excluded.last_received_at ELSE {agg}.last_received_at END, max_gap_seconds = CASE WHEN {agg}.max_gap_seconds >= excluded.max_gap_seconds THEN {agg}.max_gap_seconds ELSE excluded.max_gap_seconds END, updated_at = excluded.updated_at";
 
 /// What a bucket already knows about its own continuity.
 const BUCKET_GAP_STATE_SQL: &str = "SELECT first_observed_at, last_observed_at, max_gap_seconds FROM {agg} WHERE {scope} = ? AND metric = ?{dim_predicate} AND grain_seconds = ? AND bucket_start = ?";
@@ -1609,7 +1614,7 @@ const BUCKET_REPLACE_SQL: &str = "UPDATE {agg} SET min_value = ?, max_value = ?,
 ///
 /// Its `SET` clause also precedes the `WHERE` one, so the caller binds those
 /// nine values before the series identity (see `SeriesScope::bind_series`).
-const BUCKET_CARRY_SQL: &str = "UPDATE {agg} SET min_value = MIN({agg}.min_value, ?), max_value = MAX({agg}.max_value, ?), last_value = CASE WHEN {agg}.last_observed_at <= ? THEN ? ELSE {agg}.last_value END, last_observed_at = CASE WHEN {agg}.last_observed_at <= ? THEN ? ELSE {agg}.last_observed_at END, last_received_at = CASE WHEN {agg}.last_observed_at <= ? THEN ? ELSE {agg}.last_received_at END, updated_at = ? WHERE {scope} = ? AND metric = ?{dim_predicate} AND grain_seconds = ? AND bucket_start = ?";
+const BUCKET_CARRY_SQL: &str = "UPDATE {agg} SET min_value = CASE WHEN {agg}.min_value <= ? THEN {agg}.min_value ELSE ? END, max_value = CASE WHEN {agg}.max_value >= ? THEN {agg}.max_value ELSE ? END, last_value = CASE WHEN {agg}.last_observed_at <= ? THEN ? ELSE {agg}.last_value END, last_observed_at = CASE WHEN {agg}.last_observed_at <= ? THEN ? ELSE {agg}.last_observed_at END, last_received_at = CASE WHEN {agg}.last_observed_at <= ? THEN ? ELSE {agg}.last_received_at END, updated_at = ? WHERE {scope} = ? AND metric = ?{dim_predicate} AND grain_seconds = ? AND bucket_start = ?";
 
 /// Re-derive the buckets that counted a corrected observation.
 ///
@@ -1718,6 +1723,8 @@ pub async fn recompute_aggregates(
             scope
                 .bind_series(
                     sqlx::query(&carry_sql)
+                        .bind(value)
+                        .bind(value)
                         .bind(value)
                         .bind(value)
                         .bind(observed_at)
@@ -2523,7 +2530,7 @@ async fn load_ledger(
 /// scan here would make the range route cost grow with every Node that has ever
 /// recorded a protection loss (migration 0066, issue #213). Held as a constant
 /// so the plan test beside it asserts the statement the route really runs.
-const PAUSE_LOOKUP_SQL: &str = "SELECT first_skipped_at, last_skipped_at, skipped_count FROM capacity_skipped_series WHERE scope_kind = ? AND scope_key = ? AND metric = ? AND dimension = ? AND last_skipped_at >= ? AND first_skipped_at <= ? ORDER BY first_skipped_at";
+const PAUSE_LOOKUP_SQL: &str = "SELECT first_skipped_at, last_skipped_at, skipped_count FROM capacity_skipped_series WHERE scope_kind = $1 AND scope_key = $2 AND metric = $3 AND dimension = $4 AND last_skipped_at >= $5 AND first_skipped_at <= $6 ORDER BY first_skipped_at";
 
 /// Protection losses recorded for one series inside the window.
 ///
@@ -2642,7 +2649,7 @@ pub struct HostSeriesCoverage {
 /// Migration 0069's `host_metric_series_state_mount_idx` is what makes that order
 /// and that limit an index walk instead of a sort of every mount path the Agent
 /// has ever reported.
-const HOST_COVERAGE_SQL: &str = "SELECT l.dimension, l.first_observed_at, l.last_observed_at, l.last_received_at, l.observation_count, l.replayed_count, l.corrected_count, l.released_before, s.value, s.received_at FROM host_metric_series_state l LEFT JOIN host_metric_samples s ON s.agent_id = l.agent_id AND s.metric = l.metric AND s.dimension = l.dimension AND s.observed_at = l.last_observed_at WHERE l.agent_id = ? AND l.metric = ? ORDER BY l.last_observed_at DESC, l.dimension ASC LIMIT ?";
+const HOST_COVERAGE_SQL: &str = "SELECT l.dimension, l.first_observed_at, l.last_observed_at, l.last_received_at, l.observation_count, l.replayed_count, l.corrected_count, l.released_before, s.value, s.received_at FROM host_metric_series_state l LEFT JOIN host_metric_samples s ON s.agent_id = l.agent_id AND s.metric = l.metric AND s.dimension = l.dimension AND s.observed_at = l.last_observed_at WHERE l.agent_id = $1 AND l.metric = $2 ORDER BY l.last_observed_at DESC, l.dimension ASC LIMIT $3";
 
 /// One Agent's mount paths for one storage series, newest first.
 ///

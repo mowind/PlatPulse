@@ -294,7 +294,7 @@ pub(crate) async fn notification_events(
     }
     let limit = parse_page(params.limit);
     let rows = sqlx::query_as::<_, EventRow>(
-        "SELECT event_id, event_kind, incident_id, rule_key, subject_kind, subject_key, severity, summary, created_at FROM notification_events WHERE (?1 IS NULL OR event_kind = ?1) AND (?2 IS NULL OR ?2 = '' OR (created_at, event_id) < (SELECT created_at, event_id FROM notification_events WHERE event_id = ?2)) ORDER BY created_at DESC, event_id DESC LIMIT ?3",
+        "SELECT event_id, event_kind, incident_id, rule_key, subject_kind, subject_key, severity, summary, created_at FROM notification_events WHERE ($1 IS NULL OR event_kind = $1) AND ($2 IS NULL OR $2 = '' OR (created_at, event_id) < (SELECT created_at, event_id FROM notification_events WHERE event_id = $2)) ORDER BY created_at DESC, event_id DESC LIMIT $3",
     )
     .bind(params.event_kind.as_deref())
     .bind(params.before.as_deref())
@@ -321,6 +321,7 @@ pub(crate) async fn notification_events(
         let query = format!(
             "SELECT delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at FROM notification_deliveries WHERE event_id IN ({placeholders}) ORDER BY created_at"
         );
+        let query = crate::database::number_placeholders(&query);
         let mut builder = sqlx::query_as::<_, DeliveryRow>(&query);
         for event_id in &event_ids {
             builder = builder.bind(event_id);
@@ -467,7 +468,7 @@ pub(crate) async fn notification_deliveries(
     }
     let limit = parse_page(params.limit);
     let rows = sqlx::query_as::<_, DeliveryRow>(
-        "SELECT delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at FROM notification_deliveries WHERE (?1 IS NULL OR state = ?1) AND (?2 IS NULL OR channel_kind = ?2) AND (?3 IS NULL OR ?3 = '' OR (created_at, delivery_id) < (SELECT created_at, delivery_id FROM notification_deliveries WHERE delivery_id = ?3)) ORDER BY created_at DESC, delivery_id DESC LIMIT ?4",
+        "SELECT delivery_id, event_id, channel_kind, destination, state, attempt_count, next_attempt_at, last_attempt_at, last_result, last_error_kind, retry_after_seconds, created_at, updated_at FROM notification_deliveries WHERE ($1 IS NULL OR state = $1) AND ($2 IS NULL OR channel_kind = $2) AND ($3 IS NULL OR $3 = '' OR (created_at, delivery_id) < (SELECT created_at, delivery_id FROM notification_deliveries WHERE delivery_id = $3)) ORDER BY created_at DESC, delivery_id DESC LIMIT $4",
     )
     .bind(params.state.as_deref())
     .bind(params.channel.as_deref())
@@ -693,7 +694,7 @@ pub(crate) async fn retry_delivery(
                 .into_response();
         }
     };
-    if crate::auth::insert_audit_event(
+    let audit_event_id = match crate::auth::insert_audit_event(
         &mut *tx,
         Some(&principal.0.user_id),
         "notification_delivery_retried",
@@ -706,16 +707,8 @@ pub(crate) async fn retry_delivery(
         })),
     )
     .await
-    .is_err()
     {
-        let _ = tx.rollback().await;
-        return unavailable_error(&request_id.0);
-    }
-    let audit_event_id: i64 = match sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(value) => value,
+        Ok(id) => id,
         Err(_) => {
             let _ = tx.rollback().await;
             return unavailable_error(&request_id.0);

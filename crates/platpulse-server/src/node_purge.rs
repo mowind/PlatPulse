@@ -188,7 +188,7 @@ pub async fn measure(
     node_id: &str,
 ) -> Result<Option<NodePurgeImpact>, sqlx::Error> {
     let target = sqlx::query_as::<_, (String, String, String, Option<String>, String, String, i64, String, String, String)>(
-        "SELECT n.node_id, n.agent_id, n.network_key, n.display_name, n.lifecycle, n.visibility, n.inventory_revision, n.rpc_endpoint, n.first_seen_at, n.updated_at FROM nodes n WHERE n.node_id = ?",
+        "SELECT n.node_id, n.agent_id, n.network_key, n.display_name, n.lifecycle, n.visibility, n.inventory_revision, n.rpc_endpoint, n.first_seen_at, n.updated_at FROM nodes n WHERE n.node_id = $1",
     )
     .bind(node_id)
     .fetch_optional(&mut *connection)
@@ -209,7 +209,7 @@ pub async fn measure(
         return Ok(None);
     };
     let network_display_name =
-        sqlx::query_scalar::<_, String>("SELECT display_name FROM networks WHERE network_key = ?")
+        sqlx::query_scalar::<_, String>("SELECT display_name FROM networks WHERE network_key = $1")
             .bind(&network_key)
             .fetch_optional(&mut *connection)
             .await?
@@ -286,14 +286,14 @@ pub async fn measure(
 
 /// Node-owned rows in `capacity_skipped_series`: that evidence table keys a
 /// Node by `scope_kind`/`scope_key` instead of a `node_id` column (issue #212).
-const NODE_SCOPED_ROWS: &str = "scope_kind = 'node' AND scope_key = ?";
+const NODE_SCOPED_ROWS: &str = "scope_kind = 'node' AND scope_key = $1";
 
 async fn count(
     connection: &mut SqliteConnection,
     table: &'static str,
     node_id: &str,
 ) -> Result<i64, sqlx::Error> {
-    count_where(connection, table, "node_id = ?", node_id).await
+    count_where(connection, table, "node_id = $1", node_id).await
 }
 
 async fn delete(
@@ -301,7 +301,7 @@ async fn delete(
     table: &'static str,
     node_id: &str,
 ) -> Result<(), sqlx::Error> {
-    delete_where(connection, table, "node_id = ?", node_id).await
+    delete_where(connection, table, "node_id = $1", node_id).await
 }
 
 async fn count_where(
@@ -404,7 +404,7 @@ pub async fn remove(connection: &mut SqliteConnection, node_id: &str) -> Result<
         node_id,
     )
     .await?;
-    sqlx::query("DELETE FROM nodes WHERE node_id = ?")
+    sqlx::query("DELETE FROM nodes WHERE node_id = $1")
         .bind(node_id)
         .execute(connection)
         .await?;
@@ -422,7 +422,7 @@ pub async fn record_deletion_identity(
     deleted_at: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO deleted_nodes (node_id, agent_id, network_key, display_name, deleted_by_user_id, deleted_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO deleted_nodes (node_id, agent_id, network_key, display_name, deleted_by_user_id, deleted_at) VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(&target.node_id)
     .bind(&target.agent_id)
@@ -468,7 +468,7 @@ pub async fn is_purged(
     node_id: &str,
 ) -> Result<bool, sqlx::Error> {
     Ok(
-        sqlx::query_scalar::<_, String>("SELECT node_id FROM deleted_nodes WHERE node_id = ?")
+        sqlx::query_scalar::<_, String>("SELECT node_id FROM deleted_nodes WHERE node_id = $1")
             .bind(node_id)
             .fetch_optional(connection)
             .await?

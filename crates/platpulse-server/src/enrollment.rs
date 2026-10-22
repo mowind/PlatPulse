@@ -207,7 +207,7 @@ pub async fn create_enrollment_token(
 
     let mut transaction = db.pool().begin().await?;
     sqlx::query(
-        "INSERT INTO enrollment_tokens (token_id, token_digest, created_at, expires_at, consumed_at, consumed_agent_id, revoked_at) VALUES (?, ?, ?, ?, NULL, NULL, NULL)",
+        "INSERT INTO enrollment_tokens (token_id, token_digest, created_at, expires_at, consumed_at, consumed_agent_id, revoked_at) VALUES ($1, $2, $3, $4, NULL, NULL, NULL)",
     )
     .bind(&token_id)
     .bind(digest.to_vec())
@@ -306,7 +306,7 @@ pub async fn create_recovery_token(
     // the identity and refuses a fresh credential, so an outstanding or newly
     // requested Recovery Token must not resurrect it (design §15.2, #171).
     let agent_live = sqlx::query_scalar::<_, String>(
-        "SELECT agent_id FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+        "SELECT agent_id FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
     )
     .bind(agent_id)
     .fetch_optional(&mut *transaction)
@@ -316,7 +316,7 @@ pub async fn create_recovery_token(
         return Err(RecoveryError::AgentNotFound);
     }
     sqlx::query(
-        "INSERT INTO recovery_tokens (token_id, token_digest, agent_id, created_at, expires_at, consumed_at, revoked_at) VALUES (?, ?, ?, ?, ?, NULL, NULL)",
+        "INSERT INTO recovery_tokens (token_id, token_digest, agent_id, created_at, expires_at, consumed_at, revoked_at) VALUES ($1, $2, $3, $4, $5, NULL, NULL)",
     )
     .bind(&token_id)
     .bind(digest.to_vec())
@@ -369,7 +369,7 @@ pub async fn recover(
 
     let mut transaction = db.pool().begin().await?;
     let row: Option<RecoveryRow> = sqlx::query_as(
-        "SELECT token_digest, agent_id, expires_at, consumed_at, revoked_at FROM recovery_tokens WHERE token_id = ?",
+        "SELECT token_digest, agent_id, expires_at, consumed_at, revoked_at FROM recovery_tokens WHERE token_id = $1",
     )
     .bind(token_id)
     .fetch_optional(&mut *transaction)
@@ -397,7 +397,7 @@ pub async fn recover(
     }
 
     let epoch: Option<i64> = sqlx::query_scalar(
-        "SELECT agent_epoch FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+        "SELECT agent_epoch FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
     )
     .bind(&row.agent_id)
     .fetch_optional(&mut *transaction)
@@ -407,7 +407,7 @@ pub async fn recover(
     };
     let new_epoch = epoch + 1;
     let now_text = format_rfc3339(now);
-    sqlx::query("UPDATE agents SET agent_epoch = ?, updated_at = ? WHERE agent_id = ?")
+    sqlx::query("UPDATE agents SET agent_epoch = $1, updated_at = $2 WHERE agent_id = $3")
         .bind(new_epoch)
         .bind(&now_text)
         .bind(&row.agent_id)
@@ -417,7 +417,7 @@ pub async fn recover(
     // Recovery means the credential was lost or compromised: every still
     // valid credential is revoked and one fresh credential is issued.
     let revoked = sqlx::query(
-        "UPDATE agent_credentials SET revoked_at = ? WHERE agent_id = ? AND revoked_at IS NULL",
+        "UPDATE agent_credentials SET revoked_at = $1 WHERE agent_id = $2 AND revoked_at IS NULL",
     )
     .bind(&now_text)
     .bind(&row.agent_id)
@@ -428,7 +428,7 @@ pub async fn recover(
     let (credential_id, credential) = new_agent_credential();
     let credential_digest = pepper.hmac_digest(credential.as_bytes());
     sqlx::query(
-        "INSERT INTO agent_credentials (credential_id, agent_id, credential_digest, created_at, revoked_at, revoke_after) VALUES (?, ?, ?, ?, NULL, NULL)",
+        "INSERT INTO agent_credentials (credential_id, agent_id, credential_digest, created_at, revoked_at, revoke_after) VALUES ($1, $2, $3, $4, NULL, NULL)",
     )
     .bind(&credential_id)
     .bind(&row.agent_id)
@@ -438,7 +438,7 @@ pub async fn recover(
     .await?;
 
     let consumed = sqlx::query(
-        "UPDATE recovery_tokens SET consumed_at = ? WHERE token_id = ? AND consumed_at IS NULL",
+        "UPDATE recovery_tokens SET consumed_at = $1 WHERE token_id = $2 AND consumed_at IS NULL",
     )
     .bind(&now_text)
     .bind(token_id)
@@ -497,7 +497,7 @@ pub async fn enroll(
 
     let mut transaction = db.pool().begin().await?;
     let row: Option<EnrollmentRow> = sqlx::query_as(
-        "SELECT token_digest, expires_at, consumed_at, revoked_at FROM enrollment_tokens WHERE token_id = ?",
+        "SELECT token_digest, expires_at, consumed_at, revoked_at FROM enrollment_tokens WHERE token_id = $1",
     )
     .bind(token_id)
     .fetch_optional(&mut *transaction)
@@ -533,7 +533,7 @@ pub async fn enroll(
     let agent_epoch: i64 = 1;
     let now_text = format_rfc3339(now);
     sqlx::query(
-        "INSERT INTO agents (agent_id, agent_epoch, active_boot_id, last_report_sequence, last_received_at, created_at, updated_at) VALUES (?, ?, NULL, NULL, NULL, ?, ?)",
+        "INSERT INTO agents (agent_id, agent_epoch, active_boot_id, last_report_sequence, last_received_at, created_at, updated_at) VALUES ($1, $2, NULL, NULL, NULL, $3, $4)",
     )
     .bind(&agent_id)
     .bind(agent_epoch)
@@ -545,7 +545,7 @@ pub async fn enroll(
     let (credential_id, credential) = new_agent_credential();
     let credential_digest = pepper.hmac_digest(credential.as_bytes());
     sqlx::query(
-        "INSERT INTO agent_credentials (credential_id, agent_id, credential_digest, created_at, revoked_at) VALUES (?, ?, ?, ?, NULL)",
+        "INSERT INTO agent_credentials (credential_id, agent_id, credential_digest, created_at, revoked_at) VALUES ($1, $2, $3, $4, NULL)",
     )
     .bind(&credential_id)
     .bind(&agent_id)
@@ -555,7 +555,7 @@ pub async fn enroll(
     .await?;
 
     let consumed = sqlx::query(
-        "UPDATE enrollment_tokens SET consumed_at = ?, consumed_agent_id = ? WHERE token_id = ? AND consumed_at IS NULL",
+        "UPDATE enrollment_tokens SET consumed_at = $1, consumed_agent_id = $2 WHERE token_id = $3 AND consumed_at IS NULL",
     )
     .bind(&now_text)
     .bind(&agent_id)
@@ -616,7 +616,7 @@ pub async fn authenticate_agent_credential(
     let Some(row) = sqlx::query_as::<_, CredentialRow>(
         "SELECT c.credential_digest, c.revoked_at, c.revoke_after, a.agent_id
          FROM agent_credentials c JOIN agents a ON a.agent_id = c.agent_id
-         WHERE c.credential_id = ? AND a.deleted_at IS NULL",
+         WHERE c.credential_id = $1 AND a.deleted_at IS NULL",
     )
     .bind(credential_id)
     .fetch_optional(db.pool())
@@ -706,7 +706,7 @@ pub async fn rotate_agent_credential(
     // A removed Agent is not rotatable: rotation must not mint a fresh
     // credential on an identity the Owner permanently deleted (#171).
     let agent_live = sqlx::query_scalar::<_, String>(
-        "SELECT agent_id FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+        "SELECT agent_id FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
     )
     .bind(agent_id)
     .fetch_optional(&mut *transaction)
@@ -718,8 +718,8 @@ pub async fn rotate_agent_credential(
 
     let valid: Vec<String> = sqlx::query_scalar(
         "SELECT credential_id FROM agent_credentials
-         WHERE agent_id = ? AND revoked_at IS NULL
-           AND (revoke_after IS NULL OR revoke_after > ?)
+         WHERE agent_id = $1 AND revoked_at IS NULL
+           AND (revoke_after IS NULL OR revoke_after > $2)
          ORDER BY created_at, credential_id",
     )
     .bind(agent_id)
@@ -734,7 +734,7 @@ pub async fn rotate_agent_credential(
     if revoke_previous {
         for credential_id in &valid {
             sqlx::query(
-                "UPDATE agent_credentials SET revoked_at = ? WHERE credential_id = ? AND revoked_at IS NULL",
+                "UPDATE agent_credentials SET revoked_at = $1 WHERE credential_id = $2 AND revoked_at IS NULL",
             )
             .bind(&now_text)
             .bind(credential_id)
@@ -745,7 +745,7 @@ pub async fn rotate_agent_credential(
     } else {
         for credential_id in &valid {
             sqlx::query(
-                "UPDATE agent_credentials SET revoke_after = ? WHERE credential_id = ? AND revoked_at IS NULL",
+                "UPDATE agent_credentials SET revoke_after = $1 WHERE credential_id = $2 AND revoked_at IS NULL",
             )
             .bind(&overlap_deadline)
             .bind(credential_id)
@@ -758,7 +758,7 @@ pub async fn rotate_agent_credential(
     let (credential_id, credential) = new_agent_credential();
     let credential_digest = pepper.hmac_digest(credential.as_bytes());
     sqlx::query(
-        "INSERT INTO agent_credentials (credential_id, agent_id, credential_digest, created_at, revoked_at, revoke_after) VALUES (?, ?, ?, ?, NULL, NULL)",
+        "INSERT INTO agent_credentials (credential_id, agent_id, credential_digest, created_at, revoked_at, revoke_after) VALUES ($1, $2, $3, $4, NULL, NULL)",
     )
     .bind(&credential_id)
     .bind(agent_id)
@@ -842,16 +842,17 @@ pub async fn revoke_agent_credential(
     let mut transaction = db.pool().begin().await?;
     // A removed Agent is not addressable; revocation is refused as not-found
     // so the missing identity is indistinguishable from any other unknown one.
-    let agent_live: Option<String> =
-        sqlx::query_scalar("SELECT agent_id FROM agents WHERE agent_id = ? AND deleted_at IS NULL")
-            .bind(agent_id)
-            .fetch_optional(&mut *transaction)
-            .await?;
+    let agent_live: Option<String> = sqlx::query_scalar(
+        "SELECT agent_id FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(agent_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
     if agent_live.is_none() {
         return Err(RevokeError::NotFound);
     }
     let updated = sqlx::query(
-        "UPDATE agent_credentials SET revoked_at = ? WHERE credential_id = ? AND agent_id = ? AND revoked_at IS NULL",
+        "UPDATE agent_credentials SET revoked_at = $1 WHERE credential_id = $2 AND agent_id = $3 AND revoked_at IS NULL",
     )
     .bind(&now_text)
     .bind(credential_id)
@@ -860,7 +861,7 @@ pub async fn revoke_agent_credential(
     .await?;
     if updated.rows_affected() == 0 {
         let exists: Option<String> = sqlx::query_scalar(
-            "SELECT credential_id FROM agent_credentials WHERE credential_id = ? AND agent_id = ?",
+            "SELECT credential_id FROM agent_credentials WHERE credential_id = $1 AND agent_id = $2",
         )
         .bind(credential_id)
         .bind(agent_id)
@@ -1012,7 +1013,7 @@ pub async fn update_agent_metadata(
 
     let mut transaction = db.pool().begin().await?;
     let existing = sqlx::query_as::<_, (Option<String>, Option<String>)>(
-        "SELECT display_name, notes FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+        "SELECT display_name, notes FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
     )
     .bind(agent_id)
     .fetch_optional(&mut *transaction)
@@ -1026,13 +1027,15 @@ pub async fn update_agent_metadata(
     }
 
     let changed_at = format_rfc3339(now_utc());
-    sqlx::query("UPDATE agents SET display_name = ?, notes = ?, updated_at = ? WHERE agent_id = ?")
-        .bind(next.display_name.as_deref())
-        .bind(next.notes.as_deref())
-        .bind(&changed_at)
-        .bind(agent_id)
-        .execute(&mut *transaction)
-        .await?;
+    sqlx::query(
+        "UPDATE agents SET display_name = $1, notes = $2, updated_at = $3 WHERE agent_id = $4",
+    )
+    .bind(next.display_name.as_deref())
+    .bind(next.notes.as_deref())
+    .bind(&changed_at)
+    .bind(agent_id)
+    .execute(&mut *transaction)
+    .await?;
 
     let before = serde_json::json!({
         "display_name": previous_display_name,

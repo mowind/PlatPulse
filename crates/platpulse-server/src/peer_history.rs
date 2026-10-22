@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use sqlx::{FromRow, QueryBuilder, Sqlite, SqlitePool, Transaction};
+use sqlx::{FromRow, Sqlite, SqlitePool, Transaction};
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 
@@ -122,10 +122,10 @@ impl AggregateFamily {
     fn select_sql(self) -> &'static str {
         match self {
             Self::FiveMinute => {
-                "SELECT bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at FROM peer_aggregate_5m WHERE node_id=? AND bucket_start=?"
+                "SELECT bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at FROM peer_aggregate_5m WHERE node_id=$1 AND bucket_start=$2"
             }
             Self::Hourly => {
-                "SELECT bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at FROM peer_aggregate_1h WHERE node_id=? AND bucket_start=?"
+                "SELECT bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at FROM peer_aggregate_1h WHERE node_id=$1 AND bucket_start=$2"
             }
         }
     }
@@ -133,10 +133,10 @@ impl AggregateFamily {
     fn update_sql(self) -> &'static str {
         match self {
             Self::FiveMinute => {
-                "UPDATE peer_aggregate_5m SET sample_count=?, total_peers=?, inbound_count=?, outbound_count=?, trusted_count=?, static_count=?, consensus_count=?, known_country_count=?, unknown_country_count=?, arrivals=?, departures=?, cbft_lag_count=?, cbft_lag_sum=?, cbft_lag_min=?, cbft_lag_max=?, first_observed_at=?, last_observed_at=? WHERE node_id=? AND bucket_start=?"
+                "UPDATE peer_aggregate_5m SET sample_count=$1, total_peers=$2, inbound_count=$3, outbound_count=$4, trusted_count=$5, static_count=$6, consensus_count=$7, known_country_count=$8, unknown_country_count=$9, arrivals=$10, departures=$11, cbft_lag_count=$12, cbft_lag_sum=$13, cbft_lag_min=$14, cbft_lag_max=$15, first_observed_at=$16, last_observed_at=$17 WHERE node_id=$18 AND bucket_start=$19"
             }
             Self::Hourly => {
-                "UPDATE peer_aggregate_1h SET sample_count=?, total_peers=?, inbound_count=?, outbound_count=?, trusted_count=?, static_count=?, consensus_count=?, known_country_count=?, unknown_country_count=?, arrivals=?, departures=?, cbft_lag_count=?, cbft_lag_sum=?, cbft_lag_min=?, cbft_lag_max=?, first_observed_at=?, last_observed_at=? WHERE node_id=? AND bucket_start=?"
+                "UPDATE peer_aggregate_1h SET sample_count=$1, total_peers=$2, inbound_count=$3, outbound_count=$4, trusted_count=$5, static_count=$6, consensus_count=$7, known_country_count=$8, unknown_country_count=$9, arrivals=$10, departures=$11, cbft_lag_count=$12, cbft_lag_sum=$13, cbft_lag_min=$14, cbft_lag_max=$15, first_observed_at=$16, last_observed_at=$17 WHERE node_id=$18 AND bucket_start=$19"
             }
         }
     }
@@ -144,10 +144,10 @@ impl AggregateFamily {
     fn insert_sql(self) -> &'static str {
         match self {
             Self::FiveMinute => {
-                "INSERT INTO peer_aggregate_5m (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO peer_aggregate_5m (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)"
             }
             Self::Hourly => {
-                "INSERT INTO peer_aggregate_1h (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO peer_aggregate_1h (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)"
             }
         }
     }
@@ -155,10 +155,10 @@ impl AggregateFamily {
     fn country_insert_sql(self) -> &'static str {
         match self {
             Self::FiveMinute => {
-                "INSERT INTO peer_aggregate_5m_countries (node_id, bucket_start, country_code, peer_count) VALUES (?, ?, ?, ?) ON CONFLICT(node_id, bucket_start, country_code) DO UPDATE SET peer_count=peer_count + excluded.peer_count"
+                "INSERT INTO peer_aggregate_5m_countries (node_id, bucket_start, country_code, peer_count) VALUES ($1, $2, $3, $4) ON CONFLICT(node_id, bucket_start, country_code) DO UPDATE SET peer_count=peer_count + excluded.peer_count"
             }
             Self::Hourly => {
-                "INSERT INTO peer_aggregate_1h_countries (node_id, bucket_start, country_code, peer_count) VALUES (?, ?, ?, ?) ON CONFLICT(node_id, bucket_start, country_code) DO UPDATE SET peer_count=peer_count + excluded.peer_count"
+                "INSERT INTO peer_aggregate_1h_countries (node_id, bucket_start, country_code, peer_count) VALUES ($1, $2, $3, $4) ON CONFLICT(node_id, bucket_start, country_code) DO UPDATE SET peer_count=peer_count + excluded.peer_count"
             }
         }
     }
@@ -179,7 +179,7 @@ impl AggregateFamily {
 
     fn history_select_sql(self) -> String {
         format!(
-            "SELECT {} FROM {} WHERE node_id=? ORDER BY bucket_start DESC LIMIT ?",
+            "SELECT {} FROM {} WHERE node_id=$1 ORDER BY bucket_start DESC LIMIT $2",
             self.history_columns(),
             self.table()
         )
@@ -290,7 +290,7 @@ async fn country_for_peer(
     // Only the selected provider's retained results are usable; a result left
     // over from another provider never resolves a country.
     sqlx::query_scalar::<_, Option<String>>(
-        "SELECT country_code FROM geo_location_cache WHERE provider = ? AND canonical_ip = ? AND created_at IS NOT NULL AND created_at > ?",
+        "SELECT country_code FROM geo_location_cache WHERE provider = $1 AND canonical_ip = $2 AND created_at IS NOT NULL AND created_at > $3",
     )
     .bind(provider.as_str())
     .bind(canonical_ip)
@@ -496,19 +496,16 @@ async fn attach_countries(
         return Ok(Vec::new());
     }
 
-    let mut country_query = QueryBuilder::<Sqlite>::new(family.country_select_prefix());
-    country_query
-        .push_bind(node_id)
-        .push(" AND bucket_start IN (");
-    country_query.push_bind(&db_rows[0].bucket_start);
-    for row in &db_rows[1..] {
-        country_query.push(",").push_bind(&row.bucket_start);
+    let bucket_placeholders = vec!["?"; db_rows.len()].join(",");
+    let country_sql = crate::database::number_placeholders(&format!(
+        "{}? AND bucket_start IN ({bucket_placeholders}) ORDER BY bucket_start DESC, country_code",
+        family.country_select_prefix()
+    ));
+    let mut country_query = sqlx::query_as::<_, (String, String, i64)>(&country_sql).bind(node_id);
+    for row in &db_rows {
+        country_query = country_query.bind(&row.bucket_start);
     }
-    country_query.push(") ORDER BY bucket_start DESC, country_code");
-    let country_rows = country_query
-        .build_query_as::<(String, String, i64)>()
-        .fetch_all(pool)
-        .await?;
+    let country_rows = country_query.fetch_all(pool).await?;
     let mut countries_by_bucket: HashMap<String, Vec<CountryCount>> = HashMap::new();
     for (bucket_start, country_code, count) in country_rows {
         countries_by_bucket
@@ -712,7 +709,7 @@ async fn component_status(
     node_id: &str,
 ) -> Result<(Option<String>, Option<i64>), sqlx::Error> {
     let status: Option<(String, i64)> = sqlx::query_as(
-        "SELECT state, value_revision FROM component_status WHERE node_id=? AND component_key='peers'",
+        "SELECT state, value_revision FROM component_status WHERE node_id=$1 AND component_key='peers'",
     )
     .bind(node_id)
     .fetch_optional(pool)
@@ -720,10 +717,12 @@ async fn component_status(
     let state = status.as_ref().map(|(state, _)| state.clone());
     let current_peer_count = match status.as_ref() {
         Some((state, value_revision)) if state == "ok" && *value_revision > 0 => Some(
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM current_node_peers WHERE node_id=?")
-                .bind(node_id)
-                .fetch_one(pool)
-                .await?,
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM current_node_peers WHERE node_id=$1",
+            )
+            .bind(node_id)
+            .fetch_one(pool)
+            .await?,
         ),
         _ => None,
     };
@@ -755,7 +754,7 @@ pub(crate) async fn load_range(
     let (matching, first_bucket, last_bucket): (i64, Option<String>, Option<String>) =
         sqlx::query_as(&format!(
             "SELECT COUNT(*), MIN(bucket_start), MAX(bucket_start) FROM {} \
-              WHERE node_id = ? AND bucket_start >= ? AND bucket_start < ?",
+              WHERE node_id = $1 AND bucket_start >= $2 AND bucket_start < $3",
             family.table()
         ))
         .bind(node_id)
@@ -767,7 +766,7 @@ pub(crate) async fn load_range(
     let (ever_min, ever_max, latest): (Option<String>, Option<String>, Option<String>) =
         sqlx::query_as(&format!(
             "SELECT MIN(bucket_start), MAX(bucket_start), MAX(last_observed_at) FROM {} \
-              WHERE node_id = ?",
+              WHERE node_id = $1",
             family.table()
         ))
         .bind(node_id)
@@ -783,6 +782,7 @@ pub(crate) async fn load_range(
         page_sql.push_str(" AND bucket_start < ?");
     }
     page_sql.push_str(" ORDER BY bucket_start DESC LIMIT ?");
+    let page_sql = crate::database::number_placeholders(&page_sql);
     let mut page = sqlx::query_as::<_, DbAggregateRow>(&page_sql)
         .bind(node_id)
         .bind(&request.from)

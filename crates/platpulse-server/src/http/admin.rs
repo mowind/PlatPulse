@@ -164,7 +164,7 @@ pub(crate) async fn set_visibility(
         }
     };
     let before = sqlx::query_as::<_, (String, String)>(
-        "SELECT visibility, network_key FROM nodes WHERE node_id = ?",
+        "SELECT visibility, network_key FROM nodes WHERE node_id = $1",
     )
     .bind(&node_id)
     .fetch_optional(&mut *tx)
@@ -188,7 +188,7 @@ pub(crate) async fn set_visibility(
         );
     };
     let changed_at = crate::auth::format_rfc3339(crate::auth::now_utc());
-    if sqlx::query("UPDATE nodes SET visibility = ?, updated_at = ? WHERE node_id = ?")
+    if sqlx::query("UPDATE nodes SET visibility = $1, updated_at = $2 WHERE node_id = $3")
         .bind(&body.visibility)
         .bind(&changed_at)
         .bind(&node_id)
@@ -328,7 +328,7 @@ pub(crate) async fn set_node_metadata(
     // `display_name` is nullable: a Node without a Server-owned name must
     // still be renameable, so the previous value is decoded as Option.
     let before = sqlx::query_as::<_, (Option<String>, String)>(
-        "SELECT display_name, network_key FROM nodes WHERE node_id = ?",
+        "SELECT display_name, network_key FROM nodes WHERE node_id = $1",
     )
     .bind(&node_id)
     .fetch_optional(&mut *tx)
@@ -359,7 +359,7 @@ pub(crate) async fn set_node_metadata(
         .into_response();
     }
     let changed_at = crate::auth::format_rfc3339(crate::auth::now_utc());
-    if sqlx::query("UPDATE nodes SET display_name = ?, updated_at = ? WHERE node_id = ?")
+    if sqlx::query("UPDATE nodes SET display_name = $1, updated_at = $2 WHERE node_id = $3")
         .bind(&body.display_name)
         .bind(&changed_at)
         .bind(&node_id)
@@ -1674,7 +1674,7 @@ pub struct NodeDiagnostic {
 
 async fn process_diagnostic(state: &AppState, node_id: &str) -> Option<ProcessDiagnostic> {
     sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64, Option<i64>, Option<String>, Option<f64>, Option<i64>, Option<i64>)>(
-        "SELECT s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision, p.pid, p.started_at, p.cpu_percent, p.memory_bytes, p.uptime_ms FROM component_status s LEFT JOIN current_node_process_observations p ON p.node_id = s.node_id WHERE s.node_id = ? AND s.component_key = 'process'"
+        "SELECT s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision, p.pid, p.started_at, p.cpu_percent, p.memory_bytes, p.uptime_ms FROM component_status s LEFT JOIN current_node_process_observations p ON p.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'process'"
     )
     .bind(node_id)
     .fetch_optional(state.db().pool())
@@ -1703,7 +1703,7 @@ async fn data_directory_diagnostic(
     node_id: &str,
 ) -> Option<DataDirectoryDiagnostic> {
     sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64, Option<i64>, Option<i64>)>(
-        "SELECT s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision, d.size_bytes, CASE WHEN c.state IN ('ok', 'error') THEN d.capacity_bytes ELSE NULL END FROM component_status s LEFT JOIN component_status c ON c.node_id = s.node_id AND c.component_key = 'datadirectorycapacitybytes' LEFT JOIN current_node_data_directory_observations d ON d.node_id = s.node_id WHERE s.node_id = ? AND s.component_key = 'datadirectorysizebytes'"
+        "SELECT s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision, d.size_bytes, CASE WHEN c.state IN ('ok', 'error') THEN d.capacity_bytes ELSE NULL END FROM component_status s LEFT JOIN component_status c ON c.node_id = s.node_id AND c.component_key = 'datadirectorycapacitybytes' LEFT JOIN current_node_data_directory_observations d ON d.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'datadirectorysizebytes'"
     )
     .bind(node_id)
     .fetch_optional(state.db().pool())
@@ -1729,7 +1729,7 @@ async fn data_directory_diagnostic(
 
 async fn sync_diagnostic(state: &AppState, node_id: &str) -> Option<SyncDiagnostic> {
     sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
-        "SELECT s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision, c.syncing, c.current_block, c.highest_block, c.pulled_states, c.known_states FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = ? AND s.component_key = 'sync'"
+        "SELECT s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision, c.syncing, c.current_block, c.highest_block, c.pulled_states, c.known_states FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'sync'"
     )
     .bind(node_id)
     .fetch_optional(state.db().pool())
@@ -1755,7 +1755,7 @@ async fn sync_diagnostic(state: &AppState, node_id: &str) -> Option<SyncDiagnost
 
 async fn consensus_diagnostic(state: &AppState, node_id: &str) -> Option<ConsensusDiagnostic> {
     sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
-        "SELECT s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision, c.consensus_epoch, c.consensus_view_number, c.consensus_validator, c.consensus_highest_qc_block, c.consensus_highest_lock_block, c.consensus_highest_commit_block FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = ? AND s.component_key = 'consensus'"
+        "SELECT s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision, c.consensus_epoch, c.consensus_view_number, c.consensus_validator, c.consensus_highest_qc_block, c.consensus_highest_lock_block, c.consensus_highest_commit_block FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'consensus'"
     )
     .bind(node_id)
     .fetch_optional(state.db().pool())
@@ -1837,7 +1837,7 @@ async fn peer_churn_diagnostic(
     };
     let Some((component_state, value_received_at, value_revision)) =
         sqlx::query_as::<_, (String, Option<String>, i64)>(
-            "SELECT state, value_received_at, value_revision FROM component_status WHERE node_id=? AND component_key='peers'",
+            "SELECT state, value_received_at, value_revision FROM component_status WHERE node_id=$1 AND component_key='peers'",
         )
         .bind(node_id)
         .fetch_optional(state.db().pool())
@@ -1849,13 +1849,13 @@ async fn peer_churn_diagnostic(
         return Ok(unknown());
     }
     let total_open_intervals = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND closed_at IS NULL",
+        "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=$1 AND closed_at IS NULL",
     )
     .bind(node_id)
     .fetch_one(state.db().pool())
     .await?;
     let arrivals = sqlx::query_as::<_, PeerPresenceRow>(
-        "SELECT peer_id, opened_at, closed_at, direction, trusted, static_peer, consensus_peer, client_name FROM peer_presence_intervals WHERE node_id=? AND opened_at >= ? ORDER BY opened_at DESC, interval_id DESC LIMIT ?",
+        "SELECT peer_id, opened_at, closed_at, direction, trusted, static_peer, consensus_peer, client_name FROM peer_presence_intervals WHERE node_id=$1 AND opened_at >= $2 ORDER BY opened_at DESC, interval_id DESC LIMIT $3",
     )
     .bind(node_id)
     .bind(&window_start)
@@ -1866,7 +1866,7 @@ async fn peer_churn_diagnostic(
     .map(peer_presence_interval_from_row)
     .collect::<Vec<_>>();
     let departures = sqlx::query_as::<_, PeerPresenceRow>(
-        "SELECT peer_id, opened_at, closed_at, direction, trusted, static_peer, consensus_peer, client_name FROM peer_presence_intervals WHERE node_id=? AND closed_at >= ? ORDER BY closed_at DESC, interval_id DESC LIMIT ?",
+        "SELECT peer_id, opened_at, closed_at, direction, trusted, static_peer, consensus_peer, client_name FROM peer_presence_intervals WHERE node_id=$1 AND closed_at >= $2 ORDER BY closed_at DESC, interval_id DESC LIMIT $3",
     )
     .bind(node_id)
     .bind(&window_start)
@@ -1909,7 +1909,7 @@ async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnost
         i64,
         i64,
     )>(
-        "SELECT state, error_code, error_message, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision FROM component_status WHERE node_id=? AND component_key='peers'",
+        "SELECT state, error_code, error_message, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision FROM component_status WHERE node_id=$1 AND component_key='peers'",
     )
     .bind(node_id)
     .fetch_optional(state.db().pool())
@@ -1941,7 +1941,7 @@ async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnost
         Option<i64>,
         Option<i64>,
     )>(
-        "SELECT peer_id, direction, trusted, static_peer, consensus_peer, client_name, cbft_protocol_version, cbft_highest_qc_block, cbft_locked_block, cbft_commit_block FROM current_node_peers WHERE node_id=? ORDER BY peer_id LIMIT 1024",
+        "SELECT peer_id, direction, trusted, static_peer, consensus_peer, client_name, cbft_protocol_version, cbft_highest_qc_block, cbft_locked_block, cbft_commit_block FROM current_node_peers WHERE node_id=$1 ORDER BY peer_id LIMIT 1024",
     )
     .bind(node_id)
     .fetch_all(state.db().pool())
@@ -1982,7 +1982,7 @@ async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnost
             consensus_count += 1;
         }
         let capabilities = sqlx::query_scalar::<_, String>(
-            "SELECT capability FROM current_node_peer_capabilities WHERE node_id=? AND peer_id=? ORDER BY capability",
+            "SELECT capability FROM current_node_peer_capabilities WHERE node_id=$1 AND peer_id=$2 ORDER BY capability",
         )
         .bind(node_id)
         .bind(&peer_id)
@@ -2051,7 +2051,7 @@ async fn node_diagnostic(
     let process = process_diagnostic(state, &node_id).await;
     let data_directory = data_directory_diagnostic(state, &node_id).await;
     let rpc = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<i64>)>(
-        "SELECT c.rpc_client_version, s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = ? AND s.component_key = 'rpc'",
+        "SELECT c.rpc_client_version, s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'rpc'",
     )
     .bind(&node_id)
     .fetch_optional(state.db().pool())
@@ -2070,10 +2070,10 @@ async fn node_diagnostic(
         value_revision,
     )) = rpc
     {
-        let namespaces = sqlx::query_scalar::<_, String>("SELECT namespace FROM current_node_rpc_namespaces WHERE node_id = ? ORDER BY namespace")
+        let namespaces = sqlx::query_scalar::<_, String>("SELECT namespace FROM current_node_rpc_namespaces WHERE node_id = $1 ORDER BY namespace")
             .bind(&node_id).fetch_all(state.db().pool()).await.unwrap_or_default();
         let methods = sqlx::query_scalar::<_, String>(
-            "SELECT method FROM current_node_rpc_methods WHERE node_id = ? ORDER BY method",
+            "SELECT method FROM current_node_rpc_methods WHERE node_id = $1 ORDER BY method",
         )
         .bind(&node_id)
         .fetch_all(state.db().pool())
@@ -2109,7 +2109,7 @@ async fn node_diagnostic(
             .chain(peers.as_ref().and_then(|c| c.received_at.as_deref())),
     );
     let history = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<String>, Option<i64>, Option<String>)>(
-        "SELECT c.current_block, h.historical_high_watermark, h.resync_state, r.block_number, r.confidence FROM current_node_chain_observations c LEFT JOIN block_history_state h ON h.node_id=c.node_id LEFT JOIN nodes n ON n.node_id=c.node_id LEFT JOIN network_reference_heads r ON r.network_key=n.network_key WHERE c.node_id=?"
+        "SELECT c.current_block, h.historical_high_watermark, h.resync_state, r.block_number, r.confidence FROM current_node_chain_observations c LEFT JOIN block_history_state h ON h.node_id=c.node_id LEFT JOIN nodes n ON n.node_id=c.node_id LEFT JOIN network_reference_heads r ON r.network_key=n.network_key WHERE c.node_id=$1"
     ).bind(&node_id).fetch_optional(state.db().pool()).await.ok().flatten();
     let (
         current_head,
@@ -2182,7 +2182,7 @@ async fn node_identity_status(
     network_key: &str,
 ) -> NodeIdentityStatus {
     let observed = sqlx::query_as::<_, (Option<String>, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<i64>)>(
-        "SELECT c.network_genesis_hash, c.network_chain_id, c.network_p2p_network_id, c.network_address_hrp, s.state, s.value_revision FROM current_node_chain_observations c LEFT JOIN component_status s ON s.node_id = c.node_id AND s.component_key = 'network_identity' WHERE c.node_id = ?",
+        "SELECT c.network_genesis_hash, c.network_chain_id, c.network_p2p_network_id, c.network_address_hrp, s.state, s.value_revision FROM current_node_chain_observations c LEFT JOIN component_status s ON s.node_id = c.node_id AND s.component_key = 'network_identity' WHERE c.node_id = $1",
     )
     .bind(node_id)
     .fetch_optional(state.db().pool())
@@ -2234,7 +2234,7 @@ async fn node_identity_status(
         };
     }
     let expected = sqlx::query_as::<_, (String, i64, i64, String)>(
-        "SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks WHERE network_key = ?",
+        "SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks WHERE network_key = $1",
     )
     .bind(network_key)
     .fetch_optional(state.db().pool())
@@ -2341,7 +2341,7 @@ async fn block_history_rejection(state: &AppState, node_id: &str) -> Option<Bloc
         _,
         (i64, Option<i64>, Option<i64>, Option<String>, Option<String>),
     >(
-        "WITH current_refusals AS (SELECT g.from_height, g.to_height, g.reason, g.created_at FROM block_history_gaps g WHERE g.node_id = ? AND g.kind = 'server_rejected' AND g.authored_by = 'server' AND g.created_at > max(COALESCE((SELECT MAX(s.accepted_at) FROM block_summaries s WHERE s.node_id = g.node_id), ''), COALESCE((SELECT h.last_accepted_summary_at FROM block_history_state h WHERE h.node_id = g.node_id), ''))) SELECT COUNT(*), MIN(from_height), MAX(to_height), (SELECT reason FROM current_refusals ORDER BY created_at DESC, from_height DESC LIMIT 1), (SELECT created_at FROM current_refusals ORDER BY created_at DESC, from_height DESC LIMIT 1) FROM current_refusals",
+        "WITH current_refusals AS (SELECT g.from_height, g.to_height, g.reason, g.created_at FROM block_history_gaps g WHERE g.node_id = $1 AND g.kind = 'server_rejected' AND g.authored_by = 'server' AND g.created_at > CASE WHEN COALESCE((SELECT MAX(s.accepted_at) FROM block_summaries s WHERE s.node_id = g.node_id), '') >= COALESCE((SELECT h.last_accepted_summary_at FROM block_history_state h WHERE h.node_id = g.node_id), '') THEN COALESCE((SELECT MAX(s.accepted_at) FROM block_summaries s WHERE s.node_id = g.node_id), '') ELSE COALESCE((SELECT h.last_accepted_summary_at FROM block_history_state h WHERE h.node_id = g.node_id), '') END) SELECT COUNT(*), MIN(from_height), MAX(to_height), (SELECT reason FROM current_refusals ORDER BY created_at DESC, from_height DESC LIMIT 1), (SELECT created_at FROM current_refusals ORDER BY created_at DESC, from_height DESC LIMIT 1) FROM current_refusals",
     )
     .bind(node_id)
     .fetch_one(state.db().pool())
@@ -2594,7 +2594,7 @@ async fn admin_node_detail(
     Extension(request_id): Extension<super::RequestId>,
 ) -> Response {
     let row = sqlx::query_as::<_, AdminNodeRow>(
-        "SELECT n.node_id, n.agent_id, n.display_name, n.network_key, r.display_name AS network_display_name, n.lifecycle, n.visibility, n.inventory_revision, n.first_seen_at, n.updated_at, n.rpc_endpoint FROM nodes n JOIN networks r ON r.network_key = n.network_key WHERE n.node_id = ?",
+        "SELECT n.node_id, n.agent_id, n.display_name, n.network_key, r.display_name AS network_display_name, n.lifecycle, n.visibility, n.inventory_revision, n.first_seen_at, n.updated_at, n.rpc_endpoint FROM nodes n JOIN networks r ON r.network_key = n.network_key WHERE n.node_id = $1",
     )
     .bind(&node_id)
     .fetch_optional(state.db().pool())
@@ -2628,7 +2628,7 @@ async fn admin_node_detail(
     )
     .await;
     let fingerprint = sqlx::query_scalar::<_, String>(
-        "SELECT node_key_fingerprint FROM current_node_chain_observations WHERE node_id = ?",
+        "SELECT node_key_fingerprint FROM current_node_chain_observations WHERE node_id = $1",
     )
     .bind(&row.node_id)
     .fetch_optional(state.db().pool())
@@ -2638,7 +2638,7 @@ async fn admin_node_detail(
     let identity = node_identity_status(&state, &row.node_id, &row.network_key).await;
     let block_history_rejection = block_history_rejection(&state, &row.node_id).await;
     let transfer = sqlx::query_as::<_, NodeTransferRow>(&format!(
-        "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE node_id=? ORDER BY created_at DESC LIMIT 1"
+        "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE node_id=$1 ORDER BY created_at DESC LIMIT 1"
     ))
     .bind(&row.node_id)
     .fetch_optional(state.db().pool())
@@ -2710,7 +2710,7 @@ async fn admin_node_peer_churn(
     Extension(_session): Extension<super::AuthenticatedSession>,
     Extension(request_id): Extension<super::RequestId>,
 ) -> Response {
-    let exists = sqlx::query_scalar::<_, String>("SELECT node_id FROM nodes WHERE node_id=?")
+    let exists = sqlx::query_scalar::<_, String>("SELECT node_id FROM nodes WHERE node_id=$1")
         .bind(&node_id)
         .fetch_optional(state.db().pool())
         .await;
@@ -2913,7 +2913,7 @@ async fn admin_node_peer_history(
             );
         }
     };
-    let exists = sqlx::query_scalar::<_, String>("SELECT node_id FROM nodes WHERE node_id=?")
+    let exists = sqlx::query_scalar::<_, String>("SELECT node_id FROM nodes WHERE node_id=$1")
         .bind(&node_id)
         .fetch_optional(state.db().pool())
         .await;
@@ -3185,7 +3185,7 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
         .collect();
     let liveness = agent_liveness(last_received_at.as_deref()).to_owned();
     let (sequence_gap_count, latest_gap_at) = sqlx::query_as::<_, (i64, Option<String>)>(
-        "SELECT COUNT(*), MAX(created_at) FROM report_sequence_gaps WHERE agent_id=?",
+        "SELECT COUNT(*), MAX(created_at) FROM report_sequence_gaps WHERE agent_id=$1",
     )
     .bind(&agent_id)
     .fetch_one(state.db().pool())
@@ -3193,7 +3193,7 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
     .unwrap_or((0, None));
     let credentials = credential_summaries(state, &agent_id).await;
     let host_components = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64)>(
-        "SELECT component_key, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision FROM component_status WHERE agent_id = ? AND scope = 'host' ORDER BY component_key",
+        "SELECT component_key, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision FROM component_status WHERE agent_id = $1 AND scope = 'host' ORDER BY component_key",
     )
     .bind(&agent_id)
     .fetch_all(state.db().pool())
@@ -3213,7 +3213,7 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
     })
     .collect::<Vec<_>>();
     let host = sqlx::query_as::<_, HostProjectionRow>(
-        "SELECT h.cpu_percent, h.memory_total_bytes, h.memory_used_bytes, h.load1, h.load5, h.load15, h.network_rx_bytes_per_sec, h.network_tx_bytes_per_sec, h.spool_queued_bytes, h.spool_queued_reports, h.spool_oldest_queued_age_ms, h.spool_in_flight, h.spool_last_delivery_error, h.spool_last_delivery_at, h.spool_capacity_bytes AS spool_capacity_bytes, h.spool_max_age_seconds AS spool_max_age_seconds, h.spool_dropped_sequence_from AS spool_dropped_sequence_from, h.spool_dropped_sequence_to AS spool_dropped_sequence_to, h.spool_dropped_time_from AS spool_dropped_time_from, h.spool_dropped_time_to AS spool_dropped_time_to, h.spool_dropped_height_from AS spool_dropped_height_from, h.spool_dropped_height_to AS spool_dropped_height_to, h.spool_pending_history_gaps AS spool_pending_history_gaps, h.spool_report_too_large AS spool_report_too_large, h.spool_store_fatal AS spool_store_fatal, h.spool_store_error AS spool_store_error, h.updated_at FROM current_host_observations h WHERE h.agent_id = ?",
+        "SELECT h.cpu_percent, h.memory_total_bytes, h.memory_used_bytes, h.load1, h.load5, h.load15, h.network_rx_bytes_per_sec, h.network_tx_bytes_per_sec, h.spool_queued_bytes, h.spool_queued_reports, h.spool_oldest_queued_age_ms, h.spool_in_flight, h.spool_last_delivery_error, h.spool_last_delivery_at, h.spool_capacity_bytes AS spool_capacity_bytes, h.spool_max_age_seconds AS spool_max_age_seconds, h.spool_dropped_sequence_from AS spool_dropped_sequence_from, h.spool_dropped_sequence_to AS spool_dropped_sequence_to, h.spool_dropped_time_from AS spool_dropped_time_from, h.spool_dropped_time_to AS spool_dropped_time_to, h.spool_dropped_height_from AS spool_dropped_height_from, h.spool_dropped_height_to AS spool_dropped_height_to, h.spool_pending_history_gaps AS spool_pending_history_gaps, h.spool_report_too_large AS spool_report_too_large, h.spool_store_fatal AS spool_store_fatal, h.spool_store_error AS spool_store_error, h.updated_at FROM current_host_observations h WHERE h.agent_id = $1",
     )
     .bind(&agent_id)
     .fetch_optional(state.db().pool())
@@ -3227,7 +3227,7 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
         updated_at: row.updated_at, components: host_components,
     });
     let rows = sqlx::query_as::<_, (String, String, Option<String>, String, i64, String)>(
-        "SELECT node_id, network_key, display_name, lifecycle, inventory_revision, visibility FROM nodes WHERE agent_id = ? ORDER BY node_id",
+        "SELECT node_id, network_key, display_name, lifecycle, inventory_revision, visibility FROM nodes WHERE agent_id = $1 ORDER BY node_id",
     )
     .bind(&agent_id)
     .fetch_all(state.db().pool())
@@ -3366,7 +3366,7 @@ async fn agent_inventory_diagnostic(
     accepted_protocol_major: Option<i64>,
 ) -> InventoryDiagnosis {
     let latest = sqlx::query_as::<_, (String, Option<String>, Option<i64>, Option<String>, String, Option<i64>)>(
-        "SELECT disposition, rejection_code, inventory_revision, inventory_sha256, received_at, inventory_protocol_major FROM agent_report_receipts WHERE agent_id = ? ORDER BY received_at DESC, report_sequence DESC LIMIT 1",
+        "SELECT disposition, rejection_code, inventory_revision, inventory_sha256, received_at, inventory_protocol_major FROM agent_report_receipts WHERE agent_id = $1 ORDER BY received_at DESC, report_sequence DESC LIMIT 1",
     )
     .bind(agent_id)
     .fetch_optional(state.db().pool())
@@ -3416,7 +3416,7 @@ async fn agent_inventory_diagnostic(
 async fn credential_summaries(state: &AppState, agent_id: &str) -> Vec<AgentCredentialSummary> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
-        "SELECT credential_id, created_at, revoked_at, revoke_after FROM agent_credentials WHERE agent_id = ? ORDER BY created_at DESC, credential_id",
+        "SELECT credential_id, created_at, revoked_at, revoke_after FROM agent_credentials WHERE agent_id = $1 ORDER BY created_at DESC, credential_id",
     )
     .bind(agent_id)
     .fetch_all(state.db().pool())
@@ -3621,7 +3621,7 @@ pub(crate) async fn admin_recovery_token(
     }
     let lifetime = std::time::Duration::from_secs((lifetime_hours as u64) * 3600);
     let epoch: Option<i64> = match sqlx::query_scalar(
-        "SELECT agent_epoch FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+        "SELECT agent_epoch FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
     )
     .bind(&agent_id)
     .fetch_optional(state.db().pool())
@@ -3888,7 +3888,7 @@ pub(crate) async fn admin_agent_audit(
     Extension(request_id): Extension<super::RequestId>,
 ) -> Response {
     let agent_exists = sqlx::query_scalar::<_, String>(
-        "SELECT agent_id FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+        "SELECT agent_id FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
     )
     .bind(&agent_id)
     .fetch_optional(state.db().pool())
@@ -3907,7 +3907,7 @@ pub(crate) async fn admin_agent_audit(
     let rows = sqlx::query_as::<_, (i64, String, Option<String>, String, Option<String>)>(
         "SELECT a.audit_event_id, a.event_kind, u.username, a.created_at, a.after_json
          FROM audit_events a LEFT JOIN users u ON u.user_id = a.actor_user_id
-         WHERE a.target_kind = 'agent' AND a.target_id = ?
+         WHERE a.target_kind = 'agent' AND a.target_id = $1
          ORDER BY a.created_at DESC, a.audit_event_id DESC LIMIT 50",
     )
     .bind(&agent_id)
@@ -3954,7 +3954,7 @@ pub(crate) async fn admin_agent_detail(
     Extension(request_id): Extension<super::RequestId>,
 ) -> Response {
     let Some(row) = sqlx::query_as::<_, AgentAdminRow>(
-        "SELECT agent_id, display_name, notes, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count, last_inventory_revision AS accepted_inventory_revision, inventory_sha256 AS accepted_inventory_sha256, inventory_protocol_major AS accepted_inventory_protocol_major FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+        "SELECT agent_id, display_name, notes, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count, last_inventory_revision AS accepted_inventory_revision, inventory_sha256 AS accepted_inventory_sha256, inventory_protocol_major AS accepted_inventory_protocol_major FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
     )
     .bind(&agent_id)
     .fetch_optional(state.db().pool())
@@ -4048,7 +4048,7 @@ pub(crate) async fn acknowledge_agent_attention(
             skipped,
         }) => {
             let attention = sqlx::query_as::<_, crate::attention::AgentAttentionRow>(&format!(
-                "{} AND a.agent_id = ?",
+                "{} AND a.agent_id = $1",
                 crate::attention::AGENT_ATTENTION_SELECT
             ))
             .bind(&agent_id)
@@ -4415,7 +4415,7 @@ pub(crate) async fn overview(
         let identity = node_identity_status(&state, &node_id, &network_key).await;
         if identity.state == "mismatched" {
             let observed_at = sqlx::query_scalar::<_, String>(
-                "SELECT COALESCE((SELECT observed_at FROM component_status WHERE node_id = ? AND component_key = 'network_identity'), (SELECT updated_at FROM current_node_chain_observations WHERE node_id = ?))",
+                "SELECT COALESCE((SELECT observed_at FROM component_status WHERE node_id = $1 AND component_key = 'network_identity'), (SELECT updated_at FROM current_node_chain_observations WHERE node_id = $2))",
             )
             .bind(&node_id)
             .bind(&node_id)
@@ -4493,7 +4493,7 @@ pub(crate) async fn overview(
         }
         if diagnostic.resync_state != "normal" {
             let resync_observed_at = sqlx::query_scalar::<_, String>(
-                "SELECT COALESCE(resync_last_progress_at, updated_at) FROM block_history_state WHERE node_id = ?",
+                "SELECT COALESCE(resync_last_progress_at, updated_at) FROM block_history_state WHERE node_id = $1",
             )
             .bind(&node_id)
             .fetch_optional(state.db().pool())
@@ -4675,7 +4675,7 @@ async fn admin_node_history(
         Err(response) => return *response,
     };
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
-    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id=?")
+    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id=$1")
         .bind(&node_id)
         .fetch_optional(state.db().pool())
         .await
@@ -4715,7 +4715,7 @@ async fn admin_node_history(
         raw_retention_days,
     ));
     let oldest_raw = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT MIN(accepted_at) FROM block_summaries WHERE node_id=?",
+        "SELECT MIN(accepted_at) FROM block_summaries WHERE node_id=$1",
     )
     .bind(&node_id)
     .fetch_one(state.db().pool())
@@ -4732,7 +4732,7 @@ async fn admin_node_history(
         }
     };
     let has_history = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT historical_high_watermark FROM block_history_state WHERE node_id=?",
+        "SELECT historical_high_watermark FROM block_history_state WHERE node_id=$1",
     )
     .bind(&node_id)
     .fetch_optional(state.db().pool())
@@ -4751,7 +4751,7 @@ async fn admin_node_history(
     let has_expired_raw = oldest_raw.as_ref().is_some_and(|value| value < &cutoff);
     let availability = (has_expired_raw || (oldest_raw.is_none() && has_history))
         .then(|| "unavailable".to_owned());
-    let rows = sqlx::query_as::<_, AdminHistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height, gap_kind, gap_reason, divergence_kind, divergence_reason, divergence_retained_hash, divergence_observed_hash, divergence_observed_at FROM (SELECT block_number, block_timestamp_ms, transaction_count, 'summary', coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, observed_at, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM block_summaries WHERE node_id = ? AND accepted_at >= ? UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, kind, reason, NULL, NULL, NULL, NULL, NULL FROM block_history_gaps WHERE node_id = ? UNION ALL SELECT NULL, NULL, NULL, 'divergence', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, retained_observed_at, height, height, NULL, NULL, 'chain_divergence', reason, retained_block_hash, observed_block_hash, observed_at FROM chain_divergence_observations WHERE node_id = ?) WHERE (? IS NULL OR COALESCE(block_number, to_height) >= ?) AND (? IS NULL OR COALESCE(block_number, from_height) <= ?) ORDER BY COALESCE(block_number, from_height) DESC LIMIT ?")
+    let rows = sqlx::query_as::<_, AdminHistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height, gap_kind, gap_reason, divergence_kind, divergence_reason, divergence_retained_hash, divergence_observed_hash, divergence_observed_at FROM (SELECT block_number, block_timestamp_ms, transaction_count, 'summary', coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, observed_at, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM block_summaries WHERE node_id = $1 AND accepted_at >= $2 UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, kind, reason, NULL, NULL, NULL, NULL, NULL FROM block_history_gaps WHERE node_id = $3 UNION ALL SELECT NULL, NULL, NULL, 'divergence', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, retained_observed_at, height, height, NULL, NULL, 'chain_divergence', reason, retained_block_hash, observed_block_hash, observed_at FROM chain_divergence_observations WHERE node_id = $4) WHERE ($5 IS NULL OR COALESCE(block_number, to_height) >= $6) AND ($7 IS NULL OR COALESCE(block_number, from_height) <= $8) ORDER BY COALESCE(block_number, from_height) DESC LIMIT $9")
         .bind(&node_id)
         .bind(&cutoff)
         .bind(&node_id)
@@ -5203,7 +5203,7 @@ async fn admin_node_metric_history(
         );
     };
     let metric = metric.to_owned();
-    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id=?")
+    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id=$1")
         .bind(&node_id)
         .fetch_optional(state.db().pool())
         .await
@@ -5448,7 +5448,7 @@ async fn admin_node_state_history(
             );
         }
     };
-    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id=?")
+    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id=$1")
         .bind(&node_id)
         .fetch_optional(state.db().pool())
         .await
@@ -5996,7 +5996,7 @@ async fn admin_node_host_metric_history(
     // Node's page never presents the shared totals as that Node's own (design
     // §11.6).
     let agent_id =
-        match sqlx::query_scalar::<_, String>("SELECT agent_id FROM nodes WHERE node_id=?")
+        match sqlx::query_scalar::<_, String>("SELECT agent_id FROM nodes WHERE node_id=$1")
             .bind(&node_id)
             .fetch_optional(state.db().pool())
             .await
@@ -6055,7 +6055,7 @@ async fn host_owner_exists(
     request_id: &str,
     agent_id: &str,
 ) -> Result<(), Box<Response>> {
-    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM agents WHERE agent_id=?")
+    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM agents WHERE agent_id=$1")
         .bind(agent_id)
         .fetch_optional(state.db().pool())
         .await
@@ -6498,7 +6498,7 @@ async fn admin_network_detail(
     Extension(request_id): Extension<super::RequestId>,
 ) -> Response {
     let row = sqlx::query_as::<_, (String, String, String, i64, i64, String, String, String, i64, i64, i64)>(
-        &format!("SELECT n.network_key, n.display_name, n.genesis_hash, n.chain_id, n.p2p_network_id, n.address_hrp, n.created_at, n.updated_at, {NETWORK_NODE_COUNTS} FROM networks n WHERE n.network_key = ?"),
+        &format!("SELECT n.network_key, n.display_name, n.genesis_hash, n.chain_id, n.p2p_network_id, n.address_hrp, n.created_at, n.updated_at, {NETWORK_NODE_COUNTS} FROM networks n WHERE n.network_key = $1"),
     )
     .bind(&network_key)
     .fetch_optional(state.db().pool())
@@ -6535,7 +6535,7 @@ async fn admin_network_detail(
         );
     };
     let nodes = sqlx::query_as::<_, (String, String, Option<String>, String, String)>(
-        "SELECT node_id, agent_id, display_name, lifecycle, visibility FROM nodes WHERE network_key = ? ORDER BY COALESCE(display_name, node_id)",
+        "SELECT node_id, agent_id, display_name, lifecycle, visibility FROM nodes WHERE network_key = $1 ORDER BY COALESCE(display_name, node_id)",
     )
     .bind(&network_key)
     .fetch_all(state.db().pool())
@@ -6679,7 +6679,7 @@ pub(crate) async fn create_network(
         }
     };
     let insert = sqlx::query(
-        "INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(&key)
     .bind(&body.display_name)
@@ -6804,7 +6804,7 @@ pub(crate) async fn update_network(
         }
     };
     let existing = sqlx::query_as::<_, (String, String, i64, i64, String)>(
-        "SELECT display_name, genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks WHERE network_key = ?",
+        "SELECT display_name, genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks WHERE network_key = $1",
     )
     .bind(&network_key)
     .fetch_optional(state.db().pool())
@@ -6889,7 +6889,7 @@ pub(crate) async fn update_network(
         }
     };
     if sqlx::query(
-        "UPDATE networks SET display_name = ?, genesis_hash = ?, chain_id = ?, p2p_network_id = ?, address_hrp = ?, updated_at = ? WHERE network_key = ?",
+        "UPDATE networks SET display_name = $1, genesis_hash = $2, chain_id = $3, p2p_network_id = $4, address_hrp = $5, updated_at = $6 WHERE network_key = $7",
     )
     .bind(&next_name)
     .bind(&next_genesis)
@@ -7072,7 +7072,7 @@ async fn materialize_expired_node_transfers(
     now_text: &str,
 ) -> Result<(), sqlx::Error> {
     let expired = sqlx::query_as::<_, (String,)>(
-        "SELECT transfer_id FROM node_transfers WHERE node_id=? AND status='pending' AND expires_at <= ?",
+        "SELECT transfer_id FROM node_transfers WHERE node_id=$1 AND status='pending' AND expires_at <= $2",
     )
     .bind(node_id)
     .bind(now_text)
@@ -7080,7 +7080,7 @@ async fn materialize_expired_node_transfers(
     .await?;
     for (transfer_id,) in expired {
         sqlx::query(
-            "UPDATE node_transfers SET status='expired', updated_at=? WHERE transfer_id=? AND status='pending'",
+            "UPDATE node_transfers SET status='expired', updated_at=$1 WHERE transfer_id=$2 AND status='pending'",
         )
         .bind(now_text)
         .bind(&transfer_id)
@@ -7109,7 +7109,7 @@ async fn materialize_expired_transfer(
     now_text: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     let expired = sqlx::query(
-        "UPDATE node_transfers SET status='expired', updated_at=? WHERE transfer_id=? AND status='pending' AND expires_at <= ?",
+        "UPDATE node_transfers SET status='expired', updated_at=$1 WHERE transfer_id=$2 AND status='pending' AND expires_at <= $3",
     )
     .bind(now_text)
     .bind(transfer_id)
@@ -7120,7 +7120,7 @@ async fn materialize_expired_transfer(
         return Ok(None);
     }
     let node_id =
-        sqlx::query_scalar::<_, String>("SELECT node_id FROM node_transfers WHERE transfer_id=?")
+        sqlx::query_scalar::<_, String>("SELECT node_id FROM node_transfers WHERE transfer_id=$1")
             .bind(transfer_id)
             .fetch_one(&mut **tx)
             .await?;
@@ -7165,7 +7165,7 @@ async fn admin_node_transfers(
             );
         }
     };
-    let known: Option<i64> = match sqlx::query_scalar("SELECT 1 FROM nodes WHERE node_id=?")
+    let known: Option<i64> = match sqlx::query_scalar("SELECT 1 FROM nodes WHERE node_id=$1")
         .bind(&node_id)
         .fetch_optional(&mut *tx)
         .await
@@ -7201,7 +7201,7 @@ async fn admin_node_transfers(
         );
     }
     let rows = sqlx::query_as::<_, NodeTransferRow>(&format!(
-        "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE node_id=? ORDER BY created_at DESC"
+        "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE node_id=$1 ORDER BY created_at DESC"
     ))
     .bind(&node_id)
     .fetch_all(&mut *tx)
@@ -7306,7 +7306,7 @@ pub(crate) async fn create_node_transfer(
         }
     };
     let owner: Option<String> =
-        match sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=?")
+        match sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=$1")
             .bind(&node_id)
             .fetch_optional(&mut *tx)
             .await
@@ -7341,7 +7341,7 @@ pub(crate) async fn create_node_transfer(
     // predicate here stops a Node from being pointed back at an identity the
     // Owner permanently deleted (design §15.2, issue #171).
     let target_known: Option<i64> =
-        match sqlx::query_scalar("SELECT 1 FROM agents WHERE agent_id=? AND deleted_at IS NULL")
+        match sqlx::query_scalar("SELECT 1 FROM agents WHERE agent_id=$1 AND deleted_at IS NULL")
             .bind(&body.target_agent_id)
             .fetch_optional(&mut *tx)
             .await
@@ -7376,7 +7376,7 @@ pub(crate) async fn create_node_transfer(
         );
     }
     let pending: Option<String> = match sqlx::query_scalar(
-        "SELECT transfer_id FROM node_transfers WHERE node_id=? AND status='pending'",
+        "SELECT transfer_id FROM node_transfers WHERE node_id=$1 AND status='pending'",
     )
     .bind(&node_id)
     .fetch_optional(&mut *tx)
@@ -7397,7 +7397,7 @@ pub(crate) async fn create_node_transfer(
         // retained in history, ownership is untouched, and the response is
         // the standard error envelope (request ID included).
         let transfer_id = uuid::Uuid::new_v4().to_string();
-        if sqlx::query("INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, updated_at) VALUES (?, ?, ?, ?, 'conflict', ?, ?, ?, ?)")
+        if sqlx::query("INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, updated_at) VALUES ($1, $2, $3, $4, 'conflict', $5, $6, $7, $8)")
             .bind(&transfer_id)
             .bind(&node_id)
             .bind(&source_agent_id)
@@ -7409,20 +7409,6 @@ pub(crate) async fn create_node_transfer(
             .execute(&mut *tx)
             .await
             .is_err()
-            || crate::auth::insert_audit_event(
-                &mut *tx,
-                Some(&principal.0.user_id),
-                "node_transfer_conflict",
-                "node",
-                &node_id,
-                Some(&serde_json::json!({
-                    "transfer_id": transfer_id,
-                    "pending_transfer_id": pending,
-                    "target_agent_id": body.target_agent_id,
-                })),
-            )
-            .await
-            .is_err()
         {
             return mutation_error(
                 &request_id.0,
@@ -7431,9 +7417,19 @@ pub(crate) async fn create_node_transfer(
                 "server database is unavailable",
             );
         }
-        let audit_event_id: i64 = match sqlx::query_scalar("SELECT last_insert_rowid()")
-            .fetch_one(&mut *tx)
-            .await
+        let audit_event_id = match crate::auth::insert_audit_event(
+            &mut *tx,
+            Some(&principal.0.user_id),
+            "node_transfer_conflict",
+            "node",
+            &node_id,
+            Some(&serde_json::json!({
+                "transfer_id": transfer_id,
+                "pending_transfer_id": pending,
+                "target_agent_id": body.target_agent_id,
+            })),
+        )
+        .await
         {
             Ok(value) => value,
             Err(_) => {
@@ -7469,7 +7465,7 @@ pub(crate) async fn create_node_transfer(
             .into_response();
     }
     let transfer_id = uuid::Uuid::new_v4().to_string();
-    if sqlx::query("INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, updated_at) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)")
+    if sqlx::query("INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, updated_at) VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8)")
         .bind(&transfer_id)
         .bind(&node_id)
         .bind(&source_agent_id)
@@ -7481,22 +7477,6 @@ pub(crate) async fn create_node_transfer(
         .execute(&mut *tx)
         .await
         .is_err()
-        || crate::auth::insert_audit_event(
-            &mut *tx,
-            Some(&principal.0.user_id),
-            "node_transfer_created",
-            "node",
-            &node_id,
-            Some(&serde_json::json!({
-                "transfer_id": transfer_id,
-                "source_agent_id": source_agent_id,
-                "target_agent_id": body.target_agent_id,
-                "expires_at": expires_at,
-                "operator_reason": body.operator_reason,
-            })),
-        )
-        .await
-        .is_err()
     {
         return mutation_error(
             &request_id.0,
@@ -7505,9 +7485,21 @@ pub(crate) async fn create_node_transfer(
             "server database is unavailable",
         );
     }
-    let audit_event_id: i64 = match sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await
+    let audit_event_id = match crate::auth::insert_audit_event(
+        &mut *tx,
+        Some(&principal.0.user_id),
+        "node_transfer_created",
+        "node",
+        &node_id,
+        Some(&serde_json::json!({
+            "transfer_id": transfer_id,
+            "source_agent_id": source_agent_id,
+            "target_agent_id": body.target_agent_id,
+            "expires_at": expires_at,
+            "operator_reason": body.operator_reason,
+        })),
+    )
+    .await
     {
         Ok(value) => value,
         Err(_) => {
@@ -7520,7 +7512,7 @@ pub(crate) async fn create_node_transfer(
         }
     };
     let row = match sqlx::query_as::<_, NodeTransferRow>(&format!(
-        "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE transfer_id=?"
+        "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE transfer_id=$1"
     ))
     .bind(&transfer_id)
     .fetch_one(&mut *tx)
@@ -7596,7 +7588,7 @@ async fn admin_transfer_detail(
         );
     }
     let row = sqlx::query_as::<_, NodeTransferRow>(&format!(
-        "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE transfer_id=?"
+        "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE transfer_id=$1"
     ))
     .bind(&transfer_id)
     .fetch_optional(&mut *tx)
@@ -7674,7 +7666,7 @@ pub(crate) async fn cancel_node_transfer(
         );
     }
     let row = sqlx::query_as::<_, NodeTransferRow>(&format!(
-        "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE transfer_id=?"
+        "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE transfer_id=$1"
     ))
     .bind(&transfer_id)
     .fetch_optional(&mut *tx)
@@ -7707,25 +7699,11 @@ pub(crate) async fn cancel_node_transfer(
         );
     }
     let cancelled_at = crate::auth::format_rfc3339(crate::auth::now_utc());
-    if sqlx::query("UPDATE node_transfers SET status='cancelled', cancelled_at=?, updated_at=? WHERE transfer_id=? AND status='pending'")
+    if sqlx::query("UPDATE node_transfers SET status='cancelled', cancelled_at=$1, updated_at=$2 WHERE transfer_id=$3 AND status='pending'")
         .bind(&cancelled_at)
         .bind(&cancelled_at)
         .bind(&transfer_id)
         .execute(&mut *tx)
-        .await
-        .is_err()
-        || crate::auth::insert_audit_event(
-            &mut *tx,
-            Some(&principal.0.user_id),
-            "node_transfer_cancelled",
-            "node",
-            &row.node_id,
-            Some(&serde_json::json!({
-                "transfer_id": transfer_id,
-                "source_agent_id": row.source_agent_id,
-                "target_agent_id": row.target_agent_id,
-            })),
-        )
         .await
         .is_err()
     {
@@ -7736,9 +7714,19 @@ pub(crate) async fn cancel_node_transfer(
             "server database is unavailable",
         );
     }
-    let audit_event_id: i64 = match sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await
+    let audit_event_id = match crate::auth::insert_audit_event(
+        &mut *tx,
+        Some(&principal.0.user_id),
+        "node_transfer_cancelled",
+        "node",
+        &row.node_id,
+        Some(&serde_json::json!({
+            "transfer_id": transfer_id,
+            "source_agent_id": row.source_agent_id,
+            "target_agent_id": row.target_agent_id,
+        })),
+    )
+    .await
     {
         Ok(value) => value,
         Err(_) => {
@@ -7908,7 +7896,7 @@ async fn geo_diagnostic(state: &AppState) -> Option<GeoStatusDiagnostic> {
     let rebuild_before = crate::geo::cache_rebuild_cutoff(&now);
     let provider = config.provider.as_str();
     let cache_country_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(DISTINCT country_code) FROM geo_location_cache WHERE provider = ? AND country_code IS NOT NULL AND expires_at > ? AND created_at > ?",
+        "SELECT COUNT(DISTINCT country_code) FROM geo_location_cache WHERE provider = $1 AND country_code IS NOT NULL AND expires_at > $2 AND created_at > $3",
     )
     .bind(provider)
     .bind(&now)
@@ -7917,7 +7905,7 @@ async fn geo_diagnostic(state: &AppState) -> Option<GeoStatusDiagnostic> {
     .await
     .ok()?;
     let last_success_at = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT MAX(last_success_at) FROM geo_location_cache WHERE provider = ?",
+        "SELECT MAX(last_success_at) FROM geo_location_cache WHERE provider = $1",
     )
     .bind(provider)
     .fetch_one(state.db().pool())
@@ -8037,7 +8025,7 @@ async fn record_geo_refresh_audit(
     started: bool,
 ) -> Result<i64, ()> {
     let mut tx = state.db().pool().begin().await.map_err(|_| ())?;
-    crate::auth::insert_audit_change(
+    let audit_event_id = crate::auth::insert_audit_change(
         &mut *tx,
         Some(&principal.0.user_id),
         "geo_refresh_requested",
@@ -8055,10 +8043,6 @@ async fn record_geo_refresh_audit(
     )
     .await
     .map_err(|_| ())?;
-    let audit_event_id = sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|_| ())?;
     tx.commit().await.map_err(|_| ())?;
     Ok(audit_event_id)
 }
@@ -8240,7 +8224,7 @@ pub(crate) async fn update_geo_provider(
             "server database is unavailable",
         );
     }
-    if crate::auth::insert_audit_change(
+    let audit_event_id = match crate::auth::insert_audit_change(
         &mut *tx,
         Some(&principal.0.user_id),
         "geo_provider_changed",
@@ -8250,21 +8234,8 @@ pub(crate) async fn update_geo_provider(
         Some(&serde_json::json!({ "provider": provider.as_str() })),
     )
     .await
-    .is_err()
     {
-        let _ = tx.rollback().await;
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
-    }
-    let audit_event_id = match sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(value) => value,
+        Ok(id) => id,
         Err(_) => {
             let _ = tx.rollback().await;
             return mutation_error(

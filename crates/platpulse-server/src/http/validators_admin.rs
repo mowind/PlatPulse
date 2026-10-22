@@ -415,7 +415,7 @@ async fn validator_dto(
     record: ValidatorRecord,
 ) -> Result<Validator, ValidatorError> {
     let link_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM node_validator_links WHERE validator_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM node_validator_links WHERE validator_id = $1")
             .bind(&record.validator_id)
             .fetch_one(state.db().pool())
             .await?;
@@ -577,7 +577,7 @@ async fn link_dto(
     record: NodeValidatorLinkRecord,
 ) -> Result<NodeValidatorLink, ValidatorError> {
     let row = sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT v.network_key, v.validator_node_id, n.display_name FROM validators v JOIN nodes n ON n.node_id = ? WHERE v.validator_id = ?",
+        "SELECT v.network_key, v.validator_node_id, n.display_name FROM validators v JOIN nodes n ON n.node_id = $1 WHERE v.validator_id = $2",
     )
     .bind(&record.node_id)
     .bind(&record.validator_id)
@@ -779,7 +779,7 @@ pub(crate) async fn admin_node_validator_links(
         Err(error) => return error_response(&request_id.0, error),
     };
     if records.is_empty() {
-        match sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id = ?")
+        match sqlx::query_scalar::<_, i64>("SELECT 1 FROM nodes WHERE node_id = $1")
             .bind(&node_id)
             .fetch_optional(state.db().pool())
             .await

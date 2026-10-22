@@ -244,7 +244,7 @@ async fn insert_operation(
     let operation_id = uuid::Uuid::new_v4().to_string();
     let created_at = crate::auth::format_rfc3339(crate::auth::now_utc());
     sqlx::query(
-        "INSERT INTO operations (operation_id, kind, status, progress_percent, request_id, params_json, warnings_json, errors_json, created_by_user_id, created_at) VALUES (?, ?, ?, 0, ?, ?, '[]', '[]', ?, ?)",
+        "INSERT INTO operations (operation_id, kind, status, progress_percent, request_id, params_json, warnings_json, errors_json, created_by_user_id, created_at) VALUES ($1, $2, $3, 0, $4, $5, '[]', '[]', $6, $7)",
     )
     .bind(&operation_id)
     .bind(kind)
@@ -255,7 +255,7 @@ async fn insert_operation(
     .bind(&created_at)
     .execute(&mut *executor)
     .await?;
-    crate::auth::insert_audit_event(
+    let audit_event_id = crate::auth::insert_audit_event(
         &mut *executor,
         Some(actor_user_id),
         event_kind,
@@ -267,10 +267,7 @@ async fn insert_operation(
         })),
     )
     .await?;
-    let audit_event_id: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *executor)
-        .await?;
-    sqlx::query("UPDATE operations SET audit_event_id = ? WHERE operation_id = ?")
+    sqlx::query("UPDATE operations SET audit_event_id = $1 WHERE operation_id = $2")
         .bind(audit_event_id)
         .bind(&operation_id)
         .execute(&mut *executor)
@@ -358,7 +355,7 @@ async fn load_operation_request(
     now: time::OffsetDateTime,
 ) -> Result<Option<OperationRequestRow>, sqlx::Error> {
     sqlx::query_as::<_, OperationRequestRow>(
-        "SELECT kind, intent_fingerprint, operation_id, audit_event_id FROM operation_requests WHERE request_id = ? AND expires_at > ?",
+        "SELECT kind, intent_fingerprint, operation_id, audit_event_id FROM operation_requests WHERE request_id = $1 AND expires_at > $2",
     )
     .bind(request_id)
     .bind(crate::auth::format_rfc3339(now))
@@ -375,7 +372,7 @@ async fn load_operation_request_by_intent(
     now: time::OffsetDateTime,
 ) -> Result<Option<OperationRequestRow>, sqlx::Error> {
     sqlx::query_as::<_, OperationRequestRow>(
-        "SELECT kind, intent_fingerprint, operation_id, audit_event_id FROM operation_requests WHERE kind = ? AND intent_fingerprint = ? AND expires_at > ?",
+        "SELECT kind, intent_fingerprint, operation_id, audit_event_id FROM operation_requests WHERE kind = $1 AND intent_fingerprint = $2 AND expires_at > $3",
     )
     .bind(kind)
     .bind(intent_fingerprint)
@@ -395,7 +392,7 @@ async fn insert_operation_request(
     now: time::OffsetDateTime,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO operation_requests (request_id, kind, intent_fingerprint, operation_id, audit_event_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO operation_requests (request_id, kind, intent_fingerprint, operation_id, audit_event_id, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(request_id)
     .bind(kind)
@@ -416,7 +413,7 @@ async fn prune_expired_operation_requests(
     executor: &mut sqlx::SqliteConnection,
     now: time::OffsetDateTime,
 ) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query("DELETE FROM operation_requests WHERE expires_at <= ?")
+    let result = sqlx::query("DELETE FROM operation_requests WHERE expires_at <= $1")
         .bind(crate::auth::format_rfc3339(now))
         .execute(&mut *executor)
         .await?;
@@ -431,7 +428,7 @@ async fn open_operation_of_kind(
     kind: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     sqlx::query_scalar::<_, String>(
-        "SELECT operation_id FROM operations WHERE kind = ? AND status IN (?, ?) ORDER BY created_at, operation_id LIMIT 1",
+        "SELECT operation_id FROM operations WHERE kind = $1 AND status IN ($2, $3) ORDER BY created_at, operation_id LIMIT 1",
     )
     .bind(kind)
     .bind(STATUS_QUEUED)
@@ -526,7 +523,7 @@ async fn recorded_outcome(
 /// oldest queued operation. Terminal rows are never picked up.
 pub async fn next_queued(pool: &SqlitePool) -> Result<Option<String>, OperationError> {
     let row = sqlx::query_as::<_, (String,)>(
-        "SELECT operation_id FROM operations WHERE status IN (?, ?) ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at, operation_id LIMIT 1",
+        "SELECT operation_id FROM operations WHERE status IN ($1, $2) ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at, operation_id LIMIT 1",
     )
     .bind(STATUS_RUNNING)
     .bind(STATUS_QUEUED)
@@ -541,7 +538,7 @@ pub async fn next_queued(pool: &SqlitePool) -> Result<Option<String>, OperationE
 pub async fn mark_running(pool: &SqlitePool, operation_id: &str) -> Result<bool, OperationError> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let result = sqlx::query(
-        "UPDATE operations SET status = ?, started_at = COALESCE(started_at, ?) WHERE operation_id = ? AND status = ?",
+        "UPDATE operations SET status = $1, started_at = COALESCE(started_at, $2) WHERE operation_id = $3 AND status = $4",
     )
     .bind(STATUS_RUNNING)
     .bind(&now)
@@ -552,10 +549,11 @@ pub async fn mark_running(pool: &SqlitePool, operation_id: &str) -> Result<bool,
     if result.rows_affected() == 1 {
         return Ok(true);
     }
-    let status: String = sqlx::query_scalar("SELECT status FROM operations WHERE operation_id = ?")
-        .bind(operation_id)
-        .fetch_one(pool)
-        .await?;
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM operations WHERE operation_id = $1")
+            .bind(operation_id)
+            .fetch_one(pool)
+            .await?;
     Ok(status == STATUS_RUNNING)
 }
 
@@ -564,7 +562,7 @@ pub async fn operation_kind(
     operation_id: &str,
 ) -> Result<String, OperationError> {
     Ok(
-        sqlx::query_scalar("SELECT kind FROM operations WHERE operation_id = ?")
+        sqlx::query_scalar("SELECT kind FROM operations WHERE operation_id = $1")
             .bind(operation_id)
             .fetch_one(pool)
             .await?,
@@ -576,7 +574,7 @@ pub async fn operation_params(
     operation_id: &str,
 ) -> Result<Value, OperationError> {
     let text: String =
-        sqlx::query_scalar("SELECT params_json FROM operations WHERE operation_id = ?")
+        sqlx::query_scalar("SELECT params_json FROM operations WHERE operation_id = $1")
             .bind(operation_id)
             .fetch_one(pool)
             .await?;
@@ -593,7 +591,7 @@ pub async fn set_progress(
 ) -> Result<(), OperationError> {
     let percent = percent.clamp(0, 100);
     sqlx::query(
-        "UPDATE operations SET progress_percent = ?, progress_label = ? WHERE operation_id = ?",
+        "UPDATE operations SET progress_percent = $1, progress_label = $2 WHERE operation_id = $3",
     )
     .bind(percent)
     .bind(label)
@@ -647,7 +645,7 @@ async fn append_json_list(
     entry: &Value,
 ) -> Result<(), OperationError> {
     let text: String = sqlx::query_scalar(&format!(
-        "SELECT {column} FROM operations WHERE operation_id = ?"
+        "SELECT {column} FROM operations WHERE operation_id = $1"
     ))
     .bind(operation_id)
     .fetch_one(state.db().pool())
@@ -659,7 +657,7 @@ async fn append_json_list(
         return Ok(()); // bounded sink: stop recording, never fail the run
     }
     sqlx::query(&format!(
-        "UPDATE operations SET {column} = ? WHERE operation_id = ?"
+        "UPDATE operations SET {column} = $1 WHERE operation_id = $2"
     ))
     .bind(&encoded)
     .bind(operation_id)
@@ -675,7 +673,7 @@ pub async fn is_cancel_requested(
     operation_id: &str,
 ) -> Result<bool, OperationError> {
     Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT cancel_requested FROM operations WHERE operation_id = ?",
+        "SELECT cancel_requested FROM operations WHERE operation_id = $1",
     )
     .bind(operation_id)
     .fetch_one(state.db().pool())
@@ -702,7 +700,7 @@ pub async fn finalize(
         .transpose()?;
     let mut tx = state.db().pool().begin().await?;
     sqlx::query(
-        "UPDATE operations SET status = ?, result_json = ?, finished_at = ? WHERE operation_id = ?",
+        "UPDATE operations SET status = $1, result_json = $2, finished_at = $3 WHERE operation_id = $4",
     )
     .bind(status)
     .bind(&result_text)
@@ -742,7 +740,7 @@ pub async fn finalize(
 pub async fn requeue_interrupted_operations(pool: &SqlitePool) -> Result<u64, OperationError> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let interrupted: Vec<String> =
-        sqlx::query_scalar("SELECT params_json FROM operations WHERE status = ? AND kind = ?")
+        sqlx::query_scalar("SELECT params_json FROM operations WHERE status = $1 AND kind = $2")
             .bind(STATUS_RUNNING)
             .bind(KIND_RETENTION_RUN)
             .fetch_all(pool)
@@ -752,7 +750,7 @@ pub async fn requeue_interrupted_operations(pool: &SqlitePool) -> Result<u64, Op
         let params: Value = serde_json::from_str(&params_json).unwrap_or(Value::Null);
         let message = crate::retention::interrupted_run_message(&params);
         counted += sqlx::query(
-            "UPDATE operations SET status = ?, finished_at = ?, errors_json = ? WHERE status = ? AND kind = ? AND params_json = ?",
+            "UPDATE operations SET status = $1, finished_at = $2, errors_json = $3 WHERE status = $4 AND kind = $5 AND params_json = $6",
         )
         .bind(STATUS_FAILED)
         .bind(&now)
@@ -768,7 +766,7 @@ pub async fn requeue_interrupted_operations(pool: &SqlitePool) -> Result<u64, Op
         .rows_affected();
     }
     let result = sqlx::query(
-        "UPDATE operations SET status = ?, finished_at = ?, errors_json = ? WHERE status = ?",
+        "UPDATE operations SET status = $1, finished_at = $2, errors_json = $3 WHERE status = $4",
     )
     .bind(STATUS_FAILED)
     .bind(&now)

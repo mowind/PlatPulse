@@ -418,7 +418,7 @@ pub(crate) async fn update_history_window(
         }
     };
     let before_days = match sqlx::query_scalar::<_, i64>(
-        "SELECT retention_days FROM retention_policies WHERE family = ?",
+        "SELECT retention_days FROM retention_policies WHERE family = $1",
     )
     .bind(family)
     .fetch_optional(&mut *tx)
@@ -446,7 +446,7 @@ pub(crate) async fn update_history_window(
     };
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     if sqlx::query(
-        "UPDATE retention_policies SET retention_days = ?, enabled = 1, updated_at = ?, updated_by = ? WHERE family = ?",
+        "UPDATE retention_policies SET retention_days = $1, enabled = 1, updated_at = $2, updated_by = $3 WHERE family = $4",
     )
     .bind(request.window_days)
     .bind(&now)
@@ -464,7 +464,7 @@ pub(crate) async fn update_history_window(
             "Server database is unavailable",
         );
     }
-    if crate::auth::insert_audit_change(
+    let audit_event_id = match crate::auth::insert_audit_change(
         &mut *tx,
         Some(&principal.0.user_id),
         "history_window_updated",
@@ -474,21 +474,8 @@ pub(crate) async fn update_history_window(
         Some(&serde_json::json!({ "windowDays": request.window_days })),
     )
     .await
-    .is_err()
     {
-        let _ = tx.rollback().await;
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
-    }
-    let audit_event_id = match sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(value) => value,
+        Ok(id) => id,
         Err(_) => {
             let _ = tx.rollback().await;
             return mutation_error(
@@ -734,7 +721,7 @@ async fn load_operation_summary(
     operation_id: &str,
 ) -> Result<Option<OperationSummary>, sqlx::Error> {
     let row = sqlx::query_as::<_, OperationRow>(
-        "SELECT operation_id, kind, status, progress_percent, progress_label, request_id, created_at, started_at, finished_at, audit_event_id, cancel_requested FROM operations WHERE operation_id = ?",
+        "SELECT operation_id, kind, status, progress_percent, progress_label, request_id, created_at, started_at, finished_at, audit_event_id, cancel_requested FROM operations WHERE operation_id = $1",
     )
     .bind(operation_id)
     .fetch_optional(pool)
@@ -750,7 +737,7 @@ async fn load_operation_detail(
         return Ok(None);
     };
     let (warnings, errors, result): (String, String, Option<String>) = sqlx::query_as(
-        "SELECT warnings_json, errors_json, result_json FROM operations WHERE operation_id = ?",
+        "SELECT warnings_json, errors_json, result_json FROM operations WHERE operation_id = $1",
     )
     .bind(operation_id)
     .fetch_one(pool)
@@ -835,7 +822,7 @@ pub(crate) async fn operations_list(
     }
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
     let rows = sqlx::query_as::<_, OperationRow>(
-        "SELECT operation_id, kind, status, progress_percent, progress_label, request_id, created_at, started_at, finished_at, audit_event_id, cancel_requested FROM operations WHERE (?1 IS NULL OR status = ?1) AND (?2 IS NULL OR kind = ?2) ORDER BY created_at DESC, operation_id DESC LIMIT ?3",
+        "SELECT operation_id, kind, status, progress_percent, progress_label, request_id, created_at, started_at, finished_at, audit_event_id, cancel_requested FROM operations WHERE ($1 IS NULL OR status = $1) AND ($2 IS NULL OR kind = $2) ORDER BY created_at DESC, operation_id DESC LIMIT $3",
     )
     .bind(params.status.as_deref())
     .bind(params.kind.as_deref())
@@ -929,7 +916,7 @@ pub(crate) async fn cancel_operation(
     // makes it terminal, so this handler - not a worker - records what that
     // Operation did and did not release.
     let current: Option<(String, i64, String, String)> = sqlx::query_as(
-        "SELECT status, cancel_requested, kind, params_json FROM operations WHERE operation_id = ?",
+        "SELECT status, cancel_requested, kind, params_json FROM operations WHERE operation_id = $1",
     )
     .bind(&operation_id)
     .fetch_optional(&mut *tx)
@@ -983,7 +970,7 @@ pub(crate) async fn cancel_operation(
         None
     };
     if sqlx::query(
-        "UPDATE operations SET cancel_requested = 1, status = ?, result_json = COALESCE(result_json, ?), finished_at = COALESCE(finished_at, ?) WHERE operation_id = ?",
+        "UPDATE operations SET cancel_requested = 1, status = $1, result_json = COALESCE(result_json, $2), finished_at = COALESCE(finished_at, $3) WHERE operation_id = $4",
     )
     .bind(new_status)
     .bind(stopped_work)
@@ -1001,7 +988,7 @@ pub(crate) async fn cancel_operation(
             "Server database is unavailable",
         );
     }
-    if crate::auth::insert_audit_event(
+    let audit_event_id = match crate::auth::insert_audit_event(
         &mut *tx,
         Some(&principal.0.user_id),
         "operation_cancelled",
@@ -1010,21 +997,8 @@ pub(crate) async fn cancel_operation(
         Some(&serde_json::json!({ "status": new_status })),
     )
     .await
-    .is_err()
     {
-        let _ = tx.rollback().await;
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
-    }
-    let audit_event_id: i64 = match sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(value) => value,
+        Ok(id) => id,
         Err(_) => {
             let _ = tx.rollback().await;
             return mutation_error(
@@ -1352,7 +1326,7 @@ pub(crate) async fn update_retention_policy(
         }
     };
     let before: Option<(i64, String)> = sqlx::query_as(
-        "SELECT retention_days, updated_at FROM retention_policies WHERE family = ?",
+        "SELECT retention_days, updated_at FROM retention_policies WHERE family = $1",
     )
     .bind(&family)
     .fetch_optional(&mut *tx)
@@ -1390,7 +1364,7 @@ pub(crate) async fn update_retention_policy(
     }
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     if sqlx::query(
-        "UPDATE retention_policies SET retention_days = ?, enabled = 1, updated_at = ?, updated_by = ? WHERE family = ?",
+        "UPDATE retention_policies SET retention_days = $1, enabled = 1, updated_at = $2, updated_by = $3 WHERE family = $4",
     )
     .bind(request.retention_days)
     .bind(&now)
@@ -1408,7 +1382,7 @@ pub(crate) async fn update_retention_policy(
             "Server database is unavailable",
         );
     }
-    if crate::auth::insert_audit_event(
+    let audit_event_id = match crate::auth::insert_audit_event(
         &mut *tx,
         Some(&principal.0.user_id),
         "retention_policy_updated",
@@ -1420,21 +1394,8 @@ pub(crate) async fn update_retention_policy(
         })),
     )
     .await
-    .is_err()
     {
-        let _ = tx.rollback().await;
-        return mutation_error(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
-    }
-    let audit_event_id: i64 = match sqlx::query_scalar("SELECT last_insert_rowid()")
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(value) => value,
+        Ok(id) => id,
         Err(_) => {
             let _ = tx.rollback().await;
             return mutation_error(
@@ -1887,7 +1848,7 @@ pub(crate) async fn backup_artifact_detail(
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
     let row = sqlx::query_as::<_, (String, String, i64, String, i64, String, String, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>, Option<String>)>(
-        "SELECT artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, data_range_min, data_range_max, verification, verified_at, create_operation_id, verification_error, verify_operation_id FROM backup_artifacts WHERE artifact_id = ?",
+        "SELECT artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, data_range_min, data_range_max, verification, verified_at, create_operation_id, verification_error, verify_operation_id FROM backup_artifacts WHERE artifact_id = $1",
     )
     .bind(&artifact_id)
     .fetch_optional(state.db().pool())
@@ -1966,7 +1927,7 @@ pub(crate) async fn backup_verify(
         return response;
     }
     let exists: Option<(String,)> =
-        sqlx::query_as("SELECT artifact_id FROM backup_artifacts WHERE artifact_id = ?")
+        sqlx::query_as("SELECT artifact_id FROM backup_artifacts WHERE artifact_id = $1")
             .bind(&artifact_id)
             .fetch_optional(state.db().pool())
             .await
@@ -2541,7 +2502,7 @@ async fn last_operation_of_kind(
     kind: &str,
 ) -> Result<Option<OperationSummary>, sqlx::Error> {
     let row = sqlx::query_as::<_, OperationRow>(
-        "SELECT operation_id, kind, status, progress_percent, progress_label, request_id, created_at, started_at, finished_at, audit_event_id, cancel_requested FROM operations WHERE kind = ? ORDER BY created_at DESC, operation_id DESC LIMIT 1",
+        "SELECT operation_id, kind, status, progress_percent, progress_label, request_id, created_at, started_at, finished_at, audit_event_id, cancel_requested FROM operations WHERE kind = $1 ORDER BY created_at DESC, operation_id DESC LIMIT 1",
     )
     .bind(kind)
     .fetch_optional(pool)

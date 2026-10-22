@@ -235,7 +235,7 @@ async fn load(
     executor: impl sqlx::SqliteExecutor<'_>,
 ) -> Result<Option<StoredReading>, sqlx::Error> {
     sqlx::query_as::<_, StoredReading>(
-        "SELECT balance, last_good_at, last_attempt_at, error_category FROM reward_wallet_balance WHERE address = ?",
+        "SELECT balance, last_good_at, last_attempt_at, error_category FROM reward_wallet_balance WHERE address = $1",
     )
     .bind(REWARD_WALLET_ADDRESS)
     .fetch_optional(executor)
@@ -298,7 +298,7 @@ pub async fn record(
         Ok(balance) => {
             sqlx::query(
                 "INSERT INTO reward_wallet_balance (address, balance, last_good_at, last_attempt_at, error_category)
-                 VALUES (?, ?, ?, ?, NULL)
+                 VALUES ($1, $2, $3, $4, NULL)
                  ON CONFLICT(address) DO UPDATE SET
                    balance = excluded.balance,
                    last_good_at = excluded.last_good_at,
@@ -315,7 +315,7 @@ pub async fn record(
         Err(category) => {
             sqlx::query(
                 "INSERT INTO reward_wallet_balance (address, balance, last_good_at, last_attempt_at, error_category)
-                 VALUES (?, NULL, NULL, ?, ?)
+                 VALUES ($1, NULL, NULL, $2, $3)
                  ON CONFLICT(address) DO UPDATE SET
                    last_attempt_at = excluded.last_attempt_at,
                    error_category = excluded.error_category",

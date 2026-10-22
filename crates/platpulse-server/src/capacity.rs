@@ -717,7 +717,7 @@ pub async fn load_open_interval(
 /// and the in-memory gate either both move or neither does.
 async fn open_interval(pool: &SqlitePool, open: &OpenInterval<'_>) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO capacity_protection_intervals (interval_id, source_mount, started_at, started_reason, opened_total_bytes, opened_available_bytes, pause_below_bytes, resume_above_bytes, ended_at, ended_reason, resumed_total_bytes, resumed_available_bytes, created_at, updated_at) VALUES (?, ?, ?, 'low_space', ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)",
+        "INSERT INTO capacity_protection_intervals (interval_id, source_mount, started_at, started_reason, opened_total_bytes, opened_available_bytes, pause_below_bytes, resume_above_bytes, ended_at, ended_reason, resumed_total_bytes, resumed_available_bytes, created_at, updated_at) VALUES ($1, $2, $3, 'low_space', $4, $5, $6, $7, NULL, NULL, NULL, NULL, $8, $9)",
     )
     .bind(open.interval_id)
     .bind(open.source_mount)
@@ -742,7 +742,7 @@ async fn close_interval(
     resumed: &FilesystemSample,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE capacity_protection_intervals SET ended_at = ?, ended_reason = ?, resumed_total_bytes = ?, resumed_available_bytes = ?, updated_at = ? WHERE interval_id = ? AND ended_at IS NULL",
+        "UPDATE capacity_protection_intervals SET ended_at = $1, ended_reason = $2, resumed_total_bytes = $3, resumed_available_bytes = $4, updated_at = $5 WHERE interval_id = $6 AND ended_at IS NULL",
     )
     .bind(ended_at)
     .bind(reason)
@@ -783,7 +783,7 @@ pub async fn record_skipped_series(
     observed_at: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO capacity_skipped_series (interval_id, scope_kind, scope_key, metric, dimension, skipped_count, first_skipped_at, last_skipped_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?) ON CONFLICT(interval_id, scope_kind, scope_key, metric, dimension) DO UPDATE SET skipped_count = capacity_skipped_series.skipped_count + 1, first_skipped_at = MIN(capacity_skipped_series.first_skipped_at, excluded.first_skipped_at), last_skipped_at = MAX(capacity_skipped_series.last_skipped_at, excluded.last_skipped_at) WHERE excluded.last_skipped_at > capacity_skipped_series.last_skipped_at",
+        "INSERT INTO capacity_skipped_series (interval_id, scope_kind, scope_key, metric, dimension, skipped_count, first_skipped_at, last_skipped_at) VALUES ($1, $2, $3, $4, $5, 1, $6, $7) ON CONFLICT(interval_id, scope_kind, scope_key, metric, dimension) DO UPDATE SET skipped_count = capacity_skipped_series.skipped_count + 1, first_skipped_at = CASE WHEN capacity_skipped_series.first_skipped_at <= excluded.first_skipped_at THEN capacity_skipped_series.first_skipped_at ELSE excluded.first_skipped_at END, last_skipped_at = CASE WHEN capacity_skipped_series.last_skipped_at >= excluded.last_skipped_at THEN capacity_skipped_series.last_skipped_at ELSE excluded.last_skipped_at END WHERE excluded.last_skipped_at > capacity_skipped_series.last_skipped_at",
     )
     .bind(interval_id)
     .bind(scope.as_str())
@@ -818,7 +818,7 @@ pub async fn recent_intervals(
         String,
     );
     let rows = sqlx::query_as::<_, IntervalRow>(
-        "SELECT interval_id, source_mount, started_at, started_reason, opened_total_bytes, opened_available_bytes, pause_below_bytes, resume_above_bytes, ended_at, ended_reason, resumed_total_bytes, resumed_available_bytes, updated_at FROM capacity_protection_intervals ORDER BY started_at DESC LIMIT ?",
+        "SELECT interval_id, source_mount, started_at, started_reason, opened_total_bytes, opened_available_bytes, pause_below_bytes, resume_above_bytes, ended_at, ended_reason, resumed_total_bytes, resumed_available_bytes, updated_at FROM capacity_protection_intervals ORDER BY started_at DESC LIMIT $1",
     )
     .bind(limit)
     .fetch_all(pool)
@@ -841,13 +841,13 @@ pub async fn recent_intervals(
             updated_at,
         ) = row;
         let (skipped_series_total, skipped_sample_count): (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(*), COALESCE(SUM(skipped_count), 0) FROM capacity_skipped_series WHERE interval_id = ?",
+            "SELECT COUNT(*), COALESCE(SUM(skipped_count), 0) FROM capacity_skipped_series WHERE interval_id = $1",
         )
         .bind(&interval_id)
         .fetch_one(pool)
         .await?;
         let series = sqlx::query_as::<_, (String, String, String, String, i64, String, String)>(
-            "SELECT scope_kind, scope_key, metric, dimension, skipped_count, first_skipped_at, last_skipped_at FROM capacity_skipped_series WHERE interval_id = ? ORDER BY skipped_count DESC, last_skipped_at DESC, scope_key ASC, metric ASC, dimension ASC LIMIT ?",
+            "SELECT scope_kind, scope_key, metric, dimension, skipped_count, first_skipped_at, last_skipped_at FROM capacity_skipped_series WHERE interval_id = $1 ORDER BY skipped_count DESC, last_skipped_at DESC, scope_key ASC, metric ASC, dimension ASC LIMIT $2",
         )
         .bind(&interval_id)
         .bind(ADMIN_SKIPPED_SERIES_LIMIT)

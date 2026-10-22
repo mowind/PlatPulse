@@ -293,7 +293,7 @@ async fn store_rejected<I: ReportInventory>(
         .rejections()
         .first()
         .map(|rejection| rejection.code.as_str());
-    let result = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, rejection_code, inventory_revision, inventory_sha256, inventory_protocol_major) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    let result = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, rejection_code, inventory_revision, inventory_sha256, inventory_protocol_major) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
         .bind(report.report_id.to_string()).bind(report.agent_id.to_string())
         .bind(report.agent_epoch as i64).bind(report.boot_id.to_string())
         .bind(report.report_sequence as i64).bind(hash.to_string())
@@ -333,7 +333,7 @@ async fn record_security_event(
     tx: &mut Transaction<'_, Sqlite>,
     agent_id: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE agents SET security_event_count=security_event_count+1 WHERE agent_id=?")
+    sqlx::query("UPDATE agents SET security_event_count=security_event_count+1 WHERE agent_id=$1")
         .bind(agent_id)
         .execute(&mut **tx)
         .await
@@ -381,7 +381,7 @@ async fn save_component<T: serde::Serialize>(
     let error_message = redacted_error_message.as_deref();
     let value_received_at = (component.status == ComponentStatus::Ok && component.latest.is_some())
         .then_some(received_at);
-    sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision, error_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, attempted_at=excluded.attempted_at, observed_at=COALESCE(excluded.observed_at, component_status.observed_at), received_at=excluded.received_at, value_received_at=COALESCE(excluded.value_received_at, component_status.value_received_at), state_revision=excluded.state_revision, value_revision=CASE WHEN excluded.value_revision > 0 THEN excluded.value_revision ELSE component_status.value_revision END, error_code=excluded.error_code, error_message=excluded.error_message")
+    sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision, error_code, error_message) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, attempted_at=excluded.attempted_at, observed_at=COALESCE(excluded.observed_at, component_status.observed_at), received_at=excluded.received_at, value_received_at=COALESCE(excluded.value_received_at, component_status.value_received_at), state_revision=excluded.state_revision, value_revision=CASE WHEN excluded.value_revision > 0 THEN excluded.value_revision ELSE component_status.value_revision END, error_code=excluded.error_code, error_message=excluded.error_message")
         .bind(agent_id).bind(scope).bind(scope_key).bind(node_id).bind(component_storage_key(key))
         .bind(status_name(component.status)).bind(component.attempted_at.map(|v| v.to_string()))
         .bind(component.latest_observed_at.map(|v| v.to_string())).bind(received_at)
@@ -404,14 +404,14 @@ async fn save_peer_presence(
         return Ok(PeerPresenceDelta::default());
     }
     let previous_peer_ids: HashSet<String> =
-        sqlx::query_scalar("SELECT peer_id FROM current_node_peers WHERE node_id=?")
+        sqlx::query_scalar("SELECT peer_id FROM current_node_peers WHERE node_id=$1")
             .bind(node_id)
             .fetch_all(&mut **tx)
             .await?
             .into_iter()
             .collect();
     let open_peer_ids: HashSet<String> = sqlx::query_scalar(
-        "SELECT peer_id FROM peer_presence_intervals WHERE node_id=? AND closed_at IS NULL",
+        "SELECT peer_id FROM peer_presence_intervals WHERE node_id=$1 AND closed_at IS NULL",
     )
     .bind(node_id)
     .fetch_all(&mut **tx)
@@ -450,7 +450,7 @@ async fn save_peer_presence(
             .client_name
             .as_deref()
             .map(crate::redaction::redact_sensitive);
-        sqlx::query("INSERT INTO peer_presence_intervals (node_id, peer_id, direction, trusted, static_peer, consensus_peer, client_name, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO peer_presence_intervals (node_id, peer_id, direction, trusted, static_peer, consensus_peer, client_name, opened_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
             .bind(node_id)
             .bind(&safe_peer_id)
             .bind(direction)
@@ -467,7 +467,7 @@ async fn save_peer_presence(
         if !incoming.contains(peer_id.as_str()) {
             // Server timestamps are normally monotonic, but a wall-clock
             // adjustment must not violate the interval ordering constraint.
-            sqlx::query("UPDATE peer_presence_intervals SET closed_at=CASE WHEN opened_at > ? THEN opened_at ELSE ? END WHERE node_id=? AND peer_id=? AND closed_at IS NULL")
+            sqlx::query("UPDATE peer_presence_intervals SET closed_at=CASE WHEN opened_at > $1 THEN opened_at ELSE $2 END WHERE node_id=$3 AND peer_id=$4 AND closed_at IS NULL")
                 .bind(received_at)
                 .bind(received_at)
                 .bind(node_id)
@@ -494,11 +494,11 @@ async fn save_current_peers(
 
     // A successful snapshot is authoritative, including an empty list. Error,
     // Unsupported, and omitted optional components leave this table untouched.
-    sqlx::query("DELETE FROM current_node_peer_capabilities WHERE node_id=?")
+    sqlx::query("DELETE FROM current_node_peer_capabilities WHERE node_id=$1")
         .bind(node_id)
         .execute(&mut **tx)
         .await?;
-    sqlx::query("DELETE FROM current_node_peers WHERE node_id=?")
+    sqlx::query("DELETE FROM current_node_peers WHERE node_id=$1")
         .bind(node_id)
         .execute(&mut **tx)
         .await?;
@@ -516,7 +516,7 @@ async fn save_current_peers(
             .as_deref()
             .map(crate::redaction::redact_sensitive);
         let safe_peer_id = crate::redaction::redact_peer_identity(&peer.peer_id);
-        sqlx::query("INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, cbft_protocol_version, cbft_highest_qc_block, cbft_locked_block, cbft_commit_block, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, cbft_protocol_version, cbft_highest_qc_block, cbft_locked_block, cbft_commit_block, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
             .bind(node_id)
             .bind(&safe_peer_id)
             .bind(canonical_ip.as_deref())
@@ -538,15 +538,17 @@ async fn save_current_peers(
             // outside this receipt transaction. A reference only keeps the
             // retained rows honest about being referenced right now, and a
             // failure of that path can never erase a last-good country.
-            sqlx::query("UPDATE geo_location_cache SET last_referenced_at=? WHERE canonical_ip=?")
-                .bind(received_at)
-                .bind(&ip)
-                .execute(&mut **tx)
-                .await?;
+            sqlx::query(
+                "UPDATE geo_location_cache SET last_referenced_at=$1 WHERE canonical_ip=$2",
+            )
+            .bind(received_at)
+            .bind(&ip)
+            .execute(&mut **tx)
+            .await?;
         }
         for capability in &peer.caps {
             let safe_capability = crate::redaction::redact_sensitive(capability);
-            sqlx::query("INSERT INTO current_node_peer_capabilities (node_id, peer_id, capability, updated_at) VALUES (?, ?, ?, ?)")
+            sqlx::query("INSERT INTO current_node_peer_capabilities (node_id, peer_id, capability, updated_at) VALUES ($1, $2, $3, $4)")
                 .bind(node_id)
                 .bind(&safe_peer_id)
                 .bind(safe_capability)
@@ -573,16 +575,16 @@ async fn open_coverage_gap(
     created_at: &str,
 ) -> Result<(), sqlx::Error> {
     let overlap = sqlx::query_as::<_, (i64, i64, i64)>(
-        "SELECT coverage_id, first_height, last_height FROM block_coverage_intervals WHERE node_id=? AND status='open_recoverable_gap' AND first_height <= ? AND last_height >= ? ORDER BY first_height LIMIT 1",
+        "SELECT coverage_id, first_height, last_height FROM block_coverage_intervals WHERE node_id=$1 AND status='open_recoverable_gap' AND first_height <= $2 AND last_height >= $3 ORDER BY first_height LIMIT 1",
     )
     .bind(node_id).bind(to_height as i64).bind(from_height as i64)
     .fetch_optional(&mut **tx).await?;
     if let Some((coverage_id, _first, _last)) = overlap {
-        sqlx::query("UPDATE block_coverage_intervals SET first_height=MIN(first_height,?), last_height=MAX(last_height,?), updated_at=? WHERE coverage_id=?")
+        sqlx::query("UPDATE block_coverage_intervals SET first_height=CASE WHEN first_height <= $1 THEN first_height ELSE $1 END, last_height=CASE WHEN last_height >= $2 THEN last_height ELSE $2 END, updated_at=$3 WHERE coverage_id=$4")
             .bind(from_height as i64).bind(to_height as i64).bind(created_at).bind(coverage_id)
             .execute(&mut **tx).await?;
     } else {
-        sqlx::query("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES (?, ?, ?, 'open_recoverable_gap', ?, ?)")
+        sqlx::query("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ($1, $2, $3, 'open_recoverable_gap', $4, $5)")
             .bind(node_id).bind(from_height as i64).bind(to_height as i64).bind(created_at).bind(created_at)
             .execute(&mut **tx).await?;
     }
@@ -596,18 +598,18 @@ async fn append_coverage_height(
     created_at: &str,
 ) -> Result<(), sqlx::Error> {
     let previous = sqlx::query_as::<_, (i64, i64, i64)>(
-        "SELECT coverage_id, first_height, last_height FROM block_coverage_intervals WHERE node_id=? AND status='covered' AND last_height < ? ORDER BY last_height DESC LIMIT 1",
+        "SELECT coverage_id, first_height, last_height FROM block_coverage_intervals WHERE node_id=$1 AND status='covered' AND last_height < $2 ORDER BY last_height DESC LIMIT 1",
     )
     .bind(node_id).bind(height as i64).fetch_optional(&mut **tx).await?;
     if let Some((coverage_id, first, last)) = previous {
         if last + 1 == height as i64 {
-            sqlx::query("UPDATE block_coverage_intervals SET last_height=?,updated_at=? WHERE coverage_id=?")
+            sqlx::query("UPDATE block_coverage_intervals SET last_height=$1,updated_at=$2 WHERE coverage_id=$3")
                 .bind(height as i64).bind(created_at).bind(coverage_id).execute(&mut **tx).await?;
             return Ok(());
         }
         let _ = (first, last);
     }
-    sqlx::query("INSERT OR IGNORE INTO block_coverage_intervals (node_id,first_height,last_height,status,created_at,updated_at) VALUES (?, ?, ?, 'covered', ?, ?)")
+    sqlx::query("INSERT INTO block_coverage_intervals (node_id,first_height,last_height,status,created_at,updated_at) VALUES ($1, $2, $3, 'covered', $4, $5) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(height as i64).bind(height as i64).bind(created_at).bind(created_at).execute(&mut **tx).await?;
     Ok(())
 }
@@ -617,7 +619,7 @@ async fn coverage_allows_backfill(
     node_id: &str,
     height: u64,
 ) -> Result<Option<i64>, sqlx::Error> {
-    sqlx::query_scalar("SELECT coverage_id FROM block_coverage_intervals WHERE node_id=? AND status='open_recoverable_gap' AND first_height <= ? AND last_height >= ? LIMIT 1")
+    sqlx::query_scalar("SELECT coverage_id FROM block_coverage_intervals WHERE node_id=$1 AND status='open_recoverable_gap' AND first_height <= $2 AND last_height >= $3 LIMIT 1")
         .bind(node_id).bind(height as i64).bind(height as i64).fetch_optional(&mut **tx).await
 }
 
@@ -628,7 +630,7 @@ async fn close_coverage_height(
     now_text: &str,
 ) -> Result<(), sqlx::Error> {
     let row = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT first_height,last_height FROM block_coverage_intervals WHERE coverage_id=?",
+        "SELECT first_height,last_height FROM block_coverage_intervals WHERE coverage_id=$1",
     )
     .bind(coverage_id)
     .fetch_optional(&mut **tx)
@@ -639,27 +641,31 @@ async fn close_coverage_height(
     let first = first as u64;
     let last = last as u64;
     if first == last {
-        sqlx::query("DELETE FROM block_coverage_intervals WHERE coverage_id=?")
+        sqlx::query("DELETE FROM block_coverage_intervals WHERE coverage_id=$1")
             .bind(coverage_id)
             .execute(&mut **tx)
             .await?;
     } else if height == first {
-        sqlx::query("UPDATE block_coverage_intervals SET first_height=first_height+1,updated_at=? WHERE coverage_id=?").bind(now_text).bind(coverage_id).execute(&mut **tx).await?;
+        sqlx::query("UPDATE block_coverage_intervals SET first_height=first_height+1,updated_at=$1 WHERE coverage_id=$2").bind(now_text).bind(coverage_id).execute(&mut **tx).await?;
     } else if height == last {
-        sqlx::query("UPDATE block_coverage_intervals SET last_height=last_height-1,updated_at=? WHERE coverage_id=?").bind(now_text).bind(coverage_id).execute(&mut **tx).await?;
+        sqlx::query("UPDATE block_coverage_intervals SET last_height=last_height-1,updated_at=$1 WHERE coverage_id=$2").bind(now_text).bind(coverage_id).execute(&mut **tx).await?;
     } else if height > first && height < last {
         sqlx::query(
-            "UPDATE block_coverage_intervals SET last_height=? ,updated_at=? WHERE coverage_id=?",
+            "UPDATE block_coverage_intervals SET last_height=$1 ,updated_at=$2 WHERE coverage_id=$3",
         )
         .bind((height - 1) as i64)
         .bind(now_text)
         .bind(coverage_id)
         .execute(&mut **tx)
         .await?;
-        sqlx::query("INSERT INTO block_coverage_intervals (node_id,first_height,last_height,status,created_at,updated_at) SELECT node_id,?,?,status,created_at,? FROM block_coverage_intervals WHERE coverage_id=?").bind(last as i64).bind(now_text).execute(&mut **tx).await?;
+        sqlx::query("INSERT INTO block_coverage_intervals (node_id,first_height,last_height,status,created_at,updated_at) SELECT node_id,$1,$2,status,created_at,$3 FROM block_coverage_intervals WHERE coverage_id=$4").bind(last as i64).bind(now_text).execute(&mut **tx).await?;
     }
     Ok(())
 }
+
+/// How recently an Agent must have been heard from for its Nodes to count as
+/// sources of a Network Reference Head.
+const REFERENCE_SOURCE_FRESHNESS_SECONDS: i64 = 120;
 
 async fn update_network_references(
     tx: &mut Transaction<'_, Sqlite>,
@@ -667,13 +673,28 @@ async fn update_network_references(
     observed_at: &str,
 ) -> Result<(), sqlx::Error> {
     for network_key in network_keys {
-        let rows = sqlx::query_as::<_, (String, i64, Option<String>)>(
-            "SELECT n.node_id, c.current_block, h.resync_state FROM nodes n JOIN agents a ON a.agent_id=n.agent_id JOIN current_node_chain_observations c ON c.node_id=n.node_id LEFT JOIN block_history_state h ON h.node_id=n.node_id WHERE n.network_key=? AND n.lifecycle='active' AND julianday(a.last_received_at) >= julianday(?) - (120.0/86400.0) ORDER BY c.current_block DESC",
+        // Only an Agent heard from within the freshness window is a source. The
+        // window is judged here on parsed instants: an unparseable receipt time
+        // is never fresh.
+        let fresh_since = crate::auth::parse_rfc3339(observed_at)
+            .map(|instant| instant - time::Duration::seconds(REFERENCE_SOURCE_FRESHNESS_SECONDS));
+        let rows = sqlx::query_as::<_, (String, i64, Option<String>, Option<String>)>(
+            "SELECT n.node_id, c.current_block, h.resync_state, a.last_received_at FROM nodes n JOIN agents a ON a.agent_id=n.agent_id JOIN current_node_chain_observations c ON c.node_id=n.node_id LEFT JOIN block_history_state h ON h.node_id=n.node_id WHERE n.network_key=$1 AND n.lifecycle='active' ORDER BY c.current_block DESC",
         )
         .bind(network_key)
-        .bind(observed_at)
         .fetch_all(&mut **tx)
-        .await?;
+        .await?
+        .into_iter()
+        .filter(|(_, _, _, last_received_at)| {
+            fresh_since.is_some_and(|since| {
+                last_received_at
+                    .as_deref()
+                    .and_then(crate::auth::parse_rfc3339)
+                    .is_some_and(|at| at >= since)
+            })
+        })
+        .map(|(node_id, head, state, _)| (node_id, head, state))
+        .collect::<Vec<_>>();
         let eligible = rows
             .iter()
             .filter(|(_, _, state)| state.as_deref() != Some("resyncing"))
@@ -684,12 +705,12 @@ async fn update_network_references(
             eligible
         };
         let Some((node_id, head, _)) = candidates.first() else {
-            sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence, eligible_source_count, contributing_node_id) VALUES (?, NULL, ?, 'unknown', 0, NULL) ON CONFLICT(network_key) DO UPDATE SET block_number=NULL, observed_at=excluded.observed_at, confidence='unknown', eligible_source_count=0, contributing_node_id=NULL")
+            sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence, eligible_source_count, contributing_node_id) VALUES ($1, NULL, $2, 'unknown', 0, NULL) ON CONFLICT(network_key) DO UPDATE SET block_number=NULL, observed_at=excluded.observed_at, confidence='unknown', eligible_source_count=0, contributing_node_id=NULL")
                 .bind(network_key).bind(observed_at).execute(&mut **tx).await?;
             continue;
         };
         let confidence = if candidates.len() >= 2 { "high" } else { "low" };
-        sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence, eligible_source_count, contributing_node_id) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(network_key) DO UPDATE SET block_number=excluded.block_number, observed_at=excluded.observed_at, confidence=excluded.confidence, eligible_source_count=excluded.eligible_source_count, contributing_node_id=excluded.contributing_node_id")
+        sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence, eligible_source_count, contributing_node_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(network_key) DO UPDATE SET block_number=excluded.block_number, observed_at=excluded.observed_at, confidence=excluded.confidence, eligible_source_count=excluded.eligible_source_count, contributing_node_id=excluded.contributing_node_id")
             .bind(network_key).bind(*head).bind(observed_at).bind(confidence).bind(candidates.len() as i64).bind(node_id)
             .execute(&mut **tx).await?;
     }
@@ -910,7 +931,7 @@ async fn block_network_identity_rejections<I: ReportInventory>(
             continue;
         };
         let registered = sqlx::query_as::<_, (String, i64, i64, String)>(
-            "SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks WHERE network_key = ?",
+            "SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks WHERE network_key = $1",
         ).bind(node.network_key.as_str()).fetch_optional(&mut **tx).await?;
         let Some((genesis_hash, chain_id, p2p_network_id, address_hrp)) = registered else {
             continue;
@@ -954,13 +975,13 @@ async fn observe_block_identity(
     let node_id = sample.node_id.to_string();
     // Identity evidence has its own retention and bounded height count. It is
     // deliberately independent from raw Block Summary retention.
-    sqlx::query("DELETE FROM block_identity_window WHERE node_id=? AND retained_until IS NOT NULL AND retained_until < ?")
+    sqlx::query("DELETE FROM block_identity_window WHERE node_id=$1 AND retained_until IS NOT NULL AND retained_until < $2")
         .bind(&node_id)
         .bind(received_at)
         .execute(&mut **tx)
         .await?;
     let existing = sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT block_hash, retained_until FROM block_identity_window WHERE node_id=? AND height=?",
+        "SELECT block_hash, retained_until FROM block_identity_window WHERE node_id=$1 AND height=$2",
     )
     .bind(&node_id)
     .bind(sample.block_number as i64)
@@ -972,7 +993,7 @@ async fn observe_block_identity(
     let observed_hash = sample.block_hash.to_string();
     if let Some((retained_hash, _)) = existing {
         if retained_hash != observed_hash {
-            sqlx::query("INSERT OR IGNORE INTO chain_divergence_observations (node_id, height, retained_block_hash, observed_block_hash, observed_at, reason, retained_observed_at) SELECT ?, ?, block_hash, ?, ?, 'chain_divergence', observed_at FROM block_identity_window WHERE node_id=? AND height=?")
+            sqlx::query("INSERT INTO chain_divergence_observations (node_id, height, retained_block_hash, observed_block_hash, observed_at, reason, retained_observed_at) SELECT $1, $2, block_hash, $3, $4, 'chain_divergence', observed_at FROM block_identity_window WHERE node_id=$5 AND height=$6 ON CONFLICT DO NOTHING")
                 .bind(&node_id)
                 .bind(sample.block_number as i64)
                 .bind(&observed_hash)
@@ -983,7 +1004,7 @@ async fn observe_block_identity(
                 .await?;
             return Ok(true);
         }
-        sqlx::query("UPDATE block_identity_window SET observed_at=?, retained_until=? WHERE node_id=? AND height=?")
+        sqlx::query("UPDATE block_identity_window SET observed_at=$1, retained_until=$2 WHERE node_id=$3 AND height=$4")
             .bind(sample.observed_at.to_string())
             .bind(retention_until)
             .bind(&node_id)
@@ -992,7 +1013,7 @@ async fn observe_block_identity(
             .await?;
         return Ok(false);
     }
-    sqlx::query("INSERT INTO block_identity_window (node_id, height, block_hash, retained_until, observed_at) VALUES (?, ?, ?, ?, ?)")
+    sqlx::query("INSERT INTO block_identity_window (node_id, height, block_hash, retained_until, observed_at) VALUES ($1, $2, $3, $4, $5)")
         .bind(&node_id)
         .bind(sample.block_number as i64)
         .bind(&observed_hash)
@@ -1000,7 +1021,7 @@ async fn observe_block_identity(
         .bind(sample.observed_at.to_string())
         .execute(&mut **tx)
         .await?;
-    sqlx::query("DELETE FROM block_identity_window WHERE node_id=? AND height NOT IN (SELECT height FROM block_identity_window WHERE node_id=? ORDER BY height DESC LIMIT ?)")
+    sqlx::query("DELETE FROM block_identity_window WHERE node_id=$1 AND height NOT IN (SELECT height FROM block_identity_window WHERE node_id=$2 ORDER BY height DESC LIMIT $3)")
         .bind(&node_id)
         .bind(&node_id)
         .bind(MAX_WINDOW_HEIGHTS)
@@ -1333,7 +1354,7 @@ async fn save_current<I: ReportInventory>(
         .as_ref()
         .and_then(|value| value.store_error.as_deref())
         .map(crate::redaction::redact_sensitive);
-    sqlx::query("INSERT INTO current_host_observations (agent_id, cpu_percent, memory_total_bytes, memory_used_bytes, load1, load5, load15, network_rx_bytes_per_sec, network_tx_bytes_per_sec, clock_skew_ms, spool_queued_bytes, spool_queued_reports, spool_oldest_queued_age_ms, spool_dropped_reports, spool_dropped_samples, spool_in_flight, spool_last_delivery_error, spool_last_delivery_at, spool_capacity_bytes, spool_max_age_seconds, spool_dropped_sequence_from, spool_dropped_sequence_to, spool_dropped_time_from, spool_dropped_time_to, spool_dropped_height_from, spool_dropped_height_to, spool_pending_history_gaps, spool_report_too_large, spool_store_fatal, spool_store_error, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET cpu_percent=COALESCE(excluded.cpu_percent, current_host_observations.cpu_percent), memory_total_bytes=COALESCE(excluded.memory_total_bytes, current_host_observations.memory_total_bytes), memory_used_bytes=COALESCE(excluded.memory_used_bytes, current_host_observations.memory_used_bytes), load1=COALESCE(excluded.load1, current_host_observations.load1), load5=COALESCE(excluded.load5, current_host_observations.load5), load15=COALESCE(excluded.load15, current_host_observations.load15), network_rx_bytes_per_sec=COALESCE(excluded.network_rx_bytes_per_sec, current_host_observations.network_rx_bytes_per_sec), network_tx_bytes_per_sec=COALESCE(excluded.network_tx_bytes_per_sec, current_host_observations.network_tx_bytes_per_sec), clock_skew_ms=COALESCE(excluded.clock_skew_ms, current_host_observations.clock_skew_ms), spool_queued_bytes=COALESCE(excluded.spool_queued_bytes, current_host_observations.spool_queued_bytes), spool_queued_reports=COALESCE(excluded.spool_queued_reports, current_host_observations.spool_queued_reports), spool_oldest_queued_age_ms=COALESCE(excluded.spool_oldest_queued_age_ms, current_host_observations.spool_oldest_queued_age_ms), spool_dropped_reports=COALESCE(excluded.spool_dropped_reports, current_host_observations.spool_dropped_reports), spool_dropped_samples=COALESCE(excluded.spool_dropped_samples, current_host_observations.spool_dropped_samples), spool_in_flight=COALESCE(excluded.spool_in_flight, current_host_observations.spool_in_flight), spool_last_delivery_error=COALESCE(excluded.spool_last_delivery_error, current_host_observations.spool_last_delivery_error), spool_last_delivery_at=COALESCE(excluded.spool_last_delivery_at, current_host_observations.spool_last_delivery_at), spool_capacity_bytes=COALESCE(excluded.spool_capacity_bytes, current_host_observations.spool_capacity_bytes), spool_max_age_seconds=COALESCE(excluded.spool_max_age_seconds, current_host_observations.spool_max_age_seconds), spool_dropped_sequence_from=COALESCE(excluded.spool_dropped_sequence_from, current_host_observations.spool_dropped_sequence_from), spool_dropped_sequence_to=COALESCE(excluded.spool_dropped_sequence_to, current_host_observations.spool_dropped_sequence_to), spool_dropped_time_from=COALESCE(excluded.spool_dropped_time_from, current_host_observations.spool_dropped_time_from), spool_dropped_time_to=COALESCE(excluded.spool_dropped_time_to, current_host_observations.spool_dropped_time_to), spool_dropped_height_from=COALESCE(excluded.spool_dropped_height_from, current_host_observations.spool_dropped_height_from), spool_dropped_height_to=COALESCE(excluded.spool_dropped_height_to, current_host_observations.spool_dropped_height_to), spool_pending_history_gaps=COALESCE(excluded.spool_pending_history_gaps, current_host_observations.spool_pending_history_gaps), spool_report_too_large=COALESCE(excluded.spool_report_too_large, current_host_observations.spool_report_too_large), spool_store_fatal=COALESCE(excluded.spool_store_fatal, current_host_observations.spool_store_fatal), spool_store_error=COALESCE(excluded.spool_store_error, current_host_observations.spool_store_error), updated_at=excluded.updated_at")
+    sqlx::query("INSERT INTO current_host_observations (agent_id, cpu_percent, memory_total_bytes, memory_used_bytes, load1, load5, load15, network_rx_bytes_per_sec, network_tx_bytes_per_sec, clock_skew_ms, spool_queued_bytes, spool_queued_reports, spool_oldest_queued_age_ms, spool_dropped_reports, spool_dropped_samples, spool_in_flight, spool_last_delivery_error, spool_last_delivery_at, spool_capacity_bytes, spool_max_age_seconds, spool_dropped_sequence_from, spool_dropped_sequence_to, spool_dropped_time_from, spool_dropped_time_to, spool_dropped_height_from, spool_dropped_height_to, spool_pending_history_gaps, spool_report_too_large, spool_store_fatal, spool_store_error, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31) ON CONFLICT(agent_id) DO UPDATE SET cpu_percent=COALESCE(excluded.cpu_percent, current_host_observations.cpu_percent), memory_total_bytes=COALESCE(excluded.memory_total_bytes, current_host_observations.memory_total_bytes), memory_used_bytes=COALESCE(excluded.memory_used_bytes, current_host_observations.memory_used_bytes), load1=COALESCE(excluded.load1, current_host_observations.load1), load5=COALESCE(excluded.load5, current_host_observations.load5), load15=COALESCE(excluded.load15, current_host_observations.load15), network_rx_bytes_per_sec=COALESCE(excluded.network_rx_bytes_per_sec, current_host_observations.network_rx_bytes_per_sec), network_tx_bytes_per_sec=COALESCE(excluded.network_tx_bytes_per_sec, current_host_observations.network_tx_bytes_per_sec), clock_skew_ms=COALESCE(excluded.clock_skew_ms, current_host_observations.clock_skew_ms), spool_queued_bytes=COALESCE(excluded.spool_queued_bytes, current_host_observations.spool_queued_bytes), spool_queued_reports=COALESCE(excluded.spool_queued_reports, current_host_observations.spool_queued_reports), spool_oldest_queued_age_ms=COALESCE(excluded.spool_oldest_queued_age_ms, current_host_observations.spool_oldest_queued_age_ms), spool_dropped_reports=COALESCE(excluded.spool_dropped_reports, current_host_observations.spool_dropped_reports), spool_dropped_samples=COALESCE(excluded.spool_dropped_samples, current_host_observations.spool_dropped_samples), spool_in_flight=COALESCE(excluded.spool_in_flight, current_host_observations.spool_in_flight), spool_last_delivery_error=COALESCE(excluded.spool_last_delivery_error, current_host_observations.spool_last_delivery_error), spool_last_delivery_at=COALESCE(excluded.spool_last_delivery_at, current_host_observations.spool_last_delivery_at), spool_capacity_bytes=COALESCE(excluded.spool_capacity_bytes, current_host_observations.spool_capacity_bytes), spool_max_age_seconds=COALESCE(excluded.spool_max_age_seconds, current_host_observations.spool_max_age_seconds), spool_dropped_sequence_from=COALESCE(excluded.spool_dropped_sequence_from, current_host_observations.spool_dropped_sequence_from), spool_dropped_sequence_to=COALESCE(excluded.spool_dropped_sequence_to, current_host_observations.spool_dropped_sequence_to), spool_dropped_time_from=COALESCE(excluded.spool_dropped_time_from, current_host_observations.spool_dropped_time_from), spool_dropped_time_to=COALESCE(excluded.spool_dropped_time_to, current_host_observations.spool_dropped_time_to), spool_dropped_height_from=COALESCE(excluded.spool_dropped_height_from, current_host_observations.spool_dropped_height_from), spool_dropped_height_to=COALESCE(excluded.spool_dropped_height_to, current_host_observations.spool_dropped_height_to), spool_pending_history_gaps=COALESCE(excluded.spool_pending_history_gaps, current_host_observations.spool_pending_history_gaps), spool_report_too_large=COALESCE(excluded.spool_report_too_large, current_host_observations.spool_report_too_large), spool_store_fatal=COALESCE(excluded.spool_store_fatal, current_host_observations.spool_store_fatal), spool_store_error=COALESCE(excluded.spool_store_error, current_host_observations.spool_store_error), updated_at=excluded.updated_at")
         .bind(&agent_id)
         .bind(host.cpu_percent.latest)
         .bind(host.memory.latest.map(|v| v.total_bytes as i64))
@@ -1367,7 +1388,7 @@ async fn save_current<I: ReportInventory>(
         .bind(received_at)
         .execute(&mut **tx)
         .await?;
-    sqlx::query("INSERT INTO agent_spool_diagnostics (agent_id, max_bytes, max_age_seconds, dropped_sequence_from, dropped_sequence_to, dropped_time_from, dropped_time_to, dropped_height_from, dropped_height_to, pending_history_gaps, report_too_large, store_fatal, store_error, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET max_bytes=excluded.max_bytes, max_age_seconds=excluded.max_age_seconds, dropped_sequence_from=excluded.dropped_sequence_from, dropped_sequence_to=excluded.dropped_sequence_to, dropped_time_from=excluded.dropped_time_from, dropped_time_to=excluded.dropped_time_to, dropped_height_from=excluded.dropped_height_from, dropped_height_to=excluded.dropped_height_to, pending_history_gaps=excluded.pending_history_gaps, report_too_large=excluded.report_too_large, store_fatal=excluded.store_fatal, store_error=excluded.store_error, updated_at=excluded.updated_at")
+    sqlx::query("INSERT INTO agent_spool_diagnostics (agent_id, max_bytes, max_age_seconds, dropped_sequence_from, dropped_sequence_to, dropped_time_from, dropped_time_to, dropped_height_from, dropped_height_to, pending_history_gaps, report_too_large, store_fatal, store_error, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT(agent_id) DO UPDATE SET max_bytes=excluded.max_bytes, max_age_seconds=excluded.max_age_seconds, dropped_sequence_from=excluded.dropped_sequence_from, dropped_sequence_to=excluded.dropped_sequence_to, dropped_time_from=excluded.dropped_time_from, dropped_time_to=excluded.dropped_time_to, dropped_height_from=excluded.dropped_height_from, dropped_height_to=excluded.dropped_height_to, pending_history_gaps=excluded.pending_history_gaps, report_too_large=excluded.report_too_large, store_fatal=excluded.store_fatal, store_error=excluded.store_error, updated_at=excluded.updated_at")
         .bind(&agent_id)
         .bind(host.spool.latest.as_ref().and_then(|v| v.capacity_bytes.map(|x| x as i64)))
         .bind(host.spool.latest.as_ref().and_then(|v| v.max_age_seconds.map(|x| x as i64)))
@@ -1385,12 +1406,12 @@ async fn save_current<I: ReportInventory>(
         .execute(&mut **tx)
         .await?;
     if let Some(disk) = host.disk.latest.as_ref() {
-        sqlx::query("DELETE FROM current_host_disk_mounts WHERE agent_id = ?")
+        sqlx::query("DELETE FROM current_host_disk_mounts WHERE agent_id = $1")
             .bind(&agent_id)
             .execute(&mut **tx)
             .await?;
         for mount in &disk.mounts {
-            sqlx::query("INSERT INTO current_host_disk_mounts (agent_id, mount_path, total_bytes, used_bytes, updated_at) VALUES (?, ?, ?, ?, ?)")
+            sqlx::query("INSERT INTO current_host_disk_mounts (agent_id, mount_path, total_bytes, used_bytes, updated_at) VALUES ($1, $2, $3, $4, $5)")
                 .bind(&agent_id).bind(&mount.mount_path).bind(mount.total_bytes as i64).bind(mount.used_bytes as i64).bind(received_at).execute(&mut **tx).await?;
         }
     }
@@ -1565,7 +1586,7 @@ async fn save_current<I: ReportInventory>(
                 && peers.latest.is_some()
             {
                 sqlx::query_scalar::<_, Option<String>>(
-                        "SELECT value_received_at FROM component_status WHERE agent_id=? AND scope='node' AND scope_key=? AND component_key='peers'",
+                        "SELECT value_received_at FROM component_status WHERE agent_id=$1 AND scope='node' AND scope_key=$2 AND component_key='peers'",
                     )
                     .bind(&agent_id)
                     .bind(&node_id)
@@ -1621,7 +1642,7 @@ async fn save_current<I: ReportInventory>(
             }
         }
         if let Some(process) = node.process.latest {
-            sqlx::query("INSERT INTO current_node_process_observations (node_id, pid, started_at, cpu_percent, memory_bytes, uptime_ms, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET pid=excluded.pid, started_at=excluded.started_at, cpu_percent=excluded.cpu_percent, memory_bytes=excluded.memory_bytes, uptime_ms=excluded.uptime_ms, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO current_node_process_observations (node_id, pid, started_at, cpu_percent, memory_bytes, uptime_ms, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT(node_id) DO UPDATE SET pid=excluded.pid, started_at=excluded.started_at, cpu_percent=excluded.cpu_percent, memory_bytes=excluded.memory_bytes, uptime_ms=excluded.uptime_ms, updated_at=excluded.updated_at")
                 .bind(&node_id).bind(process.pid as i64).bind(process.started_at.to_string()).bind(process.cpu_percent).bind(process.memory_bytes as i64).bind(process.uptime_ms as i64).bind(received_at).execute(&mut **tx).await?;
         }
         if let Some(size_bytes) = node
@@ -1629,7 +1650,7 @@ async fn save_current<I: ReportInventory>(
             .as_ref()
             .and_then(|observation| observation.latest)
         {
-            sqlx::query("INSERT INTO current_node_data_directory_observations (node_id, size_bytes, updated_at) VALUES (?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET size_bytes=excluded.size_bytes, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO current_node_data_directory_observations (node_id, size_bytes, updated_at) VALUES ($1, $2, $3) ON CONFLICT(node_id) DO UPDATE SET size_bytes=excluded.size_bytes, updated_at=excluded.updated_at")
                 .bind(&node_id)
                 .bind(size_bytes as i64)
                 .bind(received_at)
@@ -1641,7 +1662,7 @@ async fn save_current<I: ReportInventory>(
             .as_ref()
             .and_then(|observation| observation.latest)
         {
-            sqlx::query("UPDATE current_node_data_directory_observations SET capacity_bytes=?, updated_at=? WHERE node_id=?")
+            sqlx::query("UPDATE current_node_data_directory_observations SET capacity_bytes=$1, updated_at=$2 WHERE node_id=$3")
                 .bind(capacity_bytes as i64)
                 .bind(received_at)
                 .bind(&node_id)
@@ -1797,7 +1818,7 @@ async fn save_current<I: ReportInventory>(
             // re-sends the latest sample, so bumping the timestamp
             // unconditionally would turn the "(last progress ...)" diagnostic
             // into a clock instead of an answer.
-            sqlx::query("INSERT INTO block_history_state (node_id, current_head, resync_state, resync_last_progress_at, updated_at) VALUES (?, ?, 'normal', ?, ?) ON CONFLICT(node_id) DO UPDATE SET current_head=excluded.current_head, resync_last_progress_at=CASE WHEN excluded.current_head IS NOT NULL AND (block_history_state.current_head IS NULL OR excluded.current_head > block_history_state.current_head) THEN excluded.resync_last_progress_at ELSE block_history_state.resync_last_progress_at END, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO block_history_state (node_id, current_head, resync_state, resync_last_progress_at, updated_at) VALUES ($1, $2, 'normal', $3, $4) ON CONFLICT(node_id) DO UPDATE SET current_head=excluded.current_head, resync_last_progress_at=CASE WHEN excluded.current_head IS NOT NULL AND (block_history_state.current_head IS NULL OR excluded.current_head > block_history_state.current_head) THEN excluded.resync_last_progress_at ELSE block_history_state.resync_last_progress_at END, updated_at=excluded.updated_at")
                 .bind(&node_id)
                 .bind(current)
                 .bind(&current_timestamp)
@@ -1810,8 +1831,24 @@ async fn save_current<I: ReportInventory>(
             // episode has to persist for the grace window before it flips the
             // projection; resync_started_at marks the episode start and is
             // cleared once the head re-reaches the high-water mark.
-            sqlx::query("UPDATE block_history_state SET resync_state=CASE WHEN current_head IS NULL OR historical_high_watermark IS NULL THEN resync_state WHEN current_head >= historical_high_watermark THEN 'normal' WHEN resync_started_at IS NOT NULL AND julianday(updated_at) - julianday(resync_started_at) >= (? / 86400.0) THEN 'resyncing' ELSE resync_state END, resync_started_at=CASE WHEN current_head IS NULL OR historical_high_watermark IS NULL THEN resync_started_at WHEN current_head >= historical_high_watermark THEN NULL ELSE COALESCE(resync_started_at, updated_at) END WHERE node_id=?")
-                .bind(RESYNC_TRANSITION_GRACE_SECONDS as f64)
+            // Whether the open episode has outlasted the grace window is judged
+            // on parsed instants; an episode or update instant that cannot be
+            // parsed has not outlasted it.
+            let episode: Option<(Option<String>, String)> = sqlx::query_as(
+                "SELECT resync_started_at, updated_at FROM block_history_state WHERE node_id=$1",
+            )
+            .bind(&node_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+            let grace_elapsed = episode.is_some_and(|(started_at, updated_at)| {
+                let started_at = started_at.as_deref().and_then(crate::auth::parse_rfc3339);
+                let updated_at = crate::auth::parse_rfc3339(&updated_at);
+                matches!((started_at, updated_at), (Some(started_at), Some(updated_at))
+                    if updated_at - started_at
+                        >= time::Duration::seconds(RESYNC_TRANSITION_GRACE_SECONDS))
+            });
+            sqlx::query("UPDATE block_history_state SET resync_state=CASE WHEN current_head IS NULL OR historical_high_watermark IS NULL THEN resync_state WHEN current_head >= historical_high_watermark THEN 'normal' WHEN resync_started_at IS NOT NULL AND $1 = 1 THEN 'resyncing' ELSE resync_state END, resync_started_at=CASE WHEN current_head IS NULL OR historical_high_watermark IS NULL THEN resync_started_at WHEN current_head >= historical_high_watermark THEN NULL ELSE COALESCE(resync_started_at, updated_at) END WHERE node_id=$2")
+                .bind(i64::from(grace_elapsed))
                 .bind(&node_id)
                 .execute(&mut **tx)
                 .await?;
@@ -1821,29 +1858,29 @@ async fn save_current<I: ReportInventory>(
             let consensus = node.chain.consensus.latest;
             let identity = node.chain.network_identity.latest.as_ref();
             let metadata = node.chain.static_metadata.latest.as_ref();
-            sqlx::query("INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, pulled_states, known_states, consensus_epoch, consensus_view_number, consensus_validator, consensus_highest_qc_block, consensus_highest_lock_block, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, node_key_fingerprint, enode, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET rpc_client_version=COALESCE(excluded.rpc_client_version, current_node_chain_observations.rpc_client_version), syncing=COALESCE(excluded.syncing, current_node_chain_observations.syncing), current_block=COALESCE(excluded.current_block, current_node_chain_observations.current_block), highest_block=COALESCE(excluded.highest_block, current_node_chain_observations.highest_block), pulled_states=COALESCE(excluded.pulled_states, current_node_chain_observations.pulled_states), known_states=COALESCE(excluded.known_states, current_node_chain_observations.known_states), consensus_epoch=COALESCE(excluded.consensus_epoch, current_node_chain_observations.consensus_epoch), consensus_view_number=COALESCE(excluded.consensus_view_number, current_node_chain_observations.consensus_view_number), consensus_validator=COALESCE(excluded.consensus_validator, current_node_chain_observations.consensus_validator), consensus_highest_qc_block=COALESCE(excluded.consensus_highest_qc_block, current_node_chain_observations.consensus_highest_qc_block), consensus_highest_lock_block=COALESCE(excluded.consensus_highest_lock_block, current_node_chain_observations.consensus_highest_lock_block), consensus_highest_commit_block=COALESCE(excluded.consensus_highest_commit_block, current_node_chain_observations.consensus_highest_commit_block), network_genesis_hash=COALESCE(excluded.network_genesis_hash, current_node_chain_observations.network_genesis_hash), network_chain_id=COALESCE(excluded.network_chain_id, current_node_chain_observations.network_chain_id), network_p2p_network_id=COALESCE(excluded.network_p2p_network_id, current_node_chain_observations.network_p2p_network_id), network_address_hrp=COALESCE(excluded.network_address_hrp, current_node_chain_observations.network_address_hrp), node_key_fingerprint=COALESCE(excluded.node_key_fingerprint, current_node_chain_observations.node_key_fingerprint), enode=COALESCE(excluded.enode, current_node_chain_observations.enode), updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, pulled_states, known_states, consensus_epoch, consensus_view_number, consensus_validator, consensus_highest_qc_block, consensus_highest_lock_block, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, node_key_fingerprint, enode, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) ON CONFLICT(node_id) DO UPDATE SET rpc_client_version=COALESCE(excluded.rpc_client_version, current_node_chain_observations.rpc_client_version), syncing=COALESCE(excluded.syncing, current_node_chain_observations.syncing), current_block=COALESCE(excluded.current_block, current_node_chain_observations.current_block), highest_block=COALESCE(excluded.highest_block, current_node_chain_observations.highest_block), pulled_states=COALESCE(excluded.pulled_states, current_node_chain_observations.pulled_states), known_states=COALESCE(excluded.known_states, current_node_chain_observations.known_states), consensus_epoch=COALESCE(excluded.consensus_epoch, current_node_chain_observations.consensus_epoch), consensus_view_number=COALESCE(excluded.consensus_view_number, current_node_chain_observations.consensus_view_number), consensus_validator=COALESCE(excluded.consensus_validator, current_node_chain_observations.consensus_validator), consensus_highest_qc_block=COALESCE(excluded.consensus_highest_qc_block, current_node_chain_observations.consensus_highest_qc_block), consensus_highest_lock_block=COALESCE(excluded.consensus_highest_lock_block, current_node_chain_observations.consensus_highest_lock_block), consensus_highest_commit_block=COALESCE(excluded.consensus_highest_commit_block, current_node_chain_observations.consensus_highest_commit_block), network_genesis_hash=COALESCE(excluded.network_genesis_hash, current_node_chain_observations.network_genesis_hash), network_chain_id=COALESCE(excluded.network_chain_id, current_node_chain_observations.network_chain_id), network_p2p_network_id=COALESCE(excluded.network_p2p_network_id, current_node_chain_observations.network_p2p_network_id), network_address_hrp=COALESCE(excluded.network_address_hrp, current_node_chain_observations.network_address_hrp), node_key_fingerprint=COALESCE(excluded.node_key_fingerprint, current_node_chain_observations.node_key_fingerprint), enode=COALESCE(excluded.enode, current_node_chain_observations.enode), updated_at=excluded.updated_at")
                 .bind(&node_id).bind(rpc.map(|v| &v.client_version)).bind(sync.map(|v| v.syncing as i64)).bind(sync.map(|v| v.current_block as i64)).bind(sync.map(|v| v.highest_block as i64)).bind(sync.map(|v| v.pulled_states as i64)).bind(sync.map(|v| v.known_states as i64)).bind(consensus.map(|v| v.epoch as i64)).bind(consensus.map(|v| v.view_number as i64)).bind(consensus.map(|v| v.validator as i64)).bind(consensus.map(|v| v.highest_qc_block as i64)).bind(consensus.map(|v| v.highest_lock_block as i64)).bind(consensus.map(|v| v.highest_commit_block as i64)).bind(identity.map(|v| v.genesis_hash.to_string())).bind(identity.map(|v| v.chain_id as i64)).bind(identity.map(|v| v.p2p_network_id as i64)).bind(identity.and_then(|v| v.address_hrp.as_deref())).bind(metadata.map(|v| v.node_key_fingerprint.to_string())).bind(metadata.and_then(|v| v.enode.as_deref())).bind(received_at).execute(&mut **tx).await?;
             if let Some(rpc) = rpc {
-                sqlx::query("DELETE FROM current_node_rpc_namespaces WHERE node_id = ?")
+                sqlx::query("DELETE FROM current_node_rpc_namespaces WHERE node_id = $1")
                     .bind(&node_id)
                     .execute(&mut **tx)
                     .await?;
                 for namespace in &rpc.namespaces {
-                    sqlx::query("INSERT INTO current_node_rpc_namespaces (node_id, namespace, updated_at) VALUES (?, ?, ?)").bind(&node_id).bind(namespace).bind(received_at).execute(&mut **tx).await?;
+                    sqlx::query("INSERT INTO current_node_rpc_namespaces (node_id, namespace, updated_at) VALUES ($1, $2, $3)").bind(&node_id).bind(namespace).bind(received_at).execute(&mut **tx).await?;
                 }
-                sqlx::query("DELETE FROM current_node_rpc_methods WHERE node_id = ?")
+                sqlx::query("DELETE FROM current_node_rpc_methods WHERE node_id = $1")
                     .bind(&node_id)
                     .execute(&mut **tx)
                     .await?;
                 for method in &rpc.methods {
-                    sqlx::query("INSERT INTO current_node_rpc_methods (node_id, method, updated_at) VALUES (?, ?, ?)").bind(&node_id).bind(method).bind(received_at).execute(&mut **tx).await?;
+                    sqlx::query("INSERT INTO current_node_rpc_methods (node_id, method, updated_at) VALUES ($1, $2, $3)").bind(&node_id).bind(method).bind(received_at).execute(&mut **tx).await?;
                 }
             }
         }
     }
     for sample in &report.block_summaries {
         let node_id = sample.node_id.to_string();
-        let registered_identity = sqlx::query_as::<_, (String, i64, i64, String)>("SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks n JOIN nodes nd ON nd.network_key = n.network_key WHERE nd.node_id = ?")
+        let registered_identity = sqlx::query_as::<_, (String, i64, i64, String)>("SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks n JOIN nodes nd ON nd.network_key = n.network_key WHERE nd.node_id = $1")
             .bind(&node_id)
             .fetch_optional(&mut **tx)
             .await?;
@@ -1877,7 +1914,7 @@ async fn save_current<I: ReportInventory>(
         }
         if sample.source == platpulse_core::block::BlockSource::Subscription {
             let historical_high_watermark: Option<i64> = sqlx::query_scalar(
-                "SELECT historical_high_watermark FROM block_history_state WHERE node_id=?",
+                "SELECT historical_high_watermark FROM block_history_state WHERE node_id=$1",
             )
             .bind(&node_id)
             .fetch_optional(&mut **tx)
@@ -1892,7 +1929,7 @@ async fn save_current<I: ReportInventory>(
         } else {
             None
         };
-        let inserted = sqlx::query("INSERT OR IGNORE INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_key_fingerprint, seal_signer_match, node_key_fingerprint, node_key_valid_from, node_key_valid_until, node_key_history_complete, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, accepted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        let inserted = sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_key_fingerprint, seal_signer_match, node_key_fingerprint, node_key_valid_from, node_key_valid_until, node_key_history_complete, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, accepted_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26) ON CONFLICT DO NOTHING")
             .bind(&node_id).bind(sample.block_number as i64).bind(sample.block_hash.to_string()).bind(sample.parent_hash.to_string())
             .bind(sample.network_identity.genesis_hash.to_string()).bind(sample.network_identity.chain_id as i64).bind(sample.network_identity.p2p_network_id as i64).bind(sample.network_identity.address_hrp.as_deref().unwrap_or(""))
             .bind(sample.block_timestamp_ms as i64).bind(sample.observed_at.to_string()).bind(sample.transaction_count as i64).bind(sample.block_interval_ms.map(|v| v as i64)).bind(match sample.source { platpulse_core::block::BlockSource::Subscription => "subscription", platpulse_core::block::BlockSource::GapBackfill => "gap_backfill" })
@@ -1907,7 +1944,7 @@ async fn save_current<I: ReportInventory>(
             append_coverage_height(&mut *tx, &node_id, sample.block_number, received_at).await?;
         }
 
-        sqlx::query("INSERT INTO observed_network_heads (node_id, block_number, block_hash, observed_at, confidence, eligible_sources) VALUES (?, ?, ?, ?, 'unknown', '[\\\"subscription\\\"]') ON CONFLICT(node_id) DO UPDATE SET block_number=excluded.block_number, block_hash=excluded.block_hash, observed_at=excluded.observed_at, confidence=excluded.confidence, eligible_sources=excluded.eligible_sources")
+        sqlx::query("INSERT INTO observed_network_heads (node_id, block_number, block_hash, observed_at, confidence, eligible_sources) VALUES ($1, $2, $3, $4, 'unknown', '[\\\"subscription\\\"]') ON CONFLICT(node_id) DO UPDATE SET block_number=excluded.block_number, block_hash=excluded.block_hash, observed_at=excluded.observed_at, confidence=excluded.confidence, eligible_sources=excluded.eligible_sources")
             .bind(&node_id).bind(sample.block_number as i64).bind(sample.block_hash.to_string()).bind(sample.observed_at.to_string()).execute(&mut **tx).await?;
         // last_accepted_summary_at is the durable proof that this Node's
         // history was accepted again (ADR 0011 decision 4). The Admin refusal
@@ -1916,7 +1953,7 @@ async fn save_current<I: ReportInventory>(
         // retention ages the raw Block Summary rows out; updated_at cannot
         // serve that purpose because the current-head projection writes it on
         // every Report.
-        sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, last_accepted_summary_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET historical_high_watermark=MAX(block_history_state.historical_high_watermark, excluded.historical_high_watermark), cumulative_block_count=block_history_state.cumulative_block_count + 1, cumulative_transaction_count=block_history_state.cumulative_transaction_count + excluded.cumulative_transaction_count, cumulative_self_seal_count=block_history_state.cumulative_self_seal_count + excluded.cumulative_self_seal_count, last_accepted_summary_at=excluded.last_accepted_summary_at, updated_at=excluded.updated_at")
+        sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, last_accepted_summary_at, updated_at) VALUES ($1, $2, 1, $3, $4, $5, $6) ON CONFLICT(node_id) DO UPDATE SET historical_high_watermark=CASE WHEN block_history_state.historical_high_watermark >= excluded.historical_high_watermark THEN block_history_state.historical_high_watermark ELSE excluded.historical_high_watermark END, cumulative_block_count=block_history_state.cumulative_block_count + 1, cumulative_transaction_count=block_history_state.cumulative_transaction_count + excluded.cumulative_transaction_count, cumulative_self_seal_count=block_history_state.cumulative_self_seal_count + excluded.cumulative_self_seal_count, last_accepted_summary_at=excluded.last_accepted_summary_at, updated_at=excluded.updated_at")
             .bind(&node_id).bind(sample.block_number as i64).bind(sample.transaction_count as i64)
             .bind((sample.attribution.seal_signer_match == platpulse_core::block::SealSignerMatch::SignerSelf) as i64).bind(received_at).bind(received_at).execute(&mut **tx).await?;
         // The block tiers (issue #248) advance exactly where the cumulative
@@ -1976,7 +2013,7 @@ async fn resolve_node_transfer<I: ReportInventory>(
     // Materialize transfers that expired before this declaration so the
     // history never shows a stale pending row for an expired handover.
     let expired = sqlx::query(
-        "UPDATE node_transfers SET status='expired', updated_at=? WHERE node_id=? AND target_agent_id=? AND status='pending' AND expires_at <= ?",
+        "UPDATE node_transfers SET status='expired', updated_at=$1 WHERE node_id=$2 AND target_agent_id=$3 AND status='pending' AND expires_at <= $4",
     )
     .bind(now_text)
     .bind(node.node_id.to_string())
@@ -1996,7 +2033,7 @@ async fn resolve_node_transfer<I: ReportInventory>(
         .await;
     }
     let pending = sqlx::query_as::<_, (String, String)>(
-        "SELECT transfer_id, source_agent_id FROM node_transfers WHERE node_id=? AND target_agent_id=? AND status='pending' AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
+        "SELECT transfer_id, source_agent_id FROM node_transfers WHERE node_id=$1 AND target_agent_id=$2 AND status='pending' AND expires_at > $3 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(node.node_id.to_string())
     .bind(reporting_agent)
@@ -2007,7 +2044,7 @@ async fn resolve_node_transfer<I: ReportInventory>(
         return Ok(TransferResolution::NoTransfer);
     };
     let registered = sqlx::query_as::<_, (String, String, i64, i64, String)>(
-        "SELECT n.network_key, r.genesis_hash, r.chain_id, r.p2p_network_id, r.address_hrp FROM nodes n JOIN networks r ON r.network_key=n.network_key WHERE n.node_id=?",
+        "SELECT n.network_key, r.genesis_hash, r.chain_id, r.p2p_network_id, r.address_hrp FROM nodes n JOIN networks r ON r.network_key=n.network_key WHERE n.node_id=$1",
     )
     .bind(node.node_id.to_string())
     .fetch_optional(&mut **tx)
@@ -2017,7 +2054,7 @@ async fn resolve_node_transfer<I: ReportInventory>(
     };
     if node.network_key.as_str() != registered_key {
         sqlx::query(
-            "UPDATE node_transfers SET status='rejected', rejection_code='network_key_mismatch', rejection_reason=?, updated_at=? WHERE transfer_id=?",
+            "UPDATE node_transfers SET status='rejected', rejection_code='network_key_mismatch', rejection_reason=$1, updated_at=$2 WHERE transfer_id=$3",
         )
         .bind("target declared the Node under a different Network key than the registered Network")
         .bind(now_text)
@@ -2065,7 +2102,7 @@ async fn resolve_node_transfer<I: ReportInventory>(
     }
     if !mismatched_fields.is_empty() {
         sqlx::query(
-            "UPDATE node_transfers SET status='identity_mismatch', rejection_code='identity_mismatch', rejection_reason=?, mismatched_fields=?, updated_at=? WHERE transfer_id=?",
+            "UPDATE node_transfers SET status='identity_mismatch', rejection_code='identity_mismatch', rejection_reason=$1, mismatched_fields=$2, updated_at=$3 WHERE transfer_id=$4",
         )
         .bind("the target-declared Network identity contradicts the registered Network; ownership stays with the source Agent")
         .bind(serde_json::to_string(&mismatched_fields).expect("fields serialize"))
@@ -2088,7 +2125,7 @@ async fn resolve_node_transfer<I: ReportInventory>(
         return Ok(TransferResolution::IdentityMismatch);
     }
     sqlx::query(
-        "UPDATE node_transfers SET status='completed', completed_at=?, updated_at=? WHERE transfer_id=?",
+        "UPDATE node_transfers SET status='completed', completed_at=$1, updated_at=$2 WHERE transfer_id=$3",
     )
     .bind(now_text)
     .bind(now_text)
@@ -2103,13 +2140,13 @@ async fn resolve_node_transfer<I: ReportInventory>(
     sqlx::query("PRAGMA defer_foreign_keys=ON")
         .execute(&mut **tx)
         .await?;
-    sqlx::query("UPDATE nodes SET agent_id=?, updated_at=? WHERE node_id=?")
+    sqlx::query("UPDATE nodes SET agent_id=$1, updated_at=$2 WHERE node_id=$3")
         .bind(reporting_agent)
         .bind(now_text)
         .bind(node.node_id.to_string())
         .execute(&mut **tx)
         .await?;
-    sqlx::query("UPDATE component_status SET agent_id=? WHERE node_id=?")
+    sqlx::query("UPDATE component_status SET agent_id=$1 WHERE node_id=$2")
         .bind(reporting_agent)
         .bind(node.node_id.to_string())
         .execute(&mut **tx)
@@ -2282,7 +2319,7 @@ async fn ingest_report<I: ReportInventory>(
     };
 
     let existing = match sqlx::query_as::<_, ReceiptRow>(
-        "SELECT report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id = ?",
+        "SELECT report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id = $1",
     )
     .bind(parsed.report_id.to_string())
     .fetch_optional(&mut *tx)
@@ -2312,7 +2349,7 @@ async fn ingest_report<I: ReportInventory>(
         // retained Receipt is not returned even when the immutable bytes match
         // (design 15.10.5, issue #192).
         match sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+            "SELECT 1 FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
         )
         .bind(&auth.agent_id)
         .fetch_optional(&mut *tx)
@@ -2369,7 +2406,7 @@ async fn ingest_report<I: ReportInventory>(
     // predicate makes a late report fail exactly like an invalid credential,
     // so no later Inventory, retry, or restart can reconstruct its Nodes.
     let agent = match sqlx::query_as::<_, AgentRow>(
-        "SELECT agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, last_report_sequence, last_inventory_revision FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+        "SELECT agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, last_report_sequence, last_inventory_revision FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
     )
     .bind(&auth.agent_id)
     .fetch_optional(&mut *tx)
@@ -2411,7 +2448,7 @@ async fn ingest_report<I: ReportInventory>(
     }
 
     let old_boot_status: Option<String> = sqlx::query_scalar(
-        "SELECT status FROM agent_boots WHERE agent_id=? AND agent_epoch=? AND boot_id=?",
+        "SELECT status FROM agent_boots WHERE agent_id=$1 AND agent_epoch=$2 AND boot_id=$3",
     )
     .bind(&auth.agent_id)
     .bind(parsed.agent_epoch as i64)
@@ -2445,7 +2482,7 @@ async fn ingest_report<I: ReportInventory>(
 
     let inventory_hash = parsed.inventory.accepted_sha256();
     let prior_inventory_hash: Option<String> =
-        match sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id=?")
+        match sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id=$1")
             .bind(&auth.agent_id)
             .fetch_optional(&mut *tx)
             .await
@@ -2518,7 +2555,7 @@ async fn ingest_report<I: ReportInventory>(
     };
 
     // A sequence is unique within one boot. Never silently accept a competing body.
-    let sequence_conflict = match sqlx::query_scalar::<_, String>("SELECT report_id FROM agent_report_receipts WHERE agent_id = ? AND agent_epoch = ? AND boot_id = ? AND report_sequence = ?")
+    let sequence_conflict = match sqlx::query_scalar::<_, String>("SELECT report_id FROM agent_report_receipts WHERE agent_id = $1 AND agent_epoch = $2 AND boot_id = $3 AND report_sequence = $4")
         .bind(&auth.agent_id).bind(parsed.agent_epoch as i64).bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).fetch_optional(&mut *tx).await {
             Ok(v) => v, Err(_) => return error(&request_id.0, StatusCode::SERVICE_UNAVAILABLE, "unavailable", "Server database is unavailable")
     };
@@ -2629,7 +2666,7 @@ async fn ingest_report<I: ReportInventory>(
         && parsed.boot_id.to_string() == agent.active_boot_id.as_deref().unwrap_or_default()
         && parsed.report_sequence > (last as u64).saturating_add(1)
     {
-        let _ = sqlx::query("INSERT OR IGNORE INTO report_sequence_gaps (agent_id, boot_id, from_sequence, to_sequence, created_at) VALUES (?, ?, ?, ?, ?)")
+        let _ = sqlx::query("INSERT INTO report_sequence_gaps (agent_id, boot_id, from_sequence, to_sequence, created_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING")
             .bind(&auth.agent_id)
             .bind(parsed.boot_id.to_string())
             .bind(last.saturating_add(1))
@@ -2668,7 +2705,7 @@ async fn ingest_report<I: ReportInventory>(
             continue;
         }
         let known = match sqlx::query_scalar::<_, String>(
-            "SELECT network_key FROM networks WHERE network_key = ?",
+            "SELECT network_key FROM networks WHERE network_key = $1",
         )
         .bind(node.network_key.as_str())
         .fetch_optional(&mut *tx)
@@ -2701,7 +2738,7 @@ async fn ingest_report<I: ReportInventory>(
             .await;
         }
         let owner =
-            match sqlx::query_scalar::<_, String>("SELECT agent_id FROM nodes WHERE node_id = ?")
+            match sqlx::query_scalar::<_, String>("SELECT agent_id FROM nodes WHERE node_id = $1")
                 .bind(node.node_id.to_string())
                 .fetch_optional(&mut *tx)
                 .await
@@ -2775,7 +2812,7 @@ async fn ingest_report<I: ReportInventory>(
     // Equal content is unchanged; do not retire siblings or rewrite inventory
     // ownership on a replay. A newly accepted declaration remains authoritative.
     if !inventory_unchanged && parsed.inventory.nodes().is_empty() {
-        if sqlx::query("UPDATE nodes SET lifecycle='retired', updated_at=? WHERE agent_id=?")
+        if sqlx::query("UPDATE nodes SET lifecycle='retired', updated_at=$1 WHERE agent_id=$2")
             .bind(&now_text)
             .bind(&auth.agent_id)
             .execute(&mut *tx)
@@ -2796,6 +2833,7 @@ async fn ingest_report<I: ReportInventory>(
         let sql = format!(
             "UPDATE nodes SET lifecycle='retired', updated_at=? WHERE agent_id=? AND node_id NOT IN ({placeholders})"
         );
+        let sql = crate::database::number_placeholders(&sql);
         let mut query = sqlx::query(&sql).bind(&now_text).bind(&auth.agent_id);
         for node_id in &accepted_inventory_ids {
             query = query.bind(node_id);
@@ -2813,7 +2851,7 @@ async fn ingest_report<I: ReportInventory>(
         if rejected_nodes.contains(&node.node_id) {
             continue;
         }
-        let result = sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', 'private', ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET network_key=excluded.network_key, display_name=COALESCE(nodes.display_name, excluded.display_name), rpc_endpoint=excluded.rpc_endpoint, lifecycle='active', inventory_revision=excluded.inventory_revision, updated_at=excluded.updated_at")
+        let result = sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ($1, $2, $3, $4, $5, 'active', 'private', $6, $7, $8) ON CONFLICT(node_id) DO UPDATE SET network_key=excluded.network_key, display_name=COALESCE(nodes.display_name, excluded.display_name), rpc_endpoint=excluded.rpc_endpoint, lifecycle='active', inventory_revision=excluded.inventory_revision, updated_at=excluded.updated_at")
             .bind(node.node_id.to_string()).bind(&auth.agent_id).bind(node.network_key.as_str()).bind(&node.display_name).bind(node.rpc_endpoint.as_str()).bind(effective_inventory_revision as i64).bind(&now_text).bind(&now_text).execute(&mut *tx).await;
         if result.is_err() {
             return error(
@@ -2893,7 +2931,7 @@ async fn ingest_report<I: ReportInventory>(
             continue;
         }
         let node_id = sample.node_id.to_string();
-        let registered_identity = match sqlx::query_as::<_, (String, i64, i64, String)>("SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks n JOIN nodes nd ON nd.network_key = n.network_key WHERE nd.node_id = ?")
+        let registered_identity = match sqlx::query_as::<_, (String, i64, i64, String)>("SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks n JOIN nodes nd ON nd.network_key = n.network_key WHERE nd.node_id = $1")
             .bind(&node_id)
             .fetch_optional(&mut *tx)
             .await {
@@ -2915,7 +2953,7 @@ async fn ingest_report<I: ReportInventory>(
             continue;
         }
         let high: Option<i64> = match sqlx::query_scalar(
-            "SELECT historical_high_watermark FROM block_history_state WHERE node_id=?",
+            "SELECT historical_high_watermark FROM block_history_state WHERE node_id=$1",
         )
         .bind(&node_id)
         .fetch_optional(&mut *tx)
@@ -2938,7 +2976,7 @@ async fn ingest_report<I: ReportInventory>(
             continue;
         }
         let retained: Option<String> = match sqlx::query_scalar(
-            "SELECT block_hash FROM block_identity_window WHERE node_id=? AND height=?",
+            "SELECT block_hash FROM block_identity_window WHERE node_id=$1 AND height=$2",
         )
         .bind(&node_id)
         .bind(sample.block_number as i64)
@@ -3041,7 +3079,7 @@ async fn ingest_report<I: ReportInventory>(
         } else {
             continue;
         };
-        let inserted = sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES (?, ?, ?, 'server_rejected', ?, ?, 'server') ON CONFLICT(node_id, from_height, to_height, kind) DO UPDATE SET reason=excluded.reason, created_at=excluded.created_at, authored_by=excluded.authored_by")
+        let inserted = sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES ($1, $2, $3, 'server_rejected', $4, $5, 'server') ON CONFLICT(node_id, from_height, to_height, kind) DO UPDATE SET reason=excluded.reason, created_at=excluded.created_at, authored_by=excluded.authored_by")
             .bind(sample.node_id.to_string())
             .bind(sample.block_number as i64)
             .bind(sample.block_number as i64)
@@ -3070,7 +3108,7 @@ async fn ingest_report<I: ReportInventory>(
         // An Agent-declared gap is Agent evidence: it is stored with its
         // author so the Server never presents it as its own refusal, and it
         // never overwrites the Server's own text for the same triple.
-        let inserted = sqlx::query("INSERT OR IGNORE INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES (?, ?, ?, ?, ?, ?, 'agent')")
+        let inserted = sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES ($1, $2, $3, $4, $5, $6, 'agent') ON CONFLICT DO NOTHING")
             .bind(gap.node_id.to_string()).bind(gap.from_height as i64).bind(gap.to_height as i64)
             .bind(kind)
             .bind(crate::redaction::redact_sensitive(&gap.reason))
@@ -3346,10 +3384,10 @@ async fn ingest_report<I: ReportInventory>(
         }))
     };
     let stored = receipt.to_bytes();
-    let inserted = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(parsed.report_id.to_string()).bind(&auth.agent_id).bind(parsed.agent_epoch as i64).bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(hash.to_string()).bind(disposition_name(disposition)).bind(&stored).bind(&now_text).execute(&mut *tx).await;
+    let inserted = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)").bind(parsed.report_id.to_string()).bind(&auth.agent_id).bind(parsed.agent_epoch as i64).bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(hash.to_string()).bind(disposition_name(disposition)).bind(&stored).bind(&now_text).execute(&mut *tx).await;
     if let Err(insert_failure) = inserted {
         let concurrent = sqlx::query_as::<_, ReceiptRow>(
-            "SELECT report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id=?",
+            "SELECT report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id=$1",
         )
         .bind(parsed.report_id.to_string())
         .fetch_optional(&mut *tx)
@@ -3380,8 +3418,8 @@ async fn ingest_report<I: ReportInventory>(
     // other active/closing row in this epoch first. For any accepted report the
     // only such row is the previous Boot, which this transaction is replacing.
     if let Err(stale_failure) = sqlx::query(
-        "UPDATE agent_boots SET status='closed', closed_at=COALESCE(closed_at, ?), updated_at=? \
-         WHERE agent_id=? AND agent_epoch=? AND boot_id<>? AND status IN ('active','closing')",
+        "UPDATE agent_boots SET status='closed', closed_at=COALESCE(closed_at, $1), updated_at=$2 \
+         WHERE agent_id=$3 AND agent_epoch=$4 AND boot_id<>$5 AND status IN ('active','closing')",
     )
     .bind(&now_text)
     .bind(&now_text)
@@ -3393,7 +3431,7 @@ async fn ingest_report<I: ReportInventory>(
     {
         return storage_error(&request_id.0, "close stale agent boot", &stale_failure);
     }
-    let boot_upsert = sqlx::query("INSERT INTO agent_boots (agent_id, agent_epoch, boot_id, status, previous_boot_id, last_sequence, close_report_id, closed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, CASE WHEN ?='closed' THEN ? ELSE NULL END, CASE WHEN ?='closed' THEN ? ELSE NULL END, ?, ?) ON CONFLICT(agent_id, agent_epoch, boot_id) DO UPDATE SET status=excluded.status, previous_boot_id=COALESCE(excluded.previous_boot_id, agent_boots.previous_boot_id), last_sequence=MAX(agent_boots.last_sequence, excluded.last_sequence), close_report_id=COALESCE(excluded.close_report_id, agent_boots.close_report_id), closed_at=COALESCE(excluded.closed_at, agent_boots.closed_at), updated_at=excluded.updated_at")
+    let boot_upsert = sqlx::query("INSERT INTO agent_boots (agent_id, agent_epoch, boot_id, status, previous_boot_id, last_sequence, close_report_id, closed_at, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $7='closed' THEN $8 ELSE NULL END, CASE WHEN $9='closed' THEN $10 ELSE NULL END, $11, $12) ON CONFLICT(agent_id, agent_epoch, boot_id) DO UPDATE SET status=excluded.status, previous_boot_id=COALESCE(excluded.previous_boot_id, agent_boots.previous_boot_id), last_sequence=CASE WHEN agent_boots.last_sequence >= excluded.last_sequence THEN agent_boots.last_sequence ELSE excluded.last_sequence END, close_report_id=COALESCE(excluded.close_report_id, agent_boots.close_report_id), closed_at=COALESCE(excluded.closed_at, agent_boots.closed_at), updated_at=excluded.updated_at")
         .bind(&auth.agent_id)
         .bind(parsed.agent_epoch as i64)
         .bind(parsed.boot_id.to_string())
@@ -3437,7 +3475,7 @@ async fn ingest_report<I: ReportInventory>(
     let shutdown_last_error = shutdown_diag
         .and_then(|value| value.shutdown_last_error.as_deref())
         .map(crate::redaction::redact_sensitive);
-    let updated = sqlx::query("UPDATE agents SET active_boot_id=?, active_boot_status=?, previous_boot_id=?, close_report_id=CASE WHEN ?='closed' THEN ? ELSE close_report_id END, last_report_sequence=?, last_inventory_revision=?, inventory_sha256=?, inventory_protocol_major=?, last_received_at=?, clock_skew_ms=?, clock_status=?, agent_capabilities_json=?, shutdown_state=?, shutdown_started_at=?, shutdown_deadline_at=?, shutdown_finished_at=?, shutdown_unresolved_from=?, shutdown_unresolved_to=?, shutdown_last_error=?, shutdown_forced=?, shutdown_report_id=CASE WHEN ?='closed' THEN ? ELSE shutdown_report_id END, shutdown_report_sequence=?, shutdown_updated_at=?, updated_at=? WHERE agent_id=?")
+    let updated = sqlx::query("UPDATE agents SET active_boot_id=$1, active_boot_status=$2, previous_boot_id=$3, close_report_id=CASE WHEN $4='closed' THEN $5 ELSE close_report_id END, last_report_sequence=$6, last_inventory_revision=$7, inventory_sha256=$8, inventory_protocol_major=$9, last_received_at=$10, clock_skew_ms=$11, clock_status=$12, agent_capabilities_json=$13, shutdown_state=$14, shutdown_started_at=$15, shutdown_deadline_at=$16, shutdown_finished_at=$17, shutdown_unresolved_from=$18, shutdown_unresolved_to=$19, shutdown_last_error=$20, shutdown_forced=$21, shutdown_report_id=CASE WHEN $22='closed' THEN $23 ELSE shutdown_report_id END, shutdown_report_sequence=$24, shutdown_updated_at=$25, updated_at=$26 WHERE agent_id=$27")
         .bind(parsed.boot_id.to_string()).bind(lifecycle_status)
         .bind(parsed.previous_boot_id.map(|v| v.to_string()))
         .bind(lifecycle_status).bind(parsed.report_id.to_string())
@@ -3462,7 +3500,7 @@ async fn ingest_report<I: ReportInventory>(
         .execute(&mut *tx)
         .await;
     if should_activate_new_boot {
-        sqlx::query("UPDATE agents SET active_boot_status='active', previous_boot_id=?, close_applied_at=? WHERE agent_id=?")
+        sqlx::query("UPDATE agents SET active_boot_status='active', previous_boot_id=$1, close_applied_at=$2 WHERE agent_id=$3")
             .bind(parsed.previous_boot_id.map(|v| v.to_string()))
             .bind(&now_text)
             .bind(&auth.agent_id)
@@ -3470,7 +3508,7 @@ async fn ingest_report<I: ReportInventory>(
             .await
             .map_err(|_| ())
             .ok();
-        sqlx::query("UPDATE agent_boots SET status='closed', closed_at=?, updated_at=? WHERE agent_id=? AND agent_epoch=? AND boot_id=?")
+        sqlx::query("UPDATE agent_boots SET status='closed', closed_at=$1, updated_at=$2 WHERE agent_id=$3 AND agent_epoch=$4 AND boot_id=$5")
             .bind(&now_text).bind(&now_text).bind(&auth.agent_id)
             .bind(parsed.agent_epoch as i64)
             .bind(parsed.previous_boot_id.map(|v| v.to_string()))
@@ -3490,7 +3528,7 @@ async fn ingest_report<I: ReportInventory>(
     // hostile report must never advance another Agent's Node alert state.
     // Fail safe: without ownership proof no reported Node is evaluated here;
     // the sweep re-evaluates owned subjects on its own schedule.
-    let owned: Vec<String> = sqlx::query_scalar("SELECT node_id FROM nodes WHERE agent_id = ?")
+    let owned: Vec<String> = sqlx::query_scalar("SELECT node_id FROM nodes WHERE agent_id = $1")
         .bind(&auth.agent_id)
         .fetch_all(&mut *tx)
         .await

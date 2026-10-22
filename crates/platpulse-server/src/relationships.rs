@@ -220,7 +220,7 @@ pub async fn record_relations(
     recorded_at: &str,
 ) -> Result<Vec<&'static str>, sqlx::Error> {
     let open = sqlx::query_as::<_, RelationshipInterval>(&format!(
-        "SELECT {INTERVAL_COLUMNS} FROM node_relationship_intervals WHERE node_id = ? AND valid_until IS NULL ORDER BY relation_kind, valid_from"
+        "SELECT {INTERVAL_COLUMNS} FROM node_relationship_intervals WHERE node_id = $1 AND valid_until IS NULL ORDER BY relation_kind, valid_from"
     ))
     .bind(node_id)
     .fetch_all(&mut *connection)
@@ -236,7 +236,7 @@ pub async fn record_relations(
             Some(row) => {
                 let instant = close_instant(&row.valid_from, recorded_at);
                 sqlx::query(
-                    "UPDATE node_relationship_intervals SET valid_until = ? WHERE interval_id = ?",
+                    "UPDATE node_relationship_intervals SET valid_until = $1 WHERE interval_id = $2",
                 )
                 .bind(&instant)
                 .bind(&row.interval_id)
@@ -281,7 +281,7 @@ async fn insert_interval(
     recorded_at: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO node_relationship_intervals (interval_id, node_id, relation_kind, related_key, origin, valid_from, valid_until, recorded_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
+        "INSERT INTO node_relationship_intervals (interval_id, node_id, relation_kind, related_key, origin, valid_from, valid_until, recorded_at) VALUES ($1, $2, $3, $4, $5, $6, NULL, $7)",
     )
     .bind(uuid::Uuid::new_v4().to_string())
     .bind(node_id)
@@ -302,7 +302,7 @@ pub async fn load_intervals(
     node_id: &str,
 ) -> Result<Vec<RelationshipInterval>, sqlx::Error> {
     sqlx::query_as::<_, RelationshipInterval>(&format!(
-        "SELECT {INTERVAL_COLUMNS} FROM node_relationship_intervals WHERE node_id = ? ORDER BY valid_from"
+        "SELECT {INTERVAL_COLUMNS} FROM node_relationship_intervals WHERE node_id = $1 ORDER BY valid_from"
     ))
     .bind(node_id)
     .fetch_all(pool)

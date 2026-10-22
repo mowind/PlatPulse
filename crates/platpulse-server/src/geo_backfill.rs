@@ -73,7 +73,7 @@ pub async fn pending_addresses(
     limit: Option<usize>,
 ) -> Result<Vec<IpAddr>, sqlx::Error> {
     let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>)>(
-        "SELECT DISTINCT peers.remote_ip, cache.country_code, cache.expires_at, cache.last_attempt_at FROM current_node_peers peers LEFT JOIN geo_location_cache cache ON cache.provider = ? AND cache.canonical_ip = peers.remote_ip WHERE peers.remote_ip IS NOT NULL ORDER BY peers.remote_ip ASC",
+        "SELECT DISTINCT peers.remote_ip, cache.country_code, cache.expires_at, cache.last_attempt_at FROM current_node_peers peers LEFT JOIN geo_location_cache cache ON cache.provider = $1 AND cache.canonical_ip = peers.remote_ip WHERE peers.remote_ip IS NOT NULL ORDER BY peers.remote_ip ASC",
     )
     .bind(provider.as_str())
     .fetch_all(pool)
@@ -314,7 +314,7 @@ pub(crate) async fn record_lookup(
     match outcome {
         GeoLookup::Country(country_code) => {
             let existing_created_at: Option<String> = sqlx::query_scalar(
-                "SELECT created_at FROM geo_location_cache WHERE provider = ? AND canonical_ip = ?",
+                "SELECT created_at FROM geo_location_cache WHERE provider = $1 AND canonical_ip = $2",
             )
             .bind(config.provider.as_str())
             .bind(&canonical_ip)
@@ -323,7 +323,7 @@ pub(crate) async fn record_lookup(
             .flatten();
             let (created_at, expires_at) =
                 geo::cache_refresh_window(existing_created_at.as_deref(), now);
-            sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES (?, ?, ?, 'current', ?, ?, ?, ?, ?) ON CONFLICT(provider, canonical_ip) DO UPDATE SET country_code=excluded.country_code, state='current', created_at=excluded.created_at, last_attempt_at=excluded.last_attempt_at, last_success_at=excluded.last_success_at, last_referenced_at=excluded.last_referenced_at, expires_at=excluded.expires_at")
+            sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ($1, $2, $3, 'current', $4, $5, $6, $7, $8) ON CONFLICT(provider, canonical_ip) DO UPDATE SET country_code=excluded.country_code, state='current', created_at=excluded.created_at, last_attempt_at=excluded.last_attempt_at, last_success_at=excluded.last_success_at, last_referenced_at=excluded.last_referenced_at, expires_at=excluded.expires_at")
                 .bind(config.provider.as_str())
                 .bind(&canonical_ip)
                 .bind(country_code)
@@ -343,7 +343,7 @@ pub(crate) async fn record_lookup(
                 GeoLookup::NoCountry => "no_country",
                 _ => "failed",
             };
-            sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES (?, ?, NULL, ?, NULL, ?, NULL, ?, NULL) ON CONFLICT(provider, canonical_ip) DO UPDATE SET state=excluded.state, last_attempt_at=excluded.last_attempt_at, last_referenced_at=excluded.last_referenced_at")
+            sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ($1, $2, NULL, $3, NULL, $4, NULL, $5, NULL) ON CONFLICT(provider, canonical_ip) DO UPDATE SET state=excluded.state, last_attempt_at=excluded.last_attempt_at, last_referenced_at=excluded.last_referenced_at")
                 .bind(config.provider.as_str())
                 .bind(&canonical_ip)
                 .bind(state_value)

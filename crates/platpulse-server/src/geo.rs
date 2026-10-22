@@ -586,13 +586,13 @@ pub async fn cleanup_cache(
     now: &str,
     active_provider: GeoProvider,
 ) -> Result<u64, sqlx::Error> {
-    let retired = sqlx::query("DELETE FROM geo_location_cache WHERE provider <> ?")
+    let retired = sqlx::query("DELETE FROM geo_location_cache WHERE provider <> $1")
         .bind(active_provider.as_str())
         .execute(pool)
         .await?
         .rows_affected();
     let rebuild_before = cache_rebuild_cutoff(now);
-    let rebuilt = sqlx::query("DELETE FROM geo_location_cache WHERE rowid IN (SELECT rowid FROM geo_location_cache WHERE created_at IS NOT NULL AND created_at <= ? ORDER BY created_at ASC, provider ASC, canonical_ip ASC LIMIT 1024)")
+    let rebuilt = sqlx::query("DELETE FROM geo_location_cache WHERE (provider, canonical_ip) IN (SELECT provider, canonical_ip FROM geo_location_cache WHERE created_at IS NOT NULL AND created_at <= $1 ORDER BY created_at ASC, provider ASC, canonical_ip ASC LIMIT 1024)")
         .bind(&rebuild_before)
         .execute(pool)
         .await?
@@ -615,7 +615,7 @@ where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
     Ok(sqlx::query(
-        "DELETE FROM geo_location_cache WHERE rowid IN (SELECT cache.rowid FROM geo_location_cache cache WHERE NOT EXISTS (SELECT 1 FROM current_node_peers current WHERE current.remote_ip = cache.canonical_ip) ORDER BY cache.last_referenced_at ASC, cache.last_attempt_at ASC, cache.provider ASC, cache.canonical_ip ASC LIMIT MAX(0, (SELECT COUNT(*) FROM geo_location_cache) - ?))",
+        "DELETE FROM geo_location_cache WHERE (provider, canonical_ip) IN (SELECT cache.provider, cache.canonical_ip FROM geo_location_cache cache WHERE NOT EXISTS (SELECT 1 FROM current_node_peers current WHERE current.remote_ip = cache.canonical_ip) ORDER BY cache.last_referenced_at ASC, cache.last_attempt_at ASC, cache.provider ASC, cache.canonical_ip ASC LIMIT CASE WHEN (SELECT COUNT(*) FROM geo_location_cache) > $1 THEN (SELECT COUNT(*) FROM geo_location_cache) - $1 ELSE 0 END)",
     )
     .bind(MAX_PEER_IP_CACHE_ROWS)
     .execute(executor)
@@ -643,7 +643,7 @@ where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
     let rows = sqlx::query_as::<_, (String, String)>(
-        "SELECT setting_key, setting_value FROM server_settings WHERE setting_key IN (?, ?)",
+        "SELECT setting_key, setting_value FROM server_settings WHERE setting_key IN ($1, $2)",
     )
     .bind(SETTING_GEO_PROVIDER)
     .bind(SETTING_GEO_PROVIDER_GENERATION)
@@ -672,7 +672,7 @@ where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
     let value: i64 = sqlx::query_scalar(
-        "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES (?, '1', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = CAST(CAST(setting_value AS INTEGER) + 1 AS TEXT), updated_at = excluded.updated_at RETURNING CAST(setting_value AS INTEGER)",
+        "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ($1, '1', $2) ON CONFLICT(setting_key) DO UPDATE SET setting_value = CAST(CAST(setting_value AS INTEGER) + 1 AS TEXT), updated_at = excluded.updated_at RETURNING CAST(setting_value AS INTEGER)",
     )
     .bind(SETTING_GEO_PROVIDER_GENERATION)
     .bind(now)
@@ -693,7 +693,7 @@ where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
     sqlx::query(
-        "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?), (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value, updated_at=excluded.updated_at",
+        "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ($1, $2, $3), ($4, $5, $6) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value, updated_at=excluded.updated_at",
     )
     .bind(SETTING_GEO_PROVIDER)
     .bind(selection.provider.as_str())

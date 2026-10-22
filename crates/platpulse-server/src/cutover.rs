@@ -334,7 +334,7 @@ async fn resume_inner(
         ));
     }
     let agent: Option<ConvertedAgentRow> = sqlx::query_as(
-        "SELECT last_inventory_revision, inventory_sha256, inventory_protocol_major, active_boot_id, active_boot_status, close_report_id FROM agents WHERE agent_id = ? AND deleted_at IS NULL",
+        "SELECT last_inventory_revision, inventory_sha256, inventory_protocol_major, active_boot_id, active_boot_status, close_report_id FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
     )
     .bind(&verified.agent_id)
     .fetch_optional(&mut *tx)
@@ -393,7 +393,7 @@ async fn resume_inner(
         ));
     }
     sqlx::query(
-        "INSERT INTO inventory_cutover (singleton, state, resumed_at, checkpoint_manifest_sha256, conversion_manifest_sha256, agent_id, protocol_major, preserved_revision, previous_sha256, fingerprint_sha256) VALUES (1, 'resumed', ?, ?, ?, ?, 2, ?, ?, ?)",
+        "INSERT INTO inventory_cutover (singleton, state, resumed_at, checkpoint_manifest_sha256, conversion_manifest_sha256, agent_id, protocol_major, preserved_revision, previous_sha256, fingerprint_sha256) VALUES (1, 'resumed', $1, $2, $3, $4, 2, $5, $6, $7)",
     )
     .bind(now)
     .bind(checkpoint_manifest_sha256)
