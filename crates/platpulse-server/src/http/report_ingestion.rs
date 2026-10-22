@@ -1358,12 +1358,12 @@ async fn save_current<I: ReportInventory>(
         .map(crate::redaction::redact_sensitive);
     sqlx::query("INSERT INTO current_host_observations (agent_id, cpu_percent, memory_total_bytes, memory_used_bytes, load1, load5, load15, network_rx_bytes_per_sec, network_tx_bytes_per_sec, clock_skew_ms, spool_queued_bytes, spool_queued_reports, spool_oldest_queued_age_ms, spool_dropped_reports, spool_dropped_samples, spool_in_flight, spool_last_delivery_error, spool_last_delivery_at, spool_capacity_bytes, spool_max_age_seconds, spool_dropped_sequence_from, spool_dropped_sequence_to, spool_dropped_time_from, spool_dropped_time_to, spool_dropped_height_from, spool_dropped_height_to, spool_pending_history_gaps, spool_report_too_large, spool_store_fatal, spool_store_error, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31) ON CONFLICT(agent_id) DO UPDATE SET cpu_percent=COALESCE(excluded.cpu_percent, current_host_observations.cpu_percent), memory_total_bytes=COALESCE(excluded.memory_total_bytes, current_host_observations.memory_total_bytes), memory_used_bytes=COALESCE(excluded.memory_used_bytes, current_host_observations.memory_used_bytes), load1=COALESCE(excluded.load1, current_host_observations.load1), load5=COALESCE(excluded.load5, current_host_observations.load5), load15=COALESCE(excluded.load15, current_host_observations.load15), network_rx_bytes_per_sec=COALESCE(excluded.network_rx_bytes_per_sec, current_host_observations.network_rx_bytes_per_sec), network_tx_bytes_per_sec=COALESCE(excluded.network_tx_bytes_per_sec, current_host_observations.network_tx_bytes_per_sec), clock_skew_ms=COALESCE(excluded.clock_skew_ms, current_host_observations.clock_skew_ms), spool_queued_bytes=COALESCE(excluded.spool_queued_bytes, current_host_observations.spool_queued_bytes), spool_queued_reports=COALESCE(excluded.spool_queued_reports, current_host_observations.spool_queued_reports), spool_oldest_queued_age_ms=COALESCE(excluded.spool_oldest_queued_age_ms, current_host_observations.spool_oldest_queued_age_ms), spool_dropped_reports=COALESCE(excluded.spool_dropped_reports, current_host_observations.spool_dropped_reports), spool_dropped_samples=COALESCE(excluded.spool_dropped_samples, current_host_observations.spool_dropped_samples), spool_in_flight=COALESCE(excluded.spool_in_flight, current_host_observations.spool_in_flight), spool_last_delivery_error=COALESCE(excluded.spool_last_delivery_error, current_host_observations.spool_last_delivery_error), spool_last_delivery_at=COALESCE(excluded.spool_last_delivery_at, current_host_observations.spool_last_delivery_at), spool_capacity_bytes=COALESCE(excluded.spool_capacity_bytes, current_host_observations.spool_capacity_bytes), spool_max_age_seconds=COALESCE(excluded.spool_max_age_seconds, current_host_observations.spool_max_age_seconds), spool_dropped_sequence_from=COALESCE(excluded.spool_dropped_sequence_from, current_host_observations.spool_dropped_sequence_from), spool_dropped_sequence_to=COALESCE(excluded.spool_dropped_sequence_to, current_host_observations.spool_dropped_sequence_to), spool_dropped_time_from=COALESCE(excluded.spool_dropped_time_from, current_host_observations.spool_dropped_time_from), spool_dropped_time_to=COALESCE(excluded.spool_dropped_time_to, current_host_observations.spool_dropped_time_to), spool_dropped_height_from=COALESCE(excluded.spool_dropped_height_from, current_host_observations.spool_dropped_height_from), spool_dropped_height_to=COALESCE(excluded.spool_dropped_height_to, current_host_observations.spool_dropped_height_to), spool_pending_history_gaps=COALESCE(excluded.spool_pending_history_gaps, current_host_observations.spool_pending_history_gaps), spool_report_too_large=COALESCE(excluded.spool_report_too_large, current_host_observations.spool_report_too_large), spool_store_fatal=COALESCE(excluded.spool_store_fatal, current_host_observations.spool_store_fatal), spool_store_error=COALESCE(excluded.spool_store_error, current_host_observations.spool_store_error), updated_at=excluded.updated_at")
         .bind(&agent_id)
-        .bind(host.cpu_percent.latest)
+        .bind(crate::database::NullableReal(host.cpu_percent.latest))
         .bind(host.memory.latest.map(|v| v.total_bytes as i64))
         .bind(host.memory.latest.map(|v| v.used_bytes as i64))
-        .bind(host.load.latest.map(|v| v.load1))
-        .bind(host.load.latest.map(|v| v.load5))
-        .bind(host.load.latest.map(|v| v.load15))
+        .bind(crate::database::NullableReal(host.load.latest.map(|v| v.load1)))
+        .bind(crate::database::NullableReal(host.load.latest.map(|v| v.load5)))
+        .bind(crate::database::NullableReal(host.load.latest.map(|v| v.load15)))
         .bind(host.network_throughput.latest.map(|v| v.rx_bytes_per_sec as i64))
         .bind(host.network_throughput.latest.map(|v| v.tx_bytes_per_sec as i64))
         .bind(host.clock_skew.latest)
@@ -3801,7 +3801,6 @@ pub(crate) fn router_v2() -> Router<AppState> {
 mod tests {
     use super::*;
     use crate::auth::{AuthConfig, format_rfc3339, now_utc};
-    use crate::database::{ServerDatabaseConfig, initialize};
     use crate::enrollment::{
         AgentAuthInfo, RECOVERY_TOKEN_DEFAULT_LIFETIME, create_recovery_token, recover,
     };
@@ -3834,7 +3833,7 @@ mod tests {
         .await
         .unwrap();
         let agent_id = "0195f2a1-0011-4011-8011-000000000011".to_owned();
-        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, active_boot_id, last_report_sequence, last_received_at, created_at, updated_at) VALUES (?, 1, NULL, NULL, NULL, ?, ?)").bind(&agent_id).bind("2026-08-12T08:00:00Z").bind("2026-08-12T08:00:00Z").execute(database.pool()).await.unwrap();
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, active_boot_id, last_report_sequence, last_received_at, created_at, updated_at) VALUES ($1, 1, NULL, NULL, NULL, $2, $3)").bind(&agent_id).bind("2026-08-12T08:00:00Z").bind("2026-08-12T08:00:00Z").execute(database.pool()).await.unwrap();
         (dir, AppState::new(database, None, auth), agent_id)
     }
 
@@ -4027,7 +4026,7 @@ mod tests {
     }
 
     async fn accepted_inventory_revision(state: &AppState, agent_id: &str) -> i64 {
-        sqlx::query_scalar("SELECT last_inventory_revision FROM agents WHERE agent_id = ?")
+        sqlx::query_scalar("SELECT last_inventory_revision FROM agents WHERE agent_id = $1")
             .bind(agent_id)
             .fetch_one(state.db().pool())
             .await
@@ -4035,7 +4034,7 @@ mod tests {
     }
 
     async fn accepted_inventory_fingerprint(state: &AppState, agent_id: &str) -> Option<String> {
-        sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id = ?")
+        sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id = $1")
             .bind(agent_id)
             .fetch_one(state.db().pool())
             .await
@@ -4044,9 +4043,15 @@ mod tests {
 
     /// Issue #187: a failed write anywhere in the v2 receipt transaction must
     /// roll back the whole thing — allocation, projection, and receipt — and
-    /// publish no post-commit invalidation. A SQLite trigger is the controlled
-    /// failure source; the production path itself is untouched.
-    async fn v2_write_failure_rolls_back_all_writes(trigger_name: &str, trigger: &str) {
+    /// publish no post-commit invalidation. An injected trigger is the
+    /// controlled failure source; the production path itself is untouched.
+    async fn v2_write_failure_rolls_back_all_writes(
+        trigger_name: &str,
+        timing: &str,
+        operation: &str,
+        table: &str,
+        message: &str,
+    ) {
         let (dir, state, agent_id) = state_with_agent().await;
         let body = v2_report_body(
             "0195f2a1-0240-4240-8240-000000000001",
@@ -4056,10 +4061,16 @@ mod tests {
             &["ws://127.0.0.1:6790"],
         );
         let events_before = state.admin_realtime().pending_events().len();
-        sqlx::query(trigger)
-            .execute(state.db().pool())
-            .await
-            .unwrap();
+        crate::test_support::install_failure_trigger(
+            state.db().pool(),
+            trigger_name,
+            timing,
+            operation,
+            table,
+            message,
+        )
+        .await
+        .unwrap();
 
         let (status, response) = submit_v2_raw(&state, &agent_id, body.clone()).await;
         assert_ne!(
@@ -4102,8 +4113,7 @@ mod tests {
 
         // Drop the trigger and reopen the real database: the rolled-back state
         // is durable, and no invalidation is replayed across the restart.
-        sqlx::query(&format!("DROP TRIGGER {trigger_name}"))
-            .execute(state.db().pool())
+        crate::test_support::drop_failure_trigger(state.db().pool(), trigger_name, table)
             .await
             .unwrap();
         state.db().close().await;
@@ -4203,7 +4213,7 @@ mod tests {
                 .any(|revision| revision.component == ComponentKey::DataDirectoryCapacityBytes)
         );
         let stored: (i64, Option<i64>) = sqlx::query_as(
-            "SELECT size_bytes, capacity_bytes FROM current_node_data_directory_observations WHERE node_id=?",
+            "SELECT size_bytes, capacity_bytes FROM current_node_data_directory_observations WHERE node_id=$1",
         )
         .bind(report.nodes[0].node_id.to_string())
         .fetch_one(state.db().pool())
@@ -4211,7 +4221,7 @@ mod tests {
         .unwrap();
         assert_eq!(stored, (12_884_901_888, Some(51_539_607_552)));
         let disk_sample: (f64, String) = sqlx::query_as(
-            "SELECT value, received_at FROM node_metric_samples WHERE node_id=? AND metric='data_directory_percent'",
+            "SELECT value, received_at FROM node_metric_samples WHERE node_id=$1 AND metric='data_directory_percent'",
         )
         .bind(report.nodes[0].node_id.to_string())
         .fetch_one(state.db().pool())
@@ -4220,7 +4230,7 @@ mod tests {
         assert_eq!(disk_sample.0, 25.0);
         assert!(!disk_sample.1.is_empty());
         let host_network_samples: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM host_metric_samples WHERE agent_id=? AND metric IN ('network_rx_bytes_per_sec', 'network_tx_bytes_per_sec')",
+            "SELECT COUNT(*) FROM host_metric_samples WHERE agent_id=$1 AND metric IN ('network_rx_bytes_per_sec', 'network_tx_bytes_per_sec')",
         )
         .bind(&agent_id)
         .fetch_one(state.db().pool())
@@ -4245,7 +4255,7 @@ mod tests {
         });
         submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
         let stored: i64 = sqlx::query_scalar(
-            "SELECT size_bytes FROM current_node_data_directory_observations WHERE node_id=?",
+            "SELECT size_bytes FROM current_node_data_directory_observations WHERE node_id=$1",
         )
         .bind(report.nodes[0].node_id.to_string())
         .fetch_one(state.db().pool())
@@ -4258,7 +4268,7 @@ mod tests {
         report.nodes[0].data_directory_size_bytes = None;
         submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
         let stored: i64 = sqlx::query_scalar(
-            "SELECT size_bytes FROM current_node_data_directory_observations WHERE node_id=?",
+            "SELECT size_bytes FROM current_node_data_directory_observations WHERE node_id=$1",
         )
         .bind(report.nodes[0].node_id.to_string())
         .fetch_one(state.db().pool())
@@ -4313,7 +4323,7 @@ mod tests {
             (1, 1, 0)
         );
         let stored_series: (String, String) = sqlx::query_as(
-            "SELECT first_observed_at, last_observed_at FROM node_metric_series_state WHERE node_id = ? AND metric = 'data_directory_percent'",
+            "SELECT first_observed_at, last_observed_at FROM node_metric_series_state WHERE node_id = $1 AND metric = 'data_directory_percent'",
         )
         .bind(&node_id)
         .fetch_one(state.db().pool())
@@ -4377,7 +4387,7 @@ mod tests {
             (2, 1, 1)
         );
         let samples: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM node_metric_samples WHERE node_id = ? AND metric = 'data_directory_percent'",
+            "SELECT COUNT(*) FROM node_metric_samples WHERE node_id = $1 AND metric = 'data_directory_percent'",
         )
         .bind(&node_id)
         .fetch_one(state.db().pool())
@@ -4385,7 +4395,7 @@ mod tests {
         .unwrap();
         assert_eq!(samples, 2, "a replay must not add a second sample row");
         let last_observed: String = sqlx::query_scalar(
-            "SELECT last_observed_at FROM node_metric_series_state WHERE node_id = ? AND metric = 'data_directory_percent'",
+            "SELECT last_observed_at FROM node_metric_series_state WHERE node_id = $1 AND metric = 'data_directory_percent'",
         )
         .bind(&node_id)
         .fetch_one(state.db().pool())
@@ -4441,7 +4451,7 @@ mod tests {
                 .unwrap();
         assert!(removed >= 1, "the cleanup released the stored observation");
         let released_before: String = sqlx::query_scalar(
-            "SELECT released_before FROM node_metric_series_state WHERE node_id = ? AND metric = 'data_directory_percent'",
+            "SELECT released_before FROM node_metric_series_state WHERE node_id = $1 AND metric = 'data_directory_percent'",
         )
         .bind(&node_id)
         .fetch_one(state.db().pool())
@@ -4469,7 +4479,7 @@ mod tests {
         drop(state);
         let state = restart(&dir).await;
         let after_restart: String = sqlx::query_scalar(
-            "SELECT released_before FROM node_metric_series_state WHERE node_id = ? AND metric = 'data_directory_percent'",
+            "SELECT released_before FROM node_metric_series_state WHERE node_id = $1 AND metric = 'data_directory_percent'",
         )
         .bind(&node_id)
         .fetch_one(state.db().pool())
@@ -4491,7 +4501,7 @@ mod tests {
             (1, 1, 0)
         );
         let samples: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM node_metric_samples WHERE node_id = ? AND metric = 'data_directory_percent'",
+            "SELECT COUNT(*) FROM node_metric_samples WHERE node_id = $1 AND metric = 'data_directory_percent'",
         )
         .bind(&node_id)
         .fetch_one(state.db().pool())
@@ -4543,7 +4553,7 @@ mod tests {
             "the first observation of a series is counted even though the window cannot hold it"
         );
         let samples: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM node_metric_samples WHERE node_id = ? AND metric = 'data_directory_percent'",
+            "SELECT COUNT(*) FROM node_metric_samples WHERE node_id = $1 AND metric = 'data_directory_percent'",
         )
         .bind(&node_id)
         .fetch_one(state.db().pool())
@@ -4551,7 +4561,7 @@ mod tests {
         .unwrap();
         assert_eq!(samples, 0, "and no row can answer for it");
         let floor: String = sqlx::query_scalar(
-            "SELECT released_before FROM node_metric_series_state WHERE node_id = ? AND metric = 'data_directory_percent'",
+            "SELECT released_before FROM node_metric_series_state WHERE node_id = $1 AND metric = 'data_directory_percent'",
         )
         .bind(&node_id)
         .fetch_one(state.db().pool())
@@ -4587,7 +4597,7 @@ mod tests {
 
     async fn metric_ledger(pool: &sqlx::AnyPool, node_id: &str, metric: &str) -> (i64, i64, i64) {
         sqlx::query_as(
-            "SELECT observation_count, replayed_count, corrected_count FROM node_metric_series_state WHERE node_id = ? AND metric = ?",
+            "SELECT observation_count, replayed_count, corrected_count FROM node_metric_series_state WHERE node_id = $1 AND metric = $2",
         )
         .bind(node_id)
         .bind(metric)
@@ -4684,7 +4694,7 @@ mod tests {
 
         // Ingestion persisted the supervisor observation before projection.
         let stored: (i64, f64, i64, i64) = sqlx::query_as(
-            "SELECT pid, cpu_percent, memory_bytes, uptime_ms FROM current_node_process_observations WHERE node_id=?",
+            "SELECT pid, cpu_percent, memory_bytes, uptime_ms FROM current_node_process_observations WHERE node_id=$1",
         )
         .bind(&node_id)
         .fetch_one(state.db().pool())
@@ -4780,7 +4790,7 @@ mod tests {
         report.report_id = "0195f2a1-0026-4026-8026-000000000026".parse().unwrap();
         submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
         let gaps: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM report_sequence_gaps WHERE agent_id=?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM report_sequence_gaps WHERE agent_id=$1")
                 .bind(&agent_id)
                 .fetch_one(state.db().pool())
                 .await
@@ -4839,7 +4849,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::CONFLICT);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT security_event_count FROM agents WHERE agent_id=?",
+                "SELECT security_event_count FROM agents WHERE agent_id=$1",
             )
             .bind(&agent_id)
             .fetch_one(state.db().pool())
@@ -4881,7 +4891,7 @@ mod tests {
         assert_eq!(next_receipt.disposition, ReceiptDisposition::Accepted);
 
         let statuses = sqlx::query_as::<_, (String, String)>(
-            "SELECT boot_id, status FROM agent_boots WHERE agent_id=? ORDER BY boot_id",
+            "SELECT boot_id, status FROM agent_boots WHERE agent_id=$1 ORDER BY boot_id",
         )
         .bind(&agent_id)
         .fetch_all(state.db().pool())
@@ -4899,7 +4909,7 @@ mod tests {
                 .any(|(boot, status)| boot == &next.boot_id.to_string() && status == "active")
         );
         let security_events: i64 =
-            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=?")
+            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=$1")
                 .bind(&agent_id)
                 .fetch_one(state.db().pool())
                 .await
@@ -4923,7 +4933,7 @@ mod tests {
         submit(&state, &agent_id, serde_json::to_vec(&first).unwrap()).await;
 
         // Operator repair that only touched `agents`: the Boot row is stale.
-        sqlx::query("UPDATE agents SET active_boot_status='closed' WHERE agent_id=?")
+        sqlx::query("UPDATE agents SET active_boot_status='closed' WHERE agent_id=$1")
             .bind(&agent_id)
             .execute(state.db().pool())
             .await
@@ -4939,7 +4949,7 @@ mod tests {
         assert_eq!(receipt.disposition, ReceiptDisposition::Accepted);
 
         let statuses = sqlx::query_as::<_, (String, String)>(
-            "SELECT boot_id, status FROM agent_boots WHERE agent_id=? ORDER BY boot_id",
+            "SELECT boot_id, status FROM agent_boots WHERE agent_id=$1 ORDER BY boot_id",
         )
         .bind(&agent_id)
         .fetch_all(state.db().pool())
@@ -4957,7 +4967,7 @@ mod tests {
                 .any(|(boot, status)| boot == &next.boot_id.to_string() && status == "active")
         );
         let active: (Option<String>, String) = sqlx::query_as(
-            "SELECT active_boot_id, active_boot_status FROM agents WHERE agent_id=?",
+            "SELECT active_boot_id, active_boot_status FROM agents WHERE agent_id=$1",
         )
         .bind(&agent_id)
         .fetch_one(state.db().pool())
@@ -4975,7 +4985,7 @@ mod tests {
     #[tokio::test]
     async fn database_constraint_failures_are_not_reported_as_unavailable() {
         let (_dir, state, agent_id) = state_with_agent().await;
-        let failure = sqlx::query("INSERT INTO agents (agent_id, agent_epoch, active_boot_id, last_report_sequence, last_received_at, created_at, updated_at) VALUES (?, 1, NULL, NULL, NULL, ?, ?)")
+        let failure = sqlx::query("INSERT INTO agents (agent_id, agent_epoch, active_boot_id, last_report_sequence, last_received_at, created_at, updated_at) VALUES ($1, 1, NULL, NULL, NULL, $2, $3)")
             .bind(&agent_id)
             .bind("2026-08-12T08:00:00Z")
             .bind("2026-08-12T08:00:00Z")
@@ -5004,7 +5014,7 @@ mod tests {
             .unwrap();
         assert!(statuses >= 13);
         let memory: i64 = sqlx::query_scalar(
-            "SELECT memory_used_bytes FROM current_host_observations WHERE agent_id = ?",
+            "SELECT memory_used_bytes FROM current_host_observations WHERE agent_id = $1",
         )
         .bind(&agent_id)
         .fetch_one(state.db().pool())
@@ -5073,7 +5083,7 @@ mod tests {
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND closed_at IS NULL",
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=$1 AND closed_at IS NULL",
             )
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .fetch_one(state.db().pool())
@@ -5083,21 +5093,21 @@ mod tests {
             "the first successful Peer Snapshot establishes the baseline only"
         );
         let first_value_received_at: String = sqlx::query_scalar(
-            "SELECT value_received_at FROM component_status WHERE node_id=? AND component_key='peers'",
+            "SELECT value_received_at FROM component_status WHERE node_id=$1 AND component_key='peers'",
         )
         .bind("0195f2a1-0014-4014-8014-000000000014")
         .fetch_one(state.db().pool())
         .await
         .unwrap();
         assert!(!first_value_received_at.is_empty());
-        sqlx::query("UPDATE component_status SET value_received_at=? WHERE node_id=? AND component_key='peers'")
+        sqlx::query("UPDATE component_status SET value_received_at=$1 WHERE node_id=$2 AND component_key='peers'")
             .bind("2026-01-01T00:00:00Z")
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .execute(state.db().pool())
             .await
             .unwrap();
         let current: (String, String, i64, String, Option<String>, Option<i64>) = sqlx::query_as(
-            "SELECT peer_id, direction, trusted, client_name, remote_ip, cbft_commit_block FROM current_node_peers WHERE node_id=?",
+            "SELECT peer_id, direction, trusted, client_name, remote_ip, cbft_commit_block FROM current_node_peers WHERE node_id=$1",
         )
         .bind("0195f2a1-0014-4014-8014-000000000014")
         .fetch_one(state.db().pool())
@@ -5111,7 +5121,7 @@ mod tests {
         assert_eq!(current.5, Some(98));
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM current_node_peer_capabilities WHERE node_id=?",
+                "SELECT COUNT(*) FROM current_node_peer_capabilities WHERE node_id=$1",
             )
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .fetch_one(state.db().pool())
@@ -5124,7 +5134,7 @@ mod tests {
         assert_eq!(replay, first);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=?",
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=$1",
             )
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .fetch_one(state.db().pool())
@@ -5149,7 +5159,7 @@ mod tests {
         assert_eq!(duplicate_status, StatusCode::BAD_REQUEST);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM current_node_peers WHERE node_id=?",
+                "SELECT COUNT(*) FROM current_node_peers WHERE node_id=$1",
             )
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .fetch_one(state.db().pool())
@@ -5189,7 +5199,7 @@ mod tests {
         assert_eq!(error_receipt.disposition, ReceiptDisposition::Accepted);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND closed_at IS NULL",
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=$1 AND closed_at IS NULL",
             )
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .fetch_one(state.db().pool())
@@ -5200,7 +5210,7 @@ mod tests {
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM current_node_peers WHERE node_id=?",
+                "SELECT COUNT(*) FROM current_node_peers WHERE node_id=$1",
             )
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .fetch_one(state.db().pool())
@@ -5211,7 +5221,7 @@ mod tests {
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
-                "SELECT state FROM component_status WHERE node_id=? AND component_key='peers'",
+                "SELECT state FROM component_status WHERE node_id=$1 AND component_key='peers'",
             )
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .fetch_one(state.db().pool())
@@ -5221,7 +5231,7 @@ mod tests {
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
-                "SELECT value_received_at FROM component_status WHERE node_id=? AND component_key='peers'",
+                "SELECT value_received_at FROM component_status WHERE node_id=$1 AND component_key='peers'",
             )
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .fetch_one(state.db().pool())
@@ -5261,7 +5271,7 @@ mod tests {
         assert_eq!(unchanged_receipt.disposition, ReceiptDisposition::Accepted);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=?",
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=$1",
             )
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .fetch_one(state.db().pool())
@@ -5286,7 +5296,7 @@ mod tests {
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM current_node_peers WHERE node_id=?",
+                "SELECT COUNT(*) FROM current_node_peers WHERE node_id=$1",
             )
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .fetch_one(state.db().pool())
@@ -5310,7 +5320,7 @@ mod tests {
         assert_eq!(empty_receipt.disposition, ReceiptDisposition::Accepted);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-a'",
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=$1 AND peer_id='peer-a'",
             )
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .fetch_one(state.db().pool())
@@ -5321,7 +5331,7 @@ mod tests {
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM current_node_peers WHERE node_id=?",
+                "SELECT COUNT(*) FROM current_node_peers WHERE node_id=$1",
             )
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .fetch_one(state.db().pool())
@@ -5331,14 +5341,14 @@ mod tests {
             "a successful empty snapshot must clear current peers"
         );
         let empty_value_received_at: String = sqlx::query_scalar(
-            "SELECT value_received_at FROM component_status WHERE node_id=? AND component_key='peers'",
+            "SELECT value_received_at FROM component_status WHERE node_id=$1 AND component_key='peers'",
         )
         .bind("0195f2a1-0014-4014-8014-000000000014")
         .fetch_one(state.db().pool())
         .await
         .unwrap();
         assert_ne!(empty_value_received_at, "2026-01-01T00:00:00Z");
-        sqlx::query("UPDATE component_status SET value_received_at=? WHERE node_id=? AND component_key='peers'")
+        sqlx::query("UPDATE component_status SET value_received_at=$1 WHERE node_id=$2 AND component_key='peers'")
             .bind("2026-01-02T00:00:00Z")
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .execute(state.db().pool())
@@ -5364,7 +5374,7 @@ mod tests {
         );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
-                "SELECT value_received_at FROM component_status WHERE node_id=? AND component_key='peers'",
+                "SELECT value_received_at FROM component_status WHERE node_id=$1 AND component_key='peers'",
             )
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .fetch_one(state.db().pool())
@@ -5407,7 +5417,7 @@ mod tests {
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-a'",
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=$1 AND peer_id='peer-a'",
             )
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .fetch_one(state.db().pool())
@@ -5417,7 +5427,7 @@ mod tests {
             "a Peer that reappears after the baseline was cleared opens a new interval"
         );
         let open_intervals: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-a' AND closed_at IS NULL",
+            "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=$1 AND peer_id='peer-a' AND closed_at IS NULL",
         )
         .bind("0195f2a1-0014-4014-8014-000000000014")
         .fetch_one(state.db().pool())
@@ -5425,7 +5435,7 @@ mod tests {
         .unwrap();
         assert_eq!(open_intervals, 1);
         let first_interval_client: String = sqlx::query_scalar(
-            "SELECT client_name FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-a' ORDER BY interval_id LIMIT 1",
+            "SELECT client_name FROM peer_presence_intervals WHERE node_id=$1 AND peer_id='peer-a' ORDER BY interval_id LIMIT 1",
         )
         .bind("0195f2a1-0014-4014-8014-000000000014")
         .fetch_one(state.db().pool())
@@ -5444,7 +5454,7 @@ mod tests {
         let retired = submit(&state, &agent_id, serde_json::to_vec(&value).unwrap()).await;
         assert_eq!(retired.disposition, ReceiptDisposition::Accepted);
         assert_eq!(
-            sqlx::query_scalar::<_, String>("SELECT lifecycle FROM nodes WHERE node_id=?",)
+            sqlx::query_scalar::<_, String>("SELECT lifecycle FROM nodes WHERE node_id=$1",)
                 .bind("0195f2a1-0014-4014-8014-000000000014")
                 .fetch_one(state.db().pool())
                 .await
@@ -5453,7 +5463,7 @@ mod tests {
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-a' AND closed_at IS NULL",
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=$1 AND peer_id='peer-a' AND closed_at IS NULL",
             )
             .bind("0195f2a1-0014-4014-8014-000000000014")
             .fetch_one(state.db().pool())
@@ -5519,7 +5529,7 @@ mod tests {
         for (node_id, peer_id) in [(node_a, "peer-a"), (node_b, "peer-b")] {
             assert_eq!(
                 sqlx::query_scalar::<_, i64>(
-                    "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id=? AND closed_at IS NULL",
+                    "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=$1 AND peer_id=$2 AND closed_at IS NULL",
                 )
                 .bind(node_id)
                 .bind(peer_id)
@@ -5538,7 +5548,7 @@ mod tests {
         assert_eq!(second.disposition, ReceiptDisposition::Accepted);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-a' AND closed_at IS NULL",
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=$1 AND peer_id='peer-a' AND closed_at IS NULL",
             )
             .bind(node_a)
             .fetch_one(state.db().pool())
@@ -5549,7 +5559,7 @@ mod tests {
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-b' AND closed_at IS NULL",
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=$1 AND peer_id='peer-b' AND closed_at IS NULL",
             )
             .bind(node_b)
             .fetch_one(state.db().pool())
@@ -5569,7 +5579,7 @@ mod tests {
         let restarted = AppState::new(database, None, auth);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-b' AND closed_at IS NULL",
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=$1 AND peer_id='peer-b' AND closed_at IS NULL",
             )
             .bind(node_b)
             .fetch_one(restarted.db().pool())
@@ -5590,7 +5600,7 @@ mod tests {
         assert_eq!(after_restart.disposition, ReceiptDisposition::Accepted);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-a' AND closed_at IS NULL",
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=$1 AND peer_id='peer-a' AND closed_at IS NULL",
             )
             .bind(node_a)
             .fetch_one(restarted.db().pool())
@@ -5601,7 +5611,7 @@ mod tests {
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-b'",
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=$1 AND peer_id='peer-b'",
             )
             .bind(node_b)
             .fetch_one(restarted.db().pool())
@@ -5618,7 +5628,7 @@ mod tests {
         assert_eq!(departure.disposition, ReceiptDisposition::Accepted);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=? AND peer_id='peer-a' AND closed_at IS NOT NULL",
+                "SELECT COUNT(*) FROM peer_presence_intervals WHERE node_id=$1 AND peer_id='peer-a' AND closed_at IS NOT NULL",
             )
             .bind(node_a)
             .fetch_one(restarted.db().pool())
@@ -5676,7 +5686,7 @@ mod tests {
         report.validate().unwrap();
         let first = report.clone();
         submit(&state, &agent_id, serde_json::to_vec(&first).unwrap()).await;
-        sqlx::query("UPDATE block_summaries SET accepted_at=? WHERE node_id=?")
+        sqlx::query("UPDATE block_summaries SET accepted_at=$1 WHERE node_id=$2")
             .bind("2026-01-01T00:00:00Z")
             .bind(node_id.to_string())
             .execute(state.db().pool())
@@ -5688,7 +5698,7 @@ mod tests {
         )
         .await
         .unwrap();
-        sqlx::query("UPDATE block_history_state SET historical_high_watermark=100, cumulative_block_count=1, cumulative_transaction_count=3 WHERE node_id=?").bind(node_id.to_string()).execute(state.db().pool()).await.unwrap();
+        sqlx::query("UPDATE block_history_state SET historical_high_watermark=100, cumulative_block_count=1, cumulative_transaction_count=3 WHERE node_id=$1").bind(node_id.to_string()).execute(state.db().pool()).await.unwrap();
 
         let mut replay = report;
         replay.report_sequence = 2;
@@ -5704,12 +5714,12 @@ mod tests {
             platpulse_core::RejectionCode::ResyncReplay
         );
         let summaries: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE node_id=?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE node_id=$1")
                 .bind(node_id.to_string())
                 .fetch_one(state.db().pool())
                 .await
                 .unwrap();
-        let counters: (i64, i64) = sqlx::query_as("SELECT cumulative_block_count, cumulative_transaction_count FROM block_history_state WHERE node_id=?").bind(node_id.to_string()).fetch_one(state.db().pool()).await.unwrap();
+        let counters: (i64, i64) = sqlx::query_as("SELECT cumulative_block_count, cumulative_transaction_count FROM block_history_state WHERE node_id=$1").bind(node_id.to_string()).fetch_one(state.db().pool()).await.unwrap();
         assert_eq!(summaries, 0);
         assert_eq!(counters, (1, 3));
     }
@@ -5792,7 +5802,7 @@ mod tests {
         grain_seconds: i64,
         bucket_start: &str,
     ) -> Option<BlockBucket> {
-        sqlx::query_as("SELECT block_count, transaction_total, transaction_min, transaction_max, interval_count, interval_min_ms, interval_max_ms FROM node_block_aggregates WHERE node_id = ? AND grain_seconds = ? AND bucket_start = ?")
+        sqlx::query_as("SELECT block_count, transaction_total, transaction_min, transaction_max, interval_count, interval_min_ms, interval_max_ms FROM node_block_aggregates WHERE node_id = $1 AND grain_seconds = $2 AND bucket_start = $3")
             .bind(node_id)
             .bind(grain_seconds)
             .bind(bucket_start)
@@ -5881,16 +5891,18 @@ mod tests {
         let first = report_with_blocks("0195f2a1-0013-4013-8013-000000000311", 1, &blocks);
         let node_id = first.inventory.nodes[0].node_id.to_string();
         submit(&state, &agent_id, serde_json::to_vec(&first).unwrap()).await;
-        sqlx::query("DELETE FROM block_summaries WHERE node_id=?")
+        sqlx::query("DELETE FROM block_summaries WHERE node_id=$1")
             .bind(&node_id)
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("UPDATE block_history_state SET historical_high_watermark=100 WHERE node_id=?")
-            .bind(&node_id)
-            .execute(state.db().pool())
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE block_history_state SET historical_high_watermark=100 WHERE node_id=$1",
+        )
+        .bind(&node_id)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
 
         let replay = report_with_blocks("0195f2a1-0013-4013-8013-000000000312", 2, &blocks);
         let receipt = submit(&state, &agent_id, serde_json::to_vec(&replay).unwrap()).await;
@@ -5931,7 +5943,7 @@ mod tests {
             Some((2, 7, 3, 4, 0, None, None)),
             "neither block has a held parent yet"
         );
-        sqlx::query("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES (?, 11, 11, 'open_recoverable_gap', '2026-08-12T09:00:06Z', '2026-08-12T09:00:06Z')")
+        sqlx::query("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ($1, 11, 11, 'open_recoverable_gap', '2026-08-12T09:00:06Z', '2026-08-12T09:00:06Z')")
             .bind(&node_id)
             .execute(state.db().pool())
             .await
@@ -5990,10 +6002,16 @@ mod tests {
         let (_dir, state, agent_id) = state_with_agent().await;
         let base = block_base();
         // The first block opens the bucket; the second one's update aborts.
-        sqlx::query("CREATE TRIGGER abort_block_bucket BEFORE UPDATE ON node_block_aggregates BEGIN SELECT RAISE(ABORT, 'injected bucket failure'); END")
-            .execute(state.db().pool())
-            .await
-            .unwrap();
+        crate::test_support::install_failure_trigger(
+            state.db().pool(),
+            "abort_block_bucket",
+            "BEFORE",
+            "UPDATE",
+            "node_block_aggregates",
+            "injected bucket failure",
+        )
+        .await
+        .unwrap();
         let report = report_with_blocks(
             "0195f2a1-0013-4013-8013-000000000331",
             1,
@@ -6012,10 +6030,13 @@ mod tests {
         assert_eq!(summaries, 0);
 
         // Without the injected failure the same Report is accepted once.
-        sqlx::query("DROP TRIGGER abort_block_bucket")
-            .execute(state.db().pool())
-            .await
-            .unwrap();
+        crate::test_support::drop_failure_trigger(
+            state.db().pool(),
+            "abort_block_bucket",
+            "node_block_aggregates",
+        )
+        .await
+        .unwrap();
         submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
         let node_id = report.inventory.nodes[0].node_id.to_string();
         assert_eq!(
@@ -6065,21 +6086,22 @@ mod tests {
         let receipt = submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
         assert_eq!(receipt.disposition, ReceiptDisposition::Accepted);
         assert_eq!(receipt.nodes.len(), 2);
-        let node_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE agent_id = ?")
+        let node_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE agent_id = $1")
             .bind(&agent_id)
             .fetch_one(state.db().pool())
             .await
             .unwrap();
         assert_eq!(node_count, 2);
-        let host_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM current_host_observations WHERE agent_id = ?")
-                .bind(&agent_id)
-                .fetch_one(state.db().pool())
-                .await
-                .unwrap();
+        let host_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM current_host_observations WHERE agent_id = $1",
+        )
+        .bind(&agent_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
         assert_eq!(host_count, 1);
         let node_rpc_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM component_status WHERE agent_id = ? AND scope = 'node' AND component_key = 'rpc'",
+            "SELECT COUNT(*) FROM component_status WHERE agent_id = $1 AND scope = 'node' AND component_key = 'rpc'",
         )
         .bind(&agent_id)
         .fetch_one(state.db().pool())
@@ -6087,7 +6109,7 @@ mod tests {
         .unwrap();
         assert_eq!(node_rpc_count, 2);
         let node_identity_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM component_status WHERE agent_id = ? AND scope = 'node' AND component_key = 'network_identity'",
+            "SELECT COUNT(*) FROM component_status WHERE agent_id = $1 AND scope = 'node' AND component_key = 'network_identity'",
         )
         .bind(&agent_id)
         .fetch_one(state.db().pool())
@@ -6127,11 +6149,12 @@ mod tests {
         empty.inventory.nodes.clear();
         empty.nodes.clear();
         submit(&state, &agent_id, serde_json::to_vec(&empty).unwrap()).await;
-        let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = ?")
-            .bind("0195f2a1-0014-4014-8014-000000000014")
-            .fetch_one(state.db().pool())
-            .await
-            .unwrap();
+        let lifecycle: String =
+            sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = $1")
+                .bind("0195f2a1-0014-4014-8014-000000000014")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
         assert_eq!(lifecycle, "retired");
         assert!(
             state
@@ -6161,11 +6184,12 @@ mod tests {
         restored.report_id = "0195f2a1-0013-4013-8013-000000000100".parse().unwrap();
         restored.inventory.revision = 3;
         submit(&state, &agent_id, serde_json::to_vec(&restored).unwrap()).await;
-        let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = ?")
-            .bind("0195f2a1-0014-4014-8014-000000000014")
-            .fetch_one(state.db().pool())
-            .await
-            .unwrap();
+        let lifecycle: String =
+            sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = $1")
+                .bind("0195f2a1-0014-4014-8014-000000000014")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
         assert_eq!(lifecycle, "active");
     }
 
@@ -6189,11 +6213,12 @@ mod tests {
             platpulse_core::RejectionCode::InventoryRevisionConflict
         );
 
-        let endpoint: String = sqlx::query_scalar("SELECT rpc_endpoint FROM nodes WHERE node_id=?")
-            .bind("0195f2a1-0014-4014-8014-000000000014")
-            .fetch_one(state.db().pool())
-            .await
-            .unwrap();
+        let endpoint: String =
+            sqlx::query_scalar("SELECT rpc_endpoint FROM nodes WHERE node_id=$1")
+                .bind("0195f2a1-0014-4014-8014-000000000014")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
         assert_eq!(endpoint, "ws://127.0.0.1:6790");
     }
 
@@ -6229,7 +6254,7 @@ mod tests {
             Option<i64>,
             Option<String>,
         ) = sqlx::query_as(
-            "SELECT disposition, rejection_code, inventory_revision, inventory_sha256 FROM agent_report_receipts WHERE agent_id=? ORDER BY received_at DESC, report_sequence DESC LIMIT 1",
+            "SELECT disposition, rejection_code, inventory_revision, inventory_sha256 FROM agent_report_receipts WHERE agent_id=$1 ORDER BY received_at DESC, report_sequence DESC LIMIT 1",
         )
         .bind(&agent_id)
         .fetch_one(state.db().pool())
@@ -6287,7 +6312,7 @@ mod tests {
         submit(&state, &agent_id, serde_json::to_vec(&replay).unwrap()).await;
 
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM block_history_gaps WHERE node_id=? AND from_height=8 AND to_height=9",
+            "SELECT COUNT(*) FROM block_history_gaps WHERE node_id=$1 AND from_height=8 AND to_height=9",
         )
         .bind("0195f2a1-0014-4014-8014-000000000014")
         .fetch_one(state.db().pool())
@@ -6328,11 +6353,12 @@ mod tests {
             receipt.receipt.rejections[0].code,
             platpulse_core::RejectionCode::InventoryRevisionConflict
         );
-        let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = ?")
-            .bind("0195f2a1-0014-4014-8014-000000000014")
-            .fetch_one(state.db().pool())
-            .await
-            .unwrap();
+        let lifecycle: String =
+            sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = $1")
+                .bind("0195f2a1-0014-4014-8014-000000000014")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
         assert_eq!(lifecycle, "active");
     }
 
@@ -6341,7 +6367,7 @@ mod tests {
         let (_dir, state, _agent_id) = state_with_agent().await;
         let node_id: platpulse_core::identity::NodeId =
             "0195f2a1-0014-4014-8014-000000000014".parse().unwrap();
-        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, 'platon-mainnet', 'ws://127.0.0.1:6790', 'active', 'public', 1, ?, ?)")
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ($1, $2, 'platon-mainnet', 'ws://127.0.0.1:6790', 'active', 'public', 1, $3, $4)")
             .bind(node_id.to_string()).bind("0195f2a1-0011-4011-8011-000000000011").bind("2026-08-12T08:00:00Z").bind("2026-08-12T08:00:00Z").execute(state.db().pool()).await.unwrap();
         let identity = platpulse_core::network::NetworkIdentity {
             genesis_hash: "0x0000000000000000000000000000000000000000000000000000000000000001"
@@ -6388,9 +6414,9 @@ mod tests {
                 .await
                 .unwrap()
         );
-        sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'subscription', ?, 'unknown', 'unknown', 'test', ?)")
+        sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'subscription', $12, 'unknown', 'unknown', 'test', $13)")
             .bind(node_id.to_string()).bind(42_i64).bind(hash_a.to_string()).bind(first.parent_hash.to_string()).bind(identity.genesis_hash.to_string()).bind(210425_i64).bind(210425_i64).bind("lat").bind(1000_i64).bind(first.observed_at.to_string()).bind(3_i64).bind(first.attribution.coinbase.to_string()).bind("2026-08-12T09:00:00Z").execute(&mut *tx).await.unwrap();
-        sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, updated_at) VALUES (?, 42, 1, 3, 0, ?)").bind(node_id.to_string()).bind("2026-08-12T09:00:00Z").execute(&mut *tx).await.unwrap();
+        sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, updated_at) VALUES ($1, 42, 1, 3, 0, $2)").bind(node_id.to_string()).bind("2026-08-12T09:00:00Z").execute(&mut *tx).await.unwrap();
         assert!(
             observe_block_identity(&mut tx, &second, "2026-08-12T09:01:00Z")
                 .await
@@ -6403,15 +6429,15 @@ mod tests {
         );
         tx.commit().await.unwrap();
         let summary_hash: String = sqlx::query_scalar(
-            "SELECT block_hash FROM block_summaries WHERE node_id=? AND block_number=42",
+            "SELECT block_hash FROM block_summaries WHERE node_id=$1 AND block_number=42",
         )
         .bind(node_id.to_string())
         .fetch_one(state.db().pool())
         .await
         .unwrap();
-        let counters: (i64, i64) = sqlx::query_as("SELECT cumulative_block_count, cumulative_transaction_count FROM block_history_state WHERE node_id=?").bind(node_id.to_string()).fetch_one(state.db().pool()).await.unwrap();
+        let counters: (i64, i64) = sqlx::query_as("SELECT cumulative_block_count, cumulative_transaction_count FROM block_history_state WHERE node_id=$1").bind(node_id.to_string()).fetch_one(state.db().pool()).await.unwrap();
         let divergence_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM chain_divergence_observations WHERE node_id=? AND height=42",
+            "SELECT COUNT(*) FROM chain_divergence_observations WHERE node_id=$1 AND height=42",
         )
         .bind(node_id.to_string())
         .fetch_one(state.db().pool())
@@ -6449,7 +6475,7 @@ mod tests {
         // A below-high-water episode is already underway: a real resync lasts
         // far longer than the grace window, so the regression is classified as
         // resyncing rather than a transient poll/subscription skew.
-        sqlx::query("UPDATE block_history_state SET historical_high_watermark=100, cumulative_block_count=4, resync_started_at='2026-08-12T08:00:00Z' WHERE node_id=?")
+        sqlx::query("UPDATE block_history_state SET historical_high_watermark=100, cumulative_block_count=4, resync_started_at='2026-08-12T08:00:00Z' WHERE node_id=$1")
             .bind(node_id.to_string()).execute(state.db().pool()).await.unwrap();
         let mut replay = first.clone();
         replay.report_sequence = 2;
@@ -6470,27 +6496,27 @@ mod tests {
             .highest_block = 4;
         submit(&state, &agent_id, serde_json::to_vec(&replay).unwrap()).await;
         let current: i64 =
-            sqlx::query_scalar("SELECT current_head FROM block_history_state WHERE node_id=?")
+            sqlx::query_scalar("SELECT current_head FROM block_history_state WHERE node_id=$1")
                 .bind(node_id.to_string())
                 .fetch_one(state.db().pool())
                 .await
                 .unwrap();
         let high: i64 = sqlx::query_scalar(
-            "SELECT historical_high_watermark FROM block_history_state WHERE node_id=?",
+            "SELECT historical_high_watermark FROM block_history_state WHERE node_id=$1",
         )
         .bind(node_id.to_string())
         .fetch_one(state.db().pool())
         .await
         .unwrap();
         let cumulative: i64 = sqlx::query_scalar(
-            "SELECT cumulative_block_count FROM block_history_state WHERE node_id=?",
+            "SELECT cumulative_block_count FROM block_history_state WHERE node_id=$1",
         )
         .bind(node_id.to_string())
         .fetch_one(state.db().pool())
         .await
         .unwrap();
         let state_name: String =
-            sqlx::query_scalar("SELECT resync_state FROM block_history_state WHERE node_id=?")
+            sqlx::query_scalar("SELECT resync_state FROM block_history_state WHERE node_id=$1")
                 .bind(node_id.to_string())
                 .fetch_one(state.db().pool())
                 .await
@@ -6499,15 +6525,14 @@ mod tests {
         assert_eq!(high, 100);
         assert_eq!(cumulative, 4);
         assert_eq!(state_name, "resyncing");
-        let db_path = _dir.path().join("server.db");
+        // The restart asks for the same directory, so the shared helper hands
+        // back the same database on either Storage Backend (ADR 0013).
         // A restart is a new process: the previous connection is gone before
         // the next one opens. The Server holds exclusive locking, so the
         // AppState-owned pool must be closed here to model that.
         state.db().close().await;
-        let reopened = initialize(ServerDatabaseConfig::new(db_path))
-            .await
-            .unwrap();
-        let persisted: (i64, i64, String) = sqlx::query_as("SELECT current_head, historical_high_watermark, resync_state FROM block_history_state WHERE node_id=?").bind(node_id.to_string()).fetch_one(reopened.pool()).await.unwrap();
+        let reopened = crate::test_support::test_database_in(_dir.path()).await;
+        let persisted: (i64, i64, String) = sqlx::query_as("SELECT current_head, historical_high_watermark, resync_state FROM block_history_state WHERE node_id=$1").bind(node_id.to_string()).fetch_one(reopened.pool()).await.unwrap();
         assert_eq!(persisted, (4, 100, "resyncing".to_owned()));
     }
 
@@ -6535,7 +6560,7 @@ mod tests {
             .highest_block = 100;
         first.report_id = "0195f2a1-0013-4013-8013-000000000204".parse().unwrap();
         submit(&state, &agent_id, serde_json::to_vec(&first).unwrap()).await;
-        sqlx::query("UPDATE block_history_state SET historical_high_watermark=100, cumulative_block_count=4 WHERE node_id=?")
+        sqlx::query("UPDATE block_history_state SET historical_high_watermark=100, cumulative_block_count=4 WHERE node_id=$1")
             .bind(node_id.to_string()).execute(state.db().pool()).await.unwrap();
 
         // The subscription observed a block that the polled Chain Head had not
@@ -6565,7 +6590,7 @@ mod tests {
             Option<String>,
             Option<String>,
         ) = sqlx::query_as(
-            "SELECT resync_state, resync_started_at, resync_last_progress_at FROM block_history_state WHERE node_id=?",
+            "SELECT resync_state, resync_started_at, resync_last_progress_at FROM block_history_state WHERE node_id=$1",
         )
         .bind(node_id.to_string())
         .fetch_one(state.db().pool())
@@ -6607,7 +6632,7 @@ mod tests {
             .highest_block = 100;
         base.report_id = "0195f2a1-0013-4013-8013-000000000304".parse().unwrap();
         submit(&state, &agent_id, serde_json::to_vec(&base).unwrap()).await;
-        sqlx::query("UPDATE block_history_state SET historical_high_watermark=100, cumulative_block_count=4 WHERE node_id=?")
+        sqlx::query("UPDATE block_history_state SET historical_high_watermark=100, cumulative_block_count=4 WHERE node_id=$1")
             .bind(node_id.to_string()).execute(state.db().pool()).await.unwrap();
 
         let body = |sequence: u64, report_id: &str, head: u64| {
@@ -6639,7 +6664,7 @@ mod tests {
         )
         .await;
         // Age the episode past the grace window, then report the same head.
-        sqlx::query("UPDATE block_history_state SET resync_started_at='2026-08-12T08:00:00Z' WHERE node_id=?")
+        sqlx::query("UPDATE block_history_state SET resync_started_at='2026-08-12T08:00:00Z' WHERE node_id=$1")
             .bind(node_id.to_string()).execute(state.db().pool()).await.unwrap();
         submit(
             &state,
@@ -6648,7 +6673,7 @@ mod tests {
         )
         .await;
         let state_name: String =
-            sqlx::query_scalar("SELECT resync_state FROM block_history_state WHERE node_id=?")
+            sqlx::query_scalar("SELECT resync_state FROM block_history_state WHERE node_id=$1")
                 .bind(node_id.to_string())
                 .fetch_one(state.db().pool())
                 .await
@@ -6663,7 +6688,7 @@ mod tests {
         )
         .await;
         let cleared: (String, Option<String>) = sqlx::query_as(
-            "SELECT resync_state, resync_started_at FROM block_history_state WHERE node_id=?",
+            "SELECT resync_state, resync_started_at FROM block_history_state WHERE node_id=$1",
         )
         .bind(node_id.to_string())
         .fetch_one(state.db().pool())
@@ -6705,7 +6730,7 @@ mod tests {
         failed.validate().unwrap();
         submit(&state, &agent_id, serde_json::to_vec(&failed).unwrap()).await;
         let client: String = sqlx::query_scalar(
-            "SELECT rpc_client_version FROM current_node_chain_observations WHERE node_id = ?",
+            "SELECT rpc_client_version FROM current_node_chain_observations WHERE node_id = $1",
         )
         .bind(second_id.to_string())
         .fetch_one(state.db().pool())
@@ -6713,7 +6738,7 @@ mod tests {
         .unwrap();
         assert_eq!(client, "other");
         let memory: i64 = sqlx::query_scalar(
-            "SELECT memory_used_bytes FROM current_host_observations WHERE agent_id = ?",
+            "SELECT memory_used_bytes FROM current_host_observations WHERE agent_id = $1",
         )
         .bind(&agent_id)
         .fetch_one(state.db().pool())
@@ -6721,7 +6746,7 @@ mod tests {
         .unwrap();
         assert_eq!(memory, 4_294_967_296);
         let state: String = sqlx::query_scalar(
-            "SELECT state FROM component_status WHERE node_id = ? AND component_key = 'rpc'",
+            "SELECT state FROM component_status WHERE node_id = $1 AND component_key = 'rpc'",
         )
         .bind("0195f2a1-0014-4014-8014-000000000014")
         .fetch_one(state.db().pool())
@@ -6747,7 +6772,7 @@ mod tests {
         )
         .await;
         let target_agent = "0195f2a1-0019-4019-8019-000000000019".to_owned();
-        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, active_boot_id, last_report_sequence, last_received_at, created_at, updated_at) VALUES (?, 1, NULL, NULL, NULL, ?, ?)")
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, active_boot_id, last_report_sequence, last_received_at, created_at, updated_at) VALUES ($1, 1, NULL, NULL, NULL, $2, $3)")
             .bind(&target_agent)
             .bind("2026-08-12T08:00:00Z")
             .bind("2026-08-12T08:00:00Z")
@@ -6838,7 +6863,7 @@ mod tests {
         let created = format_rfc3339(now - time::Duration::hours(2));
         let expires = format_rfc3339(now + time::Duration::hours(2));
         sqlx::query(
-            "INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, updated_at) VALUES ('transfer-pending-1', ?, ?, ?, 'pending', 'move the validator', ?, ?, ?)",
+            "INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, updated_at) VALUES ('transfer-pending-1', $1, $2, $3, 'pending', 'move the validator', $4, $5, $6)",
         )
         .bind(node_id.to_string())
         .bind(source)
@@ -6874,7 +6899,7 @@ mod tests {
             SampleDispositionKind::Accepted
         );
 
-        let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=?")
+        let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=$1")
             .bind(node_id.to_string())
             .fetch_one(state.db().pool())
             .await
@@ -6896,7 +6921,7 @@ mod tests {
         assert!(completed.is_some());
         // The same transaction merged the matching sample into history.
         let summaries: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE node_id=?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE node_id=$1")
                 .bind(node_id.to_string())
                 .fetch_one(state.db().pool())
                 .await
@@ -6912,7 +6937,7 @@ mod tests {
         // The target's security counter stays clean: this was a valid
         // declaration, not a contradiction.
         let target_events: i64 =
-            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=?")
+            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=$1")
                 .bind(&target_agent)
                 .fetch_one(state.db().pool())
                 .await
@@ -6943,14 +6968,14 @@ mod tests {
             source_receipt.nodes[0].rejections[0].code,
             platpulse_core::RejectionCode::NodeOwnershipMismatch
         );
-        let owner_after: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=?")
+        let owner_after: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=$1")
             .bind(node_id.to_string())
             .fetch_one(state.db().pool())
             .await
             .unwrap();
         assert_eq!(owner_after, target_agent);
         let source_events: i64 =
-            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=?")
+            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=$1")
                 .bind(&source_agent)
                 .fetch_one(state.db().pool())
                 .await
@@ -7003,14 +7028,14 @@ mod tests {
             vec!["genesis_hash", "address_hrp"]
         );
         // Ownership never switched and no history merged.
-        let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=?")
+        let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=$1")
             .bind(node_id.to_string())
             .fetch_one(state.db().pool())
             .await
             .unwrap();
         assert_eq!(owner, source_agent);
         let summaries: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE node_id=?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE node_id=$1")
                 .bind(node_id.to_string())
                 .fetch_one(state.db().pool())
                 .await
@@ -7024,7 +7049,7 @@ mod tests {
         .unwrap();
         assert_eq!(audits, 1);
         let events: i64 =
-            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=?")
+            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=$1")
                 .bind(&target_agent)
                 .fetch_one(state.db().pool())
                 .await
@@ -7069,7 +7094,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(status, "pending");
-        let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=?")
+        let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=$1")
             .bind(node_id.to_string())
             .fetch_one(state.db().pool())
             .await
@@ -7078,7 +7103,7 @@ mod tests {
         // An in-flight declaration without a contradiction is not a
         // security event.
         let events: i64 =
-            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=?")
+            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=$1")
                 .bind(&target_agent)
                 .fetch_one(state.db().pool())
                 .await
@@ -7091,7 +7116,7 @@ mod tests {
         let (_dir, state, source_agent, target_agent, node_id) =
             state_with_source_and_target().await;
         sqlx::query(
-            "INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, created_at, expires_at, updated_at) VALUES ('transfer-expired-1', ?, ?, ?, 'pending', '2026-08-10T08:00:00Z', '2026-08-11T08:00:00Z', '2026-08-10T08:00:00Z')",
+            "INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, created_at, expires_at, updated_at) VALUES ('transfer-expired-1', $1, $2, $3, 'pending', '2026-08-10T08:00:00Z', '2026-08-11T08:00:00Z', '2026-08-10T08:00:00Z')",
         )
         .bind(node_id.to_string())
         .bind(&source_agent)
@@ -7119,7 +7144,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(status, "expired");
-        let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=?")
+        let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=$1")
             .bind(node_id.to_string())
             .fetch_one(state.db().pool())
             .await
@@ -7179,7 +7204,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(code, "network_key_mismatch");
-        let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=?")
+        let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=$1")
             .bind(node_id.to_string())
             .fetch_one(state.db().pool())
             .await
@@ -7231,21 +7256,21 @@ mod tests {
         // Neither the identity window nor the summaries nor the counters
         // were touched by the matching sample.
         let window: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM block_identity_window WHERE node_id=?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM block_identity_window WHERE node_id=$1")
                 .bind(node_id.to_string())
                 .fetch_one(state.db().pool())
                 .await
                 .unwrap();
         assert_eq!(window, 0);
         let summaries: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE node_id=?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE node_id=$1")
                 .bind(node_id.to_string())
                 .fetch_one(state.db().pool())
                 .await
                 .unwrap();
         assert_eq!(summaries, 0);
         let counts: Option<(i64, i64)> = sqlx::query_as(
-            "SELECT cumulative_block_count, cumulative_transaction_count FROM block_history_state WHERE node_id=?",
+            "SELECT cumulative_block_count, cumulative_transaction_count FROM block_history_state WHERE node_id=$1",
         )
         .bind(node_id.to_string())
         .fetch_optional(state.db().pool())
@@ -7254,7 +7279,7 @@ mod tests {
         // The row exists only from the source's earlier report; the
         // rejected declaration never incremented the counters.
         assert_eq!(counts, Some((0, 0)));
-        let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=?")
+        let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=$1")
             .bind(node_id.to_string())
             .fetch_one(state.db().pool())
             .await
@@ -7340,7 +7365,7 @@ mod tests {
         node_id: platpulse_core::identity::NodeId,
     ) -> Vec<(i64, i64, String)> {
         sqlx::query_as(
-            "SELECT from_height, to_height, reason FROM block_history_gaps WHERE node_id=? ORDER BY from_height, to_height",
+            "SELECT from_height, to_height, reason FROM block_history_gaps WHERE node_id=$1 ORDER BY from_height, to_height",
         )
         .bind(node_id.to_string())
         .fetch_all(state.db().pool())
@@ -7354,7 +7379,7 @@ mod tests {
         node_id: platpulse_core::identity::NodeId,
     ) -> Vec<(i64, i64, String, String)> {
         sqlx::query_as(
-            "SELECT from_height, to_height, reason, authored_by FROM block_history_gaps WHERE node_id=? ORDER BY from_height, to_height",
+            "SELECT from_height, to_height, reason, authored_by FROM block_history_gaps WHERE node_id=$1 ORDER BY from_height, to_height",
         )
         .bind(node_id.to_string())
         .fetch_all(state.db().pool())
@@ -7437,7 +7462,7 @@ mod tests {
         }
 
         let summaries: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE node_id=?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE node_id=$1")
                 .bind(node_id.to_string())
                 .fetch_one(state.db().pool())
                 .await
@@ -7667,7 +7692,7 @@ mod tests {
         );
 
         let accepted: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE node_id = ?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM block_summaries WHERE node_id = $1")
                 .bind(node_id.to_string())
                 .fetch_one(state.db().pool())
                 .await
@@ -7677,7 +7702,7 @@ mod tests {
         // accepted summary is counted once and only the contradicted height is
         // refused.
         let counted: i64 = sqlx::query_scalar(
-            "SELECT cumulative_block_count FROM block_history_state WHERE node_id = ?",
+            "SELECT cumulative_block_count FROM block_history_state WHERE node_id = $1",
         )
         .bind(node_id.to_string())
         .fetch_one(state.db().pool())
@@ -7867,7 +7892,7 @@ mod tests {
         // can only sort at or before the Receipt's time — never at the Agent's
         // past-dated `recorded_at`.
         let (created_at, authored_by): (String, String) = sqlx::query_as(
-            "SELECT created_at, authored_by FROM block_history_gaps WHERE node_id = ? AND from_height = 10 AND to_height = 10",
+            "SELECT created_at, authored_by FROM block_history_gaps WHERE node_id = $1 AND from_height = 10 AND to_height = 10",
         )
         .bind(node_id.to_string())
         .fetch_one(state.db().pool())
@@ -7899,14 +7924,14 @@ mod tests {
         assert_eq!(receipt.disposition, ReceiptDisposition::Accepted);
 
         let accepted: String = sqlx::query_scalar(
-            "SELECT accepted_at FROM block_summaries WHERE node_id=? ORDER BY block_number DESC LIMIT 1",
+            "SELECT accepted_at FROM block_summaries WHERE node_id=$1 ORDER BY block_number DESC LIMIT 1",
         )
         .bind(node_id.to_string())
         .fetch_one(state.db().pool())
         .await
         .unwrap();
         let recorded: Option<String> = sqlx::query_scalar(
-            "SELECT last_accepted_summary_at FROM block_history_state WHERE node_id=?",
+            "SELECT last_accepted_summary_at FROM block_history_state WHERE node_id=$1",
         )
         .bind(node_id.to_string())
         .fetch_one(state.db().pool())
@@ -8111,7 +8136,7 @@ mod tests {
         // A cache row as the Server itself writes it: created now with its
         // absolute expiry capped by the hard retention boundary.
         let cache_now = crate::auth::format_rfc3339(crate::auth::now_utc());
-        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', '8.8.8.8', 'US', 'current', ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', '8.8.8.8', 'US', 'current', $1, $2, $3, $4, $5)")
             .bind(&cache_now)
             .bind(&cache_now)
             .bind(&cache_now)
@@ -8132,7 +8157,7 @@ mod tests {
 
         for table in ["peer_aggregate_5m", "peer_aggregate_1h"] {
             let row: (i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(&format!(
-                "SELECT sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count FROM {table} WHERE node_id=?"
+                "SELECT sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count FROM {table} WHERE node_id=$1"
             ))
             .bind(node_id)
             .fetch_one(state.db().pool())
@@ -8142,7 +8167,7 @@ mod tests {
         }
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM peer_aggregate_5m_countries WHERE node_id=?",
+                "SELECT COUNT(*) FROM peer_aggregate_5m_countries WHERE node_id=$1",
             )
             .bind(node_id)
             .fetch_one(state.db().pool())
@@ -8153,7 +8178,7 @@ mod tests {
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT peer_count FROM peer_aggregate_5m_countries WHERE node_id=? AND country_code='US'",
+                "SELECT peer_count FROM peer_aggregate_5m_countries WHERE node_id=$1 AND country_code='US'",
             )
             .bind(node_id)
             .fetch_one(state.db().pool())
@@ -8168,7 +8193,7 @@ mod tests {
         assert_eq!(second.disposition, ReceiptDisposition::Accepted);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT sample_count FROM peer_aggregate_5m WHERE node_id=?",
+                "SELECT sample_count FROM peer_aggregate_5m WHERE node_id=$1",
             )
             .bind(node_id)
             .fetch_one(state.db().pool())
@@ -8183,7 +8208,7 @@ mod tests {
         let third = submit(&state, &agent_id, serde_json::to_vec(&value).unwrap()).await;
         assert_eq!(third.disposition, ReceiptDisposition::Accepted);
         let churn: (i64, i64, i64) = sqlx::query_as(
-            "SELECT total_peers, arrivals, departures FROM peer_aggregate_5m WHERE node_id=?",
+            "SELECT total_peers, arrivals, departures FROM peer_aggregate_5m WHERE node_id=$1",
         )
         .bind(node_id)
         .fetch_one(state.db().pool())
@@ -8203,7 +8228,7 @@ mod tests {
             .unwrap();
         assert_eq!(history.state, "empty");
         assert_eq!(history.five_minute[0].total_peers, 4);
-        sqlx::query("UPDATE component_status SET state='starting' WHERE node_id=? AND component_key='peers'")
+        sqlx::query("UPDATE component_status SET state='starting' WHERE node_id=$1 AND component_key='peers'")
             .bind(node_id)
             .execute(state.db().pool())
             .await
@@ -8269,7 +8294,7 @@ mod tests {
         for node_id in [node_a, node_b] {
             assert_eq!(
                 sqlx::query_scalar::<_, i64>(
-                    "SELECT COUNT(*) FROM peer_aggregate_5m WHERE node_id=?",
+                    "SELECT COUNT(*) FROM peer_aggregate_5m WHERE node_id=$1",
                 )
                 .bind(node_id)
                 .fetch_one(state.db().pool())
@@ -8280,7 +8305,7 @@ mod tests {
         }
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT total_peers FROM peer_aggregate_5m WHERE node_id=?",
+                "SELECT total_peers FROM peer_aggregate_5m WHERE node_id=$1",
             )
             .bind(node_a)
             .fetch_one(state.db().pool())
@@ -8290,7 +8315,7 @@ mod tests {
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT total_peers FROM peer_aggregate_5m WHERE node_id=?",
+                "SELECT total_peers FROM peer_aggregate_5m WHERE node_id=$1",
             )
             .bind(node_b)
             .fetch_one(state.db().pool())
@@ -8317,14 +8342,14 @@ mod tests {
         .await;
         assert_eq!(receipt.disposition, ReceiptDisposition::PartiallyAccepted);
         assert_eq!(receipt.nodes[0].current, NodeCurrentDisposition::Rejected);
-        let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=?")
+        let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=$1")
             .bind(node_id.to_string())
             .fetch_one(state.db().pool())
             .await
             .unwrap();
         assert_eq!(owner, source_agent);
         let events: i64 =
-            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=?")
+            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=$1")
                 .bind(&target_agent)
                 .fetch_one(state.db().pool())
                 .await
@@ -8536,7 +8561,7 @@ mod tests {
         );
         let fingerprint_a = declaration_fingerprint(&body_a);
         sqlx::query(
-            "UPDATE agents SET last_inventory_revision = ?, inventory_sha256 = ? WHERE agent_id = ?",
+            "UPDATE agents SET last_inventory_revision = $1, inventory_sha256 = $2 WHERE agent_id = $3",
         )
         .bind(i64::MAX)
         .bind(&fingerprint_a)
@@ -8636,7 +8661,7 @@ mod tests {
         assert_eq!(v2_acceptance(&receipt.receipt).revision, 1);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM agent_report_receipts WHERE agent_id = ?"
+                "SELECT COUNT(*) FROM agent_report_receipts WHERE agent_id = $1"
             )
             .bind(&agent_id)
             .fetch_one(state.db().pool())
@@ -8648,12 +8673,15 @@ mod tests {
 
     /// Issue #187: a failed write anywhere in the v2 receipt transaction rolls
     /// back allocation, projection, and receipt, and emits no post-commit
-    /// invalidation. Controlled SQLite triggers are the failure source.
+    /// invalidation. An injected trigger is the failure source.
     #[tokio::test]
     async fn v2_receipt_failure_rolls_back_allocation_and_projection() {
         v2_write_failure_rolls_back_all_writes(
             "abort_v2_receipt",
-            "CREATE TRIGGER abort_v2_receipt BEFORE INSERT ON agent_report_receipts BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END",
+            "BEFORE",
+            "INSERT",
+            "agent_report_receipts",
+            "injected receipt failure",
         )
         .await;
     }
@@ -8662,7 +8690,10 @@ mod tests {
     async fn v2_projection_failure_rolls_back_allocation_and_receipt() {
         v2_write_failure_rolls_back_all_writes(
             "abort_v2_projection",
-            "CREATE TRIGGER abort_v2_projection BEFORE INSERT ON nodes BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END",
+            "BEFORE",
+            "INSERT",
+            "nodes",
+            "injected projection failure",
         )
         .await;
     }
@@ -8671,7 +8702,10 @@ mod tests {
     async fn v2_allocation_failure_rolls_back_projection_and_receipt() {
         v2_write_failure_rolls_back_all_writes(
             "abort_v2_allocation",
-            "CREATE TRIGGER abort_v2_allocation BEFORE UPDATE ON agents BEGIN SELECT RAISE(ABORT, 'injected allocation failure'); END",
+            "BEFORE",
+            "UPDATE",
+            "agents",
+            "injected allocation failure",
         )
         .await;
     }
@@ -8825,7 +8859,7 @@ mod tests {
         let (_dir, state, first_agent) = state_with_agent().await;
         let second_agent = "0195f2a1-0011-4011-8011-000000000022";
         sqlx::query(
-            "INSERT INTO agents (agent_id, agent_epoch, active_boot_id, last_report_sequence, last_received_at, created_at, updated_at) VALUES (?, 1, NULL, NULL, NULL, ?, ?)",
+            "INSERT INTO agents (agent_id, agent_epoch, active_boot_id, last_report_sequence, last_received_at, created_at, updated_at) VALUES ($1, 1, NULL, NULL, NULL, $2, $3)",
         )
         .bind(second_agent)
         .bind("2026-08-12T08:00:00Z")

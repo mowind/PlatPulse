@@ -1270,7 +1270,7 @@ mod tests {
     /// `notification_events.incident_id` references `alert_incidents`;
     /// tests that attach an Event to an Incident seed the Incident first.
     async fn seed_incident(pool: &AnyPool) {
-        sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ('inc-1', 'node.rpc_unreachable', 1, 'node', 'node-a', 'critical', 'open', '2026-03-01T00:00:00Z', '2026-03-01T00:00:00Z', '{}') ON CONFLICT(incident_id) DO NOTHING")
+        sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ('inc-1', 'node.rpc_unreachable', 1, 'node', 'node-a', 'critical', 'open', 1, '2026-03-01T00:00:00Z', '{}') ON CONFLICT(incident_id) DO NOTHING")
             .execute(pool)
             .await
             .unwrap();
@@ -1453,7 +1453,7 @@ mod tests {
             ("in_flight", RetryError::AlreadyQueued),
             ("pending", RetryError::AlreadyQueued),
         ] {
-            sqlx::query("UPDATE notification_deliveries SET state = ? WHERE delivery_id = ?")
+            sqlx::query("UPDATE notification_deliveries SET state = $1 WHERE delivery_id = $2")
                 .bind(state)
                 .bind(&delivery_id)
                 .execute(&mut *conn)
@@ -1473,7 +1473,7 @@ mod tests {
         }
 
         for state in ["retry_scheduled", "failed", "dead_letter"] {
-            sqlx::query("UPDATE notification_deliveries SET state = ? WHERE delivery_id = ?")
+            sqlx::query("UPDATE notification_deliveries SET state = $1 WHERE delivery_id = $2")
                 .bind(state)
                 .bind(&delivery_id)
                 .execute(&mut *conn)

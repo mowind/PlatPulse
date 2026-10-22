@@ -1508,9 +1508,11 @@ mod tests {
         // Give ops an active Session, then demote them: the Session must be
         // revoked immediately (design §10.2: role changes revoke sessions).
         sqlx::query(
-            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES ('ops-session', ?, x'01', x'02', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', NULL)",
+            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES ('ops-session', $1, $2, $3, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', NULL)",
         )
         .bind(&ops_id)
+        .bind(vec![1u8])
+        .bind(vec![2u8])
         .execute(state.db().pool())
         .await
         .unwrap();
@@ -1546,9 +1548,11 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         sqlx::query(
-            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES ('ops-session-2', ?, x'03', x'04', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', NULL)",
+            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES ('ops-session-2', $1, $2, $3, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', NULL)",
         )
         .bind(&ops_id)
+        .bind(vec![3u8])
+        .bind(vec![4u8])
         .execute(state.db().pool())
         .await
         .unwrap();
@@ -1681,8 +1685,10 @@ mod tests {
         let (_dir, state) = test_state().await;
         let (user_id, _) = seed_owner_with_session(&state).await;
         sqlx::query(
-            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES ('victim-session', (SELECT user_id FROM users WHERE username = 'admin'), x'05', x'06', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', NULL)",
+            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES ('victim-session', (SELECT user_id FROM users WHERE username = 'admin'), $1, $2, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', NULL)",
         )
+        .bind(vec![5u8])
+        .bind(vec![6u8])
         .execute(state.db().pool())
         .await
         .unwrap();
@@ -1906,9 +1912,11 @@ mod tests {
                 .await
                 .unwrap();
         sqlx::query(
-            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES ('v1-session', ?, x'07', x'08', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', NULL)",
+            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES ('v1-session', $1, $2, $3, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', NULL)",
         )
         .bind(&v1_id)
+        .bind(vec![7u8])
+        .bind(vec![8u8])
         .execute(state.db().pool())
         .await
         .unwrap();
@@ -1947,18 +1955,22 @@ mod tests {
         let (user_id, _) = seed_owner_with_session(&state).await;
         // The acting session exists in storage; revoke-others must keep it.
         sqlx::query(
-            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES ('session-admin', ?, x'0c', x'0a', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', NULL)",
+            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES ('session-admin', $1, $2, $3, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', NULL)",
         )
         .bind(&user_id)
+        .bind(vec![12u8])
+        .bind(vec![10u8])
         .execute(state.db().pool())
         .await
         .unwrap();
-        for (id, digest) in [("other-1", "x'09'"), ("other-2", "x'0b'")] {
-            sqlx::query(&format!(
-                "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES (?, ?, {digest}, x'0a', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', NULL)"
-            ))
+        for (id, digest) in [("other-1", 0x09u8), ("other-2", 0x0bu8)] {
+            sqlx::query(
+                "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES ($1, $2, $3, $4, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', NULL)",
+            )
             .bind(id)
             .bind(&user_id)
+            .bind(vec![digest])
+            .bind(vec![0x0au8])
             .execute(state.db().pool())
             .await
             .unwrap();
@@ -1975,7 +1987,7 @@ mod tests {
         let value: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["revokedCount"], 2);
         let active: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sessions WHERE user_id = ? AND revoked_at IS NULL",
+            "SELECT COUNT(*) FROM sessions WHERE user_id = $1 AND revoked_at IS NULL",
         )
         .bind(&user_id)
         .fetch_one(state.db().pool())

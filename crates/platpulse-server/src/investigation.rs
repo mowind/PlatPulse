@@ -1607,7 +1607,7 @@ fn metric_stats_sql(schema: &HistorySchema, tier: Option<i64>) -> String {
     let grain_predicate = instants.grain_predicate;
     let table = if tier.is_some() { "{agg}" } else { "{raw}" };
     let sample_count = if tier.is_some() {
-        "COALESCE(SUM(sample_count), 0)"
+        "CAST(COALESCE(SUM(sample_count), 0) AS BIGINT)"
     } else {
         "0"
     };
@@ -2587,7 +2587,7 @@ async fn peers_source(ctx: &SourceContext<'_>) -> Result<InvestigationSourceResp
                 MAX(last_observed_at) AS last_observed \
            FROM (SELECT bucket_start, last_observed_at FROM peer_aggregate_5m WHERE node_id = $1 \
                  UNION ALL \
-                 SELECT bucket_start, last_observed_at FROM peer_aggregate_1h WHERE node_id = $2)",
+                 SELECT bucket_start, last_observed_at FROM peer_aggregate_1h WHERE node_id = $2) AS receipts",
     )
     .bind(ctx.node_id)
     .bind(ctx.node_id)
@@ -2681,7 +2681,7 @@ async fn peers_source(ctx: &SourceContext<'_>) -> Result<InvestigationSourceResp
         let (from, to) = (format_rfc3339(span.0), format_rfc3339(span.1));
         let stats = sqlx::query_as::<_, PeerStatsRow>(&format!(
             "SELECT COUNT(*) AS point_count, \
-                    COALESCE(SUM(sample_count), 0) AS sample_count, \
+                    CAST(COALESCE(SUM(sample_count), 0) AS BIGINT) AS sample_count, \
                     MIN(bucket_start) AS first_observed_at, \
                     MAX(bucket_start) AS last_observed_at \
                FROM {} \
@@ -3658,10 +3658,17 @@ mod tests {
     /// The epoch expression is plain integer arithmetic over the instant's text,
     /// so it must agree with the instant itself across leap days, month, year
     /// and century edges, and round a sub-second fraction to the nearest second.
+    #[cfg_attr(storage_postgres, ignore = "it stages a historical SQLite schema")]
     #[tokio::test]
     async fn epoch_of_names_the_unix_second_of_a_canonical_instant() {
+        if !crate::test_support::skip_unless_sqlite("it stages a historical SQLite schema") {
+            return;
+        }
         let pool = crate::test_support::unmigrated_sqlite_pool(None).await;
-        let statement = format!("SELECT {} FROM (SELECT $1 AS at)", epoch_of("at"));
+        let statement = format!(
+            "SELECT {} FROM (SELECT $1 AS at) AS instant",
+            epoch_of("at")
+        );
         for instant in [
             "1970-01-01T00:00:00Z",
             "1970-03-01T00:00:00Z",

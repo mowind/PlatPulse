@@ -872,7 +872,7 @@ mod tests {
         .await
         .unwrap();
         let row: (String, String, i64, String) = sqlx::query_as(
-            "SELECT kind, status, audit_event_id, created_by_user_id FROM operations WHERE operation_id = ?",
+            "SELECT kind, status, audit_event_id, created_by_user_id FROM operations WHERE operation_id = $1",
         )
         .bind(&operation_id)
         .fetch_one(database.pool())
@@ -888,7 +888,7 @@ mod tests {
             )
         );
         let params: String =
-            sqlx::query_scalar("SELECT params_json FROM operations WHERE operation_id = ?")
+            sqlx::query_scalar("SELECT params_json FROM operations WHERE operation_id = $1")
                 .bind(&operation_id)
                 .fetch_one(database.pool())
                 .await
@@ -896,7 +896,7 @@ mod tests {
         assert!(!params.contains("203.0.113.7"));
         assert!(!params.contains("secret"));
         let audit: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM audit_events WHERE event_kind='doctor_started' AND target_id=?",
+            "SELECT COUNT(*) FROM audit_events WHERE event_kind='doctor_started' AND target_id=$1",
         )
         .bind(&operation_id)
         .fetch_one(database.pool())
@@ -911,12 +911,12 @@ mod tests {
         let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool();
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-        sqlx::query("INSERT INTO operations (operation_id, kind, status, created_at, params_json, warnings_json, errors_json) VALUES ('op-a', 'retention_run', 'running', ?, '{}', '[]', '[]')")
+        sqlx::query("INSERT INTO operations (operation_id, kind, status, created_at, params_json, warnings_json, errors_json) VALUES ('op-a', 'retention_run', 'running', $1, '{}', '[]', '[]')")
             .bind(&now)
             .execute(pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO operations (operation_id, kind, status, created_at, params_json, warnings_json, errors_json) VALUES ('op-b', 'doctor_run', 'queued', ?, '{}', '[]', '[]')")
+        sqlx::query("INSERT INTO operations (operation_id, kind, status, created_at, params_json, warnings_json, errors_json) VALUES ('op-b', 'doctor_run', 'queued', $1, '{}', '[]', '[]')")
             .bind(&now)
             .execute(pool)
             .await
@@ -1095,7 +1095,7 @@ mod tests {
     async fn the_schema_refuses_two_open_runs_of_a_destructive_kind() {
         let (_dir, database) = fresh_database().await;
         let pool = database.pool();
-        let insert = "INSERT INTO operations (operation_id, kind, status, progress_percent, params_json, warnings_json, errors_json, created_at) VALUES (?, ?, ?, 0, '{}', '[]', '[]', '2026-01-01T00:00:00Z')";
+        let insert = "INSERT INTO operations (operation_id, kind, status, progress_percent, params_json, warnings_json, errors_json, created_at) VALUES ($1, $2, $3, 0, '{}', '[]', '[]', '2026-01-01T00:00:00Z')";
         sqlx::query(insert)
             .bind("op-1")
             .bind(KIND_RETENTION_RUN)
@@ -1133,7 +1133,7 @@ mod tests {
             .await
             .unwrap();
         // Once the open run is terminal, the next run may queue.
-        sqlx::query("UPDATE operations SET status = ? WHERE operation_id = 'op-1'")
+        sqlx::query("UPDATE operations SET status = $1 WHERE operation_id = 'op-1'")
             .bind(STATUS_CANCELLED)
             .execute(pool)
             .await
@@ -1169,7 +1169,7 @@ mod tests {
             }
         ]);
         let params = serde_json::json!({ "previewId": "preview-1", "plan": plan });
-        let insert = "INSERT INTO operations (operation_id, kind, status, params_json, warnings_json, errors_json, created_at) VALUES (?, ?, ?, ?, '[]', '[]', '2026-01-01T00:00:00Z')";
+        let insert = "INSERT INTO operations (operation_id, kind, status, params_json, warnings_json, errors_json, created_at) VALUES ($1, $2, $3, $4, '[]', '[]', '2026-01-01T00:00:00Z')";
         sqlx::query(insert)
             .bind("interrupted-run")
             .bind(KIND_RETENTION_RUN)

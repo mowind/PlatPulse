@@ -140,10 +140,7 @@ fn forced_policy(harness: &Harness) -> Arc<CapacityProtection> {
         Some(PathBuf::from("test-capacity-floor")),
     )
     .unwrap();
-    Arc::new(CapacityProtection::new(
-        config,
-        Some(harness.state.db().path()),
-    ))
+    Arc::new(CapacityProtection::new(config, harness.state.db().path()))
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
@@ -1318,8 +1315,17 @@ async fn purging_one_node_keeps_the_host_series_every_node_of_the_agent_shares()
 
 /// Story 59: a low-space pause is counted protection evidence on the shared
 /// series too, and each mount path's losses are counted apart.
+#[cfg_attr(
+    storage_postgres,
+    ignore = "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)"
+)]
 #[tokio::test]
 async fn a_low_space_pause_counts_the_losses_of_each_mount_apart() {
+    if !platpulse_server::test_support::skip_unless_sqlite(
+        "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)",
+    ) {
+        return;
+    }
     let mut harness = Harness::boot().await;
     let session = owner_session(&harness).await;
     let (agent_id, credential) = enroll_agent(&harness, &session).await;
@@ -1902,8 +1908,17 @@ async fn purging_one_node_keeps_the_mount_paths_every_node_shared() {
 /// arrive while it holds, and the mount paths already observed stay exactly as
 /// observed. A path only a paused Report carried is not silently missing
 /// either: the pause counts the loss of that mount path.
+#[cfg_attr(
+    storage_postgres,
+    ignore = "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)"
+)]
 #[tokio::test]
 async fn a_pause_keeps_the_mounts_already_observed_and_counts_what_it_dropped() {
+    if !platpulse_server::test_support::skip_unless_sqlite(
+        "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)",
+    ) {
+        return;
+    }
     let mut harness = Harness::boot().await;
     let session = owner_session(&harness).await;
     let (agent_id, credential) = enroll_agent(&harness, &session).await;
@@ -1991,8 +2006,17 @@ async fn a_pause_keeps_the_mounts_already_observed_and_counts_what_it_dropped() 
 /// is holding optional history back, a path that keeps being reported is not
 /// silent. The pause is stated on the answer instead, and the verdict comes back
 /// as soon as the pause ends.
+#[cfg_attr(
+    storage_postgres,
+    ignore = "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)"
+)]
 #[tokio::test]
 async fn a_pause_is_not_a_silence_while_the_agent_keeps_its_rhythm() {
+    if !platpulse_server::test_support::skip_unless_sqlite(
+        "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)",
+    ) {
+        return;
+    }
     let mut harness = Harness::boot().await;
     let session = owner_session(&harness).await;
     let (agent_id, credential) = enroll_agent(&harness, &session).await;
@@ -2072,10 +2096,12 @@ async fn a_pause_is_not_a_silence_while_the_agent_keeps_its_rhythm() {
 
     // Once the pause ends the same evidence is judged again, and now it is a
     // silence: the verdict was withheld for the pause, never lost.
-    let database_path = harness.state.db().path().to_path_buf();
+    // The storage location is only the path the policy measures, so a
+    // PostgreSQL deployment simply has none.
+    let storage_path = harness.state.db().path().map(std::path::Path::to_path_buf);
     harness.install_capacity(Arc::new(CapacityProtection::new(
         CapacityConfig::disabled(),
-        Some(database_path.as_path()),
+        storage_path.as_deref(),
     )));
     let (status, body) = read_mounts(&harness, Some(&session.cookie), &agent_id).await;
     assert_eq!(status, StatusCode::OK, "{body}");

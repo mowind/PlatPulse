@@ -296,6 +296,14 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
                 status: STATUS_WARNING,
                 detail: "SQLite quick_check did not finish within its budget; run `platpulse-server verify-integrity` offline for an authoritative verdict".to_owned(),
             },
+            // An unavailable check is reported as not configured. It is never
+            // shown as a pass (preserve last-good semantics, ADR 0013).
+            IntegrityVerdict::Unsupported => DoctorCheck {
+                check_id: "database_integrity".to_owned(),
+                label: "Database integrity".to_owned(),
+                status: STATUS_NOT_CONFIGURED,
+                detail: "the PostgreSQL Storage Backend has no bounded in-process integrity check; the offline verify command covers SQLite only (0.3.0 S5)".to_owned(),
+            },
             IntegrityVerdict::Failed(error) => {
                 state.note_database_error(&error);
                 DoctorCheck {
@@ -550,7 +558,12 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
     // 11. Sensitive state files and optional Geo database are checked through
     // descriptor-based no-follow validation; failures are actionable but do
     // not include filesystem paths in the Admin response.
-    let database_safe = crate::file_security::validate_file(state.db().path()).is_ok();
+    // A file-permission check applies only to the SQLite backend: the
+    // PostgreSQL backend stores no Server file, so there is nothing to check.
+    let database_safe = match state.db().path() {
+        Some(path) => crate::file_security::validate_file(path).is_ok(),
+        None => true,
+    };
     checks.push(DoctorCheck {
         check_id: "database_storage".to_owned(),
         label: "Database storage".to_owned(),
@@ -559,10 +572,14 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
         } else {
             STATUS_FAIL
         },
-        detail: if database_safe {
-            "Server database is a private regular file owned by the Server user".to_owned()
-        } else {
-            "Server database ownership or permissions are unsafe".to_owned()
+        detail: match (database_safe, state.db().path()) {
+            (false, _) => "Server database ownership or permissions are unsafe".to_owned(),
+            (true, Some(_)) => {
+                "Server database is a private regular file owned by the Server user".to_owned()
+            }
+            (true, None) => {
+                "the PostgreSQL Storage Backend stores no Server database file".to_owned()
+            }
         },
     });
     checks.push(match state.geo().path() {

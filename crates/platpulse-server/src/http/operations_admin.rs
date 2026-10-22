@@ -2675,7 +2675,7 @@ mod tests {
     /// The persisted plan of one Operation, the authority on what it released.
     async fn recorded_plan(state: &AppState, operation_id: &str) -> Value {
         let params: String =
-            sqlx::query_scalar("SELECT params_json FROM operations WHERE operation_id = ?")
+            sqlx::query_scalar("SELECT params_json FROM operations WHERE operation_id = $1")
                 .bind(operation_id)
                 .fetch_one(state.db().pool())
                 .await
@@ -2690,32 +2690,32 @@ mod tests {
         let real_now = crate::auth::now_utc();
         let old = crate::auth::format_rfc3339(real_now - time::Duration::days(400));
         let now = crate::auth::format_rfc3339(real_now);
-        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('ops-agent', 1, ?, ?)")
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('ops-agent', 1, $1, $2)")
             .bind(&old).bind(&old).execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('ops-network', 'Ops', '0xgenesis', 1, 1, 'lat', ?, ?)")
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('ops-network', 'Ops', '0xgenesis', 1, 1, 'lat', $1, $2)")
             .bind(&old).bind(&old).execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('ops-node', 'ops-agent', 'ops-network', 'ws://127.0.0.1:1', 'active', 'private', 1, ?, ?)")
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('ops-node', 'ops-agent', 'ops-network', 'ws://127.0.0.1:1', 'active', 'private', 1, $1, $2)")
             .bind(&old).bind(&old).execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES ('ops-node', 1, '0xhash', '0xparent', '0xgenesis', 1, 1, 'lat', 1, ?, 2, 'subscription', '0x0000000000000000000000000000000000000000', 'unknown', 'unknown', 'test', ?)")
+        sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES ('ops-node', 1, '0xhash', '0xparent', '0xgenesis', 1, 1, 'lat', 1, $1, 2, 'subscription', '0x0000000000000000000000000000000000000000', 'unknown', 'unknown', 'test', $2)")
             .bind(&old).bind(&old).execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES ('ops-node', 2, '0xhash2', '0xparent2', '0xgenesis', 1, 1, 'lat', 1, ?, 2, 'subscription', '0x0000000000000000000000000000000000000000', 'unknown', 'unknown', 'test', ?)")
+        sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES ('ops-node', 2, '0xhash2', '0xparent2', '0xgenesis', 1, 1, 'lat', 1, $1, 2, 'subscription', '0x0000000000000000000000000000000000000000', 'unknown', 'unknown', 'test', $2)")
             .bind(&now).bind(&now).execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, updated_at) VALUES ('ops-node', 2, 2, 4, 0, ?)")
+        sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, updated_at) VALUES ('ops-node', 2, 2, 4, 0, $1)")
             .bind(&now).execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ('ops-node', 0, 2, 'covered', ?, ?)")
+        sqlx::query("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ('ops-node', 0, 2, 'covered', $1, $2)")
             .bind(&old).bind(&old).execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, resolved_at, created_at) VALUES ('ops-node', 10, 20, 'server_rejected', ?, ?)")
+        sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, resolved_at, created_at) VALUES ('ops-node', 10, 20, 'server_rejected', $1, $2)")
             .bind(&old).bind(&old).execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, created_at) VALUES ('ops-node', 30, 40, 'permanent_gap', ?)")
+        sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, created_at) VALUES ('ops-node', 30, 40, 'permanent_gap', $1)")
             .bind(&old).execute(pool).await.unwrap();
         // An old Incident and its notification event; incidents are immutable.
-        sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ('inc-old', 'node.rpc_unreachable', 1, 'node', 'ops-node', 'critical', 'open', ?, ?, '{}')")
-            .bind(&old).bind(&old).execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO notification_events (event_id, event_kind, incident_id, rule_key, subject_kind, subject_key, severity, summary, created_at) VALUES ('ev-old', 'incident', 'inc-old', 'node.rpc_unreachable', 'node', 'ops-node', 'critical', 'old event', ?)")
+        sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ('inc-old', 'node.rpc_unreachable', 1, 'node', 'ops-node', 'critical', 'open', 1, $1, '{}')")
+            .bind(&old).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO notification_events (event_id, event_kind, incident_id, rule_key, subject_kind, subject_key, severity, summary, created_at) VALUES ('ev-old', 'incident', 'inc-old', 'node.rpc_unreachable', 'node', 'ops-node', 'critical', 'old event', $1)")
             .bind(&old).execute(pool).await.unwrap();
         // An old Audit row not referenced by any Operation (removable) and
         // one referenced by an Operation (protected).
-        sqlx::query("INSERT INTO audit_events (actor_user_id, event_kind, target_kind, target_id, created_at) VALUES ('owner', 'test_old', 'test', 't1', ?)")
+        sqlx::query("INSERT INTO audit_events (actor_user_id, event_kind, target_kind, target_id, created_at) VALUES ('owner', 'test_old', 'test', 't1', $1)")
             .bind(&old).execute(pool).await.unwrap();
         let (operation_id, audit_event_id) = crate::operations::create_operation(
             pool,
@@ -2727,9 +2727,9 @@ mod tests {
         )
         .await
         .unwrap();
-        sqlx::query("INSERT INTO audit_events (actor_user_id, event_kind, target_kind, target_id, created_at) VALUES ('owner', 'linked_old', 'test', 't2', ?)")
+        sqlx::query("INSERT INTO audit_events (actor_user_id, event_kind, target_kind, target_id, created_at) VALUES ('owner', 'linked_old', 'test', 't2', $1)")
             .bind(&old).execute(pool).await.unwrap();
-        sqlx::query("UPDATE operations SET audit_event_id = (SELECT MAX(audit_event_id) FROM audit_events), status = 'succeeded', finished_at = ? WHERE operation_id = ?")
+        sqlx::query("UPDATE operations SET audit_event_id = (SELECT MAX(audit_event_id) FROM audit_events), status = 'succeeded', finished_at = $1 WHERE operation_id = $2")
             .bind(&now).bind(&operation_id).execute(pool).await.unwrap();
         let _ = audit_event_id;
     }
@@ -3036,7 +3036,7 @@ mod tests {
             .unwrap();
         crate::operations::process_operations(&state).await.unwrap();
         let row: (String, Option<String>) =
-            sqlx::query_as("SELECT status, errors_json FROM operations WHERE operation_id=?")
+            sqlx::query_as("SELECT status, errors_json FROM operations WHERE operation_id=$1")
                 .bind(&operation_id)
                 .fetch_one(state.db().pool())
                 .await
@@ -3061,7 +3061,7 @@ mod tests {
         // The refusal is durable: the run cannot be resumed into a release later.
         crate::operations::process_operations(&state).await.unwrap();
         let status: String =
-            sqlx::query_scalar("SELECT status FROM operations WHERE operation_id=?")
+            sqlx::query_scalar("SELECT status FROM operations WHERE operation_id=$1")
                 .bind(&operation_id)
                 .fetch_one(state.db().pool())
                 .await
@@ -3436,8 +3436,17 @@ mod tests {
         assert_eq!(linked, 1);
     }
 
+    #[cfg_attr(
+        storage_postgres,
+        ignore = "it builds an offline SQLite backup with VACUUM INTO"
+    )]
     #[tokio::test]
     async fn offline_created_backup_exposes_sanitized_metadata_and_verifies() {
+        if !crate::test_support::skip_unless_sqlite(
+            "it builds an offline SQLite backup with VACUUM INTO",
+        ) {
+            return;
+        }
         let (_dir, state) = test_state().await;
         seed_old_data(&state).await;
         let pool = state.db().pool();
@@ -3528,7 +3537,7 @@ mod tests {
 
         while crate::operations::process_operations(&state).await.unwrap() > 0 {}
         let verification: (String, Option<String>) = sqlx::query_as(
-            "SELECT verification, verification_error FROM backup_artifacts WHERE artifact_id = ?",
+            "SELECT verification, verification_error FROM backup_artifacts WHERE artifact_id = $1",
         )
         .bind(&artifact_id)
         .fetch_one(pool)
@@ -3612,7 +3621,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         while crate::operations::process_operations(&state).await.unwrap() > 0 {}
         let verification: (String, Option<String>) = sqlx::query_as(
-            "SELECT verification, verification_error FROM backup_artifacts WHERE artifact_id = ?",
+            "SELECT verification, verification_error FROM backup_artifacts WHERE artifact_id = $1",
         )
         .bind(&artifact_id)
         .fetch_one(pool)
@@ -3662,7 +3671,7 @@ mod tests {
         let created_at =
             crate::auth::format_rfc3339(crate::auth::now_utc() - time::Duration::days(2));
         sqlx::query(
-            "INSERT INTO backup_artifacts (artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, verification, verified_at) VALUES ('b-old', 'platpulse-b-old.db', 10, ?, ?, ?, ?, 'ok', ?)",
+            "INSERT INTO backup_artifacts (artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, verification, verified_at) VALUES ('b-old', 'platpulse-b-old.db', 10, $1, $2, $3, $4, 'ok', $5)",
         )
         .bind("a".repeat(64))
         .bind(crate::database::SERVER_SCHEMA_VERSION)
@@ -3810,8 +3819,17 @@ mod tests {
         assert!(!body["checks"].as_array().unwrap().is_empty());
     }
 
+    #[cfg_attr(
+        storage_postgres,
+        ignore = "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)"
+    )]
     #[tokio::test]
     async fn doctor_fails_the_storage_capacity_check_while_history_is_paused() {
+        if !crate::test_support::skip_unless_sqlite(
+            "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)",
+        ) {
+            return;
+        }
         let (_dir, state) = test_state().await;
         let capacity = forced_capacity(&state);
         capacity.check_now(state.db().pool()).await.unwrap();
@@ -3863,12 +3881,21 @@ mod tests {
         .unwrap();
         std::sync::Arc::new(crate::capacity::CapacityProtection::new(
             config,
-            Some(state.db().path()),
+            state.db().path(),
         ))
     }
 
+    #[cfg_attr(
+        storage_postgres,
+        ignore = "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)"
+    )]
     #[tokio::test]
     async fn capacity_overview_reports_a_disabled_policy_without_inventing_thresholds() {
+        if !crate::test_support::skip_unless_sqlite(
+            "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)",
+        ) {
+            return;
+        }
         let (dir, state) = test_state().await;
         let response = capacity_overview(
             State(state.clone()),
@@ -3898,8 +3925,17 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        storage_postgres,
+        ignore = "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)"
+    )]
     #[tokio::test]
     async fn capacity_overview_surfaces_protection_and_the_visible_gap() {
+        if !crate::test_support::skip_unless_sqlite(
+            "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)",
+        ) {
+            return;
+        }
         let (_dir, state) = test_state().await;
         let capacity = forced_capacity(&state);
         capacity.check_now(state.db().pool()).await.unwrap();
@@ -4081,7 +4117,7 @@ mod tests {
                 .contains("never rolls a release back")
         );
         let audit: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM audit_events WHERE event_kind='operation_cancelled' AND target_id=?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM audit_events WHERE event_kind='operation_cancelled' AND target_id=$1")
                 .bind(&operation_id)
                 .fetch_one(state.db().pool()).await.unwrap();
         assert_eq!(audit, 1);
@@ -4089,7 +4125,7 @@ mod tests {
         let processed = crate::operations::process_operations(&state).await.unwrap();
         assert_eq!(processed, 0);
         let status: String =
-            sqlx::query_scalar("SELECT status FROM operations WHERE operation_id=?")
+            sqlx::query_scalar("SELECT status FROM operations WHERE operation_id=$1")
                 .bind(&operation_id)
                 .fetch_one(state.db().pool())
                 .await
@@ -4112,7 +4148,7 @@ mod tests {
         // run stays `running` with more batches to go.
         crate::operations::process_operations(&state).await.unwrap();
         let status: String =
-            sqlx::query_scalar("SELECT status FROM operations WHERE operation_id=?")
+            sqlx::query_scalar("SELECT status FROM operations WHERE operation_id=$1")
                 .bind(&operation_id)
                 .fetch_one(pool)
                 .await
@@ -4156,7 +4192,7 @@ mod tests {
         let now = crate::auth::now_utc();
         let old = crate::auth::format_rfc3339(now - time::Duration::days(31));
         let fresh = crate::auth::format_rfc3339(now - time::Duration::days(1));
-        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('slim-agent', 1, ?, ?)")
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('slim-agent', 1, $1, $2)")
             .bind(&fresh)
             .bind(&fresh)
             .execute(pool)
@@ -4178,7 +4214,7 @@ mod tests {
             }))
             .unwrap()
         };
-        let insert = "INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES (?, 'slim-agent', 1, 'boot-a', ?, ?, 'accepted', ?, ?)";
+        let insert = "INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES ($1, 'slim-agent', 1, 'boot-a', $2, $3, 'accepted', $4, $5)";
         for (report_id, sequence, received_at) in
             [("slim-old", 1_i64, &old), ("slim-fresh", 2_i64, &fresh)]
         {
@@ -4198,24 +4234,26 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         while crate::operations::process_operations(&state).await.unwrap() > 0 {}
 
-        let (slimmed, disposition, hash, body_text): (Option<String>, String, String, String) =
-            sqlx::query_as("SELECT receipt_slimmed_at, disposition, report_body_sha256, CAST(receipt_body AS TEXT) FROM agent_report_receipts WHERE report_id = 'slim-old'")
+        let (slimmed, disposition, hash, body_bytes): (Option<String>, String, String, Vec<u8>) =
+            sqlx::query_as("SELECT receipt_slimmed_at, disposition, report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id = 'slim-old'")
                 .fetch_one(pool)
                 .await
                 .unwrap();
         assert!(slimmed.is_some(), "the old receipt body was not slimmed");
         assert_eq!(disposition, "accepted");
         assert_eq!(hash, "a".repeat(64));
+        let body_text = String::from_utf8(body_bytes).expect("a receipt body is UTF-8 JSON");
         let value: Value = serde_json::from_str(&body_text).unwrap();
         assert_eq!(value["nodes"], json!([]));
         assert_eq!(value["samples"], json!([]));
 
-        let (fresh_slimmed, fresh_body): (Option<String>, String) = sqlx::query_as(
-            "SELECT receipt_slimmed_at, CAST(receipt_body AS TEXT) FROM agent_report_receipts WHERE report_id = 'slim-fresh'",
+        let (fresh_slimmed, fresh_bytes): (Option<String>, Vec<u8>) = sqlx::query_as(
+            "SELECT receipt_slimmed_at, receipt_body FROM agent_report_receipts WHERE report_id = 'slim-fresh'",
         )
         .fetch_one(pool)
         .await
         .unwrap();
+        let fresh_body = String::from_utf8(fresh_bytes).expect("a receipt body is UTF-8 JSON");
         assert!(fresh_slimmed.is_none());
         assert!(
             !serde_json::from_str::<Value>(&fresh_body).unwrap()["nodes"]
@@ -4233,9 +4271,9 @@ mod tests {
         // Simulate the race: the operation is already running when the
         // Owner's cancellation lands (cancel_requested set mid-step). The
         // domain functions must finalize Cancelled, never overwrite it.
-        sqlx::query("INSERT INTO operations (operation_id, kind, status, cancel_requested, created_at, params_json, warnings_json, errors_json) VALUES ('race-backup', 'backup_create', 'running', 1, ?, '{}', '[]', '[]')")
+        sqlx::query("INSERT INTO operations (operation_id, kind, status, cancel_requested, created_at, params_json, warnings_json, errors_json) VALUES ('race-backup', 'backup_create', 'running', 1, $1, '{}', '[]', '[]')")
             .bind(&now).execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO operations (operation_id, kind, status, cancel_requested, created_at, params_json, warnings_json, errors_json) VALUES ('race-doctor', 'doctor_run', 'running', 1, ?, '{}', '[]', '[]')")
+        sqlx::query("INSERT INTO operations (operation_id, kind, status, cancel_requested, created_at, params_json, warnings_json, errors_json) VALUES ('race-doctor', 'doctor_run', 'running', 1, $1, '{}', '[]', '[]')")
             .bind(&now).execute(pool).await.unwrap();
         crate::operations::process_operations(&state).await.unwrap();
         crate::operations::process_operations(&state).await.unwrap();
@@ -4276,7 +4314,7 @@ mod tests {
         // The next worker step honours the cancel flag.
         crate::operations::process_operations(&state).await.unwrap();
         let row: (String, Option<String>) =
-            sqlx::query_as("SELECT status, result_json FROM operations WHERE operation_id=?")
+            sqlx::query_as("SELECT status, result_json FROM operations WHERE operation_id=$1")
                 .bind(&operation_id)
                 .fetch_one(state.db().pool())
                 .await
@@ -4312,8 +4350,17 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        storage_postgres,
+        ignore = "it builds an offline SQLite backup with VACUUM INTO"
+    )]
     #[tokio::test]
     async fn restore_validate_and_submit_refuse_while_the_server_runs() {
+        if !crate::test_support::skip_unless_sqlite(
+            "it builds an offline SQLite backup with VACUUM INTO",
+        ) {
+            return;
+        }
         let (_dir, state) = test_state().await;
         let pool = state.db().pool();
 
@@ -4424,7 +4471,7 @@ mod tests {
             .unwrap();
         assert_eq!(owners, 1);
         let verification: String =
-            sqlx::query_scalar("SELECT verification FROM backup_artifacts WHERE artifact_id = ?")
+            sqlx::query_scalar("SELECT verification FROM backup_artifacts WHERE artifact_id = $1")
                 .bind(&artifact_id)
                 .fetch_one(pool)
                 .await
@@ -4432,7 +4479,7 @@ mod tests {
         assert_eq!(verification, "pending");
         // The attempt is audited end-to-end (started + finished).
         let audits: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM audit_events WHERE target_id = ? AND event_kind IN ('restore_started', 'operation_finished')",
+            "SELECT COUNT(*) FROM audit_events WHERE target_id = $1 AND event_kind IN ('restore_started', 'operation_finished')",
         )
         .bind(&operation_id)
         .fetch_one(pool)

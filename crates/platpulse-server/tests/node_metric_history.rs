@@ -122,13 +122,10 @@ impl Harness {
         self.state.db().pool()
     }
 
+    /// The state directory this deployment runs in. A PostgreSQL deployment
+    /// keeps nothing on this filesystem but still measures it for capacity.
     fn mount(&self) -> PathBuf {
-        self.state
-            .db()
-            .path()
-            .parent()
-            .expect("the database file has a parent directory")
-            .to_path_buf()
+        self._dir.path().to_path_buf()
     }
 
     async fn count_where(&self, table: &str, predicate: &str) -> i64 {
@@ -156,10 +153,7 @@ fn forced_policy(harness: &Harness) -> Arc<CapacityProtection> {
         Some(PathBuf::from("test-capacity-floor")),
     )
     .unwrap();
-    Arc::new(CapacityProtection::new(
-        config,
-        Some(harness.state.db().path()),
-    ))
+    Arc::new(CapacityProtection::new(config, harness.state.db().path()))
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
@@ -597,8 +591,17 @@ async fn an_unexplained_silence_is_a_collection_gap_not_proved_coverage() {
 /// Story 47 and 49: a low-space pause is visible as a protection gap with its
 /// counted losses, so no surface has to draw a zero or bridge the silence, and
 /// the coverage the Server claims is only what its samples prove.
+#[cfg_attr(
+    storage_postgres,
+    ignore = "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)"
+)]
 #[tokio::test]
 async fn a_low_space_pause_is_a_protection_gap_not_a_zero() {
+    if !platpulse_server::test_support::skip_unless_sqlite(
+        "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)",
+    ) {
+        return;
+    }
     let mut harness = Harness::boot().await;
     let session = owner_session(&harness).await;
     let (agent_id, credential) = enroll_agent(&harness, &session).await;
@@ -681,7 +684,7 @@ async fn a_low_space_pause_is_a_protection_gap_not_a_zero() {
     .unwrap();
     let released = Arc::new(CapacityProtection::new(
         released_config,
-        Some(harness.state.db().path()),
+        harness.state.db().path(),
     ));
     released.reconcile(harness.pool()).await.unwrap();
     assert!(!released.status().protected);
@@ -926,7 +929,7 @@ async fn an_observation_counted_below_the_floor_is_not_recounted_by_a_widening()
         let pool = harness.pool().clone();
         async move {
             sqlx::query_scalar::<_, i64>(&format!(
-                "SELECT {column} FROM node_metric_series_state WHERE node_id = ? AND metric = 'process_cpu_percent'"
+                "SELECT {column} FROM node_metric_series_state WHERE node_id = $1 AND metric = 'process_cpu_percent'"
             ))
             .bind(NODE_ID)
             .fetch_one(&pool)

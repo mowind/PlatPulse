@@ -722,11 +722,14 @@ mod tests {
         );
 
         // A write that rolls back leaves the row and the stream untouched.
-        sqlx::query(
-            "CREATE TRIGGER reject_reward_wallet BEFORE UPDATE ON reward_wallet_balance
-             BEGIN SELECT RAISE(ABORT, 'rejected'); END",
+        crate::test_support::install_failure_trigger(
+            state.db().pool(),
+            "reject_reward_wallet",
+            "BEFORE",
+            "UPDATE",
+            "reward_wallet_balance",
+            "rejected",
         )
-        .execute(state.db().pool())
         .await
         .unwrap();
         let before = state.public_realtime().current_id();

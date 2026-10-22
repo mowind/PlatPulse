@@ -1135,7 +1135,7 @@ mod tests {
     }
 
     async fn seed_event(pool: &sqlx::AnyPool) -> String {
-        sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ('inc-1', 'node.rpc_unreachable', 1, 'node', 'node-a', 'critical', 'open', '2026-03-01T00:00:00Z', '2026-03-01T00:00:00Z', '{}') ON CONFLICT(incident_id) DO NOTHING")
+        sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ('inc-1', 'node.rpc_unreachable', 1, 'node', 'node-a', 'critical', 'open', 1, '2026-03-01T00:00:00Z', '{}') ON CONFLICT(incident_id) DO NOTHING")
             .execute(pool)
             .await
             .unwrap();
@@ -1236,7 +1236,7 @@ mod tests {
                 .delivery_id
                 .clone()
         };
-        sqlx::query("UPDATE notification_deliveries SET state = 'dead_letter', attempt_count = 3, last_result = 'telegram_api_error 429' WHERE delivery_id = ?")
+        sqlx::query("UPDATE notification_deliveries SET state = 'dead_letter', attempt_count = 3, last_result = 'telegram_api_error 429' WHERE delivery_id = $1")
             .bind(&delivery_id)
             .execute(state.db().pool())
             .await
@@ -1312,7 +1312,7 @@ mod tests {
                 .clone()
         };
         sqlx::query(
-            "INSERT INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES ('att-1', ?, 1, '2026-03-01T00:00:05Z', 'failed', 'telegram_api_error 429', 'telegram_api', 120, 5)",
+            "INSERT INTO delivery_attempts (attempt_id, delivery_id, attempt_number, attempted_at, outcome, provider_result, error_kind, duration_ms, retry_after_seconds) VALUES ('att-1', $1, 1, '2026-03-01T00:00:05Z', 'failed', 'telegram_api_error 429', 'telegram_api', 120, 5)",
         )
         .bind(&delivery_id)
         .execute(state.db().pool())
@@ -1352,7 +1352,7 @@ mod tests {
                 .delivery_id
                 .clone()
         };
-        sqlx::query("UPDATE notification_deliveries SET state = 'dead_letter', attempt_count = 3 WHERE delivery_id = ?")
+        sqlx::query("UPDATE notification_deliveries SET state = 'dead_letter', attempt_count = 3 WHERE delivery_id = $1")
             .bind(&delivery_id)
             .execute(state.db().pool())
             .await
@@ -1423,7 +1423,7 @@ mod tests {
         // Three real failed attempts drive the Delivery to dead_letter.
         for _ in 0..3 {
             sqlx::query(
-                "UPDATE notification_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE delivery_id = ?",
+                "UPDATE notification_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE delivery_id = $1",
             )
             .bind(&delivery_id)
             .execute(state.db().pool())
@@ -1543,7 +1543,7 @@ mod tests {
 
         // suppressed is not retryable.
         sqlx::query(
-            "UPDATE notification_deliveries SET state = 'suppressed' WHERE delivery_id = ?",
+            "UPDATE notification_deliveries SET state = 'suppressed' WHERE delivery_id = $1",
         )
         .bind(&delivery_id)
         .execute(state.db().pool())
@@ -1772,7 +1772,7 @@ mod tests {
         let (_dir, state, _provider) = test_state().await;
         let event_id = seed_event(state.db().pool()).await;
         let delivery_id = delivery_id_for(&state, &event_id).await;
-        sqlx::query("UPDATE notification_deliveries SET state = 'dead_letter', attempt_count = 3 WHERE delivery_id = ?")
+        sqlx::query("UPDATE notification_deliveries SET state = 'dead_letter', attempt_count = 3 WHERE delivery_id = $1")
             .bind(&delivery_id)
             .execute(state.db().pool())
             .await
@@ -1836,7 +1836,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "UPDATE notification_deliveries SET state = 'dead_letter' WHERE delivery_id = ?",
+            "UPDATE notification_deliveries SET state = 'dead_letter' WHERE delivery_id = $1",
         )
         .bind(&first)
         .execute(state.db().pool())
@@ -1921,7 +1921,7 @@ mod tests {
         // the history the Owner is retrying after actually exists.
         for _ in 0..3 {
             sqlx::query(
-                "UPDATE notification_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE delivery_id = ?",
+                "UPDATE notification_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE delivery_id = $1",
             )
             .bind(&delivery_id)
             .execute(state.db().pool())
@@ -2073,7 +2073,7 @@ mod tests {
         let (_dir, state, _provider) = test_state().await;
         let event_id = seed_event(state.db().pool()).await;
         let delivery_id = delivery_id_for(&state, &event_id).await;
-        sqlx::query("UPDATE notification_deliveries SET state = 'dead_letter', attempt_count = 3 WHERE delivery_id = ?")
+        sqlx::query("UPDATE notification_deliveries SET state = 'dead_letter', attempt_count = 3 WHERE delivery_id = $1")
             .bind(&delivery_id)
             .execute(state.db().pool())
             .await
@@ -2271,7 +2271,7 @@ mod tests {
         assert!(delivery.next_attempt_at.is_some());
 
         // Force the retry due and process again.
-        sqlx::query("UPDATE notification_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE delivery_id = ?")
+        sqlx::query("UPDATE notification_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE delivery_id = $1")
             .bind(&delivery_id)
             .execute(state.db().pool())
             .await
@@ -2280,7 +2280,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(processed, 1);
-        sqlx::query("UPDATE notification_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE delivery_id = ?")
+        sqlx::query("UPDATE notification_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE delivery_id = $1")
             .bind(&delivery_id)
             .execute(state.db().pool())
             .await
@@ -2320,11 +2320,13 @@ mod tests {
                 .delivery_id
                 .clone()
         };
-        sqlx::query("UPDATE notification_deliveries SET state = 'in_flight' WHERE delivery_id = ?")
-            .bind(&delivery_id)
-            .execute(state.db().pool())
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE notification_deliveries SET state = 'in_flight' WHERE delivery_id = $1",
+        )
+        .bind(&delivery_id)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
         provider.results.lock().unwrap().clear();
         provider.results.lock().unwrap().push(Ok(()));
         let processed = crate::notifications::process_due_deliveries(&state, &*provider)
@@ -2366,7 +2368,7 @@ mod tests {
         // Insert a delivery row directly for a channel that is no longer
         // configured: the worker must fail it terminally without retrying.
         sqlx::query(
-            "INSERT INTO notification_deliveries (delivery_id, event_id, channel_kind, destination, state, created_at, updated_at) VALUES ('dl-orphan', ?, 'telegram', '****6789', 'pending', '2026-03-01T00:00:00Z', '2026-03-01T00:00:00Z')",
+            "INSERT INTO notification_deliveries (delivery_id, event_id, channel_kind, destination, state, created_at, updated_at) VALUES ('dl-orphan', $1, 'telegram', '****6789', 'pending', '2026-03-01T00:00:00Z', '2026-03-01T00:00:00Z')",
         )
         .bind(&event_id)
         .execute(state.db().pool())
@@ -2451,7 +2453,7 @@ mod tests {
     /// to the real clock.
     async fn insert_active_silence(pool: &sqlx::AnyPool, silence_id: &str) {
         let now = time::OffsetDateTime::now_utc();
-        sqlx::query("INSERT INTO silences (silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at) VALUES (?, 'node', 'node-a', 'planned', ?, ?, 'owner', ?)")
+        sqlx::query("INSERT INTO silences (silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at) VALUES ($1, 'node', 'node-a', 'planned', $2, $3, 'owner', $4)")
             .bind(silence_id)
             .bind(crate::auth::format_rfc3339(now - time::Duration::hours(1)))
             .bind(crate::auth::format_rfc3339(now + time::Duration::hours(1)))
@@ -2465,7 +2467,7 @@ mod tests {
     /// instant, expecting `node.rpc_unreachable`.
     async fn insert_active_maintenance(pool: &sqlx::AnyPool, window_id: &str) {
         let now = time::OffsetDateTime::now_utc();
-        sqlx::query("INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES (?, 'node', 'node-a', '[\"node.rpc_unreachable\"]', 'planned', ?, ?, 'owner', ?)")
+        sqlx::query("INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES ($1, 'node', 'node-a', '[\"node.rpc_unreachable\"]', 'planned', $2, $3, 'owner', $4)")
             .bind(window_id)
             .bind(crate::auth::format_rfc3339(now - time::Duration::hours(1)))
             .bind(crate::auth::format_rfc3339(now + time::Duration::hours(1)))
@@ -2556,7 +2558,7 @@ mod tests {
 
         // A Maintenance Window becomes effective before the retry is due.
         insert_active_maintenance(state.db().pool(), "mnt-handoff").await;
-        sqlx::query("UPDATE notification_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE delivery_id = ?")
+        sqlx::query("UPDATE notification_deliveries SET next_attempt_at = '2020-01-01T00:00:00Z' WHERE delivery_id = $1")
             .bind(&delivery_id)
             .execute(state.db().pool())
             .await
@@ -2644,8 +2646,8 @@ mod tests {
         }
     }
 
-    async fn incident_facts(state: &AppState) -> (String, String) {
-        sqlx::query_as::<_, (String, String)>(
+    async fn incident_facts(state: &AppState) -> (String, i64) {
+        sqlx::query_as::<_, (String, i64)>(
             "SELECT state, sequence FROM alert_incidents WHERE incident_id = 'inc-1'",
         )
         .fetch_one(state.db().pool())
@@ -2725,7 +2727,7 @@ mod tests {
 
         // The Owner explicitly ends the Silence through the audited cancellation.
         sqlx::query(
-            "UPDATE silences SET cancelled_at = ?, cancelled_by = 'owner' WHERE silence_id = 'sil-ending'",
+            "UPDATE silences SET cancelled_at = $1, cancelled_by = 'owner' WHERE silence_id = 'sil-ending'",
         )
         .bind(crate::auth::format_rfc3339(time::OffsetDateTime::now_utc()))
         .execute(state.db().pool())

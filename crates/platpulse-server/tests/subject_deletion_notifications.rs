@@ -324,7 +324,7 @@ async fn seed_incident(
     subject_key: &str,
 ) {
     sqlx::query(
-        "INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES (?, ?, 1, ?, ?, 'warning', 'open', 1, '2026-01-01T00:00:00Z', '{}')",
+        "INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ($1, $2, 1, $3, $4, 'warning', 'open', 1, '2026-01-01T00:00:00Z', '{}')",
     )
     .bind(incident_id)
     .bind(rule_key)
@@ -337,7 +337,7 @@ async fn seed_incident(
 
 async fn seed_rule_state(harness: &Harness, rule_key: &str, subject_kind: &str, subject_key: &str) {
     sqlx::query(
-        "INSERT OR REPLACE INTO alert_rule_state (rule_key, subject_kind, subject_key, state, since, input_kind, last_evaluated_at) VALUES (?, ?, ?, 'firing', '2026-01-01T00:00:00Z', 'known', '2026-01-01T00:00:00Z')",
+        "INSERT INTO alert_rule_state (rule_key, subject_kind, subject_key, state, since, input_kind, last_evaluated_at)          VALUES ($1, $2, $3, 'firing', '2026-01-01T00:00:00Z', 'known', '2026-01-01T00:00:00Z')          ON CONFLICT (rule_key, subject_key) DO UPDATE SET              subject_kind = excluded.subject_kind, state = excluded.state, since = excluded.since,              input_kind = excluded.input_kind, last_evaluated_at = excluded.last_evaluated_at,              pending_since = NULL, firing_since = NULL, recovering_since = NULL, input_value = NULL,              input_detail = NULL, evidence_json = NULL, evaluation_unavailable = 0",
     )
     .bind(rule_key)
     .bind(subject_kind)
@@ -376,7 +376,7 @@ async fn delivery_state(
     event_id: &str,
 ) -> (String, Option<String>, Option<String>) {
     sqlx::query_as(
-        "SELECT state, last_result, next_attempt_at FROM notification_deliveries WHERE event_id = ?",
+        "SELECT state, last_result, next_attempt_at FROM notification_deliveries WHERE event_id = $1",
     )
     .bind(event_id)
     .fetch_one(harness.pool())
@@ -385,7 +385,7 @@ async fn delivery_state(
 }
 
 async fn incident_deleted_at(harness: &Harness, incident_id: &str) -> Option<String> {
-    sqlx::query_scalar("SELECT subject_deleted_at FROM alert_incidents WHERE incident_id = ?")
+    sqlx::query_scalar("SELECT subject_deleted_at FROM alert_incidents WHERE incident_id = $1")
         .bind(incident_id)
         .fetch_one(harness.pool())
         .await
@@ -479,12 +479,12 @@ async fn purge_cancels_unsent_notifications_and_annotates_incidents_without_fals
     )
     .await;
 
-    sqlx::query("UPDATE notification_deliveries SET state = 'succeeded', last_result = 'ok' WHERE event_id = ?")
+    sqlx::query("UPDATE notification_deliveries SET state = 'succeeded', last_result = 'ok' WHERE event_id = $1")
         .bind(&node_sent)
         .execute(harness.pool())
         .await
         .unwrap();
-    sqlx::query("UPDATE notification_deliveries SET state = 'in_flight' WHERE event_id = ?")
+    sqlx::query("UPDATE notification_deliveries SET state = 'in_flight' WHERE event_id = $1")
         .bind(&node_in_flight)
         .execute(harness.pool())
         .await
@@ -531,7 +531,7 @@ async fn purge_cancels_unsent_notifications_and_annotates_incidents_without_fals
 
     // The Owner-only mutation is audited together with what it retired.
     let after_json: String = sqlx::query_scalar(
-        "SELECT after_json FROM audit_events WHERE event_kind = 'node_purged' AND target_id = ?",
+        "SELECT after_json FROM audit_events WHERE event_kind = 'node_purged' AND target_id = $1",
     )
     .bind(&node_id)
     .fetch_one(harness.pool())
@@ -568,7 +568,7 @@ async fn purge_cancels_unsent_notifications_and_annotates_incidents_without_fals
 
     // The Node leaves current evaluation; other subjects keep theirs.
     let node_states: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM alert_rule_state WHERE subject_kind = 'node' AND subject_key = ?",
+        "SELECT COUNT(*) FROM alert_rule_state WHERE subject_kind = 'node' AND subject_key = $1",
     )
     .bind(&node_id)
     .fetch_one(harness.pool())
@@ -576,7 +576,7 @@ async fn purge_cancels_unsent_notifications_and_annotates_incidents_without_fals
     .unwrap();
     assert_eq!(node_states, 0);
     let agent_states: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM alert_rule_state WHERE subject_kind = 'agent' AND subject_key = ?",
+        "SELECT COUNT(*) FROM alert_rule_state WHERE subject_kind = 'agent' AND subject_key = $1",
     )
     .bind(&agent_id)
     .fetch_one(harness.pool())
@@ -683,7 +683,7 @@ async fn agent_removal_retires_agent_host_and_owned_nodes_only() {
     let a_sent = seed_event(&harness, None, Some((SubjectKind::Agent, &agent_a))).await;
     let b_agent = seed_event(&harness, None, Some((SubjectKind::Agent, &agent_b))).await;
     let b_node = seed_event(&harness, None, Some((SubjectKind::Node, NODE_B))).await;
-    sqlx::query("UPDATE notification_deliveries SET state = 'succeeded', last_result = 'ok' WHERE event_id = ?")
+    sqlx::query("UPDATE notification_deliveries SET state = 'succeeded', last_result = 'ok' WHERE event_id = $1")
         .bind(&a_sent)
         .execute(harness.pool())
         .await
@@ -715,7 +715,7 @@ async fn agent_removal_retires_agent_host_and_owned_nodes_only() {
     }
 
     let removed_states: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM alert_rule_state WHERE (subject_kind = 'agent' AND subject_key = ?) OR (subject_kind = 'host' AND subject_key = ?)",
+        "SELECT COUNT(*) FROM alert_rule_state WHERE (subject_kind = 'agent' AND subject_key = $1) OR (subject_kind = 'host' AND subject_key = $2)",
     )
     .bind(&agent_a)
     .bind(&agent_a)
@@ -724,7 +724,7 @@ async fn agent_removal_retires_agent_host_and_owned_nodes_only() {
     .unwrap();
     assert_eq!(removed_states, 0);
     let surviving_states: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM alert_rule_state WHERE subject_kind = 'agent' AND subject_key = ?",
+        "SELECT COUNT(*) FROM alert_rule_state WHERE subject_kind = 'agent' AND subject_key = $1",
     )
     .bind(&agent_b)
     .fetch_one(harness.pool())
@@ -734,7 +734,7 @@ async fn agent_removal_retires_agent_host_and_owned_nodes_only() {
 
     // The Owner-only removal is audited together with what it retired.
     let after_json: String = sqlx::query_scalar(
-        "SELECT after_json FROM audit_events WHERE event_kind = 'agent_removed' AND target_id = ?",
+        "SELECT after_json FROM audit_events WHERE event_kind = 'agent_removed' AND target_id = $1",
     )
     .bind(&agent_a)
     .fetch_one(harness.pool())
@@ -761,7 +761,7 @@ async fn delivery_worker_never_hands_a_deleted_subjects_message_to_a_provider() 
     // Simulate a Delivery that became due only after the deletion (crash
     // requeue or a send that failed mid-deletion).
     let deleted_event = seed_event(&harness, None, Some((SubjectKind::Node, &node_id))).await;
-    sqlx::query("UPDATE notification_deliveries SET state = 'retry_scheduled', next_attempt_at = '2020-01-01T00:00:00Z' WHERE event_id = ?")
+    sqlx::query("UPDATE notification_deliveries SET state = 'retry_scheduled', next_attempt_at = '2020-01-01T00:00:00Z' WHERE event_id = $1")
         .bind(&deleted_event)
         .execute(harness.pool())
         .await
@@ -836,7 +836,7 @@ async fn acknowledging_an_incident_leaves_existing_rows_untouched() {
     )
     .await;
     sqlx::query(
-        "UPDATE notification_deliveries SET state = 'succeeded', last_result = 'ok', next_attempt_at = NULL WHERE event_id = ?",
+        "UPDATE notification_deliveries SET state = 'succeeded', last_result = 'ok', next_attempt_at = NULL WHERE event_id = $1",
     )
     .bind(&event)
     .execute(harness.pool())

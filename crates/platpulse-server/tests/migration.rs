@@ -128,7 +128,7 @@ async fn write_agent_checkpoint(
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, boot_state, previous_boot_id, pending_transition, pending_previous_boot_id, close_report_id, last_report_body) VALUES (1, ?, 1, ?, 'drained_pending', ?, 'drained_previous', ?, ?, ?)",
+        "INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, boot_state, previous_boot_id, pending_transition, pending_previous_boot_id, close_report_id, last_report_body) VALUES (1, $1, 1, $2, 'drained_pending', $3, 'drained_previous', $4, $5, $6)",
     )
     .bind(agent_id)
     .bind(NEXT_BOOT)
@@ -140,7 +140,7 @@ async fn write_agent_checkpoint(
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO upgrade_preparation (singleton, agent_id, agent_epoch, closing_report_id, closing_report_sequence, closing_receipt_disposition, inventory_revision, inventory_sha256, declaration_json, closed_boot_id, next_boot_id, pending_transition, accepted_inventory_revision, accepted_inventory_sha256, accepted_inventory_protocol_major) VALUES (1, ?, 1, ?, 4, 'accepted', ?, ?, ?, ?, ?, 'drained_previous', ?, ?, 1)",
+        "INSERT INTO upgrade_preparation (singleton, agent_id, agent_epoch, closing_report_id, closing_report_sequence, closing_receipt_disposition, inventory_revision, inventory_sha256, declaration_json, closed_boot_id, next_boot_id, pending_transition, accepted_inventory_revision, accepted_inventory_sha256, accepted_inventory_protocol_major) VALUES (1, $1, 1, $2, 4, 'accepted', $3, $4, $5, $6, $7, 'drained_previous', $8, $9, 1)",
     )
     .bind(agent_id)
     .bind(CLOSING_ID)
@@ -156,7 +156,7 @@ async fn write_agent_checkpoint(
     .unwrap();
     if include_record {
         sqlx::query(
-            "INSERT INTO inventory_declaration (singleton, revision, sha256, report_id, adopted_at) VALUES (1, ?, ?, ?, '2026-09-23T00:00:00Z')",
+            "INSERT INTO inventory_declaration (singleton, revision, sha256, report_id, adopted_at) VALUES (1, $1, $2, $3, '2026-09-23T00:00:00Z')",
         )
         .bind(PRESERVED_REVISION)
         .bind(inventory_sha256)
@@ -296,7 +296,7 @@ async fn make_deployment(include_revision: bool, include_record: bool) -> Deploy
     let body = closing_body();
     let now = "2026-08-12T09:00:00Z";
     sqlx::query(
-        "UPDATE agents SET agent_epoch = 1, active_boot_id = ?, active_boot_status = 'closed', close_report_id = ?, last_report_sequence = 4, last_inventory_revision = ?, inventory_sha256 = ?, inventory_protocol_major = 1, updated_at = ? WHERE agent_id = ?",
+        "UPDATE agents SET agent_epoch = 1, active_boot_id = $1, active_boot_status = 'closed', close_report_id = $2, last_report_sequence = 4, last_inventory_revision = $3, inventory_sha256 = $4, inventory_protocol_major = 1, updated_at = $5 WHERE agent_id = $6",
     )
     .bind(CLOSED_BOOT)
     .bind(CLOSING_ID)
@@ -308,7 +308,7 @@ async fn make_deployment(include_revision: bool, include_record: bool) -> Deploy
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO agent_boots (agent_id, agent_epoch, boot_id, status, last_sequence, close_report_id, closed_at, created_at, updated_at) VALUES (?, 1, ?, 'closed', 4, ?, ?, ?, ?)",
+        "INSERT INTO agent_boots (agent_id, agent_epoch, boot_id, status, last_sequence, close_report_id, closed_at, created_at, updated_at) VALUES ($1, 1, $2, 'closed', 4, $3, $4, $5, $6)",
     )
     .bind(&agent_id)
     .bind(CLOSED_BOOT)
@@ -320,7 +320,7 @@ async fn make_deployment(include_revision: bool, include_record: bool) -> Deploy
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, inventory_protocol_major) VALUES (?, ?, 1, ?, 4, ?, 'accepted', ?, ?, 1)",
+        "INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, inventory_protocol_major) VALUES ($1, $2, 1, $3, 4, $4, 'accepted', $5, $6, 1)",
     )
     .bind(CLOSING_ID)
     .bind(&agent_id)
@@ -332,7 +332,7 @@ async fn make_deployment(include_revision: bool, include_record: bool) -> Deploy
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO deleted_nodes (node_id, agent_id, network_key, display_name, deleted_by_user_id, deleted_at) VALUES (?, ?, 'platon-mainnet', 'purged', NULL, ?)",
+        "INSERT INTO deleted_nodes (node_id, agent_id, network_key, display_name, deleted_by_user_id, deleted_at) VALUES ($1, $2, 'platon-mainnet', 'purged', NULL, $3)",
     )
     .bind(PURGED_NODE_ID)
     .bind(&agent_id)
@@ -414,7 +414,7 @@ async fn read_agent_row(path: &Path, agent_id: &str) -> (i64, Option<String>, Op
         .await
         .unwrap();
     let row: (i64, Option<String>, Option<i64>) = sqlx::query_as(
-        "SELECT last_inventory_revision, inventory_sha256, inventory_protocol_major FROM agents WHERE agent_id = ?",
+        "SELECT last_inventory_revision, inventory_sha256, inventory_protocol_major FROM agents WHERE agent_id = $1",
     )
     .bind(agent_id)
     .fetch_one(&mut connection)
@@ -618,7 +618,7 @@ async fn the_first_v2_report_keeps_the_revision_and_completes_drained_previous()
         Some(fingerprint.as_str())
     );
     let (revision, sha, protocol): (i64, Option<String>, Option<i64>) = sqlx::query_as(
-        "SELECT last_inventory_revision, inventory_sha256, inventory_protocol_major FROM agents WHERE agent_id = ?",
+        "SELECT last_inventory_revision, inventory_sha256, inventory_protocol_major FROM agents WHERE agent_id = $1",
     )
     .bind(&deployment.agent_id)
     .fetch_one(probe.db().pool())
@@ -630,7 +630,7 @@ async fn the_first_v2_report_keeps_the_revision_and_completes_drained_previous()
 
     // The pending DrainedPrevious Boot linkage is completed, not reset.
     let active: (Option<String>, String) =
-        sqlx::query_as("SELECT active_boot_id, active_boot_status FROM agents WHERE agent_id = ?")
+        sqlx::query_as("SELECT active_boot_id, active_boot_status FROM agents WHERE agent_id = $1")
             .bind(&deployment.agent_id)
             .fetch_one(probe.db().pool())
             .await
@@ -688,7 +688,7 @@ async fn the_first_v2_report_keeps_the_revision_and_completes_drained_previous()
         "{body}"
     );
     let legacy_receipts: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE report_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE report_id = $1")
             .bind("0195f2a1-0072-4072-8072-000000000072")
             .fetch_one(probe.db().pool())
             .await
@@ -739,7 +739,7 @@ async fn a_failed_conversion_leaves_no_partial_output_and_tampering_is_refused()
     .await
     .unwrap();
     let mut connection = connection;
-    sqlx::query("UPDATE agents SET inventory_sha256 = '0xtampered' WHERE agent_id = ?")
+    sqlx::query("UPDATE agents SET inventory_sha256 = '0xtampered' WHERE agent_id = $1")
         .bind(&deployment.agent_id)
         .execute(&mut connection)
         .await
@@ -922,7 +922,7 @@ async fn cutover_gate_blocks_business_until_resume_and_resume_is_idempotent() {
         "{body}"
     );
     let receipts: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE report_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE report_id = $1")
             .bind("0195f2a1-0080-4080-8080-000000000080")
             .fetch_one(probe.db().pool())
             .await
@@ -1022,7 +1022,7 @@ async fn resumed_cutover_is_v2_only_and_replays_retained_v1_receipts_exactly() {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, inventory_protocol_major) VALUES (?, ?, 1, ?, 5, ?, 'accepted', ?, '2026-08-12T09:00:00Z', 1)",
+        "INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, inventory_protocol_major) VALUES ($1, $2, 1, $3, 5, $4, 'accepted', $5, '2026-08-12T09:00:00Z', 1)",
     )
     .bind(REPLAY_ID)
     .bind(&deployment.agent_id)
@@ -1106,7 +1106,7 @@ async fn resumed_cutover_is_v2_only_and_replays_retained_v1_receipts_exactly() {
         "{body_json}"
     );
     let unknown_receipts: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE report_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE report_id = $1")
             .bind(UNKNOWN_ID)
             .fetch_one(probe.db().pool())
             .await
@@ -1114,7 +1114,7 @@ async fn resumed_cutover_is_v2_only_and_replays_retained_v1_receipts_exactly() {
     assert_eq!(unknown_receipts, 0);
 
     // Agent Removal is not bypassed by the replay path.
-    sqlx::query("UPDATE agents SET deleted_at = '2026-08-12T10:00:00Z' WHERE agent_id = ?")
+    sqlx::query("UPDATE agents SET deleted_at = '2026-08-12T10:00:00Z' WHERE agent_id = $1")
         .bind(&deployment.agent_id)
         .execute(probe.db().pool())
         .await
@@ -1191,7 +1191,7 @@ async fn cutover_resume_refuses_a_changed_conversion() {
     )
     .await
     .unwrap();
-    sqlx::query("UPDATE agents SET inventory_sha256 = '0xtampered' WHERE agent_id = ?")
+    sqlx::query("UPDATE agents SET inventory_sha256 = '0xtampered' WHERE agent_id = $1")
         .bind(&deployment.agent_id)
         .execute(&mut connection)
         .await

@@ -431,6 +431,12 @@ async fn verify_integrity(
                 "the startup integrity check exceeded its budget".to_owned(),
             ));
         }
+        // This function only runs on the SQLite backend, which has a check.
+        IntegrityVerdict::Unsupported => {
+            return Err(ServerDatabaseError::IntegrityFailed(
+                "the SQLite integrity check reported no verdict".to_owned(),
+            ));
+        }
         IntegrityVerdict::Failed(error) => {
             return Err(ServerDatabaseError::IntegrityQuery(error));
         }
@@ -688,6 +694,9 @@ mod tests {
     fn backend(database: &super::super::ServerDatabase) -> &SqliteBackend {
         match &database.backend {
             super::super::Backend::Sqlite(backend) => backend,
+            super::super::Backend::Postgres(_) => {
+                panic!("the SQLite backend tests opened a PostgreSQL database")
+            }
         }
     }
 
@@ -711,8 +720,12 @@ mod tests {
         assert!(pragmas.satisfy_requirements());
     }
 
+    #[cfg_attr(storage_postgres, ignore = "it exercises the SQLite backend directly")]
     #[tokio::test]
     async fn completed_query_returns_its_value() {
+        if !crate::test_support::skip_unless_sqlite("it exercises the SQLite backend directly") {
+            return;
+        }
         let (_dir, database) = database().await;
         match bounded_scalar_query(
             database.pool(),
@@ -728,8 +741,12 @@ mod tests {
         assert_pool_reusable(database.pool()).await;
     }
 
+    #[cfg_attr(storage_postgres, ignore = "it exercises the SQLite backend directly")]
     #[tokio::test]
     async fn native_deadline_interrupts_and_releases_pool() {
+        if !crate::test_support::skip_unless_sqlite("it exercises the SQLite backend directly") {
+            return;
+        }
         let (_dir, database) = database().await;
         let outcome = tokio::time::timeout(
             Duration::from_secs(5),
@@ -750,8 +767,12 @@ mod tests {
         assert_pool_reusable(database.pool()).await;
     }
 
+    #[cfg_attr(storage_postgres, ignore = "it exercises the SQLite backend directly")]
     #[tokio::test]
     async fn aborted_query_releases_the_file_before_pool_reuse() {
+        if !crate::test_support::skip_unless_sqlite("it exercises the SQLite backend directly") {
+            return;
+        }
         let (_dir, database) = database().await;
         let database = Arc::new(database);
         let task_database = Arc::clone(&database);

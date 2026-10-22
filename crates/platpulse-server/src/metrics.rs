@@ -20,8 +20,16 @@ use crate::http::AppState;
 const SURFACES: [&str; 5] = ["public", "admin", "agent", "health", "other"];
 const STATUSES: [&str; 5] = ["2xx", "3xx", "4xx", "5xx", "other"];
 const OUTCOMES: [&str; 4] = ["accepted", "partially_accepted", "rejected", "unknown"];
-const READINESS_COMPONENTS: [&str; 6] = [
+/// Every readiness component the exposition may report. The storage component
+/// is named for the Storage Backend in use ([ADR 0013]): a SQLite deployment
+/// reports `sqlite`, a PostgreSQL deployment reports `postgres`, and the other
+/// name is not applicable and omitted from the exposition.
+///
+/// [ADR 0013]: ../../docs/adr/0013-postgresql-server-storage-backend.md
+const READINESS_COMPONENTS: [&str; 8] = [
+    "storage_ownership",
     "sqlite",
+    "postgres",
     "owner",
     "web_assets",
     "shutdown",
@@ -47,6 +55,10 @@ const DELIVERY_STATES: [&str; 8] = [
     "suppressed",
     "cancelled",
 ];
+
+/// A readiness component this deployment does not have. It is neither rendered
+/// as a sample nor counted by `platpulse_ready`.
+const READINESS_NOT_APPLICABLE: u64 = 2;
 
 struct MetricsInner {
     http_requests: [[AtomicU64; STATUSES.len()]; SURFACES.len()],
@@ -109,6 +121,17 @@ impl MetricsRegistry {
             .position(|value| *value == component)
         {
             self.inner.readiness[index].store(ready as u64, Ordering::Relaxed);
+        }
+    }
+
+    /// Mark a component as absent for this deployment (see
+    /// [`READINESS_NOT_APPLICABLE`]).
+    pub fn set_readiness_not_applicable(&self, component: &str) {
+        if let Some(index) = READINESS_COMPONENTS
+            .iter()
+            .position(|value| *value == component)
+        {
+            self.inner.readiness[index].store(READINESS_NOT_APPLICABLE, Ordering::Relaxed);
         }
     }
 
@@ -193,19 +216,22 @@ impl MetricsRegistry {
             "gauge",
         );
         for (index, component) in READINESS_COMPONENTS.iter().enumerate() {
+            let readiness = self.inner.readiness[index].load(Ordering::Relaxed);
+            if readiness == READINESS_NOT_APPLICABLE {
+                continue;
+            }
             metric_gauge(
                 &mut output,
                 "platpulse_readiness",
                 "Readiness state by fixed Server component.",
                 &["component", component],
-                self.inner.readiness[index].load(Ordering::Relaxed),
+                readiness,
             );
         }
-        let overall_ready = self
-            .inner
-            .readiness
-            .iter()
-            .all(|value| value.load(Ordering::Relaxed) == 1);
+        let overall_ready = self.inner.readiness.iter().all(|value| {
+            let readiness = value.load(Ordering::Relaxed);
+            readiness == 1 || readiness == READINESS_NOT_APPLICABLE
+        });
         metric_header(
             &mut output,
             "platpulse_ready",
@@ -669,14 +695,14 @@ async fn collect_snapshot(state: &AppState) -> MetricsSnapshot {
     let pages = db.storage_pages().await;
     snapshot.sqlite_page_count = pages.page_count;
     snapshot.sqlite_freelist_pages = pages.freelist_pages;
-    let wal_path = db.path().with_file_name(format!(
-        "{}-wal",
-        db.path()
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("database")
-    ));
-    snapshot.sqlite_wal_bytes = std::fs::metadata(wal_path).ok().map(|value| value.len());
+    // Write-ahead accounting is a SQLite concept; the PostgreSQL backend has
+    // no Server-side file to measure, so the sizes stay unknown there.
+    snapshot.sqlite_wal_bytes = db.path().and_then(|path| {
+        let name = path.file_name()?.to_str()?;
+        std::fs::metadata(path.with_file_name(format!("{name}-wal")))
+            .ok()
+            .map(|value| value.len())
+    });
     snapshot.sqlite_pool_size = pool.size() as u64;
     snapshot.sqlite_pool_idle = pool.num_idle() as u64;
     let capacity = state.capacity().status();
@@ -745,7 +771,13 @@ async fn update_readiness(state: &AppState) {
     let sqlite_ready = schema
         .is_ok_and(|version| version >= crate::database::SERVER_SCHEMA_VERSION)
         && !state.is_corrupt();
-    registry.set_readiness("sqlite", sqlite_ready);
+    registry.set_readiness("storage_ownership", state.db().ownership_held());
+    let (storage, unrealised_storage) = match state.db().storage_backend() {
+        "postgres" => ("postgres", "sqlite"),
+        _ => ("sqlite", "postgres"),
+    };
+    registry.set_readiness(storage, sqlite_ready);
+    registry.set_readiness_not_applicable(unrealised_storage);
     registry.set_readiness(
         "owner",
         crate::auth::has_owner(state.db()).await.unwrap_or(false),
@@ -792,6 +824,26 @@ mod tests {
         assert!(!text.contains("secret-node"));
         assert!(!text.contains("report_id"));
         assert!(!text.contains("raw"));
+    }
+
+    #[test]
+    fn a_component_the_deployment_lacks_is_omitted_and_never_blocks_readiness() {
+        let registry = MetricsRegistry::new();
+        for component in READINESS_COMPONENTS {
+            registry.set_readiness(component, true);
+        }
+        registry.set_readiness_not_applicable("postgres");
+        registry.set_readiness("sqlite", false);
+
+        let text = registry.render(&MetricsSnapshot::default());
+
+        assert!(!text.contains("component=\"postgres\""), "{text}");
+        assert!(text.contains("platpulse_readiness{component=\"sqlite\"} 0"));
+        assert!(text.contains("platpulse_ready 0"), "{text}");
+
+        registry.set_readiness("sqlite", true);
+        let text = registry.render(&MetricsSnapshot::default());
+        assert!(text.contains("platpulse_ready 1"), "{text}");
     }
 
     #[test]

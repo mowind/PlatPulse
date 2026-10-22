@@ -872,7 +872,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO agent_report_receipts (receipt_body) VALUES (?)")
+        sqlx::query("INSERT INTO agent_report_receipts (receipt_body) VALUES ($1)")
             .bind(br#"{"apiKey":"secret","ip":"10.0.0.1"}"#.to_vec())
             .execute(&pool)
             .await
@@ -952,12 +952,21 @@ mod tests {
 
     /// A portable backup must not carry a raw Peer address or any retained
     /// country result, whatever provider produced it (issue #132).
+    #[cfg_attr(
+        storage_postgres,
+        ignore = "it builds an offline SQLite backup with VACUUM INTO"
+    )]
     #[tokio::test]
     async fn sanitized_snapshot_drops_provider_keyed_geo_cache_and_peer_addresses() {
+        if !crate::test_support::skip_unless_sqlite(
+            "it builds an offline SQLite backup with VACUUM INTO",
+        ) {
+            return;
+        }
         let dir = tempfile::TempDir::new().unwrap();
         let database = crate::test_support::test_database_in(dir.path()).await;
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', '8.8.4.4', 'US', 'current', ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', '8.8.4.4', 'US', 'current', $1, $2, $3, $4, $5)")
             .bind(&now)
             .bind(&now)
             .bind(&now)
@@ -1037,12 +1046,12 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO messages (body) VALUES (?)")
+        sqlx::query("INSERT INTO messages (body) VALUES ($1)")
             .bind(r#"{"error":"peer 203.0.113.7","token":"secret"}"#)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO agent_report_receipts (receipt_body) VALUES (?)")
+        sqlx::query("INSERT INTO agent_report_receipts (receipt_body) VALUES ($1)")
             .bind(br#"{"endpoint":"https://198.51.100.4"}"#.as_slice())
             .execute(&pool)
             .await
@@ -1065,7 +1074,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!String::from_utf8(receipt).unwrap().contains("198.51.100.4"));
-        sqlx::query("INSERT INTO agent_report_receipts (receipt_body) VALUES (?)")
+        sqlx::query("INSERT INTO agent_report_receipts (receipt_body) VALUES ($1)")
             .bind(vec![0xff_u8, b'2', b'0', b'3'])
             .execute(&pool)
             .await
@@ -1075,8 +1084,17 @@ mod tests {
             Err(BackupError::Privacy(_))
         ));
     }
+    #[cfg_attr(
+        storage_postgres,
+        ignore = "it builds an offline SQLite backup with VACUUM INTO"
+    )]
     #[tokio::test]
     async fn verify_detects_checksum_and_integrity_failures_read_only() {
+        if !crate::test_support::skip_unless_sqlite(
+            "it builds an offline SQLite backup with VACUUM INTO",
+        ) {
+            return;
+        }
         let dir = tempfile::TempDir::new().unwrap();
         let database = crate::test_support::test_database_in(dir.path()).await;
         // Corrupt bytes cannot match any real sha256.
@@ -1265,7 +1283,7 @@ mod tests {
         // Write path: every row carries an IP literal so sanitize rewrites it.
         let redactable = format!("{}10.0.0.1", "x".repeat(175 * 1024)).into_bytes();
         for _ in 0..400 {
-            sqlx::query("INSERT INTO agent_report_receipts (receipt_body) VALUES (?)")
+            sqlx::query("INSERT INTO agent_report_receipts (receipt_body) VALUES ($1)")
                 .bind(&redactable)
                 .execute(&pool)
                 .await
@@ -1288,7 +1306,7 @@ mod tests {
             .unwrap();
         let clean = "x".repeat(175 * 1024 + 9).into_bytes();
         for _ in 0..400 {
-            sqlx::query("INSERT INTO agent_report_receipts (receipt_body) VALUES (?)")
+            sqlx::query("INSERT INTO agent_report_receipts (receipt_body) VALUES ($1)")
                 .bind(&clean)
                 .execute(&pool)
                 .await

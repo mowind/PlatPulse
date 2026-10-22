@@ -215,7 +215,10 @@ pub struct BlockWindowQuery<'a> {
 /// The range is read through `block_summaries_observed_idx` (migration 0075),
 /// so it is bounded by the window itself: a block backfilled at a low height is
 /// found by the instant it was observed, and a quiet Node is never scanned.
-const RAW_BLOCK_SQL: &str = "SELECT current.observed_at, current.accepted_at, CASE WHEN previous.block_timestamp_ms IS NOT NULL AND current.block_timestamp_ms > previous.block_timestamp_ms THEN current.block_timestamp_ms - previous.block_timestamp_ms ELSE NULL END, current.transaction_count FROM block_summaries AS current INDEXED BY block_summaries_observed_idx LEFT JOIN block_summaries AS previous ON previous.node_id = current.node_id AND previous.block_number = current.block_number - 1 WHERE current.node_id = $1 AND current.observed_at >= $2 AND current.observed_at <= $3 ORDER BY current.observed_at DESC, current.block_number DESC LIMIT $4";
+///
+/// The index is left to the planner: `INDEXED BY` is SQLite-only, and the
+/// portable SQL the two Storage Backends share cannot name an index (ADR 0013).
+const RAW_BLOCK_SQL: &str = "SELECT current.observed_at, current.accepted_at, CASE WHEN previous.block_timestamp_ms IS NOT NULL AND current.block_timestamp_ms > previous.block_timestamp_ms THEN current.block_timestamp_ms - previous.block_timestamp_ms ELSE NULL END, current.transaction_count FROM block_summaries AS current LEFT JOIN block_summaries AS previous ON previous.node_id = current.node_id AND previous.block_number = current.block_number - 1 WHERE current.node_id = $1 AND current.observed_at >= $2 AND current.observed_at <= $3 ORDER BY current.observed_at DESC, current.block_number DESC LIMIT $4";
 
 /// The buckets of one tier over one stretch, newest first so the limit is spent
 /// on the newest evidence. Served by the primary key.

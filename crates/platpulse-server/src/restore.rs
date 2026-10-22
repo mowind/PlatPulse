@@ -1136,6 +1136,7 @@ mod tests {
             },
             backup_required_mount: None,
             capacity: crate::capacity::CapacityConfig::disabled(),
+            storage: crate::config::StorageSettings::default(),
         }
     }
 
@@ -1174,7 +1175,7 @@ mod tests {
         let bytes = std::fs::metadata(&artifact_path).unwrap().len() as i64;
         let sha256 = file_sha256(&artifact_path).await.unwrap();
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-        sqlx::query("INSERT INTO backup_artifacts (artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, verification) VALUES (?, ?, ?, ?, ?, ?, ?, 'ok')")
+        sqlx::query("INSERT INTO backup_artifacts (artifact_id, filename, bytes, sha256, schema_version, server_version, created_at, verification) VALUES ($1, $2, $3, $4, $5, $6, $7, 'ok')")
             .bind(&artifact_id)
             .bind(&filename)
             .bind(bytes)
@@ -1204,8 +1205,17 @@ mod tests {
         assert!(!confirmation_matches("platpulse-b.db", "platpulse-a.db"));
     }
 
+    #[cfg_attr(
+        storage_postgres,
+        ignore = "it builds an offline SQLite backup with VACUUM INTO"
+    )]
     #[tokio::test]
     async fn check_artifact_rejects_checksum_integrity_and_newer_schema() {
+        if !crate::test_support::skip_unless_sqlite(
+            "it builds an offline SQLite backup with VACUUM INTO",
+        ) {
+            return;
+        }
         let dir = tempdir().unwrap();
         let database = crate::test_support::test_database_in(dir.path()).await;
         let snapshot = dir.path().join("snapshot.db");

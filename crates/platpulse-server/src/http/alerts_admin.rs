@@ -646,7 +646,7 @@ where
     E: Executor<'e, Database = Any>,
 {
     let rows = sqlx::query_as::<_, (String, i64, i64)>(
-        "SELECT state, COUNT(*), COALESCE(SUM(evaluation_unavailable), 0) FROM alert_rule_state WHERE rule_key = $1 GROUP BY state",
+        "SELECT state, COUNT(*), CAST(COALESCE(SUM(evaluation_unavailable), 0) AS BIGINT) FROM alert_rule_state WHERE rule_key = $1 GROUP BY state",
     )
     .bind(rule_key)
     .fetch_all(executor)
@@ -1113,7 +1113,7 @@ pub(crate) async fn update_alert_rule(
         sqlx::query(
             "UPDATE alert_rules SET enabled = $1, severity = $2, version = $3, condition_json = $4, updated_at = $5 WHERE rule_key = $6",
         )
-        .bind(next_enabled)
+        .bind(i64::from(next_enabled))
         .bind(&next_severity)
         .bind(new_version)
         .bind(serde_json::to_string(&next_condition).expect("condition serializes"))
@@ -1665,7 +1665,7 @@ pub(crate) async fn upsert_rule_override(
         .bind(&rule_key)
         .bind(&body.scope_kind)
         .bind(&body.scope_value)
-        .bind(body.enabled)
+        .bind(body.enabled.map(i64::from))
         .bind(&body.severity)
         .bind(&condition_json)
         .bind(&updated_at)
@@ -3721,7 +3721,7 @@ mod tests {
 
     async fn set_rpc_error(pool: &sqlx::AnyPool, state: &str, observed_at: OffsetDateTime) {
         let now = format_rfc3339(observed_at);
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES ('agent-a', 'node', 'node-a', 'node-a', 'rpc', ?, ?, ?, ?, 1, 1, 'rpc_unreachable', 'connect refused') ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, received_at=excluded.received_at, error_code=excluded.error_code, error_message=excluded.error_message")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES ('agent-a', 'node', 'node-a', 'node-a', 'rpc', $1, $2, $3, $4, 1, 1, 'rpc_unreachable', 'connect refused') ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, received_at=excluded.received_at, error_code=excluded.error_code, error_message=excluded.error_message")
             .bind(state)
             .bind(&now)
             .bind(&now)
@@ -4408,7 +4408,7 @@ mod tests {
         opened_at: &str,
         sequence: i64,
     ) {
-        sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES (?, 'node.rpc_unreachable', 1, 'node', ?, 'critical', 'open', ?, ?, '{}')")
+        sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ($1, 'node.rpc_unreachable', 1, 'node', $2, 'critical', 'open', $3, $4, '{}')")
             .bind(incident_id)
             .bind(subject_key)
             .bind(sequence)
@@ -4609,12 +4609,12 @@ mod tests {
         let real_now = now_utc();
         let starts = format_rfc3339(real_now - time::Duration::hours(1));
         let ends = format_rfc3339(real_now + time::Duration::hours(1));
-        sqlx::query("INSERT INTO silences (silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at) VALUES ('sil-test', 'node', 'node-a', 'quiet', ?, ?, 'owner', ?)")
+        sqlx::query("INSERT INTO silences (silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at) VALUES ('sil-test', 'node', 'node-a', 'quiet', $1, $2, 'owner', $3)")
             .bind(&starts).bind(&ends).bind(&starts)
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES ('mnt-test', 'node', 'node-a', '[\"node.rpc_unreachable\"]', 'planned', ?, ?, 'owner', ?)")
+        sqlx::query("INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES ('mnt-test', 'node', 'node-a', '[\"node.rpc_unreachable\"]', 'planned', $1, $2, 'owner', $3)")
             .bind(&starts).bind(&ends).bind(&starts)
             .execute(state.db().pool())
             .await
@@ -4786,7 +4786,7 @@ mod tests {
         );
 
         let audit_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'incident_acknowledged' AND target_id = ?",
+            "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'incident_acknowledged' AND target_id = $1",
         )
         .bind(&incident_id)
         .fetch_one(state.db().pool())
@@ -4841,10 +4841,10 @@ mod tests {
                 .unwrap()
         }
 
-        let rule_state_sql = "SELECT rule_key || '|' || subject_kind || '|' || subject_key || '|' || state || '|' || since || '|' || COALESCE(pending_since, '') || '|' || COALESCE(firing_since, '') || '|' || COALESCE(recovering_since, '') || '|' || input_kind || '|' || COALESCE(input_value, '') || '|' || COALESCE(input_detail, '') || '|' || COALESCE(evidence_json, '') || '|' || evaluation_unavailable || '|' || last_evaluated_at FROM alert_rule_state ORDER BY rule_key, subject_key";
+        let rule_state_sql = "SELECT rule_key || '|' || subject_kind || '|' || subject_key || '|' || state || '|' || since || '|' || COALESCE(pending_since, '') || '|' || COALESCE(firing_since, '') || '|' || COALESCE(recovering_since, '') || '|' || input_kind || '|' || COALESCE(CAST(input_value AS TEXT), '') || '|' || COALESCE(input_detail, '') || '|' || COALESCE(evidence_json, '') || '|' || evaluation_unavailable || '|' || last_evaluated_at FROM alert_rule_state ORDER BY rule_key, subject_key";
         let incident_sql = "SELECT incident_id || '|' || rule_key || '|' || rule_version || '|' || subject_kind || '|' || subject_key || '|' || severity || '|' || state || '|' || sequence || '|' || opened_at || '|' || COALESCE(resolved_at, '') || '|' || opened_evidence_json || '|' || COALESCE(resolved_evidence_json, '') FROM alert_incidents ORDER BY incident_id";
         let event_sql = "SELECT event_id || '|' || event_kind || '|' || COALESCE(incident_id, '') || '|' || COALESCE(rule_key, '') || '|' || COALESCE(subject_kind, '') || '|' || COALESCE(subject_key, '') || '|' || severity || '|' || summary || '|' || created_at FROM notification_events ORDER BY event_id";
-        let delivery_sql = "SELECT delivery_id || '|' || event_id || '|' || channel_kind || '|' || destination || '|' || state || '|' || attempt_count || '|' || COALESCE(next_attempt_at, '') || '|' || COALESCE(last_attempt_at, '') || '|' || COALESCE(last_result, '') || '|' || COALESCE(last_error_kind, '') || '|' || COALESCE(retry_after_seconds, '') || '|' || created_at || '|' || updated_at FROM notification_deliveries ORDER BY delivery_id";
+        let delivery_sql = "SELECT delivery_id || '|' || event_id || '|' || channel_kind || '|' || destination || '|' || state || '|' || attempt_count || '|' || COALESCE(next_attempt_at, '') || '|' || COALESCE(last_attempt_at, '') || '|' || COALESCE(last_result, '') || '|' || COALESCE(last_error_kind, '') || '|' || COALESCE(CAST(retry_after_seconds AS TEXT), '') || '|' || created_at || '|' || updated_at FROM notification_deliveries ORDER BY delivery_id";
 
         let rule_state_before = dump(pool, rule_state_sql).await;
         let incidents_before = dump(pool, incident_sql).await;
@@ -4867,7 +4867,7 @@ mod tests {
 
         // The acknowledgment is durable and audited; nothing else was written.
         let stored: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM incident_acknowledgments WHERE incident_id = ?",
+            "SELECT COUNT(*) FROM incident_acknowledgments WHERE incident_id = $1",
         )
         .bind(&incident_id)
         .fetch_one(pool)
@@ -4875,7 +4875,7 @@ mod tests {
         .unwrap();
         assert_eq!(stored, 1);
         let audit_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'incident_acknowledged' AND target_id = ?",
+            "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'incident_acknowledged' AND target_id = $1",
         )
         .bind(&incident_id)
         .fetch_one(pool)
@@ -4900,11 +4900,7 @@ mod tests {
 
         // Server restart: a fresh database handle on the same file (new
         // migrations are idempotent) sees the same durable facts.
-        let db_path = dir.path().join("server.db");
-        let database =
-            crate::database::initialize(crate::database::ServerDatabaseConfig::new(&db_path))
-                .await
-                .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let auth = crate::auth::AuthConfig::development(
             crate::secrets::load_pepper_file(&dir.path().join("pepper")).unwrap(),
             "http://127.0.0.1:8080".to_owned(),
@@ -5009,7 +5005,7 @@ mod tests {
             second["acknowledgment"]["acknowledgedAt"]
         );
         let audit_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'incident_acknowledged' AND target_id = ?",
+            "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'incident_acknowledged' AND target_id = $1",
         )
         .bind(&incident_id)
         .fetch_one(state.db().pool())
@@ -5625,11 +5621,7 @@ mod tests {
         drop(state);
 
         // Restart on the same database file.
-        let db_path = dir.path().join("server.db");
-        let database =
-            crate::database::initialize(crate::database::ServerDatabaseConfig::new(&db_path))
-                .await
-                .unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
         let auth = crate::auth::AuthConfig::development(
             crate::secrets::load_pepper_file(&dir.path().join("pepper")).unwrap(),
             "http://127.0.0.1:8080".to_owned(),

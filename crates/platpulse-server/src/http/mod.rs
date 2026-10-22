@@ -611,9 +611,7 @@ impl AppState {
                 .is_some_and(|dir| dir.join("assets").is_dir());
         let runtime = Arc::new(ServerRuntime::new());
         let shutdown = Arc::new(Notify::new());
-        let capacity = Arc::new(crate::capacity::CapacityProtection::disabled(Some(
-            db.path(),
-        )));
+        let capacity = Arc::new(crate::capacity::CapacityProtection::disabled(db.path()));
         Self {
             db: Arc::new(db),
             auth: Arc::new(auth),
@@ -1754,17 +1752,28 @@ mod tests {
         let _ = web_dir;
         seed_owner(&state).await;
         state.runtime.recover_critical_worker();
+        // ADR 0013: the storage component is named for the backend in use.
+        let storage = state.db().storage_backend().to_owned();
 
         let (status, value) = json(get(build_app(state), "/health/ready").await).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(value["status"], "ready");
-        assert_eq!(component(&value, "sqlite")["status"], "ready");
+        assert_eq!(component(&value, storage.as_str())["status"], "ready");
         assert_eq!(component(&value, "owner")["status"], "ready");
         assert_eq!(component(&value, "web_assets")["status"], "ready");
     }
 
+    #[cfg_attr(
+        storage_postgres,
+        ignore = "it corrupts the SQLite file through PRAGMA writable_schema"
+    )]
     #[tokio::test]
     async fn ready_detects_runtime_database_corruption() {
+        if !crate::test_support::skip_unless_sqlite(
+            "it corrupts the SQLite file through PRAGMA writable_schema",
+        ) {
+            return;
+        }
         let (_db_dir, _web_dir, state) = test_state_with_files(&[
             ("index.html", INDEX_HTML.as_bytes()),
             ("assets/index-abc123.js", b"// app"),
@@ -1873,11 +1882,12 @@ mod tests {
         let database = crate::test_support::test_database_in(db_dir.path()).await;
         let state = AppState::new(database, None, test_auth(db_dir.path()));
         seed_owner(&state).await;
+        let storage = state.db().storage_backend().to_owned();
 
         let (status, value) = json(get(build_app(state), "/health/ready").await).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(value["status"], "not_ready");
-        assert_eq!(component(&value, "sqlite")["status"], "ready");
+        assert_eq!(component(&value, storage.as_str())["status"], "ready");
         let web = component(&value, "web_assets");
         assert_eq!(web["status"], "not_ready");
         assert_eq!(web["reason"], "web_assets_missing");
@@ -2696,9 +2706,9 @@ mod tests {
         let pool = state.db().pool();
         for rule_key in ["node.rpc_unreachable", "agent.offline"] {
             sqlx::query(
-                "INSERT OR IGNORE INTO alert_rules \
+                "INSERT INTO alert_rules \
                  (rule_key, enabled, severity, version, condition_json, created_at, updated_at) \
-                 VALUES (?, 1, 'critical', 1, '{}', ?, ?)",
+                 VALUES ($1, 1, 'critical', 1, '{}', $2, $3) ON CONFLICT DO NOTHING",
             )
             .bind(rule_key)
             .bind("2026-01-01T00:00:00Z")
@@ -2735,7 +2745,7 @@ mod tests {
                 "INSERT INTO alert_incidents \
                  (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, \
                   state, sequence, opened_at, opened_evidence_json) \
-                 VALUES (?, ?, 1, ?, ?, 'critical', 'open', 1, ?, '{}')",
+                 VALUES ($1, $2, 1, $3, $4, 'critical', 'open', 1, $5, '{}')",
             )
             .bind(incident_id)
             .bind(rule_key)
@@ -2941,7 +2951,7 @@ mod tests {
         let digest = state.auth().pepper.hmac_digest(full_token.as_bytes());
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
         sqlx::query(
-            "INSERT INTO enrollment_tokens (token_id, token_digest, created_at, expires_at, consumed_at, consumed_agent_id, revoked_at) VALUES (?, ?, ?, '2020-01-01T00:00:00Z', NULL, NULL, NULL)",
+            "INSERT INTO enrollment_tokens (token_id, token_digest, created_at, expires_at, consumed_at, consumed_agent_id, revoked_at) VALUES ($1, $2, $3, '2020-01-01T00:00:00Z', NULL, NULL, NULL)",
         )
         .bind(&token_id)
         .bind(digest.to_vec())

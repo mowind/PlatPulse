@@ -2,11 +2,11 @@ use clap::{CommandFactory, Parser};
 
 use platpulse_server::cli::{
     AgentCommand, CheckpointCommand, Cli, Command, CutoverCommand, NetworkCommand, OwnerCommand,
-    ViewerCommand, resolve_serve_config, run_backup, run_checkpoint_convert, run_checkpoint_create,
-    run_checkpoint_restore, run_checkpoint_verify, run_checkpoint_verify_conversion,
-    run_create_enrollment_token, run_cutover_resume, run_cutover_rollback, run_cutover_status,
-    run_network_create, run_owner_create, run_restore, run_serve, run_verify_integrity,
-    run_viewer_create,
+    ViewerCommand, require_sqlite_storage, resolve_serve_config, run_backup,
+    run_checkpoint_convert, run_checkpoint_create, run_checkpoint_restore, run_checkpoint_verify,
+    run_checkpoint_verify_conversion, run_create_enrollment_token, run_cutover_resume,
+    run_cutover_rollback, run_cutover_status, run_network_create, run_owner_create, run_restore,
+    run_serve, run_verify_integrity, run_viewer_create,
 };
 use platpulse_server::config::ServerConfig;
 use platpulse_server::init::run_init;
@@ -47,6 +47,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Command::Init(args) => {
             let config = ServerConfig::resolve_init(&args.config)?;
+            require_sqlite_storage(&config, "init")?;
             let report = run_init(&config).await?;
             println!("PlatPulse Server state initialized.");
             for warning in &report.warnings {
@@ -88,19 +89,23 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Backup(args) => {
             let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
+            require_sqlite_storage(&config, "backup")?;
             let filename = run_backup(&config).await?;
             println!("Created sanitized backup '{filename}'.");
         }
         Command::VerifyIntegrity(args) => {
             let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
+            require_sqlite_storage(&config, "verify-integrity")?;
             run_verify_integrity(&config).await?;
         }
         Command::Restore(args) => {
             let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
+            require_sqlite_storage(&config, "restore")?;
             run_restore(&config, &args).await?;
         }
         Command::Checkpoint(CheckpointCommand::Create(args)) => {
             let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
+            require_sqlite_storage(&config, "checkpoint create")?;
             run_checkpoint_create(&config, &args).await?;
         }
         Command::Checkpoint(CheckpointCommand::Verify(args)) => {

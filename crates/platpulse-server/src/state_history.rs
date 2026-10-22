@@ -640,7 +640,7 @@ async fn store_entry(
     .bind(&observation.vector.value_source)
     .bind(observation.value_observed_at.as_deref())
     .bind(observation.vector.error_code.as_deref())
-    .bind(observation.vector.syncing)
+    .bind(observation.vector.syncing.map(i64::from))
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -733,7 +733,7 @@ async fn store_ledger(
     .bind(&observation.vector.value_source)
     .bind(observation.value_observed_at.as_deref())
     .bind(observation.vector.error_code.as_deref())
-    .bind(observation.vector.syncing)
+    .bind(observation.vector.syncing.map(i64::from))
     .bind(delta.entry_at)
     .bind(&observed_at)
     .bind(&received_at)

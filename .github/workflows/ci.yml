@@ -62,6 +62,53 @@ jobs:
           test -z "$(git status --porcelain -- docs/openapi/openapi.json)" \
             || { echo 'OpenAPI spec is not fresh'; git status --porcelain -- docs/openapi/openapi.json; exit 1; }
 
+  # The Server must behave identically on both Storage Backends (ADR 0013):
+  # the same suite runs again against PostgreSQL 15 (the supported minimum)
+  # and PostgreSQL 18 (the current release). Every test gets its own database
+  # cloned from one migrated template (crates/platpulse-server/src/test_support.rs).
+  rust-postgres:
+    name: Rust workspace (PostgreSQL ${{ matrix.postgres }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["15", "18"]
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_PASSWORD: platpulse
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PLATPULSE_TEST_STORAGE: postgres
+      PLATPULSE_TEST_POSTGRES_URL: postgres://postgres:platpulse@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-pg${{ matrix.postgres }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-pg${{ matrix.postgres }}-
+            ${{ runner.os }}-cargo-
+
+      - name: Test
+        run: cargo test --workspace
+
   web:
     name: WebUI
     runs-on: ubuntu-latest

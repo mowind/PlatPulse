@@ -833,7 +833,7 @@ pub async fn recent_intervals(
             updated_at,
         ) = row;
         let (skipped_series_total, skipped_sample_count): (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(*), COALESCE(SUM(skipped_count), 0) FROM capacity_skipped_series WHERE interval_id = $1",
+            "SELECT COUNT(*), CAST(COALESCE(SUM(skipped_count), 0) AS BIGINT) FROM capacity_skipped_series WHERE interval_id = $1",
         )
         .bind(&interval_id)
         .fetch_one(pool)

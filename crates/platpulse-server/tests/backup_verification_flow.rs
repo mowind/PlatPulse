@@ -204,8 +204,17 @@ async fn read_operation(harness: &Harness, session: &Session, operation_id: &str
     body_json(response).await
 }
 
+#[cfg_attr(
+    storage_postgres,
+    ignore = "it builds offline SQLite backup artifacts with VACUUM INTO"
+)]
 #[tokio::test]
 async fn offline_artifact_is_readable_and_acceptance_is_not_the_result() {
+    if !platpulse_server::test_support::skip_unless_sqlite(
+        "it builds offline SQLite backup artifacts with VACUUM INTO",
+    ) {
+        return;
+    }
     let harness = Harness::boot().await;
     let owner = login(&harness, OWNER_LOGIN_BODY).await;
     let artifact_id = harness.create_offline_artifact().await;
@@ -296,7 +305,7 @@ async fn offline_artifact_is_readable_and_acceptance_is_not_the_result() {
 
     // The completion is durable Audit, not only a redrawn badge.
     let audited: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'operation_finished' AND target_kind = 'operation' AND target_id = ?",
+        "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'operation_finished' AND target_kind = 'operation' AND target_id = $1",
     )
     .bind(&operation_id)
     .fetch_one(harness.pool())
@@ -305,8 +314,17 @@ async fn offline_artifact_is_readable_and_acceptance_is_not_the_result() {
     assert_eq!(audited, 1);
 }
 
+#[cfg_attr(
+    storage_postgres,
+    ignore = "it builds offline SQLite backup artifacts with VACUUM INTO"
+)]
 #[tokio::test]
 async fn corrupt_and_unreadable_artifacts_are_distinct_recorded_failures() {
+    if !platpulse_server::test_support::skip_unless_sqlite(
+        "it builds offline SQLite backup artifacts with VACUUM INTO",
+    ) {
+        return;
+    }
     let harness = Harness::boot().await;
     let owner = login(&harness, OWNER_LOGIN_BODY).await;
     let artifact_id = harness.create_offline_artifact().await;
@@ -414,8 +432,17 @@ async fn corrupt_and_unreadable_artifacts_are_distinct_recorded_failures() {
     assert_eq!(operations_count, 3);
 }
 
+#[cfg_attr(
+    storage_postgres,
+    ignore = "it builds offline SQLite backup artifacts with VACUUM INTO"
+)]
 #[tokio::test]
 async fn cancelled_verification_leaves_the_last_recorded_outcome_intact() {
+    if !platpulse_server::test_support::skip_unless_sqlite(
+        "it builds offline SQLite backup artifacts with VACUUM INTO",
+    ) {
+        return;
+    }
     let harness = Harness::boot().await;
     let owner = login(&harness, OWNER_LOGIN_BODY).await;
     let artifact_id = harness.create_offline_artifact().await;
@@ -430,7 +457,7 @@ async fn cancelled_verification_leaves_the_last_recorded_outcome_intact() {
     // the worker would observe it.
     let second = request_verification(&harness, &owner, &artifact_id).await;
     sqlx::query(
-        "UPDATE operations SET status = 'running', started_at = created_at WHERE operation_id = ?",
+        "UPDATE operations SET status = 'running', started_at = created_at WHERE operation_id = $1",
     )
     .bind(&second)
     .execute(harness.pool())
@@ -473,8 +500,17 @@ async fn cancelled_verification_leaves_the_last_recorded_outcome_intact() {
     );
 }
 
+#[cfg_attr(
+    storage_postgres,
+    ignore = "it builds offline SQLite backup artifacts with VACUUM INTO"
+)]
 #[tokio::test]
 async fn the_backup_surface_is_owner_only_behind_real_origin_and_csrf() {
+    if !platpulse_server::test_support::skip_unless_sqlite(
+        "it builds offline SQLite backup artifacts with VACUUM INTO",
+    ) {
+        return;
+    }
     let harness = Harness::boot().await;
     let owner = login(&harness, OWNER_LOGIN_BODY).await;
     let viewer = login(&harness, VIEWER_LOGIN_BODY).await;

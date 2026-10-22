@@ -1,9 +1,9 @@
 //! Minimal operational health routes (design §12).
 //!
 //! `/health/live` only proves the event loop responds; `/health/ready`
-//! checks the components the Server owns (SQLite migrations, the first
-//! Owner, Web assets). Neither response leaks versions, DB paths, or
-//! internal counts.
+//! checks the components the Server owns (Storage Backend ownership,
+//! schema version, the first Owner, Web assets). Neither response leaks
+//! versions, DB paths, or internal counts.
 //!
 //! Runtime corruption is latched from an `SQLITE_CORRUPT` observed on a real
 //! query (`AppState::note_database_error`). The authoritative whole-database
@@ -82,21 +82,34 @@ pub struct ReadyResponse {
     )
 )]
 pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
-    let sqlite = if state.is_corrupt() {
-        ReadyComponent::not_ready("sqlite", "integrity_check_failed")
+    // The storage component is named for the Storage Backend in use (ADR 0013,
+    // issue #255): `sqlite` on a database file, `postgres` on a PostgreSQL
+    // database. The checks behind the name are the same on both backends.
+    let storage = state.db().storage_backend();
+    let storage_component = if state.is_corrupt() {
+        ReadyComponent::not_ready(storage, "integrity_check_failed")
     } else {
         match state.db().schema_version().await {
             Ok(version) if version >= crate::database::SERVER_SCHEMA_VERSION => {
-                ReadyComponent::ready("sqlite")
+                ReadyComponent::ready(storage)
             }
-            Ok(_) => ReadyComponent::not_ready("sqlite", "migration_pending"),
+            Ok(_) => ReadyComponent::not_ready(storage, "migration_pending"),
             Err(error) => {
                 if let Some(error) = error.as_sqlx() {
                     state.note_database_error(error);
                 }
-                ReadyComponent::not_ready("sqlite", "unavailable")
+                ReadyComponent::not_ready(storage, "unavailable")
             }
         }
+    };
+    // Storage Backend ownership is the session-level advisory lock on
+    // PostgreSQL (ADR 0013): once it is lost the Server is draining and must
+    // never report itself ready again. SQLite ownership is the process-lifetime
+    // file lock, so it is always held there.
+    let storage_ownership = if state.db().ownership_held() {
+        ReadyComponent::ready("storage_ownership")
+    } else {
+        ReadyComponent::not_ready("storage_ownership", "ownership_lost")
     };
     let owner = match crate::auth::has_owner(state.db()).await {
         Ok(true) => ReadyComponent::ready("owner"),
@@ -140,7 +153,14 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
     };
 
     let components = vec![
-        sqlite, owner, web_assets, shutdown, workers, corruption, cutover,
+        storage_ownership,
+        storage_component,
+        owner,
+        web_assets,
+        shutdown,
+        workers,
+        corruption,
+        cutover,
     ];
     let ready = components
         .iter()

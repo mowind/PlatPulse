@@ -155,10 +155,10 @@ impl AggregateFamily {
     fn country_insert_sql(self) -> &'static str {
         match self {
             Self::FiveMinute => {
-                "INSERT INTO peer_aggregate_5m_countries (node_id, bucket_start, country_code, peer_count) VALUES ($1, $2, $3, $4) ON CONFLICT(node_id, bucket_start, country_code) DO UPDATE SET peer_count=peer_count + excluded.peer_count"
+                "INSERT INTO peer_aggregate_5m_countries (node_id, bucket_start, country_code, peer_count) VALUES ($1, $2, $3, $4) ON CONFLICT(node_id, bucket_start, country_code) DO UPDATE SET peer_count=peer_aggregate_5m_countries.peer_count + excluded.peer_count"
             }
             Self::Hourly => {
-                "INSERT INTO peer_aggregate_1h_countries (node_id, bucket_start, country_code, peer_count) VALUES ($1, $2, $3, $4) ON CONFLICT(node_id, bucket_start, country_code) DO UPDATE SET peer_count=peer_count + excluded.peer_count"
+                "INSERT INTO peer_aggregate_1h_countries (node_id, bucket_start, country_code, peer_count) VALUES ($1, $2, $3, $4) ON CONFLICT(node_id, bucket_start, country_code) DO UPDATE SET peer_count=peer_aggregate_1h_countries.peer_count + excluded.peer_count"
             }
         }
     }
@@ -925,8 +925,12 @@ mod tests {
         );
     }
 
+    #[cfg_attr(storage_postgres, ignore = "it stages a historical SQLite schema")]
     #[tokio::test]
     async fn retained_last_good_countries_resolve_beyond_the_ttl_but_within_retention() {
+        if !crate::test_support::skip_unless_sqlite("it stages a historical SQLite schema") {
+            return;
+        }
         let pool = crate::test_support::unmigrated_sqlite_pool(None).await;
         sqlx::query(crate::geo::CACHE_TABLE_DDL)
             .execute(&pool)
@@ -938,7 +942,7 @@ mod tests {
             let expires_at = expires_at.to_owned();
             let pool = pool.clone();
             async move {
-                sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', ?, 'US', 'current', ?, ?, ?, ?, ?)")
+                sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', $1, 'US', 'current', $2, $3, $4, $5, $6)")
                     .bind(ip)
                     .bind(&created_at)
                     .bind(&created_at)

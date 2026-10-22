@@ -1140,7 +1140,7 @@ mod tests {
             .unwrap();
         assert_eq!(agents, 1);
         let consumed: (Option<String>, Option<String>) = sqlx::query_as(
-            "SELECT consumed_at, consumed_agent_id FROM enrollment_tokens WHERE token_id = ?",
+            "SELECT consumed_at, consumed_agent_id FROM enrollment_tokens WHERE token_id = $1",
         )
         .bind(&token_id)
         .fetch_one(db.pool())
@@ -1165,12 +1165,19 @@ mod tests {
         .unwrap();
         let credential_digest = pepper.hmac_digest(enrolled.credential.as_bytes());
         assert_eq!(stored, credential_digest.to_vec());
-        let stored_tokens: Vec<String> =
-            sqlx::query_scalar("SELECT hex(token_digest) FROM enrollment_tokens")
+        // Compared as bytes: `hex(bytea)` and `hex(blob)` do not agree (PostgreSQL
+        // `hex` takes an integer), and the column is a binary digest on both
+        // backends.
+        let stored_tokens: Vec<Vec<u8>> =
+            sqlx::query_scalar("SELECT token_digest FROM enrollment_tokens")
                 .fetch_all(db.pool())
                 .await
                 .unwrap();
-        assert!(stored_tokens.iter().all(|digest| digest != &full_token));
+        assert!(
+            stored_tokens
+                .iter()
+                .all(|digest| digest != full_token.as_bytes())
+        );
     }
 
     #[tokio::test]
@@ -1223,7 +1230,7 @@ mod tests {
         let digest = pepper.hmac_digest(expired_token.as_bytes());
         let now = format_rfc3339(now_utc());
         sqlx::query(
-            "INSERT INTO enrollment_tokens (token_id, token_digest, created_at, expires_at, consumed_at, consumed_agent_id, revoked_at) VALUES (?, ?, ?, '2020-01-01T00:00:00Z', NULL, NULL, NULL)",
+            "INSERT INTO enrollment_tokens (token_id, token_digest, created_at, expires_at, consumed_at, consumed_agent_id, revoked_at) VALUES ($1, $2, $3, '2020-01-01T00:00:00Z', NULL, NULL, NULL)",
         )
         .bind(&token_id)
         .bind(digest.to_vec())
@@ -1288,7 +1295,7 @@ mod tests {
 
         // Revoking the credential takes effect immediately.
         sqlx::query(
-            "UPDATE agent_credentials SET revoked_at = '2026-01-01T00:00:00Z' WHERE agent_id = ?",
+            "UPDATE agent_credentials SET revoked_at = '2026-01-01T00:00:00Z' WHERE agent_id = $1",
         )
         .bind(&enrolled.agent_id)
         .execute(db.pool())
@@ -1360,7 +1367,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(agents, 1, "recovery must not create a duplicate Agent");
-        let epoch: i64 = sqlx::query_scalar("SELECT agent_epoch FROM agents WHERE agent_id = ?")
+        let epoch: i64 = sqlx::query_scalar("SELECT agent_epoch FROM agents WHERE agent_id = $1")
             .bind(&enrolled.agent_id)
             .fetch_one(db.pool())
             .await
@@ -1440,7 +1447,7 @@ mod tests {
         let digest = pepper.hmac_digest(expired_token.as_bytes());
         let now = format_rfc3339(now_utc());
         sqlx::query(
-            "INSERT INTO recovery_tokens (token_id, token_digest, agent_id, created_at, expires_at, consumed_at, revoked_at) VALUES (?, ?, ?, ?, '2020-01-01T00:00:00Z', NULL, NULL)",
+            "INSERT INTO recovery_tokens (token_id, token_digest, agent_id, created_at, expires_at, consumed_at, revoked_at) VALUES ($1, $2, $3, $4, '2020-01-01T00:00:00Z', NULL, NULL)",
         )
         .bind(&token_id)
         .bind(digest.to_vec())
@@ -1477,7 +1484,7 @@ mod tests {
             recover(&db, &pepper, &tampered).await.unwrap_err(),
             RecoveryError::Invalid
         );
-        let epoch: i64 = sqlx::query_scalar("SELECT agent_epoch FROM agents WHERE agent_id = ?")
+        let epoch: i64 = sqlx::query_scalar("SELECT agent_epoch FROM agents WHERE agent_id = $1")
             .bind(&enrolled.agent_id)
             .fetch_one(db.pool())
             .await
@@ -1556,7 +1563,7 @@ mod tests {
             "the previous credential stays valid through the overlap window"
         );
         // The Epoch is untouched by rotation.
-        let epoch: i64 = sqlx::query_scalar("SELECT agent_epoch FROM agents WHERE agent_id = ?")
+        let epoch: i64 = sqlx::query_scalar("SELECT agent_epoch FROM agents WHERE agent_id = $1")
             .bind(&enrolled.agent_id)
             .fetch_one(db.pool())
             .await
@@ -1565,7 +1572,7 @@ mod tests {
 
         // Overlap enforcement is lazy: past the deadline the old credential
         // stops working without any explicit revoke.
-        sqlx::query("UPDATE agent_credentials SET revoke_after = '2020-01-01T00:00:00Z' WHERE credential_id = ?")
+        sqlx::query("UPDATE agent_credentials SET revoke_after = '2020-01-01T00:00:00Z' WHERE credential_id = $1")
             .bind(&rotated.overlap_credential_ids[0])
             .execute(db.pool())
             .await
@@ -1774,7 +1781,7 @@ mod tests {
         // ID is the identifier, and no name is inferred from Node or
         // diagnostic fields.
         let initial: (Option<String>, Option<String>) =
-            sqlx::query_as("SELECT display_name, notes FROM agents WHERE agent_id = ?")
+            sqlx::query_as("SELECT display_name, notes FROM agents WHERE agent_id = $1")
                 .bind(&enrolled.agent_id)
                 .fetch_one(db.pool())
                 .await
@@ -1799,14 +1806,14 @@ mod tests {
         // The persistence is observable by any later reader (refresh,
         // restart, another Owner) and leaves the Agent ID and Epoch alone.
         let stored: (Option<String>, Option<String>) =
-            sqlx::query_as("SELECT display_name, notes FROM agents WHERE agent_id = ?")
+            sqlx::query_as("SELECT display_name, notes FROM agents WHERE agent_id = $1")
                 .bind(&enrolled.agent_id)
                 .fetch_one(db.pool())
                 .await
                 .unwrap();
         assert_eq!(stored.0.as_deref(), Some("Host A Agent"));
         assert_eq!(stored.1.as_deref(), Some("Primary Host\ncovers Node A"));
-        let epoch: i64 = sqlx::query_scalar("SELECT agent_epoch FROM agents WHERE agent_id = ?")
+        let epoch: i64 = sqlx::query_scalar("SELECT agent_epoch FROM agents WHERE agent_id = $1")
             .bind(&enrolled.agent_id)
             .fetch_one(db.pool())
             .await

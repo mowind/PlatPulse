@@ -10,7 +10,7 @@ PlatPulse is a Server–Agent–WebUI monitoring suite for PlatON nodes, develop
 
 ## Tech stack
 
-- **Rust** (Agent + Server): Tokio, Axum + Tower, Reqwest (Rustls), Serde, SQLx SQLite (Agent and Server) and PostgreSQL (Server only, in progress), Alloy (Agent only), sysinfo, Clap + TOML, tracing, utoipa, Argon2id, time.
+- **Rust** (Agent + Server): Tokio, Axum + Tower, Reqwest (Rustls), Serde, SQLx SQLite (Agent and Server) and PostgreSQL (Server only, ADR 0013), Alloy (Agent only), sysinfo, Clap + TOML, tracing, utoipa, Argon2id, time.
 - **Node.js** (WebUI): React, TypeScript strict, Vite, React Router, TanStack Query, native EventSource and fetch.
 - No ORM, gRPC, Kafka, NATS, Redis, workflow engine, or global DI container. Dependencies are injected through explicit constructors.
 
@@ -36,8 +36,11 @@ cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
 # Server tests pick their Storage Backend through the shared helper platpulse_server::test_support (ADR 0013).
-# PostgreSQL is a 0.3.0 target and not yet available; the helper refuses `postgres` until it lands.
-# PLATPULSE_TEST_STORAGE=postgres cargo test --workspace   # SQLite remains the default (PLATPULSE_TEST_STORAGE=sqlite)
+# SQLite remains the default (PLATPULSE_TEST_STORAGE=sqlite); PostgreSQL clones a fresh database per test
+# from a migrated template and never falls back to SQLite, so it needs a reachable server:
+# PLATPULSE_TEST_STORAGE=postgres PLATPULSE_TEST_POSTGRES_URL=postgres://user:pass@host:5432/postgres cargo test --workspace
+# A SQLite-only test is annotated `#[cfg_attr(storage_postgres, ignore = "<reason>")]`; crates/platpulse-server/build.rs
+# turns PLATPULSE_TEST_STORAGE into that cfg so a PostgreSQL run reports the test as ignored with its reason, never passed.
 cargo deny check && cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2026-0381
 
 # Design references: "design §X.Y" = docs/design/platpulse.md, "webui.md §X.Y" = docs/design/webui.md
@@ -56,10 +59,10 @@ CI also runs Playwright across fixed projects: `phone-360-touch` (360×800), `ph
 
 ## Engineering conventions
 
-- **SQLx with typed SQL** — no ORM, no per-table repository traits. The Server uses SQLx typed SQL on SQLite (default) or PostgreSQL ([ADR 0013](docs/adr/0013-postgresql-server-storage-backend.md); PostgreSQL is a 0.3.0 target, in progress, not yet implemented); the Agent is SQLite-only. Tests use real temp SQLite and real PostgreSQL, no mocks. Agent and Server keep independent schemas/migrations.
-- **Server domain SQL is written in the portable form** (ADR 0013, #252) — `$N` placeholders (a statement composed from optional `?` fragments is numbered once with `database::number_placeholders`), `ON CONFLICT DO NOTHING` instead of `INSERT OR IGNORE`, `RETURNING` instead of `last_insert_rowid()`, primary-key batching instead of `rowid`, `CASE` instead of scalar `MIN`/`MAX`, no `julianday`. SQLite-only operations paths (backup, restore, checkpoint, PRAGMA/integrity) are the exception.
-- **Server domain code runs on the `sqlx::Any` seam** (ADR 0013, #254) — business modules take `AnyPool`/`AnyConnection`/`Transaction<'_, Any>` and never name `sqlx::sqlite` types; backend-specific operations live under `database/` (and the offline backup/restore/checkpoint/migration tools). `Any` is strict: decode 0/1 flags as `i64` (or `database::NullableFlag` for an `Option<bool>` `FromRow` field), decode a nullable column as `Option<_>`, and never ignore a failed statement inside a transaction.
-- **Any Server schema change ships migrations for both backends in the same change** — SQLite and PostgreSQL share one logical schema version and must stay logically equivalent (tables, columns, constraints, indexes). This takes effect once the PostgreSQL migration baseline lands (0.3.0 target).
+- **SQLx with typed SQL** — no ORM, no per-table repository traits. The Server uses SQLx typed SQL on SQLite (default) or PostgreSQL ([ADR 0013](docs/adr/0013-postgresql-server-storage-backend.md); PostgreSQL is a 0.3.0 Storage Backend, issue #255); the Agent is SQLite-only. Tests use real temp SQLite and real PostgreSQL, no mocks. Agent and Server keep independent schemas/migrations.
+- **Server domain SQL is written in the portable form** (ADR 0013, #252) — `$N` placeholders (a statement composed from optional `?` fragments is numbered once with `database::number_placeholders`), `ON CONFLICT DO NOTHING` instead of `INSERT OR IGNORE`, `RETURNING` instead of `last_insert_rowid()`, primary-key batching instead of `rowid`, `CASE` instead of scalar `MIN`/`MAX`, no `julianday`, and every column a `DO UPDATE SET` expression reads from the existing row qualified with its table name (`SET n = t.n + 1`) because PostgreSQL sees the target row and the proposed row side by side and rejects an unqualified reference as ambiguous. SQLite-only operations paths (backup, restore, checkpoint, PRAGMA/integrity) are the exception.
+- **Server domain code runs on the `sqlx::Any` seam** (ADR 0013, #254) — business modules take `AnyPool`/`AnyConnection`/`Transaction<'_, Any>` and never name `sqlx::sqlite` types; backend-specific operations live under `database/` (and the offline backup/restore/checkpoint/migration tools). `Any` is strict: decode 0/1 flags as `i64` (or `database::NullableFlag` for an `Option<bool>` `FromRow` field), decode a nullable column as `Option<_>`, bind a nullable double as `database::NullableReal` (a bare `Option<f64>` declares `float4` for a missing sample and `float8` for a present one, which poisons the cached PostgreSQL statement), and never ignore a failed statement inside a transaction.
+- **Any Server schema change ships migrations for both backends in the same change** — SQLite and PostgreSQL share one logical schema version and must stay logically equivalent (tables, columns, constraints, indexes). The PostgreSQL baseline migration (crates/platpulse-server/migrations-postgres) is the single schema version they share.
 - **`platpulse-core` is I/O-free** — no Axum/SQLx/Alloy dependencies; no Server rows or Public/Admin DTOs.
 - **Scope observations per Node, not per Agent** — block, transaction, consensus, peer and error state must never merge into an Agent-level chain view. One Agent may monitor multiple Nodes; one Node has exactly one Endpoint (no failover).
 - **Host observation is collected once per Agent** and referenced by Node views; do not duplicate resource accounting.

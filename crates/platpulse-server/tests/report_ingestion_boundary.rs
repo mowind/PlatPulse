@@ -280,14 +280,14 @@ async fn real_credential_report_round_trip_is_bound_to_the_enrolled_identity() {
 
     // The Node projection is owned by the Agent the credential resolved to.
     let node_id = report.inventory.nodes[0].node_id.to_string();
-    let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id = ?")
+    let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id = $1")
         .bind(&node_id)
         .fetch_one(harness.state.db().pool())
         .await
         .unwrap();
     assert_eq!(owner, agent_id);
     let receipts: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE report_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_report_receipts WHERE report_id = $1")
             .bind(report.report_id.to_string())
             .fetch_one(harness.state.db().pool())
             .await
@@ -443,14 +443,14 @@ async fn pending_transfer_race_is_settled_at_the_router_boundary() {
         receipt.samples[0].disposition,
         SampleDispositionKind::Accepted
     );
-    let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id = ?")
+    let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id = $1")
         .bind(&node_id)
         .fetch_one(harness.state.db().pool())
         .await
         .unwrap();
     assert_eq!(owner, target_agent);
     let transfer: String =
-        sqlx::query_scalar("SELECT status FROM node_transfers WHERE node_id = ?")
+        sqlx::query_scalar("SELECT status FROM node_transfers WHERE node_id = $1")
             .bind(&node_id)
             .fetch_one(harness.state.db().pool())
             .await
@@ -476,7 +476,7 @@ async fn pending_transfer_race_is_settled_at_the_router_boundary() {
         RejectionCode::NodeOwnershipMismatch
     );
     let events: i64 =
-        sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id = ?")
+        sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id = $1")
             .bind(&source_agent)
             .fetch_one(harness.state.db().pool())
             .await

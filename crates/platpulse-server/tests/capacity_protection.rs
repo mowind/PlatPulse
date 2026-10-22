@@ -106,13 +106,10 @@ impl Harness {
         self.state.db().pool()
     }
 
+    /// The state directory this deployment runs in. A PostgreSQL deployment
+    /// keeps nothing on this filesystem but still measures it for capacity.
     fn mount(&self) -> PathBuf {
-        self.state
-            .db()
-            .path()
-            .parent()
-            .expect("the database file has a parent directory")
-            .to_path_buf()
+        self._dir.path().to_path_buf()
     }
 
     async fn count(&self, table: &str) -> i64 {
@@ -140,10 +137,7 @@ fn forced_policy(harness: &Harness) -> Arc<CapacityProtection> {
         Some(PathBuf::from("test-capacity-floor")),
     )
     .unwrap();
-    Arc::new(CapacityProtection::new(
-        config,
-        Some(harness.state.db().path()),
-    ))
+    Arc::new(CapacityProtection::new(config, harness.state.db().path()))
 }
 
 /// An interval a previous process left open, written directly: a test that needs
@@ -155,7 +149,7 @@ async fn seed_open_interval(harness: &Harness, interval_id: &str) {
     let mount = harness.mount();
     let available = sample_filesystem(&mount).unwrap().available_bytes;
     sqlx::query(
-        "INSERT INTO capacity_protection_intervals (interval_id, source_mount, started_at, started_reason, opened_total_bytes, opened_available_bytes, pause_below_bytes, resume_above_bytes, created_at, updated_at) VALUES (?, ?, '2026-03-01T02:00:00Z', 'low_space', ?, ?, ?, ?, '2026-03-01T02:00:00Z', '2026-03-01T02:00:00Z')",
+        "INSERT INTO capacity_protection_intervals (interval_id, source_mount, started_at, started_reason, opened_total_bytes, opened_available_bytes, pause_below_bytes, resume_above_bytes, created_at, updated_at) VALUES ($1, $2, '2026-03-01T02:00:00Z', 'low_space', $3, $4, $5, $6, '2026-03-01T02:00:00Z', '2026-03-01T02:00:00Z')",
     )
     .bind(interval_id)
     .bind(mount.to_string_lossy().to_string())
@@ -364,8 +358,17 @@ fn skipped_series_keys(interval: &platpulse_server::capacity::CapacityIntervalRe
 /// is still accepted with its core projection, the gap is visible and counted,
 /// and releasing the floor resumes history and closes the interval with the
 /// measurement that released it.
+#[cfg_attr(
+    storage_postgres,
+    ignore = "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)"
+)]
 #[tokio::test]
 async fn optional_history_pauses_under_pressure_and_recovers_with_a_visible_gap() {
+    if !platpulse_server::test_support::skip_unless_sqlite(
+        "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)",
+    ) {
+        return;
+    }
     let mut harness = Harness::boot().await;
     let session = owner_session(&harness).await;
     let (agent_id, credential) = enroll_agent(&harness, &session).await;
@@ -513,7 +516,7 @@ async fn optional_history_pauses_under_pressure_and_recovers_with_a_visible_gap(
     .unwrap();
     let released = Arc::new(CapacityProtection::new(
         released_config,
-        Some(harness.state.db().path()),
+        harness.state.db().path(),
     ));
     released.reconcile(harness.pool()).await.unwrap();
     assert!(
@@ -580,8 +583,17 @@ async fn optional_history_pauses_under_pressure_and_recovers_with_a_visible_gap(
 /// to open one was refused: protection stayed defeated while the recorded
 /// interval stayed open forever. A tick now retries the read before it decides
 /// anything.
+#[cfg_attr(
+    storage_postgres,
+    ignore = "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)"
+)]
 #[tokio::test]
 async fn a_tick_adopts_an_open_interval_the_startup_read_missed() {
+    if !platpulse_server::test_support::skip_unless_sqlite(
+        "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)",
+    ) {
+        return;
+    }
     let mut harness = Harness::boot().await;
     let session = owner_session(&harness).await;
     let (agent_id, credential) = enroll_agent(&harness, &session).await;
@@ -642,7 +654,7 @@ async fn a_tick_adopts_an_open_interval_the_startup_read_missed() {
     .unwrap();
     let released = Arc::new(CapacityProtection::new(
         released_config,
-        Some(harness.state.db().path()),
+        harness.state.db().path(),
     ));
     released.check_now(harness.pool()).await.unwrap();
     assert!(!released.status().protected);
@@ -659,8 +671,17 @@ async fn a_tick_adopts_an_open_interval_the_startup_read_missed() {
 
 /// Story 46 and design §8.3: a Report whose receipt write fails is not accepted
 /// as received, and the gap it would have recorded rolls back with it.
+#[cfg_attr(
+    storage_postgres,
+    ignore = "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)"
+)]
 #[tokio::test]
 async fn a_report_that_fails_its_receipt_write_does_not_claim_a_gap() {
+    if !platpulse_server::test_support::skip_unless_sqlite(
+        "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)",
+    ) {
+        return;
+    }
     let mut harness = Harness::boot().await;
     let session = owner_session(&harness).await;
     let (agent_id, credential) = enroll_agent(&harness, &session).await;
@@ -735,8 +756,17 @@ async fn storage_capacity_check(harness: &Harness, session: &Session) -> Value {
 /// Issue #212 review: the recorded gap counts readings the Server did not
 /// store, not repeat receipts of one reading. An Agent that re-sends its
 /// last-good sample while history is paused has not lost a second sample.
+#[cfg_attr(
+    storage_postgres,
+    ignore = "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)"
+)]
 #[tokio::test]
 async fn a_replayed_reading_is_not_counted_as_a_second_lost_sample() {
+    if !platpulse_server::test_support::skip_unless_sqlite(
+        "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)",
+    ) {
+        return;
+    }
     let mut harness = Harness::boot().await;
     let session = owner_session(&harness).await;
     let (agent_id, credential) = enroll_agent(&harness, &session).await;
@@ -841,7 +871,7 @@ async fn skipped_counting_advances_only_on_a_reading_newer_than_the_mark() {
         tx.commit().await.unwrap();
 
         let (count, first, last): (i64, String, String) = sqlx::query_as(
-            "SELECT skipped_count, first_skipped_at, last_skipped_at FROM capacity_skipped_series WHERE interval_id = ? AND scope_kind = ? AND scope_key = ? AND metric = ?",
+            "SELECT skipped_count, first_skipped_at, last_skipped_at FROM capacity_skipped_series WHERE interval_id = $1 AND scope_kind = $2 AND scope_key = $3 AND metric = $4",
         )
         .bind(INTERVAL)
         .bind(SkippedScope::Host.as_str())
@@ -940,8 +970,17 @@ async fn doctor_warns_when_the_state_filesystem_cannot_be_measured() {
 
 /// The Admin surface: Owner-only, and honest about a disabled policy instead of
 /// inventing thresholds or a zero available-bytes reading.
+#[cfg_attr(
+    storage_postgres,
+    ignore = "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)"
+)]
 #[tokio::test]
 async fn capacity_route_is_owner_only_and_does_not_invent_a_disabled_policy() {
+    if !platpulse_server::test_support::skip_unless_sqlite(
+        "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)",
+    ) {
+        return;
+    }
     let harness = Harness::boot().await;
     let session = owner_session(&harness).await;
     auth::create_viewer(

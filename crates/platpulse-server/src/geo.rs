@@ -672,7 +672,7 @@ where
     E: sqlx::Executor<'e, Database = sqlx::Any>,
 {
     let value: i64 = sqlx::query_scalar(
-        "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ($1, '1', $2) ON CONFLICT(setting_key) DO UPDATE SET setting_value = CAST(CAST(setting_value AS INTEGER) + 1 AS TEXT), updated_at = excluded.updated_at RETURNING CAST(setting_value AS INTEGER)",
+        "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ($1, '1', $2) ON CONFLICT(setting_key) DO UPDATE SET setting_value = CAST(CAST(server_settings.setting_value AS INTEGER) + 1 AS TEXT), updated_at = excluded.updated_at RETURNING CAST(server_settings.setting_value AS INTEGER)",
     )
     .bind(SETTING_GEO_PROVIDER_GENERATION)
     .bind(now)
@@ -804,14 +804,18 @@ mod tests {
         assert!(eligible_public_ip(&"2001:4860:4860::8888".parse().unwrap()));
     }
 
+    #[cfg_attr(storage_postgres, ignore = "it stages a historical SQLite schema")]
     #[tokio::test]
     async fn trims_cache_to_the_configured_bound() {
+        if !crate::test_support::skip_unless_sqlite("it stages a historical SQLite schema") {
+            return;
+        }
         let pool = crate::test_support::unmigrated_sqlite_pool(None).await;
         sqlx::query(CACHE_TABLE_DDL).execute(&pool).await.unwrap();
         for index in 0..=MAX_PEER_IP_CACHE_ROWS {
             let ip = format!("198.18.{}.{}", index / 256, index % 256);
             let timestamp = format!("2026-01-01T00:00:{index:04}Z");
-            sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', ?, 'US', 'current', ?, ?, ?, ?, ?)")
+            sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', $1, 'US', 'current', $2, $3, $4, $5, $6)")
                 .bind(ip)
                 .bind(&timestamp)
                 .bind(&timestamp)

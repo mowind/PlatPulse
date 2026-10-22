@@ -3855,7 +3855,7 @@ mod tests {
         received_at: &str,
         provider_timestamp: Option<&str>,
     ) {
-        sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES (?, 'validator-1', ?, ?, ?, ?, ?, ?, 'platsScan', ?, 12, '1000.000000', '25.000000', '0.05', 40, 5, 900)")
+        sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES ($1, 'validator-1', $2, $3, $4, $5, $6, $7, 'platsScan', $8, 12, '1000.000000', '25.000000', '0.05', 40, 5, 900)")
             .bind(format!("snapshot-{timezone}-{local_date}"))
             .bind(timezone)
             .bind(local_date)
@@ -4587,7 +4587,7 @@ mod tests {
         .unwrap();
         // The metrics acceptance path now runs on the automatic model: the
         // legacy manual Link would never be a Public fallback (#173).
-        sqlx::query("UPDATE node_validator_links SET origin = 'automatic' WHERE link_id = ?")
+        sqlx::query("UPDATE node_validator_links SET origin = 'automatic' WHERE link_id = $1")
             .bind(&link.link_id)
             .execute(db.pool())
             .await
@@ -4754,7 +4754,7 @@ mod tests {
         )
         .await
         .unwrap();
-        sqlx::query("UPDATE node_validator_links SET origin = 'automatic' WHERE link_id = ?")
+        sqlx::query("UPDATE node_validator_links SET origin = 'automatic' WHERE link_id = $1")
             .bind(&link.link_id)
             .execute(db.pool())
             .await
@@ -5288,7 +5288,7 @@ mod tests {
         )
         .await
         .unwrap();
-        sqlx::query("UPDATE node_validator_links SET origin = 'automatic' WHERE link_id = ?")
+        sqlx::query("UPDATE node_validator_links SET origin = 'automatic' WHERE link_id = $1")
             .bind(&link.link_id)
             .execute(db.pool())
             .await
@@ -5755,7 +5755,7 @@ mod tests {
         );
         assert_eq!(insight.counter_state, "counter_reset");
         let incidents = sqlx::query_as::<_, (String, String, String)>(
-            "SELECT rule_key, state, opened_evidence_json FROM alert_incidents WHERE subject_key = ? ORDER BY rule_key",
+            "SELECT rule_key, state, opened_evidence_json FROM alert_incidents WHERE subject_key = $1 ORDER BY rule_key",
         )
         .bind(&validator.validator_id)
         .fetch_all(db.pool())
@@ -5776,7 +5776,7 @@ mod tests {
         assert!(counter_evidence.contains("123456789012345678901234567890"));
         assert!(counter_evidence.contains("123456789012345678901234567889"));
         let ranking_state: (i64, String) = sqlx::query_as(
-            "SELECT evaluation_unavailable, input_kind FROM alert_rule_state WHERE rule_key = 'validator.ranking_changed' AND subject_key = ?",
+            "SELECT evaluation_unavailable, input_kind FROM alert_rule_state WHERE rule_key = 'validator.ranking_changed' AND subject_key = $1",
         )
         .bind(&validator.validator_id)
         .fetch_one(db.pool())
@@ -5784,7 +5784,7 @@ mod tests {
         .unwrap();
         assert_eq!(ranking_state, (0, "known".to_owned()));
         let counter_state: (i64, String) = sqlx::query_as(
-            "SELECT evaluation_unavailable, input_kind FROM alert_rule_state WHERE rule_key = 'validator.counter_reset' AND subject_key = ?",
+            "SELECT evaluation_unavailable, input_kind FROM alert_rule_state WHERE rule_key = 'validator.counter_reset' AND subject_key = $1",
         )
         .bind(&validator.validator_id)
         .fetch_one(db.pool())
@@ -5806,7 +5806,7 @@ mod tests {
         assert!(failed_diagnostic.contains("provider timeout"));
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM alert_incidents WHERE subject_key = ? AND state = 'open'",
+                "SELECT COUNT(*) FROM alert_incidents WHERE subject_key = $1 AND state = 'open'",
             )
             .bind(&validator.validator_id)
             .fetch_one(db.pool())
@@ -5815,7 +5815,7 @@ mod tests {
             2
         );
         let unavailable: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT evaluation_unavailable, input_kind FROM alert_rule_state WHERE subject_key = ? AND rule_key LIKE 'validator.%' ORDER BY rule_key",
+            "SELECT evaluation_unavailable, input_kind FROM alert_rule_state WHERE subject_key = $1 AND rule_key LIKE 'validator.%' ORDER BY rule_key",
         )
         .bind(&validator.validator_id)
         .fetch_all(db.pool())
@@ -5876,8 +5876,12 @@ mod tests {
         assert_eq!(insight.activity.as_deref(), Some("active"));
     }
 
+    #[cfg_attr(storage_postgres, ignore = "it replays a historical SQLite migration")]
     #[tokio::test]
     async fn candidate_activity_migration_preserves_existing_last_good_rows() {
+        if !crate::test_support::skip_unless_sqlite("it replays a historical SQLite migration") {
+            return;
+        }
         let dir = tempdir().unwrap();
         let path = dir.path().join("server.db");
         let pool = crate::test_support::unmigrated_sqlite_pool(Some(&path)).await;
@@ -6143,7 +6147,7 @@ mod tests {
 
         async fn history_count(db: &ServerDatabase, validator_id: &str) -> i64 {
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM validator_ranking_history WHERE validator_id = ?",
+                "SELECT COUNT(*) FROM validator_ranking_history WHERE validator_id = $1",
             )
             .bind(validator_id)
             .fetch_one(db.pool())
@@ -6250,7 +6254,7 @@ mod tests {
         refresh_all(&db, &provider).await.unwrap();
         refresh_all(&db, &provider).await.unwrap();
         let row = sqlx::query_as::<_, ValidatorCounterHistoryRecord>(
-            "SELECT history_id, validator_id, counter_name, previous_value, current_value, observed_at, provider_timestamp, observation_key FROM validator_counter_history WHERE validator_id = ?",
+            "SELECT history_id, validator_id, counter_name, previous_value, current_value, observed_at, provider_timestamp, observation_key FROM validator_counter_history WHERE validator_id = $1",
         )
         .bind(&validator.validator_id)
         .fetch_one(db.pool())
@@ -6261,7 +6265,7 @@ mod tests {
         assert_eq!(row.current_value, "99.999999999999999999");
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM validator_counter_history WHERE validator_id = ?"
+                "SELECT COUNT(*) FROM validator_counter_history WHERE validator_id = $1"
             )
             .bind(&validator.validator_id)
             .fetch_one(db.pool())
@@ -6308,7 +6312,7 @@ mod tests {
         assert_eq!(insight.reward_amount.as_deref(), Some("499.999999999999"));
         assert_eq!(insight.counter_state, "counter_reset");
         let row = sqlx::query_as::<_, ValidatorCounterHistoryRecord>(
-            "SELECT history_id, validator_id, counter_name, previous_value, current_value, observed_at, provider_timestamp, observation_key FROM validator_counter_history WHERE validator_id = ?",
+            "SELECT history_id, validator_id, counter_name, previous_value, current_value, observed_at, provider_timestamp, observation_key FROM validator_counter_history WHERE validator_id = $1",
         )
         .bind(&validator.validator_id)
         .fetch_one(db.pool())
@@ -6732,7 +6736,7 @@ mod tests {
         assert_eq!(daily[0].rank, None);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM validator_monthly_aggregates WHERE validator_id = ?"
+                "SELECT COUNT(*) FROM validator_monthly_aggregates WHERE validator_id = $1"
             )
             .bind(&validator.validator_id)
             .fetch_one(db.pool())
@@ -6752,7 +6756,7 @@ mod tests {
             .unwrap();
         assert_eq!(daily_after_restart.len(), 1);
         let monthly_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM validator_monthly_aggregates WHERE validator_id = ?",
+            "SELECT COUNT(*) FROM validator_monthly_aggregates WHERE validator_id = $1",
         )
         .bind(&validator.validator_id)
         .fetch_one(db.pool())
@@ -6817,7 +6821,7 @@ mod tests {
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM validator_monthly_aggregates WHERE validator_id = ?"
+                "SELECT COUNT(*) FROM validator_monthly_aggregates WHERE validator_id = $1"
             )
             .bind(&validator.validator_id)
             .fetch_one(db.pool())
@@ -6973,7 +6977,7 @@ mod tests {
             .await
             .unwrap();
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-        sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, block_count, counter_state, change_state, candidate_observations, updated_at) VALUES (?, 'platscan', 'unsupported', 'legacy', '2025-01-01T00:00:00Z', ?, ?, 77, 'normal', 'normal', 0, ?)")
+        sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, block_count, counter_state, change_state, candidate_observations, updated_at) VALUES ($1, 'platscan', 'unsupported', 'legacy', '2025-01-01T00:00:00Z', $2, $3, 77, 'normal', 'normal', 0, $4)")
             .bind(&validator.validator_id)
             .bind(&now)
             .bind(&now)
@@ -6994,8 +6998,12 @@ mod tests {
         );
     }
 
+    #[cfg_attr(storage_postgres, ignore = "it replays a historical SQLite migration")]
     #[tokio::test]
     async fn migration_0046_adds_the_delegation_percentage_without_backfilling_legacy_rows() {
+        if !crate::test_support::skip_unless_sqlite("it replays a historical SQLite migration") {
+            return;
+        }
         // Build the schema exactly as it existed immediately before migration
         // 0046, seed one last-good row, then apply 0046 directly. The full
         // startup path also runs the destructive #174 cutover (0053), which
@@ -7794,8 +7802,12 @@ mod tests {
         assert_eq!(insight.rank_cohort_size, Some(10));
     }
 
+    #[cfg_attr(storage_postgres, ignore = "it replays a historical SQLite migration")]
     #[tokio::test]
     async fn migration_0047_clears_the_untrusted_legacy_detail_rank() {
+        if !crate::test_support::skip_unless_sqlite("it replays a historical SQLite migration") {
+            return;
+        }
         // Build the schema immediately before 0047, seed the old detail-alias
         // rank, then apply 0047 directly. The full startup path also runs the
         // destructive #174 cutover (0053), which removes an unlinked legacy
@@ -7819,7 +7831,7 @@ mod tests {
         migrator_through(47).run(&pool).await.unwrap();
         // Inspect the pinned historical schema, not the current row shape.
         let (rank, rank_outcome, block_count): (Option<i64>, Option<String>, Option<i64>) =
-            sqlx::query_as("SELECT rank, rank_outcome, block_count FROM current_validator_insights WHERE validator_id = ?")
+            sqlx::query_as("SELECT rank, rank_outcome, block_count FROM current_validator_insights WHERE validator_id = $1")
                 .bind("validator-legacy-rank").fetch_one(&pool).await.unwrap();
         // The detail alias was never an authoritative ranking source, so the
         // upgrade drops it rather than exposing an untrusted position.
@@ -7849,7 +7861,7 @@ mod tests {
         hrp: &str,
         enode: Option<&str>,
     ) {
-        sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, enode, updated_at) VALUES (?, ?, ?, ?, ?, ?, '2026-01-01T00:00:00Z') ON CONFLICT(node_id) DO UPDATE SET network_genesis_hash=excluded.network_genesis_hash, network_chain_id=excluded.network_chain_id, network_p2p_network_id=excluded.network_p2p_network_id, network_address_hrp=excluded.network_address_hrp, enode=excluded.enode, updated_at=excluded.updated_at")
+        sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, enode, updated_at) VALUES ($1, $2, $3, $4, $5, $6, '2026-01-01T00:00:00Z') ON CONFLICT(node_id) DO UPDATE SET network_genesis_hash=excluded.network_genesis_hash, network_chain_id=excluded.network_chain_id, network_p2p_network_id=excluded.network_p2p_network_id, network_address_hrp=excluded.network_address_hrp, enode=excluded.enode, updated_at=excluded.updated_at")
             .bind(node_id)
             .bind(genesis)
             .bind(chain_id)
@@ -7862,7 +7874,7 @@ mod tests {
     }
 
     async fn identity_state(db: &ServerDatabase, node_id: &str) -> String {
-        sqlx::query_scalar("SELECT state FROM node_validator_identity_status WHERE node_id = ?")
+        sqlx::query_scalar("SELECT state FROM node_validator_identity_status WHERE node_id = $1")
             .bind(node_id)
             .fetch_one(db.pool())
             .await
@@ -8396,7 +8408,7 @@ mod tests {
         origin: &str,
     ) {
         let now = "2026-01-01T00:00:00Z";
-        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES (?, 'platon-mainnet', ?, NULL, ?, ?)")
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ($1, 'platon-mainnet', $2, NULL, $3, $4)")
             .bind(validator_id)
             .bind(format!("0x{validator_id}"))
             .bind(now)
@@ -8404,7 +8416,7 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) VALUES (?, 'node-1', ?, ?, ?, ?, NULL, ?, ?)")
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) VALUES ($1, 'node-1', $2, $3, $4, $5, NULL, $6, $7)")
             .bind(format!("link-{validator_id}"))
             .bind(validator_id)
             .bind(if origin == "manual" { Some("primary") } else { None })
@@ -8415,7 +8427,7 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, stake_amount, reward_amount, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, last_observation_key, updated_at) VALUES (?, 'platscan', 'success', ?, 'active', ?, ?, ?, '10', '5', 100, 'counter_reset', 'ranking_changed', 10, 20, 1, ?, ?, ?)")
+        sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, provider_timestamp, activity, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, stake_amount, reward_amount, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, last_observation_key, updated_at) VALUES ($1, 'platscan', 'success', $2, 'active', $3, $4, $5, '10', '5', 100, 'counter_reset', 'ranking_changed', 10, 20, 1, $6, $7, $8)")
             .bind(validator_id)
             .bind(now)
             .bind(now)
@@ -8427,7 +8439,7 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO validator_ranking_history (history_id, validator_id, previous_rank, current_rank, observed_at, observation_key) VALUES (?, ?, 10, 20, ?, ?)")
+        sqlx::query("INSERT INTO validator_ranking_history (history_id, validator_id, previous_rank, current_rank, observed_at, observation_key) VALUES ($1, $2, 10, 20, $3, $4)")
             .bind(format!("rank-{validator_id}"))
             .bind(validator_id)
             .bind(now)
@@ -8435,7 +8447,7 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO validator_counter_history (history_id, validator_id, counter_name, previous_value, current_value, observed_at, observation_key) VALUES (?, ?, 'reward_amount', '5', '1', ?, ?)")
+        sqlx::query("INSERT INTO validator_counter_history (history_id, validator_id, counter_name, previous_value, current_value, observed_at, observation_key) VALUES ($1, $2, 'reward_amount', '5', '1', $3, $4)")
             .bind(format!("counter-{validator_id}"))
             .bind(validator_id)
             .bind(now)
@@ -8443,7 +8455,7 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, source, observation_key) VALUES (?, ?, 'UTC', '2026-01-01', '2026-01', ?, ?, 'platscan', ?)")
+        sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, source, observation_key) VALUES ($1, $2, 'UTC', '2026-01-01', '2026-01', $3, $4, 'platscan', $5)")
             .bind(format!("daily-{validator_id}"))
             .bind(validator_id)
             .bind(now)
@@ -8452,7 +8464,7 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO validator_monthly_aggregates (aggregate_id, validator_id, timezone, month_key, snapshot_count, first_sample_at, last_sample_at, updated_at) VALUES (?, ?, 'UTC', '2026-01', 1, ?, ?, ?)")
+        sqlx::query("INSERT INTO validator_monthly_aggregates (aggregate_id, validator_id, timezone, month_key, snapshot_count, first_sample_at, last_sample_at, updated_at) VALUES ($1, $2, 'UTC', '2026-01', 1, $3, $4, $5)")
             .bind(format!("monthly-{validator_id}"))
             .bind(validator_id)
             .bind(now)
@@ -8465,19 +8477,19 @@ mod tests {
 
     async fn seed_legacy_network_agent_and_node(pool: &sqlx::AnyPool) {
         let now = "2026-01-01T00:00:00Z";
-        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('platon-mainnet', 'Mainnet', '0x0', 1, 1, 'lat', ?, ?)")
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('platon-mainnet', 'Mainnet', '0x0', 1, 1, 'lat', $1, $2)")
             .bind(now)
             .bind(now)
             .execute(pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('agent-1', 1, ?, ?)")
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('agent-1', 1, $1, $2)")
             .bind(now)
             .bind(now)
             .execute(pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, lifecycle, visibility, inventory_revision, first_seen_at, updated_at, rpc_endpoint) VALUES ('node-1', 'agent-1', 'platon-mainnet', 'active', 'private', 1, ?, ?, 'http://127.0.0.1:1')")
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, lifecycle, visibility, inventory_revision, first_seen_at, updated_at, rpc_endpoint) VALUES ('node-1', 'agent-1', 'platon-mainnet', 'active', 'private', 1, $1, $2, 'http://127.0.0.1:1')")
             .bind(now)
             .bind(now)
             .execute(pool)
@@ -8494,8 +8506,12 @@ mod tests {
     /// #174: the cutover deletes the legacy manual Links and the old Validator
     /// snapshots/history/daily/monthly aggregates, but leaves Node monitoring
     /// history, existing Incident evidence and Audit in place.
+    #[cfg_attr(storage_postgres, ignore = "it replays a historical SQLite migration")]
     #[tokio::test]
     async fn migration_0053_removes_the_legacy_generation_and_preserves_unrelated_evidence() {
+        if !crate::test_support::skip_unless_sqlite("it replays a historical SQLite migration") {
+            return;
+        }
         let now = "2026-01-01T00:00:00Z";
         let dir = tempdir().unwrap();
         let path = dir.path().join("server.db");
@@ -8505,17 +8521,17 @@ mod tests {
         // An automatic generation is the new model and must survive #174.
         seed_validator_generation(&pool, "validator-auto", "obs-auto", "automatic").await;
         // Node monitoring history must be preserved.
-        sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, updated_at) VALUES ('node-1', 10, 10, 20, 3, ?)")
+        sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, updated_at) VALUES ('node-1', 10, 10, 20, 3, $1)")
             .bind(now)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO peer_presence_intervals (node_id, peer_id, direction, trusted, static_peer, consensus_peer, opened_at) VALUES ('node-1', 'peer-1', 'inbound', 0, 0, 0, ?)")
+        sqlx::query("INSERT INTO peer_presence_intervals (node_id, peer_id, direction, trusted, static_peer, consensus_peer, opened_at) VALUES ('node-1', 'peer-1', 'inbound', 0, 0, 0, $1)")
             .bind(now)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ('node-1', 'process_cpu_percent', ?, ?, 1.5)")
+        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ('node-1', 'process_cpu_percent', $1, $2, 1.5)")
             .bind(now)
             .bind(now)
             .execute(&pool)
@@ -8523,18 +8539,18 @@ mod tests {
             .unwrap();
         // Existing Incident and Audit evidence must be retained. The rule row
         // only satisfies the Incident foreign key; the catalog is seeded later.
-        sqlx::query("INSERT INTO alert_rules (rule_key, enabled, severity, version, condition_json, created_at, updated_at) VALUES ('validator.counter_reset', 1, 'critical', 1, '{}', ?, ?)")
+        sqlx::query("INSERT INTO alert_rules (rule_key, enabled, severity, version, condition_json, created_at, updated_at) VALUES ('validator.counter_reset', 1, 'critical', 1, '{}', $1, $2)")
             .bind(now)
             .bind(now)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ('incident-1', 'validator.counter_reset', 1, 'validator', 'validator-manual', 'critical', 'open', 1, ?, '{}')")
+        sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ('incident-1', 'validator.counter_reset', 1, 'validator', 'validator-manual', 'critical', 'open', 1, $1, '{}')")
             .bind(now)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO audit_events (actor_user_id, event_kind, target_kind, target_id, created_at) VALUES (NULL, 'validator_created', 'validator', 'validator-manual', ?)")
+        sqlx::query("INSERT INTO audit_events (actor_user_id, event_kind, target_kind, target_id, created_at) VALUES (NULL, 'validator_created', 'validator', 'validator-manual', $1)")
             .bind(now)
             .execute(&pool)
             .await
@@ -8617,8 +8633,12 @@ mod tests {
     /// #174: removing a legacy generation with an open counter-reset Incident
     /// must not be read as a recovery, and a later Provider pass must not
     /// re-open the generation that was removed.
+    #[cfg_attr(storage_postgres, ignore = "it replays a historical SQLite migration")]
     #[tokio::test]
     async fn legacy_generation_removal_does_not_resolve_open_incidents_or_reaccumulate() {
+        if !crate::test_support::skip_unless_sqlite("it replays a historical SQLite migration") {
+            return;
+        }
         let now = "2026-01-01T00:00:00Z";
         let dir = tempdir().unwrap();
         let path = dir.path().join("server.db");
@@ -8627,19 +8647,19 @@ mod tests {
         seed_validator_generation(&pool, "validator-legacy", "obs-1", "manual").await;
         // An open counter-reset Incident and its firing evaluation state belong
         // to the legacy generation and must survive as evidence.
-        sqlx::query("INSERT INTO alert_rules (rule_key, enabled, severity, version, condition_json, created_at, updated_at) VALUES ('validator.counter_reset', 1, 'critical', 1, '{}', ?, ?)")
+        sqlx::query("INSERT INTO alert_rules (rule_key, enabled, severity, version, condition_json, created_at, updated_at) VALUES ('validator.counter_reset', 1, 'critical', 1, '{}', $1, $2)")
             .bind(now)
             .bind(now)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO alert_rule_state (rule_key, subject_kind, subject_key, state, since, input_kind, last_evaluated_at) VALUES ('validator.counter_reset', 'validator', 'validator-legacy', 'firing', ?, 'known', ?)")
+        sqlx::query("INSERT INTO alert_rule_state (rule_key, subject_kind, subject_key, state, since, input_kind, last_evaluated_at) VALUES ('validator.counter_reset', 'validator', 'validator-legacy', 'firing', $1, 'known', $2)")
             .bind(now)
             .bind(now)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ('incident-legacy', 'validator.counter_reset', 1, 'validator', 'validator-legacy', 'critical', 'open', 1, ?, '{}')")
+        sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ('incident-legacy', 'validator.counter_reset', 1, 'validator', 'validator-legacy', 'critical', 'open', 1, $1, '{}')")
             .bind(now)
             .execute(&pool)
             .await
@@ -8673,7 +8693,7 @@ mod tests {
         );
         // The reference boundary is closed too: an old insight cannot be
         // re-inserted for a removed identity.
-        let reinsert = sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, last_attempt_received_at, updated_at) VALUES ('validator-legacy', 'platscan', 'success', ?, ?)")
+        let reinsert = sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, last_attempt_received_at, updated_at) VALUES ('validator-legacy', 'platscan', 'success', $1, $2)")
             .bind(now)
             .bind(now)
             .execute(db.pool())
@@ -8702,9 +8722,13 @@ mod tests {
 
     /// #174: a failure after the destructive statements must roll the whole
     /// migration back and stop startup, never leaving a half-migrated database.
+    #[cfg_attr(storage_postgres, ignore = "it replays a historical SQLite migration")]
     #[tokio::test]
     async fn a_failed_validator_model_migration_rolls_back_instead_of_serving_half_migrated_state()
     {
+        if !crate::test_support::skip_unless_sqlite("it replays a historical SQLite migration") {
+            return;
+        }
         let dir = tempdir().unwrap();
         let path = dir.path().join("server.db");
         let pool = schema_before_validator_model_migration(&path).await;

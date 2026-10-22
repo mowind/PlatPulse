@@ -308,7 +308,7 @@ async fn submit_accepted(harness: &Harness, credential: &str, report: &AgentRepo
 }
 
 async fn count_for_node(harness: &Harness, table: &str, node_id: &str) -> i64 {
-    let sql = format!("SELECT COUNT(*) FROM {table} WHERE node_id = ?");
+    let sql = format!("SELECT COUNT(*) FROM {table} WHERE node_id = $1");
     sqlx::query_scalar(&sql)
         .bind(node_id)
         .fetch_one(harness.pool())
@@ -321,19 +321,19 @@ async fn count_for_node(harness: &Harness, table: &str, node_id: &str) -> i64 {
 async fn seed_shared_evidence(harness: &Harness, agent_id: &str, node_id: &str) {
     let pool = harness.pool();
     let now = "2026-01-01T00:00:00Z";
-    sqlx::query("INSERT OR IGNORE INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ('validator-1', ?, '0xvalidator', 'Validator One', ?, ?)")
+    sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ('validator-1', $1, '0xvalidator', 'Validator One', $2, $3) ON CONFLICT DO NOTHING")
         .bind(NETWORK_KEY).bind(now).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, source, observation_key) VALUES ('snapshot-1', 'validator-1', 'UTC', '2026-01-01', '2026-01', ?, ?, 'test', 'observation-1')")
+    sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, source, observation_key) VALUES ('snapshot-1', 'validator-1', 'UTC', '2026-01-01', '2026-01', $1, $2, 'test', 'observation-1') ON CONFLICT DO NOTHING")
         .bind(now).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO network_reference_heads (network_key, block_number, observed_at, confidence, eligible_source_count, contributing_node_id) VALUES (?, 1, ?, 'high', 1, NULL)")
+    sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence, eligible_source_count, contributing_node_id) VALUES ($1, 1, $2, 'high', 1, NULL) ON CONFLICT DO NOTHING")
         .bind(NETWORK_KEY).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO host_metric_samples (agent_id, metric, observed_at, received_at, value) VALUES (?, 'network_rx_bytes_per_sec', ?, ?, 1.0)")
+    sqlx::query("INSERT INTO host_metric_samples (agent_id, metric, observed_at, received_at, value) VALUES ($1, 'network_rx_bytes_per_sec', $2, $3, 1.0) ON CONFLICT DO NOTHING")
         .bind(agent_id).bind(now).bind(now).execute(pool).await.unwrap();
     let rule_key: String = sqlx::query_scalar("SELECT rule_key FROM alert_rules LIMIT 1")
         .fetch_one(pool)
         .await
         .unwrap();
-    sqlx::query("INSERT OR IGNORE INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ('incident-agent-1', ?, 1, 'agent', ?, 'warning', 'open', 1, ?, '{}')")
+    sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ('incident-agent-1', $1, 1, 'agent', $2, 'warning', 'open', 1, $3, '{}') ON CONFLICT DO NOTHING")
         .bind(rule_key).bind(agent_id).bind(now).execute(pool).await.unwrap();
     let _ = node_id;
 }
@@ -467,7 +467,7 @@ async fn owner_removal_revokes_credentials_purges_nodes_and_keeps_shared_evidenc
     // Every owned Node is gone through the Node Purge path and keeps a deletion
     // identity; the Agent row is marked, not physically deleted.
     for node_id in [NODE_A1, NODE_A2] {
-        let nodes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE node_id = ?")
+        let nodes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE node_id = $1")
             .bind(node_id)
             .fetch_one(harness.pool())
             .await
@@ -478,7 +478,7 @@ async fn owner_removal_revokes_credentials_purges_nodes_and_keeps_shared_evidenc
             0
         );
         let deleted: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM deleted_nodes WHERE node_id = ?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM deleted_nodes WHERE node_id = $1")
                 .bind(node_id)
                 .fetch_one(harness.pool())
                 .await
@@ -486,21 +486,21 @@ async fn owner_removal_revokes_credentials_purges_nodes_and_keeps_shared_evidenc
         assert_eq!(deleted, 1);
     }
     let deleted_at: Option<String> =
-        sqlx::query_scalar("SELECT deleted_at FROM agents WHERE agent_id = ?")
+        sqlx::query_scalar("SELECT deleted_at FROM agents WHERE agent_id = $1")
             .bind(&agent_a)
             .fetch_one(harness.pool())
             .await
             .unwrap();
     assert!(deleted_at.is_some(), "the Agent removal marker is durable");
     let deleted_by: Option<String> =
-        sqlx::query_scalar("SELECT deleted_by_user_id FROM agents WHERE agent_id = ?")
+        sqlx::query_scalar("SELECT deleted_by_user_id FROM agents WHERE agent_id = $1")
             .bind(&agent_a)
             .fetch_one(harness.pool())
             .await
             .unwrap();
     assert!(deleted_by.is_some(), "the Audit actor is recorded");
     let audit: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'agent_removed' AND target_kind = 'agent' AND target_id = ?",
+        "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'agent_removed' AND target_kind = 'agent' AND target_id = $1",
     )
     .bind(&agent_a)
     .fetch_one(harness.pool())
@@ -611,14 +611,14 @@ async fn owner_removal_revokes_credentials_purges_nodes_and_keeps_shared_evidenc
     // Shared Agent/Host, Validator history, Network reference, and Incident
     // evidence survive, and the other Agent/Node is untouched.
     let host: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM current_host_observations WHERE agent_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM current_host_observations WHERE agent_id = $1")
             .bind(&agent_a)
             .fetch_one(harness.pool())
             .await
             .unwrap();
     assert_eq!(host, 1, "Host observation evidence is retained");
     let host_samples: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM host_metric_samples WHERE agent_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM host_metric_samples WHERE agent_id = $1")
             .bind(&agent_a)
             .fetch_one(harness.pool())
             .await
@@ -669,7 +669,7 @@ async fn owner_removal_revokes_credentials_purges_nodes_and_keeps_shared_evidenc
     // The removal survives a Server restart.
     let harness = harness.restart().await;
     let owner = login(&harness, OWNER_LOGIN_BODY).await;
-    let node_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE agent_id = ?")
+    let node_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE agent_id = $1")
         .bind(&agent_a)
         .fetch_one(harness.pool())
         .await

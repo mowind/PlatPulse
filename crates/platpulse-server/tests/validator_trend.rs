@@ -93,7 +93,7 @@ impl Harness {
 
     async fn seed_agent(&self) {
         let now = self.now("0 seconds").await;
-        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at, last_received_at, shutdown_state, security_event_count) VALUES (?, 1, ?, ?, ?, 'running', 0)")
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at, last_received_at, shutdown_state, security_event_count) VALUES ($1, 1, $2, $3, $4, 'running', 0)")
             .bind(AGENT_ID)
             .bind(&now)
             .bind(&now)
@@ -105,7 +105,7 @@ impl Harness {
 
     async fn seed_node(&self, node_id: &str, display_name: &str) {
         let now = self.now("0 seconds").await;
-        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, ?, ?, 'ws://127.0.0.1:1', 'active', 'private', 1, ?, ?)")
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ($1, $2, $3, $4, 'ws://127.0.0.1:1', 'active', 'private', 1, $5, $6)")
             .bind(node_id)
             .bind(AGENT_ID)
             .bind(NETWORK_KEY)
@@ -119,7 +119,7 @@ impl Harness {
 
     async fn seed_chain_observation(&self, node_id: &str, enode: &str) {
         let now = self.now("0 seconds").await;
-        sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, enode, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, enode, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)")
             .bind(node_id)
             .bind(NETWORK_GENESIS)
             .bind(NETWORK_CHAIN_ID as i64)
@@ -143,7 +143,7 @@ impl Harness {
             .unwrap();
         assert_eq!(summary.identified, 1);
         assert_eq!(summary.newly_linked, 1);
-        sqlx::query_scalar("SELECT validator_id FROM validators WHERE validator_node_id = ?")
+        sqlx::query_scalar("SELECT validator_id FROM validators WHERE validator_node_id = $1")
             .bind(p2p_key('a'))
             .fetch_one(self.pool())
             .await
@@ -161,7 +161,7 @@ impl Harness {
         received_at: &str,
         provider_timestamp: Option<&str>,
     ) {
-        sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'platsScan', ?, 12, '1000.000000', '25.000000', '0.05', 40, 5, 900)")
+        sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'platsScan', $9, 12, '1000.000000', '25.000000', '0.05', 40, 5, 900)")
             .bind(format!("snapshot-{timezone}-{local_date}"))
             .bind(validator_id)
             .bind(timezone)
@@ -180,12 +180,28 @@ impl Harness {
         self.state.db().pool()
     }
 
+    /// The Server clock, read in this process, so a relative modifier produces
+    /// a timestamp the freshness window compares. Computed in Rust rather than
+    /// with `strftime`, which PostgreSQL does not provide: the same test runs
+    /// on both Storage Backends (ADR 0013).
     async fn now(&self, modifier: &str) -> String {
-        sqlx::query_scalar::<_, String>("SELECT strftime('%Y-%m-%dT%H:%M:%SZ','now',?)")
-            .bind(modifier)
-            .fetch_one(self.pool())
-            .await
-            .unwrap()
+        let (amount, unit) = match modifier.split_whitespace().collect::<Vec<_>>().as_slice() {
+            [amount, unit, ..] => (amount.parse::<i64>().unwrap_or_default(), *unit),
+            [amount] => (amount.parse::<i64>().unwrap_or_default(), "seconds"),
+            [] => (0, "seconds"),
+        };
+        let seconds = match unit.trim_end_matches('s') {
+            "second" => amount,
+            "minute" => amount * 60,
+            "hour" => amount * 3_600,
+            "day" => amount * 86_400,
+            other => panic!("unsupported relative modifier unit {other}"),
+        };
+        (time::OffsetDateTime::now_utc() + time::Duration::seconds(seconds))
+            .replace_nanosecond(0)
+            .expect("a whole-second instant has no nanosecond to replace")
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("RFC 3339 formatting cannot fail for a UTC instant")
     }
 
     async fn send(&self, request: Request<Body>) -> axum::response::Response {

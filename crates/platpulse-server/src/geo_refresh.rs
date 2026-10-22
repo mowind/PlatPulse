@@ -764,20 +764,20 @@ mod tests {
     }
 
     async fn seed_node(state: &AppState, node_id: &str) {
-        sqlx::query("INSERT OR IGNORE INTO agents (agent_id, agent_epoch, last_received_at, created_at, updated_at) VALUES ('agent-geo-refresh', 1, ?, ?, ?)")
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, last_received_at, created_at, updated_at) VALUES ('agent-geo-refresh', 1, $1, $2, $3) ON CONFLICT DO NOTHING")
             .bind(NOW)
             .bind(NOW)
             .bind(NOW)
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT OR IGNORE INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('geo-net', 'Geo Network', '0xgenesis', 1, 1, 'lat', ?, ?)")
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('geo-net', 'Geo Network', '0xgenesis', 1, 1, 'lat', $1, $2) ON CONFLICT DO NOTHING")
             .bind(NOW)
             .bind(NOW)
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, 'agent-geo-refresh', 'geo-net', ?, 'ws://127.0.0.1:1', 'active', 'public', 1, ?, ?)")
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ($1, 'agent-geo-refresh', 'geo-net', $2, 'ws://127.0.0.1:1', 'active', 'public', 1, $3, $4)")
             .bind(node_id)
             .bind(node_id)
             .bind(NOW)
@@ -788,7 +788,7 @@ mod tests {
     }
 
     async fn insert_peer(state: &AppState, node_id: &str, peer_id: &str, remote_ip: &str) {
-        sqlx::query("INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, updated_at) VALUES (?, ?, ?, 'inbound', 0, 0, 0, ?)")
+        sqlx::query("INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, updated_at) VALUES ($1, $2, $3, 'inbound', 0, 0, 0, $4)")
             .bind(node_id)
             .bind(peer_id)
             .bind(remote_ip)
@@ -809,7 +809,7 @@ mod tests {
 
     async fn cache_row(state: &AppState, provider: GeoProvider, ip: &str) -> Option<CacheRow> {
         sqlx::query_as(
-            "SELECT country_code, state, created_at, expires_at, last_success_at, last_attempt_at FROM geo_location_cache WHERE provider = ? AND canonical_ip = ?",
+            "SELECT country_code, state, created_at, expires_at, last_success_at, last_attempt_at FROM geo_location_cache WHERE provider = $1 AND canonical_ip = $2",
         )
         .bind(provider.as_str())
         .bind(ip)
@@ -874,7 +874,7 @@ mod tests {
         let state = refresh_state(&dir, true, GeoProvider::LocalMmdb).await;
         seed_node(&state, "geo-node-a").await;
         insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
-        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', ?, 'US', 'current', ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', $1, 'US', 'current', $2, $3, $4, $5, $6)")
             .bind(RESOLVABLE)
             .bind(NOW)
             .bind(NOW)
@@ -1148,7 +1148,7 @@ mod tests {
         seed_node(&state, "geo-node-a").await;
         insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
         // A successful Peer Snapshot basis so the projection has a denominator.
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-geo-refresh', 'node', 'geo-node-a', 'geo-node-a', 'peers', 'ok', ?, ?, ?, ?, 1, 1)")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-geo-refresh', 'node', 'geo-node-a', 'geo-node-a', 'peers', 'ok', $1, $2, $3, $4, 1, 1)")
             .bind(NOW)
             .bind(NOW)
             .bind(NOW)
@@ -1362,7 +1362,7 @@ mod tests {
         let state = external_state(&dir, &stub, GeoProvider::Ipinfo, Duration::from_secs(2)).await;
         seed_node(&state, "geo-node-a").await;
         insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
-        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('ipinfo', ?, 'US', 'current', ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('ipinfo', $1, 'US', 'current', $2, $3, $4, $5, $6)")
             .bind(RESOLVABLE)
             .bind(NOW)
             .bind(NOW)

@@ -372,6 +372,8 @@ pub enum HumanCreateError {
     Database(#[from] crate::database::ServerDatabaseError),
     #[error(transparent)]
     Ownership(#[from] crate::ownership::OwnershipError),
+    #[error("{0}")]
+    Storage(String),
     #[error(transparent)]
     Identity(#[from] crate::auth::IdentityError),
 }
@@ -440,6 +442,61 @@ struct GuardedDatabase {
     _ownership: Option<crate::ownership::OwnershipGuard>,
 }
 
+/// Take the exclusive stopped-Server guard for an Admin CLI command.
+///
+/// A running Server must refuse an offline Admin command before the database
+/// opens, so every caller takes this first and hands the guard to
+/// [`open_database_for_admin_cli`]. The PostgreSQL backend takes its own
+/// session advisory lock when it connects, so the guard is `None` there and
+/// the advisory lock is the mutual exclusion.
+fn acquire_admin_ownership(
+    config: &ServerConfig,
+) -> Result<Option<crate::ownership::OwnershipGuard>, Box<dyn std::error::Error>> {
+    if config.uses_postgres() {
+        return Ok(None);
+    }
+    Ok(crate::ownership::acquire_for_deployment(
+        &config.db_path,
+        config.development,
+    )?)
+}
+
+/// Open the configured Storage Backend for an Admin CLI command under the
+/// ownership guard taken by [`acquire_admin_ownership`].
+///
+/// The returned [`GuardedDatabase`] keeps the guard alive until the caller
+/// closes the database.
+async fn open_database_for_admin_cli(
+    config: &ServerConfig,
+    ownership: Option<crate::ownership::OwnershipGuard>,
+) -> Result<GuardedDatabase, Box<dyn std::error::Error>> {
+    let database = initialize(config.storage_config()?).await?;
+    Ok(GuardedDatabase {
+        database,
+        _ownership: ownership,
+    })
+}
+
+/// Refuse a command that operates on the SQLite database file when this
+/// deployment stores its data in PostgreSQL (ADR 0013).
+///
+/// Offline backup, restore, integrity verification, checkpoint coordination,
+/// cutover, and `init` are file operations on a SQLite deployment. They have no
+/// PostgreSQL counterpart in this release, so they fail with guidance instead
+/// of touching a path that is not this deployment's database.
+pub fn require_sqlite_storage(
+    config: &ServerConfig,
+    command: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if config.uses_postgres() {
+        return Err(format!(
+            "`platpulse-server {command}` operates on the Server SQLite database file and is not available on the PostgreSQL Storage Backend (ADR 0013); run it against a SQLite deployment"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 async fn open_database_with_new_password(
     config: &ServerConfig,
     username: &str,
@@ -452,19 +509,12 @@ async fn open_database_with_new_password(
     let password_hash = hash_password(password.as_bytes()).map_err(HumanCreateError::Hash)?;
     // Ownership before SQLite, handed back with the database so it is retained
     // through close.
-    let ownership = crate::ownership::acquire_for_deployment(&config.db_path, config.development)?;
-    let database = initialize(ServerDatabaseConfig::for_deployment(
-        &config.db_path,
-        config.development,
-    ))
-    .await?;
-    Ok((
-        GuardedDatabase {
-            database,
-            _ownership: ownership,
-        },
-        password_hash,
-    ))
+    let ownership = acquire_admin_ownership(config)
+        .map_err(|error| HumanCreateError::Storage(error.to_string()))?;
+    let guarded = open_database_for_admin_cli(config, ownership)
+        .await
+        .map_err(|error| HumanCreateError::Storage(error.to_string()))?;
+    Ok((guarded, password_hash))
 }
 
 /// Register a Network from the local CLI (design §4.5): the command
@@ -477,14 +527,10 @@ pub async fn run_network_create(
 ) -> Result<(), Box<dyn std::error::Error>> {
     crate::init::restrict_umask();
     // The guard lives until this command returns, after the database closes.
-    let _ownership = crate::ownership::acquire_for_deployment(&config.db_path, config.development)?;
-    let database = initialize(ServerDatabaseConfig::for_deployment(
-        &config.db_path,
-        config.development,
-    ))
-    .await?;
+    let ownership = acquire_admin_ownership(config)?;
+    let guarded = open_database_for_admin_cli(config, ownership).await?;
     let result = create_network(
-        &database,
+        &guarded.database,
         &args.key,
         &args.display_name,
         &args.genesis_hash,
@@ -493,7 +539,7 @@ pub async fn run_network_create(
         &args.address_hrp,
     )
     .await;
-    database.close().await;
+    guarded.database.close().await;
     let record = result?;
     println!(
         "Registered network '{}' ({}).",
@@ -510,9 +556,9 @@ pub async fn run_create_enrollment_token(
     args: &EnrollmentTokenCreateArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     crate::init::restrict_umask();
-    // A running Server is refused before SQLite opens, and the guard is
+    // A running Server is refused before the database opens, and the guard is
     // released on both success and failure.
-    let _ownership = crate::ownership::acquire_for_deployment(&config.db_path, config.development)?;
+    let ownership = acquire_admin_ownership(config)?;
     let lifetime_hours = args.expires_in.unwrap_or(24);
     if !(1..=168).contains(&lifetime_hours) {
         return Err(EnrollmentError::InvalidLifetime(
@@ -523,13 +569,9 @@ pub async fn run_create_enrollment_token(
     let lifetime = std::time::Duration::from_secs(lifetime_hours * 3600);
 
     let pepper = load_pepper_file(&config.pepper_file)?;
-    let database = initialize(ServerDatabaseConfig::for_deployment(
-        &config.db_path,
-        config.development,
-    ))
-    .await?;
-    let result = create_enrollment_token(&database, &pepper, None, lifetime).await;
-    database.close().await;
+    let guarded = open_database_for_admin_cli(config, ownership).await?;
+    let result = create_enrollment_token(&guarded.database, &pepper, None, lifetime).await;
+    guarded.database.close().await;
     let record = result?;
     println!(
         "Enrollment token {} (single use, expires in {}h):",
@@ -722,6 +764,7 @@ pub async fn run_cutover_status(
     args: &CutoverStatusArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
+    require_sqlite_storage(&config, "cutover status")?;
     let status = crate::cutover::cutover_status(&config).await?;
     match status.mode {
         crate::cutover::InventoryCutover::NotConverted => println!(
@@ -759,6 +802,7 @@ pub async fn run_cutover_resume(
     args: &CutoverResumeArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = ServerConfig::resolve(Some(args.config.as_path()), &Default::default())?;
+    require_sqlite_storage(&config, "cutover resume")?;
     let summary =
         crate::cutover::resume_cutover(&config, &args.checkpoint, &args.converted).await?;
     println!(
@@ -892,8 +936,14 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     // Exclusive stopped-Server detection (design §12, issues #51/#160): the
     // serving process holds the database ownership guard for its lifetime, so
     // every offline CLI command refuses while a Server is running, and a
-    // second Server refuses to start over the same database.
-    let _ownership = crate::ownership::acquire(&config.db_path)?;
+    // second Server refuses to start over the same database. The PostgreSQL
+    // backend owns its schema through the session advisory lock it takes when
+    // it connects (ADR 0013, issue #255), so no file guard applies there.
+    let _ownership = if config.uses_postgres() {
+        None
+    } else {
+        Some(crate::ownership::acquire(&config.db_path)?)
+    };
 
     let pepper = load_pepper_file(&config.pepper_file)?;
     let auth = if config.development {
@@ -902,10 +952,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         AuthConfig::production(pepper, config.public_base_url.clone())
     };
 
-    let database = crate::database::ServerDatabase::open_existing(
-        ServerDatabaseConfig::for_deployment(&config.db_path, config.development),
-    )
-    .await?;
+    let database = crate::database::ServerDatabase::open_existing(config.storage_config()?).await?;
     // Issue #192: a converted deployment that has not passed the explicit
     // cutover gate must not start a single business writer. It still serves
     // read-only diagnostics and reports itself not ready, so an operator can
@@ -992,7 +1039,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
     // an earlier process left open, and closes one whose policy is now off.
     let capacity = std::sync::Arc::new(crate::capacity::CapacityProtection::new(
         config.capacity.clone(),
-        Some(state.db().path()),
+        state.db().path(),
     ));
     // A failure here is deferred rather than fatal: the sampling worker
     // retries the same reconciliation on its next tick before it decides
@@ -1415,6 +1462,14 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         }
     }
 
+    // Storage Backend ownership (ADR 0013, issue #255): the PostgreSQL backend
+    // proves on a heartbeat that this process still owns the schema. The future
+    // completes only when that proof fails, so the select below stops serving
+    // and exits non-zero instead of writing into a database another Server may
+    // have taken over. The SQLite backend never completes it.
+    let ownership_lost = state.db().ownership_lost();
+    tokio::pin!(ownership_lost);
+
     tracing::info!(listen = %config.listen, "listening");
     if let Some(tls_config) = native_tls {
         let handle = axum_server::Handle::new();
@@ -1422,30 +1477,25 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             .handle(handle.clone())
             .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>());
         tokio::pin!(server);
+        let mut cause = ShutdownCause::Signal;
         tokio::select! {
             result = &mut server => result?,
-            _ = wait_for_shutdown_signal() => {
-                tracing::info!("shutdown signal received; draining for up to 10s");
-                state.begin_shutdown();
-                let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-                handle.graceful_shutdown(Some(Duration::from_secs(10)));
-                let shutdown_result = tokio::time::timeout_at(deadline, async {
-                    tokio::join!(&mut server, state.wait_for_ingestion(deadline))
-                })
-                .await;
-                let (listener_stopped, drained) = match shutdown_result {
-                    Ok((server_result, drained)) => (server_result.is_ok(), drained),
-                    Err(_) => (false, false),
-                };
-                let workers_drained = drain_workers(&mut worker_handles, deadline).await;
-                let metrics_drained = drain_metrics_listener(&mut metrics_handle, deadline).await;
-                let checkpointed = state.checkpoint_wal().await.is_ok();
-                state.db().close().await;
-                if !listener_stopped || !drained || !workers_drained || !metrics_drained || !checkpointed {
-                    return Err(format!("graceful shutdown incomplete (listener={listener_stopped}, drained={drained}, workers={workers_drained}, metrics={metrics_drained}, checkpointed={checkpointed})").into());
-                }
-            }
+            _ = wait_for_shutdown_signal() => {}
+            _ = &mut ownership_lost => cause = ShutdownCause::OwnershipLost,
         }
+        log_shutdown_cause(cause);
+        state.begin_shutdown();
+        let outcome = drain_runtime(
+            &state,
+            &mut server,
+            || handle.graceful_shutdown(Some(SHUTDOWN_DRAIN_TIMEOUT)),
+            &mut worker_handles,
+            &mut metrics_handle,
+        )
+        .await;
+        let checkpointed = state.checkpoint_wal().await.is_ok();
+        state.db().close().await;
+        finish_shutdown(cause, outcome, checkpointed)?;
     } else {
         let listener = tokio::net::TcpListener::bind(config.listen).await?;
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -1458,30 +1508,27 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         })
         .into_future();
         tokio::pin!(server);
+        let mut cause = ShutdownCause::Signal;
         tokio::select! {
             result = &mut server => result?,
-            _ = wait_for_shutdown_signal() => {
-                tracing::info!("shutdown signal received; draining for up to 10s");
-                state.begin_shutdown();
-                let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-                let _ = shutdown_tx.send(());
-                let shutdown_result = tokio::time::timeout_at(deadline, async {
-                    tokio::join!(&mut server, state.wait_for_ingestion(deadline))
-                })
-                .await;
-                let (listener_stopped, drained) = match shutdown_result {
-                    Ok((server_result, drained)) => (server_result.is_ok(), drained),
-                    Err(_) => (false, false),
-                };
-                let workers_drained = drain_workers(&mut worker_handles, deadline).await;
-                let metrics_drained = drain_metrics_listener(&mut metrics_handle, deadline).await;
-                let checkpointed = state.checkpoint_wal().await.is_ok();
-                state.db().close().await;
-                if !listener_stopped || !drained || !workers_drained || !metrics_drained || !checkpointed {
-                    return Err(format!("graceful shutdown incomplete (listener={listener_stopped}, drained={drained}, workers={workers_drained}, metrics={metrics_drained}, checkpointed={checkpointed})").into());
-                }
-            }
+            _ = wait_for_shutdown_signal() => {}
+            _ = &mut ownership_lost => cause = ShutdownCause::OwnershipLost,
         }
+        log_shutdown_cause(cause);
+        state.begin_shutdown();
+        let outcome = drain_runtime(
+            &state,
+            &mut server,
+            || {
+                let _ = shutdown_tx.send(());
+            },
+            &mut worker_handles,
+            &mut metrics_handle,
+        )
+        .await;
+        let checkpointed = state.checkpoint_wal().await.is_ok();
+        state.db().close().await;
+        finish_shutdown(cause, outcome, checkpointed)?;
     }
     tracing::info!(outcome = "complete", "shutdown complete");
     Ok(())
@@ -1545,6 +1592,111 @@ fn start_metrics_listener(
             }
             result
         }))
+    }
+}
+
+/// Bound on the graceful drain that follows a stop: the listener, in-flight
+/// ingestion, background workers, and the metrics listener all share it.
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Why the serving process is stopping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShutdownCause {
+    /// A termination signal arrived; the deployment is still ours.
+    Signal,
+    /// The Storage Backend proved this process no longer owns the schema
+    /// (ADR 0013, issue #255). The process must stop writing and exit non-zero.
+    OwnershipLost,
+}
+
+/// What the graceful drain managed before its deadline.
+#[derive(Debug, Clone, Copy)]
+struct DrainOutcome {
+    listener_stopped: bool,
+    drained: bool,
+    workers_drained: bool,
+    metrics_drained: bool,
+}
+
+impl DrainOutcome {
+    fn complete(self) -> bool {
+        self.listener_stopped && self.drained && self.workers_drained && self.metrics_drained
+    }
+
+    fn summary(self) -> String {
+        format!(
+            "listener={}, drained={}, workers={}, metrics={}",
+            self.listener_stopped, self.drained, self.workers_drained, self.metrics_drained
+        )
+    }
+}
+
+/// Record why the Server is draining, at the severity the cause deserves.
+fn log_shutdown_cause(cause: ShutdownCause) {
+    match cause {
+        ShutdownCause::Signal => {
+            tracing::info!("shutdown signal received; draining for up to 10s");
+        }
+        ShutdownCause::OwnershipLost => {
+            tracing::error!(
+                "storage backend ownership lost; stopping the Server and draining for up to 10s"
+            );
+        }
+    }
+}
+
+/// Stop the listener and drain in-flight ingestion, background workers, and the
+/// metrics listener within [`SHUTDOWN_DRAIN_TIMEOUT`].
+async fn drain_runtime<F, E>(
+    state: &crate::AppState,
+    mut server: F,
+    stop_listener: impl FnOnce(),
+    worker_handles: &mut [tokio::task::JoinHandle<()>],
+    metrics_handle: &mut Option<tokio::task::JoinHandle<Result<(), String>>>,
+) -> DrainOutcome
+where
+    F: std::future::Future<Output = Result<(), E>> + Unpin,
+{
+    let deadline = tokio::time::Instant::now() + SHUTDOWN_DRAIN_TIMEOUT;
+    stop_listener();
+    let shutdown_result = tokio::time::timeout_at(deadline, async {
+        tokio::join!(&mut server, state.wait_for_ingestion(deadline))
+    })
+    .await;
+    let (listener_stopped, drained) = match shutdown_result {
+        Ok((server_result, drained)) => (server_result.is_ok(), drained),
+        Err(_) => (false, false),
+    };
+    DrainOutcome {
+        listener_stopped,
+        drained,
+        workers_drained: drain_workers(worker_handles, deadline).await,
+        metrics_drained: drain_metrics_listener(metrics_handle, deadline).await,
+    }
+}
+
+/// Turn a completed stop into the process result.
+///
+/// A signal stop that drained cleanly succeeds. A stop caused by lost Storage
+/// Backend ownership always fails, even when the drain was clean: this process
+/// may no longer be the writer, so an operator must see a non-zero exit.
+fn finish_shutdown(
+    cause: ShutdownCause,
+    outcome: DrainOutcome,
+    checkpointed: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match cause {
+        ShutdownCause::Signal if outcome.complete() && checkpointed => Ok(()),
+        ShutdownCause::Signal => Err(format!(
+            "graceful shutdown incomplete ({}, checkpointed={checkpointed})",
+            outcome.summary()
+        )
+        .into()),
+        ShutdownCause::OwnershipLost => Err(format!(
+            "Storage Backend ownership lost ({}, checkpointed={checkpointed})",
+            outcome.summary()
+        )
+        .into()),
     }
 }
 
@@ -1622,6 +1774,36 @@ fn read_password() -> Result<String, HumanCreateError> {
 
 #[cfg(test)]
 mod tests {
+    use super::{DrainOutcome, ShutdownCause, finish_shutdown};
+
+    fn drained() -> DrainOutcome {
+        DrainOutcome {
+            listener_stopped: true,
+            drained: true,
+            workers_drained: true,
+            metrics_drained: true,
+        }
+    }
+
+    #[test]
+    fn a_complete_drain_after_a_signal_shuts_down_cleanly() {
+        assert!(
+            finish_shutdown(ShutdownCause::Signal, drained(), true).is_ok(),
+            "a signal after a complete drain and a checkpoint is a clean exit"
+        );
+    }
+
+    #[test]
+    fn lost_ownership_exits_non_zero_even_after_a_clean_drain() {
+        let error = finish_shutdown(ShutdownCause::OwnershipLost, drained(), true)
+            .expect_err("losing the Storage Backend must fail the process");
+        let message = error.to_string();
+        assert!(
+            message.contains("ownership lost"),
+            "unexpected exit reason: {message}"
+        );
+    }
+
     #[test]
     fn stdin_password_keeps_spaces_and_strips_only_line_endings() {
         // read_password reads the real process stdin, which is not

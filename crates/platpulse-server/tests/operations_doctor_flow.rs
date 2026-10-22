@@ -265,7 +265,7 @@ async fn doctor_run_is_observable_from_queued_to_terminal_over_http() {
 
     // Durable Audit: the start and the terminal outcome both survive.
     let audited: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM audit_events WHERE target_id = ? AND event_kind IN ('doctor_started', 'operation_finished')",
+        "SELECT COUNT(*) FROM audit_events WHERE target_id = $1 AND event_kind IN ('doctor_started', 'operation_finished')",
     )
     .bind(&operation_id)
     .fetch_one(harness.pool())
@@ -363,7 +363,7 @@ async fn cancel_requested_is_not_immediate_completion() {
 
     // The worker picked the queued run up and set it running.
     sqlx::query(
-        "UPDATE operations SET status = 'running', started_at = created_at WHERE operation_id = ?",
+        "UPDATE operations SET status = 'running', started_at = created_at WHERE operation_id = $1",
     )
     .bind(&operation_id)
     .execute(harness.pool())
@@ -434,7 +434,7 @@ async fn queued_work_survives_a_restart_and_interrupted_work_fails_honestly() {
     let interrupted_id = start_doctor_run(&harness, &owner).await;
     // The process died with this one mid-run.
     sqlx::query(
-        "UPDATE operations SET status = 'running', started_at = created_at WHERE operation_id = ?",
+        "UPDATE operations SET status = 'running', started_at = created_at WHERE operation_id = $1",
     )
     .bind(&interrupted_id)
     .execute(harness.pool())

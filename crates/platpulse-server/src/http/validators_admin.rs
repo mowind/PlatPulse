@@ -1393,7 +1393,7 @@ mod tests {
 
     async fn seed_admin_analytics_row(state: &AppState, validator_id: &str) {
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES (?, 'mainnet', ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ($1, 'mainnet', $2, $3, $4, $5)")
             .bind(validator_id)
             .bind(format!("node-{validator_id}"))
             .bind(validator_id)
@@ -1402,7 +1402,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES (?, 'explorer', 'success', NULL, ?, ?, ?, ?, 5, '1000', '10', '0.05', 8, 42, 100, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, ?, ?)")
+        sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, diagnostic, provider_timestamp, last_attempt_received_at, last_good_received_at, last_good_provider_timestamp, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count, counter_state, change_state, candidate_previous_rank, candidate_rank, candidate_observations, candidate_observed_at, candidate_provider_timestamp, candidate_observation_key, last_observation_key, updated_at) VALUES ($1, 'explorer', 'success', NULL, $2, $3, $4, $5, 5, '1000', '10', '0.05', 8, 42, 100, 'normal', 'normal', NULL, NULL, 0, NULL, NULL, NULL, $6, $7)")
             .bind(validator_id)
             .bind(&now)
             .bind(&now)
@@ -1413,7 +1413,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES (?, ?, 'UTC', '2026-01-01', '2026-01', ?, ?, ?, 'explorer', 'obs-1', 5, '1000', '10', '0.05', 8, 42, 100)")
+        sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES ($1, $2, 'UTC', '2026-01-01', '2026-01', $3, $4, $5, 'explorer', 'obs-1', 5, '1000', '10', '0.05', 8, 42, 100)")
             .bind(format!("snap-{validator_id}"))
             .bind(validator_id)
             .bind(&now)
@@ -1422,7 +1422,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO validator_monthly_aggregates (aggregate_id, validator_id, timezone, month_key, snapshot_count, first_sample_at, last_sample_at, rank_min, rank_max, rank_last, stake_last, reward_last, reward_rate_last, delegator_count_last, epoch_last, block_count_last, updated_at) VALUES (?, ?, 'UTC', '2026-01', 1, ?, ?, 5, 5, 5, '1000', '10', '0.05', 8, 42, 100, ?)")
+        sqlx::query("INSERT INTO validator_monthly_aggregates (aggregate_id, validator_id, timezone, month_key, snapshot_count, first_sample_at, last_sample_at, rank_min, rank_max, rank_last, stake_last, reward_last, reward_rate_last, delegator_count_last, epoch_last, block_count_last, updated_at) VALUES ($1, $2, 'UTC', '2026-01', 1, $3, $4, 5, 5, 5, '1000', '10', '0.05', 8, 42, 100, $5)")
             .bind(format!("agg-{validator_id}"))
             .bind(validator_id)
             .bind(&now)
@@ -1444,7 +1444,7 @@ mod tests {
         received_at: &str,
         provider_timestamp: Option<&str>,
     ) {
-        sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'explorer', ?, 5, '1000', '25', '0.05', 8, 42, 100)")
+        sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, reward_rate, delegator_count, epoch, block_count) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'explorer', $9, 5, '1000', '25', '0.05', 8, 42, 100)")
             .bind(format!("snapshot-{validator_id}-{local_date}"))
             .bind(validator_id)
             .bind(timezone)

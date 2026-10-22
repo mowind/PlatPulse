@@ -4,8 +4,9 @@
 //! domain modules see a backend-neutral [`sqlx::AnyPool`] and write portable
 //! SQL; everything that depends on the Storage Backend in use (file ownership,
 //! connection PRAGMAs, integrity checks, result-code classification, page
-//! accounting) is dispatched to a per-backend module. SQLite is the only
-//! backend in this slice ([`sqlite`]); PostgreSQL is a 0.3.0 target.
+//! accounting) is dispatched to a per-backend module: [`sqlite`] for the
+//! SQLite file backend and [`postgres`] for the PostgreSQL backend
+//! (ADR 0013, issue #255).
 //!
 //! The pool is intentionally one connection so the report-ingestion path can
 //! make its transaction boundary explicit without introducing per-table
@@ -20,12 +21,53 @@ use sqlx::migrate::{MigrateError, Migrator};
 use sqlx::{AnyConnection, AnyPool};
 use thiserror::Error;
 
+mod postgres;
 mod sqlite;
 
+pub use postgres::{
+    DEFAULT_CONNECT_TIMEOUT as POSTGRES_DEFAULT_CONNECT_TIMEOUT,
+    DEFAULT_OWNERSHIP_HEARTBEAT as POSTGRES_DEFAULT_OWNERSHIP_HEARTBEAT,
+};
+pub use postgres::{
+    PostgresConnectConfig, PostgresHost, PostgresPassword, PostgresSecretError, PostgresSslMode,
+};
 pub use sqlite::{JournalMode, SqlitePragmas};
 
-/// The Server's embedded migration source. It is not shared with the Agent.
+/// The Server's embedded SQLite migration source. It is not shared with the
+/// Agent. The PostgreSQL baseline lives beside it in
+/// [`postgres::POSTGRES_MIGRATOR`] at the same logical schema version.
 pub static SERVER_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
+
+/// The Storage Backend a Server database is stored by (ADR 0013).
+#[derive(Debug, Clone)]
+pub enum StorageConfig {
+    /// A SQLite file (the default).
+    Sqlite(ServerDatabaseConfig),
+    /// A PostgreSQL database (issue #255).
+    Postgres(PostgresConnectConfig),
+}
+
+impl From<ServerDatabaseConfig> for StorageConfig {
+    fn from(config: ServerDatabaseConfig) -> Self {
+        Self::Sqlite(config)
+    }
+}
+
+impl From<PostgresConnectConfig> for StorageConfig {
+    fn from(config: PostgresConnectConfig) -> Self {
+        Self::Postgres(config)
+    }
+}
+
+impl StorageConfig {
+    /// A short, loggable name of the backend in use.
+    pub fn backend_name(&self) -> &'static str {
+        match self {
+            Self::Sqlite(_) => "sqlite",
+            Self::Postgres(_) => "postgres",
+        }
+    }
+}
 
 /// The latest migration version compiled into the Server binary.
 pub const SERVER_SCHEMA_VERSION: i64 = 75;
@@ -184,6 +226,16 @@ pub enum ServerDatabaseError {
     Filesystem(String),
     #[error("Server SQLite database file is empty")]
     EmptyDatabase,
+    #[error("Server PostgreSQL configuration is refused: {0}")]
+    Unsupported(String),
+    #[error(
+        "another Server owns this PostgreSQL database: the session advisory lock is held; only one Server may serve a database at a time"
+    )]
+    OwnershipHeld,
+    #[error("Server PostgreSQL schema ownership check failed: {0}")]
+    SchemaOwnership(String),
+    #[error("Server PostgreSQL collation check failed: {0}")]
+    Collation(String),
 }
 
 impl ServerDatabaseError {
@@ -220,6 +272,10 @@ pub(crate) enum IntegrityVerdict {
     Exhausted,
     /// The database returned an error before any verdict.
     Failed(sqlx::Error),
+    /// The backend in use has no bounded integrity check. The PostgreSQL
+    /// equivalent belongs to the 0.3.0 operations slice (ADR 0013, S5); an
+    /// unavailable check is never reported as consistent.
+    Unsupported,
 }
 
 /// Page accounting of the stored database, when the backend has one.
@@ -266,9 +322,58 @@ impl From<NullableFlag> for Option<bool> {
     }
 }
 
+/// A nullable real column, bound through the backend-neutral driver.
+///
+/// A direct `.bind(Option<f64>)` is not portable: the backend-neutral driver
+/// converts a bound value to the native driver by its kind, and its `None`
+/// kind for a `f64` becomes `Option<f32>` — so an absent sample declares the
+/// parameter `float4` while a present one declares `float8`. PostgreSQL caches
+/// a prepared statement together with the parameter types of its first
+/// execution, so a statement first executed without a sample then rejects
+/// every later real sample with `22P03 incorrect binary data format in bind
+/// parameter N`. Encoding the absence as a null of the other float kind makes
+/// both spellings convert to `Option<f64>`, so the parameter is always
+/// `float8` (ADR 0013).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NullableReal(pub Option<f64>);
+
+impl From<Option<f64>> for NullableReal {
+    fn from(value: Option<f64>) -> Self {
+        Self(value)
+    }
+}
+
+impl sqlx::Type<sqlx::Any> for NullableReal {
+    fn type_info() -> sqlx::any::AnyTypeInfo {
+        <f64 as sqlx::Type<sqlx::Any>>::type_info()
+    }
+
+    fn compatible(ty: &sqlx::any::AnyTypeInfo) -> bool {
+        <f64 as sqlx::Type<sqlx::Any>>::compatible(ty)
+    }
+}
+
+impl sqlx::Encode<'_, sqlx::Any> for NullableReal {
+    fn encode_by_ref(
+        &self,
+        buffer: &mut <sqlx::Any as sqlx::Database>::ArgumentBuffer<'_>,
+    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+        match self.0 {
+            Some(value) => <f64 as sqlx::Encode<sqlx::Any>>::encode(value, buffer),
+            // A null `f32` is the encoding the driver converts to
+            // `Option<f64>::None` — see the type documentation.
+            None => <Option<f32> as sqlx::Encode<sqlx::Any>>::encode(None, buffer),
+        }
+    }
+}
+
 /// The Storage Backend behind a [`ServerDatabase`].
 enum Backend {
-    Sqlite(sqlite::SqliteBackend),
+    /// Boxed because `SqliteConnectOptions` is far larger than the PostgreSQL
+    /// handle; the enum itself lives once per process, so the indirection is
+    /// free (clippy::large_enum_variant).
+    Sqlite(Box<sqlite::SqliteBackend>),
+    Postgres(postgres::PostgresBackend),
 }
 
 /// An initialized Server database whose writes are serialized by one pool
@@ -276,7 +381,8 @@ enum Backend {
 pub struct ServerDatabase {
     pool: AnyPool,
     backend: Backend,
-    path: PathBuf,
+    /// The SQLite file backing this database; `None` on PostgreSQL.
+    path: Option<PathBuf>,
     /// The runtime Inventory protocol mode, resolved once at startup from the
     /// durable conversion/cutover markers (issue #192). It is fixed for the
     /// process lifetime because resuming the cutover requires a stopped Server.
@@ -284,42 +390,63 @@ pub struct ServerDatabase {
 }
 
 impl ServerDatabase {
-    /// Open the Server database, migrate it, validate required pragmas, and
-    /// run integrity checks before returning a database to the HTTP startup
-    /// path.
-    pub async fn open(config: ServerDatabaseConfig) -> Result<Self, ServerDatabaseError> {
-        Self::open_with(config, true).await
+    /// Open the Server database, migrate it, validate the backend contract,
+    /// and run integrity checks before returning a database to the HTTP
+    /// startup path.
+    pub async fn open(config: impl Into<StorageConfig>) -> Result<Self, ServerDatabaseError> {
+        Self::open_with(config.into(), true).await
     }
 
-    /// Open an already initialized database without creating a new file. The
-    /// serve path uses this guard so a missing or renamed state file can never
-    /// silently become an empty writable database.
-    pub async fn open_existing(config: ServerDatabaseConfig) -> Result<Self, ServerDatabaseError> {
-        match std::fs::symlink_metadata(config.path()) {
-            Ok(metadata) if metadata.len() == 0 => {
-                return Err(ServerDatabaseError::EmptyDatabase);
+    /// Open an already initialized database without creating a new SQLite
+    /// file. The serve path uses this guard so a missing or renamed state file
+    /// can never silently become an empty writable database. A PostgreSQL
+    /// database must already exist; connecting to a missing one fails.
+    pub async fn open_existing(
+        config: impl Into<StorageConfig>,
+    ) -> Result<Self, ServerDatabaseError> {
+        let config = config.into();
+        if let StorageConfig::Sqlite(sqlite_config) = &config {
+            match std::fs::symlink_metadata(sqlite_config.path()) {
+                Ok(metadata) if metadata.len() == 0 => {
+                    return Err(ServerDatabaseError::EmptyDatabase);
+                }
+                Ok(_) => {}
+                Err(_) => return Err(ServerDatabaseError::EmptyDatabase),
             }
-            Ok(_) => {}
-            Err(_) => return Err(ServerDatabaseError::EmptyDatabase),
         }
         Self::open_with(config, false).await
     }
 
     async fn open_with(
-        config: ServerDatabaseConfig,
+        config: StorageConfig,
         create_if_missing: bool,
     ) -> Result<Self, ServerDatabaseError> {
-        let (pool, backend) = sqlite::open(&config, create_if_missing).await?;
-        let backend = Backend::Sqlite(backend);
+        let (pool, backend, path) = match &config {
+            StorageConfig::Sqlite(sqlite_config) => {
+                let (pool, backend) = sqlite::open(sqlite_config, create_if_missing).await?;
+                (
+                    pool,
+                    Backend::Sqlite(Box::new(backend)),
+                    Some(sqlite_config.path().to_owned()),
+                )
+            }
+            StorageConfig::Postgres(postgres_config) => {
+                let (pool, backend) = postgres::open(postgres_config).await?;
+                (pool, Backend::Postgres(backend), None)
+            }
+        };
         match Self::prepare(&pool, &backend, &config, create_if_missing).await {
             Ok(inventory_cutover) => Ok(Self {
                 pool,
                 backend,
-                path: config.path().to_owned(),
+                path,
                 inventory_cutover,
             }),
             Err(error) => {
                 pool.close().await;
+                if let Backend::Postgres(backend) = &backend {
+                    backend.release().await;
+                }
                 Err(error)
             }
         }
@@ -329,13 +456,14 @@ impl ServerDatabase {
     async fn prepare(
         pool: &AnyPool,
         backend: &Backend,
-        config: &ServerDatabaseConfig,
+        config: &StorageConfig,
         create_if_missing: bool,
     ) -> Result<crate::cutover::InventoryCutover, ServerDatabaseError> {
-        SERVER_MIGRATOR
-            .run(pool)
-            .await
-            .map_err(ServerDatabaseError::Migration)?;
+        match backend {
+            Backend::Sqlite(_) => SERVER_MIGRATOR.run(pool).await,
+            Backend::Postgres(_) => postgres::POSTGRES_MIGRATOR.run(pool).await,
+        }
+        .map_err(ServerDatabaseError::Migration)?;
 
         // Seed the typed Alert Rule catalog (idempotent; Owner-edited rules
         // are never overwritten) right after migrations so every database
@@ -354,23 +482,64 @@ impl ServerDatabase {
             .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))?;
         drop(conn);
 
-        match backend {
-            Backend::Sqlite(backend) => {
-                sqlite::verify_startup(pool, backend, config, create_if_missing).await?;
+        match (backend, config) {
+            (Backend::Sqlite(sqlite_backend), StorageConfig::Sqlite(sqlite_config)) => {
+                sqlite::verify_startup(pool, sqlite_backend, sqlite_config, create_if_missing)
+                    .await?;
+            }
+            (Backend::Postgres(_), _) => postgres::verify_startup(pool).await?,
+            (Backend::Sqlite(_), StorageConfig::Postgres(_)) => {
+                unreachable!("a SQLite backend is always opened from a SQLite configuration")
             }
         }
         // Resolve the durable Inventory protocol mode once at startup. A
         // converted deployment (issue #191) stays gated until the coordinated
         // cutover is resumed (issue #192); a fresh or pre-conversion
         // deployment keeps the ordinary v1/v2 behaviour.
-        crate::cutover::detect_inventory_cutover(pool)
-            .await
-            .map_err(ServerDatabaseError::IntegrityQuery)
+        //
+        // The conversion marker is a SQLite file migration, so only a SQLite
+        // deployment can carry it. A PostgreSQL baseline is created directly in
+        // the current protocol and the cutover tooling refuses that backend
+        // (`require_sqlite_storage`), so there is nothing to gate.
+        match backend {
+            Backend::Sqlite(_) => crate::cutover::detect_inventory_cutover(pool)
+                .await
+                .map_err(ServerDatabaseError::IntegrityQuery),
+            Backend::Postgres(_) => Ok(crate::cutover::InventoryCutover::NotConverted),
+        }
     }
 
-    /// Filesystem path of the validated Server database.
-    pub fn path(&self) -> &Path {
-        &self.path
+    /// Filesystem path of the validated Server SQLite database. It is
+    /// `None` on the PostgreSQL backend, which stores no Server file.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// The Storage Backend in use ("sqlite" or "postgres").
+    pub fn storage_backend(&self) -> &'static str {
+        match &self.backend {
+            Backend::Sqlite(_) => "sqlite",
+            Backend::Postgres(_) => "postgres",
+        }
+    }
+
+    /// Whether this process still exclusively owns the Storage Backend.
+    pub fn ownership_held(&self) -> bool {
+        match &self.backend {
+            Backend::Sqlite(_) => true,
+            Backend::Postgres(backend) => backend.ownership_held(),
+        }
+    }
+
+    /// Resolve when this process stops owning the Storage Backend. SQLite
+    /// ownership is the process-lifetime file lock the CLI holds, so this
+    /// future never resolves there; the PostgreSQL session advisory lock can
+    /// be lost with its connection, and the Server must then stop.
+    pub async fn ownership_lost(&self) {
+        match &self.backend {
+            Backend::Sqlite(_) => std::future::pending().await,
+            Backend::Postgres(backend) => backend.ownership_lost().await,
+        }
     }
 
     /// The Inventory protocol mode resolved at startup (issue #192).
@@ -391,6 +560,10 @@ impl ServerDatabase {
             Backend::Sqlite(_) => sqlite::read_pragmas(&self.pool)
                 .await
                 .map_err(ServerDatabaseError::PragmaQuery),
+            Backend::Postgres(_) => Err(ServerDatabaseError::Unsupported(
+                "SQLite connection pragmas do not exist on the PostgreSQL Storage Backend"
+                    .to_owned(),
+            )),
         }
     }
 
@@ -414,21 +587,26 @@ impl ServerDatabase {
             Backend::Sqlite(backend) => {
                 sqlite::bounded_integrity_check(&self.pool, backend, scope, budget).await
             }
+            Backend::Postgres(_) => IntegrityVerdict::Unsupported,
         }
     }
 
-    /// Page accounting for the metrics surface.
+    /// Page accounting for the metrics surface. PostgreSQL has no page
+    /// accounting of its own, so the sizes stay unknown there (never zero).
     pub(crate) async fn storage_pages(&self) -> StoragePages {
         match &self.backend {
             Backend::Sqlite(_) => sqlite::storage_pages(&self.pool).await,
+            Backend::Postgres(_) => StoragePages::default(),
         }
     }
 
-    /// Make every committed write durable in the main database file before
-    /// shutdown.
+    /// Flush committed writes into the main SQLite file before shutdown. The
+    /// PostgreSQL backend has no write-ahead file the Server has to fold back
+    /// in, so nothing is needed there.
     pub async fn checkpoint_wal(&self) -> Result<(), sqlx::Error> {
         match &self.backend {
             Backend::Sqlite(_) => sqlite::checkpoint_wal(&self.pool).await,
+            Backend::Postgres(_) => Ok(()),
         }
     }
 
@@ -451,12 +629,17 @@ impl ServerDatabase {
             }
             tokio::task::yield_now().await;
         }
+        // Closing the work connection must not leave the ownership session
+        // behind: it is what the next Server waits for.
+        if let Backend::Postgres(backend) = &self.backend {
+            backend.release().await;
+        }
     }
 }
 
 /// Initialize the Server database before constructing a listener.
 pub async fn initialize(
-    config: ServerDatabaseConfig,
+    config: impl Into<StorageConfig>,
 ) -> Result<ServerDatabase, ServerDatabaseError> {
     ServerDatabase::open(config).await
 }
@@ -468,13 +651,14 @@ pub async fn initialize(
 /// errors it can downcast to its native database error, so a PostgreSQL
 /// SQLSTATE that happens to share a numeric code is never read as SQLite.
 pub(crate) fn is_corruption_error(error: &sqlx::Error) -> bool {
-    sqlite::is_corruption_error(error)
+    sqlite::is_corruption_error(error) || postgres::is_corruption_error(error)
 }
 
 /// Defer foreign-key enforcement to the commit of the current transaction.
 pub(crate) async fn defer_foreign_keys(connection: &mut AnyConnection) -> Result<(), sqlx::Error> {
     match connection.backend_name() {
         sqlite::BACKEND_NAME => sqlite::defer_foreign_keys(connection).await,
+        postgres::BACKEND_NAME => postgres::defer_foreign_keys(connection).await,
         other => Err(sqlx::Error::Configuration(
             format!("deferred foreign keys are not implemented for {other}").into(),
         )),
@@ -608,9 +792,9 @@ mod tests {
             "unsupported",
             "not_configured",
         ] {
-            sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, created_at, updated_at) VALUES (?, 'mainnet', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, created_at, updated_at) VALUES ($1, 'mainnet', $2, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
                 .bind(outcome).bind(outcome).execute(&pool).await.unwrap();
-            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, activity, last_attempt_received_at, last_good_received_at, stake_amount, counter_state, change_state, candidate_observations, updated_at) VALUES (?, 'platscan', ?, 'active', '2026-02-02T00:00:00Z', '2026-01-01T00:00:00Z', '123456789000000000000', 'normal', 'normal', 0, '2026-02-02T00:00:00Z')")
+            sqlx::query("INSERT INTO current_validator_insights (validator_id, source, outcome, activity, last_attempt_received_at, last_good_received_at, stake_amount, counter_state, change_state, candidate_observations, updated_at) VALUES ($1, 'platscan', $2, 'active', '2026-02-02T00:00:00Z', '2026-01-01T00:00:00Z', '123456789000000000000', 'normal', 'normal', 0, '2026-02-02T00:00:00Z')")
                 .bind(outcome).bind(outcome).execute(&pool).await.unwrap();
         }
         pool.close().await;
@@ -628,7 +812,7 @@ mod tests {
             "not_configured",
         ] {
             let (kind, verdict_time, detail_time, stake): (Option<String>, Option<String>, String, String) =
-                sqlx::query_as("SELECT last_good_verdict_outcome, last_good_verdict_received_at, last_good_received_at, stake_amount FROM current_validator_insights WHERE validator_id = ?")
+                sqlx::query_as("SELECT last_good_verdict_outcome, last_good_verdict_received_at, last_good_received_at, stake_amount FROM current_validator_insights WHERE validator_id = $1")
                     .bind(outcome).fetch_one(database.pool()).await.unwrap();
             assert_eq!(detail_time, "2026-01-01T00:00:00Z");
             assert_eq!(stake, "123456789000000000000");
@@ -744,7 +928,7 @@ mod tests {
         let path = directory.path().join("server.db");
         let database = ServerDatabase::open(config(&path)).await.unwrap();
         sqlx::query(
-            "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)",
+            "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ($1, $2, $3)",
         )
         .bind("test")
         .bind("value")
@@ -756,7 +940,7 @@ mod tests {
 
         let reopened = ServerDatabase::open(config(&path)).await.unwrap();
         let value: String =
-            sqlx::query_scalar("SELECT setting_value FROM server_settings WHERE setting_key = ?")
+            sqlx::query_scalar("SELECT setting_value FROM server_settings WHERE setting_key = $1")
                 .bind("test")
                 .fetch_one(reopened.pool())
                 .await
@@ -924,7 +1108,7 @@ mod tests {
                 .await
                 .unwrap();
             sqlx::query(
-                "INSERT INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES ('one_minute_aggregate', ?, 7, 365, 0, 1, '2026-01-01T00:00:00Z', ?)",
+                "INSERT INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES ('one_minute_aggregate', $1, 7, 365, 0, 1, '2026-01-01T00:00:00Z', $2)",
             )
             .bind(retention_days)
             .bind(updated_by)
@@ -1126,7 +1310,7 @@ mod tests {
         let path = directory.path().join("server.db");
         let database = ServerDatabase::open(config(&path)).await.unwrap();
         sqlx::query(
-            "INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind("mainnet")
         .bind("Mainnet")
@@ -1140,7 +1324,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ($1, $2, $3, $4)",
         )
         .bind("agent-1")
         .bind(1_i64)
@@ -1151,7 +1335,7 @@ mod tests {
         .unwrap();
         for node_id in ["node-a", "node-b"] {
             sqlx::query(
-                "INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, inventory_revision, first_seen_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             )
             .bind(node_id)
             .bind("agent-1")
@@ -1165,7 +1349,7 @@ mod tests {
             .await
             .unwrap();
             sqlx::query(
-                "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, state_revision, value_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, state_revision, value_revision) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             )
             .bind("agent-1")
             .bind("node")
@@ -1181,7 +1365,7 @@ mod tests {
         }
 
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM component_status WHERE agent_id = ? AND component_key = ?",
+            "SELECT COUNT(*) FROM component_status WHERE agent_id = $1 AND component_key = $2",
         )
         .bind("agent-1")
         .bind("rpc")
@@ -1200,7 +1384,7 @@ mod tests {
 
         for table in forbidden {
             let exists =
-                sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+                sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $1")
                     .bind(table)
                     .fetch_optional(database.pool())
                     .await

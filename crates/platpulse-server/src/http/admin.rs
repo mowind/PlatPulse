@@ -4751,7 +4751,7 @@ async fn admin_node_history(
     let has_expired_raw = oldest_raw.as_ref().is_some_and(|value| value < &cutoff);
     let availability = (has_expired_raw || (oldest_raw.is_none() && has_history))
         .then(|| "unavailable".to_owned());
-    let rows = sqlx::query_as::<_, AdminHistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height, gap_kind, gap_reason, divergence_kind, divergence_reason, divergence_retained_hash, divergence_observed_hash, divergence_observed_at FROM (SELECT block_number, block_timestamp_ms, transaction_count, 'summary', coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, observed_at, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM block_summaries WHERE node_id = $1 AND accepted_at >= $2 UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, kind, reason, NULL, NULL, NULL, NULL, NULL FROM block_history_gaps WHERE node_id = $3 UNION ALL SELECT NULL, NULL, NULL, 'divergence', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, retained_observed_at, height, height, NULL, NULL, 'chain_divergence', reason, retained_block_hash, observed_block_hash, observed_at FROM chain_divergence_observations WHERE node_id = $4) WHERE ($5 IS NULL OR COALESCE(block_number, to_height) >= $6) AND ($7 IS NULL OR COALESCE(block_number, from_height) <= $8) ORDER BY COALESCE(block_number, from_height) DESC LIMIT $9")
+    let rows = sqlx::query_as::<_, AdminHistoryRow>("SELECT block_number, block_timestamp_ms, transaction_count, source, coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, CASE WHEN protocol_proposer_kind = 'verified' THEN protocol_proposer_identity ELSE NULL END, attribution_reason, observed_at, from_height, to_height, gap_kind, gap_reason, divergence_kind, divergence_reason, divergence_retained_hash, divergence_observed_hash, divergence_observed_at FROM (SELECT block_number, block_timestamp_ms, transaction_count, 'summary', coinbase, seal_signer_match, seal_signer_key_fingerprint, node_key_fingerprint, node_key_valid_from, node_key_valid_until, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, observed_at, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM block_summaries WHERE node_id = $1 AND accepted_at >= $2 UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, created_at, from_height, to_height, kind, reason, NULL, NULL, NULL, NULL, NULL FROM block_history_gaps WHERE node_id = $3 UNION ALL SELECT NULL, NULL, NULL, 'divergence', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, retained_observed_at, height, height, NULL, NULL, 'chain_divergence', reason, retained_block_hash, observed_block_hash, observed_at FROM chain_divergence_observations WHERE node_id = $4) AS history WHERE ($5 IS NULL OR COALESCE(block_number, to_height) >= $6) AND ($7 IS NULL OR COALESCE(block_number, from_height) <= $8) ORDER BY COALESCE(block_number, from_height) DESC LIMIT $9")
         .bind(&node_id)
         .bind(&cutoff)
         .bind(&node_id)
@@ -8410,7 +8410,7 @@ mod tests {
         let state = AppState::new(database, None, auth);
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
         let expires_at = crate::geo::cache_expiry(&now);
-        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('disabled', '8.8.8.8', 'US', 'current', ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('disabled', '8.8.8.8', 'US', 'current', $1, $2, $3, $4, $5)")
             .bind(&now)
             .bind(&now)
             .bind(&now)
@@ -8603,7 +8603,7 @@ mod tests {
             .unwrap();
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
         for provider in ["disabled", "local_mmdb"] {
-            sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES (?, '8.8.8.8', 'US', 'current', ?, ?, ?, ?, ?)")
+            sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ($1, '8.8.8.8', 'US', 'current', $2, $3, $4, $5, $6)")
                 .bind(provider)
                 .bind(&now)
                 .bind(&now)
@@ -9399,20 +9399,20 @@ mod tests {
             "http://127.0.0.1:8080".to_owned(),
         );
         let state = AppState::new(database, None, auth);
-        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES (?, 1, ?, ?)")
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ($1, 1, $2, $3)")
             .bind("agent-host-test")
             .bind("2026-01-01T00:00:00Z")
             .bind("2026-01-01T00:00:00Z")
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO current_host_observations (agent_id, updated_at) VALUES (?, ?)")
+        sqlx::query("INSERT INTO current_host_observations (agent_id, updated_at) VALUES ($1, $2)")
             .bind("agent-host-test")
             .bind("2026-01-01T00:00:02Z")
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES (?, 'host', 'host', 'cpu_percent', 'error', ?, ?, ?, 2, 1, ?, ?)")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES ($1, 'host', 'host', 'cpu_percent', 'error', $2, $3, $4, 2, 1, $5, $6)")
             .bind("agent-host-test")
             .bind("2026-01-01T00:00:01Z")
             .bind("2025-12-31T23:59:00Z")
@@ -9478,14 +9478,14 @@ mod tests {
         let now = crate::auth::now_utc();
         let fresh = crate::auth::format_rfc3339(now - time::Duration::seconds(20));
         let created = "2026-01-01T00:00:00Z";
-        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at, last_received_at, shutdown_state, security_event_count) VALUES ('agent-ov', 1, ?, ?, ?, 'running', 0)")
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at, last_received_at, shutdown_state, security_event_count) VALUES ('agent-ov', 1, $1, $2, $3, 'running', 0)")
             .bind(created)
             .bind(created)
             .bind(&fresh)
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Main', '0xgenesis', 1, 1, 'lat', ?, ?)")
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Main', '0xgenesis', 1, 1, 'lat', $1, $2)")
             .bind(created)
             .bind(created)
             .execute(state.db().pool())
@@ -9495,7 +9495,7 @@ mod tests {
             ("node-a", "Node A", "public", "ok"),
             ("node-b", "Node B", "private", "error"),
         ] {
-            sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, 'agent-ov', 'mainnet', ?, 'ws://127.0.0.1:1', 'active', ?, 1, ?, ?)")
+            sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ($1, 'agent-ov', 'mainnet', $2, 'ws://127.0.0.1:1', 'active', $3, 1, $4, $5)")
                 .bind(node_id)
                 .bind(name)
                 .bind(visibility)
@@ -9504,7 +9504,7 @@ mod tests {
                 .execute(state.db().pool())
                 .await
                 .unwrap();
-            sqlx::query("INSERT INTO current_node_chain_observations (node_id, current_block, syncing, updated_at) VALUES (?, 100, 0, ?)")
+            sqlx::query("INSERT INTO current_node_chain_observations (node_id, current_block, syncing, updated_at) VALUES ($1, 100, 0, $2)")
                 .bind(node_id)
                 .bind(&fresh)
                 .execute(state.db().pool())
@@ -9512,7 +9512,7 @@ mod tests {
                 .unwrap();
             for component in ["rpc", "sync", "consensus", "network_identity"] {
                 let component_state = if component == "rpc" { rpc_state } else { "ok" };
-                sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-ov', 'node', ?, ?, ?, ?, ?, ?, ?, 1, 1)")
+                sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-ov', 'node', $1, $2, $3, $4, $5, $6, $7, 1, 1)")
                     .bind(node_id)
                     .bind(node_id)
                     .bind(component)
@@ -9580,14 +9580,14 @@ mod tests {
         let now = crate::auth::now_utc();
         let stale = crate::auth::format_rfc3339(now - time::Duration::hours(1));
         let created = "2026-01-01T00:00:00Z";
-        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at, last_received_at, shutdown_state, security_event_count) VALUES ('agent-ov2', 1, ?, ?, ?, 'running', 2)")
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at, last_received_at, shutdown_state, security_event_count) VALUES ('agent-ov2', 1, $1, $2, $3, 'running', 2)")
             .bind(created)
             .bind(created)
             .bind(&stale)
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO current_host_observations (agent_id, spool_store_fatal, spool_dropped_sequence_to, updated_at) VALUES ('agent-ov2', 1, 5, ?)")
+        sqlx::query("INSERT INTO current_host_observations (agent_id, spool_store_fatal, spool_dropped_sequence_to, updated_at) VALUES ('agent-ov2', 1, 5, $1)")
             .bind(&stale)
             .execute(state.db().pool())
             .await
@@ -9595,18 +9595,18 @@ mod tests {
         // The recorded gap interval has its own event time, distinct from the
         // Host observation, so the Server must not reuse one Agent-wide clock.
         let gap_time = crate::auth::format_rfc3339(now - time::Duration::hours(2));
-        sqlx::query("INSERT INTO report_sequence_gaps (agent_id, boot_id, from_sequence, to_sequence, created_at) VALUES ('agent-ov2', 'boot-ov2', 3, 4, ?)")
+        sqlx::query("INSERT INTO report_sequence_gaps (agent_id, boot_id, from_sequence, to_sequence, created_at) VALUES ('agent-ov2', 'boot-ov2', 3, 4, $1)")
             .bind(&gap_time)
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Main', '0xgenesis', 1, 1, 'lat', ?, ?)")
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Main', '0xgenesis', 1, 1, 'lat', $1, $2)")
             .bind(created)
             .bind(created)
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('node-unknown', 'agent-ov2', 'mainnet', 'Node Unknown', 'ws://127.0.0.1:2', 'active', 'private', 1, ?, ?)")
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('node-unknown', 'agent-ov2', 'mainnet', 'Node Unknown', 'ws://127.0.0.1:2', 'active', 'private', 1, $1, $2)")
             .bind(created)
             .bind(created)
             .execute(state.db().pool())
@@ -9709,7 +9709,7 @@ mod tests {
         );
         let state = AppState::new(database, None, auth);
         let created = "2026-01-01T00:00:00Z";
-        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('agent-overview-networks', 1, ?, ?)")
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('agent-overview-networks', 1, $1, $2)")
             .bind(created)
             .bind(created)
             .execute(state.db().pool())
@@ -9720,7 +9720,7 @@ mod tests {
             ("network-ineligible", "Ineligible", "0xexpected-ineligible"),
             ("network-retired", "Retired", "0xexpected-retired"),
         ] {
-            sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES (?, ?, ?, 1, 1, 'lat', ?, ?)")
+            sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ($1, $2, $3, 1, 1, 'lat', $4, $5)")
                 .bind(network_key)
                 .bind(display_name)
                 .bind(genesis_hash)
@@ -9742,7 +9742,7 @@ mod tests {
             ),
             ("node-retired-mismatch", "network-retired", "retired", "ok"),
         ] {
-            sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, 'agent-overview-networks', ?, 'ws://127.0.0.1:1', ?, 'private', 1, ?, ?)")
+            sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ($1, 'agent-overview-networks', $2, 'ws://127.0.0.1:1', $3, 'private', 1, $4, $5)")
                 .bind(node_id)
                 .bind(network_key)
                 .bind(lifecycle)
@@ -9751,7 +9751,7 @@ mod tests {
                 .execute(state.db().pool())
                 .await
                 .unwrap();
-            sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-overview-networks', 'node', ?, ?, 'network_identity', ?, ?, ?, ?, 1, 1)")
+            sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-overview-networks', 'node', $1, $2, 'network_identity', $3, $4, $5, $6, 1, 1)")
                 .bind(node_id)
                 .bind(node_id)
                 .bind(identity_state)
@@ -9763,24 +9763,24 @@ mod tests {
                 .unwrap();
         }
         for node_id in ["node-mismatch-a", "node-mismatch-b"] {
-            sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES (?, '0xexpected-distinct', 999, 1, 'lat', ?)")
+            sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES ($1, '0xexpected-distinct', 999, 1, 'lat', $2)")
                 .bind(node_id)
                 .bind(created)
                 .execute(state.db().pool())
                 .await
                 .unwrap();
         }
-        sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_chain_id, updated_at) VALUES ('node-partial', 999, ?)")
+        sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_chain_id, updated_at) VALUES ('node-partial', 999, $1)")
             .bind(created)
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES ('node-retained-error', '0xexpected-ineligible', 999, 1, 'lat', ?)")
+        sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES ('node-retained-error', '0xexpected-ineligible', 999, 1, 'lat', $1)")
             .bind(created)
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES ('node-retired-mismatch', '0xexpected-retired', 999, 1, 'lat', ?)")
+        sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES ('node-retired-mismatch', '0xexpected-retired', 999, 1, 'lat', $1)")
             .bind(created)
             .execute(state.db().pool())
             .await
@@ -9840,19 +9840,19 @@ mod tests {
         );
         let state = AppState::new(database, None, auth);
         let created = "2026-01-01T00:00:00Z";
-        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('agent-retired', 1, ?, ?)")
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('agent-retired', 1, $1, $2)")
             .bind(created)
             .bind(created)
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Main', '0xgenesis', 1, 1, 'lat', ?, ?)")
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Main', '0xgenesis', 1, 1, 'lat', $1, $2)")
             .bind(created)
             .bind(created)
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('node-retired', 'agent-retired', 'mainnet', 'Node Retired', 'ws://127.0.0.1:3', 'retired', 'private', 1, ?, ?)")
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('node-retired', 'agent-retired', 'mainnet', 'Node Retired', 'ws://127.0.0.1:3', 'retired', 'private', 1, $1, $2)")
             .bind(created)
             .bind(created)
             .execute(state.db().pool())
@@ -9904,7 +9904,8 @@ mod tests {
         sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('agent-lifecycle-test', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
             .execute(state.db().pool()).await.unwrap();
         // One already-issued credential, like a real enrolled Agent.
-        sqlx::query("INSERT INTO agent_credentials (credential_id, agent_id, credential_digest, created_at, revoked_at, revoke_after) VALUES ('credential-initial', 'agent-lifecycle-test', x'00', '2026-01-01T00:00:00Z', NULL, NULL)")
+        sqlx::query("INSERT INTO agent_credentials (credential_id, agent_id, credential_digest, created_at, revoked_at, revoke_after) VALUES ('credential-initial', 'agent-lifecycle-test', $1, '2026-01-01T00:00:00Z', NULL, NULL)")
+            .bind(vec![0u8])
             .execute(state.db().pool()).await.unwrap();
         (dir, state)
     }
@@ -10181,7 +10182,7 @@ mod tests {
         let fixed = "2026-01-01T00:00:00Z".to_owned();
         let fresh = crate::auth::format_rfc3339(now);
         sqlx::query(
-            "INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'PlatON Mainnet', '0x' || '01' || '00000000000000000000000000000000000000000000000000000000000000', 210425, 1, 'lat', ?, ?)",
+            "INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'PlatON Mainnet', '0x' || '01' || '00000000000000000000000000000000000000000000000000000000000000', 210425, 1, 'lat', $1, $2)",
         )
         .bind(&fixed)
         .bind(&fixed)
@@ -10194,7 +10195,7 @@ mod tests {
             ("node-retired", "retired"),
         ] {
             sqlx::query(
-                "INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, 'agent-lifecycle-test', 'mainnet', ?, 'ws://127.0.0.1:6790', ?, 'private', 1, ?, ?)",
+                "INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ($1, 'agent-lifecycle-test', 'mainnet', $2, 'ws://127.0.0.1:6790', $3, 'private', 1, $4, $5)",
             )
             .bind(node_id)
             .bind(node_id)
@@ -10207,7 +10208,7 @@ mod tests {
         }
         // Healthy Node: matching observed identity + fresh ok components.
         sqlx::query(
-            "INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_validator, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, node_key_fingerprint, updated_at) VALUES ('node-healthy', 'platon/1.5.1', 0, 100, 100, 1, 1, 100, '0x' || '01' || '00000000000000000000000000000000000000000000000000000000000000', 210425, 1, 'lat', 'fp-healthy', ?)",
+            "INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_validator, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, node_key_fingerprint, updated_at) VALUES ('node-healthy', 'platon/1.5.1', 0, 100, 100, 1, 1, 100, '0x' || '01' || '00000000000000000000000000000000000000000000000000000000000000', 210425, 1, 'lat', 'fp-healthy', $1)",
         )
         .bind(&fresh)
         .execute(state.db().pool())
@@ -10215,7 +10216,7 @@ mod tests {
         .unwrap();
         for component in ["rpc", "sync", "consensus", "network_identity"] {
             sqlx::query(
-                "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-lifecycle-test', 'node', 'node-healthy', 'node-healthy', ?, 'ok', ?, ?, ?, 1, 1)",
+                "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-lifecycle-test', 'node', 'node-healthy', 'node-healthy', $1, 'ok', $2, $3, $4, 1, 1)",
             )
             .bind(component)
             .bind(&fresh)
@@ -10226,7 +10227,7 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-lifecycle-test', 'node', 'node-healthy', 'node-healthy', 'peers', 'ok', ?, ?, ?, ?, 1, 1)",
+            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-lifecycle-test', 'node', 'node-healthy', 'node-healthy', 'peers', 'ok', $1, $2, $3, $4, 1, 1)",
         )
         .bind(&fresh)
         .bind(&fresh)
@@ -10236,21 +10237,21 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, cbft_protocol_version, cbft_highest_qc_block, cbft_locked_block, cbft_commit_block, updated_at) VALUES ('node-healthy', 'peer-healthy', '203.0.113.7', 'inbound', 1, 0, 1, 'PlatON/v1.5.1', 1, 100, 99, 98, ?)",
+            "INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, cbft_protocol_version, cbft_highest_qc_block, cbft_locked_block, cbft_commit_block, updated_at) VALUES ('node-healthy', 'peer-healthy', '203.0.113.7', 'inbound', 1, 0, 1, 'PlatON/v1.5.1', 1, 100, 99, 98, $1)",
         )
         .bind(&fresh)
         .execute(state.db().pool())
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO current_node_peer_capabilities (node_id, peer_id, capability, updated_at) VALUES ('node-healthy', 'peer-healthy', 'cbft/1', ?)",
+            "INSERT INTO current_node_peer_capabilities (node_id, peer_id, capability, updated_at) VALUES ('node-healthy', 'peer-healthy', 'cbft/1', $1)",
         )
         .bind(&fresh)
         .execute(state.db().pool())
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO peer_presence_intervals (node_id, peer_id, opened_at, closed_at, direction, trusted, static_peer, consensus_peer, client_name) VALUES ('node-healthy', 'peer-healthy', ?, ?, 'inbound', 1, 0, 1, 'PlatON/v1.5.1')",
+            "INSERT INTO peer_presence_intervals (node_id, peer_id, opened_at, closed_at, direction, trusted, static_peer, consensus_peer, client_name) VALUES ('node-healthy', 'peer-healthy', $1, $2, 'inbound', 1, 0, 1, 'PlatON/v1.5.1')",
         )
         .bind(&fixed)
         .bind(&fresh)
@@ -10259,7 +10260,7 @@ mod tests {
         .unwrap();
         // Mismatched Node: RPC error with a last-good sync value retained
         sqlx::query(
-            "INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_validator, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES ('node-mismatched', 'platon/1.5.1', 0, 99, 99, 1, 0, 99, '0x' || '01' || '00000000000000000000000000000000000000000000000000000000000000', 999999, 1, 'lat', ?)",
+            "INSERT INTO current_node_chain_observations (node_id, rpc_client_version, syncing, current_block, highest_block, consensus_epoch, consensus_validator, consensus_highest_commit_block, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, updated_at) VALUES ('node-mismatched', 'platon/1.5.1', 0, 99, 99, 1, 0, 99, '0x' || '01' || '00000000000000000000000000000000000000000000000000000000000000', 999999, 1, 'lat', $1)",
         )
         .bind(&fresh)
         .execute(state.db().pool())
@@ -10272,7 +10273,7 @@ mod tests {
                 ("ok", "", "")
             };
             sqlx::query(
-                "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES ('agent-lifecycle-test', 'node', 'node-mismatched', 'node-mismatched', ?, ?, ?, ?, ?, 2, 1, ?, ?)",
+                "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES ('agent-lifecycle-test', 'node', 'node-mismatched', 'node-mismatched', $1, $2, $3, $4, $5, 2, 1, $6, $7)",
             )
             .bind(component)
             .bind(component_state)
@@ -10402,7 +10403,7 @@ mod tests {
 
         async fn insert_gap(state: &AppState, reason: &str, height: i64, at: &str, author: &str) {
             sqlx::query(
-                "INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES ('node-healthy', ?, ?, 'server_rejected', ?, ?, ?)",
+                "INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES ('node-healthy', $1, $2, 'server_rejected', $3, $4, $5)",
             )
             .bind(height)
             .bind(height)
@@ -10415,7 +10416,7 @@ mod tests {
         }
 
         async fn accept_summary(state: &AppState, at: &str) {
-            sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES ('node-healthy', 100, '0xhash', '0xparent', '0xgenesis', 210425, 1, 'lat', 1, ?, 2, 'subscription', '0x0000000000000000000000000000000000000000', 'unknown', 'unknown', 'test', ?)")
+            sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES ('node-healthy', 100, '0xhash', '0xparent', '0xgenesis', 210425, 1, 'lat', 1, $1, 2, 'subscription', '0x0000000000000000000000000000000000000000', 'unknown', 'unknown', 'test', $2)")
                 .bind(at)
                 .bind(at)
                 .execute(state.db().pool())
@@ -10573,7 +10574,7 @@ mod tests {
         assert_eq!(churn["recent_departures"][0]["peer_id"], "peer-healthy");
         assert!(churn["recent_departures"][0]["duration_seconds"].is_number());
         assert!(!churn.to_string().contains("203.0.113.7"));
-        sqlx::query("INSERT INTO peer_aggregate_5m (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO peer_aggregate_5m (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)")
             .bind("node-healthy")
             .bind("2026-08-12T10:05:00Z")
             .bind(1_i64)
@@ -10596,7 +10597,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO peer_aggregate_5m_countries (node_id, bucket_start, country_code, peer_count) VALUES (?, ?, ?, ?)")
+        sqlx::query("INSERT INTO peer_aggregate_5m_countries (node_id, bucket_start, country_code, peer_count) VALUES ($1, $2, $3, $4)")
             .bind("node-healthy")
             .bind("2026-08-12T10:05:00Z")
             .bind("US")
@@ -10675,7 +10676,7 @@ mod tests {
     /// Insert one 5-minute Peer receipt bucket holding a single trusted inbound
     /// Peer: the row shape one successful Report leaves behind.
     async fn insert_peer_bucket(state: &AppState, node_id: &str, bucket_start: &str) {
-        sqlx::query("INSERT INTO peer_aggregate_5m (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO peer_aggregate_5m (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, cbft_lag_min, cbft_lag_max, first_observed_at, last_observed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)")
             .bind(node_id)
             .bind(bucket_start)
             .bind(1_i64)
@@ -11326,7 +11327,7 @@ mod tests {
         let state = AppState::new(database, None, auth);
         sqlx::query("INSERT INTO users (user_id, username, role, password_hash, created_at, updated_at) VALUES ('owner', 'owner', 'owner', 'hash', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')").execute(state.db().pool()).await.unwrap();
         for agent in ["agent-source", "agent-target"] {
-            sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES (?, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ($1, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
                 .bind(agent)
                 .execute(state.db().pool())
                 .await
@@ -11377,7 +11378,7 @@ mod tests {
         assert_eq!(value["request_id"], "req-123");
         let audit_id = value["audit_event_id"].as_i64().unwrap();
         let audit: (String, String) = sqlx::query_as(
-            "SELECT event_kind, after_json FROM audit_events WHERE audit_event_id=?",
+            "SELECT event_kind, after_json FROM audit_events WHERE audit_event_id=$1",
         )
         .bind(audit_id)
         .fetch_one(state.db().pool())
@@ -11649,7 +11650,7 @@ mod tests {
         received_at: &str,
     ) {
         sqlx::query(
-            "INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, rejection_code, inventory_revision, inventory_sha256, inventory_protocol_major) VALUES (?, 'agent-lifecycle-test', 1, 'boot-inventory-test', ?, 'body-hash', ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, rejection_code, inventory_revision, inventory_sha256, inventory_protocol_major) VALUES ($1, 'agent-lifecycle-test', 1, 'boot-inventory-test', $2, 'body-hash', $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(report_id)
         .bind(report_sequence)

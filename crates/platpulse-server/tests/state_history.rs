@@ -126,13 +126,10 @@ impl Harness {
         self.state.db().pool()
     }
 
+    /// The state directory this deployment runs in. A PostgreSQL deployment
+    /// keeps nothing on this filesystem but still measures it for capacity.
     fn mount(&self) -> PathBuf {
-        self.state
-            .db()
-            .path()
-            .parent()
-            .expect("the database file has a parent directory")
-            .to_path_buf()
+        self._dir.path().to_path_buf()
     }
 
     async fn count_where(&self, table: &str, predicate: &str) -> i64 {
@@ -160,10 +157,7 @@ fn forced_policy(harness: &Harness) -> Arc<CapacityProtection> {
         Some(PathBuf::from("test-capacity-floor")),
     )
     .unwrap();
-    Arc::new(CapacityProtection::new(
-        config,
-        Some(harness.state.db().path()),
-    ))
+    Arc::new(CapacityProtection::new(config, harness.state.db().path()))
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
@@ -899,8 +893,17 @@ async fn a_replay_and_a_correction_are_counted_without_inventing_a_state_change(
 /// Story 59: a low-space pause is a visible protection gap with its counted
 /// losses, so a paused stretch is never recorded as a state, drawn as a change,
 /// or counted as proved coverage.
+#[cfg_attr(
+    storage_postgres,
+    ignore = "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)"
+)]
 #[tokio::test]
 async fn a_low_space_pause_is_a_protection_gap_with_its_counted_losses() {
+    if !platpulse_server::test_support::skip_unless_sqlite(
+        "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)",
+    ) {
+        return;
+    }
     let mut harness = Harness::boot().await;
     let session = owner_session(&harness).await;
     let (agent_id, credential) = enroll_agent(&harness, &session).await;
@@ -985,7 +988,7 @@ async fn a_low_space_pause_is_a_protection_gap_with_its_counted_losses() {
     .unwrap();
     let released = Arc::new(CapacityProtection::new(
         released_config,
-        Some(harness.state.db().path()),
+        harness.state.db().path(),
     ));
     released.reconcile(harness.pool()).await.unwrap();
     assert!(!released.status().protected);

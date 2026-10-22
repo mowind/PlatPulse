@@ -108,7 +108,7 @@ async fn write_agent_checkpoint(base: &Path, declaration_json: &str, inventory_s
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, boot_state, previous_boot_id, pending_transition, pending_previous_boot_id, close_report_id, last_report_body) VALUES (1, ?, 1, ?, 'drained_pending', ?, 'drained_previous', ?, ?, ?)",
+        "INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, boot_state, previous_boot_id, pending_transition, pending_previous_boot_id, close_report_id, last_report_body) VALUES (1, $1, 1, $2, 'drained_pending', $3, 'drained_previous', $4, $5, $6)",
     )
     .bind(AGENT_ID)
     .bind(NEXT_BOOT)
@@ -120,7 +120,7 @@ async fn write_agent_checkpoint(base: &Path, declaration_json: &str, inventory_s
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO upgrade_preparation (singleton, agent_id, agent_epoch, closing_report_id, closing_report_sequence, closing_receipt_disposition, inventory_revision, inventory_sha256, declaration_json, closed_boot_id, next_boot_id, pending_transition, accepted_inventory_revision, accepted_inventory_sha256, accepted_inventory_protocol_major) VALUES (1, ?, 1, ?, 4, 'accepted', 1, ?, ?, ?, ?, 'drained_previous', 1, ?, 1)",
+        "INSERT INTO upgrade_preparation (singleton, agent_id, agent_epoch, closing_report_id, closing_report_sequence, closing_receipt_disposition, inventory_revision, inventory_sha256, declaration_json, closed_boot_id, next_boot_id, pending_transition, accepted_inventory_revision, accepted_inventory_sha256, accepted_inventory_protocol_major) VALUES (1, $1, 1, $2, 4, 'accepted', 1, $3, $4, $5, $6, 'drained_previous', 1, $7, 1)",
     )
     .bind(AGENT_ID)
     .bind(CLOSING_ID)
@@ -229,7 +229,7 @@ impl Deployment {
             .unwrap();
         let now = "2026-08-12T09:00:00Z";
         sqlx::query(
-            "INSERT INTO agents (agent_id, agent_epoch, active_boot_id, active_boot_status, close_report_id, last_report_sequence, last_inventory_revision, inventory_sha256, inventory_protocol_major, created_at, updated_at) VALUES (?, 1, ?, 'closed', ?, 4, 1, ?, 1, ?, ?)",
+            "INSERT INTO agents (agent_id, agent_epoch, active_boot_id, active_boot_status, close_report_id, last_report_sequence, last_inventory_revision, inventory_sha256, inventory_protocol_major, created_at, updated_at) VALUES ($1, 1, $2, 'closed', $3, 4, 1, $4, 1, $5, $6)",
         )
         .bind(AGENT_ID)
         .bind(CLOSED_BOOT)
@@ -241,7 +241,7 @@ impl Deployment {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO agent_boots (agent_id, agent_epoch, boot_id, status, last_sequence, close_report_id, closed_at, created_at, updated_at) VALUES (?, 1, ?, 'closed', 4, ?, ?, ?, ?)",
+            "INSERT INTO agent_boots (agent_id, agent_epoch, boot_id, status, last_sequence, close_report_id, closed_at, created_at, updated_at) VALUES ($1, 1, $2, 'closed', 4, $3, $4, $5, $6)",
         )
         .bind(AGENT_ID)
         .bind(CLOSED_BOOT)
@@ -253,7 +253,7 @@ impl Deployment {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES (?, ?, 1, ?, 4, ?, 'accepted', ?, ?)",
+            "INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES ($1, $2, 1, $3, 4, $4, 'accepted', $5, $6)",
         )
         .bind(CLOSING_ID)
         .bind(AGENT_ID)
@@ -265,7 +265,7 @@ impl Deployment {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO deleted_nodes (node_id, agent_id, network_key, display_name, deleted_by_user_id, deleted_at) VALUES (?, ?, 'platon-mainnet', 'purged', NULL, ?)",
+            "INSERT INTO deleted_nodes (node_id, agent_id, network_key, display_name, deleted_by_user_id, deleted_at) VALUES ($1, $2, 'platon-mainnet', 'purged', NULL, $3)",
         )
         .bind(NODE_ID)
         .bind(AGENT_ID)
@@ -370,7 +370,7 @@ async fn receipt_body(path: &Path) -> Vec<u8> {
         .await
         .unwrap();
     let body: Vec<u8> =
-        sqlx::query_scalar("SELECT receipt_body FROM agent_report_receipts WHERE report_id = ?")
+        sqlx::query_scalar("SELECT receipt_body FROM agent_report_receipts WHERE report_id = $1")
             .bind(CLOSING_ID)
             .fetch_one(&mut connection)
             .await

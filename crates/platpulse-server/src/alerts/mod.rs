@@ -1168,7 +1168,9 @@ pub async fn extract_input(
         }
         (SubjectKind::Host, "host.disk_pressure") => {
             let row = sqlx::query_as::<_, (Option<f64>, Option<String>)>(
-                "SELECT MAX(used_bytes * 1.0 / total_bytes), MAX(updated_at) FROM current_host_disk_mounts WHERE agent_id = $1",
+                // PostgreSQL computes MAX over a numeric expression as NUMERIC, which the
+                // Any driver cannot decode; both backends accept this cast (ADR 0013).
+                "SELECT CAST(MAX(used_bytes * 1.0 / total_bytes) AS DOUBLE PRECISION), MAX(updated_at) FROM current_host_disk_mounts WHERE agent_id = $1",
             )
             .bind(subject_key)
             .fetch_one(&mut *executor)
@@ -1741,7 +1743,7 @@ pub async fn evaluate_rule(
     .bind(&transition.firing_since)
     .bind(&transition.recovering_since)
     .bind(input_kind)
-    .bind(input_value)
+    .bind(crate::database::NullableReal(input_value))
     .bind(input_detail)
     .bind(&evidence)
     .bind(transition.evaluation_unavailable as i64)
@@ -2226,12 +2228,12 @@ mod tests {
     async fn seed_subject(pool: &AnyPool, agent_id: &str, node_id: &str) {
         sqlx::query("INSERT INTO users (user_id, username, role, password_hash, created_at, updated_at) VALUES ('owner', 'owner', 'owner', 'hash', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
             .execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES (?, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ($1, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
             .bind(agent_id)
             .execute(pool).await.unwrap();
         sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Main', '0xgenesis', 210425, 1, 'lat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
             .execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, 'mainnet', 'ws://127.0.0.1:1', 'active', 'private', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ($1, $2, 'mainnet', 'ws://127.0.0.1:1', 'active', 'private', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
             .bind(node_id)
             .bind(agent_id)
             .execute(pool).await.unwrap();
@@ -2247,7 +2249,7 @@ mod tests {
     ) {
         let now = format_rfc3339(observed_at);
         let (error_code, error_message) = error.unwrap_or(("", ""));
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES (?, 'node', ?, ?, 'rpc', ?, ?, ?, ?, 1, 1, ?, ?) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, received_at=excluded.received_at, state_revision=state_revision+1, error_code=excluded.error_code, error_message=excluded.error_message")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES ($1, 'node', $2, $3, 'rpc', $4, $5, $6, $7, 1, 1, $8, $9) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, received_at=excluded.received_at, state_revision=component_status.state_revision+1, error_code=excluded.error_code, error_message=excluded.error_message")
             .bind(agent_id)
             .bind(node_id)
             .bind(node_id)
@@ -2264,7 +2266,7 @@ mod tests {
 
     async fn update_condition(pool: &AnyPool, rule_key: &str, condition: RuleCondition) {
         let json = serde_json::to_string(&condition).unwrap();
-        sqlx::query("UPDATE alert_rules SET condition_json = ? WHERE rule_key = ?")
+        sqlx::query("UPDATE alert_rules SET condition_json = $1 WHERE rule_key = $2")
             .bind(json)
             .bind(rule_key)
             .execute(pool)
@@ -2274,7 +2276,7 @@ mod tests {
 
     async fn count_incidents(pool: &AnyPool, rule_key: &str, subject_key: &str) -> (i64, i64) {
         let open: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM alert_incidents WHERE rule_key = ? AND subject_key = ? AND state = 'open'",
+            "SELECT COUNT(*) FROM alert_incidents WHERE rule_key = $1 AND subject_key = $2 AND state = 'open'",
         )
         .bind(rule_key)
         .bind(subject_key)
@@ -2282,7 +2284,7 @@ mod tests {
         .await
         .unwrap();
         let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM alert_incidents WHERE rule_key = ? AND subject_key = ?",
+            "SELECT COUNT(*) FROM alert_incidents WHERE rule_key = $1 AND subject_key = $2",
         )
         .bind(rule_key)
         .bind(subject_key)
@@ -2806,7 +2808,7 @@ mod tests {
         let now = base_time();
         // A very old `ok` observation must NOT count as fresh recovery.
         sqlx::query(
-            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-a', 'node', 'node-a', 'node-a', 'rpc', 'ok', ?, ?, ?, 1, 1)",
+            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-a', 'node', 'node-a', 'node-a', 'rpc', 'ok', $1, $2, $3, 1, 1)",
         )
         .bind(format_rfc3339(now - time::Duration::hours(2)))
         .bind(format_rfc3339(now - time::Duration::hours(2)))
@@ -2867,7 +2869,7 @@ mod tests {
         let starts = format_rfc3339(now - time::Duration::hours(1));
         let ends = format_rfc3339(now + time::Duration::hours(1));
         sqlx::query(
-            "INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES ('mnt-bad', 'node', 'node-a', 'not-json[[', 'corrupt', ?, ?, 'owner', ?)",
+            "INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES ('mnt-bad', 'node', 'node-a', 'not-json[[', 'corrupt', $1, $2, 'owner', $3)",
         )
         .bind(&starts).bind(&ends).bind(&starts)
         .execute(&pool)
@@ -2960,7 +2962,7 @@ mod tests {
         let (open, total) = count_incidents(&pool, "node.rpc_unreachable", "node-a").await;
         assert_eq!((open, total), (1, 1));
         let (rule_version, evidence): (i64, String) = sqlx::query_as(
-            "SELECT rule_version, opened_evidence_json FROM alert_incidents WHERE incident_id = ?",
+            "SELECT rule_version, opened_evidence_json FROM alert_incidents WHERE incident_id = $1",
         )
         .bind(&incident_id)
         .fetch_one(&pool)
@@ -3012,7 +3014,7 @@ mod tests {
         let (open, total) = count_incidents(&pool, "node.rpc_unreachable", "node-a").await;
         assert_eq!((open, total), (0, 1));
         let resolved: Option<String> =
-            sqlx::query_scalar("SELECT resolved_at FROM alert_incidents WHERE incident_id = ?")
+            sqlx::query_scalar("SELECT resolved_at FROM alert_incidents WHERE incident_id = $1")
                 .bind(&incident_id)
                 .fetch_one(&pool)
                 .await
@@ -3127,7 +3129,7 @@ mod tests {
         let (_dir, pool) = test_pool().await;
         seed_subject(&pool, "agent-a", "node-a").await;
         let now = format_rfc3339(base_time());
-        sqlx::query("INSERT INTO alert_rule_overrides (rule_key, scope_kind, scope_value, enabled, severity, condition_json, created_at, updated_at) VALUES ('host.memory_pressure', 'network', 'mainnet', NULL, NULL, ?, ?, ?)")
+        sqlx::query("INSERT INTO alert_rule_overrides (rule_key, scope_kind, scope_value, enabled, severity, condition_json, created_at, updated_at) VALUES ('host.memory_pressure', 'network', 'mainnet', NULL, NULL, $1, $2, $3)")
             .bind(serde_json::to_string(&RuleCondition::with_threshold(60, 120, 95.0)).unwrap())
             .bind(&now)
             .bind(&now)
@@ -3140,7 +3142,7 @@ mod tests {
         assert_eq!(eff.condition.threshold, Some(90.0));
 
         // Node rule with network override then a stricter node override.
-        sqlx::query("INSERT INTO alert_rule_overrides (rule_key, scope_kind, scope_value, severity, condition_json, created_at, updated_at) VALUES ('node.rpc_unreachable', 'network', 'mainnet', NULL, ?, ?, ?)")
+        sqlx::query("INSERT INTO alert_rule_overrides (rule_key, scope_kind, scope_value, severity, condition_json, created_at, updated_at) VALUES ('node.rpc_unreachable', 'network', 'mainnet', NULL, $1, $2, $3)")
             .bind(serde_json::to_string(&RuleCondition::boolean(10, 20)).unwrap())
             .bind(&now)
             .bind(&now)
@@ -3150,7 +3152,7 @@ mod tests {
         let eff = effective(&pool, "node.rpc_unreachable", SubjectKind::Node, "node-a").await;
         assert_eq!(eff.condition.for_secs, 10);
 
-        sqlx::query("INSERT INTO alert_rule_overrides (rule_key, scope_kind, scope_value, enabled, condition_json, created_at, updated_at) VALUES ('node.rpc_unreachable', 'node', 'node-a', 0, NULL, ?, ?)")
+        sqlx::query("INSERT INTO alert_rule_overrides (rule_key, scope_kind, scope_value, enabled, condition_json, created_at, updated_at) VALUES ('node.rpc_unreachable', 'node', 'node-a', 0, NULL, $1, $2)")
             .bind(&now)
             .bind(&now)
             .execute(&pool)
@@ -3172,7 +3174,8 @@ mod tests {
         assert_eq!(input.kind_str(), "unknown");
 
         // A report older than the offline threshold fires; a fresh one does not.
-        sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES ('r1', 'agent-a', 1, 'boot-a', 1, 'hash', 'accepted', x'00', ?)")
+        sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES ('r1', 'agent-a', 1, 'boot-a', 1, 'hash', 'accepted', $1, $2)")
+            .bind(vec![0u8])
             .bind(format_rfc3339(now - time::Duration::hours(2)))
             .execute(&pool)
             .await
@@ -3181,7 +3184,8 @@ mod tests {
         assert_eq!(input.kind_str(), "known");
         assert!(input.fires(120.0));
 
-        sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES ('r2', 'agent-a', 1, 'boot-a', 2, 'hash2', 'accepted', x'00', ?)")
+        sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES ('r2', 'agent-a', 1, 'boot-a', 2, 'hash2', 'accepted', $1, $2)")
+            .bind(vec![0u8])
             .bind(format_rfc3339(now - time::Duration::seconds(5)))
             .execute(&pool)
             .await
@@ -3190,7 +3194,7 @@ mod tests {
         assert!(!input.fires(120.0));
 
         // Host memory pressure maps the worst observed usage.
-        sqlx::query("INSERT INTO current_host_observations (agent_id, memory_used_bytes, memory_total_bytes, updated_at) VALUES ('agent-a', 950, 1000, ?)")
+        sqlx::query("INSERT INTO current_host_observations (agent_id, memory_used_bytes, memory_total_bytes, updated_at) VALUES ('agent-a', 950, 1000, $1)")
             .bind(format_rfc3339(now))
             .execute(&pool)
             .await
@@ -3224,7 +3228,7 @@ mod tests {
         seed_subject(&pool, "agent-a", "node-a").await;
         let now = base_time();
         let now_text = format_rfc3339(now);
-        sqlx::query("INSERT INTO block_history_state (node_id, updated_at, current_head) VALUES ('node-a', ?, 100)")
+        sqlx::query("INSERT INTO block_history_state (node_id, updated_at, current_head) VALUES ('node-a', $1, 100)")
             .bind(&now_text)
             .execute(&pool)
             .await
@@ -3240,7 +3244,7 @@ mod tests {
         .await;
         assert_eq!(input.kind_str(), "unknown");
 
-        sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence) VALUES ('mainnet', 500, ?, 'high')")
+        sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence) VALUES ('mainnet', 500, $1, 'high')")
             .bind(&now_text)
             .execute(&pool)
             .await
@@ -3257,12 +3261,12 @@ mod tests {
         assert!(input.fires(10.0));
 
         // Sync lag: syncing=1 fires; syncing=0 with a small gap does not.
-        sqlx::query("INSERT INTO current_node_chain_observations (node_id, syncing, current_block, highest_block, updated_at) VALUES ('node-a', 1, 100, 500, ?)")
+        sqlx::query("INSERT INTO current_node_chain_observations (node_id, syncing, current_block, highest_block, updated_at) VALUES ('node-a', 1, 100, 500, $1)")
             .bind(&now_text)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-a', 'node', 'node-a', 'node-a', 'sync', 'ok', ?, ?, ?, 1, 1)")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-a', 'node', 'node-a', 'node-a', 'sync', 'ok', $1, $2, $3, 1, 1)")
             .bind(&now_text).bind(&now_text).bind(&now_text)
             .execute(&pool)
             .await
@@ -3279,7 +3283,7 @@ mod tests {
         let now_text = format_rfc3339(now);
 
         // Partial observation stays unknown.
-        sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_genesis_hash, updated_at) VALUES ('node-a', '0xgenesis', ?)")
+        sqlx::query("INSERT INTO current_node_chain_observations (node_id, network_genesis_hash, updated_at) VALUES ('node-a', '0xgenesis', $1)")
             .bind(&now_text)
             .execute(&pool)
             .await
@@ -3333,23 +3337,23 @@ mod tests {
         let now = base_time();
         let now_text = format_rfc3339(now);
         let later = format_rfc3339(now + time::Duration::hours(2));
-        sqlx::query("INSERT INTO silences (silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at) VALUES ('sil-all', 'all', NULL, 'quiet', ?, ?, 'owner', ?)")
+        sqlx::query("INSERT INTO silences (silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at) VALUES ('sil-all', 'all', NULL, 'quiet', $1, $2, 'owner', $3)")
             .bind(&now_text).bind(&later).bind(&now_text)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO silences (silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at) VALUES ('sil-other-node', 'node', 'node-b', 'other', ?, ?, 'owner', ?)")
+        sqlx::query("INSERT INTO silences (silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at) VALUES ('sil-other-node', 'node', 'node-b', 'other', $1, $2, 'owner', $3)")
             .bind(&now_text).bind(&later).bind(&now_text)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES ('mnt-node-a', 'node', 'node-a', '[\"node.rpc_unreachable\"]', 'planned', ?, ?, 'owner', ?)")
+        sqlx::query("INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES ('mnt-node-a', 'node', 'node-a', '[\"node.rpc_unreachable\"]', 'planned', $1, $2, 'owner', $3)")
             .bind(&now_text).bind(&later).bind(&now_text)
             .execute(&pool)
             .await
             .unwrap();
         // Maintenance window for a different rule must not match.
-        sqlx::query("INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES ('mnt-other-rule', 'node', 'node-a', '[\"node.consensus_stalled\"]', 'other', ?, ?, 'owner', ?)")
+        sqlx::query("INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES ('mnt-other-rule', 'node', 'node-a', '[\"node.consensus_stalled\"]', 'other', $1, $2, 'owner', $3)")
             .bind(&now_text).bind(&later).bind(&now_text)
             .execute(&pool)
             .await
@@ -3371,12 +3375,12 @@ mod tests {
 
         // Agent-subject suppression: an agent-scoped maintenance window and
         // an agent silence match Host subjects by their Agent.
-        sqlx::query("INSERT INTO silences (silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at) VALUES ('sil-agent', 'agent', 'agent-a', 'agent quiet', ?, ?, 'owner', ?)")
+        sqlx::query("INSERT INTO silences (silence_id, matcher_kind, matcher_value, reason, starts_at, ends_at, created_by, created_at) VALUES ('sil-agent', 'agent', 'agent-a', 'agent quiet', $1, $2, 'owner', $3)")
             .bind(&now_text).bind(&later).bind(&now_text)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES ('mnt-agent', 'agent', 'agent-a', '[]', 'agent mnt', ?, ?, 'owner', ?)")
+        sqlx::query("INSERT INTO maintenance_windows (window_id, scope_kind, scope_value, expected_rule_keys, reason, starts_at, ends_at, created_by, created_at) VALUES ('mnt-agent', 'agent', 'agent-a', '[]', 'agent mnt', $1, $2, 'owner', $3)")
             .bind(&now_text).bind(&later).bind(&now_text)
             .execute(&pool)
             .await
@@ -3396,7 +3400,7 @@ mod tests {
         let past_start = format_rfc3339(now - time::Duration::hours(4));
         let past_end = format_rfc3339(now - time::Duration::hours(1));
         sqlx::query(
-            "UPDATE silences SET starts_at = ?, ends_at = ? WHERE silence_id = 'sil-agent'",
+            "UPDATE silences SET starts_at = $1, ends_at = $2 WHERE silence_id = 'sil-agent'",
         )
         .bind(&past_start)
         .bind(&past_end)

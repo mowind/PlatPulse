@@ -1,0 +1,1542 @@
+-- PostgreSQL baseline for Server schema version 75 (ADR 0013, #255).
+--
+-- One baseline that is logically equivalent to the SQLite schema produced by
+-- migrations/0001..0075: the same tables, columns, constraints and indexes.
+-- SQLite and PostgreSQL share the logical schema version, so this file carries
+-- version 75; every later Server schema change ships a SQLite migration and a
+-- PostgreSQL migration with the same version in the same change.
+--
+-- Type mapping mirrors the SQLite logical types: INTEGER -> BIGINT (0/1 flags
+-- stay integers), TEXT -> TEXT COLLATE "C" (byte-order comparisons, like
+-- SQLite's BINARY collation), BLOB -> BYTEA, REAL -> DOUBLE PRECISION.
+-- GLOB checks become anchored regular expressions, rowid aliases become
+-- identity columns, and every foreign key is DEFERRABLE INITIALLY IMMEDIATE so
+-- the transactions that defer foreign keys on SQLite can do so here too.
+--
+-- Generated from the migrated SQLite schema; keep it logically equivalent
+-- (the schema equivalence test compares both catalogs).
+
+CREATE TABLE users (
+    user_id TEXT COLLATE "C" PRIMARY KEY,
+    username TEXT COLLATE "C" NOT NULL UNIQUE,
+    role TEXT COLLATE "C" NOT NULL CHECK (role IN ('owner', 'viewer')),
+    password_hash TEXT COLLATE "C" NOT NULL,
+    disabled_at TEXT COLLATE "C",
+    created_at TEXT COLLATE "C" NOT NULL,
+    updated_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE agents (
+    agent_id TEXT COLLATE "C" PRIMARY KEY,
+    agent_epoch BIGINT NOT NULL CHECK (agent_epoch >= 0),
+    active_boot_id TEXT COLLATE "C",
+    last_report_sequence BIGINT CHECK (last_report_sequence IS NULL OR last_report_sequence > 0),
+    last_received_at TEXT COLLATE "C",
+    created_at TEXT COLLATE "C" NOT NULL,
+    updated_at TEXT COLLATE "C" NOT NULL
+, last_inventory_revision BIGINT NOT NULL DEFAULT 0 CHECK (last_inventory_revision >= 0), agent_capabilities_json TEXT COLLATE "C" NOT NULL DEFAULT '[]', clock_skew_ms BIGINT, clock_status TEXT COLLATE "C" NOT NULL DEFAULT 'unknown' CHECK (clock_status IN ('known', 'clock_unreliable', 'unknown')), inventory_sha256 TEXT COLLATE "C", active_boot_status TEXT COLLATE "C" NOT NULL DEFAULT 'active' CHECK (active_boot_status IN ('active', 'closing', 'closed')), previous_boot_id TEXT COLLATE "C", close_report_id TEXT COLLATE "C", close_applied_at TEXT COLLATE "C", security_event_count BIGINT NOT NULL DEFAULT 0 CHECK (security_event_count >= 0), shutdown_state TEXT COLLATE "C" NOT NULL DEFAULT 'unknown' CHECK (shutdown_state IN ('unknown', 'running', 'stopping', 'draining', 'final_stored', 'send_failed', 'forced_kill_recovery')), shutdown_started_at TEXT COLLATE "C", shutdown_deadline_at TEXT COLLATE "C", shutdown_finished_at TEXT COLLATE "C", shutdown_unresolved_from BIGINT, shutdown_unresolved_to BIGINT, shutdown_last_error TEXT COLLATE "C", shutdown_forced BIGINT NOT NULL DEFAULT 0 CHECK (shutdown_forced IN (0, 1)), shutdown_report_id TEXT COLLATE "C", shutdown_report_sequence BIGINT, shutdown_updated_at TEXT COLLATE "C", display_name TEXT COLLATE "C", notes TEXT COLLATE "C", deleted_at TEXT COLLATE "C", deleted_by_user_id TEXT COLLATE "C" REFERENCES users(user_id) DEFERRABLE INITIALLY IMMEDIATE, inventory_protocol_major BIGINT);
+
+CREATE TABLE agent_attention_acknowledgments (
+    agent_id TEXT COLLATE "C" NOT NULL REFERENCES agents(agent_id) DEFERRABLE INITIALLY IMMEDIATE,
+    kind TEXT COLLATE "C" NOT NULL,
+    evidence_key TEXT COLLATE "C" NOT NULL,
+    acknowledged_at TEXT COLLATE "C" NOT NULL,
+    acknowledged_by_user_id TEXT COLLATE "C" REFERENCES users(user_id) DEFERRABLE INITIALLY IMMEDIATE,
+    PRIMARY KEY (agent_id, kind, evidence_key)
+);
+
+CREATE TABLE agent_boots (
+    agent_id TEXT COLLATE "C" NOT NULL,
+    agent_epoch BIGINT NOT NULL CHECK (agent_epoch >= 0),
+    boot_id TEXT COLLATE "C" NOT NULL,
+    status TEXT COLLATE "C" NOT NULL CHECK (status IN ('active', 'closing', 'closed')),
+    previous_boot_id TEXT COLLATE "C",
+    last_sequence BIGINT NOT NULL DEFAULT 0 CHECK (last_sequence >= 0),
+    close_report_id TEXT COLLATE "C",
+    closed_at TEXT COLLATE "C",
+    created_at TEXT COLLATE "C" NOT NULL,
+    updated_at TEXT COLLATE "C" NOT NULL,
+    PRIMARY KEY (agent_id, agent_epoch, boot_id)
+);
+
+CREATE TABLE agent_credentials (
+    credential_id TEXT COLLATE "C" PRIMARY KEY,
+    agent_id TEXT COLLATE "C" NOT NULL REFERENCES agents(agent_id) DEFERRABLE INITIALLY IMMEDIATE,
+    credential_digest BYTEA NOT NULL UNIQUE,
+    created_at TEXT COLLATE "C" NOT NULL,
+    revoked_at TEXT COLLATE "C"
+, revoke_after TEXT COLLATE "C");
+
+CREATE TABLE agent_report_receipts (
+    report_id TEXT COLLATE "C" PRIMARY KEY,
+    agent_id TEXT COLLATE "C" NOT NULL REFERENCES agents(agent_id) DEFERRABLE INITIALLY IMMEDIATE,
+    agent_epoch BIGINT NOT NULL CHECK (agent_epoch >= 0),
+    boot_id TEXT COLLATE "C" NOT NULL,
+    report_sequence BIGINT NOT NULL CHECK (report_sequence > 0),
+    report_body_sha256 TEXT COLLATE "C" NOT NULL,
+    disposition TEXT COLLATE "C" NOT NULL CHECK (
+        disposition IN ('accepted', 'partially_accepted', 'rejected')
+    ),
+    receipt_body BYTEA NOT NULL,
+    received_at TEXT COLLATE "C" NOT NULL, rejection_code TEXT COLLATE "C", inventory_revision BIGINT, inventory_sha256 TEXT COLLATE "C", inventory_protocol_major BIGINT, receipt_slimmed_at TEXT COLLATE "C",
+    UNIQUE (agent_id, agent_epoch, boot_id, report_sequence)
+);
+
+CREATE TABLE agent_spool_diagnostics (
+    agent_id TEXT COLLATE "C" PRIMARY KEY REFERENCES agents(agent_id) DEFERRABLE INITIALLY IMMEDIATE,
+    max_bytes BIGINT,
+    max_age_seconds BIGINT,
+    dropped_sequence_from BIGINT,
+    dropped_sequence_to BIGINT,
+    dropped_time_from TEXT COLLATE "C",
+    dropped_time_to TEXT COLLATE "C",
+    dropped_height_from BIGINT,
+    dropped_height_to BIGINT,
+    pending_history_gaps BIGINT,
+    report_too_large BIGINT,
+    store_fatal BIGINT,
+    store_error TEXT COLLATE "C",
+    updated_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE alert_rules (
+    rule_key TEXT COLLATE "C" PRIMARY KEY,
+    enabled BIGINT NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    severity TEXT COLLATE "C" NOT NULL CHECK (severity IN ('info', 'warning', 'critical')),
+    version BIGINT NOT NULL DEFAULT 1 CHECK (version >= 1),
+    condition_json TEXT COLLATE "C" NOT NULL,
+    created_at TEXT COLLATE "C" NOT NULL,
+    updated_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE alert_incidents (
+    incident_id TEXT COLLATE "C" PRIMARY KEY,
+    rule_key TEXT COLLATE "C" NOT NULL REFERENCES alert_rules(rule_key) DEFERRABLE INITIALLY IMMEDIATE,
+    rule_version BIGINT NOT NULL,
+    subject_kind TEXT COLLATE "C" NOT NULL CHECK (
+        subject_kind IN ('agent', 'host', 'node', 'network', 'validator', 'server')
+    ),
+    subject_key TEXT COLLATE "C" NOT NULL,
+    severity TEXT COLLATE "C" NOT NULL CHECK (severity IN ('info', 'warning', 'critical')),
+    state TEXT COLLATE "C" NOT NULL CHECK (state IN ('open', 'resolved')),
+    sequence BIGINT NOT NULL CHECK (sequence >= 1),
+    opened_at TEXT COLLATE "C" NOT NULL,
+    resolved_at TEXT COLLATE "C",
+    opened_evidence_json TEXT COLLATE "C" NOT NULL,
+    resolved_evidence_json TEXT COLLATE "C", subject_deleted_at TEXT COLLATE "C",
+    UNIQUE (rule_key, subject_key, sequence)
+);
+
+CREATE TABLE alert_rule_overrides (
+    rule_key TEXT COLLATE "C" NOT NULL REFERENCES alert_rules(rule_key) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    scope_kind TEXT COLLATE "C" NOT NULL CHECK (scope_kind IN ('network', 'node')),
+    scope_value TEXT COLLATE "C" NOT NULL,
+    enabled BIGINT CHECK (enabled IN (0, 1)),
+    severity TEXT COLLATE "C" CHECK (severity IN ('info', 'warning', 'critical')),
+    condition_json TEXT COLLATE "C",
+    created_at TEXT COLLATE "C" NOT NULL,
+    updated_at TEXT COLLATE "C" NOT NULL,
+    PRIMARY KEY (rule_key, scope_kind, scope_value),
+    CHECK (enabled IS NOT NULL OR severity IS NOT NULL OR condition_json IS NOT NULL)
+);
+
+CREATE TABLE alert_rule_state (
+    rule_key TEXT COLLATE "C" NOT NULL REFERENCES alert_rules(rule_key) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    subject_kind TEXT COLLATE "C" NOT NULL CHECK (
+        subject_kind IN ('agent', 'host', 'node', 'network', 'validator', 'server')
+    ),
+    subject_key TEXT COLLATE "C" NOT NULL,
+    state TEXT COLLATE "C" NOT NULL CHECK (state IN ('normal', 'pending', 'firing', 'recovering')),
+    since TEXT COLLATE "C" NOT NULL,
+    pending_since TEXT COLLATE "C",
+    firing_since TEXT COLLATE "C",
+    recovering_since TEXT COLLATE "C",
+    input_kind TEXT COLLATE "C" NOT NULL CHECK (input_kind IN ('known', 'unknown', 'stale', 'unsupported')),
+    input_value DOUBLE PRECISION,
+    input_detail TEXT COLLATE "C",
+    evidence_json TEXT COLLATE "C",
+    evaluation_unavailable BIGINT NOT NULL DEFAULT 0 CHECK (evaluation_unavailable IN (0, 1)),
+    last_evaluated_at TEXT COLLATE "C" NOT NULL,
+    PRIMARY KEY (rule_key, subject_key)
+);
+
+CREATE TABLE alert_rule_versions (
+    rule_key TEXT COLLATE "C" NOT NULL REFERENCES alert_rules(rule_key) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    version BIGINT NOT NULL CHECK (version >= 1),
+    severity TEXT COLLATE "C" NOT NULL CHECK (severity IN ('info', 'warning', 'critical')),
+    condition_json TEXT COLLATE "C" NOT NULL,
+    created_at TEXT COLLATE "C" NOT NULL,
+    PRIMARY KEY (rule_key, version)
+);
+
+CREATE TABLE audit_events (
+    audit_event_id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    actor_user_id TEXT COLLATE "C" REFERENCES users(user_id) DEFERRABLE INITIALLY IMMEDIATE,
+    event_kind TEXT COLLATE "C" NOT NULL,
+    target_kind TEXT COLLATE "C" NOT NULL,
+    target_id TEXT COLLATE "C",
+    before_json TEXT COLLATE "C",
+    after_json TEXT COLLATE "C",
+    created_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE backup_artifacts (
+    artifact_id TEXT COLLATE "C" PRIMARY KEY,
+    -- Sanitized base name only; never an absolute path.
+    filename TEXT COLLATE "C" NOT NULL CHECK (length(filename) BETWEEN 1 AND 120),
+    bytes BIGINT NOT NULL CHECK (bytes >= 0),
+    sha256 TEXT COLLATE "C" NOT NULL CHECK (length(sha256) = 64),
+    schema_version BIGINT NOT NULL,
+    server_version TEXT COLLATE "C" NOT NULL,
+    created_at TEXT COLLATE "C" NOT NULL,
+    data_range_min TEXT COLLATE "C",
+    data_range_max TEXT COLLATE "C",
+    verification TEXT COLLATE "C" NOT NULL DEFAULT 'pending'
+        CHECK (verification IN ('pending', 'ok', 'failed')),
+    verified_at TEXT COLLATE "C",
+    verification_error TEXT COLLATE "C"
+        CHECK (verification_error IS NULL OR length(verification_error) BETWEEN 1 AND 300),
+    create_operation_id TEXT COLLATE "C",
+    verify_operation_id TEXT COLLATE "C"
+);
+
+CREATE TABLE networks (
+    network_key TEXT COLLATE "C" PRIMARY KEY,
+    display_name TEXT COLLATE "C" NOT NULL,
+    genesis_hash TEXT COLLATE "C" NOT NULL,
+    chain_id BIGINT NOT NULL CHECK (chain_id >= 0),
+    p2p_network_id BIGINT NOT NULL CHECK (p2p_network_id >= 0),
+    address_hrp TEXT COLLATE "C" NOT NULL,
+    created_at TEXT COLLATE "C" NOT NULL,
+    updated_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE nodes (
+    node_id TEXT COLLATE "C" PRIMARY KEY,
+    agent_id TEXT COLLATE "C" NOT NULL REFERENCES agents(agent_id) DEFERRABLE INITIALLY IMMEDIATE,
+    network_key TEXT COLLATE "C" NOT NULL REFERENCES networks(network_key) DEFERRABLE INITIALLY IMMEDIATE,
+    display_name TEXT COLLATE "C",
+    rpc_endpoint TEXT COLLATE "C" NOT NULL,
+    lifecycle TEXT COLLATE "C" NOT NULL CHECK (lifecycle IN ('active', 'retired')),
+    visibility TEXT COLLATE "C" NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'public')),
+    inventory_revision BIGINT NOT NULL CHECK (inventory_revision > 0),
+    first_seen_at TEXT COLLATE "C" NOT NULL,
+    updated_at TEXT COLLATE "C" NOT NULL,
+    UNIQUE (agent_id, node_id)
+);
+
+CREATE TABLE block_coverage_intervals (
+    coverage_id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    first_height BIGINT NOT NULL CHECK (first_height >= 0),
+    last_height BIGINT NOT NULL CHECK (last_height >= first_height),
+    status TEXT COLLATE "C" NOT NULL CHECK (
+        status IN ('covered', 'open_recoverable_gap', 'permanent_gap')
+    ),
+    created_at TEXT COLLATE "C" NOT NULL,
+    updated_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE block_history_gaps (
+    gap_id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    from_height BIGINT NOT NULL CHECK (from_height >= 0),
+    to_height BIGINT NOT NULL CHECK (to_height >= from_height),
+    kind TEXT COLLATE "C" NOT NULL,
+    created_at TEXT COLLATE "C" NOT NULL,
+    resolved_at TEXT COLLATE "C"
+, reason TEXT COLLATE "C" NOT NULL DEFAULT 'history gap', authored_by TEXT COLLATE "C" NOT NULL DEFAULT 'agent'
+    CHECK (authored_by IN ('server', 'agent')));
+
+CREATE TABLE block_history_state (
+    node_id TEXT COLLATE "C" PRIMARY KEY REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    historical_high_watermark BIGINT NOT NULL DEFAULT 0 CHECK (historical_high_watermark >= 0),
+    cumulative_block_count BIGINT NOT NULL DEFAULT 0 CHECK (cumulative_block_count >= 0),
+    cumulative_transaction_count BIGINT NOT NULL DEFAULT 0 CHECK (cumulative_transaction_count >= 0),
+    cumulative_self_seal_count BIGINT NOT NULL DEFAULT 0 CHECK (cumulative_self_seal_count >= 0),
+    updated_at TEXT COLLATE "C" NOT NULL
+, current_head BIGINT, resync_state TEXT COLLATE "C" NOT NULL DEFAULT 'normal' CHECK (resync_state IN ('normal', 'resyncing', 'stalled')), resync_started_at TEXT COLLATE "C", resync_last_progress_at TEXT COLLATE "C", resync_target_height BIGINT, last_accepted_summary_at TEXT COLLATE "C");
+
+CREATE TABLE block_identity_window (
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    height BIGINT NOT NULL CHECK (height >= 0),
+    block_hash TEXT COLLATE "C" NOT NULL,
+    retained_until TEXT COLLATE "C", observed_at TEXT COLLATE "C",
+    PRIMARY KEY (node_id, height)
+);
+
+CREATE TABLE block_summaries (
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    block_number BIGINT NOT NULL CHECK (block_number >= 0),
+    block_hash TEXT COLLATE "C" NOT NULL,
+    parent_hash TEXT COLLATE "C" NOT NULL,
+    network_genesis_hash TEXT COLLATE "C" NOT NULL,
+    network_chain_id BIGINT NOT NULL CHECK (network_chain_id >= 0),
+    network_p2p_network_id BIGINT NOT NULL CHECK (network_p2p_network_id >= 0),
+    network_address_hrp TEXT COLLATE "C" NOT NULL,
+    block_timestamp_ms BIGINT NOT NULL CHECK (block_timestamp_ms >= 0),
+    observed_at TEXT COLLATE "C" NOT NULL,
+    transaction_count BIGINT NOT NULL CHECK (transaction_count >= 0),
+    block_interval_ms BIGINT CHECK (block_interval_ms IS NULL OR block_interval_ms >= 0),
+    source TEXT COLLATE "C" NOT NULL CHECK (source IN ('subscription', 'gap_backfill')),
+    coinbase TEXT COLLATE "C" NOT NULL,
+    seal_signer_key_fingerprint TEXT COLLATE "C",
+    seal_signer_match TEXT COLLATE "C" NOT NULL CHECK (
+        seal_signer_match IN ('self', 'other', 'unknown')
+    ),
+    protocol_proposer_kind TEXT COLLATE "C" NOT NULL CHECK (
+        protocol_proposer_kind IN ('verified', 'unknown')
+    ),
+    protocol_proposer_identity TEXT COLLATE "C",
+    attribution_reason TEXT COLLATE "C" NOT NULL,
+    accepted_at TEXT COLLATE "C" NOT NULL, node_key_fingerprint TEXT COLLATE "C", node_key_valid_from TEXT COLLATE "C", node_key_valid_until TEXT COLLATE "C", node_key_history_complete BIGINT NOT NULL DEFAULT 0 CHECK (node_key_history_complete IN (0, 1)), seal_recovery_rule TEXT COLLATE "C", seal_evidence TEXT COLLATE "C",
+    PRIMARY KEY (node_id, block_number),
+    CHECK (
+        (protocol_proposer_kind = 'verified' AND protocol_proposer_identity IS NOT NULL)
+        OR (protocol_proposer_kind = 'unknown' AND protocol_proposer_identity IS NULL)
+    )
+);
+
+CREATE TABLE capacity_protection_intervals (
+    interval_id TEXT COLLATE "C" PRIMARY KEY CHECK (length(interval_id) BETWEEN 1 AND 64),
+    source_mount TEXT COLLATE "C" NOT NULL CHECK (length(source_mount) BETWEEN 1 AND 4096),
+    started_at TEXT COLLATE "C" NOT NULL,
+    started_reason TEXT COLLATE "C" NOT NULL CHECK (started_reason IN ('low_space')),
+    opened_total_bytes BIGINT NOT NULL CHECK (opened_total_bytes >= 0),
+    opened_available_bytes BIGINT NOT NULL CHECK (opened_available_bytes >= 0),
+    pause_below_bytes BIGINT NOT NULL CHECK (pause_below_bytes > 0),
+    resume_above_bytes BIGINT NOT NULL CHECK (resume_above_bytes >= pause_below_bytes),
+    ended_at TEXT COLLATE "C",
+    ended_reason TEXT COLLATE "C" CHECK (ended_reason IN ('resumed', 'protection_disabled')),
+    resumed_total_bytes BIGINT CHECK (resumed_total_bytes >= 0),
+    resumed_available_bytes BIGINT CHECK (resumed_available_bytes >= 0),
+    created_at TEXT COLLATE "C" NOT NULL,
+    updated_at TEXT COLLATE "C" NOT NULL,
+    CHECK ((ended_at IS NULL) = (ended_reason IS NULL)),
+    CHECK ((ended_at IS NULL) = (resumed_total_bytes IS NULL)),
+    CHECK ((ended_at IS NULL) = (resumed_available_bytes IS NULL)),
+    CHECK (ended_at IS NULL OR ended_at >= started_at)
+);
+
+CREATE TABLE capacity_skipped_series (
+    interval_id TEXT COLLATE "C" NOT NULL REFERENCES capacity_protection_intervals(interval_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    scope_kind TEXT COLLATE "C" NOT NULL CHECK (scope_kind IN ('node', 'host')),
+    scope_key TEXT COLLATE "C" NOT NULL CHECK (length(scope_key) BETWEEN 1 AND 128),
+    metric TEXT COLLATE "C" NOT NULL CHECK (length(metric) BETWEEN 1 AND 128),
+    dimension TEXT COLLATE "C" NOT NULL DEFAULT '' CHECK (length(dimension) <= 4096),
+    skipped_count BIGINT NOT NULL CHECK (skipped_count > 0),
+    first_skipped_at TEXT COLLATE "C" NOT NULL,
+    last_skipped_at TEXT COLLATE "C" NOT NULL,
+    PRIMARY KEY (interval_id, scope_kind, scope_key, metric, dimension)
+);
+
+CREATE TABLE chain_divergence_observations (
+    divergence_id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    height BIGINT NOT NULL CHECK (height >= 0),
+    retained_block_hash TEXT COLLATE "C" NOT NULL,
+    observed_block_hash TEXT COLLATE "C" NOT NULL,
+    observed_at TEXT COLLATE "C" NOT NULL,
+    reason TEXT COLLATE "C" NOT NULL
+, retained_observed_at TEXT COLLATE "C");
+
+CREATE TABLE component_status (
+    agent_id TEXT COLLATE "C" NOT NULL REFERENCES agents(agent_id) DEFERRABLE INITIALLY IMMEDIATE,
+    scope TEXT COLLATE "C" NOT NULL CHECK (scope IN ('host', 'node')),
+    scope_key TEXT COLLATE "C" NOT NULL,
+    node_id TEXT COLLATE "C",
+    component_key TEXT COLLATE "C" NOT NULL,
+    state TEXT COLLATE "C" NOT NULL CHECK (
+        state IN ('starting', 'ok', 'error', 'disabled', 'unsupported')
+    ),
+    attempted_at TEXT COLLATE "C",
+    observed_at TEXT COLLATE "C",
+    received_at TEXT COLLATE "C",
+    state_revision BIGINT NOT NULL CHECK (state_revision >= 0),
+    value_revision BIGINT NOT NULL CHECK (value_revision >= 0),
+    error_code TEXT COLLATE "C",
+    error_message TEXT COLLATE "C", value_received_at TEXT COLLATE "C",
+    PRIMARY KEY (agent_id, scope, scope_key, component_key),
+    FOREIGN KEY (agent_id, node_id) REFERENCES nodes(agent_id, node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    CHECK (
+        (scope = 'host' AND scope_key = 'host' AND node_id IS NULL)
+        OR (scope = 'node' AND node_id IS NOT NULL AND scope_key = node_id)
+    )
+);
+
+CREATE TABLE current_host_disk_mounts (
+    agent_id TEXT COLLATE "C" NOT NULL REFERENCES agents(agent_id) DEFERRABLE INITIALLY IMMEDIATE,
+    mount_path TEXT COLLATE "C" NOT NULL,
+    total_bytes BIGINT NOT NULL CHECK (total_bytes >= 0),
+    used_bytes BIGINT NOT NULL CHECK (used_bytes >= 0 AND used_bytes <= total_bytes),
+    updated_at TEXT COLLATE "C" NOT NULL,
+    PRIMARY KEY (agent_id, mount_path)
+);
+
+CREATE TABLE current_host_observations (
+    agent_id TEXT COLLATE "C" PRIMARY KEY REFERENCES agents(agent_id) DEFERRABLE INITIALLY IMMEDIATE,
+    cpu_percent DOUBLE PRECISION,
+    memory_total_bytes BIGINT,
+    memory_used_bytes BIGINT,
+    load1 DOUBLE PRECISION,
+    load5 DOUBLE PRECISION,
+    load15 DOUBLE PRECISION,
+    network_rx_bytes_per_sec BIGINT,
+    network_tx_bytes_per_sec BIGINT,
+    clock_skew_ms BIGINT,
+    spool_queued_bytes BIGINT,
+    spool_queued_reports BIGINT,
+    spool_oldest_queued_age_ms BIGINT,
+    spool_dropped_reports BIGINT,
+    spool_dropped_samples BIGINT,
+    updated_at TEXT COLLATE "C" NOT NULL
+, spool_in_flight BIGINT, spool_last_delivery_error TEXT COLLATE "C", spool_last_delivery_at TEXT COLLATE "C", spool_capacity_bytes BIGINT, spool_max_age_seconds BIGINT, spool_dropped_sequence_from BIGINT, spool_dropped_sequence_to BIGINT, spool_dropped_time_from TEXT COLLATE "C", spool_dropped_time_to TEXT COLLATE "C", spool_dropped_height_from BIGINT, spool_dropped_height_to BIGINT, spool_pending_history_gaps BIGINT, spool_report_too_large BIGINT, spool_store_fatal BIGINT, spool_store_error TEXT COLLATE "C");
+
+CREATE TABLE current_node_chain_observations (
+    node_id TEXT COLLATE "C" PRIMARY KEY REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    rpc_client_version TEXT COLLATE "C",
+    syncing BIGINT CHECK (syncing IS NULL OR syncing IN (0, 1)),
+    current_block BIGINT,
+    highest_block BIGINT,
+    pulled_states BIGINT,
+    known_states BIGINT,
+    consensus_epoch BIGINT,
+    consensus_view_number BIGINT,
+    consensus_validator BIGINT CHECK (
+        consensus_validator IS NULL OR consensus_validator IN (0, 1)
+    ),
+    consensus_highest_qc_block BIGINT,
+    consensus_highest_lock_block BIGINT,
+    consensus_highest_commit_block BIGINT,
+    network_genesis_hash TEXT COLLATE "C",
+    network_chain_id BIGINT,
+    network_p2p_network_id BIGINT,
+    network_address_hrp TEXT COLLATE "C",
+    node_key_fingerprint TEXT COLLATE "C",
+    enode TEXT COLLATE "C",
+    updated_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE current_node_data_directory_observations (
+    node_id TEXT COLLATE "C" PRIMARY KEY REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    size_bytes BIGINT NOT NULL CHECK (size_bytes >= 0),
+    updated_at TEXT COLLATE "C" NOT NULL
+, capacity_bytes BIGINT CHECK (capacity_bytes IS NULL OR capacity_bytes >= 0));
+
+CREATE TABLE current_node_peers (
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    peer_id TEXT COLLATE "C" NOT NULL CHECK (length(peer_id) > 0 AND length(peer_id) <= 128),
+    remote_ip TEXT COLLATE "C" CHECK (remote_ip IS NULL OR length(remote_ip) <= 45),
+    direction TEXT COLLATE "C" NOT NULL CHECK (direction IN ('inbound', 'outbound')),
+    trusted BIGINT NOT NULL CHECK (trusted IN (0, 1)),
+    static_peer BIGINT NOT NULL CHECK (static_peer IN (0, 1)),
+    consensus_peer BIGINT NOT NULL CHECK (consensus_peer IN (0, 1)),
+    client_name TEXT COLLATE "C" CHECK (client_name IS NULL OR length(client_name) <= 256),
+    cbft_protocol_version BIGINT CHECK (cbft_protocol_version IS NULL OR (cbft_protocol_version >= 0 AND cbft_protocol_version <= 1024)),
+    cbft_highest_qc_block BIGINT CHECK (cbft_highest_qc_block IS NULL OR cbft_highest_qc_block >= 0),
+    cbft_locked_block BIGINT CHECK (cbft_locked_block IS NULL OR cbft_locked_block >= 0),
+    cbft_commit_block BIGINT CHECK (cbft_commit_block IS NULL OR cbft_commit_block >= 0),
+    updated_at TEXT COLLATE "C" NOT NULL,
+    PRIMARY KEY (node_id, peer_id)
+);
+
+CREATE TABLE current_node_peer_capabilities (
+    node_id TEXT COLLATE "C" NOT NULL,
+    peer_id TEXT COLLATE "C" NOT NULL,
+    capability TEXT COLLATE "C" NOT NULL CHECK (length(capability) > 0 AND length(capability) <= 128),
+    updated_at TEXT COLLATE "C" NOT NULL,
+    PRIMARY KEY (node_id, peer_id, capability),
+    FOREIGN KEY (node_id, peer_id)
+        REFERENCES current_node_peers(node_id, peer_id)
+        ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE
+);
+
+CREATE TABLE current_node_process_observations (
+    node_id TEXT COLLATE "C" PRIMARY KEY REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    pid BIGINT,
+    started_at TEXT COLLATE "C",
+    cpu_percent DOUBLE PRECISION,
+    memory_bytes BIGINT,
+    uptime_ms BIGINT,
+    updated_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE current_node_rpc_methods (
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    method TEXT COLLATE "C" NOT NULL,
+    updated_at TEXT COLLATE "C" NOT NULL,
+    PRIMARY KEY (node_id, method)
+);
+
+CREATE TABLE current_node_rpc_namespaces (
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    namespace TEXT COLLATE "C" NOT NULL,
+    updated_at TEXT COLLATE "C" NOT NULL,
+    PRIMARY KEY (node_id, namespace)
+);
+
+CREATE TABLE validators (
+    validator_id TEXT COLLATE "C" PRIMARY KEY,
+    network_key TEXT COLLATE "C" NOT NULL REFERENCES networks(network_key) DEFERRABLE INITIALLY IMMEDIATE,
+    validator_node_id TEXT COLLATE "C" NOT NULL,
+    display_name TEXT COLLATE "C",
+    created_at TEXT COLLATE "C" NOT NULL,
+    updated_at TEXT COLLATE "C" NOT NULL,
+    UNIQUE (network_key, validator_node_id)
+);
+
+CREATE TABLE "current_validator_insights" (
+    validator_id TEXT COLLATE "C" PRIMARY KEY REFERENCES validators(validator_id) DEFERRABLE INITIALLY IMMEDIATE,
+    source TEXT COLLATE "C",
+    outcome TEXT COLLATE "C" NOT NULL CHECK (outcome IN ('success', 'not_found', 'empty', 'not_configured', 'error', 'unsupported')),
+    diagnostic TEXT COLLATE "C",
+    provider_timestamp TEXT COLLATE "C",
+    last_attempt_received_at TEXT COLLATE "C" NOT NULL,
+    last_good_received_at TEXT COLLATE "C",
+    last_good_provider_timestamp TEXT COLLATE "C",
+    rank BIGINT,
+    stake_amount TEXT COLLATE "C",
+    reward_amount TEXT COLLATE "C",
+    reward_rate TEXT COLLATE "C",
+    delegator_count BIGINT,
+    epoch BIGINT,
+    block_count BIGINT,
+    counter_state TEXT COLLATE "C" NOT NULL DEFAULT 'normal' CHECK (counter_state IN ('normal', 'counter_reset')),
+    candidate_previous_rank BIGINT,
+    candidate_rank BIGINT,
+    candidate_observations BIGINT NOT NULL DEFAULT 0,
+    last_observation_key TEXT COLLATE "C",
+    updated_at TEXT COLLATE "C" NOT NULL,
+    change_state TEXT COLLATE "C" NOT NULL DEFAULT 'normal' CHECK (change_state IN ('normal', 'ranking_changed', 'counter_reset')),
+    candidate_observed_at TEXT COLLATE "C",
+    candidate_provider_timestamp TEXT COLLATE "C",
+    candidate_observation_key TEXT COLLATE "C",
+    activity TEXT COLLATE "C" CHECK (activity IN ('candidate', 'active', 'producing', 'exiting', 'exited', 'verifying', 'locked')),
+    expected_block_count BIGINT,
+    gen_blocks_rate TEXT COLLATE "C",
+    delegation_reward_percentage TEXT COLLATE "C",
+    rank_outcome TEXT COLLATE "C" CHECK (rank_outcome IN ('success', 'error', 'not_configured', 'unsupported')),
+    rank_diagnostic TEXT COLLATE "C",
+    rank_last_attempt_received_at TEXT COLLATE "C",
+    rank_last_good_received_at TEXT COLLATE "C",
+    rank_cohort_size BIGINT
+, last_good_verdict_outcome TEXT COLLATE "C"
+    CHECK (last_good_verdict_outcome IN ('success', 'empty')), last_good_verdict_received_at TEXT COLLATE "C");
+
+CREATE TABLE deleted_nodes (
+    node_id TEXT COLLATE "C" PRIMARY KEY,
+    agent_id TEXT COLLATE "C" NOT NULL,
+    network_key TEXT COLLATE "C" NOT NULL,
+    display_name TEXT COLLATE "C",
+    deleted_by_user_id TEXT COLLATE "C" REFERENCES users(user_id) DEFERRABLE INITIALLY IMMEDIATE,
+    deleted_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE notification_events (
+    event_id TEXT COLLATE "C" PRIMARY KEY,
+    event_kind TEXT COLLATE "C" NOT NULL CHECK (event_kind IN ('incident', 'test')),
+    incident_id TEXT COLLATE "C" REFERENCES alert_incidents(incident_id) ON DELETE SET NULL DEFERRABLE INITIALLY IMMEDIATE,
+    rule_key TEXT COLLATE "C",
+    subject_kind TEXT COLLATE "C" CHECK (
+        subject_kind IN ('agent', 'host', 'node', 'network', 'validator', 'server')
+    ),
+    subject_key TEXT COLLATE "C",
+    severity TEXT COLLATE "C" NOT NULL CHECK (severity IN ('info', 'warning', 'critical')),
+    summary TEXT COLLATE "C" NOT NULL CHECK (length(summary) BETWEEN 1 AND 500),
+    created_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE "notification_deliveries" (
+    delivery_id TEXT COLLATE "C" PRIMARY KEY,
+    event_id TEXT COLLATE "C" NOT NULL REFERENCES notification_events(event_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    channel_kind TEXT COLLATE "C" NOT NULL CHECK (channel_kind IN ('telegram')),
+    destination TEXT COLLATE "C" NOT NULL CHECK (length(destination) BETWEEN 1 AND 200),
+    state TEXT COLLATE "C" NOT NULL CHECK (
+        state IN ('pending', 'in_flight', 'retry_scheduled', 'succeeded', 'failed', 'dead_letter', 'suppressed', 'cancelled')
+    ),
+    attempt_count BIGINT NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    next_attempt_at TEXT COLLATE "C",
+    last_attempt_at TEXT COLLATE "C",
+    last_result TEXT COLLATE "C" CHECK (last_result IS NULL OR length(last_result) BETWEEN 1 AND 300),
+    last_error_kind TEXT COLLATE "C" CHECK (
+        last_error_kind IS NULL
+        OR last_error_kind IN ('telegram_api', 'network', 'timeout', 'config', 'internal')
+    ),
+    retry_after_seconds BIGINT CHECK (retry_after_seconds IS NULL OR retry_after_seconds >= 0),
+    created_at TEXT COLLATE "C" NOT NULL,
+    updated_at TEXT COLLATE "C" NOT NULL,
+    UNIQUE (event_id, channel_kind)
+);
+
+CREATE TABLE "delivery_attempts" (
+    attempt_id TEXT COLLATE "C" PRIMARY KEY,
+    delivery_id TEXT COLLATE "C" NOT NULL REFERENCES "notification_deliveries"(delivery_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    attempt_number BIGINT NOT NULL CHECK (attempt_number >= 1),
+    attempted_at TEXT COLLATE "C" NOT NULL,
+    outcome TEXT COLLATE "C" NOT NULL CHECK (outcome IN ('succeeded', 'failed')),
+    provider_result TEXT COLLATE "C" NOT NULL CHECK (length(provider_result) BETWEEN 1 AND 300),
+    error_kind TEXT COLLATE "C" CHECK (
+        error_kind IS NULL
+        OR error_kind IN ('telegram_api', 'network', 'timeout', 'config', 'internal')
+    ),
+    duration_ms BIGINT CHECK (duration_ms IS NULL OR duration_ms >= 0),
+    retry_after_seconds BIGINT CHECK (retry_after_seconds IS NULL OR retry_after_seconds >= 0),
+    UNIQUE (delivery_id, attempt_number)
+);
+
+CREATE TABLE enrollment_tokens (
+    token_id TEXT COLLATE "C" PRIMARY KEY,
+    token_digest BYTEA NOT NULL UNIQUE,
+    created_at TEXT COLLATE "C" NOT NULL,
+    expires_at TEXT COLLATE "C" NOT NULL,
+    consumed_at TEXT COLLATE "C",
+    consumed_agent_id TEXT COLLATE "C" REFERENCES agents(agent_id) DEFERRABLE INITIALLY IMMEDIATE,
+    revoked_at TEXT COLLATE "C"
+);
+
+CREATE TABLE "geo_location_cache" (
+    provider TEXT COLLATE "C" NOT NULL,
+    canonical_ip TEXT COLLATE "C" NOT NULL,
+    country_code TEXT COLLATE "C" CHECK(country_code IS NULL OR country_code ~ '^[A-Z][A-Z]$'),
+    state TEXT COLLATE "C" NOT NULL CHECK(state IN ('current', 'no_country', 'failed')),
+    created_at TEXT COLLATE "C",
+    last_attempt_at TEXT COLLATE "C" NOT NULL,
+    last_success_at TEXT COLLATE "C",
+    last_referenced_at TEXT COLLATE "C" NOT NULL,
+    expires_at TEXT COLLATE "C",
+    PRIMARY KEY (provider, canonical_ip)
+);
+
+CREATE TABLE host_metric_aggregates (
+    agent_id TEXT COLLATE "C" NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    metric TEXT COLLATE "C" NOT NULL CHECK (length(metric) BETWEEN 1 AND 64),
+    dimension TEXT COLLATE "C" NOT NULL DEFAULT '' CHECK (length(dimension) <= 4096),
+    grain_seconds BIGINT NOT NULL CHECK (grain_seconds IN (60, 300)),
+    bucket_start TEXT COLLATE "C" NOT NULL CHECK (length(bucket_start) = 20),
+    sample_count BIGINT NOT NULL CHECK (sample_count >= 1),
+    min_value DOUBLE PRECISION NOT NULL,
+    max_value DOUBLE PRECISION NOT NULL CHECK (max_value >= min_value),
+    last_value DOUBLE PRECISION NOT NULL,
+    first_observed_at TEXT COLLATE "C" NOT NULL,
+    last_observed_at TEXT COLLATE "C" NOT NULL,
+    last_received_at TEXT COLLATE "C" NOT NULL,
+    max_gap_seconds BIGINT NOT NULL DEFAULT 0
+        CHECK (max_gap_seconds >= 0 AND max_gap_seconds <= grain_seconds),
+    updated_at TEXT COLLATE "C" NOT NULL,
+    PRIMARY KEY (agent_id, metric, dimension, grain_seconds, bucket_start)
+);
+
+CREATE TABLE host_metric_samples (
+    agent_id TEXT COLLATE "C" NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    metric TEXT COLLATE "C" NOT NULL CHECK (metric IN (
+        'cpu_percent',
+        'memory_used_bytes',
+        'memory_total_bytes',
+        'load1',
+        'load5',
+        'load15',
+        'network_rx_bytes_per_sec',
+        'network_tx_bytes_per_sec',
+        'disk_used_bytes',
+        'disk_total_bytes'
+    )),
+    dimension TEXT COLLATE "C" NOT NULL DEFAULT '' CHECK (length(dimension) <= 4096),
+    observed_at TEXT COLLATE "C" NOT NULL,
+    received_at TEXT COLLATE "C" NOT NULL,
+    value DOUBLE PRECISION NOT NULL CHECK (value >= 0),
+    PRIMARY KEY (agent_id, metric, dimension, observed_at)
+);
+
+CREATE TABLE host_metric_series_state (
+    agent_id TEXT COLLATE "C" NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    metric TEXT COLLATE "C" NOT NULL CHECK (length(metric) BETWEEN 1 AND 64),
+    dimension TEXT COLLATE "C" NOT NULL DEFAULT '' CHECK (length(dimension) <= 4096),
+    first_observed_at TEXT COLLATE "C" NOT NULL,
+    last_observed_at TEXT COLLATE "C" NOT NULL,
+    last_received_at TEXT COLLATE "C" NOT NULL,
+    observation_count BIGINT NOT NULL CHECK (observation_count >= 1),
+    replayed_count BIGINT NOT NULL DEFAULT 0 CHECK (replayed_count >= 0),
+    corrected_count BIGINT NOT NULL DEFAULT 0 CHECK (corrected_count >= 0),
+    released_before TEXT COLLATE "C" NOT NULL DEFAULT '1970-01-01T00:00:00Z'
+        CHECK (length(released_before) = 20),
+    updated_at TEXT COLLATE "C" NOT NULL,
+    PRIMARY KEY (agent_id, metric, dimension)
+);
+
+CREATE TABLE incident_acknowledgments (
+    incident_id TEXT COLLATE "C" PRIMARY KEY REFERENCES alert_incidents(incident_id) DEFERRABLE INITIALLY IMMEDIATE,
+    acknowledged_by_user_id TEXT COLLATE "C" REFERENCES users(user_id) DEFERRABLE INITIALLY IMMEDIATE,
+    acknowledged_by_username TEXT COLLATE "C" NOT NULL,
+    acknowledged_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE inventory_cutover (
+    singleton BIGINT PRIMARY KEY CHECK (singleton = 1),
+    state TEXT COLLATE "C" NOT NULL CHECK (state = 'resumed'),
+    resumed_at TEXT COLLATE "C" NOT NULL,
+    checkpoint_manifest_sha256 TEXT COLLATE "C" NOT NULL,
+    conversion_manifest_sha256 TEXT COLLATE "C" NOT NULL,
+    agent_id TEXT COLLATE "C" NOT NULL,
+    protocol_major BIGINT NOT NULL CHECK (protocol_major = 2),
+    preserved_revision BIGINT NOT NULL CHECK (preserved_revision >= 0),
+    previous_sha256 TEXT COLLATE "C",
+    fingerprint_sha256 TEXT COLLATE "C"
+);
+
+CREATE TABLE inventory_migration (
+    singleton BIGINT PRIMARY KEY CHECK (singleton = 1),
+    protocol_major BIGINT NOT NULL CHECK (protocol_major = 2),
+    preserved_revision BIGINT NOT NULL CHECK (preserved_revision >= 0),
+    previous_sha256 TEXT COLLATE "C",
+    fingerprint_sha256 TEXT COLLATE "C",
+    converted_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE maintenance_windows (
+    window_id TEXT COLLATE "C" PRIMARY KEY,
+    scope_kind TEXT COLLATE "C" NOT NULL CHECK (scope_kind IN ('agent', 'node', 'network')),
+    scope_value TEXT COLLATE "C" NOT NULL,
+    expected_rule_keys TEXT COLLATE "C" NOT NULL DEFAULT '[]',
+    reason TEXT COLLATE "C" NOT NULL CHECK (length(reason) > 0),
+    starts_at TEXT COLLATE "C" NOT NULL,
+    ends_at TEXT COLLATE "C" NOT NULL,
+    created_by TEXT COLLATE "C" NOT NULL REFERENCES users(user_id) DEFERRABLE INITIALLY IMMEDIATE,
+    created_at TEXT COLLATE "C" NOT NULL,
+    cancelled_at TEXT COLLATE "C",
+    cancelled_by TEXT COLLATE "C" REFERENCES users(user_id) DEFERRABLE INITIALLY IMMEDIATE,
+    CHECK (ends_at > starts_at)
+);
+
+CREATE TABLE network_reference_heads (
+    network_key TEXT COLLATE "C" PRIMARY KEY REFERENCES networks(network_key) DEFERRABLE INITIALLY IMMEDIATE,
+    block_number BIGINT CHECK (block_number IS NULL OR block_number >= 0),
+    observed_at TEXT COLLATE "C" NOT NULL,
+    confidence TEXT COLLATE "C" NOT NULL CHECK (confidence IN ('high', 'medium', 'low', 'unknown')),
+    eligible_source_count BIGINT NOT NULL DEFAULT 0 CHECK (eligible_source_count >= 0),
+    contributing_node_id TEXT COLLATE "C"
+);
+
+CREATE TABLE node_block_aggregates (
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    grain_seconds BIGINT NOT NULL CHECK (grain_seconds IN (60, 300)),
+    bucket_start TEXT COLLATE "C" NOT NULL CHECK (length(bucket_start) = 20),
+    block_count BIGINT NOT NULL CHECK (block_count >= 1),
+    transaction_total BIGINT NOT NULL CHECK (transaction_total >= 0),
+    transaction_min BIGINT NOT NULL CHECK (transaction_min >= 0),
+    transaction_max BIGINT NOT NULL CHECK (transaction_max >= transaction_min),
+    last_transaction_count BIGINT NOT NULL CHECK (last_transaction_count >= 0),
+    interval_count BIGINT NOT NULL DEFAULT 0 CHECK (interval_count >= 0 AND interval_count <= block_count),
+    interval_min_ms BIGINT CHECK (interval_min_ms IS NULL OR interval_min_ms > 0),
+    interval_max_ms BIGINT,
+    last_interval_ms BIGINT,
+    last_interval_observed_at TEXT COLLATE "C",
+    first_observed_at TEXT COLLATE "C" NOT NULL,
+    last_observed_at TEXT COLLATE "C" NOT NULL,
+    last_received_at TEXT COLLATE "C" NOT NULL,
+    max_gap_seconds BIGINT NOT NULL DEFAULT 0
+        CHECK (max_gap_seconds >= 0 AND max_gap_seconds <= grain_seconds),
+    updated_at TEXT COLLATE "C" NOT NULL,
+    PRIMARY KEY (node_id, grain_seconds, bucket_start),
+    CHECK (
+        (interval_count = 0 AND interval_min_ms IS NULL AND interval_max_ms IS NULL
+            AND last_interval_ms IS NULL AND last_interval_observed_at IS NULL)
+        OR (interval_count > 0 AND interval_min_ms IS NOT NULL
+            AND interval_max_ms >= interval_min_ms AND last_interval_ms IS NOT NULL
+            AND last_interval_observed_at IS NOT NULL)
+    )
+);
+
+CREATE TABLE node_metric_aggregates (
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    metric TEXT COLLATE "C" NOT NULL CHECK (length(metric) BETWEEN 1 AND 64),
+    grain_seconds BIGINT NOT NULL CHECK (grain_seconds IN (60, 300)),
+    bucket_start TEXT COLLATE "C" NOT NULL CHECK (length(bucket_start) = 20),
+    sample_count BIGINT NOT NULL CHECK (sample_count >= 1),
+    min_value DOUBLE PRECISION NOT NULL,
+    max_value DOUBLE PRECISION NOT NULL CHECK (max_value >= min_value),
+    last_value DOUBLE PRECISION NOT NULL,
+    first_observed_at TEXT COLLATE "C" NOT NULL,
+    last_observed_at TEXT COLLATE "C" NOT NULL,
+    last_received_at TEXT COLLATE "C" NOT NULL,
+    max_gap_seconds BIGINT NOT NULL DEFAULT 0
+        CHECK (max_gap_seconds >= 0 AND max_gap_seconds <= grain_seconds),
+    updated_at TEXT COLLATE "C" NOT NULL,
+    PRIMARY KEY (node_id, metric, grain_seconds, bucket_start)
+);
+
+CREATE TABLE node_metric_samples (
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    metric TEXT COLLATE "C" NOT NULL CHECK (metric IN (
+        'process_cpu_percent',
+        'process_memory_percent',
+        'data_directory_percent',
+        'peer_inbound_count',
+        'peer_outbound_count',
+        'sync_current_block',
+        'sync_highest_block',
+        'consensus_highest_qc_block',
+        'consensus_highest_lock_block',
+        'consensus_highest_commit_block'
+    )),
+    observed_at TEXT COLLATE "C" NOT NULL,
+    received_at TEXT COLLATE "C" NOT NULL,
+    value DOUBLE PRECISION NOT NULL CHECK (value >= 0),
+    PRIMARY KEY (node_id, metric, observed_at)
+);
+
+CREATE TABLE node_metric_series_state (
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    metric TEXT COLLATE "C" NOT NULL CHECK (length(metric) BETWEEN 1 AND 64),
+    first_observed_at TEXT COLLATE "C" NOT NULL,
+    last_observed_at TEXT COLLATE "C" NOT NULL,
+    last_received_at TEXT COLLATE "C" NOT NULL,
+    observation_count BIGINT NOT NULL CHECK (observation_count >= 1),
+    replayed_count BIGINT NOT NULL DEFAULT 0 CHECK (replayed_count >= 0),
+    corrected_count BIGINT NOT NULL DEFAULT 0 CHECK (corrected_count >= 0),
+    released_before TEXT COLLATE "C" NOT NULL DEFAULT '1970-01-01T00:00:00Z'
+        CHECK (length(released_before) = 20),
+    updated_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE node_relationship_intervals (
+    interval_id TEXT COLLATE "C" PRIMARY KEY,
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    -- 'agent' is the Node's reporting Agent. A Host relation is not stored
+    -- separately: Host observations are collected once per Agent and Host
+    -- alert subjects are keyed by the Agent id, so the recorded Agent interval
+    -- is the Host relation's evidence too.
+    relation_kind TEXT COLLATE "C" NOT NULL CHECK (relation_kind IN ('agent', 'network')),
+    related_key TEXT COLLATE "C" NOT NULL,
+    origin TEXT COLLATE "C" NOT NULL CHECK (origin IN ('enrollment', 'transfer', 'network_change')),
+    valid_from TEXT COLLATE "C" NOT NULL,
+    valid_until TEXT COLLATE "C",
+    recorded_at TEXT COLLATE "C" NOT NULL,
+    CHECK (valid_until IS NULL OR valid_until > valid_from)
+);
+
+CREATE TABLE node_state_observations (
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    component TEXT COLLATE "C" NOT NULL CHECK (component IN ('sync', 'consensus')),
+    observed_at TEXT COLLATE "C" NOT NULL CHECK (length(observed_at) = 20),
+    received_at TEXT COLLATE "C" NOT NULL CHECK (length(received_at) = 20),
+    entry_kind TEXT COLLATE "C" NOT NULL CHECK (entry_kind IN ('change', 'anchor')),
+    collection_state TEXT COLLATE "C" NOT NULL CHECK (collection_state IN (
+        'starting',
+        'ok',
+        'error',
+        'disabled',
+        'unsupported'
+    )),
+    value_source TEXT COLLATE "C" NOT NULL CHECK (value_source IN ('current', 'last_good', 'none')),
+    value_observed_at TEXT COLLATE "C" CHECK (value_observed_at IS NULL OR length(value_observed_at) = 20),
+    error_code TEXT COLLATE "C" CHECK (error_code IS NULL OR length(error_code) BETWEEN 1 AND 128),
+    syncing BIGINT CHECK (syncing IS NULL OR syncing IN (0, 1)),
+    PRIMARY KEY (node_id, component, observed_at)
+);
+
+CREATE TABLE node_state_series_state (
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    component TEXT COLLATE "C" NOT NULL CHECK (component IN ('sync', 'consensus')),
+    first_observed_at TEXT COLLATE "C" NOT NULL,
+    last_observed_at TEXT COLLATE "C" NOT NULL,
+    last_received_at TEXT COLLATE "C" NOT NULL,
+    last_collection_state TEXT COLLATE "C" NOT NULL CHECK (last_collection_state IN (
+        'starting',
+        'ok',
+        'error',
+        'disabled',
+        'unsupported'
+    )),
+    last_value_source TEXT COLLATE "C" NOT NULL CHECK (last_value_source IN ('current', 'last_good', 'none')),
+    last_value_observed_at TEXT COLLATE "C" CHECK (last_value_observed_at IS NULL OR length(last_value_observed_at) = 20),
+    last_error_code TEXT COLLATE "C" CHECK (last_error_code IS NULL OR length(last_error_code) BETWEEN 1 AND 128),
+    last_syncing BIGINT CHECK (last_syncing IS NULL OR last_syncing IN (0, 1)),
+    last_entry_at TEXT COLLATE "C" CHECK (last_entry_at IS NULL OR length(last_entry_at) = 20),
+    -- The newest instant this series counted a delivery for, whether or not that
+    -- delivery needed a row of its own. An unchanged state writes no row between
+    -- anchors, so the entries alone cannot tell a delivery that has already been
+    -- counted from the first sighting of an older instant: without this column a
+    -- repeated Report would be counted as a second delivery, and an out-of-order
+    -- Report that states a transition the log does not hold would be discarded as
+    -- a repeat instead of being recorded.
+    last_delivery_at TEXT COLLATE "C" NOT NULL CHECK (length(last_delivery_at) = 20),
+    entry_count BIGINT NOT NULL CHECK (entry_count >= 1),
+    change_count BIGINT NOT NULL CHECK (change_count >= 1),
+    anchor_count BIGINT NOT NULL DEFAULT 0 CHECK (anchor_count >= 0),
+    replayed_count BIGINT NOT NULL DEFAULT 0 CHECK (replayed_count >= 0),
+    corrected_count BIGINT NOT NULL DEFAULT 0 CHECK (corrected_count >= 0),
+    released_before TEXT COLLATE "C" NOT NULL DEFAULT '1970-01-01T00:00:00Z'
+        CHECK (length(released_before) = 20),
+    updated_at TEXT COLLATE "C" NOT NULL,
+    PRIMARY KEY (node_id, component)
+);
+
+CREATE TABLE node_transfers (
+    transfer_id TEXT COLLATE "C" PRIMARY KEY,
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    source_agent_id TEXT COLLATE "C" NOT NULL REFERENCES agents(agent_id) DEFERRABLE INITIALLY IMMEDIATE,
+    target_agent_id TEXT COLLATE "C" NOT NULL REFERENCES agents(agent_id) DEFERRABLE INITIALLY IMMEDIATE,
+    status TEXT COLLATE "C" NOT NULL CHECK (status IN (
+        'pending', 'completed', 'cancelled', 'expired', 'rejected',
+        'conflict', 'identity_mismatch'
+    )),
+    operator_reason TEXT COLLATE "C",
+    created_at TEXT COLLATE "C" NOT NULL,
+    expires_at TEXT COLLATE "C" NOT NULL,
+    cancelled_at TEXT COLLATE "C",
+    completed_at TEXT COLLATE "C",
+    rejection_code TEXT COLLATE "C",
+    rejection_reason TEXT COLLATE "C",
+    mismatched_fields TEXT COLLATE "C",
+    updated_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE node_validator_identity_status (
+    node_id TEXT COLLATE "C" PRIMARY KEY REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    state TEXT COLLATE "C" NOT NULL CHECK (state IN (
+        'identified',
+        'missing_public_key',
+        'invalid_public_key',
+        'network_identity_missing',
+        'network_identity_mismatch'
+    )),
+    observed_node_key TEXT COLLATE "C",
+    updated_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE "node_validator_links" (
+    link_id TEXT COLLATE "C" PRIMARY KEY,
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    validator_id TEXT COLLATE "C" NOT NULL REFERENCES validators(validator_id) DEFERRABLE INITIALLY IMMEDIATE,
+    role TEXT COLLATE "C" CHECK (role IS NULL OR role IN ('primary', 'standby', 'observer')),
+    origin TEXT COLLATE "C" NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual', 'automatic')),
+    valid_from TEXT COLLATE "C" NOT NULL,
+    valid_until TEXT COLLATE "C",
+    created_at TEXT COLLATE "C" NOT NULL,
+    updated_at TEXT COLLATE "C" NOT NULL,
+    CHECK (valid_until IS NULL OR valid_until > valid_from)
+);
+
+CREATE TABLE notification_requests (
+    request_id TEXT COLLATE "C" PRIMARY KEY CHECK (length(request_id) BETWEEN 1 AND 128),
+    command_kind TEXT COLLATE "C" NOT NULL CHECK (command_kind IN ('test', 'retry')),
+    intent_fingerprint TEXT COLLATE "C" NOT NULL CHECK (length(intent_fingerprint) BETWEEN 1 AND 200),
+    event_id TEXT COLLATE "C" REFERENCES notification_events(event_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    delivery_id TEXT COLLATE "C" NOT NULL REFERENCES notification_deliveries(delivery_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    audit_event_id BIGINT NOT NULL,
+    created_at TEXT COLLATE "C" NOT NULL,
+    expires_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE observed_network_heads (
+    node_id TEXT COLLATE "C" PRIMARY KEY REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    block_number BIGINT CHECK (block_number IS NULL OR block_number >= 0),
+    block_hash TEXT COLLATE "C",
+    observed_at TEXT COLLATE "C" NOT NULL,
+    confidence TEXT COLLATE "C" NOT NULL CHECK (confidence IN ('high', 'medium', 'low', 'unknown')),
+    eligible_sources TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE "operations" (
+    operation_id TEXT COLLATE "C" PRIMARY KEY,
+    kind TEXT COLLATE "C" NOT NULL CHECK (kind IN (
+        'retention_run', 'backup_create', 'backup_verify', 'doctor_run',
+        'restore'
+    )),
+    status TEXT COLLATE "C" NOT NULL CHECK (status IN (
+        'queued', 'running', 'succeeded',
+        'succeeded_with_warnings', 'failed', 'cancelled'
+    )),
+    progress_percent BIGINT NOT NULL DEFAULT 0 CHECK (progress_percent BETWEEN 0 AND 100),
+    progress_label TEXT COLLATE "C",
+    request_id TEXT COLLATE "C",
+    -- Sanitized JSON: parameters never carry secrets or paths.
+    params_json TEXT COLLATE "C" NOT NULL DEFAULT '{}',
+    warnings_json TEXT COLLATE "C" NOT NULL DEFAULT '[]',
+    errors_json TEXT COLLATE "C" NOT NULL DEFAULT '[]',
+    result_json TEXT COLLATE "C",
+    created_by_user_id TEXT COLLATE "C" REFERENCES users(user_id) DEFERRABLE INITIALLY IMMEDIATE,
+    created_at TEXT COLLATE "C" NOT NULL,
+    started_at TEXT COLLATE "C",
+    finished_at TEXT COLLATE "C",
+    audit_event_id BIGINT,
+    cancel_requested BIGINT NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1))
+);
+
+CREATE TABLE operation_requests (
+    request_id TEXT COLLATE "C" PRIMARY KEY CHECK (length(request_id) BETWEEN 1 AND 128),
+    kind TEXT COLLATE "C" NOT NULL,
+    intent_fingerprint TEXT COLLATE "C" NOT NULL CHECK (length(intent_fingerprint) BETWEEN 1 AND 200),
+    operation_id TEXT COLLATE "C" NOT NULL REFERENCES operations(operation_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    audit_event_id BIGINT NOT NULL,
+    created_at TEXT COLLATE "C" NOT NULL,
+    expires_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE peer_aggregate_1h (
+    aggregate_id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    bucket_start TEXT COLLATE "C" NOT NULL,
+    sample_count BIGINT NOT NULL CHECK (sample_count > 0),
+    total_peers BIGINT NOT NULL CHECK (total_peers >= 0),
+    inbound_count BIGINT NOT NULL CHECK (inbound_count >= 0),
+    outbound_count BIGINT NOT NULL CHECK (outbound_count >= 0),
+    trusted_count BIGINT NOT NULL CHECK (trusted_count >= 0),
+    static_count BIGINT NOT NULL CHECK (static_count >= 0),
+    consensus_count BIGINT NOT NULL CHECK (consensus_count >= 0),
+    known_country_count BIGINT NOT NULL CHECK (known_country_count >= 0),
+    unknown_country_count BIGINT NOT NULL CHECK (unknown_country_count >= 0),
+    arrivals BIGINT NOT NULL CHECK (arrivals >= 0),
+    departures BIGINT NOT NULL CHECK (departures >= 0),
+    cbft_lag_count BIGINT NOT NULL CHECK (cbft_lag_count >= 0),
+    cbft_lag_sum BIGINT NOT NULL CHECK (cbft_lag_sum >= 0),
+    cbft_lag_min BIGINT CHECK (cbft_lag_min IS NULL OR cbft_lag_min >= 0),
+    cbft_lag_max BIGINT CHECK (cbft_lag_max IS NULL OR cbft_lag_max >= 0),
+    first_observed_at TEXT COLLATE "C" NOT NULL,
+    last_observed_at TEXT COLLATE "C" NOT NULL,
+    UNIQUE (node_id, bucket_start),
+    CHECK (outbound_count + inbound_count <= total_peers),
+    CHECK (known_country_count + unknown_country_count = total_peers),
+    CHECK (cbft_lag_count = 0 OR (cbft_lag_min IS NOT NULL AND cbft_lag_max IS NOT NULL))
+);
+
+CREATE TABLE peer_aggregate_1h_countries (
+    node_id TEXT COLLATE "C" NOT NULL,
+    bucket_start TEXT COLLATE "C" NOT NULL,
+    country_code TEXT COLLATE "C" NOT NULL CHECK (length(country_code) = 2 AND country_code ~ '^[A-Z][A-Z]$'),
+    peer_count BIGINT NOT NULL CHECK (peer_count > 0),
+    PRIMARY KEY (node_id, bucket_start, country_code),
+    FOREIGN KEY (node_id, bucket_start)
+        REFERENCES peer_aggregate_1h (node_id, bucket_start)
+        ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE
+);
+
+CREATE TABLE peer_aggregate_5m (
+    aggregate_id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+    bucket_start TEXT COLLATE "C" NOT NULL,
+    sample_count BIGINT NOT NULL CHECK (sample_count > 0),
+    total_peers BIGINT NOT NULL CHECK (total_peers >= 0),
+    inbound_count BIGINT NOT NULL CHECK (inbound_count >= 0),
+    outbound_count BIGINT NOT NULL CHECK (outbound_count >= 0),
+    trusted_count BIGINT NOT NULL CHECK (trusted_count >= 0),
+    static_count BIGINT NOT NULL CHECK (static_count >= 0),
+    consensus_count BIGINT NOT NULL CHECK (consensus_count >= 0),
+    known_country_count BIGINT NOT NULL CHECK (known_country_count >= 0),
+    unknown_country_count BIGINT NOT NULL CHECK (unknown_country_count >= 0),
+    arrivals BIGINT NOT NULL CHECK (arrivals >= 0),
+    departures BIGINT NOT NULL CHECK (departures >= 0),
+    cbft_lag_count BIGINT NOT NULL CHECK (cbft_lag_count >= 0),
+    cbft_lag_sum BIGINT NOT NULL CHECK (cbft_lag_sum >= 0),
+    cbft_lag_min BIGINT CHECK (cbft_lag_min IS NULL OR cbft_lag_min >= 0),
+    cbft_lag_max BIGINT CHECK (cbft_lag_max IS NULL OR cbft_lag_max >= 0),
+    first_observed_at TEXT COLLATE "C" NOT NULL,
+    last_observed_at TEXT COLLATE "C" NOT NULL,
+    UNIQUE (node_id, bucket_start),
+    CHECK (outbound_count + inbound_count <= total_peers),
+    CHECK (known_country_count + unknown_country_count = total_peers),
+    CHECK (cbft_lag_count = 0 OR (cbft_lag_min IS NOT NULL AND cbft_lag_max IS NOT NULL))
+);
+
+CREATE TABLE peer_aggregate_5m_countries (
+    node_id TEXT COLLATE "C" NOT NULL,
+    bucket_start TEXT COLLATE "C" NOT NULL,
+    country_code TEXT COLLATE "C" NOT NULL CHECK (length(country_code) = 2 AND country_code ~ '^[A-Z][A-Z]$'),
+    peer_count BIGINT NOT NULL CHECK (peer_count > 0),
+    PRIMARY KEY (node_id, bucket_start, country_code),
+    FOREIGN KEY (node_id, bucket_start)
+        REFERENCES peer_aggregate_5m (node_id, bucket_start)
+        ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE
+);
+
+CREATE TABLE peer_presence_intervals (
+    interval_id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    node_id TEXT COLLATE "C" NOT NULL REFERENCES nodes(node_id) DEFERRABLE INITIALLY IMMEDIATE,
+    peer_id TEXT COLLATE "C" NOT NULL CHECK (length(peer_id) > 0 AND length(peer_id) <= 128),
+    direction TEXT COLLATE "C" NOT NULL CHECK (direction IN ('inbound', 'outbound')),
+    trusted BIGINT NOT NULL CHECK (trusted IN (0, 1)),
+    static_peer BIGINT NOT NULL CHECK (static_peer IN (0, 1)),
+    consensus_peer BIGINT NOT NULL CHECK (consensus_peer IN (0, 1)),
+    client_name TEXT COLLATE "C" CHECK (client_name IS NULL OR length(client_name) <= 256),
+    opened_at TEXT COLLATE "C" NOT NULL,
+    closed_at TEXT COLLATE "C",
+    CHECK (closed_at IS NULL OR closed_at >= opened_at)
+);
+
+CREATE TABLE recovery_tokens (
+    token_id TEXT COLLATE "C" PRIMARY KEY,
+    token_digest BYTEA NOT NULL UNIQUE,
+    agent_id TEXT COLLATE "C" NOT NULL REFERENCES agents(agent_id) DEFERRABLE INITIALLY IMMEDIATE,
+    created_at TEXT COLLATE "C" NOT NULL,
+    expires_at TEXT COLLATE "C" NOT NULL,
+    consumed_at TEXT COLLATE "C",
+    revoked_at TEXT COLLATE "C"
+);
+
+CREATE TABLE report_sequence_gaps (
+    gap_id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    agent_id TEXT COLLATE "C" NOT NULL REFERENCES agents(agent_id) DEFERRABLE INITIALLY IMMEDIATE,
+    boot_id TEXT COLLATE "C" NOT NULL,
+    from_sequence BIGINT NOT NULL CHECK (from_sequence > 0),
+    to_sequence BIGINT NOT NULL CHECK (to_sequence >= from_sequence),
+    created_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE retention_policies (
+    family TEXT COLLATE "C" PRIMARY KEY CHECK (family IN (
+        'raw_block_summary',
+        'one_minute_aggregate',
+        'five_minute_aggregate',
+        'one_hour_aggregate',
+        'history_gap',
+        'divergence_observation',
+        'audit_event',
+        'alert_notification',
+        'peer_presence_interval',
+        'peer_aggregate_5m',
+        'peer_aggregate_1h',
+        'validator_daily_snapshot',
+        'validator_monthly_aggregate',
+        'report_receipt_body',
+        'raw_metric_sample',
+        'observation_state'
+    )),
+    retention_days BIGINT NOT NULL CHECK (retention_days >= 0),
+    min_days BIGINT NOT NULL CHECK (min_days >= 0),
+    max_days BIGINT NOT NULL CHECK (max_days = 0 OR max_days >= min_days),
+    supported BIGINT NOT NULL CHECK (supported IN (0, 1)),
+    enabled BIGINT NOT NULL CHECK (enabled IN (0, 1)),
+    updated_at TEXT COLLATE "C" NOT NULL,
+    updated_by TEXT COLLATE "C"
+);
+
+CREATE TABLE retention_previews (
+    preview_id TEXT COLLATE "C" PRIMARY KEY CHECK (length(preview_id) BETWEEN 1 AND 64),
+    created_at TEXT COLLATE "C" NOT NULL,
+    created_by TEXT COLLATE "C" NOT NULL,
+    policy_version TEXT COLLATE "C" NOT NULL CHECK (length(policy_version) BETWEEN 1 AND 64),
+    scope_json TEXT COLLATE "C" NOT NULL,
+    entries_json TEXT COLLATE "C" NOT NULL,
+    estimated_rows BIGINT NOT NULL CHECK (estimated_rows >= 0),
+    expires_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE reward_wallet_balance (
+    address TEXT COLLATE "C" PRIMARY KEY NOT NULL,
+    balance TEXT COLLATE "C",
+    last_good_at TEXT COLLATE "C",
+    last_attempt_at TEXT COLLATE "C" NOT NULL,
+    error_category TEXT COLLATE "C"
+        CHECK (error_category IS NULL OR error_category IN ('upstream_unavailable', 'invalid_response')),
+    CHECK ((balance IS NULL) = (last_good_at IS NULL))
+);
+
+CREATE TABLE server_settings (
+    setting_key TEXT COLLATE "C" PRIMARY KEY,
+    setting_value TEXT COLLATE "C" NOT NULL,
+    updated_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE sessions (
+    session_id TEXT COLLATE "C" PRIMARY KEY,
+    user_id TEXT COLLATE "C" NOT NULL REFERENCES users(user_id) DEFERRABLE INITIALLY IMMEDIATE,
+    token_digest BYTEA NOT NULL UNIQUE,
+    csrf_token_digest BYTEA NOT NULL,
+    created_at TEXT COLLATE "C" NOT NULL,
+    last_seen_at TEXT COLLATE "C" NOT NULL,
+    expires_at TEXT COLLATE "C" NOT NULL,
+    revoked_at TEXT COLLATE "C"
+, client_hint TEXT COLLATE "C" NOT NULL DEFAULT 'Unknown');
+
+CREATE TABLE silences (
+    silence_id TEXT COLLATE "C" PRIMARY KEY,
+    matcher_kind TEXT COLLATE "C" NOT NULL CHECK (matcher_kind IN ('all', 'agent', 'node', 'network')),
+    matcher_value TEXT COLLATE "C",
+    reason TEXT COLLATE "C" NOT NULL CHECK (length(reason) > 0),
+    starts_at TEXT COLLATE "C" NOT NULL,
+    ends_at TEXT COLLATE "C" NOT NULL,
+    created_by TEXT COLLATE "C" NOT NULL REFERENCES users(user_id) DEFERRABLE INITIALLY IMMEDIATE,
+    created_at TEXT COLLATE "C" NOT NULL,
+    cancelled_at TEXT COLLATE "C",
+    cancelled_by TEXT COLLATE "C" REFERENCES users(user_id) DEFERRABLE INITIALLY IMMEDIATE,
+    CHECK (ends_at > starts_at),
+    CHECK (matcher_kind = 'all' OR (matcher_value IS NOT NULL AND matcher_value <> ''))
+);
+
+CREATE TABLE validator_counter_history (
+    history_id TEXT COLLATE "C" PRIMARY KEY,
+    validator_id TEXT COLLATE "C" NOT NULL REFERENCES validators(validator_id) DEFERRABLE INITIALLY IMMEDIATE,
+    counter_name TEXT COLLATE "C" NOT NULL CHECK (counter_name IN ('stake_amount', 'reward_amount', 'block_count')),
+    previous_value TEXT COLLATE "C" NOT NULL,
+    current_value TEXT COLLATE "C" NOT NULL,
+    observed_at TEXT COLLATE "C" NOT NULL,
+    provider_timestamp TEXT COLLATE "C",
+    observation_key TEXT COLLATE "C" NOT NULL,
+    UNIQUE (validator_id, counter_name, observation_key)
+);
+
+CREATE TABLE validator_daily_snapshots (
+    snapshot_id TEXT COLLATE "C" PRIMARY KEY,
+    validator_id TEXT COLLATE "C" NOT NULL REFERENCES validators(validator_id) DEFERRABLE INITIALLY IMMEDIATE,
+    timezone TEXT COLLATE "C" NOT NULL,
+    local_date TEXT COLLATE "C" NOT NULL,
+    month_key TEXT COLLATE "C" NOT NULL,
+    sample_at TEXT COLLATE "C" NOT NULL,
+    received_at TEXT COLLATE "C" NOT NULL,
+    provider_timestamp TEXT COLLATE "C",
+    source TEXT COLLATE "C" NOT NULL,
+    observation_key TEXT COLLATE "C" NOT NULL,
+    rank BIGINT,
+    stake_amount TEXT COLLATE "C",
+    reward_amount TEXT COLLATE "C",
+    reward_rate TEXT COLLATE "C",
+    delegator_count BIGINT,
+    epoch BIGINT,
+    block_count BIGINT,
+    UNIQUE (validator_id, timezone, local_date)
+);
+
+CREATE TABLE validator_model_migration (
+    migration_key TEXT COLLATE "C" PRIMARY KEY CHECK (migration_key = 'validator_model'),
+    migrated_at TEXT COLLATE "C" NOT NULL
+);
+
+CREATE TABLE validator_monthly_aggregates (
+    aggregate_id TEXT COLLATE "C" PRIMARY KEY,
+    validator_id TEXT COLLATE "C" NOT NULL REFERENCES validators(validator_id) DEFERRABLE INITIALLY IMMEDIATE,
+    timezone TEXT COLLATE "C" NOT NULL,
+    month_key TEXT COLLATE "C" NOT NULL,
+    snapshot_count BIGINT NOT NULL CHECK (snapshot_count >= 0),
+    first_sample_at TEXT COLLATE "C" NOT NULL,
+    last_sample_at TEXT COLLATE "C" NOT NULL,
+    rank_min BIGINT,
+    rank_max BIGINT,
+    rank_last BIGINT,
+    stake_last TEXT COLLATE "C",
+    reward_last TEXT COLLATE "C",
+    reward_rate_last TEXT COLLATE "C",
+    delegator_count_last BIGINT,
+    epoch_last BIGINT,
+    block_count_last BIGINT,
+    updated_at TEXT COLLATE "C" NOT NULL,
+    UNIQUE (validator_id, timezone, month_key)
+);
+
+CREATE TABLE validator_ranking_history (
+    history_id TEXT COLLATE "C" PRIMARY KEY,
+    validator_id TEXT COLLATE "C" NOT NULL REFERENCES validators(validator_id) DEFERRABLE INITIALLY IMMEDIATE,
+    previous_rank BIGINT,
+    current_rank BIGINT NOT NULL,
+    observed_at TEXT COLLATE "C" NOT NULL,
+    provider_timestamp TEXT COLLATE "C",
+    observation_key TEXT COLLATE "C" NOT NULL, candidate_observed_at TEXT COLLATE "C", candidate_provider_timestamp TEXT COLLATE "C", candidate_observation_key TEXT COLLATE "C",
+    UNIQUE (validator_id, observation_key)
+);
+
+CREATE INDEX agent_attention_acknowledgments_agent_idx
+    ON agent_attention_acknowledgments (agent_id, kind);
+
+CREATE UNIQUE INDEX agent_boots_one_active
+    ON agent_boots(agent_id, agent_epoch) WHERE status IN ('active', 'closing');
+
+CREATE INDEX agent_boots_status_idx ON agent_boots(agent_id, status, updated_at);
+
+CREATE INDEX agent_report_receipts_agent_idx
+    ON agent_report_receipts (agent_id, received_at, report_sequence);
+
+CREATE INDEX agent_report_receipts_latest_idx
+    ON agent_report_receipts (agent_id, received_at DESC, report_sequence DESC);
+
+CREATE INDEX agent_report_receipts_slimming_idx
+    ON agent_report_receipts (received_at)
+    WHERE receipt_slimmed_at IS NULL;
+
+CREATE INDEX agent_spool_diagnostics_updated_idx ON agent_spool_diagnostics (updated_at);
+
+CREATE INDEX agents_live_idx ON agents (deleted_at, agent_id);
+
+CREATE INDEX agents_liveness_idx ON agents (last_received_at);
+
+CREATE INDEX agents_shutdown_idx ON agents(shutdown_state, shutdown_updated_at);
+
+CREATE INDEX alert_incidents_open_idx ON alert_incidents (state, opened_at DESC);
+
+CREATE INDEX alert_incidents_rule_idx ON alert_incidents (rule_key, subject_key, sequence);
+
+CREATE INDEX alert_incidents_subject_live_idx
+    ON alert_incidents (state, subject_deleted_at);
+
+CREATE INDEX audit_events_created_idx ON audit_events (created_at, audit_event_id);
+
+CREATE INDEX backup_artifacts_created_idx ON backup_artifacts (created_at DESC);
+
+CREATE INDEX block_coverage_node_idx
+    ON block_coverage_intervals (node_id, first_height, last_height);
+
+CREATE INDEX block_gaps_node_idx
+    ON block_history_gaps (node_id, from_height, to_height);
+
+CREATE UNIQUE INDEX block_history_gaps_identity_idx
+    ON block_history_gaps (node_id, from_height, to_height, kind);
+
+CREATE INDEX block_summaries_accepted_at_idx
+ON block_summaries (accepted_at, node_id, block_number);
+
+CREATE INDEX block_summaries_observed_idx
+    ON block_summaries (node_id, observed_at);
+
+CREATE INDEX block_summaries_recent_idx
+    ON block_summaries (node_id, block_number DESC);
+
+CREATE INDEX capacity_protection_intervals_started_idx
+    ON capacity_protection_intervals (started_at DESC);
+
+CREATE UNIQUE INDEX capacity_protection_open_interval_idx
+    ON capacity_protection_intervals ((1))
+    WHERE ended_at IS NULL;
+
+CREATE INDEX capacity_skipped_series_interval_idx
+    ON capacity_skipped_series (interval_id, skipped_count DESC);
+
+CREATE INDEX capacity_skipped_series_lookup_idx
+    ON capacity_skipped_series (scope_kind, scope_key, metric, dimension, last_skipped_at);
+
+CREATE UNIQUE INDEX chain_divergence_identity_idx
+    ON chain_divergence_observations (node_id, height, retained_block_hash, observed_block_hash);
+
+CREATE INDEX component_status_node_idx
+    ON component_status (node_id, component_key);
+
+CREATE INDEX current_node_peers_node_id_idx ON current_node_peers(node_id);
+
+CREATE INDEX current_validator_insights_outcome_idx
+    ON current_validator_insights (outcome, last_attempt_received_at);
+
+CREATE INDEX deleted_nodes_deleted_at_idx ON deleted_nodes (deleted_at DESC, node_id);
+
+CREATE INDEX delivery_attempts_delivery_idx
+    ON delivery_attempts (delivery_id, attempt_number);
+
+CREATE INDEX divergence_node_idx
+    ON chain_divergence_observations (node_id, height, divergence_id);
+
+CREATE INDEX enrollment_tokens_expiry_idx
+    ON enrollment_tokens (expires_at, consumed_at, revoked_at);
+
+CREATE INDEX geo_location_cache_expires_idx
+    ON geo_location_cache (provider, expires_at);
+
+CREATE INDEX geo_location_cache_reference_idx
+    ON geo_location_cache (canonical_ip);
+
+CREATE INDEX host_metric_aggregates_expiry_idx
+    ON host_metric_aggregates (grain_seconds, bucket_start);
+
+CREATE INDEX host_metric_samples_observed_at_idx
+ON host_metric_samples (observed_at, agent_id, metric);
+
+CREATE INDEX host_metric_samples_recent_idx
+ON host_metric_samples (agent_id, received_at DESC, metric);
+
+CREATE INDEX host_metric_series_state_mount_idx
+    ON host_metric_series_state (agent_id, metric, last_observed_at DESC, dimension ASC);
+
+CREATE UNIQUE INDEX host_metric_series_state_series_idx
+    ON host_metric_series_state (agent_id, metric, dimension);
+
+CREATE INDEX maintenance_active_idx ON maintenance_windows (ends_at DESC);
+
+CREATE INDEX network_reference_heads_confidence_idx ON network_reference_heads (confidence, observed_at);
+
+CREATE INDEX node_block_aggregates_expiry_idx
+    ON node_block_aggregates (grain_seconds, bucket_start);
+
+CREATE INDEX node_metric_aggregates_expiry_idx
+    ON node_metric_aggregates (grain_seconds, bucket_start);
+
+CREATE INDEX node_metric_samples_observed_at_idx
+    ON node_metric_samples (observed_at, node_id, metric);
+
+CREATE INDEX node_metric_samples_recent_idx
+ON node_metric_samples (node_id, received_at DESC, metric);
+
+CREATE UNIQUE INDEX node_metric_series_state_series_idx
+    ON node_metric_series_state (node_id, metric);
+
+CREATE INDEX node_relationship_intervals_node_idx
+    ON node_relationship_intervals (node_id, relation_kind, valid_from, valid_until);
+
+CREATE INDEX node_relationship_intervals_related_idx
+    ON node_relationship_intervals (relation_kind, related_key, valid_from, valid_until);
+
+CREATE INDEX node_state_observations_expiry_idx
+    ON node_state_observations (observed_at, node_id, component);
+
+CREATE UNIQUE INDEX node_state_series_state_series_idx
+    ON node_state_series_state (node_id, component);
+
+CREATE INDEX node_transfers_node_idx ON node_transfers (node_id, created_at);
+
+CREATE INDEX node_transfers_target_pending_idx
+    ON node_transfers (target_agent_id, status);
+
+CREATE INDEX node_validator_identity_status_state_idx
+    ON node_validator_identity_status (state, updated_at);
+
+CREATE INDEX node_validator_links_node_idx
+    ON node_validator_links (node_id, valid_from, valid_until);
+
+CREATE INDEX node_validator_links_origin_idx
+    ON node_validator_links (origin, node_id, valid_from, valid_until);
+
+CREATE INDEX node_validator_links_validator_idx
+    ON node_validator_links (validator_id, valid_from, valid_until);
+
+CREATE INDEX nodes_agent_idx ON nodes (agent_id, lifecycle);
+
+CREATE INDEX nodes_network_visibility_idx ON nodes (network_key, visibility, lifecycle);
+
+CREATE INDEX notification_deliveries_created_idx
+    ON notification_deliveries (created_at DESC);
+
+CREATE INDEX notification_deliveries_state_idx
+    ON notification_deliveries (state, next_attempt_at);
+
+CREATE INDEX notification_events_created_idx ON notification_events (created_at DESC);
+
+CREATE INDEX notification_requests_command_created_idx
+    ON notification_requests (command_kind, created_at);
+
+CREATE INDEX notification_requests_expires_idx
+    ON notification_requests (expires_at);
+
+CREATE INDEX operation_requests_expires_idx ON operation_requests (expires_at);
+
+CREATE UNIQUE INDEX operation_requests_intent_idx
+    ON operation_requests (kind, intent_fingerprint);
+
+CREATE INDEX operations_audit_idx ON operations (audit_event_id);
+
+CREATE INDEX operations_created_idx ON operations (created_at DESC);
+
+CREATE UNIQUE INDEX operations_open_retention_run_idx
+    ON operations (kind)
+    WHERE kind = 'retention_run' AND status IN ('queued', 'running');
+
+CREATE INDEX operations_status_idx ON operations (status, created_at);
+
+CREATE INDEX peer_aggregate_1h_node_idx
+ON peer_aggregate_1h (node_id, bucket_start DESC);
+
+CREATE INDEX peer_aggregate_1h_retention_idx
+ON peer_aggregate_1h (bucket_start);
+
+CREATE INDEX peer_aggregate_5m_node_idx
+ON peer_aggregate_5m (node_id, bucket_start DESC);
+
+CREATE INDEX peer_aggregate_5m_retention_idx
+ON peer_aggregate_5m (bucket_start);
+
+CREATE INDEX peer_presence_node_idx
+    ON peer_presence_intervals (node_id, closed_at);
+
+CREATE UNIQUE INDEX peer_presence_open_unique
+    ON peer_presence_intervals (node_id, peer_id)
+    WHERE closed_at IS NULL;
+
+CREATE INDEX peer_presence_retention_idx
+    ON peer_presence_intervals (closed_at);
+
+CREATE INDEX recovery_tokens_agent_idx
+    ON recovery_tokens (agent_id, consumed_at, revoked_at);
+
+CREATE INDEX recovery_tokens_expiry_idx
+    ON recovery_tokens (expires_at, consumed_at, revoked_at);
+
+CREATE INDEX retention_previews_expires_at_idx
+    ON retention_previews (expires_at);
+
+CREATE INDEX sessions_user_idx ON sessions (user_id, revoked_at, expires_at);
+
+CREATE INDEX silences_active_idx ON silences (ends_at DESC);
+
+CREATE INDEX validator_counter_history_validator_idx
+    ON validator_counter_history (validator_id, observed_at DESC);
+
+CREATE INDEX validator_daily_snapshots_lookup_idx
+    ON validator_daily_snapshots (validator_id, timezone, local_date DESC);
+
+CREATE INDEX validator_daily_snapshots_month_idx
+    ON validator_daily_snapshots (validator_id, timezone, month_key, sample_at DESC);
+
+CREATE INDEX validator_monthly_aggregates_lookup_idx
+    ON validator_monthly_aggregates (validator_id, timezone, month_key DESC);
+
+CREATE INDEX validator_ranking_history_validator_idx
+    ON validator_ranking_history (validator_id, observed_at DESC);
+
+CREATE INDEX validators_network_idx ON validators (network_key, validator_node_id);
+
+-- Overlap guards (SQLite triggers raising the same messages).
+CREATE FUNCTION node_validator_links_no_overlap() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM node_validator_links existing
+        WHERE (TG_OP = 'INSERT' OR existing.link_id != NEW.link_id)
+          AND existing.node_id = NEW.node_id
+          AND existing.origin = NEW.origin
+          AND NEW.valid_from < COALESCE(existing.valid_until, '9999-12-31T23:59:59Z')
+          AND (existing.valid_until IS NULL OR existing.valid_from < COALESCE(NEW.valid_until, '9999-12-31T23:59:59Z'))
+    ) THEN
+        RAISE EXCEPTION 'node_validator_link_overlap' USING ERRCODE = 'P0001';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER node_validator_links_no_overlap_insert
+BEFORE INSERT ON node_validator_links
+FOR EACH ROW EXECUTE FUNCTION node_validator_links_no_overlap();
+
+CREATE TRIGGER node_validator_links_no_overlap_update
+BEFORE UPDATE OF node_id, valid_from, valid_until ON node_validator_links
+FOR EACH ROW EXECUTE FUNCTION node_validator_links_no_overlap();
+
+CREATE FUNCTION node_relationship_intervals_no_overlap() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM node_relationship_intervals existing
+        WHERE (TG_OP = 'INSERT' OR existing.interval_id != NEW.interval_id)
+          AND existing.node_id = NEW.node_id
+          AND existing.relation_kind = NEW.relation_kind
+          AND NEW.valid_from < COALESCE(existing.valid_until, '9999-12-31T23:59:59Z')
+          AND COALESCE(NEW.valid_until, '9999-12-31T23:59:59Z') > existing.valid_from
+    ) THEN
+        RAISE EXCEPTION 'node_relationship_interval_overlap' USING ERRCODE = 'P0001';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER node_relationship_intervals_no_overlap_insert
+BEFORE INSERT ON node_relationship_intervals
+FOR EACH ROW EXECUTE FUNCTION node_relationship_intervals_no_overlap();
+
+CREATE TRIGGER node_relationship_intervals_no_overlap_update
+BEFORE UPDATE OF node_id, relation_kind, valid_from, valid_until ON node_relationship_intervals
+FOR EACH ROW EXECUTE FUNCTION node_relationship_intervals_no_overlap();
+
+-- Seed rows the SQLite migrations insert.
+INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ('authorization_generation', '0', '1970-01-01T00:00:00Z');
+INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ('site_access_mode', 'private', '1970-01-01T00:00:00Z');
+INSERT INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES ('peer_aggregate_1h', 0, 0, 0, 1, 1, '1970-01-01T00:00:00Z', 'defaults');
+INSERT INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES ('peer_aggregate_5m', 90, 7, 365, 1, 1, '1970-01-01T00:00:00Z', 'defaults');
+INSERT INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES ('raw_metric_sample', 1, 1, 30, 1, 1, '1970-01-01T00:00:00Z', 'defaults');
+INSERT INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES ('report_receipt_body', 30, 30, 30, 1, 1, '1970-01-01T00:00:00Z', 'defaults');
+INSERT INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES ('validator_daily_snapshot', 0, 0, 0, 1, 1, '1970-01-01T00:00:00Z', 'defaults');
+INSERT INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES ('validator_monthly_aggregate', 0, 0, 0, 1, 1, '1970-01-01T00:00:00Z', 'defaults');
+INSERT INTO validator_model_migration (migration_key, migrated_at)
+VALUES ('validator_model', to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+

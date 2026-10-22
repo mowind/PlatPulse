@@ -136,7 +136,7 @@ async fn login(harness: &Harness, body: &str) -> Session {
 /// unhealthy Node so the Overview carries both Agent and Node prompts.
 async fn seed(harness: &Harness) {
     let stale = auth::format_rfc3339(auth::now_utc() - time::Duration::hours(1));
-    sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at, last_received_at, shutdown_state, security_event_count) VALUES (?, 1, ?, ?, ?, 'running', 3)")
+    sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at, last_received_at, shutdown_state, security_event_count) VALUES ($1, 1, $2, $3, $4, 'running', 3)")
         .bind(AGENT_ID)
         .bind(CREATED)
         .bind(CREATED)
@@ -144,13 +144,13 @@ async fn seed(harness: &Harness) {
         .execute(harness.pool())
         .await
         .unwrap();
-    sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Main', '0xgenesis', 1, 1, 'lat', ?, ?)")
+    sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Main', '0xgenesis', 1, 1, 'lat', $1, $2)")
         .bind(CREATED)
         .bind(CREATED)
         .execute(harness.pool())
         .await
         .unwrap();
-    sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, 'mainnet', 'Node A', 'ws://127.0.0.1:1', 'active', 'private', 1, ?, ?)")
+    sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ($1, $2, 'mainnet', 'Node A', 'ws://127.0.0.1:1', 'active', 'private', 1, $3, $4)")
         .bind(NODE_ID)
         .bind(AGENT_ID)
         .bind(CREATED)
@@ -158,7 +158,7 @@ async fn seed(harness: &Harness) {
         .execute(harness.pool())
         .await
         .unwrap();
-    sqlx::query("INSERT INTO current_node_chain_observations (node_id, current_block, syncing, updated_at) VALUES (?, 100, 0, ?)")
+    sqlx::query("INSERT INTO current_node_chain_observations (node_id, current_block, syncing, updated_at) VALUES ($1, 100, 0, $2)")
         .bind(NODE_ID)
         .bind(&stale)
         .execute(harness.pool())
@@ -166,7 +166,7 @@ async fn seed(harness: &Harness) {
         .unwrap();
     for component in ["rpc", "sync", "consensus", "network_identity"] {
         let component_state = if component == "rpc" { "error" } else { "ok" };
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, ?, ?, ?, ?, ?, 1, 1)")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ($1, 'node', $2, $3, $4, $5, $6, $7, $8, 1, 1)")
             .bind(AGENT_ID)
             .bind(NODE_ID)
             .bind(NODE_ID)
@@ -312,7 +312,7 @@ async fn acknowledgment_is_shared_durable_and_rearms_only_on_new_evidence() {
     assert!(agent_items(&overview(&harness, &owner).await).is_empty());
 
     // New evidence (a fresh security event) re-prompts with a new boundary.
-    sqlx::query("UPDATE agents SET security_event_count = 4 WHERE agent_id = ?")
+    sqlx::query("UPDATE agents SET security_event_count = 4 WHERE agent_id = $1")
         .bind(AGENT_ID)
         .execute(harness.pool())
         .await

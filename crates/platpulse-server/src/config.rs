@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use ipnet::IpNet;
 
@@ -15,6 +16,10 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::capacity::CapacityConfig;
+use crate::database::{
+    PostgresConnectConfig, PostgresHost, PostgresPassword, PostgresSecretError, PostgresSslMode,
+    ServerDatabaseConfig, StorageConfig,
+};
 
 /// Default listen address when neither the config file nor CLI flags set one.
 pub const DEFAULT_LISTEN: SocketAddr =
@@ -91,6 +96,55 @@ pub struct ServerConfigFile {
     /// Optional capacity visibility and low-space protection policy
     /// (design §11.5, issue #212).
     pub capacity: Option<CapacitySectionFile>,
+    /// Optional Storage Backend selection (ADR 0013, issue #255). Absent means
+    /// the SQLite backend, which is the only backend a deployment that never
+    /// declares this section has ever used.
+    pub storage: Option<StorageSectionFile>,
+}
+
+/// The optional `[storage]` section (ADR 0013, issue #255).
+///
+/// A backend is selected explicitly, by name, inside this section. Neither a
+/// connection string, a libpq environment variable, nor the presence of
+/// `db_path` selects PostgreSQL: an operator always states the intent.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct StorageSectionFile {
+    /// Backend selector: `sqlite` (default) or `postgres`.
+    pub backend: Option<String>,
+    /// Connection settings for the PostgreSQL backend. Present only together
+    /// with `backend = "postgres"`.
+    pub postgres: Option<PostgresSectionFile>,
+}
+
+/// `[storage.postgres]`: every setting the PostgreSQL connection needs.
+///
+/// There is deliberately no `url`/`dsn` key and no password key. The password
+/// lives in a private file the Server user owns, named by `password_file`,
+/// so it never enters `server.toml`, the process environment, or a log line.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PostgresSectionFile {
+    /// Host name or IP address of the server reached over TCP, or the absolute
+    /// path of the directory holding its Unix-domain socket.
+    pub host: Option<String>,
+    /// TCP port (default 5432; ignored for a Unix-domain socket).
+    pub port: Option<u16>,
+    /// Database name.
+    pub database: Option<String>,
+    /// Role the Server connects as; it must own the schema (ADR 0013).
+    pub user: Option<String>,
+    /// Private file holding the password on a single line.
+    pub password_file: Option<PathBuf>,
+    /// TLS policy: `disable` (Unix-domain socket only), `verify-ca`, or
+    /// `verify-full` (default for TCP).
+    pub sslmode: Option<String>,
+    /// PEM root certificate the server certificate is verified against.
+    pub ssl_root_cert_file: Option<PathBuf>,
+    /// Connection timeout in seconds (default 10).
+    pub connect_timeout_secs: Option<u64>,
+    /// Ownership heartbeat interval in seconds (default 5).
+    pub ownership_heartbeat_secs: Option<u64>,
 }
 
 /// The optional `[capacity]` section (design §11.5, issue #212).
@@ -230,7 +284,46 @@ pub struct ServerConfig {
     /// Resolved capacity visibility and low-space protection policy
     /// (design §11.5, issue #212).
     pub capacity: CapacityConfig,
+    /// Resolved Storage Backend selection (ADR 0013, issue #255).
+    pub storage: StorageSettings,
 }
+
+/// The Storage Backend a resolved deployment stores its data in (ADR 0013).
+#[derive(Debug, Clone, Default)]
+pub enum StorageSettings {
+    /// The default: one Server SQLite file at `db_path`.
+    #[default]
+    Sqlite,
+    /// A PostgreSQL database reached with explicit connection settings.
+    Postgres(PostgresSettings),
+}
+
+/// Resolved PostgreSQL connection settings.
+///
+/// The password is deliberately absent: `[storage.postgres]` names a private
+/// password file and [`ServerConfig::storage_config`] reads it only when the
+/// backend is actually opened, so it never enters this struct, a log line, or
+/// a DTO.
+#[derive(Debug, Clone)]
+pub struct PostgresSettings {
+    pub host: PostgresHost,
+    pub port: u16,
+    pub database: String,
+    pub user: String,
+    pub password_file: PathBuf,
+    pub ssl_mode: PostgresSslMode,
+    pub ssl_root_cert: Option<PathBuf>,
+    pub connect_timeout: Duration,
+    pub ownership_heartbeat: Duration,
+}
+
+/// Default PostgreSQL TCP port.
+pub const DEFAULT_POSTGRES_PORT: u16 = 5432;
+/// Bounds applied to both PostgreSQL timer settings. The upper bound keeps a
+/// mistyped value (for example `3600`) from delaying a connection attempt for
+/// an hour before the Server reports it.
+pub const MIN_POSTGRES_TIMER_SECONDS: u64 = 1;
+pub const MAX_POSTGRES_TIMER_SECONDS: u64 = 300;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MetricsConfig {
@@ -367,6 +460,12 @@ pub enum ConfigError {
     InvalidBackupRequiredMount { path: PathBuf },
     #[error("invalid capacity protection policy in {path}: {reason}")]
     InvalidCapacity { path: PathBuf, reason: String },
+    #[error("invalid [storage] configuration in {path}: {reason}")]
+    InvalidStorage { path: PathBuf, reason: String },
+    #[error(
+        "db_path must not be set in {path} when the PostgreSQL Storage Backend is selected: the SQLite file path selects nothing on PostgreSQL (ADR 0013). Remove db_path or select `backend = \"sqlite\"`"
+    )]
+    StorageDbPathConflict { path: PathBuf },
 }
 
 impl ServerConfigFile {
@@ -541,6 +640,12 @@ impl ServerConfig {
         let backup_required_mount =
             resolve_backup_required_mount(file, &backup_dir, config_path.as_deref())?;
         let capacity = resolve_capacity(file, config_path.as_deref())?;
+        // A declared `db_path` (file or `serve --db-path`) is refused together
+        // with the PostgreSQL backend: two storage locations in one config is
+        // an operator mistake, not a preference to weigh.
+        let db_path_declared =
+            cli.db_path.is_some() || file.and_then(|value| value.db_path.as_ref()).is_some();
+        let storage = resolve_storage(file, db_path_declared, config_path.as_deref())?;
 
         Ok(Self {
             config_path,
@@ -561,7 +666,244 @@ impl ServerConfig {
             metrics,
             backup_required_mount,
             capacity,
+            storage,
         })
+    }
+
+    /// Whether this deployment stores its data in PostgreSQL (ADR 0013).
+    pub fn uses_postgres(&self) -> bool {
+        matches!(self.storage, StorageSettings::Postgres(_))
+    }
+
+    /// The Storage Backend configuration, with the PostgreSQL password read
+    /// from its private file.
+    ///
+    /// This is the only place the password is read, and it is read at the
+    /// moment the backend is opened, so an unreadable or over-permissive
+    /// password file fails the command instead of surfacing later as an
+    /// authentication error.
+    pub fn storage_config(&self) -> Result<StorageConfig, PostgresSecretError> {
+        match &self.storage {
+            StorageSettings::Sqlite => Ok(StorageConfig::Sqlite(
+                ServerDatabaseConfig::for_deployment(&self.db_path, self.development),
+            )),
+            StorageSettings::Postgres(settings) => {
+                let password = PostgresPassword::from_file(&settings.password_file)?;
+                let mut config = PostgresConnectConfig::new(
+                    settings.host.clone(),
+                    settings.port,
+                    settings.database.clone(),
+                    settings.user.clone(),
+                    password,
+                )
+                .with_ssl_mode(settings.ssl_mode)
+                .with_connect_timeout(settings.connect_timeout)
+                .with_ownership_heartbeat(settings.ownership_heartbeat);
+                if let Some(cert) = &settings.ssl_root_cert {
+                    config = config.with_ssl_root_cert(cert.clone());
+                }
+                Ok(StorageConfig::Postgres(config))
+            }
+        }
+    }
+}
+
+/// Resolve the optional `[storage]` section.
+///
+/// Absent means SQLite: a deployment that never mentions the section keeps the
+/// backend it has always used, and nothing else (no DSN, no libpq environment
+/// variable, no `db_path`) can silently redirect it to PostgreSQL.
+fn resolve_storage(
+    file: Option<&ServerConfigFile>,
+    db_path_declared: bool,
+    config_path: Option<&Path>,
+) -> Result<StorageSettings, ConfigError> {
+    let origin = config_path
+        .map(Path::to_owned)
+        .unwrap_or_else(|| PathBuf::from("<cli>"));
+    let Some(section) = file.and_then(|value| value.storage.as_ref()) else {
+        return Ok(StorageSettings::Sqlite);
+    };
+    let backend = section.backend.as_deref().unwrap_or("sqlite");
+    match backend.trim().to_ascii_lowercase().as_str() {
+        "" => Err(ConfigError::InvalidStorage {
+            path: origin,
+            reason: "`backend` must name a backend; supported values are `sqlite` and `postgres`"
+                .to_owned(),
+        }),
+        "sqlite" => {
+            if section.postgres.is_some() {
+                return Err(ConfigError::InvalidStorage {
+                    path: origin,
+                    reason: "`[storage.postgres]` requires `backend = \"postgres\"`; remove the section or select the PostgreSQL backend"
+                        .to_owned(),
+                });
+            }
+            Ok(StorageSettings::Sqlite)
+        }
+        "postgres" => {
+            if db_path_declared {
+                return Err(ConfigError::StorageDbPathConflict { path: origin });
+            }
+            let postgres =
+                section
+                    .postgres
+                    .as_ref()
+                    .ok_or_else(|| ConfigError::InvalidStorage {
+                        path: origin.clone(),
+                        reason: "`backend = \"postgres\"` requires a `[storage.postgres]` section"
+                            .to_owned(),
+                    })?;
+            Ok(StorageSettings::Postgres(resolve_postgres(
+                postgres, &origin,
+            )?))
+        }
+        other => Err(ConfigError::InvalidStorage {
+            path: origin,
+            reason: format!(
+                "unknown storage backend '{other}'; supported values are `sqlite` and `postgres`"
+            ),
+        }),
+    }
+}
+
+/// Resolve and validate `[storage.postgres]`.
+fn resolve_postgres(
+    section: &PostgresSectionFile,
+    origin: &Path,
+) -> Result<PostgresSettings, ConfigError> {
+    let invalid = |reason: String| ConfigError::InvalidStorage {
+        path: origin.to_owned(),
+        reason,
+    };
+    // `host` names a TCP endpoint, or an absolute directory path holding the
+    // server's Unix-domain socket (the same distinction libpq makes), so one
+    // key selects either transport.
+    let host = match section.host.as_deref() {
+        None => {
+            return Err(invalid(
+                "`[storage.postgres]` requires `host`: a host name, an IP address, or the absolute path of a Unix-domain socket directory"
+                    .to_owned(),
+            ))
+        }
+        Some(host) => {
+            let host = host.trim();
+            if host.is_empty() {
+                return Err(invalid("`host` must not be empty".to_owned()));
+            }
+            if host.starts_with('/') {
+                PostgresHost::Socket(PathBuf::from(host))
+            } else {
+                PostgresHost::Tcp(host.to_owned())
+            }
+        }
+    };
+    let database = required_value(section.database.as_deref(), "database", &invalid)?;
+    let user = required_value(section.user.as_deref(), "user", &invalid)?;
+    let password_file = section.password_file.clone().ok_or_else(|| {
+        invalid(
+            "`password_file` is required: the password is never read from `server.toml`, the environment, or the command line"
+                .to_owned(),
+        )
+    })?;
+    if !password_file.is_absolute() {
+        return Err(invalid(format!(
+            "`password_file` must be an absolute path, got {}",
+            password_file.display()
+        )));
+    }
+    let socket = matches!(host, PostgresHost::Socket(_));
+    // ADR 0013: `sslmode` defaults to `verify-full` and allows only `verify-ca`
+    // otherwise; `disable` is accepted only when the operator writes it for a
+    // Unix-domain socket, so a socket deployment never falls back to plaintext
+    // because a key was left out.
+    let ssl_mode = match section.sslmode.as_deref() {
+        None => PostgresSslMode::VerifyFull,
+        Some(name) => PostgresSslMode::from_name(name).ok_or_else(|| {
+            invalid(format!(
+                "unknown sslmode '{name}'; supported values are `disable`, `verify-ca`, and `verify-full`"
+            ))
+        })?,
+    };
+    if ssl_mode == PostgresSslMode::Disable && !socket {
+        return Err(invalid(
+            "`sslmode = \"disable\"` is refused over TCP: a remote PostgreSQL connection is always encrypted (ADR 0013). Set `host` to a Unix-domain socket directory for a local unencrypted connection"
+                .to_owned(),
+        ));
+    }
+    if section.ssl_root_cert_file.is_some() && ssl_mode == PostgresSslMode::Disable {
+        return Err(invalid(
+            "`ssl_root_cert_file` requires TLS; it cannot accompany `sslmode = \"disable\"`"
+                .to_owned(),
+        ));
+    }
+    let port = section.port.unwrap_or(DEFAULT_POSTGRES_PORT);
+    if port == 0 {
+        return Err(invalid("`port` must be between 1 and 65535".to_owned()));
+    }
+    let connect_timeout = resolve_postgres_timer(
+        section.connect_timeout_secs,
+        "connect_timeout_secs",
+        crate::database::POSTGRES_DEFAULT_CONNECT_TIMEOUT,
+        &invalid,
+    )?;
+    let ownership_heartbeat = resolve_postgres_timer(
+        section.ownership_heartbeat_secs,
+        "ownership_heartbeat_secs",
+        crate::database::POSTGRES_DEFAULT_OWNERSHIP_HEARTBEAT,
+        &invalid,
+    )?;
+    if ownership_heartbeat >= connect_timeout {
+        return Err(invalid(format!(
+            "`ownership_heartbeat_secs` ({}) must be shorter than `connect_timeout_secs` ({}): a heartbeat that outlives the connection attempt never reports a lost ownership",
+            ownership_heartbeat.as_secs(),
+            connect_timeout.as_secs()
+        )));
+    }
+    Ok(PostgresSettings {
+        host,
+        port,
+        database,
+        user,
+        password_file,
+        ssl_mode,
+        ssl_root_cert: section.ssl_root_cert_file.clone(),
+        connect_timeout,
+        ownership_heartbeat,
+    })
+}
+
+/// A required non-empty string setting, trimmed.
+fn required_value(
+    value: Option<&str>,
+    name: &str,
+    invalid: &impl Fn(String) -> ConfigError,
+) -> Result<String, ConfigError> {
+    match value.map(str::trim) {
+        Some(value) if !value.is_empty() => Ok(value.to_owned()),
+        _ => Err(invalid(format!(
+            "`{name}` is required and must not be empty"
+        ))),
+    }
+}
+
+/// Resolve a bounded PostgreSQL timer setting, in seconds.
+fn resolve_postgres_timer(
+    seconds: Option<u64>,
+    name: &str,
+    default: Duration,
+    invalid: &impl Fn(String) -> ConfigError,
+) -> Result<Duration, ConfigError> {
+    match seconds {
+        None => Ok(default),
+        Some(value)
+            if (MIN_POSTGRES_TIMER_SECONDS..=MAX_POSTGRES_TIMER_SECONDS).contains(&value) =>
+        {
+            Ok(Duration::from_secs(value))
+        }
+        Some(value) => Err(invalid(format!(
+            "`{name}` must be between {MIN_POSTGRES_TIMER_SECONDS} and {MAX_POSTGRES_TIMER_SECONDS} seconds, got {value}"
+        ))),
     }
 }
 
@@ -1312,5 +1654,251 @@ development = false
         let path = write_config(dir.path(), "state_dir = \"/srv/x\"\nunknown_key = 1\n");
         let error = ServerConfig::resolve(Some(&path), &CliOverrides::default()).unwrap_err();
         assert!(matches!(error, ConfigError::Parse { .. }));
+    }
+
+    fn storage_config(dir: &Path, body: &str) -> Result<ServerConfig, ConfigError> {
+        let path = write_config(dir, &format!("state_dir = \"/srv/platpulse\"\n{body}"));
+        ServerConfig::resolve(Some(&path), &CliOverrides::default())
+    }
+
+    fn invalid_storage_reason(error: ConfigError) -> String {
+        match error {
+            ConfigError::InvalidStorage { reason, .. } => reason,
+            other => panic!("expected an invalid [storage] configuration, got {other:?}"),
+        }
+    }
+
+    /// A minimal valid PostgreSQL section over a Unix-domain socket.
+    const SOCKET_SECTION: &str = "\
+[storage]
+backend = \"postgres\"
+[storage.postgres]
+host = \"/run/postgresql\"
+database = \"platpulse\"
+user = \"platpulse\"
+password_file = \"/etc/platpulse/postgres-password\"
+";
+
+    const TCP_SECTION: &str = "\
+[storage]
+backend = \"postgres\"
+[storage.postgres]
+host = \"db.internal\"
+database = \"platpulse\"
+user = \"platpulse\"
+password_file = \"/etc/platpulse/postgres-password\"
+";
+
+    #[test]
+    fn storage_absent_selects_sqlite() {
+        let dir = tempdir().unwrap();
+        let config = storage_config(dir.path(), "").unwrap();
+        assert!(!config.uses_postgres());
+        assert!(matches!(config.storage, StorageSettings::Sqlite));
+        let storage = config.storage_config().unwrap();
+        assert!(matches!(storage, StorageConfig::Sqlite(_)));
+    }
+
+    #[test]
+    fn storage_sqlite_backend_refuses_a_postgres_section() {
+        let dir = tempdir().unwrap();
+        let error = storage_config(
+            dir.path(),
+            "[storage]\nbackend = \"sqlite\"\n[storage.postgres]\nhost = \"/run/postgresql\"\n",
+        )
+        .unwrap_err();
+        assert!(invalid_storage_reason(error).contains("[storage.postgres]"));
+    }
+
+    #[test]
+    fn storage_postgres_requires_its_section() {
+        let dir = tempdir().unwrap();
+        let error = storage_config(dir.path(), "[storage]\nbackend = \"postgres\"\n").unwrap_err();
+        assert!(invalid_storage_reason(error).contains("[storage.postgres]"));
+    }
+
+    #[test]
+    fn storage_postgres_rejects_db_path() {
+        let dir = tempdir().unwrap();
+        let error = storage_config(
+            dir.path(),
+            &format!("db_path = \"/srv/platpulse/other.db\"\n{SOCKET_SECTION}"),
+        )
+        .unwrap_err();
+        assert!(matches!(error, ConfigError::StorageDbPathConflict { .. }));
+    }
+
+    #[test]
+    fn storage_postgres_resolves_a_socket_host_and_the_adr_keys() {
+        let dir = tempdir().unwrap();
+        let config = storage_config(
+            dir.path(),
+            &format!(
+                "{SOCKET_SECTION}sslmode = \"verify-ca\"\nssl_root_cert_file = \"/etc/platpulse/pg-ca.pem\"\nconnect_timeout_secs = 20\nownership_heartbeat_secs = 4\n"
+            ),
+        )
+        .unwrap();
+        assert!(config.uses_postgres());
+        let StorageSettings::Postgres(settings) = &config.storage else {
+            panic!("the PostgreSQL section did not select the PostgreSQL Storage Backend");
+        };
+        assert_eq!(
+            settings.host,
+            PostgresHost::Socket(PathBuf::from("/run/postgresql"))
+        );
+        assert_eq!(settings.port, DEFAULT_POSTGRES_PORT);
+        assert_eq!(settings.database, "platpulse");
+        assert_eq!(settings.user, "platpulse");
+        assert_eq!(
+            settings.password_file,
+            PathBuf::from("/etc/platpulse/postgres-password")
+        );
+        assert_eq!(settings.ssl_mode, PostgresSslMode::VerifyCa);
+        assert_eq!(
+            settings.ssl_root_cert.as_deref(),
+            Some(Path::new("/etc/platpulse/pg-ca.pem"))
+        );
+        assert_eq!(settings.connect_timeout, Duration::from_secs(20));
+        assert_eq!(settings.ownership_heartbeat, Duration::from_secs(4));
+    }
+
+    #[test]
+    fn storage_postgres_defaults_sslmode_to_verify_full_even_over_a_socket() {
+        let dir = tempdir().unwrap();
+        let config = storage_config(dir.path(), SOCKET_SECTION).unwrap();
+        let StorageSettings::Postgres(settings) = &config.storage else {
+            panic!("the PostgreSQL section did not select the PostgreSQL Storage Backend");
+        };
+        assert_eq!(settings.ssl_mode, PostgresSslMode::VerifyFull);
+        assert!(settings.ssl_root_cert.is_none());
+        assert_eq!(
+            settings.connect_timeout,
+            crate::database::POSTGRES_DEFAULT_CONNECT_TIMEOUT
+        );
+        assert_eq!(
+            settings.ownership_heartbeat,
+            crate::database::POSTGRES_DEFAULT_OWNERSHIP_HEARTBEAT
+        );
+
+        let config = storage_config(dir.path(), TCP_SECTION).unwrap();
+        let StorageSettings::Postgres(settings) = &config.storage else {
+            panic!("the PostgreSQL section did not select the PostgreSQL Storage Backend");
+        };
+        assert_eq!(settings.host, PostgresHost::Tcp("db.internal".to_owned()));
+        assert_eq!(settings.port, DEFAULT_POSTGRES_PORT);
+        assert_eq!(settings.ssl_mode, PostgresSslMode::VerifyFull);
+    }
+
+    #[test]
+    fn storage_postgres_refuses_sslmode_disable_over_tcp() {
+        let dir = tempdir().unwrap();
+        let error = storage_config(dir.path(), &format!("{TCP_SECTION}sslmode = \"disable\"\n"))
+            .unwrap_err();
+        let reason = invalid_storage_reason(error);
+        assert!(reason.contains("always encrypted"), "{reason}");
+    }
+
+    #[test]
+    fn storage_postgres_refuses_unknown_sslmode_and_certificate_without_tls() {
+        let dir = tempdir().unwrap();
+        let error = storage_config(
+            dir.path(),
+            &format!("{SOCKET_SECTION}sslmode = \"prefer\"\n"),
+        )
+        .unwrap_err();
+        assert!(invalid_storage_reason(error).contains("unknown sslmode"));
+
+        let error = storage_config(
+            dir.path(),
+            &format!(
+                "{SOCKET_SECTION}sslmode = \"disable\"\nssl_root_cert_file = \"/etc/platpulse/pg-ca.pem\"\n"
+            ),
+        )
+        .unwrap_err();
+        assert!(invalid_storage_reason(error).contains("requires TLS"));
+    }
+
+    #[test]
+    fn storage_postgres_refuses_url_dsn_and_inline_password_keys() {
+        let dir = tempdir().unwrap();
+        for key in [
+            "url = \"postgres://user:pass@db.internal/platpulse\"",
+            "dsn = \"postgres://user:pass@db.internal/platpulse\"",
+            "password = \"secret\"",
+        ] {
+            let error = storage_config(dir.path(), &format!("{SOCKET_SECTION}{key}\n"))
+                .expect_err("a URL, DSN or inline password key must be refused");
+            assert!(matches!(error, ConfigError::Parse { .. }), "{key}");
+        }
+    }
+
+    #[test]
+    fn storage_postgres_requires_a_host_and_an_absolute_password_file() {
+        let dir = tempdir().unwrap();
+        let error = storage_config(
+            dir.path(),
+            "[storage]\nbackend = \"postgres\"\n[storage.postgres]\ndatabase = \"platpulse\"\nuser = \"platpulse\"\npassword_file = \"/etc/platpulse/postgres-password\"\n",
+        )
+        .unwrap_err();
+        assert!(invalid_storage_reason(error).contains("requires `host`"));
+
+        let error = storage_config(
+            dir.path(),
+            "[storage]\nbackend = \"postgres\"\n[storage.postgres]\nhost = \"db.internal\"\ndatabase = \"platpulse\"\nuser = \"platpulse\"\npassword_file = \"postgres-password\"\n",
+        )
+        .unwrap_err();
+        assert!(invalid_storage_reason(error).contains("absolute path"));
+    }
+
+    #[test]
+    fn storage_postgres_requires_a_heartbeat_shorter_than_the_connect_timeout() {
+        let dir = tempdir().unwrap();
+        let error = storage_config(
+            dir.path(),
+            &format!("{SOCKET_SECTION}connect_timeout_secs = 5\nownership_heartbeat_secs = 5\n"),
+        )
+        .unwrap_err();
+        assert!(invalid_storage_reason(error).contains("shorter than"));
+    }
+
+    #[test]
+    fn storage_postgres_refuses_an_unknown_backend_name() {
+        let dir = tempdir().unwrap();
+        let error = storage_config(dir.path(), "[storage]\nbackend = \"mysql\"\n").unwrap_err();
+        assert!(invalid_storage_reason(error).contains("unknown storage backend"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_config_reads_the_password_file_and_never_exposes_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        let password_path = dir.path().join("postgres-password");
+        fs::write(&password_path, "s3cret-password\n").unwrap();
+        fs::set_permissions(&password_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let config = storage_config(
+            dir.path(),
+            &format!(
+                "[storage]\nbackend = \"postgres\"\n[storage.postgres]\nhost = \"/run/postgresql\"\ndatabase = \"platpulse\"\nuser = \"platpulse\"\npassword_file = \"{}\"\n",
+                password_path.display()
+            ),
+        )
+        .unwrap();
+        let storage = config.storage_config().unwrap();
+        let StorageConfig::Postgres(connect) = &storage else {
+            panic!("the PostgreSQL section did not produce a PostgreSQL configuration");
+        };
+        assert_eq!(connect.user(), "platpulse");
+        assert_eq!(connect.database(), "platpulse");
+        let debug = format!("{connect:?}");
+        assert!(!debug.contains("s3cret-password"), "{debug}");
+        assert!(debug.contains("redacted"), "{debug}");
+
+        // A password file the Server may not read is refused rather than
+        // silently dropped, so a broken deployment never starts on '.pgpass'.
+        fs::set_permissions(&password_path, fs::Permissions::from_mode(0o644)).unwrap();
+        let error = config.storage_config().unwrap_err();
+        assert!(matches!(error, PostgresSecretError::Unreadable { .. }));
     }
 }

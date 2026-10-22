@@ -204,7 +204,7 @@ fn fixture_report(agent_id: &str, agent_epoch: u64) -> AgentReport {
 }
 
 async fn count_for_node(harness: &Harness, table: &str, node_id: &str) -> i64 {
-    let sql = format!("SELECT COUNT(*) FROM {table} WHERE node_id = ?");
+    let sql = format!("SELECT COUNT(*) FROM {table} WHERE node_id = $1");
     sqlx::query_scalar(&sql)
         .bind(node_id)
         .fetch_one(harness.pool())
@@ -213,7 +213,7 @@ async fn count_for_node(harness: &Harness, table: &str, node_id: &str) -> i64 {
 }
 
 async fn node_row_count(harness: &Harness, node_id: &str) -> i64 {
-    sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE node_id = ?")
+    sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE node_id = $1")
         .bind(node_id)
         .fetch_one(harness.pool())
         .await
@@ -361,79 +361,79 @@ async fn seed_directly_owned_rows(
     let pool = harness.pool();
     let now = "2026-01-01T00:00:00Z";
 
-    sqlx::query("INSERT OR IGNORE INTO current_node_process_observations (node_id, pid, started_at, cpu_percent, memory_bytes, uptime_ms, updated_at) VALUES (?, 1, ?, 1.0, 1024, 10, ?)")
+    sqlx::query("INSERT INTO current_node_process_observations (node_id, pid, started_at, cpu_percent, memory_bytes, uptime_ms, updated_at) VALUES ($1, 1, $2, 1.0, 1024, 10, $3) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO current_node_data_directory_observations (node_id, size_bytes, capacity_bytes, updated_at) VALUES (?, 10, 100, ?)")
+    sqlx::query("INSERT INTO current_node_data_directory_observations (node_id, size_bytes, capacity_bytes, updated_at) VALUES ($1, 10, 100, $2) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, updated_at) VALUES (?, 'peer-1', NULL, 'outbound', 0, 0, 0, ?)")
+    sqlx::query("INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, updated_at) VALUES ($1, 'peer-1', NULL, 'outbound', 0, 0, 0, $2) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO current_node_peer_capabilities (node_id, peer_id, capability, updated_at) VALUES (?, 'peer-1', 'platon', ?)")
+    sqlx::query("INSERT INTO current_node_peer_capabilities (node_id, peer_id, capability, updated_at) VALUES ($1, 'peer-1', 'platon', $2) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO peer_presence_intervals (node_id, peer_id, direction, trusted, static_peer, consensus_peer, opened_at) VALUES (?, 'peer-1', 'outbound', 0, 0, 0, ?)")
+    sqlx::query("INSERT INTO peer_presence_intervals (node_id, peer_id, direction, trusted, static_peer, consensus_peer, opened_at) VALUES ($1, 'peer-1', 'outbound', 0, 0, 0, $2) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO peer_aggregate_5m (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, first_observed_at, last_observed_at) VALUES (?, ?, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, ?, ?)")
+    sqlx::query("INSERT INTO peer_aggregate_5m (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, first_observed_at, last_observed_at) VALUES ($1, $2, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, $3, $4) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO peer_aggregate_5m_countries (node_id, bucket_start, country_code, peer_count) VALUES (?, ?, 'US', 1)")
+    sqlx::query("INSERT INTO peer_aggregate_5m_countries (node_id, bucket_start, country_code, peer_count) VALUES ($1, $2, 'US', 1) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO peer_aggregate_1h (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, first_observed_at, last_observed_at) VALUES (?, ?, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, ?, ?)")
+    sqlx::query("INSERT INTO peer_aggregate_1h (node_id, bucket_start, sample_count, total_peers, inbound_count, outbound_count, trusted_count, static_count, consensus_count, known_country_count, unknown_country_count, arrivals, departures, cbft_lag_count, cbft_lag_sum, first_observed_at, last_observed_at) VALUES ($1, $2, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, $3, $4) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO peer_aggregate_1h_countries (node_id, bucket_start, country_code, peer_count) VALUES (?, ?, 'US', 1)")
+    sqlx::query("INSERT INTO peer_aggregate_1h_countries (node_id, bucket_start, country_code, peer_count) VALUES ($1, $2, 'US', 1) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_key_fingerprint, seal_signer_match, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, accepted_at, node_key_history_complete) VALUES (?, 1, '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', '0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', ?, 210425, 210425, 'lat', 1000, ?, 1, NULL, 'subscription', 'lat1coinbase', NULL, 'unknown', 'unknown', NULL, 'test', ?, 0)")
+    sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_key_fingerprint, seal_signer_match, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, accepted_at, node_key_history_complete) VALUES ($1, 1, '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', '0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', $2, 210425, 210425, 'lat', 1000, $3, 1, NULL, 'subscription', 'lat1coinbase', NULL, 'unknown', 'unknown', NULL, 'test', $4, 0) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(NETWORK_GENESIS).bind(now).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO block_history_state (node_id, updated_at) VALUES (?, ?)")
+    sqlx::query("INSERT INTO block_history_state (node_id, updated_at) VALUES ($1, $2) ON CONFLICT DO NOTHING")
         .bind(node_id)
         .bind(now)
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query("INSERT OR IGNORE INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES (?, 1, 1, 'covered', ?, ?)")
+    sqlx::query("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ($1, 1, 1, 'covered', $2, $3) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO block_identity_window (node_id, height, block_hash) VALUES (?, 1, '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')")
+    sqlx::query("INSERT INTO block_identity_window (node_id, height, block_hash) VALUES ($1, 1, '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') ON CONFLICT DO NOTHING")
         .bind(node_id).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO block_history_gaps (node_id, from_height, to_height, kind, created_at) VALUES (?, 2, 3, 'permanent', ?)")
+    sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, created_at) VALUES ($1, 2, 3, 'permanent', $2) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO chain_divergence_observations (node_id, height, retained_block_hash, observed_block_hash, observed_at, reason) VALUES (?, 1, '0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', ?, 'test')")
+    sqlx::query("INSERT INTO chain_divergence_observations (node_id, height, retained_block_hash, observed_block_hash, observed_at, reason) VALUES ($1, 1, '0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', $2, 'test') ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO observed_network_heads (node_id, block_number, block_hash, observed_at, confidence, eligible_sources) VALUES (?, 1, '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', ?, 'high', '[\"subscription\"]')")
+    sqlx::query("INSERT INTO observed_network_heads (node_id, block_number, block_hash, observed_at, confidence, eligible_sources) VALUES ($1, 1, '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', $2, 'high', '[\"subscription\"]') ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES (?, 'process_cpu_percent', ?, ?, 1.0)")
+    sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ($1, 'process_cpu_percent', $2, $3, 1.0) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).bind(now).execute(pool).await.unwrap();
     // The series ledger is Node-owned too: it describes what the Node's series
     // observed, so it is purged with them (issue #213).
-    sqlx::query("INSERT OR IGNORE INTO node_metric_series_state (node_id, metric, first_observed_at, last_observed_at, last_received_at, observation_count, replayed_count, corrected_count, updated_at) VALUES (?, 'process_cpu_percent', ?, ?, ?, 1, 0, 0, ?)")
+    sqlx::query("INSERT INTO node_metric_series_state (node_id, metric, first_observed_at, last_observed_at, last_received_at, observation_count, replayed_count, corrected_count, updated_at) VALUES ($1, 'process_cpu_percent', $2, $3, $4, 1, 0, 0, $5) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
     // The aggregate buckets summarize the same Node's series beyond the raw
     // window and carry its Node ID directly, so they are Node-owned history
     // (issue #214).
-    sqlx::query("INSERT OR IGNORE INTO node_metric_aggregates (node_id, metric, grain_seconds, bucket_start, sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at, last_received_at, updated_at) VALUES (?, 'process_cpu_percent', 60, ?, 2, 1.0, 2.0, 2.0, ?, ?, ?, ?)")
+    sqlx::query("INSERT INTO node_metric_aggregates (node_id, metric, grain_seconds, bucket_start, sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at, last_received_at, updated_at) VALUES ($1, 'process_cpu_percent', 60, $2, 2, 1.0, 2.0, 2.0, $3, $4, $5, $6) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).bind(now).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
     // The block tiers summarize this Node's accepted blocks and carry its Node
     // ID directly, so they are Node-owned history too (issue #248).
-    sqlx::query("INSERT OR IGNORE INTO node_block_aggregates (node_id, grain_seconds, bucket_start, block_count, transaction_total, transaction_min, transaction_max, last_transaction_count, first_observed_at, last_observed_at, last_received_at, updated_at) VALUES (?, 60, ?, 1, 1, 1, 1, 1, ?, ?, ?, ?)")
+    sqlx::query("INSERT INTO node_block_aggregates (node_id, grain_seconds, bucket_start, block_count, transaction_total, transaction_min, transaction_max, last_transaction_count, first_observed_at, last_observed_at, last_received_at, updated_at) VALUES ($1, 60, $2, 1, 1, 1, 1, 1, $3, $4, $5, $6) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).bind(now).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
     // The recorded synchronization and consensus states are evidence about
     // this Node, so they are Node-owned history and the Purge removes them
     // (issue #217).
-    sqlx::query("INSERT OR IGNORE INTO node_state_observations (node_id, component, observed_at, received_at, entry_kind, collection_state, value_source) VALUES (?, 'sync', ?, ?, 'change', 'ok', 'current')")
+    sqlx::query("INSERT INTO node_state_observations (node_id, component, observed_at, received_at, entry_kind, collection_state, value_source) VALUES ($1, 'sync', $2, $3, 'change', 'ok', 'current') ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO node_state_series_state (node_id, component, first_observed_at, last_observed_at, last_received_at, last_collection_state, last_value_source, last_delivery_at, entry_count, change_count, anchor_count, replayed_count, corrected_count, released_before, updated_at) VALUES (?, 'sync', ?, ?, ?, 'ok', 'current', ?, 1, 1, 0, 0, 0, '1970-01-01T00:00:00Z', ?)")
+    sqlx::query("INSERT INTO node_state_series_state (node_id, component, first_observed_at, last_observed_at, last_received_at, last_collection_state, last_value_source, last_delivery_at, entry_count, change_count, anchor_count, replayed_count, corrected_count, released_before, updated_at) VALUES ($1, 'sync', $2, $3, $4, 'ok', 'current', $5, 1, 1, 0, 0, 0, '1970-01-01T00:00:00Z', $6) ON CONFLICT DO NOTHING")
         // The journal's newest counted delivery has to be named, or the
         // NOT NULL column makes this seed row silently absent.
         .bind(node_id).bind(now).bind(now).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, created_at, updated_at) VALUES (?, ?, ?, 'observer', ?, ?, ?)")
+    sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, valid_from, created_at, updated_at) VALUES ($1, $2, $3, 'observer', $4, $5, $6) ON CONFLICT DO NOTHING")
         .bind(format!("link-{node_id}")).bind(node_id).bind(validator_id).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, created_at, expires_at, updated_at) VALUES (?, ?, ?, ?, 'cancelled', ?, ?, ?)")
+    sqlx::query("INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, created_at, expires_at, updated_at) VALUES ($1, $2, $3, $4, 'cancelled', $5, $6, $7) ON CONFLICT DO NOTHING")
         .bind(format!("transfer-{node_id}")).bind(node_id).bind(agent_id).bind(agent_id).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
     // Node-owned capacity gap evidence. A skipped-series row carries its owner
     // in a scope column rather than a Foreign Key, so it is seeded through the
     // interval that owns it; a Host series of the same interval is seeded
     // alongside to prove that only the Node's share of the gap is purged.
-    sqlx::query("INSERT OR IGNORE INTO capacity_protection_intervals (interval_id, source_mount, started_at, started_reason, opened_total_bytes, opened_available_bytes, pause_below_bytes, resume_above_bytes, created_at, updated_at) VALUES ('interval-1', '/srv/state', ?, 'low_space', 100, 1, 50, 60, ?, ?)")
+    sqlx::query("INSERT INTO capacity_protection_intervals (interval_id, source_mount, started_at, started_reason, opened_total_bytes, opened_available_bytes, pause_below_bytes, resume_above_bytes, created_at, updated_at) VALUES ('interval-1', '/srv/state', $1, 'low_space', 100, 1, 50, 60, $2, $3) ON CONFLICT DO NOTHING")
         .bind(now).bind(now).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO capacity_skipped_series (interval_id, scope_kind, scope_key, metric, skipped_count, first_skipped_at, last_skipped_at) VALUES ('interval-1', 'node', ?, 'process_cpu_percent', 3, ?, ?)")
+    sqlx::query("INSERT INTO capacity_skipped_series (interval_id, scope_kind, scope_key, metric, skipped_count, first_skipped_at, last_skipped_at) VALUES ('interval-1', 'node', $1, 'process_cpu_percent', 3, $2, $3) ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO capacity_skipped_series (interval_id, scope_kind, scope_key, metric, skipped_count, first_skipped_at, last_skipped_at) VALUES ('interval-1', 'host', ?, 'network_rx_bytes_per_sec', 2, ?, ?)")
+    sqlx::query("INSERT INTO capacity_skipped_series (interval_id, scope_kind, scope_key, metric, skipped_count, first_skipped_at, last_skipped_at) VALUES ('interval-1', 'host', $1, 'network_rx_bytes_per_sec', 2, $2, $3) ON CONFLICT DO NOTHING")
         .bind(agent_id).bind(now).bind(now).execute(pool).await.unwrap();
 }
 
@@ -441,24 +441,24 @@ async fn seed_shared_data(harness: &Harness, agent_id: &str, node_id: &str) {
     let pool = harness.pool();
     let now = "2026-01-01T00:00:00Z";
     // Another Node owned by the same Agent, with its own Node-scoped estimate.
-    sqlx::query("INSERT OR IGNORE INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('sibling-node', ?, ?, 'Sibling', 'ws://127.0.0.1:2', 'active', 'public', 1, ?, ?)")
+    sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('sibling-node', $1, $2, 'Sibling', 'ws://127.0.0.1:2', 'active', 'public', 1, $3, $4) ON CONFLICT DO NOTHING")
         .bind(agent_id).bind(NETWORK_KEY).bind(now).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, state_revision, value_revision) VALUES (?, 'node', 'sibling-node', 'sibling-node', 'rpc', 'ok', 1, 1)")
+    sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, state_revision, value_revision) VALUES ($1, 'node', 'sibling-node', 'sibling-node', 'rpc', 'ok', 1, 1) ON CONFLICT DO NOTHING")
         .bind(agent_id).execute(pool).await.unwrap();
     // An independent Validator identity and one durable daily snapshot.
-    sqlx::query("INSERT OR IGNORE INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ('validator-1', ?, '0xvalidator', 'Validator One', ?, ?)")
+    sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ('validator-1', $1, '0xvalidator', 'Validator One', $2, $3) ON CONFLICT DO NOTHING")
         .bind(NETWORK_KEY).bind(now).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, source, observation_key) VALUES ('snapshot-1', 'validator-1', 'UTC', '2026-01-01', '2026-01', ?, ?, 'test', 'observation-1')")
+    sqlx::query("INSERT INTO validator_daily_snapshots (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, source, observation_key) VALUES ('snapshot-1', 'validator-1', 'UTC', '2026-01-01', '2026-01', $1, $2, 'test', 'observation-1') ON CONFLICT DO NOTHING")
         .bind(now).bind(now).execute(pool).await.unwrap();
     // A Network-scoped reference head that is not Node-owned.
-    sqlx::query("INSERT OR IGNORE INTO network_reference_heads (network_key, block_number, observed_at, confidence, eligible_source_count, contributing_node_id) VALUES (?, 1, ?, 'high', 1, NULL)")
+    sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence, eligible_source_count, contributing_node_id) VALUES ($1, 1, $2, 'high', 1, NULL) ON CONFLICT DO NOTHING")
         .bind(NETWORK_KEY).bind(now).execute(pool).await.unwrap();
     // Existing Alert Incident evidence for the Node subject.
     let rule_key: String = sqlx::query_scalar("SELECT rule_key FROM alert_rules LIMIT 1")
         .fetch_one(pool)
         .await
         .unwrap();
-    sqlx::query("INSERT OR IGNORE INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ('incident-1', ?, 1, 'node', ?, 'warning', 'open', 1, ?, '{}')")
+    sqlx::query("INSERT INTO alert_incidents (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) VALUES ('incident-1', $1, 1, 'node', $2, 'warning', 'open', 1, $3, '{}') ON CONFLICT DO NOTHING")
         .bind(rule_key).bind(node_id).bind(now).execute(pool).await.unwrap();
 }
 
@@ -480,7 +480,7 @@ async fn owner_purge_removes_only_node_owned_data_and_leaves_shared_evidence() {
     let value = body_json(response).await;
     assert_eq!(value["receipt"]["disposition"], "accepted", "{value}");
 
-    sqlx::query("UPDATE nodes SET visibility = 'public' WHERE node_id = ?")
+    sqlx::query("UPDATE nodes SET visibility = 'public' WHERE node_id = $1")
         .bind(&node_id)
         .execute(harness.pool())
         .await
@@ -576,7 +576,7 @@ async fn owner_purge_removes_only_node_owned_data_and_leaves_shared_evidence() {
     // Purge removes it; the Agent's own Host series of the same interval is not
     // Node-owned and survives.
     let node_gap: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM capacity_skipped_series WHERE scope_kind = 'node' AND scope_key = ?",
+        "SELECT COUNT(*) FROM capacity_skipped_series WHERE scope_kind = 'node' AND scope_key = $1",
     )
     .bind(&node_id)
     .fetch_one(harness.pool())
@@ -597,7 +597,7 @@ async fn owner_purge_removes_only_node_owned_data_and_leaves_shared_evidence() {
         "the Agent's Host series is shared evidence, not Node-owned history"
     );
 
-    let node_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE node_id = ?")
+    let node_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE node_id = $1")
         .bind(&node_id)
         .fetch_one(harness.pool())
         .await
@@ -606,7 +606,7 @@ async fn owner_purge_removes_only_node_owned_data_and_leaves_shared_evidence() {
 
     // Minimal deletion identity and Audit Event are retained.
     let deleted: (String, String, String) = sqlx::query_as(
-        "SELECT agent_id, network_key, deleted_at FROM deleted_nodes WHERE node_id = ?",
+        "SELECT agent_id, network_key, deleted_at FROM deleted_nodes WHERE node_id = $1",
     )
     .bind(&node_id)
     .fetch_one(harness.pool())
@@ -616,7 +616,7 @@ async fn owner_purge_removes_only_node_owned_data_and_leaves_shared_evidence() {
     assert_eq!(deleted.1, NETWORK_KEY);
     assert!(!deleted.2.is_empty());
     let audit: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'node_purged' AND target_kind = 'node' AND target_id = ?",
+        "SELECT COUNT(*) FROM audit_events WHERE event_kind = 'node_purged' AND target_kind = 'node' AND target_id = $1",
     )
     .bind(&node_id)
     .fetch_one(harness.pool())
@@ -626,14 +626,14 @@ async fn owner_purge_removes_only_node_owned_data_and_leaves_shared_evidence() {
 
     // Shared Agent/Host, sibling Node, Network, Validator history, and Incident
     // evidence survive.
-    let agents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE agent_id = ?")
+    let agents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE agent_id = $1")
         .bind(&agent_id)
         .fetch_one(harness.pool())
         .await
         .unwrap();
     assert_eq!(agents, 1);
     let host: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM current_host_observations WHERE agent_id = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM current_host_observations WHERE agent_id = $1")
             .bind(&agent_id)
             .fetch_one(harness.pool())
             .await
@@ -657,7 +657,7 @@ async fn owner_purge_removes_only_node_owned_data_and_leaves_shared_evidence() {
     .unwrap();
     assert_eq!(snapshots, 1, "independent Validator history must survive");
     let reference: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM network_reference_heads WHERE network_key = ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM network_reference_heads WHERE network_key = $1")
             .bind(NETWORK_KEY)
             .fetch_one(harness.pool())
             .await
@@ -812,10 +812,10 @@ async fn active_and_retired_nodes_are_both_purgeable() {
     let (agent_id, _credential) = enroll_agent(&harness, &owner).await;
     let now = "2026-01-01T00:00:00Z";
     for (node_id, lifecycle) in [("active-node", "active"), ("retired-node", "retired")] {
-        sqlx::query("INSERT OR IGNORE INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, ?, ?, 'ws://127.0.0.1:1', ?, 'private', 1, ?, ?)")
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ($1, $2, $3, 'ws://127.0.0.1:1', $4, 'private', 1, $5, $6) ON CONFLICT DO NOTHING")
             .bind(node_id).bind(&agent_id).bind(NETWORK_KEY).bind(lifecycle).bind(now).bind(now)
             .execute(harness.pool()).await.unwrap();
-        sqlx::query("INSERT OR IGNORE INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, state_revision, value_revision) VALUES (?, 'node', ?, ?, 'rpc', 'ok', 1, 1)")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, state_revision, value_revision) VALUES ($1, 'node', $2, $3, 'rpc', 'ok', 1, 1) ON CONFLICT DO NOTHING")
             .bind(&agent_id).bind(node_id).bind(node_id).execute(harness.pool()).await.unwrap();
         let response = harness
             .send(admin_post(
@@ -957,7 +957,7 @@ async fn replay_same_revision_and_new_revision_cannot_rebuild_a_purged_node() {
     assert_eq!(status, StatusCode::OK, "{value}");
     let original = value["receipt"].clone();
     let dedup_before: (String, String) = sqlx::query_as(
-        "SELECT report_body_sha256, disposition FROM agent_report_receipts WHERE report_id = ?",
+        "SELECT report_body_sha256, disposition FROM agent_report_receipts WHERE report_id = $1",
     )
     .bind(first.report_id.to_string())
     .fetch_one(harness.pool())
@@ -977,7 +977,7 @@ async fn replay_same_revision_and_new_revision_cannot_rebuild_a_purged_node() {
     );
     // The deletion does not rewrite the old Receipt or the dedup boundary.
     let dedup_after: (String, String) = sqlx::query_as(
-        "SELECT report_body_sha256, disposition FROM agent_report_receipts WHERE report_id = ?",
+        "SELECT report_body_sha256, disposition FROM agent_report_receipts WHERE report_id = $1",
     )
     .bind(first.report_id.to_string())
     .fetch_one(harness.pool())
@@ -1062,7 +1062,7 @@ async fn a_purged_node_stays_unreconstructable_after_a_server_restart() {
     );
     assert_eq!(node_row_count(&harness, &node_id).await, 0);
 
-    let deleted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM deleted_nodes WHERE node_id = ?")
+    let deleted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM deleted_nodes WHERE node_id = $1")
         .bind(&node_id)
         .fetch_one(harness.pool())
         .await
@@ -1294,7 +1294,7 @@ fn v2_receipt_of(value: &Value) -> ReportReceiptV2 {
 }
 
 async fn accepted_revision(harness: &Harness, agent_id: &str) -> i64 {
-    sqlx::query_scalar("SELECT last_inventory_revision FROM agents WHERE agent_id = ?")
+    sqlx::query_scalar("SELECT last_inventory_revision FROM agents WHERE agent_id = $1")
         .bind(agent_id)
         .fetch_one(harness.pool())
         .await
@@ -1302,7 +1302,7 @@ async fn accepted_revision(harness: &Harness, agent_id: &str) -> i64 {
 }
 
 async fn accepted_fingerprint(harness: &Harness, agent_id: &str) -> Option<String> {
-    sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id = ?")
+    sqlx::query_scalar("SELECT inventory_sha256 FROM agents WHERE agent_id = $1")
         .bind(agent_id)
         .fetch_one(harness.pool())
         .await
@@ -1312,7 +1312,7 @@ async fn accepted_fingerprint(harness: &Harness, agent_id: &str) -> Option<Strin
 /// A still-pending Transfer into the reporting Agent, valid for the whole test.
 async fn pending_v2_transfer(harness: &Harness, node_id: &str, source: &str, target: &str) {
     sqlx::query(
-        "INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, updated_at) VALUES ('transfer-v2-1', ?, ?, ?, 'pending', 'v2 handover', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        "INSERT INTO node_transfers (transfer_id, node_id, source_agent_id, target_agent_id, status, operator_reason, created_at, expires_at, updated_at) VALUES ('transfer-v2-1', $1, $2, $3, 'pending', 'v2 handover', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
     )
     .bind(node_id)
     .bind(source)
@@ -1534,7 +1534,7 @@ async fn v2_replay_and_new_content_cannot_rebuild_a_purged_node() {
     assert_eq!(status, StatusCode::OK, "{value}");
     let original = value["receipt"].clone();
     let dedup_before: (String, String) = sqlx::query_as(
-        "SELECT report_body_sha256, disposition FROM agent_report_receipts WHERE report_id = ?",
+        "SELECT report_body_sha256, disposition FROM agent_report_receipts WHERE report_id = $1",
     )
     .bind(first.report_id.to_string())
     .fetch_one(harness.pool())
@@ -1549,7 +1549,7 @@ async fn v2_replay_and_new_content_cannot_rebuild_a_purged_node() {
     assert_eq!(replayed["receipt"], original);
     assert_eq!(node_row_count(&harness, &node_id).await, 0);
     let dedup_after: (String, String) = sqlx::query_as(
-        "SELECT report_body_sha256, disposition FROM agent_report_receipts WHERE report_id = ?",
+        "SELECT report_body_sha256, disposition FROM agent_report_receipts WHERE report_id = $1",
     )
     .bind(first.report_id.to_string())
     .fetch_one(harness.pool())
@@ -1620,7 +1620,7 @@ async fn v2_replay_and_new_content_cannot_rebuild_a_purged_node() {
         RejectionCode::NodePurged
     );
     assert_eq!(node_row_count(&harness, &node_id).await, 0);
-    let deleted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM deleted_nodes WHERE node_id = ?")
+    let deleted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM deleted_nodes WHERE node_id = $1")
         .bind(&node_id)
         .fetch_one(harness.pool())
         .await
@@ -1668,7 +1668,7 @@ async fn v2_node_removed_from_the_latest_declaration_is_retired_not_deleted() {
             .revision,
         2
     );
-    let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = ?")
+    let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = $1")
         .bind(&removed)
         .fetch_one(harness.pool())
         .await
@@ -1679,7 +1679,7 @@ async fn v2_node_removed_from_the_latest_declaration_is_retired_not_deleted() {
         "Retired keeps the Node history"
     );
     let kept_lifecycle: String =
-        sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = ?")
+        sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = $1")
             .bind(&kept)
             .fetch_one(harness.pool())
             .await
@@ -1688,7 +1688,7 @@ async fn v2_node_removed_from_the_latest_declaration_is_retired_not_deleted() {
 
     // Agent silence is not retirement: an old liveness timestamp and a
     // background evaluation leave the declared Node Active.
-    sqlx::query("UPDATE agents SET last_received_at = '2020-01-01T00:00:00Z' WHERE agent_id = ?")
+    sqlx::query("UPDATE agents SET last_received_at = '2020-01-01T00:00:00Z' WHERE agent_id = $1")
         .bind(&agent_id)
         .execute(harness.pool())
         .await
@@ -1696,7 +1696,7 @@ async fn v2_node_removed_from_the_latest_declaration_is_retired_not_deleted() {
     platpulse_server::alerts::sweep(&harness.state)
         .await
         .unwrap();
-    let kept_after: String = sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = ?")
+    let kept_after: String = sqlx::query_scalar("SELECT lifecycle FROM nodes WHERE node_id = $1")
         .bind(&kept)
         .fetch_one(harness.pool())
         .await
@@ -1752,7 +1752,7 @@ async fn v2_transfer_conditions_are_evaluated_even_when_the_declaration_is_uncha
             .await
             .unwrap();
     assert_eq!(transfer_status, "pending");
-    let owner_now: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id = ?")
+    let owner_now: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id = $1")
         .bind(&node_id)
         .fetch_one(harness.pool())
         .await
@@ -1779,7 +1779,7 @@ async fn v2_transfer_conditions_are_evaluated_even_when_the_declaration_is_uncha
             .await
             .unwrap();
     assert_eq!(transfer_status, "completed");
-    let owner_now: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id = ?")
+    let owner_now: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id = $1")
         .bind(&node_id)
         .fetch_one(harness.pool())
         .await
@@ -1798,13 +1798,13 @@ async fn v2_transfer_conditions_are_evaluated_even_when_the_declaration_is_uncha
         RejectionCode::NodeOwnershipMismatch
     );
     let events: i64 =
-        sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id = ?")
+        sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id = $1")
             .bind(&source_agent)
             .fetch_one(harness.pool())
             .await
             .unwrap();
     assert_eq!(events, 1);
-    let owner_now: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id = ?")
+    let owner_now: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id = $1")
         .bind(&node_id)
         .fetch_one(harness.pool())
         .await

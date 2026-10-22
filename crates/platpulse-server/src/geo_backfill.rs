@@ -457,20 +457,20 @@ mod tests {
     }
 
     async fn seed_node(state: &AppState, node_id: &str) {
-        sqlx::query("INSERT OR IGNORE INTO agents (agent_id, agent_epoch, last_received_at, created_at, updated_at) VALUES ('agent-geo-backfill', 1, ?, ?, ?)")
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, last_received_at, created_at, updated_at) VALUES ('agent-geo-backfill', 1, $1, $2, $3) ON CONFLICT DO NOTHING")
             .bind(NOW)
             .bind(NOW)
             .bind(NOW)
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT OR IGNORE INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('geo-net', 'Geo Network', '0xgenesis', 1, 1, 'lat', ?, ?)")
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('geo-net', 'Geo Network', '0xgenesis', 1, 1, 'lat', $1, $2) ON CONFLICT DO NOTHING")
             .bind(NOW)
             .bind(NOW)
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, 'agent-geo-backfill', 'geo-net', ?, 'ws://127.0.0.1:1', 'active', 'public', 1, ?, ?)")
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ($1, 'agent-geo-backfill', 'geo-net', $2, 'ws://127.0.0.1:1', 'active', 'public', 1, $3, $4)")
             .bind(node_id)
             .bind(node_id)
             .bind(NOW)
@@ -481,7 +481,7 @@ mod tests {
     }
 
     async fn insert_peer(state: &AppState, node_id: &str, peer_id: &str, remote_ip: &str) {
-        sqlx::query("INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, updated_at) VALUES (?, ?, ?, 'inbound', 0, 0, 0, ?)")
+        sqlx::query("INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, updated_at) VALUES ($1, $2, $3, 'inbound', 0, 0, 0, $4)")
             .bind(node_id)
             .bind(peer_id)
             .bind(remote_ip)
@@ -502,7 +502,7 @@ mod tests {
 
     async fn cache_row(state: &AppState, ip: &str) -> Option<CacheRow> {
         sqlx::query_as(
-            "SELECT country_code, state, created_at, expires_at, last_success_at, last_attempt_at FROM geo_location_cache WHERE provider = 'local_mmdb' AND canonical_ip = ?",
+            "SELECT country_code, state, created_at, expires_at, last_success_at, last_attempt_at FROM geo_location_cache WHERE provider = 'local_mmdb' AND canonical_ip = $1",
         )
         .bind(ip)
         .fetch_optional(state.db().pool())
@@ -600,7 +600,7 @@ mod tests {
         seed_node(&state, "geo-node-a").await;
         insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
         // A retained country result that expired one hour before the pass.
-        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', ?, 'SE', 'current', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-12T09:00:00Z')")
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', $1, 'SE', 'current', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-12T09:00:00Z')")
             .bind(RESOLVABLE)
             .execute(state.db().pool())
             .await
@@ -797,7 +797,7 @@ mod tests {
             ("local_mmdb", "1.1.1.1"),
             ("disabled", "1.1.1.1"),
         ] {
-            sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES (?, ?, 'US', 'current', ?, ?, ?, ?, ?)")
+            sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ($1, $2, 'US', 'current', $3, $4, $5, $6, $7)")
                 .bind(provider)
                 .bind(ip)
                 .bind(NOW)
@@ -851,7 +851,7 @@ mod tests {
         // A country result whose 24-hour TTL is long past but whose birth
         // time is still inside the 30-day hard boundary: exactly the
         // retained last-good state the projections serve as Stale.
-        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', ?, 'SE', 'failed', '2026-08-01T09:00:00Z', '2026-08-12T09:00:00Z', '2026-08-01T09:00:00Z', '2026-08-12T09:00:00Z', '2026-08-02T09:00:00Z')")
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', $1, 'SE', 'failed', '2026-08-01T09:00:00Z', '2026-08-12T09:00:00Z', '2026-08-01T09:00:00Z', '2026-08-12T09:00:00Z', '2026-08-02T09:00:00Z')")
             .bind(RESOLVABLE)
             .execute(state.db().pool())
             .await
@@ -867,7 +867,7 @@ mod tests {
         assert_eq!(row.1, "failed");
 
         // Past the hard boundary the row is genuinely unretainable.
-        sqlx::query("UPDATE geo_location_cache SET created_at = '2026-06-01T09:00:00Z' WHERE canonical_ip = ?")
+        sqlx::query("UPDATE geo_location_cache SET created_at = '2026-06-01T09:00:00Z' WHERE canonical_ip = $1")
             .bind(RESOLVABLE)
             .execute(state.db().pool())
             .await
@@ -920,8 +920,12 @@ mod tests {
     /// A restart reuses both the durable provider selection and the retained
     /// country result: the new process resolves from the existing cache and
     /// schedules no new lookup for a result that is still valid.
+    #[cfg_attr(storage_postgres, ignore = "it reopens the SQLite database file")]
     #[tokio::test]
     async fn the_selection_and_retained_results_survive_a_server_restart() {
+        if !crate::test_support::skip_unless_sqlite("it reopens the SQLite database file") {
+            return;
+        }
         let dir = tempdir().unwrap();
         // The pass time comes from the real clock so the retained 24-hour
         // result is still valid after the restart below.
@@ -982,7 +986,7 @@ mod tests {
         seed_node(&state, "geo-node-a").await;
         insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
         // A successful Peer Snapshot basis so the projection has a denominator.
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-geo-backfill', 'node', 'geo-node-a', 'geo-node-a', 'peers', 'ok', ?, ?, ?, ?, 1, 1)")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-geo-backfill', 'node', 'geo-node-a', 'geo-node-a', 'peers', 'ok', $1, $2, $3, $4, 1, 1)")
             .bind(NOW)
             .bind(NOW)
             .bind(NOW)
@@ -1017,7 +1021,7 @@ mod tests {
         ip: &str,
     ) -> Option<CacheRow> {
         sqlx::query_as(
-            "SELECT country_code, state, created_at, expires_at, last_success_at, last_attempt_at FROM geo_location_cache WHERE provider = ? AND canonical_ip = ?",
+            "SELECT country_code, state, created_at, expires_at, last_success_at, last_attempt_at FROM geo_location_cache WHERE provider = $1 AND canonical_ip = $2",
         )
         .bind(provider.as_str())
         .bind(ip)
@@ -1127,7 +1131,7 @@ mod tests {
         seed_node(&state, "geo-node-a").await;
         insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
         insert_peer(&state, "geo-node-a", "p2", RESOLVABLE).await;
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-geo-backfill', 'node', 'geo-node-a', 'geo-node-a', 'peers', 'ok', ?, ?, ?, ?, 1, 1)")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-geo-backfill', 'node', 'geo-node-a', 'geo-node-a', 'peers', 'ok', $1, $2, $3, $4, 1, 1)")
             .bind(NOW)
             .bind(NOW)
             .bind(NOW)
@@ -1173,7 +1177,7 @@ mod tests {
         seed_node(&state, "geo-node-a").await;
         insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
         // A retained country result that expired one hour before the pass.
-        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('ipinfo', ?, 'SE', 'current', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-12T09:00:00Z')")
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('ipinfo', $1, 'SE', 'current', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-12T09:00:00Z')")
             .bind(RESOLVABLE)
             .execute(state.db().pool())
             .await
@@ -1410,8 +1414,12 @@ mod tests {
     /// A restart reuses the durable provider selection and the retained
     /// external result, so a Server that already resolved its Peers does not
     /// ask the provider again for a valid country.
+    #[cfg_attr(storage_postgres, ignore = "it reopens the SQLite database file")]
     #[tokio::test]
     async fn ipinfo_selection_and_retained_results_survive_a_server_restart() {
+        if !crate::test_support::skip_unless_sqlite("it reopens the SQLite database file") {
+            return;
+        }
         let dir = tempdir().unwrap();
         let stub = StubServer::start(vec![StubReply::country("SE")]).await;
         // The pass time comes from the real clock so the retained 24-hour
@@ -1532,7 +1540,7 @@ mod tests {
         // Ingestion writes a Node's Peer rows inside the same transaction that
         // records its Peer Snapshot value, so both Nodes here have produced one.
         for node_id in ["geo-node-a", "geo-node-b"] {
-            sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-geo-backfill', 'node', ?, ?, 'peers', 'ok', ?, ?, ?, ?, 1, 1)")
+            sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-geo-backfill', 'node', $1, $2, 'peers', 'ok', $3, $4, $5, $6, 1, 1)")
             .bind(node_id)
             .bind(node_id)
             .bind(NOW)
@@ -1614,7 +1622,7 @@ mod tests {
         let state = geojs_state(&dir, &stub).await;
         seed_node(&state, "geo-node-a").await;
         insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
-        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('geojs', ?, 'SE', 'current', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-12T09:00:00Z')")
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('geojs', $1, 'SE', 'current', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-11T09:00:00Z', '2026-08-12T09:00:00Z')")
             .bind(RESOLVABLE)
             .execute(state.db().pool())
             .await
@@ -1783,8 +1791,12 @@ mod tests {
     /// A restart reuses the durable provider selection and the retained
     /// GeoJS result, so a Server that already resolved its Peers does not ask
     /// the GeoJS endpoint again for a valid country.
+    #[cfg_attr(storage_postgres, ignore = "it reopens the SQLite database file")]
     #[tokio::test]
     async fn geojs_selection_and_retained_results_survive_a_server_restart() {
+        if !crate::test_support::skip_unless_sqlite("it reopens the SQLite database file") {
+            return;
+        }
         let dir = tempdir().unwrap();
         let stub = StubServer::start(vec![StubReply::document(
             r#"{"country":"Sweden","country_code":"SE"}"#,

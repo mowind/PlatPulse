@@ -97,9 +97,12 @@ Server resolves the installed default `/usr/share/platpulse/web`. A configured
 
 The Server may start when the default or configured WebUI directory is
 missing/incomplete, but `/health/ready` reports the `web_assets` component as
-not ready with reason `web_assets_missing`. Readiness evaluates six components:
-`sqlite`, `owner`, `web_assets`, `shutdown`, `critical_workers`, and `corruption`;
-any `not_ready` component makes the endpoint return HTTP 503. `/health/live`
+not ready with reason `web_assets_missing`. Readiness evaluates eight components:
+`storage_ownership`, the storage component named for the backend in use
+(`sqlite`, or `postgres` with the PostgreSQL Storage Backend), `owner`,
+`web_assets`, `shutdown`, `critical_workers`, `corruption`, and
+`inventory_cutover`; any `not_ready` component makes the endpoint return HTTP
+503. `/health/live`
 only proves that the event loop responds. `init` emits a warning instead of
 creating or modifying WebUI files.
 
@@ -115,6 +118,64 @@ platpulse-server serve --config /etc/platpulse/server.toml
 development, and custom installations. It has higher precedence than the
 `web_root` value in `server.toml`, which has higher precedence than the
 built-in default.
+
+### Storage Backend
+
+The Server stores its data in a SQLite database file by default. The PostgreSQL
+Storage Backend is chosen explicitly by name ([ADR 0013](adr/0013-postgresql-server-storage-backend.md));
+it is never inferred from the environment, a URL, or a DSN:
+
+```toml
+[storage]
+backend = "postgres"
+
+[storage.postgres]
+host = "/run/postgresql"   # or a host name / IP address
+port = 5432
+database = "platpulse"
+user = "platpulse"
+password_file = "/etc/platpulse/secrets/postgres-password"
+sslmode = "disable"        # accepted only over a Unix-domain socket
+connect_timeout_secs = 10
+ownership_heartbeat_secs = 5
+```
+
+Every setting comes from `[storage.postgres]`: the `PG*` libpq variables and
+`.pgpass` are ignored, and a `password`, `url`, or `dsn` key is rejected. The
+password is read only from `password_file`, which follows the same policy as
+`pepper_file` (a same-user 0600 regular file, no symlinked path). It never
+appears in a log, an error, or the redacted connection `Debug` output. When the
+PostgreSQL backend is selected, `db_path` must be absent; leave `backup_dir`
+in place only if the SQLite tooling still uses it.
+
+`sslmode` defaults to `verify-full` and accepts only `verify-ca` as another
+value; `disable` must be written out explicitly and is accepted only for a
+Unix-domain socket directory, so leaving the key out never downgrades a socket
+connection to plaintext by accident. A remote connection is always encrypted, so
+`disable` over TCP is refused. `ssl_root_cert_file` supplies the CA certificate and cannot accompany
+`disable`. Both timers are 1..=300 s and the heartbeat must be shorter than the
+connect timeout.
+
+At startup the Server requires PostgreSQL 15 or newer, a schema whose text
+columns are collated `"C"`, and a role that owns the target schema; each
+failure is reported with the exact remedy. The PostgreSQL baseline migration
+lives beside the SQLite ones in `crates/platpulse-server/migrations-postgres`
+and is applied automatically after ownership is taken. Both backends share one
+logical schema version and CI proves their tables, columns, constraints, and
+indexes stay equivalent.
+
+Only one Server may serve a database. The owner holds a session-level advisory
+lock on a dedicated ownership connection; a second Server fails to start instead
+of sharing the database. If the ownership connection is lost, the Server stops
+writing, reports the `storage_ownership` readiness component as not ready,
+drains, and exits non-zero without reacquiring ownership in process. The work
+pool holds a single connection and never reconnects after ownership is lost; a
+transaction interrupted that way rolls back and Ingestion answers with a
+retryable 503.
+
+`init`, `backup`, `restore`, `verify-integrity`, `checkpoint create`, and the
+inventory cutover commands operate on the SQLite database file and refuse the
+PostgreSQL backend.
 
 The current production provider is Telegram. If no channel is configured,
 Notification Events are still recorded but no Delivery rows are created; configure

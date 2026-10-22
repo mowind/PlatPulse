@@ -13,6 +13,22 @@ listen = "127.0.0.1:8080"
 public_base_url = "https://monitor.example.com"
 development = false
 
+# Optional Storage Backend (ADR 0013). The default is the SQLite database file
+# at db_path. PostgreSQL is selected explicitly by name and then db_path must be
+# absent; every PostgreSQL setting comes from this section (PG* variables and
+# .pgpass are ignored). See docs/deployment.md before switching a deployment.
+# [storage]
+# backend = "postgres"
+# [storage.postgres]
+# host = "/run/postgresql"   # or a host name / IP address
+# port = 5432
+# database = "platpulse"
+# user = "platpulse"
+# password_file = "/etc/platpulse/secrets/postgres-password"
+# sslmode = "disable"        # accepted only over a Unix-domain socket
+# connect_timeout_secs = 10
+# ownership_heartbeat_secs = 5
+
 # Optional: use an operator-provided GeoLite2 Country database. PlatPulse does
 # not download, bundle, or store MaxMind credentials.
 # [geo]

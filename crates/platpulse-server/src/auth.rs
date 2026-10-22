@@ -1413,7 +1413,7 @@ mod tests {
         let now = format_rfc3339(now_utc());
         let past = "2020-01-01T00:00:00Z";
         sqlx::query(
-            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES (?, (SELECT user_id FROM users WHERE username = 'admin'), ?, ?, ?, ?, ?, NULL)",
+            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES ($1, (SELECT user_id FROM users WHERE username = 'admin'), $2, $3, $4, $5, $6, NULL)",
         )
         .bind(&token_id)
         .bind(digest.to_vec())
@@ -1439,7 +1439,7 @@ mod tests {
         );
         assert!(
             sqlx::query_scalar::<_, Option<String>>(
-                "SELECT revoked_at FROM sessions WHERE session_id = ?",
+                "SELECT revoked_at FROM sessions WHERE session_id = $1",
             )
             .bind(&token_id)
             .fetch_one(db.pool())
@@ -1526,7 +1526,7 @@ mod tests {
         let csrf = derive_csrf_token(config, &full_token);
         let csrf_digest = config.pepper.hmac_digest(csrf.as_bytes());
         sqlx::query(
-            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES (?, (SELECT user_id FROM users WHERE username = 'admin'), ?, ?, ?, ?, ?, NULL)",
+            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES ($1, (SELECT user_id FROM users WHERE username = 'admin'), $2, $3, $4, $5, $6, NULL)",
         )
         .bind(&token_id)
         .bind(digest.to_vec())
@@ -1553,7 +1553,7 @@ mod tests {
         let csrf_digest = config.pepper.hmac_digest(csrf.as_bytes());
         let now = format_rfc3339(now_utc());
         sqlx::query(
-            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES (?, (SELECT user_id FROM users WHERE username = 'admin'), ?, ?, ?, ?, '2099-01-01T00:00:00Z', NULL)",
+            "INSERT INTO sessions (session_id, user_id, token_digest, csrf_token_digest, created_at, last_seen_at, expires_at, revoked_at) VALUES ($1, (SELECT user_id FROM users WHERE username = 'admin'), $2, $3, $4, $5, '2099-01-01T00:00:00Z', NULL)",
         )
         .bind(&token_id)
         .bind(digest.to_vec())

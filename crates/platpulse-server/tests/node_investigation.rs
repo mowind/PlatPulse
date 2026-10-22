@@ -129,10 +129,7 @@ fn forced_policy(harness: &Harness) -> Arc<CapacityProtection> {
         Some(PathBuf::from("test-capacity-floor")),
     )
     .unwrap();
-    Arc::new(CapacityProtection::new(
-        config,
-        Some(harness.state.db().path()),
-    ))
+    Arc::new(CapacityProtection::new(config, harness.state.db().path()))
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
@@ -761,8 +758,17 @@ async fn a_silence_between_reports_is_partial_coverage_and_never_a_zero() {
 
 /// Story 59: a low-space pause is a pause rather than a collection failure, and
 /// the loss it caused is counted instead of reading as silence.
+#[cfg_attr(
+    storage_postgres,
+    ignore = "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)"
+)]
 #[tokio::test]
 async fn a_low_space_pause_is_a_pause_and_not_a_collection_failure() {
+    if !platpulse_server::test_support::skip_unless_sqlite(
+        "capacity protection does not apply to the PostgreSQL Storage Backend (ADR 0013)",
+    ) {
+        return;
+    }
     let mut harness = Harness::boot().await;
     let session = owner_session(&harness).await;
     let (agent_id, credential) = enroll_agent(&harness, &session).await;
@@ -837,8 +843,8 @@ async fn a_node_with_no_evidence_is_unavailable_rather_than_empty() {
     sqlx::query(
         "INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, \
          lifecycle, visibility, inventory_revision, first_seen_at, updated_at) \
-         VALUES (?, ?, 'platon-mainnet', 'Quiet Node', 'http://127.0.0.1:8545', 'active', \
-         'private', 1, ?, ?)",
+         VALUES ($1, $2, 'platon-mainnet', 'Quiet Node', 'http://127.0.0.1:8545', 'active', \
+         'private', 1, $3, $4)",
     )
     .bind(quiet_node)
     .bind(&agent_id)
@@ -897,7 +903,7 @@ async fn a_purged_node_says_when_it_was_purged_and_an_unknown_one_is_not_found()
     let deleted_at = auth::format_rfc3339(auth::now_utc() - time::Duration::minutes(10));
     sqlx::query(
         "INSERT INTO deleted_nodes (node_id, agent_id, network_key, display_name, \
-         deleted_by_user_id, deleted_at) VALUES (?, ?, 'platon-mainnet', 'Purged Node', NULL, ?)",
+         deleted_by_user_id, deleted_at) VALUES ($1, $2, 'platon-mainnet', 'Purged Node', NULL, $3)",
     )
     .bind(unknown)
     .bind(&agent_id)
@@ -1175,7 +1181,7 @@ async fn seed_relations(
         sqlx::query(
             "INSERT INTO node_relationship_intervals \
              (interval_id, node_id, relation_kind, related_key, origin, valid_from, valid_until, recorded_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(NODE_ID)
@@ -1201,9 +1207,9 @@ async fn seed_incident(
     opened_at: &str,
 ) {
     sqlx::query(
-        "INSERT OR IGNORE INTO alert_rules \
+        "INSERT INTO alert_rules \
          (rule_key, enabled, severity, version, condition_json, created_at, updated_at) \
-         VALUES ('node.rpc_unreachable', 1, 'warning', 1, '{}', ?, ?)",
+         VALUES ('node.rpc_unreachable', 1, 'warning', 1, '{}', $1, $2) ON CONFLICT DO NOTHING",
     )
     .bind(opened_at)
     .bind(opened_at)
@@ -1213,7 +1219,7 @@ async fn seed_incident(
     sqlx::query(
         "INSERT INTO alert_incidents \
          (incident_id, rule_key, rule_version, subject_kind, subject_key, severity, state, sequence, opened_at, opened_evidence_json) \
-         VALUES (?, 'node.rpc_unreachable', 1, ?, ?, 'warning', 'open', ?, ?, '{}')",
+         VALUES ($1, 'node.rpc_unreachable', 1, $2, $3, 'warning', 'open', $4, $5, '{}')",
     )
     .bind(uuid::Uuid::new_v4().to_string())
     .bind(subject_kind)
@@ -1374,7 +1380,7 @@ async fn a_validator_link_is_served_as_a_recorded_correspondence() {
     let now = auth::format_rfc3339(auth::now_utc());
     sqlx::query(
         "INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) \
-         VALUES (?, 'platon-mainnet', ?, 'Seeded Validator', ?, ?)",
+         VALUES ($1, 'platon-mainnet', $2, 'Seeded Validator', $3, $4)",
     )
     .bind(VALIDATOR_ID)
     .bind(VALIDATOR_ID)
@@ -1386,7 +1392,7 @@ async fn a_validator_link_is_served_as_a_recorded_correspondence() {
     sqlx::query(
         "INSERT INTO node_validator_links \
          (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) \
-         VALUES (?, ?, ?, 'primary', 'manual', ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, 'primary', 'manual', $4, $5, $6, $7)",
     )
     .bind(uuid::Uuid::new_v4().to_string())
     .bind(NODE_ID)
@@ -1465,7 +1471,7 @@ async fn a_recorded_link_answers_only_for_the_stretch_the_server_held_it() {
 
     sqlx::query(
         "INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) \
-         VALUES (?, 'platon-mainnet', ?, 'Seeded Validator', ?, ?)",
+         VALUES ($1, 'platon-mainnet', $2, 'Seeded Validator', $3, $4)",
     )
     .bind(VALIDATOR_ID)
     .bind(VALIDATOR_ID)
@@ -1478,7 +1484,7 @@ async fn a_recorded_link_answers_only_for_the_stretch_the_server_held_it() {
         sqlx::query(
             "INSERT INTO node_validator_links \
              (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) \
-             VALUES (?, ?, ?, 'primary', 'manual', ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, 'primary', 'manual', $4, $5, $6, $7)",
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(NODE_ID)
@@ -1503,7 +1509,7 @@ async fn a_recorded_link_answers_only_for_the_stretch_the_server_held_it() {
              (snapshot_id, validator_id, timezone, local_date, month_key, sample_at, received_at, \
               provider_timestamp, source, observation_key, rank, stake_amount, reward_amount, \
               reward_rate, delegator_count, epoch, block_count) \
-             VALUES (?, ?, 'UTC', ?, ?, ?, ?, NULL, 'platsScan', ?, 12, '1000.000000', '25.000000', \
+             VALUES ($1, $2, 'UTC', $3, $4, $5, $6, NULL, 'platsScan', $7, 12, '1000.000000', '25.000000', \
                      '0.05', 40, 5, 900)",
         )
         .bind(format!("snapshot-UTC-{local_date}"))

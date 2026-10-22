@@ -3302,8 +3302,12 @@ mod tests {
     /// against a ledger that grows with the fleet, so it must be served by an
     /// index — the samples beside it already are, and a scan here would make the
     /// range route cost grow with every Node that has ever lost optional history.
+    #[cfg_attr(storage_postgres, ignore = "it asserts a SQLite query plan")]
     #[tokio::test]
     async fn the_pause_lookup_is_index_backed_and_never_scans_the_ledger() {
+        if !crate::test_support::skip_unless_sqlite("it asserts a SQLite query plan") {
+            return;
+        }
         let dir = tempfile::TempDir::new().unwrap();
         let database = crate::test_support::test_database_in(dir.path()).await;
         let rows: Vec<(i64, i64, i64, String)> =
@@ -3344,19 +3348,19 @@ mod tests {
         let database = crate::test_support::test_database_in(dir.path()).await;
         let pool = database.pool().clone();
         let stamp = "2026-03-31T12:00:00Z";
-        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('tier-network', 'Tier', '0xgenesis', 1, 1, 'lat', ?, ?)")
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('tier-network', 'Tier', '0xgenesis', 1, 1, 'lat', $1, $2)")
             .bind(stamp)
             .bind(stamp)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('tier-agent', 1, ?, ?)")
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('tier-agent', 1, $1, $2)")
             .bind(stamp)
             .bind(stamp)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES (?, 'tier-agent', 'tier-network', 'ws://127.0.0.1:1', 'active', 'private', 1, ?, ?)")
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ($1, 'tier-agent', 'tier-network', 'ws://127.0.0.1:1', 'active', 'private', 1, $2, $3)")
             .bind(TIER_NODE)
             .bind(stamp)
             .bind(stamp)
@@ -3383,7 +3387,7 @@ mod tests {
     }
 
     async fn keep_raw(pool: &sqlx::AnyPool, observed_at: &str, value: f64) {
-        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ($1, $2, $3, $4, $5)")
             .bind(TIER_NODE)
             .bind(TIER_METRIC)
             .bind(observed_at)
@@ -3400,7 +3404,7 @@ mod tests {
         grain_seconds: i64,
         bucket_start: &str,
     ) -> Option<(i64, f64, f64, f64, String, String)> {
-        sqlx::query_as("SELECT sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at FROM node_metric_aggregates WHERE node_id = ? AND metric = ? AND grain_seconds = ? AND bucket_start = ?")
+        sqlx::query_as("SELECT sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at FROM node_metric_aggregates WHERE node_id = $1 AND metric = $2 AND grain_seconds = $3 AND bucket_start = $4")
             .bind(TIER_NODE)
             .bind(TIER_METRIC)
             .bind(grain_seconds)
@@ -4443,7 +4447,7 @@ mod tests {
         observed_at: &str,
         value: f64,
     ) {
-        sqlx::query("INSERT INTO host_metric_samples (agent_id, metric, dimension, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO host_metric_samples (agent_id, metric, dimension, observed_at, received_at, value) VALUES ($1, $2, $3, $4, $5, $6)")
             .bind(HOST_AGENT)
             .bind(HOST_STORAGE_METRIC)
             .bind(mount_path)
@@ -4462,7 +4466,7 @@ mod tests {
         grain_seconds: i64,
         bucket_start: &str,
     ) -> Option<(i64, f64, f64, f64, String, String)> {
-        sqlx::query_as("SELECT sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at FROM host_metric_aggregates WHERE agent_id = ? AND metric = ? AND dimension = ? AND grain_seconds = ? AND bucket_start = ?")
+        sqlx::query_as("SELECT sample_count, min_value, max_value, last_value, first_observed_at, last_observed_at FROM host_metric_aggregates WHERE agent_id = $1 AND metric = $2 AND dimension = $3 AND grain_seconds = $4 AND bucket_start = $5")
             .bind(HOST_AGENT)
             .bind(HOST_STORAGE_METRIC)
             .bind(mount_path)
@@ -4682,7 +4686,7 @@ mod tests {
         let pool = database.pool().clone();
         let stamp = "2026-04-01T00:00:00Z";
         sqlx::query(
-            "INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES (?, 1, ?, ?)",
+            "INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ($1, 1, $2, $3)",
         )
         .bind(COVERAGE_AGENT)
         .bind(stamp)
@@ -4814,12 +4818,12 @@ mod tests {
             42.0,
         )
         .await;
-        sqlx::query("DELETE FROM host_metric_samples WHERE agent_id = ?")
+        sqlx::query("DELETE FROM host_metric_samples WHERE agent_id = $1")
             .bind(COVERAGE_AGENT)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("UPDATE host_metric_series_state SET released_before = ? WHERE agent_id = ?")
+        sqlx::query("UPDATE host_metric_series_state SET released_before = $1 WHERE agent_id = $2")
             .bind("2026-04-02T00:00:00Z")
             .bind(COVERAGE_AGENT)
             .execute(&pool)
@@ -5158,8 +5162,12 @@ mod tests {
     /// with every mount path the fleet has ever reported, so it must be served by
     /// an index: a scan or a sort here would make the route cost grow with the
     /// fleet instead of with the answer.
+    #[cfg_attr(storage_postgres, ignore = "it asserts a SQLite query plan")]
     #[tokio::test]
     async fn the_mount_coverage_read_is_index_backed_and_never_sorts_the_ledger() {
+        if !crate::test_support::skip_unless_sqlite("it asserts a SQLite query plan") {
+            return;
+        }
         let (_dir, pool) = coverage_store().await;
         let rows: Vec<(i64, i64, i64, String)> =
             sqlx::query_as(&format!("EXPLAIN QUERY PLAN {HOST_COVERAGE_SQL}"))
