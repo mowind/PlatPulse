@@ -1,19 +1,19 @@
 //! Spike #253 (ADR 0013 Q13, #226 S2) — THROWAWAY, not for merge.
 //!
-//! Validates whether one \`sqlx::Any\` pool plus one \`$N\` SQL text can carry the
+//! Validates whether one `sqlx::Any` pool plus one `$N` SQL text can carry the
 //! Server's Report Ingestion on both SQLite and PostgreSQL. Every test runs on
 //! the real schema: SQLite through the Server migrations, PostgreSQL through
-//! \`tests/any_spike/pg_schema.sql\` (a mechanical translation of the same final
-//! schema, see \`translate_schema.py\`).
+//! `tests/any_spike/pg_schema.sql` (a mechanical translation of the same final
+//! schema, see `translate_schema.py`).
 //!
-//! PostgreSQL tests need \`PLATPULSE_SPIKE_PG_URL\` (an admin URL to a scratch
-//! server, e.g. \`postgres://spike:spike@127.0.0.1:55417/spike?sslmode=disable\`);
+//! PostgreSQL tests need `PLATPULSE_SPIKE_PG_URL` (an admin URL to a scratch
+//! server, e.g. `postgres://spike:spike@127.0.0.1:55417/spike?sslmode=disable`);
 //! each test creates and drops its own database. Without it only the SQLite
-//! half runs. The benchmark is \`#[ignore]\`:
+//! half runs. The benchmark is `#[ignore]`:
 //!
-//! \`\`\`text
+//! ```text
 //! PLATPULSE_SPIKE_PG_URL=... cargo test -p platpulse-server --release --test any_spike -- --ignored --nocapture
-//! \`\`\`
+//! ```
 #![allow(clippy::too_many_lines)]
 
 use std::path::{Path, PathBuf};
@@ -84,8 +84,8 @@ fn install() {
     sqlx::any::install_default_drivers();
 }
 
-/// Required SQLite connection settings. \`AnyConnectOptions\` is URL-only and
-/// \`SqliteConnectOptions::from_url\` understands just mode/cache/immutable/vfs,
+/// Required SQLite connection settings. `AnyConnectOptions` is URL-only and
+/// `SqliteConnectOptions::from_url` understands just mode/cache/immutable/vfs,
 /// so synchronous/busy_timeout must be re-applied per connection.
 async fn sqlite_after_connect(conn: &mut AnyConnection, busy_ms: u64) -> Result<(), sqlx::Error> {
     if conn.backend_name() == "SQLite" {
@@ -309,8 +309,7 @@ async fn q1_boolean_mapping() {
         .unwrap();
         assert_eq!(wrapped, 1, "{kind:?}");
 
-        // Binding a Rust bool: SQLite stores 0/1, PostgreSQL rejects bool into
-        // a BIGINT column (42804 datatype_mismatch).
+        // Binding a Rust bool: SQLite stores 0/1, PostgreSQL rejects it.
         let bind_bool = sqlx::query("UPDATE agents SET shutdown_forced = $1 WHERE agent_id = $2")
             .bind(false)
             .bind("agent-a")
@@ -327,11 +326,12 @@ async fn q1_boolean_mapping() {
                     "[q1 Postgres] bind bool into BIGINT -> {:?} {error}",
                     code(&error)
                 );
-                assert!(matches!(code(&error).as_deref(), Some("08P01" | "42804")));
+                assert_eq!(code(&error).as_deref(), Some("08P01"));
             }
         }
 
-        // \`flag = 1\` and \`SUM(flag)\` stay portable on mirrored integers.
+        // `flag = 1` stays portable on mirrored integers (an aggregate over
+        // them needs a CAST on PostgreSQL, see portability_traps).
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM agents WHERE shutdown_forced = 1 OR shutdown_forced = 0",
         )
@@ -340,8 +340,32 @@ async fn q1_boolean_mapping() {
         .unwrap();
         assert_eq!(count, 1, "{kind:?}");
 
-        // The alternative — native BOOLEAN on PostgreSQL only — splits SQL:
-        // integer literals stop comparing (42883) and SQLite never returns Bool.
+        // The alternative — BOOLEAN on both sides. SQLite stores a BOOLEAN
+        // column as an integer, and the Any driver refuses its declared type.
+        if kind == Kind::Sqlite {
+            conn.execute("CREATE TABLE flag_probe (flag BOOLEAN NOT NULL)")
+                .await
+                .unwrap();
+            conn.execute("INSERT INTO flag_probe VALUES (1)")
+                .await
+                .unwrap();
+            let as_bool = sqlx::query_scalar::<_, bool>("SELECT flag FROM flag_probe")
+                .fetch_one(&mut *conn)
+                .await;
+            let as_int = sqlx::query_scalar::<_, i64>("SELECT flag FROM flag_probe")
+                .fetch_one(&mut *conn)
+                .await;
+            eprintln!(
+                "[q1 Sqlite] BOOLEAN column -> as bool: {:?}, as i64: {:?}",
+                as_bool.as_ref().map_err(ToString::to_string),
+                as_int.as_ref().map_err(ToString::to_string)
+            );
+            assert!(
+                as_bool.is_err(),
+                "SQLite BOOLEAN never decodes as bool through Any"
+            );
+        }
+        // ... and on PostgreSQL integer literals stop comparing (42883).
         if kind == Kind::Postgres {
             conn.execute("CREATE TABLE flag_probe (flag BOOLEAN NOT NULL)")
                 .await
@@ -550,7 +574,7 @@ async fn q3_q4_rows_affected_and_returning() {
 // Q5 — error classification through DatabaseError::code()
 // ---------------------------------------------------------------------------
 
-/// The Server's current classifier (\`http::health::is_corruption_error\`).
+/// The Server's current classifier (`http::health::is_corruption_error`).
 fn current_is_corruption_error(error: &sqlx::Error) -> bool {
     error
         .as_database_error()
@@ -726,7 +750,7 @@ async fn q5_error_classification_postgres() {
 //      defer_foreign_keys replacement
 // ---------------------------------------------------------------------------
 
-/// Same shape as \`http::report_ingestion::AgentRow\`.
+/// Same shape as `http::report_ingestion::AgentRow`.
 #[derive(Debug, FromRow, PartialEq)]
 struct AgentRow {
     agent_epoch: i64,
@@ -790,8 +814,8 @@ async fn q7_from_row_and_transactions() {
             assert_eq!(n, expected, "{kind:?} {event}");
         }
 
-        // A failed statement whose error is ignored (the \`let _ = ...\` /
-        // \`.ok()\` pattern inside the Ingestion transaction). SQLite keeps the
+        // A failed statement whose error is ignored (the `let _ = ...` /
+        // `.ok()` pattern inside the Ingestion transaction). SQLite keeps the
         // transaction usable; PostgreSQL aborts it (25P02) and COMMIT then
         // silently becomes ROLLBACK — sqlx reports success.
         let mut tx = conn.begin().await.unwrap();
@@ -863,9 +887,9 @@ async fn q7_from_row_and_transactions() {
     }
 }
 
-/// Backend-dispatched replacement for \`PRAGMA defer_foreign_keys=ON\`.
+/// Backend-dispatched replacement for `PRAGMA defer_foreign_keys=ON`.
 /// PostgreSQL needs the FK declared DEFERRABLE (INITIALLY IMMEDIATE keeps
-/// every other statement's semantics) and \`SET CONSTRAINTS\` per transaction.
+/// every other statement's semantics) and `SET CONSTRAINTS` per transaction.
 async fn defer_node_ownership_fk(conn: &mut AnyConnection) -> Result<(), sqlx::Error> {
     match conn.backend_name() {
         "SQLite" => conn
@@ -1073,11 +1097,11 @@ async fn options_sqlite_pragmas_through_any() {
     assert_eq!((fk, journal.as_str(), sync, busy), (1, "wal", 2, 5_000));
 }
 
-/// Run with e.g. \`PGAPPNAME=leaked PGOPTIONS='-c statement_timeout=4321'\`.
-/// \`PgConnectOptions::parse_from_url\` starts from \`new_without_pgpass()\`, which
+/// Run with e.g. `PGAPPNAME=leaked PGOPTIONS='-c statement_timeout=4321'`.
+/// `PgConnectOptions::parse_from_url` starts from `new_without_pgpass()`, which
 /// reads PG* environment variables; a URL can override host/port/user/
 /// password/dbname/sslmode/sslrootcert but cannot *unset* PGOPTIONS,
-/// PGSSLCERT, PGSSLKEY or PGAPPNAME. \`.pgpass\` is consulted when the URL
+/// PGSSLCERT, PGSSLKEY or PGAPPNAME. `.pgpass` is consulted when the URL
 /// carries no password.
 #[tokio::test]
 #[ignore = "needs PG* variables set by the runner"]
@@ -1101,15 +1125,14 @@ async fn options_pg_environment_leaks_through_any_url() {
     if std::env::var("PGOPTIONS").is_ok() {
         assert_eq!(timeout, "4321ms");
     }
-    // The connect options keep the password in the URL; Debug prints it.
+    // The connect options keep the password in the URL; Debug must not print it.
     let url = with_database(&pg_admin_url().unwrap(), "x");
     let options = AnyConnectOptions::from_str(&url).unwrap();
     let debug = format!("{options:?}");
     let password = url::Url::parse(&url).unwrap().password().map(str::to_owned);
-    eprintln!(
-        "[options] AnyConnectOptions Debug contains the password: {}",
-        password.is_some_and(|p| debug.contains(&format!(":{p}@")))
-    );
+    let leaked = password.is_some_and(|p| debug.contains(&format!(":{p}@")));
+    eprintln!("[options] AnyConnectOptions Debug contains the password: {leaked}");
+    assert!(!leaked, "AnyConnectOptions Debug printed the password");
 }
 
 // ---------------------------------------------------------------------------
@@ -1409,11 +1432,27 @@ async fn slice_parity_replay_and_dedup() {
         let count: i64 = sqlx::query_scalar("SELECT cumulative_block_count FROM block_history_state WHERE node_id = 'agent-a-node-1'")
             .fetch_one(&mut *conn).await.unwrap();
         assert_eq!(count, 36, "{kind:?}");
+        // Belt behind the watermark: with the watermark cleared, the replayed
+        // heights reach the INSERT, conflict, report rows_affected == 0, and
+        // still accumulate nothing.
+        conn.execute("UPDATE block_history_state SET historical_high_watermark = 0 WHERE node_id = 'agent-a-node-1'").await.unwrap();
+        let mut belt = resync.clone();
+        belt.report_id = "agent-a-belt".into();
+        belt.sequence = 100;
+        let SliceOutcome::Accepted { new_blocks, .. } = ingest_any(&mut conn, &belt).await.unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(new_blocks, 0, "{kind:?}: conflicting inserts report 0 rows");
+        let count: i64 = sqlx::query_scalar("SELECT cumulative_block_count FROM block_history_state WHERE node_id = 'agent-a-node-1'")
+            .fetch_one(&mut *conn).await.unwrap();
+        assert_eq!(count, 36, "{kind:?}");
+        conn.execute("UPDATE block_history_state SET historical_high_watermark = 36 WHERE node_id = 'agent-a-node-1'").await.unwrap();
         let after = dump(&mut conn).await;
         assert_eq!(
-            before.len() + 2,
+            before.len() + 4,
             after.len(),
-            "{kind:?}: receipt + audit row only"
+            "{kind:?}: receipt + audit row per accepted replay only"
         );
         dumps.push((kind, after));
     }
@@ -1555,7 +1594,12 @@ async fn q6_slice_benchmark() {
         let mut conn = pg.pool.acquire().await.unwrap();
         seed_slice(&mut conn, "agent-a").await;
         let batch = reports("agent-a", N, BLOCKS);
-        let mut s = bench_any(&mut conn, "AnyConnection over PostgreSQL 17".into(), &batch).await;
+        let version: String = sqlx::query_scalar("SELECT current_setting('server_version')")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        let label = format!("AnyConnection over PostgreSQL {version}");
+        let mut s = bench_any(&mut conn, label, &batch).await;
         lines.push(s.line());
     }
     for line in lines {
