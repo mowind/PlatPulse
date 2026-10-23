@@ -659,8 +659,8 @@ async fn close_coverage_height(
         .execute(&mut **tx)
         .await?;
         // The interval is split in two: the row keeps [first, height-1] and the
-        // copy above it starts at height+1, which is the first height the gap
-        // no longer covers.
+        // copy above it covers [height+1, last], so height+1 is the first
+        // height the remaining gap still misses.
         sqlx::query("INSERT INTO block_coverage_intervals (node_id,first_height,last_height,status,created_at,updated_at) SELECT node_id,$1,$2,status,created_at,$3 FROM block_coverage_intervals WHERE coverage_id=$4")
             .bind((height + 1) as i64)
             .bind(last as i64)
@@ -5827,6 +5827,16 @@ mod tests {
             .unwrap()
     }
 
+    /// Every Block Coverage interval of a Node as
+    /// (first_height, last_height, status), ordered by the lower bound.
+    async fn coverage_intervals(state: &AppState, node_id: &str) -> Vec<(i64, i64, String)> {
+        sqlx::query_as("SELECT first_height, last_height, status FROM block_coverage_intervals WHERE node_id=$1 ORDER BY first_height")
+            .bind(node_id)
+            .fetch_all(state.db().pool())
+            .await
+            .unwrap()
+    }
+
     /// Issue #248: an accepted block advances one bucket of each tier, by the
     /// minute and five minutes its own observation falls in, with its
     /// transactions and its interval to the held parent. The identical Report
@@ -6002,9 +6012,10 @@ mod tests {
         );
     }
 
-    /// A backfill that lands strictly inside an open gap splits the interval,
-    /// so the still-missing range above it keeps its own bounds instead of
-    /// being reported covered.
+    /// Issue #266: a backfill that lands strictly inside an open gap splits the
+    /// interval, so the still-missing range above it keeps its own bounds
+    /// instead of being reported covered. The upper half is a copy of the same
+    /// gap, so it keeps the gap's own `created_at` rather than the receipt time.
     #[tokio::test]
     async fn a_backfill_inside_an_open_gap_splits_the_interval() {
         use platpulse_core::block::BlockSource::{GapBackfill, Subscription};
@@ -6035,20 +6046,89 @@ mod tests {
             receipt.samples[0].rejection
         );
 
-        let intervals: Vec<(i64, i64, String)> = sqlx::query_as(
-            "SELECT first_height, last_height, status FROM block_coverage_intervals WHERE node_id=$1 ORDER BY first_height",
+        assert_eq!(
+            coverage_intervals(&state, &node_id).await,
+            vec![
+                (10, 10, "covered".to_owned()),
+                (11, 14, "open_recoverable_gap".to_owned()),
+                (16, 20, "open_recoverable_gap".to_owned()),
+            ]
+        );
+        let halves: Vec<(i64, i64, String)> = sqlx::query_as(
+            "SELECT first_height, last_height, created_at FROM block_coverage_intervals WHERE node_id=$1 AND status='open_recoverable_gap' ORDER BY first_height",
         )
         .bind(&node_id)
         .fetch_all(state.db().pool())
         .await
         .unwrap();
         assert_eq!(
-            intervals,
+            halves,
+            vec![
+                (11, 14, "2026-08-12T09:00:06Z".to_owned()),
+                (16, 20, "2026-08-12T09:00:06Z".to_owned()),
+            ],
+            "both halves are still the same gap, so they keep its created_at"
+        );
+    }
+
+    /// Issue #266: a backfill that sits on an open gap's own edge narrows the
+    /// interval instead of splitting, duplicating, or dropping it — the other
+    /// two arms of the split that once lost a gap's upper half.
+    #[tokio::test]
+    async fn a_backfill_on_an_open_gap_edge_narrows_the_interval() {
+        use platpulse_core::block::BlockSource::{GapBackfill, Subscription};
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let base = block_base();
+        let live = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000343",
+            1,
+            &[(10, 1_000, at(base, 1), 3, Subscription)],
+        );
+        let node_id = live.inventory.nodes[0].node_id.to_string();
+        submit(&state, &agent_id, serde_json::to_vec(&live).unwrap()).await;
+        sqlx::query("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ($1, 11, 20, 'open_recoverable_gap', '2026-08-12T09:00:06Z', '2026-08-12T09:00:06Z')")
+            .bind(&node_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let lower = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000344",
+            2,
+            &[(11, 2_500, at(base, 5), 4, GapBackfill)],
+        );
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&lower).unwrap()).await;
+        assert!(
+            receipt.samples[0].rejection.is_none(),
+            "the backfill on the gap's first height is accepted, got {:?}",
+            receipt.samples[0].rejection
+        );
+        assert_eq!(
+            coverage_intervals(&state, &node_id).await,
             vec![
                 (10, 10, "covered".to_owned()),
-                (11, 14, "open_recoverable_gap".to_owned()),
-                (16, 20, "open_recoverable_gap".to_owned()),
-            ]
+                (12, 20, "open_recoverable_gap".to_owned()),
+            ],
+            "closing the gap's first height moves its lower bound up by one"
+        );
+
+        let upper = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000345",
+            3,
+            &[(20, 12_000, at(base, 9), 5, GapBackfill)],
+        );
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&upper).unwrap()).await;
+        assert!(
+            receipt.samples[0].rejection.is_none(),
+            "the backfill on the gap's last height is accepted, got {:?}",
+            receipt.samples[0].rejection
+        );
+        assert_eq!(
+            coverage_intervals(&state, &node_id).await,
+            vec![
+                (10, 10, "covered".to_owned()),
+                (12, 19, "open_recoverable_gap".to_owned()),
+            ],
+            "closing the gap's last height moves its upper bound down by one"
         );
     }
 
