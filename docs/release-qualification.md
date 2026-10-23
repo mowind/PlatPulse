@@ -12,9 +12,39 @@ PlatPulse exposes no production fault-injection or remote-control API. Controlle
 
 ## Migration and recovery rehearsal
 
-Run `scripts/release-recovery-rehearsal.sh` to build the packaged Server and exercise representative schema checkpoints. The script derives the final checkpoint from the latest file in `crates/platpulse-server/migrations` (currently schema 53; migration `0053_validator_model_migration.sql`) and combines it with the fixed historical checkpoints (1, 9, 23, 29, 35, 36). The rehearsal starts each fixture through the supported Server startup path, verifies forward migration and preservation of representative projections, Report Receipts, block history, Peer/Geo rows, and the one-time Validator model cutover (#174) — a fixture already at the cutover schema keeps its seeded Validator identity and snapshot/ranking rows, while every older fixture has its manual Validator generation (identity, snapshot, ranking/counter history and daily/monthly aggregates) removed and the `validator_model_migration` marker recorded — plus Site Access settings, selected Alert/Notification/Operation rows, Audit Events, and representative human identity/session presence and Agent-epoch checks. It then creates a backup artifact through the packaged CLI while the Server is stopped, and exercises checksum failure, stopped-Server restore, secret-file preservation, corrupt input, and higher-schema refusal; concurrent/live-write backup is not covered by this rehearsal.
+Run `scripts/release-recovery-rehearsal.sh` to build the packaged Server and exercise representative schema checkpoints. The script derives the final checkpoint from the latest file in `crates/platpulse-server/migrations` (currently schema 76; migration `0076_storage_migration.sql`) and combines it with the fixed historical checkpoints (1, 9, 23, 29, 35, 36). The rehearsal starts each fixture through the supported Server startup path, verifies forward migration and preservation of representative projections, Report Receipts, block history, Peer/Geo rows, and the one-time Validator model cutover (#174) — a fixture already at the cutover schema keeps its seeded Validator identity and snapshot/ranking rows, while every older fixture has its manual Validator generation (identity, snapshot, ranking/counter history and daily/monthly aggregates) removed and the `validator_model_migration` marker recorded — plus Site Access settings, selected Alert/Notification/Operation rows, Audit Events, and representative human identity/session presence and Agent-epoch checks. It then creates a backup artifact through the packaged CLI while the Server is stopped, and exercises checksum failure, stopped-Server restore, secret-file preservation, corrupt input, and higher-schema refusal; concurrent/live-write backup is not covered by this rehearsal.
 
 Evidence is written to `target/recovery-rehearsal/recovery-rehearsal.json` and `.md`; the fixture-only seam test is `scripts/release-recovery-rehearsal.sh --self-test`.
+
+### Storage Backend Migration measurement (#257)
+
+The Storage Backend Migration is offline and one-way, so its cost is a downtime
+input: the window has to hold the copy, the verification that re-reads what was
+copied, and the final commit. A measurement on a synthetic SQLite fixture built
+to look like a near-production deployment — 5.58 GiB, 13,105,798 rows in 82
+tables, schema 76 — copied in 6.7 minutes (`13105798 of 13105798 row(s) copied
+in 6.7min`) and the whole command took 11 minutes 13 seconds of wall clock
+against a local PostgreSQL 18 over a Unix-domain socket. The work after the copy
+dominated: verifying every table re-read 4.8 million `node_metric_samples` rows
+in a single 107.7-second query, and the final commit took 215.6 seconds. The
+target database measured 7328 MB afterwards, about 1.2 times the source file.
+Those numbers describe that fixture, host, storage and database, not a budget for
+another deployment: a remote database, slower disks or a larger schema change the
+total, so measure a copy of the deployment's own data before the real switch.
+
+The rollback is rehearsed the same way. A Storage Backend Migration of a 35-row
+fixture followed by `platpulse-server storage migrate abort` removed the 35 rows it
+had written across all 82 tables, deleted the marker, and the SQLite deployment
+served `/health/ready` again. A target that has accepted a write since the baseline
+is refused instead: starting the Server on the migrated database wrote rows of its
+own, and the abort named the mismatch ("no longer holds the state recorded when it
+was migrated …; now 82 table(s), 48 row(s), digest …") rather than emptying a
+database that had moved on. So did an abort while a Server was still running
+("another Server owns this PostgreSQL database"). The forward path was exercised
+after the refusal too: the same configuration started again, reported its
+`postgres` readiness component ready, and stopped cleanly on SIGTERM, so a healthy
+migrated deployment needs no repair tool. The SQLite file is a fallback point, not
+a rollback target.
 
 ## Final release qualification job
 

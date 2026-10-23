@@ -131,7 +131,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             run_cutover_rollback(&args).await?;
         }
         Command::Storage(StorageCommand::Migrate(args)) => match &args.action {
-            Some(StorageMigrateAction::Abort(abort)) => run_storage_migrate_abort(abort).await?,
+            Some(StorageMigrateAction::Abort) => {
+                run_storage_migrate_abort(&args.source, &args.target).await?
+            }
             None => run_storage_migrate(&args).await?,
         },
         Command::Serve(args) => {

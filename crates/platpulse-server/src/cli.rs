@@ -4,7 +4,7 @@
 
 use std::io::IsTerminal;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
@@ -88,7 +88,6 @@ pub enum StorageCommand {
 }
 
 #[derive(Debug, Args)]
-#[command(subcommand_negates_reqs = true)]
 pub struct StorageMigrateArgs {
     /// server.toml of the SQLite deployment to copy.
     #[arg(long)]
@@ -104,17 +103,11 @@ pub struct StorageMigrateArgs {
 pub enum StorageMigrateAction {
     /// Undo a completed migration while the PostgreSQL target has accepted no
     /// write since the migration baseline.
-    Abort(StorageAbortArgs),
-}
-
-#[derive(Debug, Args)]
-pub struct StorageAbortArgs {
-    /// server.toml of the SQLite deployment the migration marker belongs to.
-    #[arg(long)]
-    pub source: PathBuf,
-    /// server.toml of the PostgreSQL target of that migration.
-    #[arg(long)]
-    pub target: PathBuf,
+    ///
+    /// The Storage Backend Migration's own `--source` and `--target` identify the marker and the
+    /// PostgreSQL database, so they are given once, before `abort`
+    /// (ADR 0013, issue #257).
+    Abort,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1014,10 +1007,11 @@ pub async fn run_storage_migrate(
 /// Abort a completed Storage Backend Migration while the PostgreSQL target has
 /// accepted no write since the baseline, and remove the source marker.
 pub async fn run_storage_migrate_abort(
-    args: &StorageAbortArgs,
+    source: &Path,
+    target: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let source = ServerConfig::resolve(Some(args.source.as_path()), &Default::default())?;
-    let target = ServerConfig::resolve(Some(args.target.as_path()), &Default::default())?;
+    let source = ServerConfig::resolve(Some(source), &Default::default())?;
+    let target = ServerConfig::resolve(Some(target), &Default::default())?;
     let summary = crate::storage_migration::abort(&source, &target).await?;
     println!(
         "Aborted the Storage Backend Migration recorded at {}: {} table(s) and {} row(s) were removed from {}, which is empty again.",
@@ -1965,6 +1959,70 @@ password_file = \"/etc/platpulse/postgres-password\"
                 "{command} must stay available on SQLite"
             );
         }
+    }
+
+    #[test]
+    fn the_abort_mode_reuses_the_storage_backend_migration_paths() {
+        use clap::Parser;
+        let cli = super::Cli::try_parse_from([
+            "platpulse-server",
+            "storage",
+            "migrate",
+            "--source",
+            "/etc/platpulse/server.toml",
+            "--target",
+            "/etc/platpulse/postgres.toml",
+            "abort",
+        ])
+        .expect("storage migrate --source … --target … abort parses");
+        match cli.command {
+            Some(super::Command::Storage(super::StorageCommand::Migrate(args))) => {
+                assert_eq!(
+                    args.source,
+                    std::path::PathBuf::from("/etc/platpulse/server.toml")
+                );
+                assert_eq!(
+                    args.target,
+                    std::path::PathBuf::from("/etc/platpulse/postgres.toml")
+                );
+                assert!(
+                    matches!(args.action, Some(super::StorageMigrateAction::Abort)),
+                    "the abort mode must be selected"
+                );
+            }
+            other => panic!("expected storage migrate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn migrate_without_a_mode_is_the_copy() {
+        use clap::Parser;
+        let cli = super::Cli::try_parse_from([
+            "platpulse-server",
+            "storage",
+            "migrate",
+            "--source",
+            "/etc/platpulse/server.toml",
+            "--target",
+            "/etc/platpulse/postgres.toml",
+        ])
+        .expect("the copy needs no mode");
+        match cli.command {
+            Some(super::Command::Storage(super::StorageCommand::Migrate(args))) => {
+                assert!(args.action.is_none(), "no mode means copy")
+            }
+            other => panic!("expected storage migrate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn abort_without_the_storage_backend_migration_paths_is_a_usage_error() {
+        use clap::Parser;
+        let error = super::Cli::try_parse_from(["platpulse-server", "storage", "migrate", "abort"])
+            .expect_err("abort without --source/--target must not parse");
+        let rendered = error.to_string();
+        assert!(rendered.contains("--source <SOURCE>"), "{rendered}");
+        assert!(rendered.contains("--target <TARGET>"), "{rendered}");
     }
 
     fn drained() -> DrainOutcome {
