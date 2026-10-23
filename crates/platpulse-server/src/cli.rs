@@ -70,8 +70,51 @@ pub enum Command {
     /// resume, or report the current state.
     #[command(subcommand)]
     Cutover(CutoverCommand),
+    /// Storage Backend Migration (ADR 0013, issue #257): offline, one-way
+    /// SQLite -> PostgreSQL. `migrate` copies a stopped SQLite deployment into
+    /// an empty PostgreSQL database and records the migration baseline; its
+    /// `abort` subcommand undoes that only while the target has accepted no
+    /// write since the baseline.
+    #[command(subcommand)]
+    Storage(StorageCommand),
     /// Run the HTTP Server.
     Serve(ServeArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum StorageCommand {
+    /// Copy a stopped SQLite deployment into an empty PostgreSQL database.
+    Migrate(StorageMigrateArgs),
+}
+
+#[derive(Debug, Args)]
+#[command(subcommand_negates_reqs = true)]
+pub struct StorageMigrateArgs {
+    /// server.toml of the SQLite deployment to copy.
+    #[arg(long)]
+    pub source: PathBuf,
+    /// server.toml of the empty PostgreSQL deployment that receives the copy.
+    #[arg(long)]
+    pub target: PathBuf,
+    #[command(subcommand)]
+    pub action: Option<StorageMigrateAction>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum StorageMigrateAction {
+    /// Undo a completed migration while the PostgreSQL target has accepted no
+    /// write since the migration baseline.
+    Abort(StorageAbortArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct StorageAbortArgs {
+    /// server.toml of the SQLite deployment the migration marker belongs to.
+    #[arg(long)]
+    pub source: PathBuf,
+    /// server.toml of the PostgreSQL target of that migration.
+    #[arg(long)]
+    pub target: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
@@ -908,6 +951,83 @@ pub async fn run_verify_integrity(config: &ServerConfig) -> Result<(), Box<dyn s
         }
         Err(error) => Err(Box::new(error)),
     }
+}
+
+/// Report per-table progress of the Storage Backend Migration.
+fn human_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs_f64();
+    if seconds < 60.0 {
+        format!("{seconds:.1}s")
+    } else if seconds < 3600.0 {
+        format!("{:.1}min", seconds / 60.0)
+    } else {
+        format!("{:.1}h", seconds / 3600.0)
+    }
+}
+
+/// Run the offline Storage Backend Migration (ADR 0013, issue #257): copy a
+/// stopped SQLite deployment into an empty PostgreSQL database, verify every
+/// table, record the baseline, and write the source's sibling marker.
+pub async fn run_storage_migrate(
+    args: &StorageMigrateArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let source = ServerConfig::resolve(Some(args.source.as_path()), &Default::default())?;
+    let target = ServerConfig::resolve(Some(args.target.as_path()), &Default::default())?;
+    let mut progress = |table: crate::storage_migration::TableProgress<'_>| {
+        let remaining = match table.estimated_remaining {
+            Some(remaining) => format!(", about {} remaining", human_duration(remaining)),
+            None => String::new(),
+        };
+        println!(
+            "table {}/{} {}: {} row(s); {} of {} row(s) copied in {}{}",
+            table.index,
+            table.tables,
+            table.table,
+            table.rows,
+            table.copied_rows,
+            table.total_rows,
+            human_duration(table.elapsed),
+            remaining
+        );
+    };
+    let summary = crate::storage_migration::migrate(&source, &target, &mut progress).await?;
+    println!(
+        "Migrated {} row(s) in {} table(s) from {} into {} (content digest {}, {} identity sequence(s) advanced).",
+        summary.row_count,
+        summary.table_count,
+        summary.source_path.display(),
+        summary.target_description,
+        summary.content_sha256,
+        summary.sequence_count
+    );
+    println!(
+        "The source file is unchanged; its migration marker is {}.",
+        summary.marker_path.display()
+    );
+    println!(
+        "Start the Server on PostgreSQL with {} next.",
+        args.target.display()
+    );
+    Ok(())
+}
+
+/// Abort a completed Storage Backend Migration while the PostgreSQL target has
+/// accepted no write since the baseline, and remove the source marker.
+pub async fn run_storage_migrate_abort(
+    args: &StorageAbortArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let source = ServerConfig::resolve(Some(args.source.as_path()), &Default::default())?;
+    let target = ServerConfig::resolve(Some(args.target.as_path()), &Default::default())?;
+    let summary = crate::storage_migration::abort(&source, &target).await?;
+    println!(
+        "Aborted the Storage Backend Migration recorded at {}: {} table(s) and {} row(s) were removed from {}, which is empty again.",
+        summary.completed_at, summary.table_count, summary.row_count, summary.target_description
+    );
+    println!(
+        "The SQLite database may serve again; {} is gone.",
+        crate::storage_migration::marker_path(&source.db_path).display()
+    );
+    Ok(())
 }
 
 /// Run the HTTP Server: validate the listen address, load the pepper and

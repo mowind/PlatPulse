@@ -340,6 +340,24 @@ pub async fn optional_postgres_database() -> Option<ServerDatabase> {
     Some(postgres_clone().await.1)
 }
 
+/// A fresh, *empty* PostgreSQL test database handed over as the connect
+/// configuration a Storage Backend Migration targets, or None when no
+/// PostgreSQL test server is configured.
+///
+/// It is not a clone of the template: the migration only targets a database no
+/// Server has ever opened, so this one is created without the migrated schema
+/// and without the seeded catalog. The migration opens the target itself - it
+/// must observe an empty database and commit a single transaction - so an
+/// already-open ServerDatabase is not enough, and the caller needs the
+/// configuration instead.
+pub async fn optional_postgres_connect_config() -> Option<PostgresConnectConfig> {
+    std::env::var_os(TEST_POSTGRES_URL_ENV)?;
+    let cluster = postgres_cluster().await;
+    let (database, config) = cluster.create_empty_database().await;
+    PostgresTestDatabase::register(&cluster.admin_url, &database);
+    Some(config)
+}
+
 /// Connection facts for a test that runs the real Server binary against a
 /// fresh, already-migrated PostgreSQL database.
 ///
@@ -514,6 +532,23 @@ impl PostgresCluster {
         create_database(&mut admin, &name, Some(&self.template)).await;
         let _ = admin.close().await;
         drop(clone_guard);
+        let config = self.base.clone().with_database(name.clone());
+        (name, config)
+    }
+
+    /// A new database with no schema and no seed, for the offline Storage
+    /// Backend Migration whose target must be genuinely empty.
+    async fn create_empty_database(&self) -> (String, PostgresConnectConfig) {
+        static CREATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _create_guard = CREATE.lock().await;
+        let name = format!(
+            "{TEST_DATABASE_CLONE}_{}_{}",
+            std::process::id(),
+            self.clones.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut admin = connect_admin(&self.admin_url).await;
+        create_database(&mut admin, &name, None).await;
+        let _ = admin.close().await;
         let config = self.base.clone().with_database(name.clone());
         (name, config)
     }

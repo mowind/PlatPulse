@@ -175,7 +175,9 @@ retryable 503.
 
 `init`, `backup`, `restore`, `verify-integrity`, `checkpoint create`, and the
 inventory cutover commands operate on the SQLite database file and refuse the
-PostgreSQL backend.
+PostgreSQL backend. An existing SQLite deployment moves onto PostgreSQL only
+through the offline Storage Backend Migration (`storage migrate`, one way) whose
+runbook, refusal conditions and abort rule are in "Upgrade and rollback".
 
 The current production provider is Telegram. If no channel is configured,
 Notification Events are still recorded but no Delivery rows are created; configure
@@ -722,6 +724,110 @@ Operator sequence (each step runs with the Server stopped; never point the old b
 8. Start the new Server with the converted server.toml and the Agent with the converted agent.toml. Confirm /health/ready, that the first v2 Report completes the existing DrainedPrevious transition without changing the preserved revision, and that the Admin Inventory diagnosis reports protocol v2.
 
 Failure diagnosis: cutover status distinguishes not_converted, awaiting_resume and resumed. A missing transcript, a mismatched hash or revision, a changed Boot/Closing identity or a failed offline verification leaves the deployment at awaiting_resume and refuses the switch; it never silently adopts a new baseline. After the switch, repair forward: do not restore an older backup as a routine rollback, because that may discard post-cutover declarations, Purge barriers and other writes.
+
+### Storage Backend Migration (issue #257)
+
+Moving an existing SQLite deployment onto the PostgreSQL Storage Backend is one
+offline, one-way command ([ADR 0013](adr/0013-postgresql-server-storage-backend.md)):
+`platpulse-server storage migrate` copies the whole database — Agent identity,
+credential digests, Report Receipts and Purge barriers included, unsanitized —
+into an empty PostgreSQL database. There is no PostgreSQL → SQLite direction:
+once the PostgreSQL Server has accepted a report, Agents have applied the
+Receipts, emptied their Durable Spool and advanced their sequence and Inventory
+Declaration Records, so replaying the old file backwards would break ordering,
+Receipt and Purge-barrier evidence.
+
+The copy streams every table out of the stopped SQLite deployment and inserts it
+inside one target transaction, then reads each table back and compares per-table
+row counts and content digests against the source. The transaction commits only
+when every check matches; any failure rolls the target back to empty, so a
+corrected cause can simply be retried. The command prints per-table progress with
+an estimate, and after the commit it advances every identity sequence past the
+migrated maximum, so the first insert after the migration cannot collide.
+
+Before starting, all of the following must hold:
+
+- the Server is stopped. The command claims both sides itself — the SQLite
+  deployment's ownership guard then `EXCLUSIVE` locking, and the PostgreSQL
+  target's session advisory lock — and refuses if either is held;
+- the source passes `integrity_check`, matches this binary's schema version, and
+  is not an Inventory conversion still waiting for its cutover resume
+  (`cutover status` reports `awaiting_resume`);
+- the target database exists, is owned by the configured role with a `"C"`
+  collation, and is **empty**: no tables at all, or only the ones this command
+  created on an earlier attempt. The command applies the PostgreSQL baseline
+  itself. A database that ever served is refused, because merging two histories
+  into one target is not a migration.
+
+Operator sequence:
+
+1. Stop the Server, then take the packaged backup of the SQLite deployment
+   (`platpulse-server backup`) and copy it, the pepper and the TLS secret files
+   to protected storage. The source file is never modified, so it stays the
+   fallback point.
+2. Create the empty target database and the role that owns it, for example:
+
+```bash
+sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE ROLE platpulse LOGIN" -c \
+  "CREATE DATABASE platpulse OWNER platpulse TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C'"
+```
+
+3. Write the target `server.toml`: `[storage] backend = "postgres"` with the
+   `[storage.postgres]` section, the same `pepper_file`, `backup_dir` and TLS
+   settings, and no `db_path` (see "Storage Backend" above).
+4. Run the migration with one `server.toml` on each side:
+
+```bash
+sudo -u platpulse platpulse-server storage migrate \
+  --source /etc/platpulse/server.toml \
+  --target /etc/platpulse/postgres.toml
+```
+
+5. Start the Server with the target configuration and confirm `/health/ready`,
+   the Admin dashboard and a fresh AgentReport before returning traffic.
+
+A successful migration leaves the SQLite file untouched and writes a sibling
+marker next to it (`/var/lib/platpulse/server.db.migrated`), which records the
+target, the time, the table/row counts and the content digest. While that marker
+exists, the SQLite backend refuses to start and any command that opens that
+database file refuses — it is the fallback point, not a serving database. The
+marker is taken before the first row is copied, so a run that is interrupted
+leaves an in-progress marker that fences the file the same way; its failure also
+rolls the target back, which leaves the command retryable.
+
+Rollback before the switch: `platpulse-server storage migrate abort` undoes the
+migration while the PostgreSQL target has accepted no write since the baseline
+recorded at commit — no report, no Admin mutation, no background write:
+
+```bash
+sudo -u platpulse platpulse-server storage migrate abort \
+  --source /etc/platpulse/server.toml \
+  --target /etc/platpulse/postgres.toml
+```
+
+It empties the target, removes the marker, and the SQLite deployment may serve
+again. The command compares two witnesses against the baseline: the content
+digest of every table, and the identity sequences, which advance outside the
+transaction that consumes them so a write that rolled back still leaves a
+trace. An interrupted run is aborted the same way — it left no baseline, so the
+command refuses unless the target holds nothing but the reference rows its own
+migrations insert, because rows it did not copy are not its to delete. A write
+that leaves every table byte-identical and consumes no identity (a no-op
+`UPDATE`, or one a later statement undid) is not evidence these two witnesses
+can see, so the abort proceeds: it stored nothing, and the SQLite file it hands
+back has lost nothing. Once any
+business write has landed on PostgreSQL, abort is refused (it names the write
+it found) and the fix is forward on PostgreSQL — restore into a
+fresh state only as a disaster-recovery action, exactly like the Inventory
+cutover rule above. Turning an abort down is deliberate: a PostgreSQL Server that
+already advanced Agent Receipts and Purge barriers cannot be replaced by the
+older file without losing that evidence.
+
+Downtime: the window is offline only, so Agents keep spooling while the copy
+runs. A full Durable Spool drops its oldest historical reports into History Gaps,
+so the window must stay shorter than the spool's capacity; a retention-heavy
+deployment should measure the runtime on a copy of its own data before the real
+cutover.
 
 ## Node Network Identity at onboarding and after a Node build upgrade
 

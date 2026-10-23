@@ -101,7 +101,7 @@ pub struct PostgresFacts {
 }
 
 /// The latest migration version compiled into the Server binary.
-pub const SERVER_SCHEMA_VERSION: i64 = 75;
+pub const SERVER_SCHEMA_VERSION: i64 = 76;
 
 /// The Server currently serializes all database operations through one pool
 /// connection. Read scaling can be added with a concrete query need; it is
@@ -176,6 +176,7 @@ const REQUIRED_TABLES: &[&str] = &[
     "node_state_series_state",
     "node_relationship_intervals",
     "reward_wallet_balance",
+    "storage_migration",
 ];
 
 /// Connection settings for the Server database.
@@ -257,6 +258,8 @@ pub enum ServerDatabaseError {
     Filesystem(String),
     #[error("Server SQLite database file is empty")]
     EmptyDatabase,
+    #[error("{0}")]
+    AlreadyMigrated(String),
     #[error("Server PostgreSQL configuration is refused: {0}")]
     Unsupported(String),
     #[error(
@@ -398,6 +401,17 @@ impl sqlx::Encode<'_, sqlx::Any> for NullableReal {
     }
 }
 
+/// Whether an open path runs the maintenance writes that follow migrations.
+///
+/// A serving Server seeds the typed Alert Rule catalog and invalidates carried
+/// recovery windows; an offline maintenance command must observe the stored
+/// state instead of changing it (issue #257).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupWrites {
+    Apply,
+    Skip,
+}
+
 /// The Storage Backend behind a [`ServerDatabase`].
 enum Backend {
     /// Boxed because `SqliteConnectOptions` is far larger than the PostgreSQL
@@ -428,7 +442,7 @@ impl ServerDatabase {
     /// and run integrity checks before returning a database to the HTTP
     /// startup path.
     pub async fn open(config: impl Into<StorageConfig>) -> Result<Self, ServerDatabaseError> {
-        Self::open_with(config.into(), true).await
+        Self::open_with(config.into(), true, StartupWrites::Apply).await
     }
 
     /// Open an already initialized database without creating a new SQLite
@@ -448,12 +462,28 @@ impl ServerDatabase {
                 Err(_) => return Err(ServerDatabaseError::EmptyDatabase),
             }
         }
-        Self::open_with(config, false).await
+        Self::open_with(config, false, StartupWrites::Apply).await
+    }
+
+    /// Open an already initialized database for an offline maintenance command
+    /// that must observe the stored state instead of changing it.
+    ///
+    /// Migrations, the backend contract checks and the Inventory cutover
+    /// resolution run exactly as they do at startup, but the maintenance writes
+    /// that follow migrations (Alert Rule catalog seeding and recovery-window
+    /// invalidation) are skipped: a command that measures what the database
+    /// holds - the Storage Backend Migration and its abort (ADR 0013, issue
+    /// #257) - cannot compare a digest against content it just rewrote.
+    pub(crate) async fn open_for_maintenance(
+        config: impl Into<StorageConfig>,
+    ) -> Result<Self, ServerDatabaseError> {
+        Self::open_with(config.into(), false, StartupWrites::Skip).await
     }
 
     async fn open_with(
         config: StorageConfig,
         create_if_missing: bool,
+        startup_writes: StartupWrites,
     ) -> Result<Self, ServerDatabaseError> {
         let (pool, backend, path, postgres) = match &config {
             StorageConfig::Sqlite(sqlite_config) => {
@@ -483,7 +513,7 @@ impl ServerDatabase {
                 )
             }
         };
-        match Self::prepare(&pool, &backend, &config, create_if_missing).await {
+        match Self::prepare(&pool, &backend, &config, create_if_missing, startup_writes).await {
             Ok(inventory_cutover) => Ok(Self {
                 pool,
                 backend,
@@ -507,6 +537,7 @@ impl ServerDatabase {
         backend: &Backend,
         config: &StorageConfig,
         create_if_missing: bool,
+        startup_writes: StartupWrites,
     ) -> Result<crate::cutover::InventoryCutover, ServerDatabaseError> {
         match backend {
             Backend::Sqlite(_) => SERVER_MIGRATOR.run(pool).await,
@@ -514,22 +545,24 @@ impl ServerDatabase {
         }
         .map_err(ServerDatabaseError::Migration)?;
 
-        // Seed the typed Alert Rule catalog (idempotent; Owner-edited rules
-        // are never overwritten) right after migrations so every database
-        // carries the full catalog from the start.
-        let mut conn = pool
-            .acquire()
-            .await
-            .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))?;
-        crate::alerts::seed_catalog(&mut conn)
-            .await
-            .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))?;
-        // A restart is an observation gap; no recovery window may be
-        // carried across it (issue #203 review B2).
-        crate::alerts::invalidate_recovery_windows_on_startup(&mut conn)
-            .await
-            .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))?;
-        drop(conn);
+        if startup_writes == StartupWrites::Apply {
+            // Seed the typed Alert Rule catalog (idempotent; Owner-edited rules
+            // are never overwritten) right after migrations so every database
+            // carries the full catalog from the start.
+            let mut conn = pool
+                .acquire()
+                .await
+                .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))?;
+            crate::alerts::seed_catalog(&mut conn)
+                .await
+                .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))?;
+            // A restart is an observation gap; no recovery window may be
+            // carried across it (issue #203 review B2).
+            crate::alerts::invalidate_recovery_windows_on_startup(&mut conn)
+                .await
+                .map_err(|error| ServerDatabaseError::CatalogSeed(error.to_string()))?;
+            drop(conn);
+        }
 
         match (backend, config) {
             (Backend::Sqlite(sqlite_backend), StorageConfig::Sqlite(sqlite_config)) => {
@@ -740,6 +773,18 @@ pub async fn initialize(
     config: impl Into<StorageConfig>,
 ) -> Result<ServerDatabase, ServerDatabaseError> {
     ServerDatabase::open(config).await
+}
+
+/// Native SQLite connection options for a deployment's own connection policy.
+///
+/// The offline Storage Backend Migration (ADR 0013, issue #257) opens the
+/// source file itself rather than through a pool, but it must still open it
+/// exactly as the Server would: same pragmas, same exclusive locking mode.
+pub(crate) fn sqlite_deployment_options(
+    config: &ServerDatabaseConfig,
+    create_if_missing: bool,
+) -> sqlx::sqlite::SqliteConnectOptions {
+    sqlite::connect_options(config, create_if_missing)
 }
 
 /// Whether an error is the Storage Backend reporting a corrupt database

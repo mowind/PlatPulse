@@ -2,11 +2,12 @@ use clap::{CommandFactory, Parser};
 
 use platpulse_server::cli::{
     AgentCommand, CheckpointCommand, Cli, Command, CutoverCommand, NetworkCommand, OwnerCommand,
-    ViewerCommand, require_sqlite_storage, resolve_serve_config, run_backup,
-    run_checkpoint_convert, run_checkpoint_create, run_checkpoint_restore, run_checkpoint_verify,
-    run_checkpoint_verify_conversion, run_create_enrollment_token, run_cutover_resume,
-    run_cutover_rollback, run_cutover_status, run_network_create, run_owner_create, run_restore,
-    run_serve, run_verify_integrity, run_viewer_create,
+    StorageCommand, StorageMigrateAction, ViewerCommand, require_sqlite_storage,
+    resolve_serve_config, run_backup, run_checkpoint_convert, run_checkpoint_create,
+    run_checkpoint_restore, run_checkpoint_verify, run_checkpoint_verify_conversion,
+    run_create_enrollment_token, run_cutover_resume, run_cutover_rollback, run_cutover_status,
+    run_network_create, run_owner_create, run_restore, run_serve, run_storage_migrate,
+    run_storage_migrate_abort, run_verify_integrity, run_viewer_create,
 };
 use platpulse_server::config::ServerConfig;
 use platpulse_server::init::run_init;
@@ -129,6 +130,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Cutover(CutoverCommand::Rollback(args)) => {
             run_cutover_rollback(&args).await?;
         }
+        Command::Storage(StorageCommand::Migrate(args)) => match &args.action {
+            Some(StorageMigrateAction::Abort(abort)) => run_storage_migrate_abort(abort).await?,
+            None => run_storage_migrate(&args).await?,
+        },
         Command::Serve(args) => {
             let config = resolve_serve_config(&args)?;
             run_serve(&config).await?;

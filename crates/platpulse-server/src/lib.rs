@@ -56,6 +56,9 @@ pub mod retention;
 pub mod reward_wallet;
 pub mod secrets;
 pub mod state_history;
+/// Storage Backend Migration: offline SQLite -> PostgreSQL copy and its abort
+/// (ADR 0013, issue #257).
+pub mod storage_migration;
 pub mod subject_deletion;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;

@@ -136,6 +136,12 @@ fn prepare_database_path(
     create_if_missing: bool,
 ) -> Result<(), ServerDatabaseError> {
     let path = config.path();
+    // A migrated deployment must never accept a write again: the Storage
+    // Backend Migration leaves the file untouched and records the migration in
+    // a sibling marker, so the marker is checked before SQLite opens on every
+    // path - startup and every offline CLI command alike (ADR 0013, #257).
+    crate::storage_migration::refuse_migrated(path)
+        .map_err(ServerDatabaseError::AlreadyMigrated)?;
     let parent = path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
