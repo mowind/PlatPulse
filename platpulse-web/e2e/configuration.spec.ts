@@ -17,7 +17,9 @@ test.describe('Admin Settings workflows (issues #111 and #113)', () => {
 
     // Issue #199: the static configuration cards gain no hover affordance, but
     // they must still stack in their documented reading order without overlap.
-    const headings = ['History Window', 'Site Access Mode', 'Geo provider']
+    // Issue #256 added the read-only Storage Backend block last, because it
+    // decides which of the settings above it even apply (ADR 0013).
+    const headings = ['History Window', 'Site Access Mode', 'Geo provider', 'Storage Backend']
     const blocks = await page.locator('[data-slot="settings-block"]').all()
     expect(blocks).toHaveLength(headings.length)
     const boxes: { top: number; bottom: number }[] = []
