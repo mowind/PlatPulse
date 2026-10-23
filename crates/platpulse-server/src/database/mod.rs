@@ -412,6 +412,29 @@ enum StartupWrites {
     Skip,
 }
 
+/// The Storage Backend a deployment runs on (ADR 0013).
+///
+/// Callers branch on this value instead of comparing the published name:
+/// matching an enum keeps every decision exhaustive, so a third backend is a
+/// compile error rather than a silent fall-through into the SQLite arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StorageBackend {
+    /// The default in-process SQLite database file.
+    Sqlite,
+    /// The PostgreSQL Storage Backend (issue #255).
+    Postgres,
+}
+
+impl StorageBackend {
+    /// The name the Admin surfaces and the readiness registry publish.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sqlite => "sqlite",
+            Self::Postgres => "postgres",
+        }
+    }
+}
+
 /// The Storage Backend behind a [`ServerDatabase`].
 enum Backend {
     /// Boxed because `SqliteConnectOptions` is far larger than the PostgreSQL
@@ -597,12 +620,17 @@ impl ServerDatabase {
         self.path.as_deref()
     }
 
-    /// The Storage Backend in use ("sqlite" or "postgres").
-    pub fn storage_backend(&self) -> &'static str {
+    /// The Storage Backend this deployment runs on.
+    pub fn backend(&self) -> StorageBackend {
         match &self.backend {
-            Backend::Sqlite(_) => "sqlite",
-            Backend::Postgres(_) => "postgres",
+            Backend::Sqlite(_) => StorageBackend::Sqlite,
+            Backend::Postgres(_) => StorageBackend::Postgres,
         }
+    }
+
+    /// The Storage Backend in use, as the name the Admin surfaces publish.
+    pub fn storage_backend(&self) -> &'static str {
+        self.backend().as_str()
     }
 
     /// The Storage Backend facts the Owner-only Admin surfaces show. Public

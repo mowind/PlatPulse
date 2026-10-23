@@ -358,6 +358,26 @@ pub async fn optional_postgres_connect_config() -> Option<PostgresConnectConfig>
     Some(config)
 }
 
+/// Sever every session on the PostgreSQL database `config` names.
+///
+/// A test severs the ownership session of a migration command this way: the
+/// command holds the target's advisory lock from that session, so killing it
+/// is exactly the event the command must notice instead of committing into a
+/// database another Server may now be serving.
+pub async fn terminate_postgres_sessions(config: &PostgresConnectConfig) {
+    let cluster = postgres_cluster().await;
+    let mut admin = connect_admin(&cluster.admin_url).await;
+    sqlx::query(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+         WHERE datname = $1 AND pid <> pg_backend_pid()",
+    )
+    .bind(config.database())
+    .fetch_all(&mut admin)
+    .await
+    .expect("terminate the sessions of the PostgreSQL test database");
+    let _ = admin.close().await;
+}
+
 /// Connection facts for a test that runs the real Server binary against a
 /// fresh, already-migrated PostgreSQL database.
 ///

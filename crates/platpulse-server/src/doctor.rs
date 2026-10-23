@@ -275,7 +275,10 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
     // ADR 0013 splits the check set by Storage Backend: SQLite keeps the
     // file-oriented checks, while PostgreSQL reports the ones it cannot have
     // as NOT_APPLICABLE and proves its own surface instead.
-    let postgres = state.db().storage_backend() == "postgres";
+    let postgres = matches!(
+        state.db().backend(),
+        crate::database::StorageBackend::Postgres
+    );
 
     // 1. Database integrity. SQLite verifies itself in process; the
     //    PostgreSQL Storage Backend has no check the Server may run, so it is

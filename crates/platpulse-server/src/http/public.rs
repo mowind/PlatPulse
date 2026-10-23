@@ -5260,18 +5260,24 @@ mod tests {
             .unwrap();
     }
 
-    /// The current instant, waited past a bucket edge when one is about to
-    /// arrive, so a test that seeds the open bucket and then asks for the window
-    /// cannot watch that bucket close in between.
+    /// The current instant, between two bucket edges, so a test that seeds the
+    /// open bucket and then asks for the window cannot watch that bucket close.
     ///
-    /// The margin is generous on purpose: a seeded bucket has to stay open for
-    /// the whole test, and a loaded suite where the PostgreSQL statements and
-    /// the HTTP round trip take seconds must not straddle the edge.
+    /// Both margins matter. The far one is generous on purpose: a seeded bucket
+    /// has to stay open for the whole test, and a loaded suite where the
+    /// PostgreSQL statements and the HTTP round trip take seconds must not
+    /// straddle the edge. The near one keeps the instants a test derives from
+    /// this one inside the bucket it belongs to - samples seeded a couple of
+    /// seconds behind it, and a bucket-relative offset that runs ahead of it -
+    /// which at exactly the edge would land in the closed bucket or in the
+    /// future (the flake that failed two window tests at 00:00 of a 5m edge).
     async fn settled_now(grain_seconds: i64) -> time::OffsetDateTime {
         const MARGIN_SECONDS: i64 = 20;
+        const EDGE_SECONDS: i64 = 5;
         loop {
             let now = crate::auth::now_utc();
-            if grain_seconds - now.unix_timestamp().rem_euclid(grain_seconds) > MARGIN_SECONDS {
+            let into_bucket = now.unix_timestamp().rem_euclid(grain_seconds);
+            if into_bucket >= EDGE_SECONDS && grain_seconds - into_bucket > MARGIN_SECONDS {
                 return time::OffsetDateTime::from_unix_timestamp(now.unix_timestamp()).unwrap();
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;

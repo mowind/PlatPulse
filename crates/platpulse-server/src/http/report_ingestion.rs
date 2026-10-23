@@ -658,7 +658,16 @@ async fn close_coverage_height(
         .bind(coverage_id)
         .execute(&mut **tx)
         .await?;
-        sqlx::query("INSERT INTO block_coverage_intervals (node_id,first_height,last_height,status,created_at,updated_at) SELECT node_id,$1,$2,status,created_at,$3 FROM block_coverage_intervals WHERE coverage_id=$4").bind(last as i64).bind(now_text).execute(&mut **tx).await?;
+        // The interval is split in two: the row keeps [first, height-1] and the
+        // copy above it starts at height+1, which is the first height the gap
+        // no longer covers.
+        sqlx::query("INSERT INTO block_coverage_intervals (node_id,first_height,last_height,status,created_at,updated_at) SELECT node_id,$1,$2,status,created_at,$3 FROM block_coverage_intervals WHERE coverage_id=$4")
+            .bind((height + 1) as i64)
+            .bind(last as i64)
+            .bind(now_text)
+            .bind(coverage_id)
+            .execute(&mut **tx)
+            .await?;
     }
     Ok(())
 }
@@ -5990,6 +5999,56 @@ mod tests {
         assert_eq!(
             block_bucket(&state, &node_id, 300, &at(base, 0)).await,
             five
+        );
+    }
+
+    /// A backfill that lands strictly inside an open gap splits the interval,
+    /// so the still-missing range above it keeps its own bounds instead of
+    /// being reported covered.
+    #[tokio::test]
+    async fn a_backfill_inside_an_open_gap_splits_the_interval() {
+        use platpulse_core::block::BlockSource::{GapBackfill, Subscription};
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let base = block_base();
+        let live = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000341",
+            1,
+            &[(10, 1_000, at(base, 1), 3, Subscription)],
+        );
+        let node_id = live.inventory.nodes[0].node_id.to_string();
+        submit(&state, &agent_id, serde_json::to_vec(&live).unwrap()).await;
+        sqlx::query("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ($1, 11, 20, 'open_recoverable_gap', '2026-08-12T09:00:06Z', '2026-08-12T09:00:06Z')")
+            .bind(&node_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let backfill = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000342",
+            2,
+            &[(15, 5_000, at(base, 5), 4, GapBackfill)],
+        );
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&backfill).unwrap()).await;
+        assert!(
+            receipt.samples[0].rejection.is_none(),
+            "the backfill inside the open gap is accepted, got {:?}",
+            receipt.samples[0].rejection
+        );
+
+        let intervals: Vec<(i64, i64, String)> = sqlx::query_as(
+            "SELECT first_height, last_height, status FROM block_coverage_intervals WHERE node_id=$1 ORDER BY first_height",
+        )
+        .bind(&node_id)
+        .fetch_all(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            intervals,
+            vec![
+                (10, 10, "covered".to_owned()),
+                (11, 14, "open_recoverable_gap".to_owned()),
+                (16, 20, "open_recoverable_gap".to_owned()),
+            ]
         );
     }
 

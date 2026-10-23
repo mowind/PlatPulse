@@ -566,11 +566,52 @@ pub async fn abort_deployment(
     let _source_ownership = crate::ownership::acquire(&source_db_path)?;
 
     let database = ServerDatabase::open_for_maintenance(target_config.clone()).await?;
-    let result = abort_inner(&database, &target_description, &parsed).await;
+    // The abort writes to the target under the same exclusive ownership the
+    // migration took. Losing it mid-abort means another Server may be serving
+    // the target this command is emptying, so the deletes are rolled back and
+    // the marker stays: the operator inspects the target and runs the abort
+    // again.
+    let result = while_owned(
+        &database,
+        || {
+            StorageMigrationError::Incomplete(format!(
+                "this process stopped owning the PostgreSQL target {target_description} while the abort was running (its ownership session was lost), so the abort was rolled back and the SQLite marker still fences the source; inspect the target before running the abort again"
+            ))
+        },
+        abort_inner(&database, &target_description, &parsed),
+    )
+    .await;
     database.close().await;
     let summary = result?;
     release_marker(&marker)?;
     Ok(summary)
+}
+
+/// Run one destructive target write while this process still owns the target.
+///
+/// Ownership is a session advisory lock, and the pool's ownership guard only
+/// refuses *new* work connections: the copy and the abort each check one out
+/// before they start, so they would keep using it after the session died. The
+/// write could then commit into a database another Server may by then be
+/// serving. Racing the write against `ownership_lost` drops it instead, which
+/// takes its single transaction down; for the abort the SQLite marker stays in
+/// place, so the source stays fenced and the operator re-runs the command.
+async fn while_owned<T, W>(
+    database: &ServerDatabase,
+    on_loss: impl FnOnce() -> StorageMigrationError,
+    work: W,
+) -> Result<T, StorageMigrationError>
+where
+    W: std::future::Future<Output = Result<T, StorageMigrationError>>,
+{
+    let work = std::pin::pin!(work);
+    tokio::select! {
+        // Ownership is checked first: a database that is already lost must not
+        // get one more statement in, and the write future is never polled.
+        biased;
+        _ = database.ownership_lost() => Err(on_loss()),
+        result = work => result,
+    }
 }
 
 async fn run_migrate(
@@ -611,7 +652,21 @@ async fn run_migrate(
         target_description,
         started: Instant::now(),
     };
-    let result = apply_to_target(&database, source, &plan, progress).await;
+    // Ownership of the target is a session advisory lock this process holds. If
+    // that session dies mid-copy, another Server can open the target while this
+    // one is still copying into it, so the copy is raced against the loss of
+    // ownership: dropping it takes its single transaction down, and the SQLite
+    // marker keeps fencing the source for the operator to abort or repair.
+    let result = while_owned(
+        &database,
+        || {
+            StorageMigrationError::Incomplete(format!(
+                "this process stopped owning the PostgreSQL target {target_description} while the copy was running (its ownership session was lost), so the copy was rolled back instead of committed; another Server may now hold the target, so inspect it before running the migration again"
+            ))
+        },
+        apply_to_target(&database, source, &plan, progress),
+    )
+    .await;
     database.close().await;
     result
 }
@@ -1456,53 +1511,60 @@ fn content_digest(digests: &BTreeMap<String, TableDigest>) -> String {
     hex_sha256(&hasher.finalize())
 }
 
-fn decode_sqlite_cell(
-    row: &SqliteRow,
-    index: usize,
-    class: ColumnClass,
-) -> Result<Cell, StorageMigrationError> {
-    Ok(match class {
-        ColumnClass::Text => match row.try_get::<Option<String>, _>(index)? {
-            Some(value) => Cell::Text(value),
-            None => Cell::Null,
-        },
-        ColumnClass::Integer => match row.try_get::<Option<i64>, _>(index)? {
-            Some(value) => Cell::Integer(value),
-            None => Cell::Null,
-        },
-        ColumnClass::Real => match row.try_get::<Option<f64>, _>(index)? {
-            Some(value) => Cell::Real(value),
-            None => Cell::Null,
-        },
-        ColumnClass::Blob => match row.try_get::<Option<Vec<u8>>, _>(index)? {
-            Some(value) => Cell::Blob(value),
-            None => Cell::Null,
-        },
-    })
+/// Reading one column out of a row, whichever database the row came from.
+///
+/// The source is SQLite and the target is PostgreSQL, so their row types are
+/// unrelated: this is the only thing the copy and its verification need from
+/// either, and it keeps the class-directed decode in one place.
+trait RowCells {
+    fn text(&self, index: usize) -> Result<Option<String>, sqlx::Error>;
+    fn integer(&self, index: usize) -> Result<Option<i64>, sqlx::Error>;
+    fn real(&self, index: usize) -> Result<Option<f64>, sqlx::Error>;
+    fn blob(&self, index: usize) -> Result<Option<Vec<u8>>, sqlx::Error>;
 }
 
-fn decode_target_cell(
-    row: &AnyRow,
+impl RowCells for SqliteRow {
+    fn text(&self, index: usize) -> Result<Option<String>, sqlx::Error> {
+        self.try_get(index)
+    }
+    fn integer(&self, index: usize) -> Result<Option<i64>, sqlx::Error> {
+        self.try_get(index)
+    }
+    fn real(&self, index: usize) -> Result<Option<f64>, sqlx::Error> {
+        self.try_get(index)
+    }
+    fn blob(&self, index: usize) -> Result<Option<Vec<u8>>, sqlx::Error> {
+        self.try_get(index)
+    }
+}
+
+impl RowCells for AnyRow {
+    fn text(&self, index: usize) -> Result<Option<String>, sqlx::Error> {
+        self.try_get(index)
+    }
+    fn integer(&self, index: usize) -> Result<Option<i64>, sqlx::Error> {
+        self.try_get(index)
+    }
+    fn real(&self, index: usize) -> Result<Option<f64>, sqlx::Error> {
+        self.try_get(index)
+    }
+    fn blob(&self, index: usize) -> Result<Option<Vec<u8>>, sqlx::Error> {
+        self.try_get(index)
+    }
+}
+
+/// Decode one cell by the storage class its column declares, so a NULL keeps
+/// the class instead of collapsing into an untyped absence.
+fn decode_cell<R: RowCells>(
+    row: &R,
     index: usize,
     class: ColumnClass,
 ) -> Result<Cell, StorageMigrationError> {
     Ok(match class {
-        ColumnClass::Text => match row.try_get::<Option<String>, _>(index)? {
-            Some(value) => Cell::Text(value),
-            None => Cell::Null,
-        },
-        ColumnClass::Integer => match row.try_get::<Option<i64>, _>(index)? {
-            Some(value) => Cell::Integer(value),
-            None => Cell::Null,
-        },
-        ColumnClass::Real => match row.try_get::<Option<f64>, _>(index)? {
-            Some(value) => Cell::Real(value),
-            None => Cell::Null,
-        },
-        ColumnClass::Blob => match row.try_get::<Option<Vec<u8>>, _>(index)? {
-            Some(value) => Cell::Blob(value),
-            None => Cell::Null,
-        },
+        ColumnClass::Text => row.text(index)?.map_or(Cell::Null, Cell::Text),
+        ColumnClass::Integer => row.integer(index)?.map_or(Cell::Null, Cell::Integer),
+        ColumnClass::Real => row.real(index)?.map_or(Cell::Null, Cell::Real),
+        ColumnClass::Blob => row.blob(index)?.map_or(Cell::Null, Cell::Blob),
     })
 }
 
@@ -1545,7 +1607,7 @@ async fn copy_table(
         let row = row?;
         let mut cells = Vec::with_capacity(table.columns.len());
         for (index, column) in table.columns.iter().enumerate() {
-            let cell = decode_sqlite_cell(&row, index, column.class)?;
+            let cell = decode_cell(&row, index, column.class)?;
             hash_cell(&mut hasher, &cell);
             cells.push(cell);
         }
@@ -1595,7 +1657,7 @@ async fn target_table_digest(
     while let Some(row) = stream.next().await {
         let row = row?;
         for (index, column) in table.columns.iter().enumerate() {
-            let cell = decode_target_cell(&row, index, column.class)?;
+            let cell = decode_cell(&row, index, column.class)?;
             hash_cell(&mut hasher, &cell);
         }
         rows += 1;
@@ -2558,6 +2620,81 @@ mod tests {
             .expect("count the migrated Audit Events");
         migrated.close().await;
         assert_eq!(rows, 2, "the copied rows survive the refused abort");
+    }
+
+    /// Losing the target's ownership session mid-write must fail the command
+    /// instead of letting the write commit into a database another Server may
+    /// by then be serving: the pool's ownership guard only refuses *new* work
+    /// connections, so the write already running has to be dropped.
+    #[tokio::test]
+    async fn a_target_write_that_loses_ownership_is_dropped_instead_of_committed() {
+        let Some(target) = crate::test_support::optional_postgres_connect_config().await else {
+            eprintln!(
+                "skipping the Storage Backend Migration ownership race check: {} is unset, so there is no PostgreSQL target; the PostgreSQL CI jobs set it",
+                crate::test_support::TEST_POSTGRES_URL_ENV
+            );
+            return;
+        };
+        let database = ServerDatabase::open_for_maintenance(target.clone())
+            .await
+            .expect("open the PostgreSQL target");
+
+        // The write stands in for the copy: it opens a transaction and writes
+        // into it, then waits for a signal this test never sends, so only the
+        // ownership race can end it.
+        let (started, mut started_rx) = tokio::sync::oneshot::channel();
+        let (_release, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let work = async {
+            let mut transaction = database.pool().begin().await?;
+            sqlx::query("CREATE TABLE ownership_probe (height BIGINT)")
+                .execute(&mut *transaction)
+                .await?;
+            sqlx::query("INSERT INTO ownership_probe (height) VALUES (1)")
+                .execute(&mut *transaction)
+                .await?;
+            let _ = started.send(());
+            let _ = release_rx.await;
+            transaction.commit().await?;
+            Ok::<(), StorageMigrationError>(())
+        };
+        let mut raced = Box::pin(while_owned(
+            &database,
+            || StorageMigrationError::Incomplete("ownership was lost".to_owned()),
+            work,
+        ));
+        tokio::select! {
+            _ = &mut started_rx => {}
+            result = &mut raced => {
+                panic!("the target write finished before ownership was severed: {result:?}")
+            }
+        }
+
+        crate::test_support::terminate_postgres_sessions(&target).await;
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), &mut raced)
+            .await
+            .expect(
+                "losing the ownership session must end the write instead of leaving it running",
+            );
+        assert!(
+            matches!(outcome, Err(StorageMigrationError::Incomplete(_))),
+            "the loss of the ownership session must be reported, got {outcome:?}"
+        );
+        database.close().await;
+
+        let reopened = ServerDatabase::open_for_maintenance(target)
+            .await
+            .expect("reopen the target once the severed session released it");
+        let tables: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pg_tables WHERE tablename = 'ownership_probe'",
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .expect("count the probe table");
+        reopened.close().await;
+        assert_eq!(
+            tables, 0,
+            "a write whose ownership was lost must not leave its transaction behind"
+        );
     }
 
     #[tokio::test]

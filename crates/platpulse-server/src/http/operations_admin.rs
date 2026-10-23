@@ -2390,7 +2390,11 @@ pub(crate) async fn capacity_overview(
     // that backend the policy is not merely off: it does not apply, and the
     // Server never measures or protects a disk that belongs to the database
     // operator (ADR 0013).
-    let not_applicable_reason = (state.db().storage_backend() == "postgres").then(|| {
+    let not_applicable_reason = matches!(
+        state.db().backend(),
+        crate::database::StorageBackend::Postgres
+    )
+    .then(|| {
         "the PostgreSQL Storage Backend leaves the database disk to the database operator, "
             .to_string()
             + "so the Server neither measures nor protects it against low space"
@@ -3856,7 +3860,10 @@ mod tests {
             .iter()
             .map(|check| check["status"].as_str().unwrap())
             .collect();
-        let postgres = state.db().storage_backend() == "postgres";
+        let postgres = matches!(
+            state.db().backend(),
+            crate::database::StorageBackend::Postgres
+        );
         assert!(statuses.contains("pass"));
         if postgres {
             // Backup artifacts and capacity protection belong to the database

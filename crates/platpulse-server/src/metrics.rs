@@ -797,11 +797,12 @@ async fn update_readiness(state: &AppState) {
         .is_ok_and(|version| version >= crate::database::SERVER_SCHEMA_VERSION)
         && !state.is_corrupt();
     registry.set_readiness("storage_ownership", state.db().ownership_held());
-    let (storage, unrealised_storage) = match state.db().storage_backend() {
-        "postgres" => ("postgres", "sqlite"),
-        _ => ("sqlite", "postgres"),
+    let storage = state.db().backend();
+    let unrealised_storage = match storage {
+        crate::database::StorageBackend::Postgres => "sqlite",
+        crate::database::StorageBackend::Sqlite => "postgres",
     };
-    registry.set_readiness(storage, sqlite_ready);
+    registry.set_readiness(storage.as_str(), sqlite_ready);
     registry.set_readiness_not_applicable(unrealised_storage);
     registry.set_readiness(
         "owner",
