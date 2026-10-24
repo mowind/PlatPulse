@@ -587,10 +587,9 @@ pub(crate) const CACHE_TABLE_DDL: &str = "CREATE TABLE geo_location_cache (provi
 /// no longer touches this table: the reference refresh used to run after every
 /// receipt, which cost a full scan of the cache per Report and made two
 /// concurrent Reports take the same row locks in opposite orders (PostgreSQL
-/// 40P01). Nothing else runs this concurrently: the only callers are the 60
-/// second maintenance worker and the Owner's provider switch, which commits its
-/// own transaction before calling, and Server writes stay serialized on one
-/// work connection (ADR 0013), so no two passes hold these rows at once.
+/// 40P01). Only the 60 second maintenance worker and the Owner's provider
+/// switch call this now; the switch commits its own transaction before calling,
+/// and both passes walk the statements below in the same order.
 pub async fn cleanup_cache(
     pool: &AnyPool,
     now: &str,

@@ -5880,20 +5880,38 @@ mod tests {
             .await
             .unwrap();
 
-        // A row-level write counter. SQLite fires these triggers for every row a
-        // statement touches even when the new values equal the old ones, so a
-        // same-value UPDATE cannot hide behind an unchanged stamp. PostgreSQL
-        // proves the same property through the sentinel stamps alone, since its
-        // triggers would need a function the production schema does not have.
-        if cfg!(not(storage_postgres)) {
-            sqlx::query("CREATE TABLE peer_write_probe (probe TEXT NOT NULL)")
+        // A row-level write counter, so "writes no row" is counted instead of
+        // inferred from an unchanged stamp: both backends fire these triggers
+        // for every row a statement touches even when the new values equal the
+        // old ones. The counter is test-only DDL and never reaches a production
+        // schema.
+        sqlx::query("CREATE TABLE peer_write_probe (probe TEXT NOT NULL)")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        for (table, name) in [
+            ("current_node_peers", "peers"),
+            ("current_node_peer_capabilities", "capabilities"),
+            ("geo_location_cache", "geo"),
+        ] {
+            if cfg!(storage_postgres) {
+                sqlx::query(
+                    "CREATE OR REPLACE FUNCTION platpulse_probe_write() RETURNS trigger \
+                     LANGUAGE plpgsql AS $$ BEGIN \
+                     INSERT INTO peer_write_probe (probe) VALUES (TG_TABLE_NAME::text || ' ' || TG_OP); \
+                     RETURN NULL; END $$",
+                )
                 .execute(state.db().pool())
                 .await
                 .unwrap();
-            for (table, name) in [
-                ("current_node_peers", "peers"),
-                ("current_node_peer_capabilities", "capabilities"),
-            ] {
+                sqlx::query(&format!(
+                    "CREATE TRIGGER probe_{name} AFTER INSERT OR UPDATE OR DELETE ON {table} \
+                     FOR EACH ROW EXECUTE FUNCTION platpulse_probe_write()"
+                ))
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+            } else {
                 for event in ["INSERT", "UPDATE", "DELETE"] {
                     sqlx::query(&format!(
                         "CREATE TRIGGER probe_{name}_{event} AFTER {event} ON {table} \
@@ -5904,25 +5922,25 @@ mod tests {
                     .unwrap();
                 }
             }
-            // Self-check: a no-op UPDATE of the same rows must be counted, so the
-            // zero below cannot pass because the triggers never fire.
-            sqlx::query("UPDATE current_node_peers SET trusted = trusted")
-                .execute(state.db().pool())
-                .await
-                .unwrap();
-            assert_eq!(
-                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM peer_write_probe")
-                    .fetch_one(state.db().pool())
-                    .await
-                    .unwrap(),
-                2,
-                "the write probe counts a same-value Peer UPDATE"
-            );
-            sqlx::query("DELETE FROM peer_write_probe")
-                .execute(state.db().pool())
-                .await
-                .unwrap();
         }
+        // Self-check: a no-op UPDATE of the same rows must be counted, so the
+        // zero below cannot pass because the triggers never fire.
+        sqlx::query("UPDATE current_node_peers SET trusted = trusted")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM peer_write_probe")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap(),
+            2,
+            "the write probe counts a same-value Peer UPDATE"
+        );
+        sqlx::query("DELETE FROM peer_write_probe")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
 
         value["report_id"] = serde_json::json!("0195f2a1-0181-4181-8181-000000000181");
         value["report_sequence"] = serde_json::json!(2);
@@ -5944,16 +5962,14 @@ mod tests {
             ],
             "a repeated Peer set must not rewrite a Peer or a capability row"
         );
-        if cfg!(not(storage_postgres)) {
-            assert_eq!(
-                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM peer_write_probe")
-                    .fetch_one(state.db().pool())
-                    .await
-                    .unwrap(),
-                0,
-                "a repeated Peer set must not issue a Peer write statement at all"
-            );
-        }
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM peer_write_probe")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap(),
+            0,
+            "a repeated Peer set must not write a Peer, capability or Geo cache row"
+        );
         assert_eq!(
             sqlx::query_scalar::<_, String>(
                 "SELECT last_referenced_at FROM geo_location_cache WHERE canonical_ip='8.8.8.8'",
