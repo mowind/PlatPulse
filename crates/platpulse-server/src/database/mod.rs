@@ -103,10 +103,21 @@ pub struct PostgresFacts {
 /// The latest migration version compiled into the Server binary.
 pub const SERVER_SCHEMA_VERSION: i64 = 76;
 
-/// The Server currently serializes all database operations through one pool
-/// connection. Read scaling can be added with a concrete query need; it is
-/// not hidden in a repository abstraction.
+/// SQLite allows one writer at a time, so the SQLite Storage Backend keeps
+/// exactly one pool connection: more would only trade correctness for lock
+/// waits. Read scaling can be added with a concrete query need; it is not
+/// hidden in a repository abstraction.
 pub const SERVER_WRITE_CONNECTIONS: u32 = 1;
+
+/// Work connections the PostgreSQL Storage Backend opens.
+///
+/// A PostgreSQL server serializes conflicting rows, not the whole database, so
+/// Reports from different Agents no longer queue behind one another (ADR 0013).
+/// Measured on the production host: one Report occupies its connection for
+/// ~190 ms at ~3 Reports/s, and with a single connection every read — session
+/// lookup, alert sweep, retention cleanup — waited behind an ingest
+/// transaction.
+pub const POSTGRES_WORK_CONNECTIONS: u32 = 8;
 
 /// Explicit timeout used for SQLite lock contention.
 pub const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -870,6 +881,47 @@ pub(crate) fn number_placeholders(sql: &str) -> String {
         numbered.push(character);
     }
     numbered
+}
+
+/// Number of `?` placeholders in one row of a batched statement.
+///
+/// Report Ingestion writes a variable number of rows per statement — a Peer
+/// snapshot, its capabilities, the metrics a Report carries — because the
+/// Server runs every write through a single connection (ADR 0013, issue #213),
+/// so the round trips have to be proportional to the Report rather than to the
+/// rows inside it. The text assembled here is numbered once with
+/// [`number_placeholders`] before it is prepared.
+pub(crate) fn row_placeholders(columns: usize, rows: usize) -> String {
+    let mut values = String::with_capacity(rows * (columns.saturating_mul(2) + 3));
+    for row in 0..rows {
+        if row > 0 {
+            values.push(',');
+        }
+        values.push('(');
+        for column in 0..columns {
+            if column > 0 {
+                values.push(',');
+            }
+            values.push('?');
+        }
+        values.push(')');
+    }
+    values
+}
+
+/// The `?,?,?` body of a run-time sized `IN (...)` list.
+///
+/// The caller writes the parentheses around it and numbers the statement with
+/// [`number_placeholders`].
+pub(crate) fn placeholder_list(items: usize) -> String {
+    let mut list = String::with_capacity(items.saturating_mul(2));
+    for item in 0..items {
+        if item > 0 {
+            list.push(',');
+        }
+        list.push('?');
+    }
+    list
 }
 
 #[cfg(test)]
@@ -1637,5 +1689,21 @@ mod tests {
                 .flatten();
         assert_eq!(annotation, None);
         database.close().await;
+    }
+
+    #[test]
+    fn batched_statement_text_is_numbered_in_bind_order() {
+        assert_eq!(row_placeholders(3, 2), "(?,?,?),(?,?,?)");
+        assert_eq!(row_placeholders(1, 1), "(?)");
+        assert_eq!(row_placeholders(2, 0), "");
+        assert_eq!(placeholder_list(3), "?,?,?");
+        assert_eq!(placeholder_list(0), "");
+        assert_eq!(
+            number_placeholders(&format!(
+                "INSERT INTO t (a, b) VALUES {}",
+                row_placeholders(2, 2)
+            )),
+            "INSERT INTO t (a, b) VALUES ($1,$2),($3,$4)"
+        );
     }
 }

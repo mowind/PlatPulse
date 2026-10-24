@@ -1036,6 +1036,91 @@ pub async fn cleanup_expired_metric_aggregates(
     Ok(removed)
 }
 
+/// Cadence of the bounded retention sweep.
+///
+/// Retention is bounded hygiene rather than part of a receipt (issues
+/// #213/#214/#217), so it runs on a worker instead of inside the Report
+/// receipt transaction. Running the same statements there let a cleanup and a
+/// concurrent Report take the same `node_metric_series_state` /
+/// `host_metric_series_state` rows in opposite orders, which PostgreSQL
+/// resolved as a deadlock (40P01) whose victim could have been the Report. No
+/// family window is shorter than a day (`MIN_INVESTIGATION_RAW_HOURS` is 24
+/// hours), so a pass this short leaves no tier able to outlive its window by
+/// more than one sweep.
+pub const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Gate that keeps the retention sweep out of every Report receipt in flight.
+///
+/// Moving the sweep off the receipt path was not enough on its own: a sweep
+/// statement and an ingest transaction still wrote the same
+/// `node_metric_series_state` / `host_metric_series_state` rows in opposite
+/// orders, and PostgreSQL aborted whichever transaction it found cheaper
+/// (40P01) — sometimes the Report. A Report holds the shared side for as long
+/// as its transaction lives and the sweep takes the exclusive side for one
+/// whole pass, so the two can no longer overlap and that cycle cannot form.
+/// The Server is the only writer (it holds the Storage Backend ownership
+/// lock), so one in-process gate covers every writer of these rows.
+static SWEEP_GATE: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+
+/// Take the shared side of [`SWEEP_GATE`] for one Report receipt.
+pub(crate) async fn hold_sweep_off() -> tokio::sync::RwLockReadGuard<'static, ()> {
+    SWEEP_GATE.read().await
+}
+/// Run the retention sweep until the Server shuts down.
+///
+/// Every family is swept independently and best effort: a pass that fails (a
+/// deadlock against a concurrent Report, a lock timeout) is logged and retried
+/// on the next tick, so one failing family cannot stop another from bounding
+/// its tier.
+pub async fn run_worker(state: AppState) {
+    let mut tick = tokio::time::interval(SWEEP_INTERVAL);
+    loop {
+        if state.is_shutting_down() {
+            break;
+        }
+        tokio::select! {
+            _ = state.shutdown_signal() => break,
+            _ = tick.tick() => {}
+        }
+        if state.is_shutting_down() {
+            break;
+        }
+        sweep(&state).await;
+    }
+}
+
+/// Delete one bounded batch per retention family. Returns the rows removed
+/// across the families that succeeded.
+pub async fn sweep(state: &AppState) -> u64 {
+    let _exclusive = SWEEP_GATE.write().await;
+    let now = crate::auth::now_utc();
+    let pool = state.db().pool();
+    let mut removed = 0;
+    match cleanup_raw_block_summaries(pool, now).await {
+        Ok(count) => removed += count,
+        Err(error) => tracing::warn!(error = %error, "raw block retention sweep deferred"),
+    }
+    // Issue #213: raw metric samples expire by policy instead of by a fixed
+    // per-series cap, so the sweep is what keeps the raw window bounded.
+    match cleanup_expired_metric_samples(pool, now).await {
+        Ok(count) => removed += count,
+        Err(error) => tracing::warn!(error = %error, "raw metric retention sweep deferred"),
+    }
+    // Issue #217: the recorded sync/consensus states are bounded the same way,
+    // so the state log cannot grow without limit on a server that never restarts.
+    match cleanup_expired_observation_state(pool, now).await {
+        Ok(count) => removed += count,
+        Err(error) => tracing::warn!(error = %error, "state retention sweep deferred"),
+    }
+    // Issue #214: each aggregate tier is expired by its own window, so a bucket
+    // is released only once every observation it counted is outside the window.
+    match cleanup_expired_metric_aggregates(pool, now).await {
+        Ok(count) => removed += count,
+        Err(error) => tracing::warn!(error = %error, "aggregate metric retention sweep deferred"),
+    }
+    removed
+}
+
 /// Idempotent policy seeding with the design §11.4 defaults. Safe to call
 /// at startup and from read handlers.
 ///

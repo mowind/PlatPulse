@@ -28,7 +28,7 @@ use sqlx::{AnyConnection, AnyPool, ConnectOptions as _, Connection};
 use thiserror::Error;
 use tokio::sync::{oneshot, watch};
 
-use super::{REQUIRED_TABLES, SERVER_WRITE_CONNECTIONS, ServerDatabaseError};
+use super::{POSTGRES_WORK_CONNECTIONS, REQUIRED_TABLES, ServerDatabaseError};
 
 /// The name SQLx's Any driver reports for a PostgreSQL connection.
 pub(super) const BACKEND_NAME: &str = "PostgreSQL";
@@ -520,7 +520,7 @@ async fn connect_pool(
         AnyConnectOptions::from_url(&config.any_url()).map_err(ServerDatabaseError::Connect)?;
     let before_acquire = ownership.clone();
     AnyPoolOptions::new()
-        .max_connections(SERVER_WRITE_CONNECTIONS)
+        .max_connections(POSTGRES_WORK_CONNECTIONS)
         .min_connections(0)
         .acquire_timeout(config.connect_timeout)
         // A connection is only handed out while ownership is held; once it is

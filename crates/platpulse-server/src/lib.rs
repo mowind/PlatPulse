@@ -66,9 +66,9 @@ pub mod transport;
 pub mod validator;
 
 pub use database::{
-    DEFAULT_BUSY_TIMEOUT, JournalMode, SERVER_MIGRATOR, SERVER_SCHEMA_VERSION,
-    SERVER_WRITE_CONNECTIONS, ServerDatabase, ServerDatabaseConfig, ServerDatabaseError,
-    SqlitePragmas, initialize,
+    DEFAULT_BUSY_TIMEOUT, JournalMode, POSTGRES_WORK_CONNECTIONS, SERVER_MIGRATOR,
+    SERVER_SCHEMA_VERSION, SERVER_WRITE_CONNECTIONS, ServerDatabase, ServerDatabaseConfig,
+    ServerDatabaseError, SqlitePragmas, initialize,
 };
 pub use http::{ApiError, ApiErrorBody, AppState};
 

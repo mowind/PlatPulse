@@ -479,6 +479,35 @@ async fn save_peer_presence(
     Ok(delta)
 }
 
+/// Rows one batched statement carries when a Peer snapshot is written.
+///
+/// A snapshot holds a few hundred Peers and their capabilities, and Report
+/// Ingestion writes it through the Server's single write connection (ADR 0013,
+/// issue #213), so the snapshot costs one round trip per chunk instead of one
+/// per row.
+const PEER_INSERT_ROWS: usize = 64;
+const PEER_CAPABILITY_INSERT_ROWS: usize = 200;
+
+/// Rows one batched statement carries when a Node's RPC surface is written. A
+/// Node reports a few hundred methods, and they reach the Server in one
+/// statement per chunk rather than one per method (issue #213).
+const RPC_INSERT_ROWS: usize = 200;
+
+/// One Peer of a successful snapshot, already redacted and canonicalised.
+struct CurrentPeerRow {
+    peer_id: String,
+    remote_ip: Option<String>,
+    direction: &'static str,
+    trusted: i64,
+    static_peer: i64,
+    consensus_peer: i64,
+    client_name: Option<String>,
+    cbft_protocol_version: Option<i64>,
+    cbft_highest_qc_block: Option<i64>,
+    cbft_locked_block: Option<i64>,
+    cbft_commit_block: Option<i64>,
+}
+
 async fn save_current_peers(
     tx: &mut Transaction<'_, Any>,
     node_id: &str,
@@ -502,6 +531,11 @@ async fn save_current_peers(
         .bind(node_id)
         .execute(&mut **tx)
         .await?;
+
+    // The snapshot is prepared once and then written a chunk at a time, so the
+    // round trips stay proportional to the Report instead of to the Peer count.
+    let mut peers: Vec<CurrentPeerRow> = Vec::with_capacity(snapshot.peers.len());
+    let mut capabilities: Vec<(String, String)> = Vec::new();
     for peer in &snapshot.peers {
         let direction = match peer.direction {
             PeerDirection::Inbound => "inbound",
@@ -516,54 +550,73 @@ async fn save_current_peers(
             .as_deref()
             .map(crate::redaction::redact_sensitive);
         let safe_peer_id = crate::redaction::redact_peer_identity(&peer.peer_id);
-        sqlx::query("INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, cbft_protocol_version, cbft_highest_qc_block, cbft_locked_block, cbft_commit_block, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
-            .bind(node_id)
-            .bind(&safe_peer_id)
-            .bind(canonical_ip.as_deref())
-            .bind(direction)
-            .bind(peer.trusted as i64)
-            .bind(peer.static_peer as i64)
-            .bind(peer.consensus_peer as i64)
-            .bind(safe_client_name.as_deref())
-            .bind(peer.cbft_protocol_version.map(|value| value as i64))
-            .bind(peer.cbft_highest_qc_block.map(|value| value as i64))
-            .bind(peer.cbft_locked_block.map(|value| value as i64))
-            .bind(peer.cbft_commit_block.map(|value| value as i64))
-            .bind(received_at)
-            .execute(&mut **tx)
-            .await?;
-        if let Some(ip) = canonical_ip {
-            // Recording a reference never performs a country lookup: the
-            // background Geo path (crate::geo_backfill) owns resolution
-            // outside this receipt transaction. A reference only keeps the
-            // retained rows honest about being referenced right now, and a
-            // failure of that path can never erase a last-good country.
-            sqlx::query(
-                "UPDATE geo_location_cache SET last_referenced_at=$1 WHERE canonical_ip=$2",
-            )
-            .bind(received_at)
-            .bind(&ip)
-            .execute(&mut **tx)
-            .await?;
-        }
         for capability in &peer.caps {
-            let safe_capability = crate::redaction::redact_sensitive(capability);
-            sqlx::query("INSERT INTO current_node_peer_capabilities (node_id, peer_id, capability, updated_at) VALUES ($1, $2, $3, $4)")
-                .bind(node_id)
-                .bind(&safe_peer_id)
-                .bind(safe_capability)
-                .bind(received_at)
-                .execute(&mut **tx)
-                .await?;
+            capabilities.push((
+                safe_peer_id.clone(),
+                crate::redaction::redact_sensitive(capability),
+            ));
         }
+        peers.push(CurrentPeerRow {
+            peer_id: safe_peer_id,
+            remote_ip: canonical_ip,
+            direction,
+            trusted: peer.trusted as i64,
+            static_peer: peer.static_peer as i64,
+            consensus_peer: peer.consensus_peer as i64,
+            client_name: safe_client_name,
+            cbft_protocol_version: peer.cbft_protocol_version.map(|value| value as i64),
+            cbft_highest_qc_block: peer.cbft_highest_qc_block.map(|value| value as i64),
+            cbft_locked_block: peer.cbft_locked_block.map(|value| value as i64),
+            cbft_commit_block: peer.cbft_commit_block.map(|value| value as i64),
+        });
     }
-    // Raw IP cache rows are only valid while referenced by a current Peer.
-    // This query also removes rows left behind by a node's authoritative
-    // empty snapshot without exposing IPs outside the database.
-    sqlx::query("DELETE FROM geo_location_cache WHERE NOT EXISTS (SELECT 1 FROM current_node_peers WHERE current_node_peers.remote_ip = geo_location_cache.canonical_ip)")
-        .execute(&mut **tx)
-        .await?;
-    crate::geo::trim_cache(&mut **tx).await?;
+
+    for chunk in peers.chunks(PEER_INSERT_ROWS) {
+        let sql = crate::database::number_placeholders(&format!(
+            "INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, cbft_protocol_version, cbft_highest_qc_block, cbft_locked_block, cbft_commit_block, updated_at) VALUES {}",
+            crate::database::row_placeholders(13, chunk.len())
+        ));
+        let mut statement = sqlx::query(&sql);
+        for peer in chunk {
+            statement = statement
+                .bind(node_id)
+                .bind(&peer.peer_id)
+                .bind(peer.remote_ip.as_deref())
+                .bind(peer.direction)
+                .bind(peer.trusted)
+                .bind(peer.static_peer)
+                .bind(peer.consensus_peer)
+                .bind(peer.client_name.as_deref())
+                .bind(peer.cbft_protocol_version)
+                .bind(peer.cbft_highest_qc_block)
+                .bind(peer.cbft_locked_block)
+                .bind(peer.cbft_commit_block)
+                .bind(received_at);
+        }
+        statement.execute(&mut **tx).await?;
+    }
+
+    for chunk in capabilities.chunks(PEER_CAPABILITY_INSERT_ROWS) {
+        let sql = crate::database::number_placeholders(&format!(
+            "INSERT INTO current_node_peer_capabilities (node_id, peer_id, capability, updated_at) VALUES {}",
+            crate::database::row_placeholders(4, chunk.len())
+        ));
+        let mut statement = sqlx::query(&sql);
+        for (peer_id, capability) in chunk {
+            statement = statement
+                .bind(node_id)
+                .bind(peer_id)
+                .bind(capability)
+                .bind(received_at);
+        }
+        statement.execute(&mut **tx).await?;
+    }
+
+    // The Geo cache's reference bookkeeping runs after this receipt commits
+    // (`crate::geo::refresh_peer_references`): two concurrent Reports that
+    // took the same cache row locks in opposite orders deadlocked on
+    // PostgreSQL (40P01), and cache hygiene must never be able to refuse a
+    // Report.
     Ok(())
 }
 
@@ -1182,6 +1235,7 @@ async fn save_metric_sample(
     scope: &crate::metric_history::SeriesScope<'_>,
     observed_at: Rfc3339,
     received_at: &str,
+    raw_cutoff: &str,
     value: f64,
 ) -> Result<(), sqlx::Error> {
     let observed_at = observed_at.to_string();
@@ -1192,10 +1246,15 @@ async fn save_metric_sample(
     // alone: retention releases the row once it leaves the window while the
     // ledger keeps counting.
     let stored = crate::metric_history::stored_value(tx, scope, &observed_at).await?;
-    let cutoff = metric_window_cutoff(tx).await?;
-    let delivery =
-        crate::metric_history::classify_delivery(tx, scope, &observed_at, stored, value, &cutoff)
-            .await?;
+    let delivery = crate::metric_history::classify_delivery(
+        tx,
+        scope,
+        &observed_at,
+        stored,
+        value,
+        raw_cutoff,
+    )
+    .await?;
     if let crate::capacity::HistoryGate::Paused { interval_id } = history {
         // An observation the Server has already counted is not new history: a
         // repeated last-good sample is not a second lost sample (design §11.5,
@@ -1221,7 +1280,7 @@ async fn save_metric_sample(
     // widened window covers its instant again: the row was released on purpose,
     // and recreating it would invent coverage and a fresh receipt for a stretch
     // the Server deliberately stopped holding (issue #213).
-    let released = crate::metric_history::outside_retained_window(stored, &observed_at, &cutoff);
+    let released = crate::metric_history::outside_retained_window(stored, &observed_at, raw_cutoff);
     if !released && delivery != Delivery::Replay {
         crate::metric_history::store_sample(tx, scope, &observed_at, received_at, value).await?;
     }
@@ -1273,6 +1332,13 @@ async fn save_current<I: ReportInventory>(
     received_at: &str,
     geo_provider: crate::geo::GeoProvider,
 ) -> Result<(), sqlx::Error> {
+    // Both retention windows are read once for the whole Report: they depend
+    // on the policy in this transaction's snapshot and on the clock, never on
+    // the series being written, and Report Ingestion holds the Server's single
+    // write connection (issue #213), so reading them per sample spent a round
+    // trip per sample to re-learn the same two instants.
+    let raw_cutoff = metric_window_cutoff(tx).await?;
+    let state_cutoff = state_window_cutoff(tx).await?;
     let agent_id = report.agent_id.to_string();
     let host = &report.host;
     save_component(
@@ -1436,6 +1502,7 @@ async fn save_current<I: ReportInventory>(
             &crate::metric_history::SeriesScope::host(&agent_id, metric, dimension),
             observed_at,
             received_at,
+            &raw_cutoff,
             value,
         )
         .await?;
@@ -1523,7 +1590,6 @@ async fn save_current<I: ReportInventory>(
         // a component is read back from its own row, so a failure that carries
         // no value reports the age of the last-good value instead of a fresh
         // instant.
-        let state_cutoff = state_window_cutoff(tx).await?;
         let sync_state = crate::state_history::StateObservation::of_component(
             &node.chain.sync,
             node.chain.sync.latest.map(|value| value.syncing),
@@ -1689,6 +1755,7 @@ async fn save_current<I: ReportInventory>(
                 &crate::metric_history::SeriesScope::node(&node_id, "process_cpu_percent"),
                 observed_at,
                 received_at,
+                &raw_cutoff,
                 process.cpu_percent,
             )
             .await?;
@@ -1699,6 +1766,7 @@ async fn save_current<I: ReportInventory>(
                     &crate::metric_history::SeriesScope::node(&node_id, "process_memory_percent"),
                     observed_at,
                     received_at,
+                    &raw_cutoff,
                     process.memory_bytes as f64 * 100.0 / memory.total_bytes as f64,
                 )
                 .await?;
@@ -1729,6 +1797,7 @@ async fn save_current<I: ReportInventory>(
                 &crate::metric_history::SeriesScope::node(&node_id, "data_directory_percent"),
                 size_observed_at.min(capacity_observed_at),
                 received_at,
+                &raw_cutoff,
                 size as f64 * 100.0 / capacity as f64,
             )
             .await?;
@@ -1749,6 +1818,7 @@ async fn save_current<I: ReportInventory>(
                 &crate::metric_history::SeriesScope::node(&node_id, "peer_inbound_count"),
                 observed_at,
                 received_at,
+                &raw_cutoff,
                 inbound as f64,
             )
             .await?;
@@ -1758,6 +1828,7 @@ async fn save_current<I: ReportInventory>(
                 &crate::metric_history::SeriesScope::node(&node_id, "peer_outbound_count"),
                 observed_at,
                 received_at,
+                &raw_cutoff,
                 outbound as f64,
             )
             .await?;
@@ -1788,6 +1859,7 @@ async fn save_current<I: ReportInventory>(
                     &crate::metric_history::SeriesScope::node(&node_id, metric),
                     observed_at,
                     received_at,
+                    &raw_cutoff,
                     height as f64,
                 )
                 .await?;
@@ -1811,6 +1883,7 @@ async fn save_current<I: ReportInventory>(
                     &crate::metric_history::SeriesScope::node(&node_id, metric),
                     observed_at,
                     received_at,
+                    &raw_cutoff,
                     height as f64,
                 )
                 .await?;
@@ -1876,15 +1949,31 @@ async fn save_current<I: ReportInventory>(
                     .bind(&node_id)
                     .execute(&mut **tx)
                     .await?;
-                for namespace in &rpc.namespaces {
-                    sqlx::query("INSERT INTO current_node_rpc_namespaces (node_id, namespace, updated_at) VALUES ($1, $2, $3)").bind(&node_id).bind(namespace).bind(received_at).execute(&mut **tx).await?;
+                for chunk in rpc.namespaces.chunks(RPC_INSERT_ROWS) {
+                    let sql = crate::database::number_placeholders(&format!(
+                        "INSERT INTO current_node_rpc_namespaces (node_id, namespace, updated_at) VALUES {}",
+                        crate::database::row_placeholders(3, chunk.len())
+                    ));
+                    let mut statement = sqlx::query(&sql);
+                    for namespace in chunk {
+                        statement = statement.bind(&node_id).bind(namespace).bind(received_at);
+                    }
+                    statement.execute(&mut **tx).await?;
                 }
                 sqlx::query("DELETE FROM current_node_rpc_methods WHERE node_id = $1")
                     .bind(&node_id)
                     .execute(&mut **tx)
                     .await?;
-                for method in &rpc.methods {
-                    sqlx::query("INSERT INTO current_node_rpc_methods (node_id, method, updated_at) VALUES ($1, $2, $3)").bind(&node_id).bind(method).bind(received_at).execute(&mut **tx).await?;
+                for chunk in rpc.methods.chunks(RPC_INSERT_ROWS) {
+                    let sql = crate::database::number_placeholders(&format!(
+                        "INSERT INTO current_node_rpc_methods (node_id, method, updated_at) VALUES {}",
+                        crate::database::row_placeholders(3, chunk.len())
+                    ));
+                    let mut statement = sqlx::query(&sql);
+                    for method in chunk {
+                        statement = statement.bind(&node_id).bind(method).bind(received_at);
+                    }
+                    statement.execute(&mut **tx).await?;
                 }
             }
         }
@@ -2314,6 +2403,11 @@ async fn ingest_report<I: ReportInventory>(
             "Converted deployment awaits the coordinated Inventory cutover; stop the Server and run 'platpulse-server cutover resume'",
         );
     }
+    // Hold the retention sweep off this receipt: retention and ingestion write
+    // the same series-state rows, and on PostgreSQL the deadlock that follows
+    // may abort the Report. Hygiene must never be able to refuse a Report, so
+    // the sweep waits for the receipts in flight instead.
+    let _sweep_off = crate::retention::hold_sweep_off().await;
     let mut tx = match state.db().pool().begin().await {
         Ok(tx) => tx,
         Err(db_error) => {
@@ -3411,26 +3505,97 @@ async fn ingest_report<I: ReportInventory>(
         }))
     };
     let stored = receipt.to_bytes();
-    let inserted = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)").bind(parsed.report_id.to_string()).bind(&auth.agent_id).bind(parsed.agent_epoch as i64).bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(hash.to_string()).bind(disposition_name(disposition)).bind(&stored).bind(&now_text).execute(&mut *tx).await;
-    if let Err(insert_failure) = inserted {
-        let concurrent = sqlx::query_as::<_, ReceiptRow>(
-            "SELECT report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id=$1",
-        )
-        .bind(parsed.report_id.to_string())
-        .fetch_optional(&mut *tx)
-        .await
-        .ok()
-        .flatten();
-        if let Some(concurrent) = concurrent {
-            if concurrent.report_body_sha256 == hash.to_string() {
-                if let Ok(receipt) = replay_receipt::<I>(&concurrent.receipt_body) {
-                    let _ = tx.rollback().await;
-                    return receipt_response(receipt);
+    // The same immutable Report can be delivered twice at once: a sender
+    // deadline that expired while the first attempt was still committing, or a
+    // reconnect replay. The insert therefore has to be conflict tolerant
+    // instead of an error path. A unique violation aborts the surrounding
+    // PostgreSQL transaction, so the recovery read below could never run and
+    // the second attempt surfaced as 503 storage_conflict; ON CONFLICT DO
+    // NOTHING reports the loser as zero rows and leaves the transaction
+    // usable, and the Receipt the winner stored answers both attempts.
+    let inserted = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (report_id) DO NOTHING").bind(parsed.report_id.to_string()).bind(&auth.agent_id).bind(parsed.agent_epoch as i64).bind(parsed.boot_id.to_string()).bind(parsed.report_sequence as i64).bind(hash.to_string()).bind(disposition_name(disposition)).bind(&stored).bind(&now_text).execute(&mut *tx).await;
+    match inserted {
+        Ok(result) if result.rows_affected() == 1 => {}
+        Ok(_) => {
+            // Another attempt stored this Report first. Replaying its Receipt
+            // is the idempotent answer, but it must respect the same Agent
+            // boundary the pre-check applies: a removed Agent never gets a
+            // retained Receipt back (design 15.10.5, issue #192).
+            let concurrent = match sqlx::query_as::<_, ReceiptRow>(
+                "SELECT report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id = $1",
+            )
+            .bind(parsed.report_id.to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            {
+                Ok(row) => row,
+                Err(db_error) => {
+                    state.note_database_error(&db_error);
+                    return error(
+                        &request_id.0,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "unavailable",
+                        "Server database is unavailable",
+                    );
+                }
+            };
+            let Some(concurrent) = concurrent else {
+                return error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Stored receipt is unavailable",
+                );
+            };
+            if concurrent.report_body_sha256 != hash.to_string() {
+                return error(
+                    &request_id.0,
+                    StatusCode::CONFLICT,
+                    "report_identity_conflict",
+                    "Report identity conflicts with a stored report",
+                );
+            }
+            match sqlx::query_scalar::<_, i64>(
+                "SELECT 1 FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
+            )
+            .bind(&auth.agent_id)
+            .fetch_optional(&mut *tx)
+            .await
+            {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return error(
+                        &request_id.0,
+                        StatusCode::UNAUTHORIZED,
+                        "agent_auth_required",
+                        "Agent credential is invalid",
+                    );
+                }
+                Err(db_error) => {
+                    state.note_database_error(&db_error);
+                    return error(
+                        &request_id.0,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "unavailable",
+                        "Server database is unavailable",
+                    );
                 }
             }
+            let Ok(receipt) = replay_receipt::<I>(&concurrent.receipt_body) else {
+                return error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Stored receipt is unavailable",
+                );
+            };
+            let _ = tx.rollback().await;
+            return receipt_response(receipt);
         }
-        state.note_database_error(&insert_failure);
-        return storage_error(&request_id.0, "store report receipt", &insert_failure);
+        Err(insert_failure) => {
+            state.note_database_error(&insert_failure);
+            return storage_error(&request_id.0, "store report receipt", &insert_failure);
+        }
     }
     let lifecycle_status = match parsed.boot_transition {
         platpulse_core::BootTransition::Closing => "closed",
@@ -3608,43 +3773,21 @@ async fn ingest_report<I: ReportInventory>(
     if let Err(commit_failure) = tx.commit().await {
         return storage_error(&request_id.0, "commit report transaction", &commit_failure);
     }
-    if let Err(error) =
-        crate::retention::cleanup_raw_block_summaries(state.db().pool(), crate::auth::now_utc())
-            .await
-    {
-        tracing::warn!(error = %error, "raw block retention cleanup deferred after ingestion");
-    }
-    // Issue #213: raw metric samples are expired by policy instead of by a
-    // fixed per-series cap, so the same bounded-after-every-Report guard keeps
-    // the 24-hour raw window from growing without limit.
-    if let Err(error) =
-        crate::retention::cleanup_expired_metric_samples(state.db().pool(), crate::auth::now_utc())
-            .await
-    {
-        tracing::warn!(error = %error, "raw metric retention cleanup deferred after ingestion");
-    }
-    // Issue #217: the recorded sync/consensus states are bounded the same way
-    // and by the same guard, so the state log cannot grow without limit on a
-    // server that never restarts either.
-    if let Err(error) = crate::retention::cleanup_expired_observation_state(
-        state.db().pool(),
-        crate::auth::now_utc(),
-    )
-    .await
-    {
-        tracing::warn!(error = %error, "state retention cleanup deferred after ingestion");
-    }
-    // Issue #214: the aggregate tiers are bounded by their own windows the same
-    // way, and by the same guard. Each Report that accumulated buckets also gets
-    // a chance to release the buckets whose window has passed, so a server that
-    // never restarts still cannot grow a tier without limit.
-    if let Err(error) = crate::retention::cleanup_expired_metric_aggregates(
-        state.db().pool(),
-        crate::auth::now_utc(),
-    )
-    .await
-    {
-        tracing::warn!(error = %error, "aggregate metric retention cleanup deferred after ingestion");
+    // Retention sweeps (issues #213/#214/#217) are bounded hygiene rather than
+    // part of the receipt, so they run on the crate::retention::run_worker
+    // cadence instead of here. Sweeping inside this handler made a cleanup
+    // statement and a concurrent Report lock the same node_metric_series_state
+    // / host_metric_series_state rows in opposite orders, which PostgreSQL
+    // resolved as a deadlock (40P01) whose victim could have been the Report.
+    // Peer references are cache hygiene rather than part of the receipt, so
+    // they run here, serialised and best effort: two Reports taking the same
+    // `geo_location_cache` row locks in opposite orders deadlocked on
+    // PostgreSQL (40P01), and a Report must never be refused for it.
+    if peer_component_present {
+        if let Err(error) = crate::geo::refresh_peer_references(state.db().pool(), &now_text).await
+        {
+            tracing::warn!(error = %error, "Peer reference refresh deferred after ingestion");
+        }
     }
     // Every committed report can change the Owner-side Node/Agent health
     // projection (including host-only reports), while the Public projection

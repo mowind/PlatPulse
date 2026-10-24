@@ -6,7 +6,7 @@
 //! Raw Peer IDs, addresses, capabilities, and provider responses never enter
 //! these tables.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use sqlx::{Any, AnyPool, FromRow, Transaction};
 use time::format_description::well_known::Rfc3339;
@@ -18,6 +18,16 @@ const FIVE_MINUTES: i64 = 5 * 60;
 const ONE_HOUR: i64 = 60 * 60;
 pub(crate) const HISTORY_FIVE_MINUTE_LIMIT: i64 = 288;
 pub(crate) const HISTORY_HOURLY_LIMIT: i64 = 168;
+
+/// Distinct addresses one country lookup asks about, and country rows one
+/// upsert statement carries.
+///
+/// A snapshot can name a few hundred Peers, and the whole Peer aggregate is
+/// written inside Report Ingestion's receipt transaction, which holds the
+/// Server's single write connection (ADR 0013, issue #213): the round trips
+/// have to follow the Report, not the Peer count.
+const COUNTRY_LOOKUP_IPS: usize = 500;
+const COUNTRY_UPSERT_ROWS: usize = 200;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct PeerPresenceDelta {
@@ -152,14 +162,11 @@ impl AggregateFamily {
         }
     }
 
-    fn country_insert_sql(self) -> &'static str {
+    /// The country counts table one grain is stored in.
+    fn country_table(self) -> &'static str {
         match self {
-            Self::FiveMinute => {
-                "INSERT INTO peer_aggregate_5m_countries (node_id, bucket_start, country_code, peer_count) VALUES ($1, $2, $3, $4) ON CONFLICT(node_id, bucket_start, country_code) DO UPDATE SET peer_count=peer_aggregate_5m_countries.peer_count + excluded.peer_count"
-            }
-            Self::Hourly => {
-                "INSERT INTO peer_aggregate_1h_countries (node_id, bucket_start, country_code, peer_count) VALUES ($1, $2, $3, $4) ON CONFLICT(node_id, bucket_start, country_code) DO UPDATE SET peer_count=peer_aggregate_1h_countries.peer_count + excluded.peer_count"
-            }
+            Self::FiveMinute => "peer_aggregate_5m_countries",
+            Self::Hourly => "peer_aggregate_1h_countries",
         }
     }
 
@@ -272,32 +279,70 @@ fn merge_rows(existing: &DbAggregateRow, incoming: &AggregateValues) -> Aggregat
     }
 }
 
-/// Resolve one Peer record's country for a sample taken at `received_at`.
+/// Resolve the country of every distinct address a snapshot names, for a
+/// sample taken at `received_at`.
 ///
 /// A country result stays usable for the whole hard cache-retention boundary,
 /// not only for its 24-hour TTL: that is the same retained last-good rule the
 /// Public Geo Insight applies, so both Public projections of one cache agree.
 /// Beyond the boundary the result is no longer retained and counts as unknown.
-async fn country_for_peer(
+async fn snapshot_countries(
     tx: &mut Transaction<'_, Any>,
-    remote_ip: Option<&str>,
+    snapshot: &PeerSnapshot,
     received_at: &str,
     provider: crate::geo::GeoProvider,
-) -> Result<Option<String>, sqlx::Error> {
-    let Some(canonical_ip) = remote_ip.and_then(crate::geo::GeoLoader::canonical_public_ip) else {
-        return Ok(None);
-    };
-    // Only the selected provider's retained results are usable; a result left
-    // over from another provider never resolves a country.
-    sqlx::query_scalar::<_, Option<String>>(
-        "SELECT country_code FROM geo_location_cache WHERE provider = $1 AND canonical_ip = $2 AND created_at IS NOT NULL AND created_at > $3",
-    )
-    .bind(provider.as_str())
-    .bind(canonical_ip)
-    .bind(crate::geo::cache_rebuild_cutoff(received_at))
-    .fetch_optional(&mut **tx)
-    .await
-    .map(Option::flatten)
+) -> Result<HashMap<String, String>, sqlx::Error> {
+    let remote_ips: Vec<Option<&str>> = snapshot
+        .peers
+        .iter()
+        .map(|peer| peer.remote_ip.as_deref())
+        .collect();
+    countries_for_ips(tx, &remote_ips, received_at, provider).await
+}
+
+/// The lookup behind [`snapshot_countries`], over the addresses a snapshot
+/// names. A non-public address never resolves, and duplicate addresses ask the
+/// cache once.
+async fn countries_for_ips(
+    tx: &mut Transaction<'_, Any>,
+    remote_ips: &[Option<&str>],
+    received_at: &str,
+    provider: crate::geo::GeoProvider,
+) -> Result<HashMap<String, String>, sqlx::Error> {
+    let mut canonical_ips: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for remote_ip in remote_ips {
+        let Some(canonical_ip) = remote_ip.and_then(crate::geo::GeoLoader::canonical_public_ip)
+        else {
+            continue;
+        };
+        if seen.insert(canonical_ip.clone()) {
+            canonical_ips.push(canonical_ip);
+        }
+    }
+    let mut countries = HashMap::new();
+    if canonical_ips.is_empty() {
+        return Ok(countries);
+    }
+    let cutoff = crate::geo::cache_rebuild_cutoff(received_at);
+    for chunk in canonical_ips.chunks(COUNTRY_LOOKUP_IPS) {
+        // Only the selected provider's retained results are usable; a result
+        // left over from another provider never resolves a country.
+        let sql = crate::database::number_placeholders(&format!(
+            "SELECT canonical_ip, country_code FROM geo_location_cache WHERE provider = ? AND canonical_ip IN ({}) AND created_at IS NOT NULL AND created_at > ?",
+            crate::database::placeholder_list(chunk.len())
+        ));
+        let mut query = sqlx::query_as::<_, (String, Option<String>)>(&sql).bind(provider.as_str());
+        for canonical_ip in chunk {
+            query = query.bind(canonical_ip.as_str());
+        }
+        for (canonical_ip, country_code) in query.bind(&cutoff).fetch_all(&mut **tx).await? {
+            if let Some(country_code) = country_code {
+                countries.insert(canonical_ip, country_code);
+            }
+        }
+    }
+    Ok(countries)
 }
 
 async fn aggregate_values(
@@ -308,6 +353,7 @@ async fn aggregate_values(
     delta: PeerPresenceDelta,
     provider: crate::geo::GeoProvider,
 ) -> Result<AggregateValues, sqlx::Error> {
+    let countries_by_ip = snapshot_countries(tx, snapshot, received_at, provider).await?;
     let mut countries = BTreeMap::new();
     let mut inbound_count = 0_i64;
     let mut outbound_count = 0_i64;
@@ -328,8 +374,11 @@ async fn aggregate_values(
         static_count += i64::from(peer.static_peer);
         consensus_count += i64::from(peer.consensus_peer);
 
-        if let Some(country_code) =
-            country_for_peer(tx, peer.remote_ip.as_deref(), received_at, provider).await?
+        if let Some(country_code) = peer
+            .remote_ip
+            .as_deref()
+            .and_then(crate::geo::GeoLoader::canonical_public_ip)
+            .and_then(|canonical_ip| countries_by_ip.get(&canonical_ip).cloned())
         {
             *countries.entry(country_code).or_insert(0) += 1;
         }
@@ -439,14 +488,26 @@ async fn upsert_family(
             .await?;
     }
 
-    for (country_code, count) in &incoming.countries {
-        sqlx::query(family.country_insert_sql())
-            .bind(node_id)
-            .bind(bucket)
-            .bind(country_code)
-            .bind(*count)
-            .execute(&mut **tx)
-            .await?;
+    let country_rows: Vec<(&str, i64)> = incoming
+        .countries
+        .iter()
+        .map(|(country_code, count)| (country_code.as_str(), *count))
+        .collect();
+    for chunk in country_rows.chunks(COUNTRY_UPSERT_ROWS) {
+        let table = family.country_table();
+        let sql = crate::database::number_placeholders(&format!(
+            "INSERT INTO {table} (node_id, bucket_start, country_code, peer_count) VALUES {} ON CONFLICT(node_id, bucket_start, country_code) DO UPDATE SET peer_count={table}.peer_count + excluded.peer_count",
+            crate::database::row_placeholders(4, chunk.len())
+        ));
+        let mut statement = sqlx::query(&sql);
+        for (country_code, count) in chunk {
+            statement = statement
+                .bind(node_id)
+                .bind(bucket)
+                .bind(*country_code)
+                .bind(*count);
+        }
+        statement.execute(&mut **tx).await?;
     }
     Ok(())
 }
@@ -960,51 +1021,42 @@ mod tests {
         insert("8.8.8.8", "2025-11-01T00:00:00Z", "2025-11-02T00:00:00Z").await;
 
         let mut tx = pool.begin().await.unwrap();
-        assert_eq!(
-            country_for_peer(
-                &mut tx,
+        // One lookup resolves every distinct address the snapshot names: the
+        // retained last-good result of the selected provider, and nothing else.
+        let countries = countries_for_ips(
+            &mut tx,
+            &[
                 Some("8.8.4.4"),
-                "2026-01-05T00:00:00Z",
-                crate::geo::GeoProvider::LocalMmdb
-            )
-            .await
-            .unwrap()
-            .as_deref(),
-            Some("US")
-        );
-        assert_eq!(
-            country_for_peer(
-                &mut tx,
                 Some("8.8.8.8"),
-                "2026-01-05T00:00:00Z",
-                crate::geo::GeoProvider::LocalMmdb
-            )
-            .await
-            .unwrap(),
-            None
-        );
-        assert_eq!(
-            country_for_peer(
-                &mut tx,
                 Some("10.0.0.1"),
-                "2026-01-05T00:00:00Z",
-                crate::geo::GeoProvider::LocalMmdb
-            )
-            .await
-            .unwrap(),
-            None,
-            "a non-public address never resolves a country"
+                Some("8.8.4.4"),
+                None,
+            ],
+            "2026-01-05T00:00:00Z",
+            crate::geo::GeoProvider::LocalMmdb,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            countries.get("8.8.4.4").map(String::as_str),
+            Some("US"),
+            "a retained last-good result resolves beyond its TTL"
         );
         assert_eq!(
-            country_for_peer(
-                &mut tx,
-                Some("8.8.4.4"),
-                "2026-01-05T00:00:00Z",
-                crate::geo::GeoProvider::Disabled
-            )
-            .await
-            .unwrap(),
-            None,
+            countries.len(),
+            1,
+            "an expired-by-retention address, a non-public address and a missing address never resolve a country"
+        );
+        let other_provider = countries_for_ips(
+            &mut tx,
+            &[Some("8.8.4.4")],
+            "2026-01-05T00:00:00Z",
+            crate::geo::GeoProvider::Disabled,
+        )
+        .await
+        .unwrap();
+        assert!(
+            other_provider.is_empty(),
             "another provider's retained result never resolves a country"
         );
         tx.commit().await.unwrap();

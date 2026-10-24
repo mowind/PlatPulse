@@ -623,6 +623,45 @@ where
     .rows_affected())
 }
 
+/// Serialises Peer-reference maintenance so two Reports can never hold the
+/// same `geo_location_cache` rows in opposite orders.
+///
+/// The statements below overlap on one small table, and PostgreSQL aborts one
+/// of two concurrent transactions that took those rows in a different order
+/// (40P01). Report Ingestion runs the maintenance after its receipt has
+/// committed, and this gate keeps it to a single writer: cache hygiene may be
+/// deferred, a Report may not fail.
+static PEER_REFERENCE_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Record that the Peer references the Server currently holds are still live:
+/// refresh `last_referenced_at`, drop the rows no current Peer references, and
+/// apply the cache bound.
+///
+/// Recording a reference never performs a country lookup (the background path
+/// in `crate::geo_backfill` owns resolution) and it never creates a row: a
+/// reference only keeps the retained rows honest about being referenced right
+/// now, so a failure here can never erase a last-good country.
+pub(crate) async fn refresh_peer_references(pool: &AnyPool, now: &str) -> Result<u64, sqlx::Error> {
+    let _gate = PEER_REFERENCE_GATE.lock().await;
+    // Every address a current Peer points at, in one statement: naming the
+    // Peer table instead of carrying this Report's own address list keeps the
+    // row order the planner walks identical for every Report, and one form for
+    // every Report is what makes concurrent maintenance safe.
+    let referenced = sqlx::query("UPDATE geo_location_cache SET last_referenced_at=$1 WHERE canonical_ip IN (SELECT DISTINCT remote_ip FROM current_node_peers WHERE remote_ip IS NOT NULL)")
+        .bind(now)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    // Raw IP cache rows are only valid while referenced by a current Peer.
+    // This query also removes rows left behind by a node's authoritative
+    // empty snapshot without exposing IPs outside the database.
+    let unreferenced = sqlx::query("DELETE FROM geo_location_cache WHERE NOT EXISTS (SELECT 1 FROM current_node_peers WHERE current_node_peers.remote_ip = geo_location_cache.canonical_ip)")
+        .execute(pool)
+        .await?
+        .rows_affected();
+    let trimmed = trim_cache(pool).await?;
+    Ok(referenced + unreferenced + trimmed)
+}
 /// The retry boundary for an address whose last attempt produced no country
 /// result. Recent attempts are left alone so a large Peer set cannot turn
 /// into unbounded work, and a database failure is not retried on every pass.

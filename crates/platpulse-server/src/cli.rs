@@ -1309,6 +1309,16 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
             worker_handles.push(tokio::spawn(crate::geo_backfill::run_worker(geo_state)));
         }
 
+        // Retention sweeps (issues #213/#214/#217): each family is bounded by
+        // its own window on a fixed cadence. The sweep is deliberately not part
+        // of the receipt path - a cleanup statement and a concurrent Report
+        // took the same series-state rows in opposite orders and deadlocked on
+        // PostgreSQL (40P01), where the Report must never be the victim.
+        {
+            let retention_state = state.clone();
+            worker_handles.push(tokio::spawn(crate::retention::run_worker(retention_state)));
+        }
+
         // Capacity sampling (issue #212): the worker below only samples when a
         // policy is declared. It opens a protection interval when the state
         // filesystem falls under the floor and closes it when the declared
