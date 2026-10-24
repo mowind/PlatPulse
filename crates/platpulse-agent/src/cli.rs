@@ -636,7 +636,6 @@ async fn run_delivery_loop(
     .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     let transport = crate::reporting::HttpReportTransport::from_config(&config)
         .map_err(|error| AgentCliError::Collection(error.to_string()))?;
-    let policy = config.spool.policy();
     let mut tick = periodic_interval(Duration::from_secs(1));
     let mut rejections = RepeatingMessage::new();
     // The delivery tick is 1s: an unreachable Server must not write a line
@@ -649,40 +648,46 @@ async fn run_delivery_loop(
                 if cancel.is_cancelled() {
                     break;
                 }
-                let result = crate::reporting::deliver_periodic_with_send_deadline(
+                // One pass per tick, but the pass itself is unbounded: it
+                // keeps sending while the spool still holds a queued Report, so
+                // catch-up throughput follows the Server instead of this tick
+                // (issue #270). The send timeout bounds one HTTP send, and a
+                // timed-out send still leaves the receipts it already applied
+                // counted.
+                //
+                // A refusal is logged as its receipt is applied, not when the
+                // pass returns: a rejection early in a long catch-up is one
+                // condition the operator must see immediately (design
+                // logging.md), and the pass has no bounded duration.
+                let pass = crate::reporting::deliver_backlog_with_send_timeout(
                     &mut store,
                     &transport,
-                    &policy,
-                    tokio::time::Instant::now() + send_timeout,
+                    send_timeout,
+                    &cancel,
+                    |rejection| {
+                        // A whole-report rejection is an applied receipt, not a
+                        // transport error, so it never reaches the deferral
+                        // warning below. Without this the console stays silent
+                        // while every report is refused and the projections
+                        // freeze (issue #177).
+                        let line = format!("Agent report rejected by Server: {rejection}");
+                        if let Some(printed) = rejections.observe(&line, Instant::now()) {
+                            tracing::warn!(outcome = "rejected", "{printed}");
+                        }
+                    },
                 )
                 .await;
-                match result {
-                    Ok(outcome) => match outcome.last_rejection() {
-                        Some(rejection) => {
-                            // A whole-report rejection is an applied receipt,
-                            // not a transport error, so it never reaches the
-                            // error arm below. Without this the console stays
-                            // silent while every report is refused and the
-                            // projections freeze (issue #177).
-                            let line = format!("Agent report rejected by Server: {rejection}");
-                            if let Some(printed) = rejections.observe(&line, Instant::now()) {
-                                tracing::warn!(outcome = "rejected", "{printed}");
-                            }
-                        }
-                        // An accepted report proves the Server takes this
-                        // Agent's reports again, so a later refusal is a new
-                        // condition. An idle tick is no evidence either way.
-                        None if outcome.applied > 0 => {
-                            rejections.clear();
-                            deferrals.clear();
-                        }
-                        None => {}
-                    },
-                    Err(error) => {
-                        let line = format!("Agent report delivery deferred: {error}");
-                        if let Some(printed) = deferrals.observe(&line, Instant::now()) {
-                            tracing::warn!("{printed}");
-                        }
+                // An accepted report proves the Server takes this Agent's
+                // reports again, so a later refusal is a new condition. An idle
+                // tick is no evidence either way.
+                if pass.outcome.applied > 0 && pass.outcome.rejections.is_empty() {
+                    rejections.clear();
+                    deferrals.clear();
+                }
+                if let crate::reporting::DeliveryStop::Failed(error) = pass.stop {
+                    let line = format!("Agent report delivery deferred: {error}");
+                    if let Some(printed) = deferrals.observe(&line, Instant::now()) {
+                        tracing::warn!("{printed}");
                     }
                 }
             }

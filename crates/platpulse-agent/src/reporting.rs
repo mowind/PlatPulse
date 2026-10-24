@@ -446,6 +446,23 @@ fn parse_spooled_report(
     }
 }
 
+/// What bounds one HTTP send (issue #270).
+///
+/// The Durable Spool work that precedes a send — taking the shared write permit,
+/// claiming the oldest Report, re-validating its bytes — is deliberately outside
+/// the budget. `sender_deadline_ms` is defined as the time the Agent waits for
+/// the Server's response (design §7.2), so local bookkeeping must never be able
+/// to consume it and expire it before the request leaves the Agent.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SendBudget {
+    /// Abandon the send once this much time has passed since the request
+    /// started. The Durable Spool delivery pass renews it for every Report.
+    PerSend(std::time::Duration),
+    /// Abandon the send at a moment the caller already chose: shutdown and
+    /// upgrade preparation bound a whole step, which starts before the request.
+    At(tokio::time::Instant),
+}
+
 /// Send one claimed report. No transport error is an acknowledgement; the
 /// in-flight row and exact bytes remain available for the next attempt.
 pub async fn deliver_one<T: ReportTransport>(
@@ -477,9 +494,11 @@ pub async fn deliver_one_with_send_deadline<T: ReportTransport>(
     transport: &T,
     send_deadline: tokio::time::Instant,
 ) -> Result<Option<StoredReport>, ReportStoreError> {
-    Ok(deliver_one_typed(store, transport, Some(send_deadline))
-        .await?
-        .map(|step| step.report))
+    Ok(
+        deliver_one_typed(store, transport, Some(SendBudget::At(send_deadline)))
+            .await?
+            .map(|step| step.report),
+    )
 }
 
 /// Send one claimed report under a deadline and report both the immutable
@@ -498,9 +517,11 @@ pub(crate) async fn deliver_one_with_disposition_and_send_deadline<T: ReportTran
     )>,
     ReportStoreError,
 > {
-    Ok(deliver_one_typed(store, transport, Some(send_deadline))
-        .await?
-        .map(|step| (step.report, step.disposition, step.inventory)))
+    Ok(
+        deliver_one_typed(store, transport, Some(SendBudget::At(send_deadline)))
+            .await?
+            .map(|step| (step.report, step.disposition, step.inventory)),
+    )
 }
 
 /// One applied report, with the operator-facing rejection summary when the
@@ -518,13 +539,20 @@ struct DeliveryStep {
 async fn deliver_one_typed<T: ReportTransport>(
     store: &mut AgentStore,
     transport: &T,
-    send_deadline: Option<tokio::time::Instant>,
+    send_budget: Option<SendBudget>,
 ) -> Result<Option<DeliveryStep>, ReportStoreError> {
     ensure_spool_not_fatal(store).await?;
     let Some(report) = claim_oldest_report(store).await? else {
         return Ok(None);
     };
     ensure_claimed_report_intact(store, &report).await?;
+    // The per-send budget starts here, with the request, not with the Durable
+    // Spool bookkeeping above (issue #270).
+    let send_deadline = match send_budget {
+        Some(SendBudget::PerSend(timeout)) => Some(tokio::time::Instant::now() + timeout),
+        Some(SendBudget::At(deadline)) => Some(deadline),
+        None => None,
+    };
     let response = match send_deadline {
         Some(deadline) => match tokio::time::timeout_at(deadline, transport.send(&report.body))
             .await
@@ -944,70 +972,125 @@ impl DeliveryOutcome {
     }
 }
 
-/// Deliver a bounded amount of oldest-first work.
+/// Why one delivery pass stopped (issue #270).
+///
+/// A pass is not bounded by the collection cadence: it keeps sending while the
+/// Durable Spool still holds a queued Report. The stop reason is what lets the
+/// caller tell "production and delivery are level again" apart from "the pass
+/// failed and the queue may still hold Reports".
+#[derive(Debug)]
+pub enum DeliveryStop {
+    /// No queued Report is left, so production and delivery are level again.
+    SpoolEmpty,
+    /// The pass stopped on an error; `outcome` still counts every receipt
+    /// applied before it.
+    Failed(ReportStoreError),
+    /// The caller asked the pass to stop between two Reports.
+    Cancelled,
+}
+
+/// What one delivery pass did and why it stopped (issue #270).
+#[derive(Debug)]
+pub struct DeliveryPass {
+    /// Receipts applied before the pass stopped, including the ones applied
+    /// before a later send in the same pass failed.
+    pub outcome: DeliveryOutcome,
+    /// The reason the pass returned.
+    pub stop: DeliveryStop,
+}
+
+/// Deliver queued Reports oldest-first, one at a time, until the spool is empty.
 ///
 /// A single queued report is the steady state: collection produced it and the
-/// next tick delivers it, so the worker stays at one report per tick and
-/// collection remains responsive. Anything beyond that is a backlog (a Server
-/// restart, a slow receipt). A backlog must drain faster than the collection
-/// cadence, otherwise delivery exactly cancels collection and the queue never
-/// empties: every later report then waits behind it and the spool drifts
-/// toward its overflow limit (issue #137).
+/// next tick delivers it. Anything beyond that is a backlog (a Server restart, a
+/// slow receipt), and a backlog must drain faster than the collection cadence,
+/// otherwise delivery exactly cancels collection and the queue never empties:
+/// every later report then waits behind it and the spool drifts toward its
+/// overflow limit (issue #137).
+///
+/// The pass therefore stops when the queue is empty, when a send or a receipt
+/// fails, or when the caller cancels — never because the next collection tick is
+/// due (issue #270). Catch-up throughput follows the Server's ingest rate
+/// instead of the tick rate, so a backlog whose Report takes longer to ingest
+/// than one tick still drains.
+///
+/// `send_timeout` bounds one HTTP send, not the pass: a timed-out Report is
+/// abandoned to the next pass while every receipt already applied in this one
+/// still counts. Its clock starts when the request starts, so spool bookkeeping
+/// never eats into it.
+///
+/// `on_rejection` runs as each refused receipt is applied, so a rejection seen
+/// early in a long catch-up reaches the operator immediately instead of after
+/// the queue drains.
+pub(crate) async fn deliver_backlog_with_send_timeout<T: ReportTransport>(
+    store: &mut AgentStore,
+    transport: &T,
+    send_timeout: std::time::Duration,
+    cancel: &tokio_util::sync::CancellationToken,
+    on_rejection: impl FnMut(&str),
+) -> DeliveryPass {
+    deliver_backlog(store, transport, Some(send_timeout), cancel, on_rejection).await
+}
+
+/// Deliver until the Agent Store holds no queued Report (issue #270).
 pub async fn deliver_periodic<T: ReportTransport>(
     store: &mut AgentStore,
     transport: &T,
-    policy: &SpoolPolicy,
 ) -> Result<DeliveryOutcome, ReportStoreError> {
-    deliver_periodic_inner(store, transport, policy, None).await
+    let pass = deliver_backlog(
+        store,
+        transport,
+        None,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await;
+    match pass.stop {
+        DeliveryStop::Failed(error) => Err(error),
+        DeliveryStop::SpoolEmpty | DeliveryStop::Cancelled => Ok(pass.outcome),
+    }
 }
 
-pub(crate) async fn deliver_periodic_with_send_deadline<T: ReportTransport>(
+async fn deliver_backlog<T: ReportTransport>(
     store: &mut AgentStore,
     transport: &T,
-    policy: &SpoolPolicy,
-    send_deadline: tokio::time::Instant,
-) -> Result<DeliveryOutcome, ReportStoreError> {
-    deliver_periodic_inner(store, transport, policy, Some(send_deadline)).await
-}
-
-async fn deliver_periodic_inner<T: ReportTransport>(
-    store: &mut AgentStore,
-    transport: &T,
-    policy: &SpoolPolicy,
-    send_deadline: Option<tokio::time::Instant>,
-) -> Result<DeliveryOutcome, ReportStoreError> {
-    let queued_bytes: i64 =
-        sqlx::query_scalar("SELECT COALESCE(SUM(body_bytes), 0) FROM reports WHERE in_flight = 0")
-            .fetch_one(store.connection())
-            .await?;
-    let queued_reports: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM reports WHERE in_flight = 0")
-            .fetch_one(store.connection())
-            .await?;
-    let backlogged = queued_bytes.max(0) as u64 >= policy.preflush_bytes || queued_reports > 1;
-    let max_reports = if backlogged { 8 } else { 1 };
+    send_timeout: Option<std::time::Duration>,
+    cancel: &tokio_util::sync::CancellationToken,
+    mut on_rejection: impl FnMut(&str),
+) -> DeliveryPass {
     let mut outcome = DeliveryOutcome::default();
-    for _ in 0..max_reports {
-        let result = match send_deadline {
-            Some(deadline) => {
-                if tokio::time::Instant::now() >= deadline {
-                    return Err(ReportStoreError::DeliveryDeadline);
-                }
-                deliver_one_typed(store, transport, Some(deadline)).await
-            }
-            None => deliver_one_typed(store, transport, None).await,
-        }?;
-        match result {
-            Some(step) => {
+    loop {
+        // Cancellation is checked between two Reports, so a shutdown never
+        // abandons one mid-receipt; a single send stays bounded by
+        // `send_timeout`.
+        if cancel.is_cancelled() {
+            return DeliveryPass {
+                outcome,
+                stop: DeliveryStop::Cancelled,
+            };
+        }
+        match deliver_one_typed(store, transport, send_timeout.map(SendBudget::PerSend)).await {
+            Ok(Some(step)) => {
                 outcome.applied += 1;
                 if let Some(rejection) = step.rejection {
+                    on_rejection(&rejection);
                     outcome.rejections.push(rejection);
                 }
             }
-            None => break,
+            Ok(None) => {
+                return DeliveryPass {
+                    outcome,
+                    stop: DeliveryStop::SpoolEmpty,
+                };
+            }
+            Err(error) => {
+                return DeliveryPass {
+                    outcome,
+                    stop: DeliveryStop::Failed(error),
+                };
+            }
         }
     }
-    Ok(outcome)
 }
 
 /// The whole-spool integrity boundary, run once while the Agent boots.
@@ -1969,6 +2052,571 @@ pub(crate) mod spool_backlog_fixture {
     }
 }
 
+/// Issue #270: catch-up has to be a property of the Durable Spool, not of the
+/// collection cadence.
+///
+/// The delivery loop ticks once per second, and before #270 a pass delivered at
+/// most eight Reports per tick behind one absolute deadline shared by the whole
+/// tick. Field measurement puts one Report at ~1.3 s of Server ingest against a
+/// 1 s tick, so delivery ran at the collection cadence, an outage backlog never
+/// drained, and the shared write permit was spent on a queue that could not
+/// shrink. A pass now drains the queue instead: it stops on an empty queue, on an
+/// error, or on cancellation, and sender_deadline_ms bounds one HTTP send.
+#[cfg(test)]
+mod catch_up_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    use tempfile::{TempDir, tempdir};
+    use tokio::sync::{Notify, watch};
+    use tokio_util::sync::CancellationToken;
+
+    use crate::database::AgentStoreWritePermit;
+
+    const BOOT_ID: &str = "0195f2a1-0016-4016-8016-000000000016";
+
+    async fn store_with_permit(
+        database: &std::path::Path,
+        permit: &AgentStoreWritePermit,
+    ) -> AgentStore {
+        AgentStore::open_with_write_permit(AgentDatabaseConfig::new(database), permit.clone())
+            .await
+            .unwrap()
+    }
+
+    /// A real temporary Agent Store holding `reports` queued Reports, plus the
+    /// permit and the directory its deliveries share. The TempDir comes back so
+    /// the caller keeps it alive for the whole test.
+    async fn seeded_store(reports: u64) -> (TempDir, AgentStoreWritePermit, AgentStore) {
+        let directory = tempdir().unwrap();
+        let permit = AgentStoreWritePermit::new();
+        let mut store = store_with_permit(&directory.path().join("agent.db"), &permit).await;
+        spool_backlog_fixture::seed(&mut store, BOOT_ID, &now_rfc3339(), 1, reports).await;
+        (directory, permit, store)
+    }
+
+    /// The Report identity a queued body carries, so a transport can answer with
+    /// the receipt the Server would send for exactly that Report.
+    fn queued_report_id(body: &[u8]) -> String {
+        let report: serde_json::Value = serde_json::from_slice(body).unwrap();
+        report["report_id"].as_str().unwrap().to_owned()
+    }
+
+    async fn spooled_reports(store: &mut AgentStore) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM reports")
+            .fetch_one(store.connection())
+            .await
+            .unwrap()
+    }
+
+    async fn queued_reports(store: &mut AgentStore) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM reports WHERE in_flight = 0")
+            .fetch_one(store.connection())
+            .await
+            .unwrap()
+    }
+
+    /// What one delivery costs the Agent Store on this machine with no Server in
+    /// the loop, measured instead of assumed, so a scaled outage budget tracks the
+    /// machine that runs the test rather than a constant that only holds on the
+    /// author's.
+    async fn store_floor(sample: u64) -> Duration {
+        let (_directory, _permit, mut store) = seeded_store(sample).await;
+        let transport = IngestTransport::new(Duration::ZERO);
+        let started = Instant::now();
+        let outcome = deliver_periodic(&mut store, &transport).await.unwrap();
+        let elapsed = started.elapsed();
+        store.close().await.unwrap();
+        assert_eq!(outcome.applied as u64, sample);
+        elapsed / sample as u32
+    }
+
+    /// A Report the collection side may persist while another Report is queued.
+    /// The padded fixture Reports all claim the same History Gaps, and a claim
+    /// only succeeds against gap rows the Agent Store already holds, so this one
+    /// carries no samples: the permit probe needs a real persistence through the
+    /// collection path, not the sample bookkeeping.
+    fn collection_report_body(sequence: u64) -> Vec<u8> {
+        let body = spool_backlog_fixture::report_body(BOOT_ID, &now_rfc3339(), sequence);
+        let mut report: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        report["history_gaps"] = serde_json::json!([]);
+        serde_json::to_vec(&report).unwrap()
+    }
+
+    /// The Server side of a catch-up: every send costs ingest, and from the
+    /// stall_from-th send on the Server stops answering for stall, which is what
+    /// a send deadline has to cut off. Sends are recorded so a test can state
+    /// what the pass actually did instead of inferring it.
+    struct IngestTransport {
+        ingest: Duration,
+        stall_from: Option<usize>,
+        stall: Duration,
+        sent: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl IngestTransport {
+        fn new(ingest: Duration) -> Self {
+            Self {
+                ingest,
+                stall_from: None,
+                stall: Duration::ZERO,
+                sent: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn sent_ids(&self) -> Vec<String> {
+            self.sent.lock().unwrap().clone()
+        }
+    }
+
+    impl ReportTransport for IngestTransport {
+        fn send<'a>(
+            &'a self,
+            body: &'a [u8],
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, ReportStoreError>> + Send + 'a>> {
+            let report_id = queued_report_id(body);
+            let index = {
+                let mut sent = self.sent.lock().unwrap();
+                sent.push(report_id.clone());
+                sent.len()
+            };
+            let delay = match self.stall_from {
+                Some(stall_from) if index >= stall_from => self.stall,
+                _ => self.ingest,
+            };
+            Box::pin(async move {
+                tokio::time::sleep(delay).await;
+                Ok(spool_backlog_fixture::receipt_body(&report_id, body))
+            })
+        }
+    }
+
+    /// A transport whose sends park until the test opens the gate, so a test can
+    /// look at what the pass holds while a send is in flight.
+    struct GatedTransport {
+        gate: watch::Receiver<bool>,
+        started: Arc<Notify>,
+        sent: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl ReportTransport for GatedTransport {
+        fn send<'a>(
+            &'a self,
+            body: &'a [u8],
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, ReportStoreError>> + Send + 'a>> {
+            let report_id = queued_report_id(body);
+            self.sent.lock().unwrap().push(report_id.clone());
+            self.started.notify_one();
+            let mut gate = self.gate.clone();
+            Box::pin(async move {
+                let _ = gate.wait_for(|open| *open).await;
+                Ok(spool_backlog_fixture::receipt_body(&report_id, body))
+            })
+        }
+    }
+
+    /// A Server that refuses one Report whole, and notes how many refusals the
+    /// pass had already reported to its caller when the third send began.
+    struct RefusingTransport {
+        refuse: String,
+        sent: std::sync::atomic::AtomicUsize,
+        reported: Arc<Mutex<Vec<String>>>,
+        reported_by_third_send: Arc<Mutex<Option<usize>>>,
+    }
+
+    impl ReportTransport for RefusingTransport {
+        fn send<'a>(
+            &'a self,
+            body: &'a [u8],
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, ReportStoreError>> + Send + 'a>> {
+            let report_id = queued_report_id(body);
+            let index = self.sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if index == 3 {
+                *self.reported_by_third_send.lock().unwrap() =
+                    Some(self.reported.lock().unwrap().len());
+            }
+            let refused = report_id == self.refuse;
+            Box::pin(async move {
+                if refused {
+                    Ok(super::delivery_tests::rejected_receipt_body(
+                        &report_id, body,
+                    ))
+                } else {
+                    Ok(spool_backlog_fixture::receipt_body(&report_id, body))
+                }
+            })
+        }
+    }
+
+    /// The pass is not capped: 64 queued Reports leave the spool in one pass with
+    /// no ticker involved at all, oldest first. The pre-#270 pass stopped at
+    /// eight and needed eight ticks for the same queue.
+    #[tokio::test]
+    async fn one_pass_drains_a_backlog_without_waiting_for_a_tick() {
+        const BACKLOG: u64 = 64;
+        let (_directory, _permit, mut store) = seeded_store(BACKLOG).await;
+        let transport = IngestTransport::new(Duration::ZERO);
+
+        let outcome = deliver_periodic(&mut store, &transport).await.unwrap();
+
+        assert_eq!(
+            outcome.applied as u64, BACKLOG,
+            "one pass must drain the whole queue, not a batch of it"
+        );
+        assert_eq!(spooled_reports(&mut store).await, 0);
+        let sent = transport.sent_ids();
+        assert_eq!(sent.len() as u64, BACKLOG);
+        assert_eq!(
+            sent.first().map(String::as_str),
+            Some(spool_backlog_fixture::report_id(1).as_str()),
+            "the oldest queued Report goes first"
+        );
+        assert_eq!(
+            sent.last().map(String::as_str),
+            Some(spool_backlog_fixture::report_id(BACKLOG).as_str())
+        );
+    }
+
+    /// Acceptance: a single send timeout must not lose the receipts already
+    /// applied in the same round. The pass reports how far it got and stops, and
+    /// the Report whose send timed out stays in the spool for the next pass.
+    #[tokio::test]
+    async fn a_send_timeout_keeps_the_receipts_already_applied_in_the_pass() {
+        let (_directory, _permit, mut store) = seeded_store(5).await;
+        let mut transport = IngestTransport::new(Duration::from_millis(1));
+        transport.stall_from = Some(3);
+        transport.stall = Duration::from_secs(10);
+
+        let pass = deliver_backlog_with_send_timeout(
+            &mut store,
+            &transport,
+            Duration::from_millis(100),
+            &CancellationToken::new(),
+            |_| {},
+        )
+        .await;
+
+        assert_eq!(
+            pass.outcome.applied, 2,
+            "the two receipts applied before the stalled send must still count"
+        );
+        assert!(
+            matches!(
+                pass.stop,
+                DeliveryStop::Failed(ReportStoreError::DeliveryDeadline)
+            ),
+            "the pass must stop on the send deadline, not carry on: {:?}",
+            pass.stop
+        );
+        assert_eq!(
+            transport.sent_ids().len(),
+            3,
+            "the timed-out send is not retried within the pass"
+        );
+        assert_eq!(
+            spooled_reports(&mut store).await,
+            3,
+            "no Report is lost when one send times out"
+        );
+        assert_eq!(
+            queued_reports(&mut store).await,
+            2,
+            "the timed-out Report stays claimed for the next pass and the two behind it stay queued"
+        );
+    }
+
+    /// sender_deadline_ms bounds one HTTP send, not the pass: five 60 ms sends
+    /// overrun a 100 ms budget together, yet each of them fits its own budget and
+    /// every receipt is applied. Sharing one deadline across the pass would stop
+    /// after the first two.
+    #[tokio::test]
+    async fn the_send_deadline_bounds_each_send_not_the_whole_pass() {
+        const BACKLOG: u64 = 5;
+        let (_directory, _permit, mut store) = seeded_store(BACKLOG).await;
+        let transport = IngestTransport::new(Duration::from_millis(60));
+
+        let pass = deliver_backlog_with_send_timeout(
+            &mut store,
+            &transport,
+            Duration::from_millis(100),
+            &CancellationToken::new(),
+            |_| {},
+        )
+        .await;
+
+        assert_eq!(
+            pass.outcome.applied as u64, BACKLOG,
+            "each send fits its own 100 ms budget, so the pass must deliver all five"
+        );
+        assert!(matches!(pass.stop, DeliveryStop::SpoolEmpty));
+        assert_eq!(spooled_reports(&mut store).await, 0);
+    }
+
+    /// A refusal reaches the caller while the pass is still draining, not when it
+    /// returns: the second Report is refused whole and the third send only starts
+    /// once that refusal has been reported. Without it a refusal seen early in a
+    /// long catch-up would stay invisible until the queue emptied, which
+    /// design logging.md forbids.
+    #[tokio::test]
+    async fn a_refusal_is_reported_as_its_receipt_is_applied() {
+        const BACKLOG: u64 = 3;
+        let (_directory, _permit, mut store) = seeded_store(BACKLOG).await;
+
+        let reported = Arc::new(Mutex::new(Vec::<String>::new()));
+        let reported_by_third_send = Arc::new(Mutex::new(None));
+        let transport = RefusingTransport {
+            refuse: spool_backlog_fixture::report_id(2),
+            sent: std::sync::atomic::AtomicUsize::new(0),
+            reported: Arc::clone(&reported),
+            reported_by_third_send: Arc::clone(&reported_by_third_send),
+        };
+
+        let pass = deliver_backlog_with_send_timeout(
+            &mut store,
+            &transport,
+            Duration::from_secs(5),
+            &CancellationToken::new(),
+            |rejection| reported.lock().unwrap().push(rejection.to_owned()),
+        )
+        .await;
+
+        assert_eq!(
+            pass.outcome.applied as u64, BACKLOG,
+            "a whole-report refusal is still an applied receipt"
+        );
+        assert_eq!(
+            pass.outcome.rejections.len(),
+            1,
+            "exactly one Report is refused"
+        );
+        assert_eq!(
+            *reported_by_third_send.lock().unwrap(),
+            Some(1),
+            "the refusal must be reported before the next send starts, not after the pass"
+        );
+        {
+            let reported = reported.lock().unwrap();
+            assert_eq!(
+                reported.len(),
+                1,
+                "the caller sees the refusal once: {reported:?}"
+            );
+            assert!(
+                reported[0].contains(&spool_backlog_fixture::report_id(2)),
+                "the reported refusal must name the refused Report: {reported:?}"
+            );
+        }
+        assert!(matches!(pass.stop, DeliveryStop::SpoolEmpty));
+        assert_eq!(spooled_reports(&mut store).await, 0);
+    }
+
+    /// Issue #270 acceptance with time scaled proportionally, so the scenario
+    /// fits a test run: 6,000 queued Reports (~200 MiB, roughly two hours of
+    /// collection at the default interval) drain through a Server that spends
+    /// INGEST per Report. The issue allows 60 minutes for a 300 ms ingest, twice
+    /// the pure ingest time; the budget here keeps that ratio at twice the sum of
+    /// the modelled Server time and the measured local Agent Store cost, so it
+    /// holds on a machine slower than the one that wrote it. A pass that waits for
+    /// the next 1 s tick, or that delivers one Report per tick, needs 6,000 s.
+    #[tokio::test]
+    async fn catch_up_drains_six_thousand_reports_within_the_scaled_outage_budget() {
+        const BACKLOG: u64 = 6_000;
+        const INGEST: Duration = Duration::from_millis(5);
+        const TICK: Duration = Duration::from_secs(1);
+        const SEND_TIMEOUT: Duration = Duration::from_secs(5);
+        // The default collection_interval_seconds, which sets the steady-state
+        // production rate catch-up has to beat.
+        const COLLECTION_INTERVAL: Duration = Duration::from_secs(5);
+        const CALIBRATION: u64 = 60;
+        let floor = store_floor(CALIBRATION).await;
+        let budget = (INGEST + floor) * (BACKLOG as u32) * 2;
+        let hard_limit = budget * 2;
+
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("agent.db");
+        let permit = AgentStoreWritePermit::new();
+        let mut store = store_with_permit(&database, &permit).await;
+        let mut sampler = store_with_permit(&database, &permit).await;
+        let queued_bytes =
+            spool_backlog_fixture::seed(&mut store, BOOT_ID, &now_rfc3339(), 1, BACKLOG).await;
+        assert!(
+            queued_bytes > 200 * 1024 * 1024,
+            "the guarded backlog must be a realistic outage, got {queued_bytes} bytes"
+        );
+
+        // The queue depth is measured from a second Agent Store connection on the
+        // same database, so "the backlog shrinks" is observed and not inferred.
+        let sampling = tokio::spawn(async move {
+            let mut depths = Vec::new();
+            let mut sample = tokio::time::interval(Duration::from_millis(100));
+            loop {
+                sample.tick().await;
+                let depth = spooled_reports(&mut sampler).await;
+                depths.push(depth);
+                if depth == 0 {
+                    break;
+                }
+            }
+            sampler.close().await.unwrap();
+            depths
+        });
+
+        let transport = Arc::new(IngestTransport::new(INGEST));
+        let cancel = CancellationToken::new();
+        let (applied, elapsed, sent) = tokio::time::timeout(hard_limit, async {
+            let started = Instant::now();
+            let mut tick = tokio::time::interval(TICK);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut applied = 0;
+            loop {
+                tick.tick().await;
+                let pass = deliver_backlog_with_send_timeout(
+                    &mut store,
+                    &*transport,
+                    SEND_TIMEOUT,
+                    &cancel,
+                    |_| {},
+                )
+                .await;
+                let DeliveryPass { outcome, stop } = pass;
+                applied += outcome.applied;
+                match stop {
+                    DeliveryStop::SpoolEmpty if applied > 0 => break,
+                    DeliveryStop::Failed(error) => panic!("catch-up must not fail: {error}"),
+                    _ => {}
+                }
+            }
+            (applied, started.elapsed(), transport.sent_ids())
+        })
+        .await
+        .expect("the catch-up must drain the backlog instead of stalling on it");
+
+        assert_eq!(applied as u64, BACKLOG);
+        assert_eq!(
+            sent.len() as u64,
+            BACKLOG,
+            "every Report goes out exactly once"
+        );
+        assert_eq!(spooled_reports(&mut store).await, 0);
+        assert!(
+            elapsed <= budget,
+            "the backlog must drain within {budget:?}, twice the scaled Server ingest time plus the measured {floor:?} Agent Store floor, took {elapsed:?}",
+        );
+        assert!(
+            elapsed < TICK * (BACKLOG as u32),
+            "catch-up must not wait for a collection tick per Report, took {elapsed:?}",
+        );
+        // Acceptance: catch-up throughput stays at least three times the
+        // steady-state production rate. The default collection_interval_seconds
+        // is 5, so collection produces 0.2 Reports/s and the floor is 0.6.
+        let production_rate = 1.0 / COLLECTION_INTERVAL.as_secs_f64();
+        let catch_up_rate = BACKLOG as f64 / elapsed.as_secs_f64();
+        assert!(
+            catch_up_rate >= 3.0 * production_rate,
+            "catch-up delivered {catch_up_rate:.2} Reports/s, below three times the {production_rate:.2} Reports/s steady-state production rate",
+        );
+
+        let depths = sampling.await.unwrap();
+        assert!(
+            depths.len() >= 2,
+            "the progress of the queue must be sampled"
+        );
+        assert_eq!(depths[0], BACKLOG as i64);
+        assert_eq!(
+            *depths.last().unwrap(),
+            0,
+            "the backlog must be gone, not just smaller"
+        );
+        assert!(
+            depths.windows(2).all(|pair| pair[1] < pair[0]),
+            "the backlog must decrease at every sample, saw {depths:?}"
+        );
+        store.close().await.unwrap();
+    }
+
+    /// The invariant that makes catch-up safe: a pass holds the shared write
+    /// permit only around its own Agent Store transactions, never across the HTTP
+    /// send. A collection tick that runs while a send is in flight must still be
+    /// able to write, which is what keeps the collection cadence independent of
+    /// how deep the backlog is.
+    #[tokio::test]
+    async fn a_pass_never_holds_the_write_permit_across_a_send() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("agent.db");
+        let permit = AgentStoreWritePermit::new();
+        let mut delivery_store = store_with_permit(&database, &permit).await;
+        let mut collection_store = store_with_permit(&database, &permit).await;
+        spool_backlog_fixture::seed(&mut delivery_store, BOOT_ID, &now_rfc3339(), 1, 1).await;
+
+        let (release, gate) = watch::channel(false);
+        let transport = Arc::new(GatedTransport {
+            gate,
+            started: Arc::new(Notify::new()),
+            sent: Arc::new(Mutex::new(Vec::new())),
+        });
+        let started = Arc::clone(&transport.started);
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn({
+            let transport = Arc::clone(&transport);
+            let cancel = cancel.clone();
+            async move {
+                deliver_backlog_with_send_timeout(
+                    &mut delivery_store,
+                    &*transport,
+                    Duration::from_secs(5),
+                    &cancel,
+                    |_| {},
+                )
+                .await
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), started.notified())
+            .await
+            .expect("the pass must reach its first send");
+
+        let body = collection_report_body(2);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            persist_immutable_report(
+                &mut collection_store,
+                &spool_backlog_fixture::report_id(2),
+                1,
+                BOOT_ID,
+                2,
+                &now_rfc3339(),
+                &body,
+            ),
+        )
+        .await
+        .expect("a send in flight must not hold the shared write permit")
+        .unwrap();
+        assert_eq!(
+            spooled_reports(&mut collection_store).await,
+            2,
+            "the collection-side write must reach the spool while the send is open"
+        );
+
+        release.send(true).unwrap();
+        let pass = tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            pass.outcome.applied, 2,
+            "the pass must pick up the Report the collection side wrote during the send"
+        );
+        assert!(matches!(pass.stop, DeliveryStop::SpoolEmpty));
+        assert_eq!(
+            spooled_reports(&mut collection_store).await,
+            0,
+            "both Reports must leave the spool"
+        );
+        collection_store.close().await.unwrap();
+    }
+}
+
 #[cfg(test)]
 mod delivery_tests {
     use super::*;
@@ -2042,7 +2690,7 @@ mod delivery_tests {
     /// A whole-report rejection with an Inventory conflict, as the Server
     /// returns it when the declared Inventory content does not match the
     /// accepted content at the same revision (issue #181).
-    fn rejected_receipt_body(report_id: &str, body: &[u8]) -> Vec<u8> {
+    pub(super) fn rejected_receipt_body(report_id: &str, body: &[u8]) -> Vec<u8> {
         let receipt = serde_json::json!({"report_id": report_id, "disposition": "rejected", "report_body_sha256": format!("0x{}", hex::encode(Sha256::digest(body))), "server_version": "0.1.0", "supported_protocol_majors": [1], "server_time": "2026-01-01T00:00:00Z", "inventory": "rejected", "rejections": [{"code": "inventory_revision_conflict", "retryable": false, "reason": "Inventory content conflicts at the accepted revision"}], "nodes": [], "samples": []});
         serde_json::to_vec(&serde_json::json!({"receipt": receipt})).unwrap()
     }
@@ -2134,12 +2782,13 @@ mod delivery_tests {
     /// that state, which equals the collection cadence, so a Server restart
     /// left the queued reports permanently in the spool and the queue grew
     /// toward its overflow limit instead of recovering.
+    ///
+    /// Issue #270 removed the threshold's last delivery-side role: the pass
+    /// drains until the queue is empty, so five small reports leave the spool in
+    /// one pass without any spool policy being consulted at all.
     #[tokio::test]
-    async fn a_backlog_below_the_preflush_threshold_is_drained_not_stalled() {
+    async fn a_backlog_of_several_small_reports_is_drained_in_one_pass() {
         let mut store = test_store().await;
-        let body = report_body(1);
-        // Five small reports stay far below the 1.5 MiB preflush threshold,
-        // so only the queued-report count can reveal the backlog.
         let mut responses = Vec::new();
         for sequence in 1..=5u64 {
             let id = report_id(sequence);
@@ -2157,22 +2806,15 @@ mod delivery_tests {
             .unwrap();
             responses.push(Ok(receipt_body(&id, &body)));
         }
-        let policy = SpoolPolicy {
-            max_bytes: body.len() as u64 * 64,
-            max_age_seconds: 24 * 60 * 60,
-            preflush_bytes: body.len() as u64 * 64,
-        };
         let transport = FakeTransport {
             bodies: Arc::new(Mutex::new(Vec::new())),
             responses: Arc::new(Mutex::new(responses)),
         };
 
-        let outcome = deliver_periodic(&mut store, &transport, &policy)
-            .await
-            .unwrap();
+        let outcome = deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(
             outcome.applied, 5,
-            "a below-preflush backlog must be drained in one tick, not one report"
+            "a backlog must be drained in one pass, not one report per pass"
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
@@ -2204,7 +2846,7 @@ mod delivery_tests {
         };
 
         assert_eq!(
-            deliver_periodic(&mut store, &transport, &SpoolPolicy::default())
+            deliver_periodic(&mut store, &transport)
                 .await
                 .unwrap()
                 .applied,
@@ -3093,9 +3735,7 @@ mod delivery_tests {
             responses: Arc::new(Mutex::new(vec![Ok(rejected_receipt_body(&id, &body))])),
         };
 
-        let outcome = deliver_periodic(&mut store, &transport, &SpoolPolicy::default())
-            .await
-            .unwrap();
+        let outcome = deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(outcome.applied, 1);
         let rejection = outcome
             .last_rejection()
@@ -3161,7 +3801,7 @@ mod backlog_recovery_tests {
         AgentReport, HttpReportTransport, ReportStoreError, ReportTransport, deliver_periodic,
         persist_immutable_report,
     };
-    use crate::collector::{CollectionError, SpoolPolicy, guard_startup_inventory_declaration};
+    use crate::collector::{CollectionError, guard_startup_inventory_declaration};
     use crate::config::{AgentConfig, BackfillConfig, SpoolConfig};
     use crate::database::{AgentDatabaseConfig, AgentStore, AgentStoreWritePermit};
     use crate::http_test_support::ReservedAddress;
@@ -3315,7 +3955,6 @@ mod backlog_recovery_tests {
             .await
             .unwrap();
         let transport = HttpReportTransport::from_config(&config).unwrap();
-        let policy = SpoolPolicy::default();
         for sequence in 1..=REPORT_COUNT {
             let body = report_body(sequence, &agent_id);
             persist_immutable_report(
@@ -3340,9 +3979,7 @@ mod backlog_recovery_tests {
 
         // With the Server down the tick fails and every report stays queued.
         assert!(
-            deliver_periodic(&mut store, &transport, &policy)
-                .await
-                .is_err(),
+            deliver_periodic(&mut store, &transport).await.is_err(),
             "delivery against a stopped Server must fail"
         );
         assert_eq!(
@@ -3357,9 +3994,7 @@ mod backlog_recovery_tests {
         let (restarted, _token) = boot_server(address.listener().await, dir.path()).await;
         // One tick must clear the whole backlog: catching up has to be faster
         // than the collection cadence, otherwise the queue never empties.
-        let delivered = deliver_periodic(&mut store, &transport, &policy)
-            .await
-            .unwrap();
+        let delivered = deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(
             delivered.applied, REPORT_COUNT as usize,
             "one tick must drain the backlog once the Server returns"
@@ -3412,7 +4047,6 @@ mod backlog_recovery_tests {
             .await
             .unwrap();
         let transport = HttpReportTransport::from_config(&config).unwrap();
-        let policy = SpoolPolicy::default();
 
         // Revision 1 is accepted by the real Server, and the Agent records what
         // the receipt made effective.
@@ -3428,9 +4062,7 @@ mod backlog_recovery_tests {
         )
         .await
         .unwrap();
-        let outcome = deliver_periodic(&mut store, &transport, &policy)
-            .await
-            .unwrap();
+        let outcome = deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(outcome.applied, 1);
         assert!(outcome.rejections.is_empty(), "{:?}", outcome.rejections);
         let record = read_inventory_declaration(store.connection())
@@ -3500,9 +4132,7 @@ mod backlog_recovery_tests {
         )
         .await
         .unwrap();
-        let outcome = deliver_periodic(&mut store, &transport, &policy)
-            .await
-            .unwrap();
+        let outcome = deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(
             outcome.applied, 1,
             "the bumped declaration must be accepted: {:?}",
@@ -3593,7 +4223,6 @@ mod backlog_recovery_tests {
             .await
             .unwrap();
         let transport = HttpReportTransport::from_config(&config).unwrap();
-        let policy = SpoolPolicy::default();
 
         let validator_a = (V2_NODE_A, "ws://127.0.0.1:6790", Some("Validator A"));
         let validator_b = (V2_NODE_B, "ws://127.0.0.1:6791", None);
@@ -3611,9 +4240,7 @@ mod backlog_recovery_tests {
         )
         .await
         .unwrap();
-        let outcome = deliver_periodic(&mut store, &transport, &policy)
-            .await
-            .unwrap();
+        let outcome = deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(outcome.applied, 1, "{:?}", outcome.rejections);
         assert!(outcome.rejections.is_empty(), "{:?}", outcome.rejections);
         let record = read_inventory_declaration(store.connection())
@@ -3647,9 +4274,7 @@ mod backlog_recovery_tests {
         )
         .await
         .unwrap();
-        let outcome = deliver_periodic(&mut store, &transport, &policy)
-            .await
-            .unwrap();
+        let outcome = deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(outcome.applied, 1, "{:?}", outcome.rejections);
         assert_eq!(server_inventory_revision(&server, &agent_id).await, 1);
 
@@ -3666,9 +4291,7 @@ mod backlog_recovery_tests {
         )
         .await
         .unwrap();
-        deliver_periodic(&mut store, &transport, &policy)
-            .await
-            .unwrap();
+        deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(server_inventory_revision(&server, &agent_id).await, 2);
 
         // Node order alone is not a declaration change: unchanged, revision 2.
@@ -3684,9 +4307,7 @@ mod backlog_recovery_tests {
         )
         .await
         .unwrap();
-        deliver_periodic(&mut store, &transport, &policy)
-            .await
-            .unwrap();
+        deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(server_inventory_revision(&server, &agent_id).await, 2);
 
         // A declared field change advances the revision.
@@ -3703,9 +4324,7 @@ mod backlog_recovery_tests {
         )
         .await
         .unwrap();
-        deliver_periodic(&mut store, &transport, &policy)
-            .await
-            .unwrap();
+        deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(server_inventory_revision(&server, &agent_id).await, 3);
 
         // A -> B -> A allocates a fresh revision; it never reuses the old number.
@@ -3721,9 +4340,7 @@ mod backlog_recovery_tests {
         )
         .await
         .unwrap();
-        deliver_periodic(&mut store, &transport, &policy)
-            .await
-            .unwrap();
+        deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(server_inventory_revision(&server, &agent_id).await, 4);
 
         // An accepted empty Inventory is distinct from an uninitialized Agent.
@@ -3739,9 +4356,7 @@ mod backlog_recovery_tests {
         )
         .await
         .unwrap();
-        deliver_periodic(&mut store, &transport, &policy)
-            .await
-            .unwrap();
+        deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(server_inventory_revision(&server, &agent_id).await, 5);
         let record = read_inventory_declaration(store.connection())
             .await
@@ -3762,9 +4377,7 @@ mod backlog_recovery_tests {
         )
         .await
         .unwrap();
-        let outcome = deliver_periodic(&mut store, &transport, &policy)
-            .await
-            .unwrap();
+        let outcome = deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(outcome.applied, 1);
         assert_eq!(outcome.rejections.len(), 1, "{:?}", outcome.rejections);
         assert_eq!(server_inventory_revision(&server, &agent_id).await, 5);
@@ -3855,11 +4468,8 @@ mod backlog_recovery_tests {
             "no confirmation record exists while the Server is offline"
         );
         let transport = HttpReportTransport::from_config(&config).unwrap();
-        let policy = SpoolPolicy::default();
         assert!(
-            deliver_periodic(&mut store, &transport, &policy)
-                .await
-                .is_err(),
+            deliver_periodic(&mut store, &transport).await.is_err(),
             "delivery against a stopped Server must fail"
         );
         assert_eq!(
@@ -3872,9 +4482,7 @@ mod backlog_recovery_tests {
         );
 
         let (restarted, _token) = boot_server(address.listener().await, dir.path()).await;
-        let delivered = deliver_periodic(&mut store, &transport, &policy)
-            .await
-            .unwrap();
+        let delivered = deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(
             delivered.applied, 3,
             "one tick must drain the v2 backlog: {:?}",
@@ -3950,11 +4558,8 @@ mod backlog_recovery_tests {
             inner: HttpReportTransport::from_config(&config).unwrap(),
             drop_next: AtomicBool::new(true),
         };
-        let policy = SpoolPolicy::default();
         assert!(
-            deliver_periodic(&mut store, &transport, &policy)
-                .await
-                .is_err(),
+            deliver_periodic(&mut store, &transport).await.is_err(),
             "a lost response must surface as a transport failure"
         );
         // The Server committed despite the lost response.
@@ -3983,9 +4588,7 @@ mod backlog_recovery_tests {
             "the unacknowledged Report stays queued with its exact bytes"
         );
 
-        let delivered = deliver_periodic(&mut store, &transport, &policy)
-            .await
-            .unwrap();
+        let delivered = deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(delivered.applied, 1, "{:?}", delivered.rejections);
         assert!(
             delivered.rejections.is_empty(),
