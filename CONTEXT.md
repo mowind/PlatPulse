@@ -185,12 +185,16 @@ The Server's transactional acceptance of one authenticated Agent Report, includi
 _Avoid_: HTTP handler update, Partial projection write
 
 **Current Projection**:
-A typed Server-side representation of the latest accepted state and each component's last successful value. It is rebuilt only through validated Agent Reports and is distinct from immutable history.
+A typed Server-side representation of the latest accepted state and each component's last successful value. It is rebuilt only through validated Agent Reports and is distinct from immutable history. Its freshness is judged by when the state was observed, not when the Server received it, so replaying a Durable Spool backlog advances it without making it fresh.
 _Avoid_: Agent report cache, Generic JSON metric
 
 **Durable Spool**:
 The Agent's bounded persistent queue of immutable reports awaiting Server acknowledgement. On overflow the Agent drops the oldest unconfirmed historical reports, logs a diagnostic, and preserves current-state collection. The Spool is a delivery mechanism, not user-visible history.
 _Avoid_: In-memory retry queue, History database
+
+**Spool Backlog Age**:
+The time elapsed since the oldest Agent Report still awaiting Server acknowledgement in a Durable Spool was generated. It describes delivery backlog, not Node state: a Node can be at its chain head while its Agent's Spool Backlog Age is hours.
+_Avoid_: Lag, Queue-head lag, Delay
 
 **Agent Store**:
 The Agent's local durable module that owns identity sequence, immutable report planning, acknowledgement, and spool limits behind one transactional interface.
