@@ -35,6 +35,10 @@ struct SpoolReportRow {
     body_bytes: i64,
 }
 
+/// The one projection every queued-Report integrity check reads, so a check can
+/// never validate a row shape another check does not see.
+const SPOOL_REPORT_PROJECTION: &str = "SELECT report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes FROM reports";
+
 #[derive(Debug, Error)]
 pub enum ReportStoreError {
     #[error("report body is empty")]
@@ -180,6 +184,8 @@ pub trait ReportTransport {
 pub async fn claim_oldest_report(
     store: &mut AgentStore,
 ) -> Result<Option<StoredReport>, ReportStoreError> {
+    #[cfg(test)]
+    let body_reads = store.spool_body_read_probe();
     let _write_permit = store.acquire_write().await;
     let mut tx = store.connection().begin().await?;
     let transaction_result: Result<Option<StoredReport>, ReportStoreError> = async {
@@ -219,6 +225,10 @@ pub async fn claim_oldest_report(
     match transaction_result {
         Ok(report) => {
             tx.commit().await?;
+            #[cfg(test)]
+            if report.is_some() {
+                body_reads.record(1);
+            }
             Ok(report)
         }
         Err(error) => match tx.rollback().await {
@@ -1000,26 +1010,37 @@ async fn deliver_periodic_inner<T: ReportTransport>(
     Ok(outcome)
 }
 
-/// Refuse new collection/delivery when durable spool corruption was observed.
+/// The whole-spool integrity boundary, run once while the Agent boots.
+///
+/// ADR 0001 makes start-up the place where queue integrity is established: every
+/// queued Report is streamed, hashed and re-parsed here, and a queue that fails
+/// leaves the Store fatal so no worker ever starts against it. Runtime paths
+/// call `ensure_spool_not_fatal` instead.
+///
+/// Hashing and parsing happen outside the write permit (ADR 0001 keeps them
+/// there), the scan is streamed one Report at a time so a large Durable Spool
+/// costs a stream instead of a full fetch, and a Report that fails the scan is
+/// re-read under the permit before the Store goes fatal, so no fatal write is
+/// decided by a read taken outside it.
 pub async fn ensure_spool_healthy(store: &mut AgentStore) -> Result<(), ReportStoreError> {
+    ensure_spool_not_fatal(store).await?;
+    #[cfg(test)]
+    let body_reads = store.spool_body_read_probe();
+    let scan = format!("{SPOOL_REPORT_PROJECTION} ORDER BY created_at, report_id");
+    let mut rows = sqlx::query_as::<_, SpoolReportRow>(&scan).fetch(store.connection());
+    while let Some(row) = rows.try_next().await? {
+        #[cfg(test)]
+        body_reads.record(1);
+        if let Some(reason) = validate_spool_report(&row) {
+            drop(rows);
+            let _write_permit = store.acquire_write().await;
+            return latch_spool_defect_under_permit(store, &row, &reason).await;
+        }
+    }
+    drop(rows);
+    // The collision scan is a read that decides a fatal write, so it keeps the
+    // write permit through the mark (ADR 0001).
     let _write_permit = store.acquire_write().await;
-    let fatal: i64 = sqlx::query_scalar("SELECT store_fatal FROM spool_state WHERE singleton=1")
-        .fetch_one(store.connection())
-        .await?;
-    if fatal != 0 {
-        return Err(ReportStoreError::StoreFatal(
-            "Agent Store is marked fatal; manual recovery is required".to_owned(),
-        ));
-    }
-    let rows = sqlx::query_as::<_, SpoolReportRow>(
-        "SELECT report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes FROM reports ORDER BY created_at, report_id",
-    )
-    .fetch_all(store.connection())
-    .await?;
-    if let Some(reason) = rows.iter().find_map(validate_spool_report) {
-        mark_spool_fatal_under_permit(store, &now_rfc3339(), &reason).await?;
-        return Err(ReportStoreError::StoreFatal(reason));
-    }
     let collision: Option<String> = sqlx::query_scalar(
         "SELECT receipt.report_id
          FROM reports
@@ -1075,27 +1096,34 @@ async fn ensure_claimed_report_intact(
     store: &mut AgentStore,
     report: &StoredReport,
 ) -> Result<(), ReportStoreError> {
-    let _write_permit = store.acquire_write().await;
-    let row = sqlx::query_as::<_, SpoolReportRow>(
-        "SELECT report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes FROM reports WHERE report_id = ?",
-    )
+    // The claim already copied this body under the permit, so hashing and
+    // parsing it again here stays outside the permit (ADR 0001 keeps parsing
+    // out of it), and the permit is only re-taken to latch a defect or to read
+    // the Applied Receipt Record the decision to send depends on.
+    let row = sqlx::query_as::<_, SpoolReportRow>(&format!(
+        "{SPOOL_REPORT_PROJECTION} WHERE report_id = ?"
+    ))
     .bind(&report.report_id)
     .fetch_optional(store.connection())
     .await?;
-    let defect = match row {
-        Some(row) => validate_spool_report(&row).or_else(|| {
+    #[cfg(test)]
+    if row.is_some() {
+        store.record_spool_body_read(1);
+    }
+    let suspect = row.and_then(|row| {
+        let reason = validate_spool_report(&row).or_else(|| {
             (row.body != report.body || row.body_sha256 != report.body_sha256).then(|| {
                 format!(
                     "immutable spool report {} changed after it was claimed",
                     report.report_id
                 )
             })
-        }),
-        None => None,
-    };
-    if let Some(reason) = defect {
-        mark_spool_fatal_under_permit(store, &now_rfc3339(), &reason).await?;
-        return Err(ReportStoreError::StoreFatal(reason));
+        })?;
+        Some((row, reason))
+    });
+    let _write_permit = store.acquire_write().await;
+    if let Some((suspect, reason)) = suspect {
+        return latch_spool_defect_under_permit(store, &suspect, &reason).await;
     }
     let collision: Option<String> = sqlx::query_scalar(
         "SELECT receipt.report_id FROM report_receipts AS receipt WHERE receipt.report_id = ? LIMIT 1",
@@ -1113,6 +1141,58 @@ async fn ensure_claimed_report_intact(
     }
     Ok(())
 }
+
+/// Latch a queued-Report defect that an outside-permit read already found.
+///
+/// The write permit must span the read that authorizes the write (ADR 0001), and
+/// parsing stays outside it, so this never re-validates: it re-reads the row under
+/// the permit and compares it byte for byte with the exact snapshot that failed
+/// validation. Identical bytes make that snapshot the authoritative row, and only
+/// then may the Store go fatal.
+///
+/// A Report that is gone by then (an applied receipt or a policy drop removed it)
+/// has no queued body left to condemn, so nothing is latched. A Report whose bytes
+/// changed is the impossible state ADR 0001 fails closed on: nothing rewrites a
+/// queued body.
+async fn latch_spool_defect_under_permit(
+    store: &mut AgentStore,
+    suspect: &SpoolReportRow,
+    reason: &str,
+) -> Result<(), ReportStoreError> {
+    let row = sqlx::query_as::<_, SpoolReportRow>(&format!(
+        "{SPOOL_REPORT_PROJECTION} WHERE report_id = ?"
+    ))
+    .bind(&suspect.report_id)
+    .fetch_optional(store.connection())
+    .await?;
+    #[cfg(test)]
+    if row.is_some() {
+        store.record_spool_body_read(1);
+    }
+    let reason = match row {
+        None => return Ok(()),
+        Some(row) if same_spool_row(&row, suspect) => reason.to_owned(),
+        Some(_) => format!(
+            "queued Agent Report {} changed while its integrity was being confirmed",
+            suspect.report_id
+        ),
+    };
+    mark_spool_fatal_under_permit(store, &now_rfc3339(), &reason).await?;
+    Err(ReportStoreError::StoreFatal(reason))
+}
+
+/// Whether two reads describe the same immutable queued Report.
+fn same_spool_row(left: &SpoolReportRow, right: &SpoolReportRow) -> bool {
+    left.report_id == right.report_id
+        && left.agent_epoch == right.agent_epoch
+        && left.boot_id == right.boot_id
+        && left.report_sequence == right.report_sequence
+        && left.generated_at == right.generated_at
+        && left.body_bytes == right.body_bytes
+        && left.body_sha256 == right.body_sha256
+        && left.body == right.body
+}
+
 async fn validate_historical_receipt_markers(
     store: &mut AgentStore,
 ) -> Result<(), ReportStoreError> {
@@ -1205,6 +1285,20 @@ pub async fn enforce_stored_spool_policy(
     enforce_spool_policy(store, &policy, now).await
 }
 
+/// One Report the Spool policy drops, validated while no write permit was held.
+struct PlannedSpoolDrop {
+    row: SpoolReportRow,
+    sample_count: u64,
+    height_range: Option<(u64, u64)>,
+}
+
+/// What one cleanup pass decided: the Reports it drops, or one corrupt Report it
+/// must not drop at all.
+struct SpoolCleanupPlan {
+    drops: Vec<PlannedSpoolDrop>,
+    defect: Option<(SpoolReportRow, String)>,
+}
+
 /// Apply a bounded, transactional spool policy. In-flight and newest complete
 /// current report are never deleted; each dropped report contributes bounded
 /// loss diagnostics without manufacturing Agent-side history.
@@ -1218,89 +1312,86 @@ pub async fn enforce_spool_policy(
     let cutoff = time::OffsetDateTime::parse(now, &time::format_description::well_known::Rfc3339)
         .ok()
         .map(|value| value - time::Duration::seconds(policy.max_age_seconds as i64));
+    let plan = plan_spool_cleanup(store, policy, cutoff).await?;
+    if let Some((suspect, reason)) = plan.defect {
+        let _write_permit = store.acquire_write().await;
+        return match latch_spool_defect_under_permit(store, &suspect, &reason).await {
+            // An applied receipt removed the Report between the two reads, so the
+            // pass that would have dropped it has nothing left to drop.
+            Ok(()) => Ok(SpoolCleanupSummary::default()),
+            Err(error) => Err(error),
+        };
+    }
+    if plan.drops.is_empty() {
+        return Ok(SpoolCleanupSummary::default());
+    }
+
+    #[cfg(test)]
+    let body_reads = store.spool_body_read_probe();
     let _write_permit = store.acquire_write().await;
     let mut tx = store.connection().begin().await?;
+    let mut defect: Option<String> = None;
     let transaction_result: Result<SpoolCleanupSummary, ReportStoreError> = async {
-        let rows: Vec<(String, i64, String, i64, i64)> = sqlx::query_as(
-            "SELECT report_id, report_sequence, generated_at, body_bytes, in_flight FROM reports ORDER BY created_at, report_id",
-        )
-    .fetch_all(&mut *tx)
-    .await?;
-    let total: i64 = rows
-        .iter()
-        .map(|(_, _, _, body_bytes, _)| (*body_bytes).max(0))
-        .sum();
-    let current_report_id: Option<String> = sqlx::query_scalar(
-        "SELECT r.report_id FROM reports r JOIN agent_state s ON s.singleton = 1 AND s.agent_id IS NOT NULL AND s.agent_epoch = r.agent_epoch AND s.boot_id = r.boot_id AND s.report_sequence = r.report_sequence ORDER BY r.created_at DESC, r.report_id DESC LIMIT 1",
-    )
-    .fetch_optional(&mut *tx)
-    .await?
-    .or(
-        sqlx::query_scalar(
-            "SELECT report_id FROM reports ORDER BY agent_epoch DESC, report_sequence DESC, created_at DESC, report_id DESC LIMIT 1",
-        )
-        .fetch_optional(&mut *tx)
-        .await?,
-    );
-    let mut summary = SpoolCleanupSummary::default();
-    let mut bytes = total;
-    let max_bytes = policy.max_bytes.min(i64::MAX as u64) as i64;
-    for (report_id, sequence, generated_at, body_bytes, in_flight) in rows {
-        if bytes <= max_bytes
-            && cutoff.as_ref().is_none_or(|cutoff| {
-                time::OffsetDateTime::parse(
-                    &generated_at,
-                    &time::format_description::well_known::Rfc3339,
-                )
-                .map(|value| value >= *cutoff)
-                .unwrap_or(true)
-            })
-        {
-            continue;
-        }
-        if in_flight == 1 || current_report_id.as_deref() == Some(report_id.as_str()) {
-            continue;
-        }
-        let body: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT body FROM reports WHERE report_id = ?")
-                .bind(&report_id)
-                .fetch_optional(&mut *tx)
-                .await?;
-        let Some(body) = body else {
-            continue;
-        };
-        let (sample_count, height_range) = spool_report_loss_shape(&body)?;
-        let deleted = sqlx::query("DELETE FROM reports WHERE report_id = ? AND in_flight = 0")
-            .bind(&report_id)
-            .execute(&mut *tx)
+        let mut summary = SpoolCleanupSummary::default();
+        for planned in plan.drops {
+            // Re-read under the permit and compare against the snapshot that was
+            // validated outside it. Nothing here hashes or parses a body: the
+            // bytes were already proven intact, and this only proves they are
+            // still the bytes queued (ADR 0001, issue #269).
+            let row: Option<SpoolReportRow> = sqlx::query_as(&format!(
+                "{SPOOL_REPORT_PROJECTION} WHERE report_id = ?"
+            ))
+            .bind(&planned.row.report_id)
+            .fetch_optional(&mut *tx)
             .await?;
-        if deleted.rows_affected() == 0 {
-            continue;
-        }
-        bytes -= body_bytes.max(0);
-        summary.dropped_reports += 1;
-        summary.sequence_range = Some(
-            summary
-                .sequence_range
-                .map_or((sequence as u64, sequence as u64), |(from, to)| {
-                    (from.min(sequence as u64), to.max(sequence as u64))
-                }),
-        );
-        summary.time_range = Some(summary.time_range.take().map_or(
-            (generated_at.clone(), generated_at.clone()),
-            |(from, to)| (from.min(generated_at.clone()), to.max(generated_at.clone())),
-        ));
-        summary.dropped_samples += sample_count;
-        if let Some(range) = height_range {
-            summary.height_range = Some(
+            #[cfg(test)]
+            if row.is_some() {
+                body_reads.record(1);
+            }
+            let Some(row) = row else {
+                // An applied receipt deleted it between the two reads.
+                continue;
+            };
+            if !same_spool_row(&row, &planned.row) {
+                let reason = format!(
+                    "queued Agent Report {} changed while its integrity was being confirmed",
+                    planned.row.report_id
+                );
+                defect = Some(reason.clone());
+                return Err(ReportStoreError::StoreFatal(reason));
+            }
+            let deleted = sqlx::query("DELETE FROM reports WHERE report_id = ? AND in_flight = 0")
+                .bind(&planned.row.report_id)
+                .execute(&mut *tx)
+                .await?;
+            if deleted.rows_affected() == 0 {
+                continue;
+            }
+            let sequence = planned.row.report_sequence as u64;
+            let generated_at = planned.row.generated_at;
+            summary.dropped_reports += 1;
+            summary.sequence_range = Some(
                 summary
-                    .height_range
-                    .take()
-                    .map_or(range, |(from, to)| (from.min(range.0), to.max(range.1))),
+                    .sequence_range
+                    .map_or((sequence, sequence), |(from, to)| {
+                        (from.min(sequence), to.max(sequence))
+                    }),
             );
+            summary.time_range = Some(summary.time_range.take().map_or(
+                (generated_at.clone(), generated_at.clone()),
+                |(from, to)| (from.min(generated_at.clone()), to.max(generated_at.clone())),
+            ));
+            summary.dropped_samples += planned.sample_count;
+            if let Some(range) = planned.height_range {
+                summary.height_range = Some(
+                    summary
+                        .height_range
+                        .take()
+                        .map_or(range, |(from, to)| (from.min(range.0), to.max(range.1))),
+                );
+            }
         }
-    }
-    sqlx::query("UPDATE spool_state SET dropped_reports=dropped_reports+?, dropped_samples=dropped_samples+?, dropped_sequence_from=COALESCE(MIN(dropped_sequence_from, ?), ?), dropped_sequence_to=MAX(COALESCE(dropped_sequence_to, ?), ?), dropped_time_from=COALESCE(MIN(dropped_time_from, ?), ?), dropped_time_to=MAX(COALESCE(dropped_time_to, ?), ?), dropped_height_from=COALESCE(MIN(dropped_height_from, ?), ?), dropped_height_to=MAX(COALESCE(dropped_height_to, ?), ?), pending_history_gaps=pending_history_gaps+?, updated_at=? WHERE singleton=1")
+        sqlx::query("UPDATE spool_state SET dropped_reports=dropped_reports+?, dropped_samples=dropped_samples+?, dropped_sequence_from=COALESCE(MIN(dropped_sequence_from, ?), ?), dropped_sequence_to=MAX(COALESCE(dropped_sequence_to, ?), ?), dropped_time_from=COALESCE(MIN(dropped_time_from, ?), ?), dropped_time_to=MAX(COALESCE(dropped_time_to, ?), ?), dropped_height_from=COALESCE(MIN(dropped_height_from, ?), ?), dropped_height_to=MAX(COALESCE(dropped_height_to, ?), ?), pending_history_gaps=pending_history_gaps+?, updated_at=? WHERE singleton=1")
         .bind(summary.dropped_reports as i64).bind(summary.dropped_samples as i64)
         .bind(summary.sequence_range.map(|v| v.0 as i64)).bind(summary.sequence_range.map(|v| v.0 as i64))
         .bind(summary.sequence_range.map(|v| v.1 as i64)).bind(summary.sequence_range.map(|v| v.1 as i64))
@@ -1319,9 +1410,99 @@ pub async fn enforce_spool_policy(
         }
         Err(error) => {
             tx.rollback().await?;
-            Err(error)
+            match defect {
+                Some(reason) => {
+                    mark_spool_fatal_under_permit(store, now, &reason).await?;
+                    Err(ReportStoreError::StoreFatal(reason))
+                }
+                None => Err(error),
+            }
         }
     }
+}
+
+/// Decide what one cleanup pass drops, validating every Report it selects.
+///
+/// This is the half that hashes and parses a body, so it runs outside the write
+/// permit (ADR 0001), and it reads a body only for a Report the policy is about
+/// to drop, so the steady state still reads none. The permit pass that follows
+/// only compares snapshots and deletes.
+async fn plan_spool_cleanup(
+    store: &mut AgentStore,
+    policy: &SpoolPolicy,
+    cutoff: Option<time::OffsetDateTime>,
+) -> Result<SpoolCleanupPlan, ReportStoreError> {
+    #[cfg(test)]
+    let body_reads = store.spool_body_read_probe();
+    let rows: Vec<(String, i64, String, i64, i64)> = sqlx::query_as(
+        "SELECT report_id, report_sequence, generated_at, body_bytes, in_flight FROM reports ORDER BY created_at, report_id",
+    )
+    .fetch_all(store.connection())
+    .await?;
+    let total: i64 = rows
+        .iter()
+        .map(|(_, _, _, body_bytes, _)| (*body_bytes).max(0))
+        .sum();
+    let current_report_id: Option<String> = sqlx::query_scalar(
+        "SELECT r.report_id FROM reports r JOIN agent_state s ON s.singleton = 1 AND s.agent_id IS NOT NULL AND s.agent_epoch = r.agent_epoch AND s.boot_id = r.boot_id AND s.report_sequence = r.report_sequence ORDER BY r.created_at DESC, r.report_id DESC LIMIT 1",
+    )
+    .fetch_optional(store.connection())
+    .await?
+    .or(
+        sqlx::query_scalar(
+            "SELECT report_id FROM reports ORDER BY agent_epoch DESC, report_sequence DESC, created_at DESC, report_id DESC LIMIT 1",
+        )
+        .fetch_optional(store.connection())
+        .await?,
+    );
+    let mut plan = SpoolCleanupPlan {
+        drops: Vec::new(),
+        defect: None,
+    };
+    let mut bytes = total;
+    let max_bytes = policy.max_bytes.min(i64::MAX as u64) as i64;
+    for (report_id, _sequence, generated_at, body_bytes, in_flight) in rows {
+        if bytes <= max_bytes
+            && cutoff.as_ref().is_none_or(|cutoff| {
+                time::OffsetDateTime::parse(
+                    &generated_at,
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .map(|value| value >= *cutoff)
+                .unwrap_or(true)
+            })
+        {
+            continue;
+        }
+        if in_flight == 1 || current_report_id.as_deref() == Some(report_id.as_str()) {
+            continue;
+        }
+        let row: Option<SpoolReportRow> =
+            sqlx::query_as(&format!("{SPOOL_REPORT_PROJECTION} WHERE report_id = ?"))
+                .bind(&report_id)
+                .fetch_optional(store.connection())
+                .await?;
+        let Some(row) = row else {
+            continue;
+        };
+        #[cfg(test)]
+        body_reads.record(1);
+        // Discarding is the other way a Report leaves the Durable Spool, so it
+        // validates first exactly like delivery does (issue #269): corruption is
+        // never quietly deleted, it latches the Store fatal.
+        if let Some(reason) = validate_spool_report(&row) {
+            plan.defect = Some((row, reason));
+            return Ok(plan);
+        }
+        let (sample_count, height_range) = spool_report_loss_shape(&row.body)?;
+        bytes -= body_bytes.max(0);
+        plan.drops.push(PlannedSpoolDrop {
+            row,
+            sample_count,
+            height_range,
+        });
+    }
+    Ok(plan)
 }
 
 /// What one dropped Report contributes to the bounded loss diagnostics: how many
@@ -1658,6 +1839,133 @@ mod tests {
         );
         assert_eq!(stored.1, digest);
         store.close().await.unwrap();
+    }
+}
+
+/// Builders for a large, still-valid Durable Spool backlog.
+///
+/// Issue #269 is about what integrity work *costs*, not about whether it is
+/// correct, so the tests that guard it need a backlog large enough that a
+/// per-Report rescan is unmistakable (thousands of Reports, ~100 MiB) while
+/// every queued body is still a Report the protocol accepts. A padded body is
+/// built from the one bounded, repeatable wire element that can inflate a
+/// single Report: valid History Gaps.
+#[cfg(test)]
+pub(crate) mod spool_backlog_fixture {
+    use super::*;
+
+    const PADDED_GAP_COUNT: u64 = 60;
+    const PADDED_GAP_REASON_CHARS: usize = 480;
+
+    /// A Report identity that sorts in sequence order, so "the oldest queued
+    /// Report" is predictable without depending on timestamps or a clock.
+    pub(crate) fn report_id(sequence: u64) -> String {
+        format!("0195f2a1-0015-4015-8015-{sequence:012x}")
+    }
+
+    pub(crate) fn body_digest(body: &[u8]) -> String {
+        format!("0x{}", hex::encode(Sha256::digest(body)))
+    }
+
+    /// A valid v1 Report of roughly 40 KiB, owned by `boot_id` and stamped
+    /// `generated_at`, so it survives both the protocol validator and the
+    /// Spool age bound.
+    pub(crate) fn report_body(boot_id: &str, generated_at: &str, sequence: u64) -> Vec<u8> {
+        let mut report: serde_json::Value = serde_json::from_str(include_str!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        report["report_id"] = serde_json::Value::String(report_id(sequence));
+        report["boot_id"] = serde_json::Value::String(boot_id.to_owned());
+        report["report_sequence"] = serde_json::json!(sequence);
+        report["generated_at"] = serde_json::Value::String(generated_at.to_owned());
+        let reason = "recoverable backfill exceeded the bounded height window".repeat(9);
+        let gaps: Vec<serde_json::Value> = (0..PADDED_GAP_COUNT)
+            .map(|gap| {
+                serde_json::json!({
+                    "node_id": "0195f2a1-0014-4014-8014-000000000014",
+                    "kind": "unrecoverable_backfill",
+                    "from_height": gap * 1_000 + 1,
+                    "to_height": gap * 1_000 + 1_000,
+                    "reason": reason.chars().take(PADDED_GAP_REASON_CHARS).collect::<String>(),
+                    "recorded_at": generated_at,
+                })
+            })
+            .collect();
+        report["history_gaps"] = serde_json::Value::Array(gaps);
+        serde_json::to_vec(&report).unwrap()
+    }
+
+    /// The accepted receipt the Server would answer a seeded Report with: every
+    /// Node accepted and every padded History Gap covered by an accepted sample,
+    /// which is what the apply path requires before it deletes the Report.
+    pub(crate) fn receipt_body(report_id: &str, body: &[u8]) -> Vec<u8> {
+        let report: AgentReport = serde_json::from_slice(body).unwrap();
+        let nodes = report
+            .inventory
+            .nodes
+            .iter()
+            .map(|node| {
+                serde_json::json!({
+                    "node_id": node.node_id,
+                    "current": "accepted",
+                    "accepted_component_revisions": [],
+                    "rejections": []
+                })
+            })
+            .collect::<Vec<_>>();
+        let samples = report
+            .history_gaps
+            .iter()
+            .map(|gap| {
+                serde_json::json!({
+                    "node_id": gap.node_id,
+                    "sample": {
+                        "kind": "gap",
+                        "from_height": gap.from_height,
+                        "to_height": gap.to_height
+                    },
+                    "disposition": "accepted"
+                })
+            })
+            .collect::<Vec<_>>();
+        let receipt = serde_json::json!({"report_id": report_id, "disposition": "accepted", "report_body_sha256": body_digest(body), "server_version": "0.1.0", "supported_protocol_majors": [1], "server_time": "2026-01-01T00:00:00Z", "inventory": "accepted", "rejections": [], "nodes": nodes, "samples": samples});
+        serde_json::to_vec(&serde_json::json!({"receipt": receipt})).unwrap()
+    }
+
+    /// Queue `reports` valid Reports in one transaction and return the queued
+    /// byte total, so a test can state how large the backlog it asserts against
+    /// actually is instead of trusting a comment.
+    pub(crate) async fn seed(
+        store: &mut AgentStore,
+        boot_id: &str,
+        generated_at: &str,
+        first_sequence: u64,
+        reports: u64,
+    ) -> u64 {
+        let _write_permit = store.acquire_write().await;
+        let mut tx = store.connection().begin().await.unwrap();
+        let mut queued_bytes = 0_u64;
+        for sequence in first_sequence..first_sequence + reports {
+            let body = report_body(boot_id, generated_at, sequence);
+            queued_bytes += body.len() as u64;
+            sqlx::query(
+                "INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, in_flight, created_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, 0, ?)",
+            )
+            .bind(report_id(sequence))
+            .bind(boot_id)
+            .bind(sequence as i64)
+            .bind(generated_at)
+            .bind(&body)
+            .bind(body_digest(&body))
+            .bind(body.len() as i64)
+            .bind(generated_at)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+        queued_bytes
     }
 }
 
@@ -2146,6 +2454,69 @@ mod delivery_tests {
         );
     }
 
+    /// Issue #269: discarding is the other way a Report leaves the Durable Spool,
+    /// so cleanup validates before it deletes. A Report corrupted after start-up
+    /// must latch the Store fatal instead of disappearing with the overflow.
+    #[tokio::test]
+    async fn spool_overflow_marks_a_corrupt_report_fatal_instead_of_dropping_it() {
+        let mut store = test_store().await;
+        for sequence in 1..=2 {
+            let body = report_body(sequence);
+            persist_immutable_report(
+                &mut store,
+                &report_id(sequence),
+                1,
+                "0195f2a1-0012-4012-8012-000000000012",
+                sequence,
+                "2026-08-12T09:00:00Z",
+                &body,
+            )
+            .await
+            .unwrap();
+        }
+        let body_size = report_body(1).len() as u64;
+        let mut truncated = report_body(1);
+        truncated.truncate(truncated.len() / 2);
+        sqlx::query("UPDATE reports SET body = ? WHERE report_id = ?")
+            .bind(&truncated)
+            .bind(report_id(1))
+            .execute(store.connection())
+            .await
+            .unwrap();
+
+        let error = enforce_spool_policy(
+            &mut store,
+            &SpoolPolicy {
+                max_bytes: body_size,
+                max_age_seconds: 365 * 24 * 60 * 60,
+                preflush_bytes: body_size,
+            },
+            "2026-08-12T10:00:00Z",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, ReportStoreError::StoreFatal(_)),
+            "cleanup must fail closed on a corrupt Report, got {error:?}"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT store_fatal FROM spool_state WHERE singleton = 1")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            2,
+            "a corrupt Report must not be discarded"
+        );
+        store.close().await.unwrap();
+    }
+
     #[tokio::test]
     async fn spool_overflow_drops_oldest_report_but_keeps_newest_current_report() {
         let mut store = test_store().await;
@@ -2426,22 +2797,38 @@ mod delivery_tests {
         );
     }
 
-    #[tokio::test]
-    async fn corrupt_spool_state_is_marked_fatal_before_delivery() {
-        let mut store = test_store().await;
-        let id = report_id(5);
-        let body = report_body(5);
+    async fn store_fatal_flag(store: &mut AgentStore) -> i64 {
+        sqlx::query_scalar::<_, i64>("SELECT store_fatal FROM spool_state WHERE singleton = 1")
+            .fetch_one(store.connection())
+            .await
+            .unwrap()
+    }
+
+    async fn queue_one_report(store: &mut AgentStore, sequence: u64) -> (String, Vec<u8>) {
+        let id = report_id(sequence);
+        let body = report_body(sequence);
         persist_immutable_report(
-            &mut store,
+            store,
             &id,
             1,
             "0195f2a1-0012-4012-8012-000000000012",
-            5,
+            sequence,
             "2026-08-12T09:00:00Z",
             &body,
         )
         .await
         .unwrap();
+        (id, body)
+    }
+
+    /// Issue #269: a queue whose integrity does not hold is a start-up failure.
+    /// The whole spool is validated once while the Agent boots, and that
+    /// validation latches the Store fatal, so the delivery loop never runs
+    /// against a queue it cannot trust.
+    #[tokio::test]
+    async fn startup_marks_a_corrupt_queued_report_fatal() {
+        let mut store = test_store().await;
+        let (id, _body) = queue_one_report(&mut store, 5).await;
         sqlx::query("UPDATE reports SET body_sha256 = ? WHERE report_id = ?")
             .bind("0x0000000000000000000000000000000000000000000000000000000000000000")
             .bind(&id)
@@ -2450,55 +2837,171 @@ mod delivery_tests {
             .unwrap();
 
         assert!(matches!(
-            ensure_spool_healthy(&mut store).await,
+            validate_receipt_history(&mut store).await,
             Err(ReportStoreError::StoreFatal(_))
         ));
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>(
-                "SELECT store_fatal FROM spool_state WHERE singleton = 1",
-            )
-            .fetch_one(store.connection())
-            .await
-            .unwrap(),
-            1
-        );
+        assert_eq!(store_fatal_flag(&mut store).await, 1);
     }
 
+    /// Issue #269 acceptance: the delivery hot path validates the one Report it
+    /// claimed — still before the send, still latched fatal — so a body that
+    /// rotted on disk is caught without the whole spool being re-read.
     #[tokio::test]
-    async fn corrupt_receipt_state_is_marked_fatal_before_delivery() {
+    async fn corrupt_claimed_report_is_marked_fatal_before_it_is_sent() {
         let mut store = test_store().await;
-        let id = report_id(6);
-        let body = report_body(6);
-        persist_immutable_report(
-            &mut store,
-            &id,
-            1,
-            "0195f2a1-0012-4012-8012-000000000012",
-            6,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        let (id, body) = queue_one_report(&mut store, 5).await;
+        sqlx::query("UPDATE reports SET body = ? WHERE report_id = ?")
+            .bind(b"{\"report_id\":\"truncated\"}".to_vec())
+            .bind(&id)
+            .execute(store.connection())
+            .await
+            .unwrap();
+        let transport = FakeTransport {
+            bodies: Arc::new(Mutex::new(Vec::new())),
+            responses: Arc::new(Mutex::new(vec![Ok(receipt_body(&id, &body))])),
+        };
+
+        assert!(matches!(
+            deliver_one(&mut store, &transport).await,
+            Err(ReportStoreError::StoreFatal(_))
+        ));
+        assert!(
+            transport.bodies.lock().unwrap().is_empty(),
+            "a corrupt Report must never reach the Server"
+        );
+        assert_eq!(store_fatal_flag(&mut store).await, 1);
+
+        // The latch holds: the next delivery refuses before it touches the spool.
+        let reads = store.spool_body_read_probe();
+        reads.reset();
+        assert!(matches!(
+            deliver_one(&mut store, &transport).await,
+            Err(ReportStoreError::StoreFatal(_))
+        ));
+        assert_eq!(reads.reads(), 0);
+    }
+
+    /// Issue #269: the same store status was previously only re-derived from a
+    /// whole-spool scan at every delivery; a claimed Report that also carries an
+    /// Applied Receipt Record is still refused, and nothing is sent or deleted.
+    #[tokio::test]
+    async fn claimed_report_with_an_applied_receipt_is_refused_before_it_is_sent() {
+        let mut store = test_store().await;
+        let (id, body) = queue_one_report(&mut store, 6).await;
         sqlx::query("INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, 'accepted', ?)")
             .bind(&id)
-            .bind("bad")
+            .bind(format!("0x{}", hex::encode(Sha256::digest(&body))))
             .bind("2026-08-12T10:00:00Z")
             .execute(store.connection())
             .await
             .unwrap();
+        let transport = FakeTransport {
+            bodies: Arc::new(Mutex::new(Vec::new())),
+            responses: Arc::new(Mutex::new(Vec::new())),
+        };
 
         assert!(matches!(
-            ensure_spool_healthy(&mut store).await,
+            deliver_one(&mut store, &transport).await,
             Err(ReportStoreError::StoreFatal(_))
         ));
+        assert!(transport.bodies.lock().unwrap().is_empty());
+        assert_eq!(store_fatal_flag(&mut store).await, 1);
         assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports WHERE report_id = ?",)
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports WHERE report_id = ?")
                 .bind(&id)
                 .fetch_one(store.connection())
                 .await
                 .unwrap(),
-            1
+            1,
+            "a conflicting Report is kept for manual recovery"
+        );
+    }
+
+    /// Issue #269: without the per-delivery whole-spool scan, an integrity
+    /// failure found while applying a receipt has to latch the Store fatal.
+    /// Returning a plain database error would roll back forever: the Report
+    /// stays queued, so every retry recomputes the same failure.
+    #[tokio::test]
+    async fn apply_marks_a_corrupt_report_fatal_instead_of_retrying_forever() {
+        let mut store = test_store().await;
+        let (id, body) = queue_one_report(&mut store, 8).await;
+        let receipt = receipt_body(&id, &body);
+        let digest = format!("0x{}", hex::encode(Sha256::digest(&body)));
+        sqlx::query("UPDATE reports SET body = ? WHERE report_id = ?")
+            .bind(b"{\"report_id\":\"truncated\"}".to_vec())
+            .bind(&id)
+            .execute(store.connection())
+            .await
+            .unwrap();
+
+        assert!(
+            crate::collector::apply_receipt(
+                &mut store,
+                &id,
+                &digest,
+                "accepted",
+                &receipt,
+                "2026-08-12T09:00:01Z",
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(store_fatal_flag(&mut store).await, 1);
+        let transport = FakeTransport {
+            bodies: Arc::new(Mutex::new(Vec::new())),
+            responses: Arc::new(Mutex::new(Vec::new())),
+        };
+        assert!(matches!(
+            deliver_one(&mut store, &transport).await,
+            Err(ReportStoreError::StoreFatal(_))
+        ));
+        assert!(transport.bodies.lock().unwrap().is_empty());
+    }
+
+    /// Issue #269 acceptance: with thousands of Reports and ~100 MiB queued, one
+    /// delivery reads a constant number of Report bodies — the one it claims,
+    /// the one it re-checks, and the one it applies. The assertion is a read
+    /// count, not a duration, so it cannot be satisfied by a faster machine.
+    #[tokio::test]
+    async fn backlogged_delivery_reads_a_constant_number_of_spool_bodies() {
+        const BACKLOG: u64 = 3_000;
+        const BOOT_ID: &str = "0195f2a1-0041-4041-8041-000000000041";
+        let mut store = test_store().await;
+        let generated_at = now_rfc3339();
+        let queued_bytes =
+            spool_backlog_fixture::seed(&mut store, BOOT_ID, &generated_at, 1, BACKLOG).await;
+        assert!(
+            queued_bytes > 100 * 1024 * 1024,
+            "the guarded backlog must be realistically large, got {queued_bytes} bytes"
+        );
+
+        // The start-up boundary is where the whole spool is paid for.
+        ensure_spool_healthy(&mut store).await.unwrap();
+
+        let id = spool_backlog_fixture::report_id(1);
+        let transport = FakeTransport {
+            bodies: Arc::new(Mutex::new(Vec::new())),
+            responses: Arc::new(Mutex::new(vec![Ok(spool_backlog_fixture::receipt_body(
+                &id,
+                &spool_backlog_fixture::report_body(BOOT_ID, &generated_at, 1),
+            ))])),
+        };
+        let probe = store.spool_body_read_probe();
+        probe.reset();
+        let delivered = deliver_one(&mut store, &transport).await.unwrap();
+        assert_eq!(delivered.map(|report| report.report_id), Some(id));
+        assert!(
+            probe.reads() <= 3,
+            "one delivery must read only the Reports it touches, read {} bodies",
+            probe.reads()
+        );
+        assert_eq!(transport.bodies.lock().unwrap().len(), 1);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            BACKLOG as i64 - 1
         );
     }
 

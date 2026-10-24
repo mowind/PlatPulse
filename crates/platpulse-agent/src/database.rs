@@ -218,6 +218,35 @@ impl Default for AgentStoreWritePermit {
     }
 }
 
+/// Count the spool Report bodies a code path read out of the Agent Store.
+///
+/// Durable Spool integrity work is only allowed on a bounded number of bodies
+/// per collection tick and per delivery (issue #269), and timing a query is not
+/// a stable way to prove it. Tests therefore assert on this count instead, which
+/// needs no timing and no clock. The probe is cloneable so a code path that
+/// already borrows the store's connection (a running transaction) can still
+/// record what it read.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct SpoolBodyReadProbe {
+    reads: Arc<AtomicUsize>,
+}
+
+#[cfg(test)]
+impl SpoolBodyReadProbe {
+    pub(crate) fn record(&self, rows: usize) {
+        self.reads.fetch_add(rows, Ordering::SeqCst);
+    }
+
+    pub(crate) fn reads(&self) -> usize {
+        self.reads.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn reset(&self) {
+        self.reads.store(0, Ordering::SeqCst);
+    }
+}
+
 /// Errors raised while establishing the operating-system runtime ownership
 /// lock. The lock is advisory and held by an open file descriptor, so process
 /// termination releases ownership without a PID file or stale cleanup.
@@ -590,6 +619,8 @@ async fn migrate_agent_store(connection: &mut SqliteConnection) -> Result<(), Ag
 pub struct AgentStore {
     connection: SqliteConnection,
     write_permit: AgentStoreWritePermit,
+    #[cfg(test)]
+    spool_body_reads: SpoolBodyReadProbe,
 }
 
 impl AgentStore {
@@ -637,6 +668,8 @@ impl AgentStore {
         let store = Self {
             connection,
             write_permit,
+            #[cfg(test)]
+            spool_body_reads: SpoolBodyReadProbe::default(),
         };
         secure_store_file(config.path())?;
         Ok(store)
@@ -650,6 +683,19 @@ impl AgentStore {
     /// Access the sole Agent write connection for typed SQL operations.
     pub(crate) fn connection(&mut self) -> &mut SqliteConnection {
         &mut self.connection
+    }
+
+    /// A handle that records spool body reads without borrowing the store, so
+    /// a path already holding a transaction can still report what it read.
+    #[cfg(test)]
+    pub(crate) fn spool_body_read_probe(&self) -> SpoolBodyReadProbe {
+        self.spool_body_reads.clone()
+    }
+
+    /// Record that a code path read the bodies of `rows` spool Reports.
+    #[cfg(test)]
+    pub(crate) fn record_spool_body_read(&self, rows: usize) {
+        self.spool_body_reads.record(rows);
     }
 
     /// Read the required connection pragmas after startup.

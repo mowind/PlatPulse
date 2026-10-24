@@ -1489,7 +1489,7 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
     >,
     store: &mut AgentStore,
 ) -> Result<String, CollectionError> {
-    crate::reporting::ensure_spool_healthy(store).await?;
+    crate::reporting::ensure_spool_not_fatal(store).await?;
     let state: Option<CollectionState> = load_collection_state(store).await?;
     let (
         agent_text,
@@ -2101,7 +2101,7 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
         write_permit,
     )
     .await?;
-    crate::reporting::ensure_spool_healthy(&mut store).await?;
+    crate::reporting::ensure_spool_not_fatal(&mut store).await?;
     let state: Option<CollectionState> = load_collection_state(&mut store).await?;
     let (
         agent_text,
@@ -2524,6 +2524,12 @@ pub async fn apply_receipt(
 
 /// Apply a stored receipt and delete its report only after all receipt
 /// dispositions have been durably processed, in one Agent Store transaction.
+///
+/// Applying is a read-dependent write: the stored body is hashed and re-parsed
+/// to decide whether the Report may be deleted, so that read stays inside the
+/// write permit for its whole span (ADR 0001). It is one Report, not a spool
+/// scan; issue #269 moved the O(queued Reports) hashing and parsing out of the
+/// permit, not the work that authorizes this single transaction.
 pub async fn apply_receipt_typed<I: ReportInventory>(
     store: &mut AgentStore,
     report_id: &str,
@@ -2547,6 +2553,8 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
     }
 
     let expiry_cutoff = applied_receipt_expiry_cutoff(applied_at)?;
+    #[cfg(test)]
+    let body_reads = store.spool_body_read_probe();
     let _write_permit = store.acquire_write().await;
     let mut tx = store.connection().begin().await?;
     if let Some((marker_hash, marker_disposition)) = sqlx::query_as::<_, (String, String)>(
@@ -2575,35 +2583,50 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
     }
     let mut stale_closing = false;
     let mut inventory_acceptance_conflict: Option<String> = None;
+    // A stored body that no longer matches what was delivered is not a retryable
+    // condition: the Report stays queued, so rolling back alone would recompute
+    // the same failure on every attempt. The reason is carried out of the
+    // transaction and latches the Store fatal (issue #269).
+    let mut store_integrity_failure: Option<String> = None;
     let transaction_result: Result<(), sqlx::Error> = async {
-        let (raw_report, stored_body_sha256, stored_body_bytes): (Vec<u8>, String, i64) =
+        let stored: Option<(Vec<u8>, String, i64)> =
             sqlx::query_as("SELECT body, body_sha256, body_bytes FROM reports WHERE report_id = ?")
                 .bind(report_id)
                 .fetch_optional(&mut *tx)
-                .await?
-                .ok_or_else(|| {
-                    sqlx::Error::Protocol("report is not in the Agent spool".to_owned())
-                })?;
+                .await?;
+        let Some((raw_report, stored_body_sha256, stored_body_bytes)) = stored else {
+            let reason = "report is not in the Agent spool".to_owned();
+            store_integrity_failure = Some(reason.clone());
+            return Err(sqlx::Error::Protocol(reason));
+        };
         let actual_hash = format!("0x{}", hex::encode(sha2::Sha256::digest(&raw_report)));
         if stored_body_bytes < 0
             || stored_body_bytes as usize != raw_report.len()
             || stored_body_sha256 != actual_hash
             || body_sha256 != actual_hash
         {
-            return Err(sqlx::Error::Protocol(
-                "stored report failed integrity validation".to_owned(),
-            ));
+            let reason = "stored report failed integrity validation".to_owned();
+            store_integrity_failure = Some(reason.clone());
+            return Err(sqlx::Error::Protocol(reason));
         }
-        let parsed_report: AgentReport<I> = serde_json::from_slice(&raw_report).map_err(|error| {
-            sqlx::Error::Protocol(format!("stored report is invalid: {error}"))
-        })?;
-        parsed_report.validate().map_err(|error| {
-            sqlx::Error::Protocol(format!("stored report is invalid: {error}"))
-        })?;
+        let parsed_report: AgentReport<I> = match serde_json::from_slice::<AgentReport<I>>(&raw_report)
+        {
+            Ok(report) => report,
+            Err(error) => {
+                let reason = format!("stored report is invalid: {error}");
+                store_integrity_failure = Some(reason.clone());
+                return Err(sqlx::Error::Protocol(reason));
+            }
+        };
+        if let Err(error) = parsed_report.validate() {
+            let reason = format!("stored report is invalid: {error}");
+            store_integrity_failure = Some(reason.clone());
+            return Err(sqlx::Error::Protocol(reason));
+        }
         if parsed_report.report_id.to_string() != report_id {
-            return Err(sqlx::Error::Protocol(
-                "stored report id mismatch".to_owned(),
-            ));
+            let reason = "stored report id mismatch".to_owned();
+            store_integrity_failure = Some(reason.clone());
+            return Err(sqlx::Error::Protocol(reason));
         }
     let mut expected_nodes = std::collections::HashSet::new();
     for node in parsed_report.inventory.nodes() {
@@ -2912,6 +2935,8 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
         Ok(())
     }
     .await;
+    #[cfg(test)]
+    body_reads.record(1);
     match transaction_result {
         Ok(()) => tx.commit().await.map_err(ApplyReceiptError::from),
         Err(error) => match tx.rollback().await {
@@ -2920,25 +2945,41 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
                     Err(ApplyReceiptError::StaleClosing {
                         report_id: report_id.to_owned(),
                     })
-                } else if let Some(conflict) = inventory_acceptance_conflict {
-                    // A confirmation that contradicts accepted state is a peer
-                    // protocol violation: the report and the record are both
-                    // retained, and the store fails closed instead of silently
-                    // dequeuing an acknowledgement.
-                    let reason = format!(
-                        "report {report_id} receipt conflicts with the local confirmation record ({conflict}); manual investigation required"
-                    );
-                    if let Err(mark_error) =
-                        crate::reporting::mark_spool_fatal_under_permit(store, applied_at, &reason)
-                            .await
-                    {
-                        return Err(ApplyReceiptError::Database(sqlx::Error::Protocol(format!(
-                            "{reason}; additionally failed to mark the store fatal: {mark_error}"
-                        ))));
-                    }
-                    Err(ApplyReceiptError::Database(sqlx::Error::Protocol(reason)))
                 } else {
-                    Err(ApplyReceiptError::Database(error))
+                    // Two rollbacks are not retryable. A stored body that no
+                    // longer matches what was delivered is retained by the
+                    // rollback, so the delivery loop would recompute the same
+                    // failure forever (issue #269). A confirmation that
+                    // contradicts accepted state is a peer protocol violation:
+                    // the Report and the record are both retained rather than
+                    // silently dequeuing an acknowledgement. Both fail closed by
+                    // latching the Store fatal, and they share this one handling
+                    // so the fatal-persistence semantics cannot diverge.
+                    let reason = store_integrity_failure.or_else(|| {
+                        inventory_acceptance_conflict.map(|conflict| {
+                            format!(
+                                "report {report_id} receipt conflicts with the local confirmation record ({conflict}); manual investigation required"
+                            )
+                        })
+                    });
+                    match reason {
+                        None => Err(ApplyReceiptError::Database(error)),
+                        Some(reason) => {
+                            if let Err(mark_error) =
+                                crate::reporting::mark_spool_fatal_under_permit(
+                                    store, applied_at, &reason,
+                                )
+                                .await
+                            {
+                                return Err(ApplyReceiptError::Database(sqlx::Error::Protocol(
+                                    format!(
+                                        "{reason}; additionally failed to mark the store fatal: {mark_error}"
+                                    ),
+                                )));
+                            }
+                            Err(ApplyReceiptError::Database(sqlx::Error::Protocol(reason)))
+                        }
+                    }
                 }
             }
             Err(rollback_error) => Err(ApplyReceiptError::Database(rollback_error)),
@@ -4086,6 +4127,78 @@ mod tests {
             serde_json::from_slice(&read_spool_body(&mut store, &third_digest).await).unwrap();
         assert_eq!(third.boot_transition, BootTransition::Continuing);
         assert_eq!(third.previous_boot_id, None);
+        store.close().await.unwrap();
+    }
+
+    /// Issue #269 acceptance: with thousands of Reports and ~100 MiB queued, one
+    /// collection tick reads no queued Report body at all. Queue integrity is a
+    /// start-up boundary plus the Report being delivered, never a per-tick scan
+    /// of the whole Durable Spool.
+    #[tokio::test]
+    async fn backlogged_collection_tick_reads_no_queued_spool_body() {
+        const BACKLOG: u64 = 3_000;
+        const FIRST_SEQUENCE: u64 = 1_000;
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("agent.toml");
+        let db_path = dir.path().join("agent.db");
+        std::fs::write(
+            &config_path,
+            format!(
+                "server_url=\"https://example.com\"\ncredential_file=\"{}/credential\"\nstate_db=\"{}\"\ninventory_revision=1\nnodes=[{{node_id=\"0195f2a1-0014-4014-8014-000000000014\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:6790\"}}]\n[spool]\nmax_bytes = 536870912\n",
+                dir.path().display(),
+                db_path.display()
+            ),
+        )
+        .unwrap();
+        let config = AgentConfig::resolve(&config_path).unwrap();
+        let boot = "0195f2a1-0040-4040-8040-000000000040";
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, boot_state, updated_at) VALUES (1, ?, 1, ?, 1, 1, 'active', ?)")
+            .bind("0195f2a1-0011-4011-8011-000000000011")
+            .bind(boot)
+            .bind("2026-08-12T08:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+
+        // The backlog is stamped now, so the Spool age bound drops nothing and a
+        // dropping policy cannot be mistaken for the read-count under test.
+        let generated_at = crate::database::now_rfc3339();
+        crate::reporting::apply_spool_policy(&mut store, &config.spool.policy(), &generated_at)
+            .await
+            .unwrap();
+        let queued_bytes = crate::reporting::spool_backlog_fixture::seed(
+            &mut store,
+            boot,
+            &generated_at,
+            FIRST_SEQUENCE,
+            BACKLOG,
+        )
+        .await;
+        assert!(
+            queued_bytes > 100 * 1024 * 1024,
+            "the guarded backlog must be realistically large, got {queued_bytes} bytes"
+        );
+
+        let probe = store.spool_body_read_probe();
+        probe.reset();
+        collect_and_persist_in_store(&config, &ScriptedRpcAdapter::new(snapshot()), &mut store)
+            .await
+            .unwrap();
+        assert_eq!(
+            probe.reads(),
+            0,
+            "a collection tick must not read queued Report bodies"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            BACKLOG as i64 + 1
+        );
         store.close().await.unwrap();
     }
 
