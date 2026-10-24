@@ -1,5 +1,5 @@
 //! Transactional AgentReport ingestion for the first Inventory vertical slice.
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::str::FromStr;
 
 use axum::body::{Body, Bytes, to_bytes};
@@ -397,19 +397,17 @@ async fn save_peer_presence(
     snapshot: &PeerSnapshot,
     received_at: &str,
     had_previous_successful_snapshot: bool,
+    stored: &StoredPeerState,
 ) -> Result<PeerPresenceDelta, sqlx::Error> {
     // The first successful snapshot is the baseline. Presence intervals are
     // derived only from a difference between two successful snapshots.
     if !had_previous_successful_snapshot {
         return Ok(PeerPresenceDelta::default());
     }
-    let previous_peer_ids: HashSet<String> =
-        sqlx::query_scalar("SELECT peer_id FROM current_node_peers WHERE node_id=$1")
-            .bind(node_id)
-            .fetch_all(&mut **tx)
-            .await?
-            .into_iter()
-            .collect();
+    // The Peer set the Server holds is the previous successful snapshot, and
+    // the Report has already read it once for its diff write (issue #271), so
+    // the boundary is derived from that read instead of a second query.
+    let previous_peer_ids = &stored.peers;
     let open_peer_ids: HashSet<String> = sqlx::query_scalar(
         "SELECT peer_id FROM peer_presence_intervals WHERE node_id=$1 AND closed_at IS NULL",
     )
@@ -426,10 +424,10 @@ async fn save_peer_presence(
     let delta = PeerPresenceDelta {
         arrivals: incoming
             .iter()
-            .filter(|peer_id| !previous_peer_ids.contains(peer_id.as_str()))
+            .filter(|peer_id| !previous_peer_ids.contains_key(peer_id.as_str()))
             .count() as i64,
         departures: previous_peer_ids
-            .iter()
+            .keys()
             .filter(|peer_id| !incoming.contains(peer_id.as_str()))
             .count() as i64,
     };
@@ -439,7 +437,9 @@ async fn save_peer_presence(
     // present; a later changed snapshot is still the same connection.
     for peer in &snapshot.peers {
         let safe_peer_id = crate::redaction::redact_peer_identity(&peer.peer_id);
-        if previous_peer_ids.contains(&safe_peer_id) || open_peer_ids.contains(&safe_peer_id) {
+        if previous_peer_ids.contains_key(safe_peer_id.as_str())
+            || open_peer_ids.contains(&safe_peer_id)
+        {
             continue;
         }
         let direction = match peer.direction {
@@ -494,10 +494,16 @@ const PEER_CAPABILITY_INSERT_ROWS: usize = 200;
 const RPC_INSERT_ROWS: usize = 200;
 
 /// One Peer of a successful snapshot, already redacted and canonicalised.
+///
+/// The Server stores a Peer and a snapshot reports a Peer in the same shape, so
+/// the difference between two snapshots is a field comparison rather than a
+/// second query: [`StoredPeerState`] holds the rows the Server already has, and
+/// a row the snapshot no longer reports is exactly the row the write deletes.
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
 struct CurrentPeerRow {
     peer_id: String,
     remote_ip: Option<String>,
-    direction: &'static str,
+    direction: String,
     trusted: i64,
     static_peer: i64,
     consensus_peer: i64,
@@ -508,72 +514,170 @@ struct CurrentPeerRow {
     cbft_commit_block: Option<i64>,
 }
 
+/// The Peer set one Node already has, with the capabilities recorded for it.
+///
+/// Report Ingestion reads it once per Report: the presence interval boundary
+/// and the diff write both derive from the same rows (issue #271), and a
+/// snapshot that repeats them writes nothing.
+#[derive(Debug, Default)]
+struct StoredPeerState {
+    peers: BTreeMap<String, CurrentPeerRow>,
+    capabilities: BTreeMap<String, BTreeSet<String>>,
+}
+
+async fn load_stored_peers(
+    tx: &mut Transaction<'_, Any>,
+    node_id: &str,
+) -> Result<StoredPeerState, sqlx::Error> {
+    let peers = sqlx::query_as::<_, CurrentPeerRow>(
+        "SELECT peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, cbft_protocol_version, cbft_highest_qc_block, cbft_locked_block, cbft_commit_block FROM current_node_peers WHERE node_id=$1",
+    )
+    .bind(node_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut stored = StoredPeerState {
+        peers: peers
+            .into_iter()
+            .map(|peer| (peer.peer_id.clone(), peer))
+            .collect(),
+        capabilities: BTreeMap::new(),
+    };
+    let capabilities = sqlx::query_as::<_, (String, String)>(
+        "SELECT peer_id, capability FROM current_node_peer_capabilities WHERE node_id=$1",
+    )
+    .bind(node_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    for (peer_id, capability) in capabilities {
+        stored
+            .capabilities
+            .entry(peer_id)
+            .or_default()
+            .insert(capability);
+    }
+    Ok(stored)
+}
+
+/// Write only the difference between the Peer set a snapshot reports and the
+/// one the Server holds: arrivals are inserted, departures deleted, and a Peer
+/// whose attributes changed is rewritten.
+///
+/// A Report that repeats a Peer set writes no row here at all (issue #271).
+/// Peer freshness is the `peers` component's last value receipt
+/// (`component_status.value_received_at`), so the row stamp records a change
+/// instead of the receipt, and an unchanged snapshot leaves both Peer tables
+/// exactly as they were.
 async fn save_current_peers(
     tx: &mut Transaction<'_, Any>,
     node_id: &str,
-    component: &ComponentObservation<PeerSnapshot>,
+    snapshot: &PeerSnapshot,
     received_at: &str,
+    stored: &StoredPeerState,
 ) -> Result<(), sqlx::Error> {
-    if component.status != ComponentStatus::Ok {
-        return Ok(());
-    }
-    let Some(snapshot) = component.latest.as_ref() else {
-        return Ok(());
-    };
-
-    // A successful snapshot is authoritative, including an empty list. Error,
-    // Unsupported, and omitted optional components leave this table untouched.
-    sqlx::query("DELETE FROM current_node_peer_capabilities WHERE node_id=$1")
-        .bind(node_id)
-        .execute(&mut **tx)
-        .await?;
-    sqlx::query("DELETE FROM current_node_peers WHERE node_id=$1")
-        .bind(node_id)
-        .execute(&mut **tx)
-        .await?;
-
-    // The snapshot is prepared once and then written a chunk at a time, so the
-    // round trips stay proportional to the Report instead of to the Peer count.
-    let mut peers: Vec<CurrentPeerRow> = Vec::with_capacity(snapshot.peers.len());
-    let mut capabilities: Vec<(String, String)> = Vec::new();
+    // The snapshot is reduced to the rows the Server can compare, keyed by Peer
+    // ID so the diff walks both sides in one pass.
+    let mut reported: BTreeMap<String, (CurrentPeerRow, BTreeSet<String>)> = BTreeMap::new();
     for peer in &snapshot.peers {
-        let direction = match peer.direction {
-            PeerDirection::Inbound => "inbound",
-            PeerDirection::Outbound => "outbound",
-        };
-        let canonical_ip = peer
-            .remote_ip
-            .as_deref()
-            .and_then(crate::geo::GeoLoader::canonical_public_ip);
-        let safe_client_name = peer
-            .client_name
-            .as_deref()
-            .map(crate::redaction::redact_sensitive);
         let safe_peer_id = crate::redaction::redact_peer_identity(&peer.peer_id);
-        for capability in &peer.caps {
-            capabilities.push((
-                safe_peer_id.clone(),
-                crate::redaction::redact_sensitive(capability),
-            ));
-        }
-        peers.push(CurrentPeerRow {
-            peer_id: safe_peer_id,
-            remote_ip: canonical_ip,
-            direction,
-            trusted: peer.trusted as i64,
-            static_peer: peer.static_peer as i64,
-            consensus_peer: peer.consensus_peer as i64,
-            client_name: safe_client_name,
-            cbft_protocol_version: peer.cbft_protocol_version.map(|value| value as i64),
-            cbft_highest_qc_block: peer.cbft_highest_qc_block.map(|value| value as i64),
-            cbft_locked_block: peer.cbft_locked_block.map(|value| value as i64),
-            cbft_commit_block: peer.cbft_commit_block.map(|value| value as i64),
-        });
+        let capabilities = peer
+            .caps
+            .iter()
+            .map(|capability| crate::redaction::redact_sensitive(capability))
+            .collect();
+        reported.insert(
+            safe_peer_id.clone(),
+            (
+                CurrentPeerRow {
+                    peer_id: safe_peer_id,
+                    remote_ip: peer
+                        .remote_ip
+                        .as_deref()
+                        .and_then(crate::geo::GeoLoader::canonical_public_ip),
+                    direction: match peer.direction {
+                        PeerDirection::Inbound => "inbound".to_owned(),
+                        PeerDirection::Outbound => "outbound".to_owned(),
+                    },
+                    trusted: peer.trusted as i64,
+                    static_peer: peer.static_peer as i64,
+                    consensus_peer: peer.consensus_peer as i64,
+                    client_name: peer
+                        .client_name
+                        .as_deref()
+                        .map(crate::redaction::redact_sensitive),
+                    cbft_protocol_version: peer.cbft_protocol_version.map(|value| value as i64),
+                    cbft_highest_qc_block: peer.cbft_highest_qc_block.map(|value| value as i64),
+                    cbft_locked_block: peer.cbft_locked_block.map(|value| value as i64),
+                    cbft_commit_block: peer.cbft_commit_block.map(|value| value as i64),
+                },
+                capabilities,
+            ),
+        );
     }
 
-    for chunk in peers.chunks(PEER_INSERT_ROWS) {
+    // A successful snapshot is authoritative, including an empty list: every
+    // Peer it no longer reports loses its row and the capabilities recorded
+    // with it. The capabilities are deleted explicitly rather than left to the
+    // foreign key cascade, so both tables stay clean on every Storage Backend.
+    let departed: Vec<&str> = stored
+        .peers
+        .keys()
+        .filter(|peer_id| !reported.contains_key(*peer_id))
+        .map(String::as_str)
+        .collect();
+    for chunk in departed.chunks(PEER_INSERT_ROWS) {
         let sql = crate::database::number_placeholders(&format!(
-            "INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, cbft_protocol_version, cbft_highest_qc_block, cbft_locked_block, cbft_commit_block, updated_at) VALUES {}",
+            "DELETE FROM current_node_peer_capabilities WHERE node_id=? AND peer_id IN ({})",
+            crate::database::placeholder_list(chunk.len())
+        ));
+        let mut statement = sqlx::query(&sql).bind(node_id);
+        for peer_id in chunk {
+            statement = statement.bind(*peer_id);
+        }
+        statement.execute(&mut **tx).await?;
+        let sql = crate::database::number_placeholders(&format!(
+            "DELETE FROM current_node_peers WHERE node_id=? AND peer_id IN ({})",
+            crate::database::placeholder_list(chunk.len())
+        ));
+        let mut statement = sqlx::query(&sql).bind(node_id);
+        for peer_id in chunk {
+            statement = statement.bind(*peer_id);
+        }
+        statement.execute(&mut **tx).await?;
+    }
+
+    // Arrivals and changed attributes share one statement shape, so the round
+    // trips stay proportional to what changed instead of to the Peer count: a
+    // Peer the Server does not hold is inserted, and a Peer whose content
+    // differs is rewritten with the snapshot's values. An unchanged Peer is in
+    // neither list, which is what makes a repeated snapshot write nothing.
+    let mut rewritten: Vec<&CurrentPeerRow> = Vec::new();
+    let mut arrived_capabilities: Vec<(&str, &str)> = Vec::new();
+    let mut departed_capabilities: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (peer_id, (row, capabilities)) in &reported {
+        if stored.peers.get(peer_id) != Some(row) {
+            rewritten.push(row);
+        }
+        let recorded = stored.capabilities.get(peer_id);
+        for capability in capabilities {
+            if !recorded.is_some_and(|recorded| recorded.contains(capability)) {
+                arrived_capabilities.push((peer_id.as_str(), capability.as_str()));
+            }
+        }
+        if let Some(recorded) = recorded {
+            for capability in recorded {
+                if !capabilities.contains(capability) {
+                    departed_capabilities
+                        .entry(peer_id.as_str())
+                        .or_default()
+                        .push(capability.as_str());
+                }
+            }
+        }
+    }
+
+    for chunk in rewritten.chunks(PEER_INSERT_ROWS) {
+        let sql = crate::database::number_placeholders(&format!(
+            "INSERT INTO current_node_peers (node_id, peer_id, remote_ip, direction, trusted, static_peer, consensus_peer, client_name, cbft_protocol_version, cbft_highest_qc_block, cbft_locked_block, cbft_commit_block, updated_at) VALUES {} ON CONFLICT(node_id, peer_id) DO UPDATE SET remote_ip=excluded.remote_ip, direction=excluded.direction, trusted=excluded.trusted, static_peer=excluded.static_peer, consensus_peer=excluded.consensus_peer, client_name=excluded.client_name, cbft_protocol_version=excluded.cbft_protocol_version, cbft_highest_qc_block=excluded.cbft_highest_qc_block, cbft_locked_block=excluded.cbft_locked_block, cbft_commit_block=excluded.cbft_commit_block, updated_at=excluded.updated_at",
             crate::database::row_placeholders(13, chunk.len())
         ));
         let mut statement = sqlx::query(&sql);
@@ -582,7 +686,7 @@ async fn save_current_peers(
                 .bind(node_id)
                 .bind(&peer.peer_id)
                 .bind(peer.remote_ip.as_deref())
-                .bind(peer.direction)
+                .bind(peer.direction.as_str())
                 .bind(peer.trusted)
                 .bind(peer.static_peer)
                 .bind(peer.consensus_peer)
@@ -596,7 +700,24 @@ async fn save_current_peers(
         statement.execute(&mut **tx).await?;
     }
 
-    for chunk in capabilities.chunks(PEER_CAPABILITY_INSERT_ROWS) {
+    // A Peer whose capabilities changed is diffed per capability. A capability
+    // rarely disappears from a connected Peer, so a removal is one bounded
+    // statement for that Peer while every addition shares the batched insert.
+    for (peer_id, capabilities) in &departed_capabilities {
+        for chunk in capabilities.chunks(PEER_CAPABILITY_INSERT_ROWS) {
+            let sql = crate::database::number_placeholders(&format!(
+                "DELETE FROM current_node_peer_capabilities WHERE node_id=? AND peer_id=? AND capability IN ({})",
+                crate::database::placeholder_list(chunk.len())
+            ));
+            let mut statement = sqlx::query(&sql).bind(node_id).bind(*peer_id);
+            for capability in chunk {
+                statement = statement.bind(*capability);
+            }
+            statement.execute(&mut **tx).await?;
+        }
+    }
+
+    for chunk in arrived_capabilities.chunks(PEER_CAPABILITY_INSERT_ROWS) {
         let sql = crate::database::number_placeholders(&format!(
             "INSERT INTO current_node_peer_capabilities (node_id, peer_id, capability, updated_at) VALUES {}",
             crate::database::row_placeholders(4, chunk.len())
@@ -605,18 +726,16 @@ async fn save_current_peers(
         for (peer_id, capability) in chunk {
             statement = statement
                 .bind(node_id)
-                .bind(peer_id)
-                .bind(capability)
+                .bind(*peer_id)
+                .bind(*capability)
                 .bind(received_at);
         }
         statement.execute(&mut **tx).await?;
     }
 
-    // The Geo cache's reference bookkeeping runs after this receipt commits
-    // (`crate::geo::refresh_peer_references`): two concurrent Reports that
-    // took the same cache row locks in opposite orders deadlocked on
-    // PostgreSQL (40P01), and cache hygiene must never be able to refuse a
-    // Report.
+    // Geo cache hygiene is not part of this write: `crate::geo::cleanup_cache`
+    // refreshes Peer references and drops unreferenced addresses on its own
+    // maintenance cycle (issue #271).
     Ok(())
 }
 
@@ -1659,20 +1778,32 @@ async fn save_current<I: ReportInventory>(
         )
         .await?;
         if let Some(peers) = &node.chain.peers {
-            let had_previous_successful_snapshot = if peers.status == ComponentStatus::Ok
-                && peers.latest.is_some()
-            {
-                sqlx::query_scalar::<_, Option<String>>(
-                        "SELECT value_received_at FROM component_status WHERE agent_id=$1 AND scope='node' AND scope_key=$2 AND component_key='peers'",
-                    )
-                    .bind(&agent_id)
-                    .bind(&node_id)
-                    .fetch_optional(&mut **tx)
-                    .await?
-                    .flatten()
-                    .is_some()
+            // A failed or unsupported collection keeps the last successful set
+            // and its age; only a successful snapshot is authoritative,
+            // including an empty list. Repetition of that rule lives in the
+            // writers below.
+            let snapshot = if peers.status == ComponentStatus::Ok {
+                peers.latest.as_ref()
             } else {
-                false
+                None
+            };
+            let had_previous_successful_snapshot = match snapshot {
+                None => false,
+                Some(_) => sqlx::query_scalar::<_, Option<String>>(
+                    "SELECT value_received_at FROM component_status WHERE agent_id=$1 AND scope='node' AND scope_key=$2 AND component_key='peers'",
+                )
+                .bind(&agent_id)
+                .bind(&node_id)
+                .fetch_optional(&mut **tx)
+                .await?
+                .flatten()
+                .is_some(),
+            };
+            // The current Peer set is read once per Report: the presence
+            // interval boundary and the diff write share that read (#271).
+            let stored_peers = match snapshot {
+                None => StoredPeerState::default(),
+                Some(_) => load_stored_peers(tx, &node_id).await?,
             };
             save_component(
                 tx,
@@ -1685,37 +1816,33 @@ async fn save_current<I: ReportInventory>(
                 received_at,
             )
             .await?;
-            let presence_delta = if peers.status == ComponentStatus::Ok {
-                if let Some(snapshot) = peers.latest.as_ref() {
+            let presence_delta = match snapshot {
+                None => PeerPresenceDelta::default(),
+                Some(snapshot) => {
                     save_peer_presence(
                         tx,
                         &node_id,
                         snapshot,
                         received_at,
                         had_previous_successful_snapshot,
+                        &stored_peers,
                     )
                     .await?
-                } else {
-                    PeerPresenceDelta::default()
                 }
-            } else {
-                PeerPresenceDelta::default()
             };
-            save_current_peers(tx, &node_id, peers, received_at).await?;
-            if peers.status == ComponentStatus::Ok {
-                if let Some(snapshot) = peers.latest.as_ref() {
-                    let local_head = node.chain.sync.latest.map(|sync| sync.current_block);
-                    crate::peer_history::record_successful_snapshot(
-                        tx,
-                        &node_id,
-                        snapshot,
-                        received_at,
-                        local_head,
-                        presence_delta,
-                        geo_provider,
-                    )
-                    .await?;
-                }
+            if let Some(snapshot) = snapshot {
+                save_current_peers(tx, &node_id, snapshot, received_at, &stored_peers).await?;
+                let local_head = node.chain.sync.latest.map(|sync| sync.current_block);
+                crate::peer_history::record_successful_snapshot(
+                    tx,
+                    &node_id,
+                    snapshot,
+                    received_at,
+                    local_head,
+                    presence_delta,
+                    geo_provider,
+                )
+                .await?;
             }
         }
         if let Some(process) = node.process.latest {
@@ -3779,16 +3906,11 @@ async fn ingest_report<I: ReportInventory>(
     // statement and a concurrent Report lock the same node_metric_series_state
     // / host_metric_series_state rows in opposite orders, which PostgreSQL
     // resolved as a deadlock (40P01) whose victim could have been the Report.
-    // Peer references are cache hygiene rather than part of the receipt, so
-    // they run here, serialised and best effort: two Reports taking the same
-    // `geo_location_cache` row locks in opposite orders deadlocked on
-    // PostgreSQL (40P01), and a Report must never be refused for it.
-    if peer_component_present {
-        if let Err(error) = crate::geo::refresh_peer_references(state.db().pool(), &now_text).await
-        {
-            tracing::warn!(error = %error, "Peer reference refresh deferred after ingestion");
-        }
-    }
+    // Peer references are cache hygiene rather than part of the receipt too:
+    // `crate::geo::cleanup_cache` refreshes them, drops the addresses no
+    // current Peer references, and applies the cache bound on its own
+    // maintenance cycle (issue #271). A Report neither scans nor rewrites the
+    // Geo cache, so cache hygiene can never refuse one.
     // Every committed report can change the Owner-side Node/Agent health
     // projection (including host-only reports), while the Public projection
     // changes only when the report contains a Node observation.
@@ -5624,6 +5746,373 @@ mod tests {
             1,
             "retiring a Node without a snapshot does not fabricate a departure"
         );
+    }
+
+    /// Every stamp a Peer write can move: one entry per current Peer and one
+    /// per recorded capability, so a Report that rewrites nothing is visible as
+    /// an unchanged stamp instead of a guess about timing.
+    async fn peer_stamps(state: &AppState, node_id: &str) -> Vec<(String, String)> {
+        let mut stamps: Vec<(String, String)> = sqlx::query_as(
+            "SELECT peer_id, updated_at FROM current_node_peers WHERE node_id=$1 ORDER BY peer_id",
+        )
+        .bind(node_id)
+        .fetch_all(state.db().pool())
+        .await
+        .unwrap();
+        stamps.extend(
+            sqlx::query_as::<_, (String, String)>(
+                "SELECT peer_id || ':' || capability, updated_at FROM current_node_peer_capabilities WHERE node_id=$1 ORDER BY peer_id, capability",
+            )
+            .bind(node_id)
+            .fetch_all(state.db().pool())
+            .await
+            .unwrap(),
+        );
+        stamps
+    }
+
+    /// Replace every Peer stamp with a sentinel, so the next Report can only
+    /// leave it in place by writing no row at all.
+    async fn stamp_peer_rows(state: &AppState, node_id: &str, stamp: &str) {
+        for statement in [
+            "UPDATE current_node_peers SET updated_at=$1 WHERE node_id=$2",
+            "UPDATE current_node_peer_capabilities SET updated_at=$1 WHERE node_id=$2",
+        ] {
+            sqlx::query(statement)
+                .bind(stamp)
+                .bind(node_id)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+    }
+
+    fn stamp_of(stamps: &[(String, String)], key: &str) -> String {
+        stamps
+            .iter()
+            .find(|(recorded, _)| recorded == key)
+            .unwrap_or_else(|| panic!("{key} is not recorded in {stamps:?}"))
+            .1
+            .clone()
+    }
+
+    fn peer_snapshot_body(peers: serde_json::Value) -> serde_json::Value {
+        let mut value: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        value["nodes"][0]["chain"]["peers"] = serde_json::json!({
+            "status": "ok",
+            "attempted_at": "2026-08-12T10:00:00Z",
+            "latest_observed_at": "2026-08-12T10:00:00Z",
+            "state_revision": 1,
+            "value_revision": 1,
+            "latest": {"peers": peers}
+        });
+        value
+    }
+
+    /// Acceptance of issue #271: a Report whose Peer set has not changed writes
+    /// no row to the Peer tables or the Geo cache, and the Peer Snapshot still
+    /// proves it is fresh through its own component receipt rather than a row
+    /// stamp.
+    #[tokio::test]
+    async fn repeated_peer_snapshot_writes_no_peer_row() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let node_id = "0195f2a1-0014-4014-8014-000000000014";
+        let sentinel = "2026-01-01T00:00:00Z";
+        let peers = serde_json::json!([
+            {
+                "peer_id": "peer-a",
+                "remote_ip": "8.8.8.8",
+                "direction": "inbound",
+                "trusted": true,
+                "static_peer": false,
+                "consensus_peer": true,
+                "client_name": "PlatON/v1.5.1",
+                "caps": ["cbft/1"],
+                "cbft_protocol_version": 1,
+                "cbft_highest_qc_block": 100,
+                "cbft_locked_block": 99,
+                "cbft_commit_block": 98
+            },
+            {
+                "peer_id": "peer-b",
+                "remote_ip": "192.0.2.10",
+                "direction": "outbound",
+                "trusted": false,
+                "static_peer": true,
+                "consensus_peer": false,
+                "caps": ["cbft/2"]
+            }
+        ]);
+        let mut value = peer_snapshot_body(peers);
+        value["report_id"] = serde_json::json!("0195f2a1-0180-4180-8180-000000000180");
+        value["report_sequence"] = serde_json::json!(1);
+        assert_eq!(
+            submit(&state, &agent_id, serde_json::to_vec(&value).unwrap())
+                .await
+                .disposition,
+            ReceiptDisposition::Accepted
+        );
+        // A country result as the maintenance cycle leaves it for the public
+        // address this snapshot references.
+        let cache_now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', '8.8.8.8', 'US', 'current', $1, $2, $3, $4, $5)")
+            .bind(&cache_now)
+            .bind(&cache_now)
+            .bind(&cache_now)
+            .bind(&cache_now)
+            .bind("2026-01-02T00:00:00Z")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        stamp_peer_rows(&state, node_id, sentinel).await;
+        sqlx::query("UPDATE geo_location_cache SET last_referenced_at=$1")
+            .bind(sentinel)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE component_status SET value_received_at=$1 WHERE node_id=$2 AND component_key='peers'")
+            .bind(sentinel)
+            .bind(node_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        // A row-level write counter. SQLite fires these triggers for every row a
+        // statement touches even when the new values equal the old ones, so a
+        // same-value UPDATE cannot hide behind an unchanged stamp. PostgreSQL
+        // proves the same property through the sentinel stamps alone, since its
+        // triggers would need a function the production schema does not have.
+        if cfg!(not(storage_postgres)) {
+            sqlx::query("CREATE TABLE peer_write_probe (probe TEXT NOT NULL)")
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+            for (table, name) in [
+                ("current_node_peers", "peers"),
+                ("current_node_peer_capabilities", "capabilities"),
+            ] {
+                for event in ["INSERT", "UPDATE", "DELETE"] {
+                    sqlx::query(&format!(
+                        "CREATE TRIGGER probe_{name}_{event} AFTER {event} ON {table} \
+                         BEGIN INSERT INTO peer_write_probe (probe) VALUES ('{name} {event}'); END"
+                    ))
+                    .execute(state.db().pool())
+                    .await
+                    .unwrap();
+                }
+            }
+            // Self-check: a no-op UPDATE of the same rows must be counted, so the
+            // zero below cannot pass because the triggers never fire.
+            sqlx::query("UPDATE current_node_peers SET trusted = trusted")
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM peer_write_probe")
+                    .fetch_one(state.db().pool())
+                    .await
+                    .unwrap(),
+                2,
+                "the write probe counts a same-value Peer UPDATE"
+            );
+            sqlx::query("DELETE FROM peer_write_probe")
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+
+        value["report_id"] = serde_json::json!("0195f2a1-0181-4181-8181-000000000181");
+        value["report_sequence"] = serde_json::json!(2);
+        assert_eq!(
+            submit(&state, &agent_id, serde_json::to_vec(&value).unwrap())
+                .await
+                .disposition,
+            ReceiptDisposition::Accepted
+        );
+
+        let stamps = peer_stamps(&state, node_id).await;
+        assert_eq!(
+            stamps,
+            vec![
+                ("peer-a".to_owned(), sentinel.to_owned()),
+                ("peer-b".to_owned(), sentinel.to_owned()),
+                ("peer-a:cbft/1".to_owned(), sentinel.to_owned()),
+                ("peer-b:cbft/2".to_owned(), sentinel.to_owned()),
+            ],
+            "a repeated Peer set must not rewrite a Peer or a capability row"
+        );
+        if cfg!(not(storage_postgres)) {
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM peer_write_probe")
+                    .fetch_one(state.db().pool())
+                    .await
+                    .unwrap(),
+                0,
+                "a repeated Peer set must not issue a Peer write statement at all"
+            );
+        }
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT last_referenced_at FROM geo_location_cache WHERE canonical_ip='8.8.8.8'",
+            )
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            sentinel,
+            "the receipt no longer refreshes Peer references; the maintenance cycle owns them"
+        );
+        assert_ne!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT value_received_at FROM component_status WHERE node_id=$1 AND component_key='peers'",
+            )
+            .bind(node_id)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            sentinel,
+            "the Peer Snapshot still stamps its own freshness on every successful snapshot"
+        );
+    }
+
+    /// The diff write of issue #271: an arrival is inserted, a departure is
+    /// deleted with its capabilities, and a Peer whose attributes changed is
+    /// the only row rewritten. A Peer the snapshot repeats untouched keeps its
+    /// stamp, so the Server never rewrites the whole set to absorb one change.
+    #[tokio::test]
+    async fn peer_snapshot_writes_only_the_difference() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let node_id = "0195f2a1-0014-4014-8014-000000000014";
+        let sentinel = "2026-01-01T00:00:00Z";
+        let peer_a = serde_json::json!({
+            "peer_id": "peer-a",
+            "remote_ip": "8.8.8.8",
+            "direction": "inbound",
+            "trusted": true,
+            "static_peer": false,
+            "consensus_peer": true,
+            "client_name": "PlatON/v1.5.1",
+            "caps": ["cbft/1"],
+            "cbft_protocol_version": 1,
+            "cbft_highest_qc_block": 100,
+            "cbft_locked_block": 99,
+            "cbft_commit_block": 98
+        });
+        let peer_b = serde_json::json!({
+            "peer_id": "peer-b",
+            "direction": "outbound",
+            "trusted": false,
+            "static_peer": true,
+            "consensus_peer": false,
+            "caps": ["cbft/2"]
+        });
+        let peer_c = serde_json::json!({
+            "peer_id": "peer-c",
+            "direction": "inbound",
+            "trusted": false,
+            "static_peer": false,
+            "consensus_peer": false,
+            "caps": ["cbft/3"]
+        });
+        let mut value = peer_snapshot_body(serde_json::json!([peer_a.clone(), peer_b]));
+        value["report_id"] = serde_json::json!("0195f2a1-0190-4190-8190-000000000190");
+        value["report_sequence"] = serde_json::json!(1);
+        assert_eq!(
+            submit(&state, &agent_id, serde_json::to_vec(&value).unwrap())
+                .await
+                .disposition,
+            ReceiptDisposition::Accepted
+        );
+        stamp_peer_rows(&state, node_id, sentinel).await;
+
+        // peer-b departs, peer-c arrives, and peer-a is repeated unchanged.
+        value["nodes"][0]["chain"]["peers"]["latest"]["peers"] =
+            serde_json::json!([peer_a.clone(), peer_c]);
+        value["report_id"] = serde_json::json!("0195f2a1-0191-4191-8191-000000000191");
+        value["report_sequence"] = serde_json::json!(2);
+        assert_eq!(
+            submit(&state, &agent_id, serde_json::to_vec(&value).unwrap())
+                .await
+                .disposition,
+            ReceiptDisposition::Accepted
+        );
+        let stamps = peer_stamps(&state, node_id).await;
+        assert_eq!(
+            stamps
+                .iter()
+                .map(|(recorded, _)| recorded.as_str())
+                .collect::<Vec<_>>(),
+            vec!["peer-a", "peer-c", "peer-a:cbft/1", "peer-c:cbft/3"],
+            "the departure is deleted and the arrival inserted"
+        );
+        assert_eq!(
+            stamp_of(&stamps, "peer-a"),
+            sentinel,
+            "an unchanged Peer keeps its stamp instead of being rewritten"
+        );
+        assert_ne!(stamp_of(&stamps, "peer-c"), sentinel);
+        assert_ne!(stamp_of(&stamps, "peer-c:cbft/3"), sentinel);
+
+        // peer-a now reports a newer highest QC block and one extra capability.
+        let mut changed = peer_a.clone();
+        changed["cbft_highest_qc_block"] = serde_json::json!(101);
+        changed["caps"] = serde_json::json!(["cbft/1", "cbft/9"]);
+        value["nodes"][0]["chain"]["peers"]["latest"]["peers"] =
+            serde_json::json!([changed, peer_c.clone()]);
+        value["report_id"] = serde_json::json!("0195f2a1-0192-4192-8192-000000000192");
+        value["report_sequence"] = serde_json::json!(3);
+        assert_eq!(
+            submit(&state, &agent_id, serde_json::to_vec(&value).unwrap())
+                .await
+                .disposition,
+            ReceiptDisposition::Accepted
+        );
+        let stamps = peer_stamps(&state, node_id).await;
+        assert_ne!(
+            stamp_of(&stamps, "peer-a"),
+            sentinel,
+            "a Peer whose attributes changed is rewritten"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT cbft_highest_qc_block FROM current_node_peers WHERE node_id=$1 AND peer_id='peer-a'",
+            )
+            .bind(node_id)
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap(),
+            101
+        );
+        assert_eq!(
+            stamp_of(&stamps, "peer-a:cbft/1"),
+            sentinel,
+            "a capability the snapshot repeats is not rewritten"
+        );
+        assert_ne!(stamp_of(&stamps, "peer-a:cbft/9"), sentinel);
+
+        // The capability that is no longer reported disappears on its own.
+        let mut narrowed = changed;
+        narrowed["caps"] = serde_json::json!(["cbft/9"]);
+        value["nodes"][0]["chain"]["peers"]["latest"]["peers"] =
+            serde_json::json!([narrowed, peer_c]);
+        value["report_id"] = serde_json::json!("0195f2a1-0193-4193-8193-000000000193");
+        value["report_sequence"] = serde_json::json!(4);
+        assert_eq!(
+            submit(&state, &agent_id, serde_json::to_vec(&value).unwrap())
+                .await
+                .disposition,
+            ReceiptDisposition::Accepted
+        );
+        let capabilities: Vec<String> = sqlx::query_scalar(
+            "SELECT capability FROM current_node_peer_capabilities WHERE node_id=$1 AND peer_id='peer-a' ORDER BY capability",
+        )
+        .bind(node_id)
+        .fetch_all(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(capabilities, vec!["cbft/9".to_owned()]);
     }
 
     #[tokio::test]
@@ -8497,13 +8986,35 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(churn, (4, 0, 2));
+        // Report Ingestion no longer writes the cache, so the row outlives the
+        // last current Peer reference until the maintenance cycle collects it
+        // (issue #271).
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM geo_location_cache")
                 .fetch_one(state.db().pool())
                 .await
                 .unwrap(),
-            0,
-            "the Geo cache must drop a row when its last current Peer reference disappears"
+            1,
+            "a receipt must not write the Geo cache"
+        );
+        let now_text = crate::auth::format_rfc3339(crate::auth::now_utc());
+        assert_eq!(
+            crate::geo::cleanup_cache(
+                state.db().pool(),
+                &now_text,
+                crate::geo::GeoProvider::LocalMmdb,
+            )
+            .await
+            .unwrap(),
+            1,
+            "the maintenance cycle drops a row when its last current Peer reference disappears"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM geo_location_cache")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap(),
+            0
         );
         let history = crate::peer_history::load_history(state.db().pool(), node_id)
             .await

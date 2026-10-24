@@ -572,20 +572,36 @@ pub(crate) fn write_test_database(path: &Path) {
 #[cfg(test)]
 pub(crate) const CACHE_TABLE_DDL: &str = "CREATE TABLE geo_location_cache (provider TEXT NOT NULL, canonical_ip TEXT NOT NULL, country_code TEXT CHECK(country_code IS NULL OR country_code GLOB '[A-Z][A-Z]'), state TEXT NOT NULL CHECK(state IN ('current', 'no_country', 'failed')), created_at TEXT, last_attempt_at TEXT NOT NULL, last_success_at TEXT, last_referenced_at TEXT NOT NULL, expires_at TEXT, PRIMARY KEY (provider, canonical_ip))";
 
-/// Remove rows that are no longer usable and enforce the bounded country
-/// cache. Results retained for a provider that is not selected anymore are
-/// deleted outright: they can never be read again, and a raw Peer IP must not
-/// outlive the selection that produced it.
+/// Record that the Peer references the Server holds are still live, remove rows
+/// that are no longer usable, and enforce the bounded country cache. Results
+/// retained for a provider that is not selected anymore are deleted outright:
+/// they can never be read again, and a raw Peer IP must not outlive the
+/// selection that produced it.
 ///
 /// Expiry never deletes a row: an expired country result inside the hard
 /// retention boundary is exactly the last-good Stale data the projections
 /// serve, so cleanup only applies the hard boundary, the current-reference
 /// rule, and the size bound.
+///
+/// One maintenance cycle owns every cache write (issue #271). Report Ingestion
+/// no longer touches this table: the reference refresh used to run after every
+/// receipt, which cost a full scan of the cache per Report and made two
+/// concurrent Reports take the same row locks in opposite orders (PostgreSQL
+/// 40P01). Nothing else runs this concurrently: the only callers are the 60
+/// second maintenance worker and the Owner's provider switch, which commits its
+/// own transaction before calling, and Server writes stay serialized on one
+/// work connection (ADR 0013), so no two passes hold these rows at once.
 pub async fn cleanup_cache(
     pool: &AnyPool,
     now: &str,
     active_provider: GeoProvider,
 ) -> Result<u64, sqlx::Error> {
+    // Referenced rows are stamped first, so the reference rule below and the
+    // size bound order rows by a reference recorded in this same cycle.
+    sqlx::query("UPDATE geo_location_cache SET last_referenced_at=$1 WHERE canonical_ip IN (SELECT DISTINCT remote_ip FROM current_node_peers WHERE remote_ip IS NOT NULL)")
+        .bind(now)
+        .execute(pool)
+        .await?;
     let retired = sqlx::query("DELETE FROM geo_location_cache WHERE provider <> $1")
         .bind(active_provider.as_str())
         .execute(pool)
@@ -623,45 +639,6 @@ where
     .rows_affected())
 }
 
-/// Serialises Peer-reference maintenance so two Reports can never hold the
-/// same `geo_location_cache` rows in opposite orders.
-///
-/// The statements below overlap on one small table, and PostgreSQL aborts one
-/// of two concurrent transactions that took those rows in a different order
-/// (40P01). Report Ingestion runs the maintenance after its receipt has
-/// committed, and this gate keeps it to a single writer: cache hygiene may be
-/// deferred, a Report may not fail.
-static PEER_REFERENCE_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// Record that the Peer references the Server currently holds are still live:
-/// refresh `last_referenced_at`, drop the rows no current Peer references, and
-/// apply the cache bound.
-///
-/// Recording a reference never performs a country lookup (the background path
-/// in `crate::geo_backfill` owns resolution) and it never creates a row: a
-/// reference only keeps the retained rows honest about being referenced right
-/// now, so a failure here can never erase a last-good country.
-pub(crate) async fn refresh_peer_references(pool: &AnyPool, now: &str) -> Result<u64, sqlx::Error> {
-    let _gate = PEER_REFERENCE_GATE.lock().await;
-    // Every address a current Peer points at, in one statement: naming the
-    // Peer table instead of carrying this Report's own address list keeps the
-    // row order the planner walks identical for every Report, and one form for
-    // every Report is what makes concurrent maintenance safe.
-    let referenced = sqlx::query("UPDATE geo_location_cache SET last_referenced_at=$1 WHERE canonical_ip IN (SELECT DISTINCT remote_ip FROM current_node_peers WHERE remote_ip IS NOT NULL)")
-        .bind(now)
-        .execute(pool)
-        .await?
-        .rows_affected();
-    // Raw IP cache rows are only valid while referenced by a current Peer.
-    // This query also removes rows left behind by a node's authoritative
-    // empty snapshot without exposing IPs outside the database.
-    let unreferenced = sqlx::query("DELETE FROM geo_location_cache WHERE NOT EXISTS (SELECT 1 FROM current_node_peers WHERE current_node_peers.remote_ip = geo_location_cache.canonical_ip)")
-        .execute(pool)
-        .await?
-        .rows_affected();
-    let trimmed = trim_cache(pool).await?;
-    Ok(referenced + unreferenced + trimmed)
-}
 /// The retry boundary for an address whose last attempt produced no country
 /// result. Recent attempts are left alone so a large Peer set cannot turn
 /// into unbounded work, and a database failure is not retried on every pass.

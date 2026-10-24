@@ -810,6 +810,13 @@ mod tests {
                 .unwrap();
         }
 
+        // Every row starts with an old reference stamp, so the cycle itself has
+        // to be what keeps the retained address alive.
+        sqlx::query("UPDATE geo_location_cache SET last_referenced_at='2026-08-01T09:00:00Z'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
         crate::geo::cleanup_cache(state.db().pool(), NOW, GeoProvider::LocalMmdb)
             .await
             .unwrap();
@@ -823,6 +830,14 @@ mod tests {
             remaining,
             vec![("local_mmdb".to_owned(), RESOLVABLE.to_owned())],
             "results of a retired provider and addresses without a current Peer reference are removed"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT last_referenced_at FROM geo_location_cache")
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap(),
+            NOW,
+            "the cycle stamps the addresses the current Peers still reference"
         );
 
         // With no current Peer reference left, the retained address goes too.
