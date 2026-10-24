@@ -10,7 +10,7 @@
 - Design §15.9 item 5 explicitly refused a retention policy for this table while the Receipt is the idempotency guard for a retried Report.
 - The Server matches a retry by `report_id` and returns the stored `receipt_body`; the `UNIQUE (agent_id, agent_epoch, boot_id, report_sequence)` fence and `report_body_sha256` are what turn a replay into the identical receipt and an identity conflict into `report_identity_conflict`.
 - `close_report_id` joins, the latest-rejection Attention Item, and the whole-Inventory rejection evidence all read the identity columns, not the body.
-- The Agent's Durable Spool is bounded to 2 MiB / 24 hours and drops unconfirmed reports beyond that, so a legitimate retry cannot normally be older than 24 hours. The coordinated upgrade path (issues #189–#192) deliberately preserves and delivers an immutable backlog, which can be older. Both bounds are far below the window below.
+- The Agent's Durable Spool is bounded to 512 MiB and 24 hours (issue #273 raised the shipped capacity from the 2 MiB this ADR originally recorded) and drops unconfirmed reports beyond that, so a legitimate retry cannot normally be older than 24 hours. The coordinated upgrade path (issues #189–#192) deliberately preserves and delivers an immutable backlog, which can be older. Both bounds are far below the window below.
 
 ## Decision
 

@@ -552,6 +552,53 @@ Keep corruption evidence and known-good rollback copies until recovery and
 backup verification are complete. Do not repair or replace files underneath a
 running Server.
 
+## Durable Spool capacity and the downtime it covers
+
+The Agent's Durable Spool is bounded by bytes (`[spool] max_bytes`, default
+512 MiB) and by age (`max_age_seconds`, default 24 hours). Whichever bound binds
+first drops the oldest unconfirmed historical reports into History Gaps (design
+§7.2, issue #273), so Server downtime — a restart, an Offline Backup Window, or
+the stopped Server a Storage Backend Migration needs — is absorbed only while the
+byte bound does not bind. Convert one into the other:
+
+    tolerated downtime ≈ max_bytes ÷ (average report size × generation rate)
+
+`generation rate` is one report per `collection_interval_seconds`
+(`1 ÷ collection_interval_seconds`). `average report size` is the mean
+persisted AgentReport body, so it grows with the Nodes one Agent monitors and
+with the peer count per Node. Measure it instead of assuming it: Admin → Agents
+→ the Agent's page reports **Spool bytes / capacity** and **Spool queued
+reports**, and the queued bytes divided by the queued reports is the current
+average report size.
+
+The shipped 512 MiB is sized for a **four-hour** outage at a fast cadence. In the
+reference measurement behind it — about 60 peers per Node, a one-second
+collection interval — one report is about 33.7 KB and the Agent generates about
+0.83 reports/s, so
+
+    536870912 B ÷ (33700 B × 0.83/s) ≈ 19194 s ≈ 5.3 hours
+
+which covers the four hours it targets with margin. Solve the formula the other
+way to size a Spool for a longer accepted outage, a shorter interval, or more
+Nodes:
+
+    max_bytes ≈ tolerated downtime × average report size × generation rate
+
+For example, an eight-hour outage at that same rate needs
+`28800 s × 33700 B × 0.83/s ≈ 805 MB`; set `max_bytes = 1073741824` (1 GiB, the
+ceiling) there and restart the Agent, which records the new policy at startup.
+A Host whose rate needs more than 1 GiB for the outage it must absorb has two
+remaining options: raise `collection_interval_seconds` so it generates fewer,
+larger Reports, or accept the History Gap the overflow records. The Spool never
+silently loses a report, so an overrun is visible as dropped ranges in the same
+Admin panel.
+
+`max_age_seconds` is the independent age bound: a report the Agent cannot
+deliver inside that window is dropped even when the byte bound was never
+reached, which is what keeps a stalled Spool from becoming an unbounded archive.
+The flush reserve is not a separate key — it follows capacity (three quarters
+of it), so it can never contradict the bound it is derived from.
+
 ## Agent Store recovery
 
 `platpulse-agent run` drains the previous Boot before it starts new
@@ -687,6 +734,11 @@ backup_required_mount = "/data"   # optional; enforced when set
   reports the residue count and the age of the last successful artifact.
 - Retained artifacts are never pruned automatically; retention and off-host
   copies remain operator policy.
+- An Offline Backup Window is Server downtime, so it is bounded by the same
+  Durable Spool capacity: keep the whole window — creation, verification and
+  restore rehearsal — inside the tolerated downtime [Durable Spool capacity and
+  the downtime it covers](#durable-spool-capacity-and-the-downtime-it-covers)
+  computes for that Host.
 - Place `backup_dir` on a distinct disk where possible, keep the directory
   private (`0700`), and never let a missing mount fall back to the database
   disk. A second local disk is not an off-host backup.
@@ -1015,10 +1067,11 @@ already advanced Agent Receipts and Purge barriers cannot be replaced by the
 older file without losing that evidence.
 
 Downtime: the window is offline only, so Agents keep spooling while the copy
-runs. A full Durable Spool drops its oldest historical reports into History Gaps,
-so the window must stay shorter than the spool's capacity; a retention-heavy
-deployment should measure the runtime on a copy of its own data before the real
-cutover. The measured run recorded in
+runs. A full Durable Spool drops its oldest historical reports into History
+Gaps, so the window must stay shorter than the spool's capacity — [Durable
+Spool capacity and the downtime it covers](#durable-spool-capacity-and-the-downtime-it-covers)
+converts the two. A retention-heavy deployment should measure the runtime on a
+copy of its own data before the real cutover. The measured run recorded in
 [release qualification](release-qualification.md) covers the range of a
 near-production deployment: budget the whole window, add the start-and-verify
 step, and leave margin for the estimate the command prints as it goes.

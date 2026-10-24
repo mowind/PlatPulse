@@ -3316,7 +3316,7 @@ mod delivery_tests {
             .unwrap();
         }
 
-        // Persisting enforces the recorded capacity, not the 2 MiB default.
+        // Persisting enforces the recorded capacity, not the shipped default.
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
                 .fetch_one(store.connection())

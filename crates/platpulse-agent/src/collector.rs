@@ -46,9 +46,21 @@ use crate::database::{
     delete_expired_receipt_markers,
 };
 use crate::reporting::{ReportStoreError, ReportTransport};
-pub const MAX_SPOOL_BYTES: u64 = 64 * 1024 * 1024;
+/// Shipped Durable Spool capacity (design §7.2, issue #273). The byte bound is
+/// what actually binds during a Server outage: at roughly 33.7 KB per report
+/// and 0.83 reports/s (a Host with about 60 peers at a one-second collection
+/// interval) 512 MiB absorbs about 5.3 hours of reports, so the reference
+/// four-hour outage does not overflow into History Gaps.
+pub const MAX_SPOOL_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_SPOOL_AGE_SECONDS: u64 = 24 * 60 * 60;
-pub const PREFLUSH_SPOOL_BYTES: u64 = 48 * 1024 * 1024;
+/// Flush reserve for a byte capacity: three quarters of it. The single
+/// definition keeps the shipped capacity and a configured one in step.
+pub const fn spool_preflush_bytes(max_bytes: u64) -> u64 {
+    max_bytes / 4 * 3
+}
+
+/// Flush reserve for the shipped capacity.
+pub const PREFLUSH_SPOOL_BYTES: u64 = spool_preflush_bytes(MAX_SPOOL_BYTES);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpoolPolicy {

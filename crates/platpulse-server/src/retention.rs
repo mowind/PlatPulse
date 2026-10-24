@@ -71,7 +71,7 @@ pub const FAMILY_PEER_AGGREGATE_1H: &str = "peer_aggregate_1h";
 pub const FAMILY_VALIDATOR_DAILY_SNAPSHOT: &str = "validator_daily_snapshot";
 pub const FAMILY_VALIDATOR_MONTHLY_AGGREGATE: &str = "validator_monthly_aggregate";
 /// ADR 0009: the Report Receipt body is slimmed after this fixed window. It is
-/// a safety invariant — longer than the Agent Durable Spool bound (2 MiB /
+/// a safety invariant — longer than the Agent Durable Spool bound (512 MiB /
 /// 24 h) and the coordinated-upgrade backlog — not a capacity policy, and
 /// nothing is deleted: only `receipt_body` loses its per-Node/per-sample
 /// detail.

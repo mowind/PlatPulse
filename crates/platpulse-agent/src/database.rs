@@ -32,7 +32,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 pub static AGENT_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Agent binary.
-pub const AGENT_SCHEMA_VERSION: i64 = 17;
+pub const AGENT_SCHEMA_VERSION: i64 = 18;
 
 /// Applied Receipt Records are retained for a recent duplicate/conflict window.
 pub(crate) const APPLIED_RECEIPT_RETENTION: time::Duration = time::Duration::hours(24);
@@ -1097,6 +1097,72 @@ mod tests {
         connection.close().await.unwrap();
 
         let mut store = AgentStore::open(config(&path)).await.unwrap();
+        assert_eq!(store.schema_version().await.unwrap(), AGENT_SCHEMA_VERSION);
+    }
+
+    /// A connection migrated only through `version`, so the next open applies the rest.
+    async fn connection_at_schema(path: &Path, version: i64) -> SqliteConnection {
+        let options = sqlite_options(&config(path));
+        let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+        migrations_through(version)
+            .run_direct(&mut connection)
+            .await
+            .unwrap();
+        connection
+    }
+
+    /// The recorded Durable Spool policy as (max_bytes, max_age_seconds, preflush_bytes).
+    async fn spool_policy(connection: &mut SqliteConnection) -> (i64, i64, i64) {
+        sqlx::query_as(
+            "SELECT max_bytes, max_age_seconds, preflush_bytes
+             FROM spool_state WHERE singleton = 1",
+        )
+        .fetch_one(connection)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn spool_capacity_migration_aligns_the_previous_default_to_the_shipped_one() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("agent.db");
+        let mut connection = connection_at_schema(&path, 17).await;
+        assert_eq!(
+            spool_policy(&mut connection).await,
+            (67108864, 86400, 50331648)
+        );
+        connection.close().await.unwrap();
+
+        // 0018 moves only a row that still carries the previous default, so a Store
+        // that never configured a capacity adopts the shipped 512 MiB policy.
+        let mut store = AgentStore::open(config(&path)).await.unwrap();
+        assert_eq!(
+            spool_policy(store.connection()).await,
+            (536870912, 86400, 402653184)
+        );
+        assert_eq!(store.schema_version().await.unwrap(), AGENT_SCHEMA_VERSION);
+    }
+
+    #[tokio::test]
+    async fn spool_capacity_migration_leaves_a_configured_capacity_untouched() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("agent.db");
+        let mut connection = connection_at_schema(&path, 17).await;
+        sqlx::query(
+            "UPDATE spool_state SET max_bytes = 33554432, preflush_bytes = 25165824
+             WHERE singleton = 1",
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        connection.close().await.unwrap();
+
+        // An operator capacity is not the shipped default, so 0018 must not rewrite it.
+        let mut store = AgentStore::open(config(&path)).await.unwrap();
+        assert_eq!(
+            spool_policy(store.connection()).await,
+            (33554432, 86400, 25165824)
+        );
         assert_eq!(store.schema_version().await.unwrap(), AGENT_SCHEMA_VERSION);
     }
 

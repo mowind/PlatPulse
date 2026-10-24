@@ -110,10 +110,13 @@ impl BackfillConfig {
 /// The Spool is bounded by bytes and by age; exceeding either bound drops the
 /// oldest unconfirmed historical reports. Both bounds are configuration because
 /// the byte bound is what actually binds at a fast collection cadence: the
-/// shipped 64 MiB holds about half an hour of reports at a one-second interval,
-/// so a shorter interval or a longer accepted Server outage needs a larger
-/// Spool. The preflush reserve is derived as three quarters of capacity rather
-/// than configured separately, so the two can never contradict each other.
+/// shipped 512 MiB covers the reference four-hour outage at a one-second
+/// interval with about 60 peers per Host (roughly 33.7 KB per report, 0.83
+/// reports/s), and a shorter interval, more Nodes, or a longer accepted Server
+/// outage needs a larger Spool. `docs/deployment.md` turns capacity into the
+/// downtime it tolerates. The preflush reserve is derived as three quarters of
+/// capacity rather than configured separately, so the two can never contradict
+/// each other.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SpoolConfig {
@@ -169,7 +172,7 @@ impl SpoolConfig {
         crate::collector::SpoolPolicy {
             max_bytes: self.max_bytes,
             max_age_seconds: self.max_age_seconds,
-            preflush_bytes: self.max_bytes / 4 * 3,
+            preflush_bytes: crate::collector::spool_preflush_bytes(self.max_bytes),
         }
     }
 }
@@ -513,16 +516,16 @@ mod tests {
         // three quarters of capacity.
         let default = AgentConfig::resolve(&config("")).unwrap();
         assert_eq!(default.spool, SpoolConfig::default());
-        assert_eq!(default.spool.max_bytes, 64 * 1024 * 1024);
-        assert_eq!(default.spool.policy().preflush_bytes, 48 * 1024 * 1024);
+        assert_eq!(default.spool.max_bytes, 512 * 1024 * 1024);
+        assert_eq!(default.spool.policy().preflush_bytes, 384 * 1024 * 1024);
 
-        let enlarged = AgentConfig::resolve(&config(
-            "[spool]\nmax_bytes = 67108864\nmax_age_seconds = 604800\n",
+        let configured = AgentConfig::resolve(&config(
+            "[spool]\nmax_bytes = 268435456\nmax_age_seconds = 604800\n",
         ))
         .unwrap();
-        assert_eq!(enlarged.spool.max_bytes, 64 * 1024 * 1024);
-        assert_eq!(enlarged.spool.max_age_seconds, 604_800);
-        assert_eq!(enlarged.spool.policy().preflush_bytes, 48 * 1024 * 1024);
+        assert_eq!(configured.spool.max_bytes, 256 * 1024 * 1024);
+        assert_eq!(configured.spool.max_age_seconds, 604_800);
+        assert_eq!(configured.spool.policy().preflush_bytes, 192 * 1024 * 1024);
 
         for invalid in [
             "[spool]\nmax_bytes = 1024\n",

@@ -9,13 +9,16 @@ max_height_span = 256
 max_block_count = 128
 max_time_ms = 5000
 
-# Durable Spool capacity (defaults: 64 MiB, 24 hours).
+# Durable Spool capacity (defaults: 512 MiB, 24 hours).
 # Allowed ranges: max_bytes 524288..=1073741824, max_age_seconds 60..=2592000.
 # The flush reserve follows capacity (three quarters) and is not a separate key.
-# A short collection interval or a longer accepted Server outage needs a larger
-# spool: 64 MiB holds about half an hour of reports at a one-second interval.
+# The byte bound is what actually binds during a Server outage: 512 MiB covers
+# about four hours of reports for a Host with roughly 60 peers at a one-second
+# collection interval. Size it from
+# tolerated downtime ≈ max_bytes ÷ (average report size × generation rate);
+# docs/deployment.md works the formula through.
 [spool]
-max_bytes = 67108864
+max_bytes = 536870912
 max_age_seconds = 86400
 
 # [[nodes]]
