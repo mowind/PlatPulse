@@ -1,7 +1,6 @@
 use futures_util::TryStreamExt;
 use sha2::{Digest, Sha256};
 use sqlx::{Connection, Sqlite, Transaction};
-use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -511,10 +510,11 @@ async fn deliver_one_typed<T: ReportTransport>(
     transport: &T,
     send_deadline: Option<tokio::time::Instant>,
 ) -> Result<Option<DeliveryStep>, ReportStoreError> {
-    ensure_spool_healthy(store).await?;
+    ensure_spool_not_fatal(store).await?;
     let Some(report) = claim_oldest_report(store).await? else {
         return Ok(None);
     };
+    ensure_claimed_report_intact(store, &report).await?;
     let response = match send_deadline {
         Some(deadline) => match tokio::time::timeout_at(deadline, transport.send(&report.body))
             .await
@@ -763,7 +763,7 @@ async fn persist_immutable_report_inner(
     if body.is_empty() {
         return Err(ReportStoreError::Empty);
     }
-    ensure_spool_healthy(store).await?;
+    ensure_spool_not_fatal(store).await?;
     if body.len() > platpulse_core::protocol::MAX_REPORT_BODY_BYTES {
         let _ = mark_report_too_large(store, generated_at).await;
         return Err(ReportStoreError::ReportTooLarge);
@@ -1039,6 +1039,80 @@ pub async fn ensure_spool_healthy(store: &mut AgentStore) -> Result<(), ReportSt
     Ok(())
 }
 
+/// Refuse new collection or delivery when durable spool corruption was
+/// latched earlier, without re-reading the queued bodies.
+///
+/// ensure_spool_healthy hashes and re-parses every queued Report, so calling it
+/// on the hot path makes a backlog drain quadratic: with a few thousand queued
+/// Reports the Agent spent its sender deadline rescanning the spool instead of
+/// sending, and the drain slowed down as the spool grew. Corruption detection
+/// therefore stays at startup (validate_receipt_history and the collector open
+/// paths) and in the per-Report gate ensure_claimed_report_intact, while the
+/// runtime paths only read the flag those checks latch.
+pub async fn ensure_spool_not_fatal(store: &mut AgentStore) -> Result<(), ReportStoreError> {
+    let state: Option<(i64, Option<String>)> =
+        sqlx::query_as("SELECT store_fatal, store_error FROM spool_state WHERE singleton=1")
+            .fetch_optional(store.connection())
+            .await?;
+    let Some((fatal, message)) = state else {
+        return Ok(());
+    };
+    if fatal == 0 {
+        return Ok(());
+    }
+    Err(ReportStoreError::StoreFatal(message.unwrap_or_else(|| {
+        "Agent Store is marked fatal; manual recovery is required".to_owned()
+    })))
+}
+
+/// Validate the one Report a delivery is about to send.
+///
+/// This keeps the safety property the full spool scan used to enforce -- the
+/// body still hashes to its stored digest, still parses as the Report it claims
+/// to be, and no Applied Receipt Record already covers it -- at O(1) instead of
+/// O(queued Reports).
+async fn ensure_claimed_report_intact(
+    store: &mut AgentStore,
+    report: &StoredReport,
+) -> Result<(), ReportStoreError> {
+    let _write_permit = store.acquire_write().await;
+    let row = sqlx::query_as::<_, SpoolReportRow>(
+        "SELECT report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes FROM reports WHERE report_id = ?",
+    )
+    .bind(&report.report_id)
+    .fetch_optional(store.connection())
+    .await?;
+    let defect = match row {
+        Some(row) => validate_spool_report(&row).or_else(|| {
+            (row.body != report.body || row.body_sha256 != report.body_sha256).then(|| {
+                format!(
+                    "immutable spool report {} changed after it was claimed",
+                    report.report_id
+                )
+            })
+        }),
+        None => None,
+    };
+    if let Some(reason) = defect {
+        mark_spool_fatal_under_permit(store, &now_rfc3339(), &reason).await?;
+        return Err(ReportStoreError::StoreFatal(reason));
+    }
+    let collision: Option<String> = sqlx::query_scalar(
+        "SELECT receipt.report_id FROM report_receipts AS receipt WHERE receipt.report_id = ? LIMIT 1",
+    )
+    .bind(&report.report_id)
+    .fetch_optional(store.connection())
+    .await?;
+    if collision.is_some() {
+        let reason = format!(
+            "queued Agent Report {} conflicts with an Applied Receipt Record",
+            report.report_id
+        );
+        mark_spool_fatal_under_permit(store, &now_rfc3339(), &reason).await?;
+        return Err(ReportStoreError::StoreFatal(reason));
+    }
+    Ok(())
+}
 async fn validate_historical_receipt_markers(
     store: &mut AgentStore,
 ) -> Result<(), ReportStoreError> {
@@ -1139,39 +1213,7 @@ pub async fn enforce_spool_policy(
     policy: &SpoolPolicy,
     now: &str,
 ) -> Result<SpoolCleanupSummary, ReportStoreError> {
-    ensure_spool_healthy(store).await?;
-    let rows = sqlx::query_as::<_, SpoolReportRow>(
-        "SELECT report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes FROM reports ORDER BY created_at, report_id",
-    )
-    .fetch_all(store.connection())
-    .await?;
-    let mut sample_stats = HashMap::with_capacity(rows.len());
-    for row in &rows {
-        if let Some(reason) = validate_spool_report(row) {
-            mark_spool_fatal_store(store, now, &reason).await?;
-            return Err(ReportStoreError::StoreFatal(reason));
-        }
-        let (_, block_summaries, history_gaps) = parse_spooled_report(&row.body)?;
-        let mut sample_count = 0u64;
-        let mut height_range: Option<(u64, u64)> = None;
-        for sample in &block_summaries {
-            sample_count += 1;
-            height_range = Some(
-                height_range.map_or((sample.block_number, sample.block_number), |(from, to)| {
-                    (from.min(sample.block_number), to.max(sample.block_number))
-                }),
-            );
-        }
-        for gap in &history_gaps {
-            sample_count += 1;
-            height_range = Some(
-                height_range.map_or((gap.from_height, gap.to_height), |(from, to)| {
-                    (from.min(gap.from_height), to.max(gap.to_height))
-                }),
-            );
-        }
-        sample_stats.insert(row.report_id.clone(), (sample_count, height_range));
-    }
+    ensure_spool_not_fatal(store).await?;
 
     let cutoff = time::OffsetDateTime::parse(now, &time::format_description::well_known::Rfc3339)
         .ok()
@@ -1216,12 +1258,18 @@ pub async fn enforce_spool_policy(
         {
             continue;
         }
-        let Some((sample_count, height_range)) = sample_stats.get(&report_id).copied() else {
-            continue;
-        };
         if in_flight == 1 || current_report_id.as_deref() == Some(report_id.as_str()) {
             continue;
         }
+        let body: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT body FROM reports WHERE report_id = ?")
+                .bind(&report_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(body) = body else {
+            continue;
+        };
+        let (sample_count, height_range) = spool_report_loss_shape(&body)?;
         let deleted = sqlx::query("DELETE FROM reports WHERE report_id = ? AND in_flight = 0")
             .bind(&report_id)
             .execute(&mut *tx)
@@ -1274,6 +1322,31 @@ pub async fn enforce_spool_policy(
             Err(error)
         }
     }
+}
+
+/// What one dropped Report contributes to the bounded loss diagnostics: how many
+/// samples it carried and the height range those samples covered.
+fn spool_report_loss_shape(body: &[u8]) -> Result<(u64, Option<(u64, u64)>), ReportStoreError> {
+    let (_, block_summaries, history_gaps) = parse_spooled_report(body)?;
+    let mut sample_count = 0u64;
+    let mut height_range: Option<(u64, u64)> = None;
+    for sample in &block_summaries {
+        sample_count += 1;
+        height_range = Some(
+            height_range.map_or((sample.block_number, sample.block_number), |(from, to)| {
+                (from.min(sample.block_number), to.max(sample.block_number))
+            }),
+        );
+    }
+    for gap in &history_gaps {
+        sample_count += 1;
+        height_range = Some(
+            height_range.map_or((gap.from_height, gap.to_height), |(from, to)| {
+                (from.min(gap.from_height), to.max(gap.to_height))
+            }),
+        );
+    }
+    Ok((sample_count, height_range))
 }
 
 fn validate_spool_report(row: &SpoolReportRow) -> Option<String> {
@@ -1344,15 +1417,6 @@ fn validate_spool_report(row: &SpoolReportRow) -> Option<String> {
         ));
     }
     None
-}
-
-async fn mark_spool_fatal_store(
-    store: &mut AgentStore,
-    now: &str,
-    message: &str,
-) -> Result<(), ReportStoreError> {
-    let _write_permit = store.acquire_write().await;
-    mark_spool_fatal_under_permit(store, now, message).await
 }
 
 pub(crate) async fn mark_spool_fatal_under_permit(
