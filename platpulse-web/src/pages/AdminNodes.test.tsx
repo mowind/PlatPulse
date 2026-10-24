@@ -702,12 +702,17 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
 
     await screen.findByRole('heading', { level: 1, name: 'Node A' })
-    // Header: independent dimensions and the full Node ID behind a disclosure.
-    const dimensions = screen.getByLabelText('Current Node dimensions')
+    // Header: independent Node dimensions, the Agent-owned Spool backlog the
+    // Agent link names, and the full Node ID behind a disclosure.
+    const dimensions = screen.getByLabelText('Current Node and Agent dimensions')
     expect(dimensions.textContent).toContain('healthy')
     expect(dimensions.textContent).toContain('Current')
     expect(dimensions.textContent).toContain('Matched')
     expect(dimensions.textContent).toContain('Active')
+    // No Spool reading was attested for this Node's Agent, so the dimension
+    // says so instead of reading as an empty backlog.
+    expect(dimensions.textContent).toContain('Agent Spool backlog')
+    expect(dimensions.textContent).toContain('Not observed yet')
     expect(screen.getByRole('button', { name: /Show full\s*Node ID/ })).toBeTruthy()
     expect(
       screen.getByRole('link', { name: 'Incidents for this Node' }).getAttribute('href'),
@@ -882,7 +887,7 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     renderAt('/admin/nodes/0195f2a1-0015-4015-8015-000000000015')
 
     await screen.findByRole('heading', { level: 1, name: /Node B \(private\)/ })
-    expect(screen.getByLabelText('Current Node dimensions').textContent).toContain('Stale')
+    expect(screen.getByLabelText('Current Node and Agent dimensions').textContent).toContain('Stale')
     // The RPC failure is summarized on Overview, with the error text.
     expect(screen.getByRole('list', { name: 'Current Node findings' }).textContent).toContain(
       'RPC collection failed: connection refused',
@@ -896,6 +901,54 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     // Only the redacted endpoint form is ever rendered.
     expect(screen.getAllByText('ws://127.0.0.1:****').length).toBeGreaterThan(0)
     expect(screen.queryByText('ws://127.0.0.1:8545')).toBeNull()
+  })
+
+  it('shows the Agent-owned Spool backlog with the instant its reading is anchored on', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(
+          {
+            ...NODE_A_DETAIL,
+            // A Report that sat in the Agent's Spool for 25 minutes. The Server
+            // derived the age at receipt, so the header shows it beside the Node
+            // dimensions while the label keeps its owner (ADR 0014, issue #272).
+            agent_spool_backlog_age: { age_ms: 1_500_000, basis: 'receipt' },
+          },
+          200,
+        ),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    await screen.findByRole('heading', { level: 1, name: 'Node A' })
+    const dimensions = screen.getByLabelText('Current Node and Agent dimensions')
+    expect(dimensions.textContent).toContain('Agent Spool backlog')
+    expect(dimensions.textContent).toContain('25m')
+    // The receipt-anchored reading needs no qualifier, and it never becomes one
+    // of the Node's own Health / Freshness dimensions.
+    expect(dimensions.textContent).not.toContain('as of report generation')
+  })
+
+  it('labels the Spool backlog the Server fell back to with the instant it belongs to', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(
+          {
+            ...NODE_A_DETAIL,
+            // An unreliable clock leaves the age the Report measured itself, so
+            // the view says which instant that reading describes.
+            agent_spool_backlog_age: { age_ms: 900_000, basis: 'generation' },
+          },
+          200,
+        ),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014')
+
+    await screen.findByRole('heading', { level: 1, name: 'Node A' })
+    const dimensions = screen.getByLabelText('Current Node and Agent dimensions')
+    expect(dimensions.textContent).toContain('15m')
+    expect(dimensions.textContent).toContain('as of report generation')
   })
 
   it('updates the Server-owned display name and shows the confirmation', async () => {

@@ -55,6 +55,8 @@ pub mod retention;
 /// Reward Wallet Balance refresher and reading (issue #246).
 pub mod reward_wallet;
 pub mod secrets;
+/// Spool Backlog Age derived at Report receipt (ADR 0014, issue #272).
+pub mod spool_backlog;
 pub mod state_history;
 /// Storage Backend Migration: offline SQLite -> PostgreSQL copy and its abort
 /// (ADR 0013, issue #257).

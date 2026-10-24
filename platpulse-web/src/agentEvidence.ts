@@ -38,6 +38,10 @@ export type AgentEvidence = {
 
 export function hasSpoolObservation(spool: HostDiagnostic): boolean {
   return [
+    // The Server derives the backlog age from the Report's own Spool
+    // component, so a reading it did attest is a Spool observation even when
+    // every raw counter on this row is gone (ADR 0014, issue #272).
+    spool.spool_backlog_age,
     spool.spool_capacity_bytes,
     spool.spool_dropped_height_from,
     spool.spool_dropped_height_to,

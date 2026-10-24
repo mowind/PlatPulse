@@ -139,7 +139,7 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
     await expect(page.getByRole('heading', { level: 1, name: /Node B \(private\)/ })).toBeVisible({ timeout: 15_000 })
 
     // The health summary carries the Server-owned reason.
-    await expect(page.getByLabel('Current Node dimensions')).toContainText('RPC collection failed')
+    await expect(page.getByLabel('Current Node and Agent dimensions')).toContainText('RPC collection failed')
     // Last-good sync values remain visible with the Error context.
     await expect(page.getByText(/last-good head 12842018/)).toBeVisible()
     // Both findings are summarized above every section.

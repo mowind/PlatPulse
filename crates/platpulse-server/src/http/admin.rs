@@ -1148,7 +1148,43 @@ struct HostProjectionRow {
     spool_report_too_large: Option<i64>,
     spool_store_fatal: Option<i64>,
     spool_store_error: Option<String>,
+    spool_backlog_age_ms: Option<i64>,
+    spool_backlog_age_basis: Option<String>,
     updated_at: String,
+}
+
+/// A derived Spool Backlog Age and the clock basis it is anchored on (ADR
+/// 0014, issue #272).
+///
+/// The Server derives the age when it receives the Report that carries the
+/// current Spool observation, because an immutable Report can only describe the
+/// backlog as of its own generation instant. The basis travels with the number
+/// so the WebUI can label it instead of presenting both bases as one reading.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct SpoolBacklogAgeDiagnostic {
+    /// Milliseconds since the oldest queued Report was generated, never
+    /// negative.
+    pub age_ms: i64,
+    /// `receipt` when the reading is anchored on the Server receipt instant and
+    /// corrected by the measured clock skew, `generation` when the clock was
+    /// unreliable and the Report's own age is shown instead.
+    ///
+    /// A plain string rather than a closed enum: the basis is a label, and a
+    /// client that meets one a newer Server introduced must render it as an
+    /// unknown label instead of failing to parse the whole reading.
+    pub basis: String,
+}
+
+impl SpoolBacklogAgeDiagnostic {
+    /// Build the reading from the stored age/basis pair. The two columns are
+    /// written together and cleared together, so a row with only one of them
+    /// carries no reading rather than half of one.
+    fn from_columns(age_ms: Option<i64>, basis: Option<String>) -> Option<Self> {
+        age_ms
+            .zip(basis)
+            .map(|(age_ms, basis)| Self { age_ms, basis })
+    }
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -1180,6 +1216,11 @@ pub struct HostDiagnostic {
     pub spool_report_too_large: Option<bool>,
     pub spool_store_fatal: Option<bool>,
     pub spool_store_error: Option<String>,
+    /// Spool Backlog Age derived when the Server received the Report that
+    /// carried this Spool observation (ADR 0014, issue #272); `None` when the
+    /// Agent has never reported its Durable Spool or the current observation
+    /// carries none, which is never reported as zero.
+    pub spool_backlog_age: Option<SpoolBacklogAgeDiagnostic>,
     pub updated_at: String,
     pub components: Vec<HostComponentDiagnostic>,
 }
@@ -2573,6 +2614,11 @@ pub struct AdminNodeDetail {
     /// Most recent two-phase Transfer for this Node (any outcome), with the
     /// Server-owned effective status; `None` when no Transfer ever existed.
     pub transfer: Option<NodeTransfer>,
+    /// Spool Backlog Age of the Agent that owns this Node (ADR 0014, issue
+    /// #272). Spool state is observed once per Agent, so this reading belongs
+    /// to the Agent and is shown here as the delivery backlog that carries this
+    /// Node's Reports; `None` when the Agent never reported its Durable Spool.
+    pub agent_spool_backlog_age: Option<SpoolBacklogAgeDiagnostic>,
     /// Automatic Validator identity coverage for this Node (#218): the
     /// discovery state, its sanitized reason, and the currently open automatic
     /// Link interval. `None` only when the Node row disappeared between the
@@ -2636,6 +2682,7 @@ async fn admin_node_detail(
     .await
     .ok()
     .flatten();
+    let agent_spool_backlog_age = spool_backlog_age_diagnostic(&state, &row.agent_id).await;
     let identity = node_identity_status(&state, &row.node_id, &row.network_key).await;
     let block_history_rejection = block_history_rejection(&state, &row.node_id).await;
     let transfer = sqlx::query_as::<_, NodeTransferRow>(&format!(
@@ -2692,6 +2739,7 @@ async fn admin_node_detail(
         resync_progress: diagnostic.resync_progress,
         network_reference_head: diagnostic.network_reference_head,
         network_reference_confidence: diagnostic.network_reference_confidence,
+        agent_spool_backlog_age,
         transfer,
         validator_identity,
     })
@@ -3214,7 +3262,7 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
     })
     .collect::<Vec<_>>();
     let host = sqlx::query_as::<_, HostProjectionRow>(
-        "SELECT h.cpu_percent, h.memory_total_bytes, h.memory_used_bytes, h.load1, h.load5, h.load15, h.network_rx_bytes_per_sec, h.network_tx_bytes_per_sec, h.spool_queued_bytes, h.spool_queued_reports, h.spool_oldest_queued_age_ms, h.spool_in_flight, h.spool_last_delivery_error, h.spool_last_delivery_at, h.spool_capacity_bytes AS spool_capacity_bytes, h.spool_max_age_seconds AS spool_max_age_seconds, h.spool_dropped_sequence_from AS spool_dropped_sequence_from, h.spool_dropped_sequence_to AS spool_dropped_sequence_to, h.spool_dropped_time_from AS spool_dropped_time_from, h.spool_dropped_time_to AS spool_dropped_time_to, h.spool_dropped_height_from AS spool_dropped_height_from, h.spool_dropped_height_to AS spool_dropped_height_to, h.spool_pending_history_gaps AS spool_pending_history_gaps, h.spool_report_too_large AS spool_report_too_large, h.spool_store_fatal AS spool_store_fatal, h.spool_store_error AS spool_store_error, h.updated_at FROM current_host_observations h WHERE h.agent_id = $1",
+        "SELECT h.cpu_percent, h.memory_total_bytes, h.memory_used_bytes, h.load1, h.load5, h.load15, h.network_rx_bytes_per_sec, h.network_tx_bytes_per_sec, h.spool_queued_bytes, h.spool_queued_reports, h.spool_oldest_queued_age_ms, h.spool_in_flight, h.spool_last_delivery_error, h.spool_last_delivery_at, h.spool_capacity_bytes AS spool_capacity_bytes, h.spool_max_age_seconds AS spool_max_age_seconds, h.spool_dropped_sequence_from AS spool_dropped_sequence_from, h.spool_dropped_sequence_to AS spool_dropped_sequence_to, h.spool_dropped_time_from AS spool_dropped_time_from, h.spool_dropped_time_to AS spool_dropped_time_to, h.spool_dropped_height_from AS spool_dropped_height_from, h.spool_dropped_height_to AS spool_dropped_height_to, h.spool_pending_history_gaps AS spool_pending_history_gaps, h.spool_report_too_large AS spool_report_too_large, h.spool_store_fatal AS spool_store_fatal, h.spool_store_error AS spool_store_error, h.spool_backlog_age_ms AS spool_backlog_age_ms, h.spool_backlog_age_basis AS spool_backlog_age_basis, h.updated_at FROM current_host_observations h WHERE h.agent_id = $1",
     )
     .bind(&agent_id)
     .fetch_optional(state.db().pool())
@@ -3225,6 +3273,7 @@ async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnost
         cpu_percent: row.cpu_percent, memory_total_bytes: row.memory_total_bytes, memory_used_bytes: row.memory_used_bytes, load1: row.load1, load5: row.load5, load15: row.load15, network_rx_bytes_per_sec: row.network_rx_bytes_per_sec, network_tx_bytes_per_sec: row.network_tx_bytes_per_sec,
         spool_queued_bytes: row.spool_queued_bytes, spool_queued_reports: row.spool_queued_reports, spool_oldest_queued_age_ms: row.spool_oldest_queued_age_ms, spool_in_flight: row.spool_in_flight.map(|v| v != 0), spool_last_delivery_error: redact_optional_message(row.spool_last_delivery_error), spool_last_delivery_at: row.spool_last_delivery_at,
         spool_capacity_bytes: row.spool_capacity_bytes, spool_max_age_seconds: row.spool_max_age_seconds, spool_dropped_sequence_from: row.spool_dropped_sequence_from, spool_dropped_sequence_to: row.spool_dropped_sequence_to, spool_dropped_time_from: row.spool_dropped_time_from, spool_dropped_time_to: row.spool_dropped_time_to, spool_dropped_height_from: row.spool_dropped_height_from, spool_dropped_height_to: row.spool_dropped_height_to, spool_pending_history_gaps: row.spool_pending_history_gaps, spool_report_too_large: row.spool_report_too_large.map(|v| v != 0), spool_store_fatal: row.spool_store_fatal.map(|v| v != 0), spool_store_error: redact_optional_message(row.spool_store_error),
+        spool_backlog_age: SpoolBacklogAgeDiagnostic::from_columns(row.spool_backlog_age_ms, row.spool_backlog_age_basis),
         updated_at: row.updated_at, components: host_components,
     });
     let rows = sqlx::query_as::<_, (String, String, Option<String>, String, i64, String)>(
@@ -3436,6 +3485,25 @@ async fn credential_summaries(state: &AppState, agent_id: &str) -> Vec<AgentCred
         }
     })
     .collect()
+}
+
+/// The Spool Backlog Age the Server derived for one Agent when it received the
+/// Report that carries its current Spool observation (ADR 0014, issue #272).
+/// The reading is per Agent because Host observations are, so a Node view reads
+/// it through the Agent that owns the Node.
+async fn spool_backlog_age_diagnostic(
+    state: &AppState,
+    agent_id: &str,
+) -> Option<SpoolBacklogAgeDiagnostic> {
+    sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+        "SELECT spool_backlog_age_ms, spool_backlog_age_basis FROM current_host_observations WHERE agent_id = $1",
+    )
+    .bind(agent_id)
+    .fetch_optional(state.db().pool())
+    .await
+    .ok()
+    .flatten()
+    .and_then(|(age_ms, basis)| SpoolBacklogAgeDiagnostic::from_columns(age_ms, basis))
 }
 
 /// Liveness rule shared by the diagnostics list, the overview, and the

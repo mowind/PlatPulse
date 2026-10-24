@@ -50,6 +50,7 @@ import { Input, Select } from '../components/ui/input'
 import { readBackRecovered, type DetailRead, type DetailReadResult, type ReadBackFailure } from '../lib/readBack'
 import { ReadBackNotice } from '../components/ReadBackNotice'
 import { cn } from '../lib/utils'
+import { spoolBacklogReading } from '../spoolBacklog'
 import { stateHistoryComponent, type StateHistoryComponent } from '../stateHistory'
 import {
   validatorIdentityNeedsAttention,
@@ -1049,6 +1050,10 @@ function NodeDetailHeader({
 }) {
   const identity = identityBadge(node.identity)
   const lifecycle = lifecycleLabel(node.lifecycle)
+  // The Spool state is observed once per Agent, so this reading describes the
+  // delivery backlog carrying this Node's Reports — the Agent link above names
+  // its owner, and the label names it again (ADR 0014, issue #272).
+  const backlog = spoolBacklogReading(node.agent_spool_backlog_age)
   return (
     <header className="grid min-w-0 gap-3" data-slot="node-detail-header">
       {backLink}
@@ -1083,7 +1088,7 @@ function NodeDetailHeader({
           </Link>
         </nav>
       </div>
-      <DetailDimensions label="Current Node dimensions">
+      <DetailDimensions label="Current Node and Agent dimensions">
         <DetailDimension label="Health">
           <span className="flex flex-wrap items-center gap-2">
             <StatusBadge status={node.health} tone={healthTone(node.health)} />
@@ -1101,6 +1106,18 @@ function NodeDetailHeader({
         </DetailDimension>
         <DetailDimension label="Current head">
           <span className="font-medium tabular-nums">{node.current_head ?? 'Unknown'}</span>
+        </DetailDimension>
+        <DetailDimension label="Agent Spool backlog">
+          {backlog ? (
+            <span className="font-medium tabular-nums">
+              {backlog.age}
+              {backlog.qualifier && (
+                <span className="font-normal text-muted-foreground"> · {backlog.qualifier}</span>
+              )}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">Not observed yet</span>
+          )}
         </DetailDimension>
       </DetailDimensions>
       <DetailNotices

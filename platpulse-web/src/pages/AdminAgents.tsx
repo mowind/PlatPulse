@@ -33,6 +33,7 @@ import {
   formatPercent,
 } from '../formatBytes'
 import { livenessTone, receiptTimeText } from '../agentDiagnostics'
+import { spoolBacklogReading } from '../spoolBacklog'
 import {
   agentEvidence,
   diagnosticFindings,
@@ -1697,6 +1698,7 @@ function HostMetricHistoryPanel({
 
 function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
   const host = agent.host
+  const backlog = spoolBacklogReading(host?.spool_backlog_age)
   return (
     <CardX
       size="medium"
@@ -1794,8 +1796,27 @@ function DiagnosticsPanel({ agent }: { agent: AgentDiagnostic }) {
               <DetailItem label="Spool bytes / capacity">
                 {formatBytesUnknown(host.spool_queued_bytes)} / {formatBytesUnknown(host.spool_capacity_bytes)}
               </DetailItem>
-              <DetailItem label="Spool oldest / maximum age">
-                {host.spool_oldest_queued_age_ms == null ? 'Unknown' : host.spool_oldest_queued_age_ms + ' ms'} / {host.spool_max_age_seconds == null ? 'Unknown' : host.spool_max_age_seconds + ' s'}
+              {/* The Server's derived reading, not the age the Report carried:
+                  a replayed Report shows the backlog as it stands now, and a
+                  reading measured on an unreliable clock says which instant it
+                  belongs to (ADR 0014, issue #272). The Agent's own hard limit
+                  stays beside it. */}
+              <DetailItem label="Spool backlog age">
+                {backlog ? (
+                  <>
+                    {backlog.age}
+                    {backlog.qualifier && (
+                      <span className="text-muted-foreground"> · {backlog.qualifier}</span>
+                    )}
+                  </>
+                ) : hasSpoolObservation(host) ? (
+                  'Unknown'
+                ) : (
+                  'Not observed yet'
+                )}
+              </DetailItem>
+              <DetailItem label="Spool maximum age">
+                {host.spool_max_age_seconds == null ? 'Unknown' : host.spool_max_age_seconds + ' s'}
               </DetailItem>
               <DetailItem label="Last spool delivery">
                 {host.spool_last_delivery_at == null ? 'Unknown' : formatObservedAt(host.spool_last_delivery_at)}

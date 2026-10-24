@@ -8654,6 +8654,17 @@
           "agent_id": {
             "type": "string"
           },
+          "agent_spool_backlog_age": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SpoolBacklogAgeDiagnostic",
+                "description": "Spool Backlog Age of the Agent that owns this Node (ADR 0014, issue\n#272). Spool state is observed once per Agent, so this reading belongs\nto the Agent and is shown here as the delivery backlog that carries this\nNode's Reports; `None` when the Agent never reported its Durable Spool."
+              }
+            ]
+          },
           "block_history_rejection": {
             "oneOf": [
               {
@@ -13477,6 +13488,17 @@
               "null"
             ],
             "format": "int64"
+          },
+          "spool_backlog_age": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SpoolBacklogAgeDiagnostic",
+                "description": "Spool Backlog Age derived when the Server received the Report that\ncarried this Spool observation (ADR 0014, issue #272); `None` when the\nAgent has never reported its Durable Spool or the current observation\ncarries none, which is never reported as zero."
+              }
+            ]
           },
           "spool_capacity_bytes": {
             "type": [
@@ -19078,6 +19100,25 @@
           },
           "silence": {
             "$ref": "#/components/schemas/SilenceDto"
+          }
+        }
+      },
+      "SpoolBacklogAgeDiagnostic": {
+        "type": "object",
+        "description": "A derived Spool Backlog Age and the clock basis it is anchored on (ADR\n0014, issue #272).\n\nThe Server derives the age when it receives the Report that carries the\ncurrent Spool observation, because an immutable Report can only describe the\nbacklog as of its own generation instant. The basis travels with the number\nso the WebUI can label it instead of presenting both bases as one reading.",
+        "required": [
+          "age_ms",
+          "basis"
+        ],
+        "properties": {
+          "age_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Milliseconds since the oldest queued Report was generated, never\nnegative."
+          },
+          "basis": {
+            "type": "string",
+            "description": "`receipt` when the reading is anchored on the Server receipt instant and\ncorrected by the measured clock skew, `generation` when the clock was\nunreliable and the Report's own age is shown instead.\n\nA plain string rather than a closed enum: the basis is a label, and a\nclient that meets one a newer Server introduced must render it as an\nunknown label instead of failing to parse the whole reading."
           }
         }
       },

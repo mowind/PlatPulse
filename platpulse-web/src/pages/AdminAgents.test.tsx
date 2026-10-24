@@ -740,6 +740,66 @@ describe('PAGE-ADMIN-AGENT-DETAIL', () => {
     expect(screen.queryByRole('link', { name: 'Recover agent' })).toBeNull()
   })
 
+  it('shows the Spool backlog the Server derived, not the age the Report carried', async () => {
+    // A Report that sat in the Spool for over two hours: the age it measured
+    // itself is stale, while the Server's receipt-anchored reading stands
+    // (ADR 0014, issue #272). The Agent's own maximum age stays beside it.
+    const replayed = {
+      components: [],
+      updated_at: '2026-08-12T08:00:00Z',
+      spool_oldest_queued_age_ms: 0,
+      spool_max_age_seconds: 604_800,
+      spool_backlog_age: { age_ms: 8_100_000, basis: 'receipt' },
+    }
+    const detailRoutes = (host: unknown) => ({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}`]: () => jsonResponse({ ...AGENT_DIAGNOSTIC, host }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/audit`]: () =>
+        jsonResponse({ agent_id: AGENT_ID, items: [] }, 200),
+      [`/api/admin/v1/agents/${AGENT_ID}/storage-mounts`]: () => new Promise<Response>(() => {}),
+      [`/api/admin/v1/agents/${AGENT_ID}/host-metrics/*`]: () => new Promise<Response>(() => {}),
+    })
+    /** The row's label and value once Diagnostics is open. */
+    const backlogRow = async (): Promise<HTMLElement | null> =>
+      (await screen.findByText('Spool backlog age', { exact: true })).parentElement
+
+    mockFetch(detailRoutes(replayed))
+    renderAt(`/admin/agents/${AGENT_ID}?section=diagnostics`)
+
+    let backlog = await backlogRow()
+    expect(backlog?.textContent).toContain('2h 15m')
+    // The receipt-anchored reading needs no qualifier, and the stale raw
+    // reading the Report carried is gone from the view.
+    expect(backlog?.textContent).not.toContain('as of report generation')
+    expect(screen.getByLabelText('Current Agent dimensions').textContent).not.toContain('Spool')
+    expect(screen.queryByText('Spool oldest / maximum age')).toBeNull()
+    expect(screen.getByText('Spool maximum age', { exact: true }).parentElement?.textContent).toContain(
+      '604800 s',
+    )
+
+    // An unreliable clock leaves the Report's own age, labelled with the instant
+    // that reading describes.
+    cleanup()
+    adminQueryClient.clear()
+    mockFetch(detailRoutes({ ...replayed, spool_backlog_age: { age_ms: 900_000, basis: 'generation' } }))
+    await renderAt(`/admin/agents/${AGENT_ID}?section=diagnostics`)
+
+    backlog = await backlogRow()
+    expect(backlog?.textContent).toContain('15m')
+    expect(backlog?.textContent).toContain('as of report generation')
+
+    // An observed Spool with no derived reading is Unknown, never a zero backlog
+    // and never "not observed", because the Spool itself was observed.
+    cleanup()
+    adminQueryClient.clear()
+    mockFetch(detailRoutes({ components: [], updated_at: '2026-08-12T08:00:00Z', spool_queued_reports: 0 }))
+    await renderAt(`/admin/agents/${AGENT_ID}?section=diagnostics`)
+
+    backlog = await backlogRow()
+    expect(backlog?.textContent).toContain('Unknown')
+    expect(backlog?.textContent).not.toContain('Not observed yet')
+  })
+
   it('summarizes many recorded findings as a count on Overview and keeps every one in Diagnostics', async () => {
     const longDeliveryError =
       'delivery attempt retained after a bounded retry exhausted the configured server timeout while the Server was unreachable'

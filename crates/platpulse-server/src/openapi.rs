@@ -247,6 +247,7 @@ impl Modify for AgentBearerScheme {
         crate::http::admin::AdminPeerLagSummary,
         crate::http::admin::HostDiagnostic,
         crate::http::admin::HostComponentDiagnostic,
+        crate::http::admin::SpoolBacklogAgeDiagnostic,
         crate::http::admin::ProcessDiagnostic,
         crate::http::admin::RpcDiagnostic,
         crate::http::admin::SyncDiagnostic,

@@ -520,6 +520,7 @@ export type AdminNetworkNode = {
  */
 export type AdminNodeDetail = {
     agent_id: string;
+    agent_spool_backlog_age?: null | SpoolBacklogAgeDiagnostic;
     block_history_rejection?: null | BlockHistoryRejection;
     consensus?: null | ConsensusDiagnostic;
     current_head?: number | null;
@@ -2463,6 +2464,7 @@ export type HostDiagnostic = {
     memory_used_bytes?: number | null;
     network_rx_bytes_per_sec?: number | null;
     network_tx_bytes_per_sec?: number | null;
+    spool_backlog_age?: null | SpoolBacklogAgeDiagnostic;
     spool_capacity_bytes?: number | null;
     spool_dropped_height_from?: number | null;
     spool_dropped_height_to?: number | null;
@@ -4866,6 +4868,33 @@ export type SilenceListResponse = {
 export type SilenceMutationResponse = {
     auditEventId: number;
     silence: SilenceDto;
+};
+
+/**
+ * A derived Spool Backlog Age and the clock basis it is anchored on (ADR
+ * 0014, issue #272).
+ *
+ * The Server derives the age when it receives the Report that carries the
+ * current Spool observation, because an immutable Report can only describe the
+ * backlog as of its own generation instant. The basis travels with the number
+ * so the WebUI can label it instead of presenting both bases as one reading.
+ */
+export type SpoolBacklogAgeDiagnostic = {
+    /**
+     * Milliseconds since the oldest queued Report was generated, never
+     * negative.
+     */
+    age_ms: number;
+    /**
+     * `receipt` when the reading is anchored on the Server receipt instant and
+     * corrected by the measured clock skew, `generation` when the clock was
+     * unreliable and the Report's own age is shown instead.
+     *
+     * A plain string rather than a closed enum: the basis is a label, and a
+     * client that meets one a newer Server introduced must render it as an
+     * unknown label instead of failing to parse the whole reading.
+     */
+    basis: string;
 };
 
 /**

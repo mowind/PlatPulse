@@ -324,7 +324,13 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
         },
     });
 
-    // 4. Web assets (readiness component; missing assets are a warning).
+    // 4. Spool Backlog Age across reporting Agents (ADR 0014, issue #272): a
+    //    warning only, because a near-overflow backlog is already an
+    //    `agent_spool_overflow` Attention Item and a backlog alone is not a
+    //    failed Server.
+    checks.push(spool_backlog_check(state).await?);
+
+    // 5. Web assets (readiness component; missing assets are a warning).
     checks.push(DoctorCheck {
         check_id: "web_assets".to_owned(),
         label: "Web assets".to_owned(),
@@ -344,7 +350,7 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
         },
     });
 
-    // 5. Retention policies are seeded within safety bounds.
+    // 6. Retention policies are seeded within safety bounds.
     let policy_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM retention_policies")
         .fetch_one(pool)
         .await?;
@@ -360,7 +366,7 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
         detail: format!("{policy_count} of {expected} retention policy families are seeded"),
     });
 
-    // 6-9. ADR 0008 backups are SQLite-only. On the PostgreSQL Storage
+    // 7-10. ADR 0008 backups are SQLite-only. On the PostgreSQL Storage
     //      Backend there is no Backup Artifact, no artifact age, and no
     //      residue the Server could inspect, so the four checks are reported
     //      NOT_APPLICABLE instead of passing or warning about something the
@@ -368,7 +374,7 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
     if postgres {
         checks.extend(backup_checks_not_applicable());
     } else {
-        // 6. Backup storage: configured, present, and strictly permissioned.
+        // 7. Backup storage: configured, present, and strictly permissioned.
         match state.backup_dir() {
             None => checks.push(DoctorCheck {
                 check_id: "backup_storage".to_owned(),
@@ -416,7 +422,7 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
             },
         }
 
-        // 7. Latest backup artifact integrity (skipped when nothing exists).
+        // 8. Latest backup artifact integrity (skipped when nothing exists).
         let latest = crate::backup::latest_artifact(pool).await?;
         checks.push(match latest {
             Some((artifact_id, _filename, _bytes, verification, _created_at)) => DoctorCheck {
@@ -441,7 +447,7 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
             },
         });
 
-        // 8. Age of the last successful Backup Artifact. ADR 0008 makes RPO
+        // 9. Age of the last successful Backup Artifact. ADR 0008 makes RPO
         //    operator-defined, so Doctor reports the age instead of judging it.
         checks.push(match crate::backup::latest_artifact(pool).await? {
         Some((artifact_id, _filename, _bytes, _verification, created_at)) => {
@@ -473,7 +479,7 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
         },
     });
 
-        // 9. Residue in the backup directory: a killed or disk-full attempt can
+        // 10. Residue in the backup directory: a killed or disk-full attempt can
         //    leave a half-written `.part` and its `.part-journal`, and ADR 0008
         //    reclaims nothing automatically.
         checks.push(match state.backup_dir() {
@@ -515,7 +521,7 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
     });
     }
 
-    // 10. Notification channel configuration (never token contents).
+    // 11. Notification channel configuration (never token contents).
     let telegram = state.channels().telegram.as_ref();
     checks.push(DoctorCheck {
         check_id: "notification_channels".to_owned(),
@@ -537,7 +543,7 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
         },
     });
 
-    // 11. Sensitive state files and optional Geo database are checked through
+    // 12. Sensitive state files and optional Geo database are checked through
     // descriptor-based no-follow validation; failures are actionable but do
     // not include filesystem paths in the Admin response.
     // The file-permission check exists only on SQLite: PostgreSQL stores no
@@ -584,7 +590,7 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
         },
     });
 
-    // 12. Capacity and low-space protection state (issue #212): the same
+    // 13. Capacity and low-space protection state (issue #212): the same
     // state the Operations page shows, so an Operator reading Doctor is not
     // left guessing why optional history stopped.
     checks.push(if postgres {
@@ -598,7 +604,7 @@ async fn collect_checks(state: &AppState) -> Result<Vec<DoctorCheck>, sqlx::Erro
         storage_capacity_check(state)
     });
 
-    // 13. Sensitive file discipline is a unix property; elsewhere skipped.
+    // 14. Sensitive file discipline is a unix property; elsewhere skipped.
     #[cfg(unix)]
     {
         checks.push(DoctorCheck {
@@ -813,6 +819,117 @@ fn backup_checks_not_applicable() -> Vec<DoctorCheck> {
     ]
 }
 
+/// Spool Backlog Age across the Agents that are reporting right now (ADR 0014,
+/// issue #272).
+///
+/// The reading is derived at receipt, so it exists only for Agents that
+/// reported their Durable Spool. An Agent that stopped reporting is already an
+/// `agent_offline` Attention Item, and its last reading must not keep warning
+/// forever, so only online Agents count. A backlog past the threshold is a
+/// warning: the Agent is still delivering, just behind.
+///
+/// The basis travels with the age into the detail, because an age anchored on
+/// the Report's own generation instant is a historical figure, not the wait the
+/// Operator is looking at now (ADR 0014).
+async fn spool_backlog_check(state: &AppState) -> Result<DoctorCheck, sqlx::Error> {
+    // The Operator acts on the Agent, so the reading names it the way the Admin
+    // does: its display name when the Owner set one, its id otherwise.
+    let rows = sqlx::query_as::<_, (String, Option<String>, i64, Option<String>)>(
+        "SELECT COALESCE(NULLIF(a.display_name, ''), a.agent_id), a.last_received_at, h.spool_backlog_age_ms, h.spool_backlog_age_basis FROM agents a JOIN current_host_observations h ON h.agent_id = a.agent_id WHERE h.spool_backlog_age_ms IS NOT NULL",
+    )
+    .fetch_all(state.db().pool())
+    .await?;
+    Ok(spool_backlog_check_from_rows(rows))
+}
+
+/// Reduce the per-Agent readings to one Doctor check. Split out from the query
+/// so the Online-only rule and the wording are testable without a database.
+/// Each row is the Agent's label, its last receipt instant, its Spool Backlog
+/// Age and the basis that age is anchored on.
+fn spool_backlog_check_from_rows(
+    rows: Vec<(String, Option<String>, i64, Option<String>)>,
+) -> DoctorCheck {
+    let threshold = humanize_age(crate::spool_backlog::SPOOL_BACKLOG_WARNING_MS / 1000);
+    let mut reporting = 0usize;
+    let mut backlogged: Vec<(String, i64, Option<String>)> = Vec::new();
+    for (agent_label, last_received_at, age_ms, basis) in rows {
+        if crate::attention::agent_liveness(last_received_at.as_deref()) != "online" {
+            continue;
+        }
+        reporting += 1;
+        if crate::spool_backlog::is_backlogged(age_ms) {
+            backlogged.push((agent_label, age_ms, basis));
+        }
+    }
+    let (status, detail) = if reporting == 0 {
+        (
+            STATUS_SKIPPED,
+            "no online Agent has reported a Spool observation yet".to_owned(),
+        )
+    } else if backlogged.is_empty() {
+        (
+            STATUS_PASS,
+            format!(
+                "{reporting} online Agent(s) report a Spool Backlog Age of less than {threshold}"
+            ),
+        )
+    } else {
+        // Worst first, so the Operator reads the Agent that needs attention
+        // even when the list is truncated.
+        backlogged.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+        let shown = backlogged
+            .iter()
+            .take(3)
+            .map(|(agent_label, age_ms, basis)| {
+                format!(
+                    "{agent_label} {}",
+                    spool_backlog_age_text(*age_ms, basis.as_deref())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = backlogged.len().saturating_sub(3);
+        let suffix = if more == 0 {
+            String::new()
+        } else {
+            format!(", and {more} more")
+        };
+        (
+            STATUS_WARNING,
+            format!(
+                "{} of {reporting} online Agent(s) report a Spool Backlog Age of more than {threshold}: {shown}{suffix}",
+                backlogged.len()
+            ),
+        )
+    };
+    DoctorCheck {
+        check_id: "agent_spool_backlog".to_owned(),
+        label: "Agent spool backlog".to_owned(),
+        status,
+        detail,
+    }
+}
+
+/// Name one reading the way the Admin does: the age, plus the basis whenever the
+/// Server could not anchor it on the receipt instant, so the Operator never reads
+/// a generation-time figure as the wait happening now (ADR 0014).
+fn spool_backlog_age_text(age_ms: i64, basis: Option<&str>) -> String {
+    let age = humanize_age(age_ms / 1000);
+    let qualifier = match basis {
+        // Anchored on the receipt instant and corrected for skew: the age is
+        // the current wait, so it stands on its own.
+        Some(basis) if basis == crate::spool_backlog::BacklogBasis::Receipt.as_str() => {
+            return age;
+        }
+        Some(basis) if basis == crate::spool_backlog::BacklogBasis::Generation.as_str() => {
+            "as of report generation".to_owned()
+        }
+        Some(basis) => format!("basis {basis}"),
+        None => "basis not recorded".to_owned(),
+    };
+    format!("{age} ({qualifier})")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -857,6 +974,125 @@ mod tests {
             assert!(!check.label.is_empty());
             assert!(!check.detail.is_empty());
         }
+    }
+
+    /// A `last_received_at` the offline window accepts, without freezing the
+    /// clock in the test: the liveness rule is the shared one.
+    fn just_received() -> Option<String> {
+        Some(crate::auth::format_rfc3339(crate::auth::now_utc()))
+    }
+
+    /// The basis of a reading the Server anchored on the receipt instant.
+    fn receipt() -> Option<String> {
+        Some(
+            crate::spool_backlog::BacklogBasis::Receipt
+                .as_str()
+                .to_owned(),
+        )
+    }
+
+    #[test]
+    fn spool_backlog_warns_past_the_threshold_and_passes_below_it() {
+        let quiet = spool_backlog_check_from_rows(vec![
+            ("agent-a".to_owned(), just_received(), 1_000, receipt()),
+            (
+                "agent-b".to_owned(),
+                just_received(),
+                crate::spool_backlog::SPOOL_BACKLOG_WARNING_MS,
+                receipt(),
+            ),
+        ]);
+        assert_eq!(quiet.check_id, "agent_spool_backlog");
+        assert_eq!(quiet.status, STATUS_PASS);
+
+        let backlogged = spool_backlog_check_from_rows(vec![
+            ("agent-a".to_owned(), just_received(), 1_000, receipt()),
+            (
+                "agent-b".to_owned(),
+                just_received(),
+                crate::spool_backlog::SPOOL_BACKLOG_WARNING_MS + 1,
+                receipt(),
+            ),
+        ]);
+        assert_eq!(backlogged.status, STATUS_WARNING);
+        assert!(backlogged.detail.contains("agent-b"));
+        assert!(!backlogged.detail.contains("agent-a 0s"));
+    }
+
+    #[test]
+    fn spool_backlog_labels_a_reading_the_server_could_not_anchor_on_receipt() {
+        let check = spool_backlog_check_from_rows(vec![
+            (
+                "agent-a".to_owned(),
+                just_received(),
+                crate::spool_backlog::SPOOL_BACKLOG_WARNING_MS + 1,
+                receipt(),
+            ),
+            (
+                "agent-b".to_owned(),
+                just_received(),
+                crate::spool_backlog::SPOOL_BACKLOG_WARNING_MS + 1,
+                Some(
+                    crate::spool_backlog::BacklogBasis::Generation
+                        .as_str()
+                        .to_owned(),
+                ),
+            ),
+        ]);
+        // A receipt-anchored age is the current wait and carries no label; the
+        // Report's own generation-time age must never read as that.
+        assert!(check.detail.contains("agent-a 5m"), "{}", check.detail);
+        assert!(
+            check
+                .detail
+                .contains("agent-b 5m (as of report generation)"),
+            "{}",
+            check.detail
+        );
+        assert_eq!(
+            spool_backlog_age_text(1_000, None),
+            "1s (basis not recorded)"
+        );
+    }
+
+    #[test]
+    fn spool_backlog_ignores_offline_agents_and_skips_without_readings() {
+        let stale =
+            crate::auth::format_rfc3339(crate::auth::now_utc() - time::Duration::seconds(3_600));
+        let offline = spool_backlog_check_from_rows(vec![(
+            "agent-a".to_owned(),
+            Some(stale),
+            24 * 3_600_000,
+            receipt(),
+        )]);
+        assert_eq!(offline.status, STATUS_SKIPPED);
+        assert_eq!(
+            spool_backlog_check_from_rows(Vec::new()).status,
+            STATUS_SKIPPED
+        );
+    }
+
+    #[test]
+    fn spool_backlog_lists_the_worst_three_agents_first() {
+        let check = spool_backlog_check_from_rows(
+            ["a", "b", "c", "d", "e"]
+                .iter()
+                .enumerate()
+                .map(|(index, agent_id)| {
+                    (
+                        (*agent_id).to_owned(),
+                        just_received(),
+                        crate::spool_backlog::SPOOL_BACKLOG_WARNING_MS * (index as i64 + 2),
+                        receipt(),
+                    )
+                })
+                .collect(),
+        );
+        assert_eq!(check.status, STATUS_WARNING);
+        let worst_first = check.detail.find("e ").unwrap();
+        let least = check.detail.find("d ").unwrap();
+        assert!(worst_first < least, "detail lists worst Agents first");
+        assert!(check.detail.ends_with("and 2 more"), "{}", check.detail);
     }
 
     #[test]
