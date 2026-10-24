@@ -142,6 +142,10 @@ Authorization changes create a new access generation:
 
 Session revoke, expiry, and Site Access Mode changes (Public ↔ Private) all use this sequence. Tokens and business DTOs are never transferred between tabs; tabs synchronize only an access-generation signal.
 
+A Session probe has three answers, not two. Only an HTTP `401` whose error envelope carries `auth_required` means the reader is not signed in: that answer, and only that answer, closes the Admin/Public stream, clears the cache and moves the tab to Guest (Admin then routes to `/login` with the `sessionExpired` notice). Every other failure — a `502`/`503`/`504` from an intermediary or from the Server's own database-unavailable answer, a network error, an unreadable or empty body — is the Server being unreachable, not the Session being refused: the tab keeps the reader signed in with the Session it already held, leaves the streams and the access generation untouched, states `The Server cannot confirm your Session right now. Retrying automatically.` beside the reading it already holds (and `The Server is temporarily unavailable. Retrying automatically.` when it holds no Session to keep), and repeats the probe with a bounded backoff (`1 s`, `2 s`, `4 s`, `8 s`, `15 s`, then every `30 s`) until it is answered. A first probe that is never answered reaches the same unavailable state and declares no Guest, so a Server restart never presents the login form to a reader who is still signed in; once the Server answers with the same Session the shell resumes reading under a new access generation, and a Session it no longer accepts becomes Guest at that point. A probe that was not answered is never an authorization change.
+
+The Server keeps the same line: a Session query the database cannot answer is `503 unavailable`, never `401 auth_required`, and a bound Admin/Public stream whose Session re-check cannot read the database stays open and re-checks on the next second instead of closing with a `reset` (issue #267).
+
 ## 4. Route and page inventory
 
 Each page has a stable ID. IDs are semantic and do not prescribe React filenames.

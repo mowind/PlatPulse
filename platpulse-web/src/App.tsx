@@ -60,6 +60,22 @@ function CheckingAccess() {
   )
 }
 
+/**
+ * The Server could not be asked who the reader is (restarting, 502/503, a
+ * database failure, a dropped connection). That is an outage, not a sign-out:
+ * the gate holds the reader here, shows no prior data, and the auth provider
+ * keeps probing until the Server answers (issue #267).
+ */
+function ServerUnavailable() {
+  return (
+    <main className="mx-auto max-w-[1280px] p-4">
+      <p role="status" className="text-sm text-muted-foreground">
+        The Server is temporarily unavailable. Retrying automatically.
+      </p>
+    </main>
+  )
+}
+
 function RequireSession({ children }: { children: ReactNode }) {
   const { status, accessLost } = useAuth()
   const location = useLocation()
@@ -75,6 +91,9 @@ function RequireSession({ children }: { children: ReactNode }) {
 
   if (status.state === 'loading') {
     return <CheckingAccess />
+  }
+  if (status.state === 'unavailable') {
+    return <ServerUnavailable />
   }
   if (status.state === 'guest') {
     if (siteAccessMode === null) {
@@ -101,6 +120,9 @@ function RequireOwner({ children }: { children: ReactNode }) {
 
   if (status.state === 'loading') {
     return <CheckingAccess />
+  }
+  if (status.state === 'unavailable') {
+    return <ServerUnavailable />
   }
   if (status.state === 'guest') {
     if (hadSession) {

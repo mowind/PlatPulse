@@ -5,6 +5,7 @@ import { Link, NavLink, Outlet, useOutletContext } from 'react-router'
 import { QueryClientProvider } from '@tanstack/react-query'
 import SignOutButton from '../components/SignOutButton'
 import ThemeToggle from '../components/ThemeToggle'
+import { ServerOutageNotice } from '../components/ServerOutageNotice'
 import { ServerStatusNotice } from '../components/ServerStatusNotice'
 import { RealtimeNotice } from '../components/RealtimeNotice'
 import {
@@ -89,8 +90,12 @@ export default function AdminLayout() {
     setResetting(true)
     accessGenerationRef.current = Math.max(accessGenerationRef.current, generation) + 1
     resetAdminCache(accessGenerationRef.current)
-    void recheckSession().then((confirmed) => {
-      if (confirmed) setResetting(false)
+    void recheckSession().then((recheck) => {
+      // A refused session keeps the placeholder: the route guard is leaving
+      // Admin. An unanswered one proves nothing about access, so the shell
+      // renders again and lets each query and the Server notice report the
+      // outage instead of parking on a placeholder that never resolves (#267).
+      if (recheck !== 'signed_out') setResetting(false)
     })
   }, [generation, recheckSession])
 
@@ -190,6 +195,7 @@ export default function AdminLayout() {
               <span className="text-xs whitespace-nowrap text-muted-foreground">Checking access…</span>
             )}
             <ServerStatusNotice />
+            <ServerOutageNotice />
           </div>
           <div className="order-2 ml-auto flex shrink-0 items-center gap-2 lg:order-3 lg:ml-0 lg:pr-[var(--admin-padding)]">
             <Button

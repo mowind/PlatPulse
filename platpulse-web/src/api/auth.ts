@@ -24,18 +24,56 @@ function toAuthError(error: unknown, fallbackCode: string): AuthApiError {
   return new AuthApiError(fallbackCode, 'the server is unreachable')
 }
 
-/** Current session and CSRF token, or null when unauthenticated. */
-export async function fetchSession(signal?: AbortSignal): Promise<SessionResponse | null> {
+/**
+ * What one session probe established about the reader (issue #267).
+ *
+ * A probe only retires an access when the Server says so: a `401` whose
+ * error envelope carries `auth_required` refuses the cookie. A Server that
+ * cannot answer at all — restarting, a `502`/`503` from the reverse proxy, a
+ * dropped connection, a database failure — and a `401` that is not the
+ * Server's own refusal (an intermediary's login page, an unreadable body)
+ * establishes nothing about the Session, so a caller keeps the access it
+ * already has instead of signing the reader out (webui.md §3.3).
+ */
+export type SessionProbe =
+  /** The Server reported a live session. */
+  | { kind: 'session'; response: SessionResponse }
+  /** The Server refused the cookie (`401` + `auth_required`): not signed in. */
+  | { kind: 'unauthenticated' }
+  /** The Server could not be asked. Access is unknown, not lost. */
+  | { kind: 'unavailable'; error: TransportError }
+
+/** Ask the Server whether this document holds a live session. */
+export async function probeSession(signal?: AbortSignal): Promise<SessionProbe> {
   try {
-    return await requestGenerated(
+    const response = await requestGenerated(
       () => sessionHandler({ signal }),
       'Unable to check the current session',
     )
+    return { kind: 'session', response }
   } catch (caught) {
     if (caught instanceof DOMException && caught.name === 'AbortError') throw caught
-    // Session probes fail closed. The route gate will show the safe Guest
-    // path while login still gets the normalized transport error.
-    return null
+    // Access is retired by the Server's own answer and nothing else: the
+    // status alone is not that answer, because a proxy in front of a
+    // restarting Server can also send a 401 (webui.md §3.3).
+    if (
+      caught instanceof TransportError &&
+      caught.status === 401 &&
+      caught.code === 'auth_required'
+    ) {
+      return { kind: 'unauthenticated' }
+    }
+    return {
+      kind: 'unavailable',
+      error:
+        caught instanceof TransportError
+          ? caught
+          : new TransportError(
+              'transport',
+              'network_unavailable',
+              'Unable to check the current session',
+            ),
+    }
   }
 }
 

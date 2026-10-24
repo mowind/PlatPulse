@@ -12,6 +12,7 @@ import {
   usePublicRealtime,
 } from '../api/public'
 import { homeReturnTab, readHomeReturn } from '../homeReturn'
+import { ServerOutageNotice } from '../components/ServerOutageNotice'
 import { ServerStatusNotice } from '../components/ServerStatusNotice'
 import BackgroundDecoration from '../components/BackgroundDecoration'
 import AppFooter from '../components/AppFooter'
@@ -85,17 +86,31 @@ function HomeLayoutContent() {
     setResetting(true)
     resetPublicCache(generation + 1)
     void Promise.all([recheckSession(), revalidateSiteAccessSettings()])
-      .then(([confirmed, { mode, authorizationGeneration }]) => {
-        if (!confirmed) return
+      .then(([recheck, { mode, authorizationGeneration }]) => {
+        // The Server refused the session: the route guard owns the departure,
+        // so the placeholder stays until it navigates away.
+        if (recheck === 'signed_out') return
         const current = authRef.current
         if (mode !== 'public' && current.state !== 'authenticated') {
           navigate('/login', { replace: true })
-        } else {
-          setResetting(false)
-          setGeneration(authorizationGeneration)
+          return
         }
+        // The shell may leave the placeholder, but an unanswered re-check
+        // proves no new authorization: keep the current generation rather than
+        // re-keying the cache for access that was never confirmed, and let the
+        // failing queries and the Server notice report the outage (#267).
+        setResetting(false)
+        if (recheck === 'confirmed') setGeneration(authorizationGeneration)
       })
-      .catch(() => {})
+      .catch(() => {
+        // Either reconciliation failed outright; both are reads of a Server
+        // that is not answering. The placeholder is the one thing the shell
+        // must not keep: the access generation is unchanged, so Home resumes
+        // under the authorization it already held and each failing query, and
+        // the session probe's own retry, report the outage until it ends
+        // (#267).
+        setResetting(false)
+      })
   }, [generation, navigate, recheckSession])
 
   // The reading token is bound to the reader at the authentication boundary
@@ -168,6 +183,7 @@ function HomeLayoutContent() {
       </header>
       <main className="flex-1">
         <div className="mx-auto max-w-[1280px]">
+          <ServerOutageNotice />
           <ServerStatusNotice />
           {networksQuery.data && networksQuery.isRefetchError && (
             <div className="px-4">

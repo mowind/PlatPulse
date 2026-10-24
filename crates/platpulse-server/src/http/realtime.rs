@@ -298,12 +298,6 @@ impl RealtimeHub {
         });
         tokio_stream::wrappers::ReceiverStream::new(receiver)
     }
-    /// Human-bound stream: closes with a `reset` event as soon as the
-    /// bound Session is no longer current — revoked, past its absolute
-    /// lifetime, user disabled, or role changed
-    /// (revoke/disable/role-change actively close the bound Human stream). `connected_role` is the
-    /// role the stream was opened with, so any role change closes it even
-    /// when the route group itself would still accept the session.
     /// Build the access-reset event that closes a bound stream: an
     /// `event: reset` carrying the collection-level reset payload. Shared
     /// by the Human- and Guest-bound streams so the two authorization
@@ -321,6 +315,16 @@ impl RealtimeHub {
         Ok(Event::default().event("reset").data(data))
     }
 
+    /// Human-bound stream: closes with a `reset` event as soon as the
+    /// bound Session is no longer current — revoked, past its absolute
+    /// lifetime, user disabled, or role changed
+    /// (revoke/disable/role-change actively close the bound Human stream). `connected_role` is the
+    /// role the stream was opened with, so any role change closes it even
+    /// when the route group itself would still accept the session.
+    ///
+    /// A Session the database cannot answer for is neither current nor ended:
+    /// the stream stays open and rechecks on the next tick, because a restart
+    /// or an unreachable database must not log a reader out (issue #267).
     pub(crate) fn stream_with_session(
         &self,
         last_event_id: Option<u64>,
@@ -337,13 +341,17 @@ impl RealtimeHub {
             loop {
                 tokio::select! {
                     _ = check.tick() => {
-                        if !crate::auth::session_is_current(&db, &session_id, Some(&connected_role)).await {
+                        if crate::auth::session_state(&db, &session_id, Some(&connected_role)).await
+                            == crate::auth::SessionState::Ended
+                        {
                             let _ = sender.send(Self::reset_event()).await;
                             break;
                         }
                     }
                     result = async {
-                        if !crate::auth::session_is_current(&db, &session_id, Some(&connected_role)).await {
+                        if crate::auth::session_state(&db, &session_id, Some(&connected_role)).await
+                            == crate::auth::SessionState::Ended
+                        {
                             let _ = sender.send(Self::reset_event()).await;
                             return true;
                         }
@@ -612,7 +620,8 @@ mod tests {
             .expect("stream must stay open");
         assert!(item.is_ok(), "the reset event must not be an error");
         assert!(
-            !crate::auth::session_is_current(&db, &session.session_id, Some(&session.role)).await,
+            crate::auth::session_state(&db, &session.session_id, Some(&session.role)).await
+                == crate::auth::SessionState::Ended,
             "the revoked session must no longer be current"
         );
         assert!(
@@ -620,6 +629,42 @@ mod tests {
                 .await
                 .expect("stream must close after reset")
                 .is_none()
+        );
+    }
+
+    /// Issue #267: a database that cannot be read must not reset a bound
+    /// stream. The Session is unverified, not revoked, so the stream stays
+    /// open and rechecks on the next tick.
+    #[tokio::test]
+    async fn unreadable_database_keeps_the_bound_stream_open() {
+        let (_dir, db, config) = stream_db().await;
+        let (session, _) = crate::auth::login(
+            &db,
+            &config,
+            "admin",
+            "correct horse battery",
+            None,
+            "Unknown",
+        )
+        .await
+        .unwrap();
+        let hub = RealtimeHub::new(8);
+        let mut stream = Box::pin(hub.stream_with_session(
+            None,
+            Arc::clone(&db),
+            session.session_id.clone(),
+            session.role.clone(),
+        ));
+        db.pool().close().await;
+        let item = tokio::time::timeout(Duration::from_millis(2_500), stream.next()).await;
+        assert!(
+            item.is_err(),
+            "an unreadable database must not end the stream with a reset event"
+        );
+        assert_eq!(
+            crate::auth::session_state(&db, &session.session_id, Some(&session.role)).await,
+            crate::auth::SessionState::Unknown,
+            "the recheck must report the Session as unverified, not ended"
         );
     }
 
@@ -655,7 +700,8 @@ mod tests {
             .expect("stream must stay open");
         assert!(item.is_ok(), "the reset event must not be an error");
         assert!(
-            !crate::auth::session_is_current(&db, &session.session_id, Some(&session.role)).await,
+            crate::auth::session_state(&db, &session.session_id, Some(&session.role)).await
+                == crate::auth::SessionState::Ended,
             "the changed role must no longer satisfy the bound role"
         );
     }

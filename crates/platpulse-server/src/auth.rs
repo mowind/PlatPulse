@@ -191,36 +191,64 @@ pub struct SessionInfo {
     pub csrf_token: String,
 }
 
+/// What a Session recheck found.
+///
+/// A recheck has three answers, not two: the Session is valid, the Session is
+/// gone, or the Server cannot read it at all (database unavailable, restart in
+/// progress). Collapsing "cannot read" into "gone" ends every long-lived
+/// stream with a spurious reset whenever the database is briefly unreachable
+/// (issue #267), so the third answer stands on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionState {
+    /// Revoked? no. Past its absolute lifetime? no. Owner disabled? no.
+    /// Role changed? no. The stream may stay open.
+    Current,
+    /// The Session was revoked, expired, disabled, or its role changed: the
+    /// stream must close.
+    Ended,
+    /// The database could not answer, so the Session is neither confirmed nor
+    /// revoked. A stream keeps the reader signed in and rechecks later.
+    Unknown,
+}
+
 /// Return whether the session remains valid for a long-lived stream.
 /// This deliberately rechecks revocation, absolute-lifetime expiry, user
 /// disablement, and role changes instead of trusting connect-time auth.
 /// Inactivity (`last_seen_at`) never ends a Session.
-pub async fn session_is_current(
+pub async fn session_state(
     db: &ServerDatabase,
     session_id: &str,
     expected_role: Option<&str>,
-) -> bool {
+) -> SessionState {
     let row = sqlx::query_as::<_, (String, Option<String>, String, String)>(
             "SELECT s.expires_at, s.revoked_at, u.role, COALESCE(u.disabled_at, '') FROM sessions s JOIN users u ON u.user_id=s.user_id WHERE s.session_id=$1",
         )
         .bind(session_id)
         .fetch_optional(db.pool())
-        .await
-        .ok()
-        .flatten();
+        .await;
+    let row = match row {
+        Ok(row) => row,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "session recheck could not read the database; the stream stays open"
+            );
+            return SessionState::Unknown;
+        }
+    };
     let Some((expires, revoked, role, disabled)) = row else {
-        return false;
+        return SessionState::Ended;
     };
     if revoked.is_some() || !disabled.is_empty() || expected_role.is_some_and(|value| role != value)
     {
-        return false;
+        return SessionState::Ended;
     }
     let now = now_utc();
     if now > session_expiry(&expires) {
         let _ = expire_session(db, session_id).await;
-        return false;
+        return SessionState::Ended;
     }
-    true
+    SessionState::Current
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +260,11 @@ pub enum SessionError {
     Expired,
     /// The owning user has been disabled (design §10.2).
     UserDisabled,
+    /// The Server could not read the Session because the database is
+    /// unavailable. This is not the Agent's or the browser's fault, so it
+    /// must not be reported as a rejection: the request is retried later and
+    /// the reader stays signed in (issue #267).
+    Unavailable,
 }
 
 /// Why a login attempt failed.
@@ -830,7 +863,17 @@ pub async fn authenticate_token(
     .bind(token_id)
     .fetch_optional(db.pool())
     .await
-    .map_err(|_| SessionError::Invalid)?
+    .map_err(|error| {
+        // An unreadable Session is not a rejected Session: the cookie may be
+        // perfectly valid and the database merely unavailable. Reporting it as
+        // Invalid would log a signed-in reader out over a Server restart
+        // (issue #267).
+        tracing::warn!(
+            error = %error,
+            "session lookup could not read the database; the Session is unverified, not rejected"
+        );
+        SessionError::Unavailable
+    })?
     else {
         return Err(SessionError::Invalid);
     };
@@ -856,9 +899,21 @@ pub async fn authenticate_token(
     }
 
     if now > expires_at {
-        expire_session(db, &row.session_id)
-            .await
-            .map_err(|_| SessionError::Invalid)?;
+        expire_session(db, &row.session_id).await.map_err(|error| {
+            // The Session is past its lifetime, but the lazy revoke did not
+            // land. Answer "unavailable" rather than "expired" so the client
+            // retries and the revoke is attempted again, instead of logging
+            // out on a write failure.
+            // A failed durable write needs a human (docs/design/logging.md,
+            // error level): until the revoke lands the Session stays usable
+            // in storage past its lifetime, which is worse than the retried
+            // request.
+            tracing::error!(
+                error = %error,
+                "expired session could not be revoked; answering unavailable so it is retried"
+            );
+            SessionError::Unavailable
+        })?;
         return Err(SessionError::Expired);
     }
     Ok(SessionInfo {
@@ -1470,8 +1525,9 @@ mod tests {
 
         let before_generation = authorization_generation(&db).await.unwrap();
 
-        assert!(
-            session_is_current(&db, &token_id, Some("owner")).await,
+        assert_eq!(
+            session_state(&db, &token_id, Some("owner")).await,
+            SessionState::Current,
             "the long-lived stream recheck must not cut an inactive Session"
         );
         let session = authenticate_token(&db, &config, &full_token)
@@ -1495,7 +1551,10 @@ mod tests {
         let now = format_rfc3339(now_utc());
         let (token_id, full_token) =
             insert_owner_session(&db, &config, &now, "not-a-timestamp").await;
-        assert!(!session_is_current(&db, &token_id, Some("owner")).await);
+        assert_eq!(
+            session_state(&db, &token_id, Some("owner")).await,
+            SessionState::Ended
+        );
 
         let (_, second_token) = insert_owner_session(&db, &config, &now, "garbage").await;
         assert_eq!(

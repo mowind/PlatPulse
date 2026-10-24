@@ -1338,6 +1338,15 @@ async fn session_guard(
             "auth_required",
             "user disabled",
         ),
+        // The session could not be checked, so nothing about it is known: this
+        // is the Server's failure, not a rejection. The WebUI keeps a signed-in
+        // reader signed in and retries on 503 (issue #267).
+        Err(SessionError::Unavailable) => session_error_response(
+            &request,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        ),
     }
 }
 
@@ -2335,6 +2344,36 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["session"]["username"], "admin");
         assert!(!body["csrfToken"].as_str().unwrap().is_empty());
+    }
+
+    /// Issue #267: a database that cannot answer the Session query is the
+    /// Server's failure, not the reader's. The guard answers 503 so the WebUI
+    /// keeps the reader signed in and retries; a 401 would read as "signed out".
+    #[tokio::test]
+    async fn session_lookup_failure_answers_unavailable_instead_of_logging_out() {
+        let (_, _, state) = test_state().await;
+        let app = build_app(state.clone());
+        seed_owner(&state).await;
+
+        let response = app.clone().oneshot(login_request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let cookie = response.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+
+        // The Session stays valid; only the database becomes unreadable.
+        state.db().pool().close().await;
+
+        let request = Request::builder()
+            .uri("/api/public/v1/session")
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = json(app.oneshot(request).await.unwrap()).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["error"]["code"], "unavailable");
+        assert_eq!(body["error"]["message"], "server database is unavailable");
     }
 
     #[tokio::test]

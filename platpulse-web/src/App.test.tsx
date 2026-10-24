@@ -1810,6 +1810,76 @@ describe('App shell with private Home', () => {
     expect(screen.queryByRole('heading', { level: 1, name: 'Overview' })).toBeNull()
   })
 
+  it('keeps Home reading through an unanswered access reset and resumes when the Server answers', async () => {
+    const unavailable = () =>
+      new Response('<html><body>502 Bad Gateway</body></html>', {
+        status: 502,
+        headers: { 'Content-Type': 'text/html' },
+      })
+    let answering = true
+    mockFetch({
+      '/api/public/v1/session': () =>
+        answering ? jsonResponse(OWNER_SESSION, 200) : unavailable(),
+      '/api/public/v1/access': () =>
+        answering
+          ? jsonResponse({ mode: 'private', authorizationGeneration: 0 }, 200)
+          : unavailable(),
+      '/api/public/v1/networks': () => jsonResponse([], 200),
+      '/api/public/v1/reward-wallet': () =>
+        answering
+          ? jsonResponse(
+              {
+                address: 'lat1wallet',
+                unit: 'LAT',
+                state: 'current',
+                lastGoodAt: '2026-08-12T00:00:00Z',
+                lastAttemptAt: '2026-08-12T00:00:00Z',
+              },
+              200,
+            )
+          : unavailable(),
+    })
+    vi.stubGlobal('EventSource', FakeEventSource)
+
+    render(<App />)
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await Promise.resolve()
+    })
+    await screen.findByRole('region', { name: 'Home' })
+    await waitFor(() => expect(FakeEventSource.latest).toBeTruthy())
+
+    answering = false
+    await act(async () => {
+      FakeEventSource.latest?.emit(
+        'invalidation',
+        JSON.stringify({ version: 1, eventId: 0, resource: 'collection', reset: true }),
+      )
+      await Promise.resolve()
+    })
+
+    // Neither the probe nor the access settings answered: Home must not park
+    // on its placeholder for a Server that confirmed nothing, must keep the
+    // reader's access, and must say the Server is unavailable (#267).
+    expect(
+      await screen.findByText('The Server cannot confirm your Session right now. Retrying automatically.'),
+    ).toBeTruthy()
+    expect(screen.queryByText('Revalidating Home access…')).toBeNull()
+    expect(screen.getByRole('region', { name: 'Home' })).toBeTruthy()
+    expect(screen.queryByRole('heading', { level: 1, name: 'Sign in to PlatPulse' })).toBeNull()
+
+    // The Server answers again: the notice ends on its own, with nobody
+    // touching the page.
+    answering = true
+    await waitFor(
+      () =>
+        expect(
+          screen.queryByText('The Server cannot confirm your Session right now. Retrying automatically.'),
+        ).toBeNull(),
+      { timeout: 5000 },
+    )
+  })
+
   it('never flashes a previous session Admin cache after re-login', async () => {
     let session: unknown = OWNER_SESSION
     const pendingOverview: Array<{ resolve: (value: Response) => void; slot: 1 | 2 }> = []
