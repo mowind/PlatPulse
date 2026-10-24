@@ -557,7 +557,7 @@ Admin 的 Node 页面聚焦配置与诊断（显示名、RPC Endpoint 诊断、N
 
 当前支持两种人类主体：Owner 与 Viewer（初始化/CLI 或 Owner Admin 可创建）。Viewer 可登录并读取 Home，即使 Site Access Mode 为 Private；只有 Owner 可访问 Admin。支持 Session Cookie、Argon2id 密码哈希、登录限流、Session 撤销、基础 CSRF/Origin 校验。Session 只有绝对生命周期（自创建起 7 天，即 `expires_at`），没有空闲超时：长时间开着但不操作的 Home/Admin 页面不会因此被登出；`last_seen_at` 只作为 Admin 可见的活动证据（最多每 60 秒写入一次），不参与有效性判定。Session 在越过 `expires_at`、被显式登出或 Owner 撤销、或所属用户改密/改角色/被禁用时结束；Session Cookie 不设 `Max-Age`，关闭浏览器即丢弃。匿名 Guest 的 Home 可读性由 Site Access Mode 决定（默认 Private）。
 
-「读不到 Session」不等于「Session 失效」：Session 查询本身因数据库不可用（重启、损坏、连接耗尽）而失败时，受保护路由回答 `503 unavailable`，不是 `401 auth_required`；绑定 Session 的 Admin/Public 流在重查读不到数据库时保持打开，并在下一秒重查。只有明确的 `401`（`auth_required`）才是「未登录」，其余失败都是 Server 暂时不可达（issue #267）。
+「读不到 Session」不等于「Session 失效」：Session 查询本身因数据库不可用（重启、损坏、连接耗尽）而失败时，受保护路由回答 `503 unavailable`，不是 `401 auth_required`；绑定 Session 的 Admin/Public 流在重查读不到数据库时保持连接并在下一秒重查，但「保持连接」不是「确认授权」：读不到数据库期间流不发送任何失效事件（游标不前进，事件不会丢），也不延长 Session 的绝对有效期——连接时已核验的 `expires_at` 在本地独立检查，超过它即发送 `reset` 并关闭流。只有明确的 `401`（`auth_required`）才是「未登录」，其余失败都是 Server 暂时不可达（issue #267）。
 
 ### 10.3 传输
 

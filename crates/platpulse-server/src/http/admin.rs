@@ -95,6 +95,7 @@ async fn admin_events(
         state.database(),
         _session.0.session_id.clone(),
         _session.0.role.clone(),
+        _session.0.expires_at,
     ))
     .keep_alive(
         KeepAlive::new()

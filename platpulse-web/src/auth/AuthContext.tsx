@@ -100,6 +100,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const sessionEpochRef = useRef(0)
   const retryTimerRef = useRef<number | null>(null)
   const retryAttemptRef = useRef(0)
+  /** False once the boundary is unmounted: nothing may restart a probe then. */
+  const mountedRef = useRef(true)
+  /** The sign-in in flight, so a stale rejection cannot recover the probe. */
+  const loginAttemptRef = useRef(0)
   statusRef.current = status
 
   const clearRetryTimer = useCallback(() => {
@@ -245,8 +249,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   probeRef.current = probe
 
   useEffect(() => {
+    mountedRef.current = true
     void probeRef.current('initial')
-    return invalidateProbe
+    return () => {
+      mountedRef.current = false
+      invalidateProbe()
+    }
   }, [invalidateProbe])
 
   // A departure belongs to the reader who wrote it (webui.md §15.25): the token
@@ -268,14 +276,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(
     async (username: string, password: string) => {
+      const attempt = loginAttemptRef.current + 1
+      loginAttemptRef.current = attempt
       invalidateProbe()
       const response = await apiLogin(username, password).catch((error: unknown) => {
         // A rejected login signed nobody in, so it must not end the access
         // question either: an unanswered first probe is asked again, or a
         // Server that never answered would leave the reader parked on
-        // `unavailable` with no way to recover (issue #267).
+        // `unavailable` with no way to recover (issue #267). Only the sign-in
+        // that is still the current one may do it, and only while the boundary
+        // is mounted — an unmounted provider has already canceled its probes,
+        // so a late rejection must not start a retry chain nobody owns.
         const before = statusRef.current
-        if (before.state === 'loading' || before.state === 'unavailable') {
+        const stillOurs = mountedRef.current && loginAttemptRef.current === attempt
+        if (stillOurs && (before.state === 'loading' || before.state === 'unavailable')) {
           void probeRef.current('initial')
         }
         throw error
@@ -284,6 +298,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // before the new session can render (webui.md §3.3).
       retireAuthorization()
       setAccessLost(false)
+      setOutage(false)
       setHadSession(true)
       setStatus({
         state: 'authenticated',
@@ -297,6 +312,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     const current = statusRef.current
     const csrfToken = current.state === 'authenticated' ? current.csrfToken : ''
+    // A sign-in still in flight belongs to a reader who is leaving now.
+    loginAttemptRef.current += 1
     await apiLogout(csrfToken)
     invalidateProbe()
     setOutage(false)

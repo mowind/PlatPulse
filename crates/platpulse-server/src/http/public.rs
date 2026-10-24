@@ -72,6 +72,7 @@ pub(crate) async fn public_events(
             state.database(),
             session.0.session_id.clone(),
             session.0.role.clone(),
+            session.0.expires_at,
         )),
         None => Box::pin(
             state

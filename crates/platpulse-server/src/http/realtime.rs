@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use axum::response::sse::Event;
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 use tokio::sync::Notify;
 use tokio_stream::Stream;
 
@@ -74,6 +75,40 @@ impl Drop for ConnectionGuard {
 impl Default for RealtimeHub {
     fn default() -> Self {
         Self::new(DEFAULT_BUFFER_CAPACITY)
+    }
+}
+
+/// What a bound Human stream may do after re-checking its Session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundSession {
+    /// The Session is current: send this stream's events.
+    Open,
+    /// The Server could not read the Session: keep the connection open, send
+    /// nothing, and ask again shortly (issue #267).
+    Hold,
+    /// The Session is over — revoked, expired, disabled, role changed.
+    Close,
+}
+
+/// Re-check a bound stream's Session against the database plus the absolute
+/// lifetime the Server verified when the stream was opened.
+///
+/// The lifetime is local on purpose: an unreadable database must not extend a
+/// Session past `session_expires_at`, and holding a stream is not an
+/// authorization (issue #267).
+async fn bound_session(
+    db: &crate::database::ServerDatabase,
+    session_id: &str,
+    connected_role: &str,
+    session_expires_at: OffsetDateTime,
+) -> BoundSession {
+    if crate::auth::now_utc() > session_expires_at {
+        return BoundSession::Close;
+    }
+    match crate::auth::session_state(db, session_id, Some(connected_role)).await {
+        crate::auth::SessionState::Current => BoundSession::Open,
+        crate::auth::SessionState::Ended => BoundSession::Close,
+        crate::auth::SessionState::Unknown => BoundSession::Hold,
     }
 }
 
@@ -325,12 +360,17 @@ impl RealtimeHub {
     /// A Session the database cannot answer for is neither current nor ended:
     /// the stream stays open and rechecks on the next tick, because a restart
     /// or an unreachable database must not log a reader out (issue #267).
+    /// Open is not authorized, though: while the answer is missing the stream
+    /// sends nothing and the cursor does not move, and the absolute lifetime
+    /// `session_expires_at` (verified when the stream was opened) still ends
+    /// the stream without any database answer at all.
     pub(crate) fn stream_with_session(
         &self,
         last_event_id: Option<u64>,
         db: std::sync::Arc<crate::database::ServerDatabase>,
         session_id: String,
         connected_role: String,
+        session_expires_at: OffsetDateTime,
     ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static + use<> {
         let (sender, receiver) = tokio::sync::mpsc::channel(16);
         let hub = self.clone();
@@ -341,19 +381,35 @@ impl RealtimeHub {
             loop {
                 tokio::select! {
                     _ = check.tick() => {
-                        if crate::auth::session_state(&db, &session_id, Some(&connected_role)).await
-                            == crate::auth::SessionState::Ended
+                        if bound_session(&db, &session_id, &connected_role, session_expires_at)
+                            .await
+                            == BoundSession::Close
                         {
                             let _ = sender.send(Self::reset_event()).await;
                             break;
                         }
                     }
                     result = async {
-                        if crate::auth::session_state(&db, &session_id, Some(&connected_role)).await
-                            == crate::auth::SessionState::Ended
+                        match bound_session(&db, &session_id, &connected_role, session_expires_at)
+                            .await
                         {
-                            let _ = sender.send(Self::reset_event()).await;
-                            return true;
+                            BoundSession::Close => {
+                                let _ = sender.send(Self::reset_event()).await;
+                                return true;
+                            }
+                            // The Session is neither confirmed nor revoked, so
+                            // nothing may be sent on its behalf. The cursor
+                            // stays where it was (no event is skipped) and the
+                            // loop comes back to ask again.
+                            BoundSession::Hold => {
+                                let _ = tokio::time::timeout(
+                                    Duration::from_secs(1),
+                                    hub.inner.notify.notified(),
+                                )
+                                .await;
+                                return false;
+                            }
+                            BoundSession::Open => {}
                         }
                         if let Some(invalidation) = hub.next_after(&mut cursor) {
                             let closing = invalidation.resource == "server_shutdown";
@@ -610,6 +666,7 @@ mod tests {
             Arc::clone(&db),
             session.session_id.clone(),
             session.role.clone(),
+            session.expires_at,
         ));
         crate::auth::revoke_session(&db, &session.session_id)
             .await
@@ -654,6 +711,7 @@ mod tests {
             Arc::clone(&db),
             session.session_id.clone(),
             session.role.clone(),
+            session.expires_at,
         ));
         db.pool().close().await;
         let item = tokio::time::timeout(Duration::from_millis(2_500), stream.next()).await;
@@ -665,6 +723,44 @@ mod tests {
             crate::auth::session_state(&db, &session.session_id, Some(&session.role)).await,
             crate::auth::SessionState::Unknown,
             "the recheck must report the Session as unverified, not ended"
+        );
+    }
+
+    /// Issue #267: holding a stream is not an authorization. A Session whose
+    /// absolute lifetime has passed ends the bound stream even when the
+    /// database cannot be read at all, because the lifetime was verified when
+    /// the stream was opened and is re-checked locally on every tick.
+    #[tokio::test]
+    async fn expired_session_closes_the_bound_stream_without_a_database_answer() {
+        let (_dir, db, config) = stream_db().await;
+        let (session, _) = crate::auth::login(
+            &db,
+            &config,
+            "admin",
+            "correct horse battery",
+            None,
+            "Unknown",
+        )
+        .await
+        .unwrap();
+        let hub = RealtimeHub::new(8);
+        let mut stream = Box::pin(hub.stream_with_session(
+            None,
+            Arc::clone(&db),
+            session.session_id.clone(),
+            session.role.clone(),
+            // The lifetime the Server verified when this stream was opened,
+            // already past — as if the stream had been open long enough.
+            crate::auth::now_utc() - time::Duration::seconds(1),
+        ));
+        db.pool().close().await;
+        let item = tokio::time::timeout(Duration::from_secs(3), stream.next())
+            .await
+            .expect("an expired Session must produce a reset event")
+            .expect("stream must stay open");
+        assert!(
+            item.is_ok(),
+            "an expired Session must end the stream even while the database is unreadable"
         );
     }
 
@@ -689,6 +785,7 @@ mod tests {
             Arc::clone(&db),
             session.session_id.clone(),
             session.role.clone(),
+            session.expires_at,
         ));
         sqlx::query("UPDATE users SET role = 'viewer' WHERE username = 'admin'")
             .execute(db.pool())

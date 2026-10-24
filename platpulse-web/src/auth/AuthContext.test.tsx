@@ -358,6 +358,72 @@ describe('a Server that cannot answer', () => {
     expect(auth!.generation).toBeGreaterThan(generationDuringOutage)
   })
 
+  it('ends the outage notice when a sign-in succeeds while probes go unanswered', async () => {
+    vi.useFakeTimers()
+    answer = 'bad_gateway'
+    mockFetch({
+      '/api/public/v1/session': () => sessionRoute(),
+      '/api/public/v1/login': () => jsonResponse(OWNER_SESSION, 200),
+    })
+
+    await renderProbe()
+    expect(auth!.status.state).toBe('unavailable')
+    expect(auth!.outage).toBe(true)
+
+    // The reader signs in while the Server still will not answer a probe. The
+    // sign-in answered the question the probe was waiting on and canceled its
+    // retries, so nothing may keep claiming a retry is coming (issue #267).
+    await act(async () => {
+      await auth!.login('admin', 'correct horse battery')
+    })
+    expect(auth!.status.state).toBe('authenticated')
+    expect(auth!.outage).toBe(false)
+    expect(
+      screen.queryByText('The Server cannot confirm your Session right now. Retrying automatically.'),
+    ).toBeNull()
+  })
+
+  it('restarts no probe for a sign-in that is rejected after the boundary unmounts', async () => {
+    vi.useFakeTimers()
+    answer = 'offline'
+    let rejectLogin: ((reason: unknown) => void) | null = null
+    const fetchMock = mockFetch({
+      '/api/public/v1/session': () => sessionRoute(),
+      '/api/public/v1/login': () =>
+        new Promise<Response>((_resolve, reject) => {
+          rejectLogin = reject
+        }),
+    })
+    const sessionCalls = () =>
+      fetchMock.mock.calls.filter(([request]) =>
+        (request instanceof Request ? request.url : String(request)).includes(
+          '/api/public/v1/session',
+        ),
+      ).length
+
+    await renderProbe()
+    expect(auth!.status.state).toBe('unavailable')
+    const askedBeforeLogin = sessionCalls()
+
+    let login: Promise<void> | null = null
+    await act(async () => {
+      login = auth!.login('admin', 'correct horse battery')
+      await Promise.resolve()
+    })
+    // The boundary goes away while the sign-in is still pending: its cleanup
+    // has already canceled every probe and retry it owned.
+    cleanup()
+    await act(async () => {
+      rejectLogin?.(new TypeError('Failed to fetch'))
+      await expect(login).rejects.toThrow()
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+
+    // The late rejection restarted nothing, so no retry chain outlives the
+    // boundary that would have to show its result (issue #267).
+    expect(sessionCalls()).toBe(askedBeforeLogin)
+  })
+
   it('keeps the signed-in reader through a 401 that is not the Session refusal', async () => {
     await renderSignedIn()
 
