@@ -101,7 +101,7 @@ pub struct PostgresFacts {
 }
 
 /// The latest migration version compiled into the Server binary.
-pub const SERVER_SCHEMA_VERSION: i64 = 77;
+pub const SERVER_SCHEMA_VERSION: i64 = 78;
 
 /// SQLite allows one writer at a time, so the SQLite Storage Backend keeps
 /// exactly one pool connection: more would only trade correctness for lock

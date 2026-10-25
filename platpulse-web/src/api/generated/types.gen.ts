@@ -3573,7 +3573,8 @@ export type PublicConsensusInsight = {
      */
     epoch?: number | null;
     /**
-     * Server-owned freshness of the last successful consensus observation.
+     * Server-owned freshness of the last successful consensus observation,
+     * judged on the Server-clock observation instant (ADR 0014).
      */
     freshness: string;
     /**
@@ -3597,7 +3598,8 @@ export type PublicConsensusInsight = {
      */
     receivedAt?: string | null;
     /**
-     * Server-computed boundary at which the last observation became stale.
+     * Server-computed boundary at which the last observation became stale: the
+     * observation instant plus the freshness window.
      */
     staleSince?: string | null;
     /**
@@ -3933,6 +3935,13 @@ export type PublicNode = {
     consensusState: string;
     currentHead?: number | null;
     displayName?: string | null;
+    /**
+     * The oldest Server-clock instant at which the RPC, sync and consensus
+     * observations behind this projection were taken: the Report's own
+     * observation time corrected by the Agent's measured clock skew, falling
+     * back to the Server receipt time when that skew is unmeasured or the Agent
+     * is Clock Unreliable (ADR 0014).
+     */
     freshness?: string | null;
     health: string;
     healthReason: string;
@@ -4091,7 +4100,8 @@ export type PublicPeerHistory = {
 export type PublicPeerInsight = {
     consensusCount?: number | null;
     /**
-     * Server-owned freshness of the last successful Peer Snapshot.
+     * Server-owned freshness of the last successful Peer Snapshot, judged on
+     * the Server-clock observation instant (ADR 0014).
      */
     freshness: string;
     inboundCount?: number | null;
@@ -4111,7 +4121,8 @@ export type PublicPeerInsight = {
      */
     receivedAt?: string | null;
     /**
-     * Server-computed boundary at which the last observation became stale.
+     * Server-computed boundary at which the last observation became stale: the
+     * observation instant plus the freshness window.
      */
     staleSince?: string | null;
     /**

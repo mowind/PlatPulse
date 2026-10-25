@@ -16227,7 +16227,7 @@
           },
           "freshness": {
             "type": "string",
-            "description": "Server-owned freshness of the last successful consensus observation."
+            "description": "Server-owned freshness of the last successful consensus observation,\njudged on the Server-clock observation instant (ADR 0014)."
           },
           "highestCommitBlock": {
             "type": [
@@ -16272,7 +16272,7 @@
               "string",
               "null"
             ],
-            "description": "Server-computed boundary at which the last observation became stale."
+            "description": "Server-computed boundary at which the last observation became stale: the\nobservation instant plus the freshness window."
           },
           "state": {
             "type": "string",
@@ -16743,7 +16743,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The oldest Server-clock instant at which the RPC, sync and consensus\nobservations behind this projection were taken: the Report's own\nobservation time corrected by the Agent's measured clock skew, falling\nback to the Server receipt time when that skew is unmeasured or the Agent\nis Clock Unreliable (ADR 0014)."
           },
           "health": {
             "type": "string"
@@ -17225,7 +17226,7 @@
           },
           "freshness": {
             "type": "string",
-            "description": "Server-owned freshness of the last successful Peer Snapshot."
+            "description": "Server-owned freshness of the last successful Peer Snapshot, judged on\nthe Server-clock observation instant (ADR 0014)."
           },
           "inboundCount": {
             "type": [
@@ -17268,7 +17269,7 @@
               "string",
               "null"
             ],
-            "description": "Server-computed boundary at which the last observation became stale."
+            "description": "Server-computed boundary at which the last observation became stale: the\nobservation instant plus the freshness window."
           },
           "state": {
             "type": "string",

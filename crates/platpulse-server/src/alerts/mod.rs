@@ -935,6 +935,15 @@ pub(crate) async fn freshness_bound(
 /// Extract the typed evaluation fact for one `(rule, subject)` from the
 /// accepted Current Projection. Every rule maps onto honest
 /// projection facts; missing facts are `Unknown`, never zero/Healthy.
+///
+/// Two kinds of age live here, and they are not interchangeable (ADR 0014,
+/// issue #274). A rule that judges the Node's *state* reads the Server-clock
+/// observation instant, so a Node being replayed from a backlog yields
+/// `Stale` evidence and is neither opened nor resolved. A rule that asks
+/// whether evidence is still *arriving* (`agent.offline`,
+/// `node.observation_stale`, `node.head_subscription_disconnected`) reads the
+/// receipt instant: a replay delivers old samples right now, so only the
+/// receipt instant answers that question.
 pub async fn extract_input(
     executor: &mut sqlx::AnyConnection,
 
@@ -967,7 +976,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Node, "node.rpc_unreachable") => {
             let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>)>(
-                "SELECT state, error_code, error_message, received_at FROM component_status WHERE node_id = $1 AND component_key = 'rpc'",
+                "SELECT state, error_code, error_message, COALESCE(observation_at, received_at) FROM component_status WHERE node_id = $1 AND component_key = 'rpc'",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
@@ -1018,7 +1027,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Node, "node.process_not_running") => {
             let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>)>(
-                "SELECT state, error_code, error_message, received_at FROM component_status WHERE node_id = $1 AND component_key = 'process'",
+                "SELECT state, error_code, error_message, COALESCE(observation_at, received_at) FROM component_status WHERE node_id = $1 AND component_key = 'process'",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
@@ -1032,17 +1041,17 @@ pub async fn extract_input(
         }
         (SubjectKind::Node, "node.block_stalled") => {
             let row = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>)>(
-                "SELECT h.current_head, n.network_key, h.updated_at FROM block_history_state h JOIN nodes n ON n.node_id = h.node_id WHERE h.node_id = $1",
+                "SELECT h.current_head, n.network_key, COALESCE(h.observation_at, h.updated_at) FROM block_history_state h JOIN nodes n ON n.node_id = h.node_id WHERE h.node_id = $1",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
             .await?;
-            let Some((node_head, network_key, updated_at)) = row else {
+            let Some((node_head, network_key, observed_at)) = row else {
                 return Ok(EvalInput::Unknown {
                     reason: "No block history observed".to_owned(),
                 });
             };
-            if let Some(age) = age_secs(updated_at.as_deref(), now) {
+            if let Some(age) = age_secs(observed_at.as_deref(), now) {
                 if age > stale_after_secs {
                     return Ok(EvalInput::Stale {
                         value: 0.0,
@@ -1085,7 +1094,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Node, "node.sync_lag") => {
             let row = sqlx::query_as::<_, SyncRow>(
-                "SELECT s.state, c.syncing, c.current_block, c.highest_block, s.received_at FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'sync'",
+                "SELECT s.state, c.syncing, c.current_block, c.highest_block, COALESCE(s.observation_at, s.received_at) FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'sync'",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
@@ -1097,7 +1106,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Node, "node.consensus_stalled") => {
             let row = sqlx::query_as::<_, ConsensusRow>(
-                "SELECT s.state, s.error_code, s.error_message, c.consensus_epoch, c.consensus_view_number, c.consensus_highest_commit_block, s.received_at FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'consensus'",
+                "SELECT s.state, s.error_code, s.error_message, c.consensus_epoch, c.consensus_view_number, c.consensus_highest_commit_block, COALESCE(s.observation_at, s.received_at) FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'consensus'",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
@@ -1296,6 +1305,10 @@ async fn validator_alert_detail(
     Ok(evidence.to_string())
 }
 
+/// Turn a component row into an evaluation fact.
+///
+/// `row.3` is the Server-clock observation instant of the state being judged,
+/// so retained state from a replayed Report ages from when it was observed.
 fn component_input(
     row: (
         Option<String>,
@@ -1351,10 +1364,14 @@ type SyncRow = (
     Option<String>,
 );
 
+/// Judge free-sync lag from the Current Projection.
+///
+/// The row's instant is the Server-clock observation instant, so a Node still
+/// replaying a backlog ages out instead of reporting a false lag.
 fn sync_lag_input(row: Option<SyncRow>, now: OffsetDateTime, stale_after_secs: i64) -> EvalInput {
     match row {
-        Some((state, syncing, current, highest, received_at)) => {
-            if let Some(age) = age_secs(received_at.as_deref(), now) {
+        Some((state, syncing, current, highest, observed_at)) => {
+            if let Some(age) = age_secs(observed_at.as_deref(), now) {
                 if age > stale_after_secs {
                     return EvalInput::Stale {
                         value: 0.0,
@@ -1411,14 +1428,18 @@ type ConsensusRow = (
     Option<String>,
 );
 
+/// Judge consensus activity from the Current Projection.
+///
+/// As with lag, the instant is the observation instant: replaying old reports
+/// must not look like a live, stalled consensus.
 fn consensus_input(
     row: Option<ConsensusRow>,
     now: OffsetDateTime,
     stale_after_secs: i64,
 ) -> EvalInput {
     match row {
-        Some((state, error_code, error_message, epoch, view, commit, received_at)) => {
-            if let Some(age) = age_secs(received_at.as_deref(), now) {
+        Some((state, error_code, error_message, epoch, view, commit, observed_at)) => {
+            if let Some(age) = age_secs(observed_at.as_deref(), now) {
                 if age > stale_after_secs {
                     return EvalInput::Stale {
                         value: 0.0,

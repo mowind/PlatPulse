@@ -1673,8 +1673,11 @@ fn derive_health(
 /// Server-owned freshness dimension for the Admin Node view: `current` when
 /// the newest retained observation is fresh, `stale` when an older retained
 /// observation exists, and `unknown` when nothing was ever observed.
-fn derive_freshness<'a>(received_at: impl Iterator<Item = &'a str>) -> &'static str {
-    let latest = received_at.filter_map(crate::auth::parse_rfc3339).max();
+///
+/// The instants handed in are Server-clock observation instants, so a replayed
+/// Report cannot make an old observation look current (ADR 0014, issue #274).
+fn derive_freshness<'a>(observed_at: impl Iterator<Item = &'a str>) -> &'static str {
+    let latest = observed_at.filter_map(crate::auth::parse_rfc3339).max();
     match latest {
         None => "unknown",
         Some(value)
@@ -1877,9 +1880,9 @@ async fn peer_churn_diagnostic(
         recent_arrivals: Vec::new(),
         recent_departures: Vec::new(),
     };
-    let Some((component_state, value_received_at, value_revision)) =
+    let Some((component_state, value_observation_at, value_revision)) =
         sqlx::query_as::<_, (String, Option<String>, i64)>(
-            "SELECT state, value_received_at, value_revision FROM component_status WHERE node_id=$1 AND component_key='peers'",
+            "SELECT state, COALESCE(value_observation_at, value_received_at), value_revision FROM component_status WHERE node_id=$1 AND component_key='peers'",
         )
         .bind(node_id)
         .fetch_optional(state.db().pool())
@@ -1918,7 +1921,7 @@ async fn peer_churn_diagnostic(
     .into_iter()
     .map(peer_presence_interval_from_row)
     .collect::<Vec<_>>();
-    let freshness = derive_freshness(value_received_at.as_deref().into_iter()).to_owned();
+    let freshness = derive_freshness(value_observation_at.as_deref().into_iter()).to_owned();
     let has_intervals = total_open_intervals > 0 || !arrivals.is_empty() || !departures.is_empty();
     let diagnostic_state = match component_state.as_str() {
         "error" => "error",
@@ -1951,7 +1954,7 @@ async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnost
         i64,
         i64,
     )>(
-        "SELECT state, error_code, error_message, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision FROM component_status WHERE node_id=$1 AND component_key='peers'",
+        "SELECT state, error_code, error_message, attempted_at, observed_at, received_at, COALESCE(value_observation_at, value_received_at), state_revision, value_revision FROM component_status WHERE node_id=$1 AND component_key='peers'",
     )
     .bind(node_id)
     .fetch_optional(state.db().pool())
@@ -1965,7 +1968,7 @@ async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnost
         attempted_at,
         observed_at,
         received_at,
-        value_received_at,
+        value_observation_at,
         state_revision,
         value_revision,
     ) = component;
@@ -2050,7 +2053,7 @@ async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnost
     }
 
     let freshness = if has_value {
-        derive_freshness(value_received_at.as_deref().into_iter()).to_owned()
+        derive_freshness(value_observation_at.as_deref().into_iter()).to_owned()
     } else {
         "unknown".to_owned()
     };

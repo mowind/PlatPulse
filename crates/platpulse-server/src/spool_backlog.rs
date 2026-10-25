@@ -22,8 +22,6 @@
 use platpulse_core::observation::SpoolDiagnostics;
 use platpulse_core::time::Rfc3339;
 
-use crate::http::agent::CLOCK_UNRELIABLE_THRESHOLD_MS;
-
 /// The Spool Backlog Age is above this many milliseconds a warning: an Agent
 /// that has been waiting longer than that is not merely catching up after a
 /// short Server restart. Server Doctor warns (never fails) on it, because a
@@ -85,11 +83,10 @@ pub fn spool_backlog_age(
     clock_skew_ms: Option<i64>,
 ) -> Option<SpoolBacklogAge> {
     let spool = spool?;
-    // unsigned_abs keeps a pathological i64::MIN skew from overflowing the
-    // comparison; such a reading is unreliable either way.
-    let reliable_skew =
-        clock_skew_ms.filter(|skew| skew.unsigned_abs() <= CLOCK_UNRELIABLE_THRESHOLD_MS as u64);
-    match reliable_skew {
+    // The trust rule is shared with the observation instants of issue #274, so
+    // Clock Unreliable means the same thing everywhere: `measured_skew` also
+    // keeps a pathological i64::MIN skew from overflowing the comparison.
+    match crate::observation_time::measured_skew(clock_skew_ms) {
         Some(skew) => {
             // The Report was generated at Agent-clock `generated_at`, which on
             // the Server clock is `generated_at - skew`.
@@ -115,6 +112,7 @@ pub fn spool_backlog_age(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::agent::CLOCK_UNRELIABLE_THRESHOLD_MS;
 
     fn stamp(value: &str) -> Rfc3339 {
         value.parse().expect("test timestamp is valid")

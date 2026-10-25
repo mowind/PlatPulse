@@ -208,9 +208,10 @@ fn database_protocol_error(message: impl Into<String>) -> sqlx::Error {
     sqlx::Error::Protocol(message.into())
 }
 
-fn bucket_start(received_at: &str, interval: i64) -> Result<String, sqlx::Error> {
-    let timestamp = OffsetDateTime::parse(received_at, &Rfc3339)
-        .map_err(|error| database_protocol_error(format!("invalid receipt timestamp: {error}")))?;
+fn bucket_start(observed_at: &str, interval: i64) -> Result<String, sqlx::Error> {
+    let timestamp = OffsetDateTime::parse(observed_at, &Rfc3339).map_err(|error| {
+        database_protocol_error(format!("invalid observation timestamp: {error}"))
+    })?;
     let unix_seconds = timestamp.unix_timestamp().div_euclid(interval) * interval;
     OffsetDateTime::from_unix_timestamp(unix_seconds)
         .map_err(|error| database_protocol_error(format!("invalid aggregate bucket: {error}")))?
@@ -345,14 +346,31 @@ async fn countries_for_ips(
     Ok(countries)
 }
 
+/// The two instants every Peer history write needs, kept together so a call
+/// site cannot silently swap them (ADR 0014, issue #274).
+///
+/// `observed_at` is the skew-corrected instant at which the Agent took the
+/// snapshot; it keys the bucket and stamps the bucket's observed bounds.
+/// `received_at` is the Server receipt instant, used only where Server time is
+/// the subject: the retained-geo-cache rebuild cutoff.
+#[derive(Clone, Copy)]
+pub(crate) struct SnapshotInstants<'a> {
+    pub(crate) observed_at: &'a str,
+    pub(crate) received_at: &'a str,
+}
+
+/// Aggregate one snapshot's Peer facts, stamping observation bounds with
+/// `instants.observed_at`.
 async fn aggregate_values(
     tx: &mut Transaction<'_, Any>,
     snapshot: &PeerSnapshot,
-    received_at: &str,
+    instants: SnapshotInstants<'_>,
     local_head: Option<u64>,
     delta: PeerPresenceDelta,
     provider: crate::geo::GeoProvider,
 ) -> Result<AggregateValues, sqlx::Error> {
+    let received_at = instants.received_at;
+    let observed_at = instants.observed_at;
     let countries_by_ip = snapshot_countries(tx, snapshot, received_at, provider).await?;
     let mut countries = BTreeMap::new();
     let mut inbound_count = 0_i64;
@@ -417,8 +435,8 @@ async fn aggregate_values(
         cbft_lag_sum,
         cbft_lag_min,
         cbft_lag_max,
-        first_observed_at: received_at.to_owned(),
-        last_observed_at: received_at.to_owned(),
+        first_observed_at: observed_at.to_owned(),
+        last_observed_at: observed_at.to_owned(),
         countries,
     })
 }
@@ -515,18 +533,22 @@ async fn upsert_family(
 /// Record one successful Node-scoped Peer observation in both aggregate
 /// families. The caller must invoke this inside the report receipt
 /// transaction, after current Peer/Geo projections have been updated.
+///
+/// See [`SnapshotInstants`] for why the two instants travel together: a
+/// replayed Report must land its samples in the observed buckets, not in the
+/// catch-up window (ADR 0014, issue #274).
 pub(crate) async fn record_successful_snapshot(
     tx: &mut Transaction<'_, Any>,
     node_id: &str,
     snapshot: &PeerSnapshot,
-    received_at: &str,
+    instants: SnapshotInstants<'_>,
     local_head: Option<u64>,
     delta: PeerPresenceDelta,
     provider: crate::geo::GeoProvider,
 ) -> Result<(), sqlx::Error> {
-    let values = aggregate_values(tx, snapshot, received_at, local_head, delta, provider).await?;
+    let values = aggregate_values(tx, snapshot, instants, local_head, delta, provider).await?;
     for family in [AggregateFamily::FiveMinute, AggregateFamily::Hourly] {
-        let bucket = bucket_start(received_at, family.seconds())?;
+        let bucket = bucket_start(instants.observed_at, family.seconds())?;
         upsert_family(tx, family, node_id, &bucket, &values).await?;
     }
     Ok(())

@@ -161,6 +161,46 @@ fn received_instant(received_at: &str, generated_at: Rfc3339) -> Rfc3339 {
     received_at.parse().unwrap_or(generated_at)
 }
 
+/// The two instants one Agent Report carries, as one value.
+///
+/// `received` is the Server's own instant: it answers Agent liveness,
+/// idempotency and audit, and nothing about when a Node was actually observed.
+/// `skew_ms` is the offset the same Report measured against Server time, which
+/// is what turns the Report's own observation instants into Server-clock
+/// instants (ADR 0014, issue #274). Every write that records "when was this
+/// observed" takes the corrected instant from here instead of the receipt
+/// instant, so a replayed Report cannot look newly observed.
+#[derive(Clone, Copy)]
+struct ReportStamp<'a> {
+    received: &'a str,
+    skew_ms: Option<i64>,
+}
+
+impl<'a> ReportStamp<'a> {
+    /// The Report's own `host.clock_skew` reading is kept as the Agent reported
+    /// it: [`crate::observation_time::observation_instant`] is the one place that
+    /// decides whether it may be corrected by.
+    fn new(received: &'a str, clock_skew_ms: Option<i64>) -> Self {
+        Self {
+            received,
+            skew_ms: clock_skew_ms,
+        }
+    }
+
+    /// The Server receipt instant of this Report.
+    fn received_at(&self) -> &'a str {
+        self.received
+    }
+
+    /// The Server-clock instant at which `observed` happened.
+    ///
+    /// An unmeasured or Clock Unreliable skew, and a Report that carries no
+    /// observation instant, both fall back to the receipt instant.
+    fn observed_at(&self, observed: Option<Rfc3339>) -> String {
+        crate::observation_time::observation_instant(observed, self.skew_ms, self.received)
+    }
+}
+
 /// A polled Chain Head can trail the subscribed Block History by the blocks
 /// that arrived between polls, so one below-high-water sample is observational
 /// skew rather than a resync. A below-high-water episode must persist for this
@@ -371,31 +411,46 @@ async fn save_component<T: serde::Serialize>(
     node_id: Option<&str>,
     key: ComponentKey,
     component: &ComponentObservation<T>,
-    received_at: &str,
+    stamp: ReportStamp<'_>,
 ) -> Result<(), sqlx::Error> {
+    let received_at = stamp.received_at();
     let error_code = component.error.as_ref().map(|e| e.code.as_str());
     let redacted_error_message = component
         .error
         .as_ref()
         .map(|error| crate::redaction::redact_sensitive(&error.message));
     let error_message = redacted_error_message.as_deref();
-    let value_received_at = (component.status == ComponentStatus::Ok && component.latest.is_some())
-        .then_some(received_at);
-    sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision, error_code, error_message) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, attempted_at=excluded.attempted_at, observed_at=COALESCE(excluded.observed_at, component_status.observed_at), received_at=excluded.received_at, value_received_at=COALESCE(excluded.value_received_at, component_status.value_received_at), state_revision=excluded.state_revision, value_revision=CASE WHEN excluded.value_revision > 0 THEN excluded.value_revision ELSE component_status.value_revision END, error_code=excluded.error_code, error_message=excluded.error_message")
+    let has_value = component.status == ComponentStatus::Ok && component.latest.is_some();
+    let value_received_at = has_value.then_some(received_at);
+    // The state evidence is the newest attempt, which a failed collection also
+    // carries; the value evidence is the instant the value the Server still
+    // holds was observed. Both are Server-clock instants, so the freshness and
+    // the alert evidence of a replayed Report stay where the Report observed
+    // them (ADR 0014, issue #274). The Agent's raw instant stays in `observed_at`.
+    let observation_at = stamp.observed_at(component.attempted_at.or(component.latest_observed_at));
+    let value_observation_at = has_value
+        .then(|| stamp.observed_at(component.latest_observed_at.or(component.attempted_at)));
+    sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, observation_at, value_observation_at, state_revision, value_revision, error_code, error_message) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, attempted_at=excluded.attempted_at, observed_at=COALESCE(excluded.observed_at, component_status.observed_at), received_at=excluded.received_at, value_received_at=COALESCE(excluded.value_received_at, component_status.value_received_at), observation_at=excluded.observation_at, value_observation_at=COALESCE(excluded.value_observation_at, component_status.value_observation_at), state_revision=excluded.state_revision, value_revision=CASE WHEN excluded.value_revision > 0 THEN excluded.value_revision ELSE component_status.value_revision END, error_code=excluded.error_code, error_message=excluded.error_message")
         .bind(agent_id).bind(scope).bind(scope_key).bind(node_id).bind(component_storage_key(key))
         .bind(status_name(component.status)).bind(component.attempted_at.map(|v| v.to_string()))
         .bind(component.latest_observed_at.map(|v| v.to_string())).bind(received_at)
-        .bind(value_received_at)
+        .bind(value_received_at).bind(&observation_at).bind(value_observation_at)
         .bind(component.state_revision as i64).bind(component.value_revision as i64)
         .bind(error_code).bind(error_message).execute(&mut **tx).await?;
     Ok(())
 }
 
+/// Record the Peer presence intervals of one successful Peer snapshot.
+///
+/// `observed_at` is the snapshot's observation instant on the Server clock, not
+/// its receipt instant: an interval says when a Peer was really seen, so a
+/// replayed Report must produce the intervals of its own window instead of
+/// squeezing hours of churn into the catch-up window (ADR 0014, issue #274).
 async fn save_peer_presence(
     tx: &mut Transaction<'_, Any>,
     node_id: &str,
     snapshot: &PeerSnapshot,
-    received_at: &str,
+    observed_at: &str,
     had_previous_successful_snapshot: bool,
     stored: &StoredPeerState,
 ) -> Result<PeerPresenceDelta, sqlx::Error> {
@@ -458,7 +513,7 @@ async fn save_peer_presence(
             .bind(peer.static_peer as i64)
             .bind(peer.consensus_peer as i64)
             .bind(safe_client_name.as_deref())
-            .bind(received_at)
+            .bind(observed_at)
             .execute(&mut **tx)
             .await?;
     }
@@ -468,8 +523,8 @@ async fn save_peer_presence(
             // Server timestamps are normally monotonic, but a wall-clock
             // adjustment must not violate the interval ordering constraint.
             sqlx::query("UPDATE peer_presence_intervals SET closed_at=CASE WHEN opened_at > $1 THEN opened_at ELSE $2 END WHERE node_id=$3 AND peer_id=$4 AND closed_at IS NULL")
-                .bind(received_at)
-                .bind(received_at)
+                .bind(observed_at)
+                .bind(observed_at)
                 .bind(node_id)
                 .bind(peer_id)
                 .execute(&mut **tx)
@@ -844,57 +899,68 @@ async fn close_coverage_height(
     Ok(())
 }
 
-/// How recently an Agent must have been heard from for its Nodes to count as
-/// sources of a Network Reference Head.
+/// How recently a Node's chain observation must have happened for the Node to
+/// count as a source of a Network Reference Head.
 const REFERENCE_SOURCE_FRESHNESS_SECONDS: i64 = 120;
 
+/// Recompute the Network Reference Head of every Network this Report touched.
+///
+/// A source must have been *observed* within the window on the Server clock, not
+/// merely delivered: a Node whose Reports are being replayed from a backlog is
+/// Stale, and a Stale Node is never a source of the Observed Network Head
+/// (ADR 0014, issue #274). `now` is the receipt instant of the triggering
+/// Report, which is the only instant the Server can defend when it finds no
+/// eligible source at all.
 async fn update_network_references(
     tx: &mut Transaction<'_, Any>,
     network_keys: &[String],
-    observed_at: &str,
+    now: &str,
 ) -> Result<(), sqlx::Error> {
     for network_key in network_keys {
-        // Only an Agent heard from within the freshness window is a source. The
-        // window is judged here on parsed instants: an unparseable receipt time
-        // is never fresh.
-        let fresh_since = crate::auth::parse_rfc3339(observed_at)
+        // The window is judged here on parsed instants: an unparseable evidence
+        // instant is never fresh.
+        let fresh_since = crate::auth::parse_rfc3339(now)
             .map(|instant| instant - time::Duration::seconds(REFERENCE_SOURCE_FRESHNESS_SECONDS));
         // A Node whose head was never observed is not a source: its NULL head
         // must not stand in as block 0 (the native SQLite decode once did).
         let rows = sqlx::query_as::<_, (String, i64, Option<String>, Option<String>)>(
-            "SELECT n.node_id, c.current_block, h.resync_state, a.last_received_at FROM nodes n JOIN agents a ON a.agent_id=n.agent_id JOIN current_node_chain_observations c ON c.node_id=n.node_id LEFT JOIN block_history_state h ON h.node_id=n.node_id WHERE n.network_key=$1 AND n.lifecycle='active' AND c.current_block IS NOT NULL ORDER BY c.current_block DESC",
+            "SELECT n.node_id, c.current_block, h.resync_state, COALESCE(sy.observation_at, sy.received_at) FROM nodes n JOIN current_node_chain_observations c ON c.node_id=n.node_id LEFT JOIN block_history_state h ON h.node_id=n.node_id LEFT JOIN component_status sy ON sy.agent_id=n.agent_id AND sy.scope='node' AND sy.scope_key=n.node_id AND sy.component_key='sync' WHERE n.network_key=$1 AND n.lifecycle='active' AND c.current_block IS NOT NULL ORDER BY c.current_block DESC",
         )
         .bind(network_key)
         .fetch_all(&mut **tx)
         .await?
         .into_iter()
-        .filter(|(_, _, _, last_received_at)| {
+        .filter(|(_, _, _, evidence_at)| {
             fresh_since.is_some_and(|since| {
-                last_received_at
+                evidence_at
                     .as_deref()
                     .and_then(crate::auth::parse_rfc3339)
                     .is_some_and(|at| at >= since)
             })
         })
-        .map(|(node_id, head, state, _)| (node_id, head, state))
         .collect::<Vec<_>>();
         let eligible = rows
             .iter()
-            .filter(|(_, _, state)| state.as_deref() != Some("resyncing"))
+            .filter(|(_, _, state, _)| state.as_deref() != Some("resyncing"))
             .collect::<Vec<_>>();
         let candidates = if eligible.is_empty() {
             rows.iter().collect::<Vec<_>>()
         } else {
             eligible
         };
-        let Some((node_id, head, _)) = candidates.first() else {
+        let Some((node_id, head, _, evidence_at)) = candidates.first() else {
+            // No Node was observed recently enough to hold a reference: the row
+            // records that the Server looked at its own clock `now` and found
+            // none, which is why the reference is Unknown rather than stale.
             sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence, eligible_source_count, contributing_node_id) VALUES ($1, NULL, $2, 'unknown', 0, NULL) ON CONFLICT(network_key) DO UPDATE SET block_number=NULL, observed_at=excluded.observed_at, confidence='unknown', eligible_source_count=0, contributing_node_id=NULL")
-                .bind(network_key).bind(observed_at).execute(&mut **tx).await?;
+                .bind(network_key).bind(now).execute(&mut **tx).await?;
             continue;
         };
         let confidence = if candidates.len() >= 2 { "high" } else { "low" };
+        // The reference head is the head of the winning source at the instant it
+        // was observed, not the instant this Report arrived.
         sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence, eligible_source_count, contributing_node_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(network_key) DO UPDATE SET block_number=excluded.block_number, observed_at=excluded.observed_at, confidence=excluded.confidence, eligible_source_count=excluded.eligible_source_count, contributing_node_id=excluded.contributing_node_id")
-            .bind(network_key).bind(*head).bind(observed_at).bind(confidence).bind(candidates.len() as i64).bind(node_id)
+            .bind(network_key).bind(*head).bind(evidence_at.as_deref().unwrap_or(now)).bind(confidence).bind(candidates.len() as i64).bind(node_id)
             .execute(&mut **tx).await?;
     }
     Ok(())
@@ -1448,9 +1514,10 @@ async fn save_current<I: ReportInventory>(
     tx: &mut Transaction<'_, Any>,
     history: &crate::capacity::HistoryGate,
     report: &AgentReport<I>,
-    received_at: &str,
+    stamp: ReportStamp<'_>,
     geo_provider: crate::geo::GeoProvider,
 ) -> Result<(), sqlx::Error> {
+    let received_at = stamp.received_at();
     // Both retention windows are read once for the whole Report: they depend
     // on the policy in this transaction's snapshot and on the clock, never on
     // the series being written, and Report Ingestion holds the Server's single
@@ -1468,7 +1535,7 @@ async fn save_current<I: ReportInventory>(
         None,
         ComponentKey::CpuPercent,
         &host.cpu_percent,
-        received_at,
+        stamp,
     )
     .await?;
     save_component(
@@ -1479,7 +1546,7 @@ async fn save_current<I: ReportInventory>(
         None,
         ComponentKey::Memory,
         &host.memory,
-        received_at,
+        stamp,
     )
     .await?;
     save_component(
@@ -1490,7 +1557,7 @@ async fn save_current<I: ReportInventory>(
         None,
         ComponentKey::Load,
         &host.load,
-        received_at,
+        stamp,
     )
     .await?;
     save_component(
@@ -1501,7 +1568,7 @@ async fn save_current<I: ReportInventory>(
         None,
         ComponentKey::Disk,
         &host.disk,
-        received_at,
+        stamp,
     )
     .await?;
     save_component(
@@ -1512,7 +1579,7 @@ async fn save_current<I: ReportInventory>(
         None,
         ComponentKey::NetworkThroughput,
         &host.network_throughput,
-        received_at,
+        stamp,
     )
     .await?;
     save_component(
@@ -1523,7 +1590,7 @@ async fn save_current<I: ReportInventory>(
         None,
         ComponentKey::ClockSkew,
         &host.clock_skew,
-        received_at,
+        stamp,
     )
     .await?;
     save_component(
@@ -1534,7 +1601,7 @@ async fn save_current<I: ReportInventory>(
         None,
         ComponentKey::Spool,
         &host.spool,
-        received_at,
+        stamp,
     )
     .await?;
 
@@ -1649,7 +1716,7 @@ async fn save_current<I: ReportInventory>(
             Some(&node_id),
             ComponentKey::Process,
             &node.process,
-            received_at,
+            stamp,
         )
         .await?;
         if let Some(data_directory_size) = &node.data_directory_size_bytes {
@@ -1661,7 +1728,7 @@ async fn save_current<I: ReportInventory>(
                 Some(&node_id),
                 ComponentKey::DataDirectorySizeBytes,
                 data_directory_size,
-                received_at,
+                stamp,
             )
             .await?;
         }
@@ -1674,7 +1741,7 @@ async fn save_current<I: ReportInventory>(
                 Some(&node_id),
                 ComponentKey::DataDirectoryCapacityBytes,
                 data_directory_capacity,
-                received_at,
+                stamp,
             )
             .await?;
         }
@@ -1686,7 +1753,7 @@ async fn save_current<I: ReportInventory>(
             Some(&node_id),
             ComponentKey::Rpc,
             &node.chain.rpc,
-            received_at,
+            stamp,
         )
         .await?;
         save_component(
@@ -1697,7 +1764,7 @@ async fn save_current<I: ReportInventory>(
             Some(&node_id),
             ComponentKey::Sync,
             &node.chain.sync,
-            received_at,
+            stamp,
         )
         .await?;
         save_component(
@@ -1708,7 +1775,7 @@ async fn save_current<I: ReportInventory>(
             Some(&node_id),
             ComponentKey::Consensus,
             &node.chain.consensus,
-            received_at,
+            stamp,
         )
         .await?;
         // Issue #217: the sync and consensus states are recorded as evidence of
@@ -1776,7 +1843,7 @@ async fn save_current<I: ReportInventory>(
             Some(&node_id),
             ComponentKey::NetworkIdentity,
             &node.chain.network_identity,
-            received_at,
+            stamp,
         )
         .await?;
         save_component(
@@ -1787,7 +1854,7 @@ async fn save_current<I: ReportInventory>(
             Some(&node_id),
             ComponentKey::StaticMetadata,
             &node.chain.static_metadata,
-            received_at,
+            stamp,
         )
         .await?;
         if let Some(peers) = &node.chain.peers {
@@ -1826,9 +1893,15 @@ async fn save_current<I: ReportInventory>(
                 Some(&node_id),
                 ComponentKey::Peers,
                 peers,
-                received_at,
+                stamp,
             )
             .await?;
+            // A Peer Snapshot says what was seen at one instant on the Server
+            // clock; the presence interval and the history bucket both belong to
+            // that instant, so a replayed snapshot produces its own window instead
+            // of one stretched across the catch-up (ADR 0014, #274).
+            let peers_observed_at =
+                stamp.observed_at(peers.latest_observed_at.or(peers.attempted_at));
             let presence_delta = match snapshot {
                 None => PeerPresenceDelta::default(),
                 Some(snapshot) => {
@@ -1836,7 +1909,7 @@ async fn save_current<I: ReportInventory>(
                         tx,
                         &node_id,
                         snapshot,
-                        received_at,
+                        &peers_observed_at,
                         had_previous_successful_snapshot,
                         &stored_peers,
                     )
@@ -1844,13 +1917,19 @@ async fn save_current<I: ReportInventory>(
                 }
             };
             if let Some(snapshot) = snapshot {
+                // The current Peer set is a projection write under an idempotent
+                // report: it keeps the receipt instant, the freshness of its value
+                // comes from the peers component's own observation stamp.
                 save_current_peers(tx, &node_id, snapshot, received_at, &stored_peers).await?;
                 let local_head = node.chain.sync.latest.map(|sync| sync.current_block);
                 crate::peer_history::record_successful_snapshot(
                     tx,
                     &node_id,
                     snapshot,
-                    received_at,
+                    crate::peer_history::SnapshotInstants {
+                        observed_at: &peers_observed_at,
+                        received_at,
+                    },
                     local_head,
                     presence_delta,
                     geo_provider,
@@ -2038,15 +2117,22 @@ async fn save_current<I: ReportInventory>(
             let sync = node.chain.sync.latest;
             let current = sync.map(|v| v.current_block as i64);
             let current_timestamp = report.generated_at.to_string();
+            // `observation_at` answers "when was this head seen" and is the instant
+            // head freshness and head-lag evidence are judged on; `updated_at` stays
+            // the receipt instant because the resync grace window measures how long
+            // the Server has been watching the episode (ADR 0014, issue #274).
+            let head_observed_at = stamp
+                .observed_at(metric_observed_at(&node.chain.sync).or(Some(report.generated_at)));
             // Only a head that actually advances is progress. Every report
             // re-sends the latest sample, so bumping the timestamp
             // unconditionally would turn the "(last progress ...)" diagnostic
             // into a clock instead of an answer.
-            sqlx::query("INSERT INTO block_history_state (node_id, current_head, resync_state, resync_last_progress_at, updated_at) VALUES ($1, $2, 'normal', $3, $4) ON CONFLICT(node_id) DO UPDATE SET current_head=excluded.current_head, resync_last_progress_at=CASE WHEN excluded.current_head IS NOT NULL AND (block_history_state.current_head IS NULL OR excluded.current_head > block_history_state.current_head) THEN excluded.resync_last_progress_at ELSE block_history_state.resync_last_progress_at END, updated_at=excluded.updated_at")
+            sqlx::query("INSERT INTO block_history_state (node_id, current_head, resync_state, resync_last_progress_at, updated_at, observation_at) VALUES ($1, $2, 'normal', $3, $4, $5) ON CONFLICT(node_id) DO UPDATE SET current_head=excluded.current_head, resync_last_progress_at=CASE WHEN excluded.current_head IS NOT NULL AND (block_history_state.current_head IS NULL OR excluded.current_head > block_history_state.current_head) THEN excluded.resync_last_progress_at ELSE block_history_state.resync_last_progress_at END, updated_at=excluded.updated_at, observation_at=excluded.observation_at")
                 .bind(&node_id)
                 .bind(current)
                 .bind(&current_timestamp)
                 .bind(received_at)
+                .bind(&head_observed_at)
                 .execute(&mut **tx)
                 .await?;
             // The polled Chain Head can trail the subscribed Block History by
@@ -2931,6 +3017,10 @@ async fn ingest_report<I: ReportInventory>(
         }
     }
     let now_text = now().to_string();
+    // Every observation instant this Report contributes is read through the
+    // stamp: the Report's own measured skew turns Agent-clock instants into
+    // Server-clock ones, and the receipt instant stays the fallback (ADR 0014).
+    let stamp = ReportStamp::new(&now_text, parsed.host.clock_skew.latest);
     let capabilities =
         serde_json::to_string(&parsed.agent_capabilities).expect("capabilities serialize");
     let mut ownership_mismatches = std::collections::HashSet::new();
@@ -3288,14 +3378,8 @@ async fn ingest_report<I: ReportInventory>(
     // read through the pool: ingestion already holds the single write
     // connection, and a second acquire inside the transaction would deadlock.
     let history = state.capacity().history_gate();
-    if let Err(save_error) = save_current(
-        &mut tx,
-        &history,
-        &projection_report,
-        &now_text,
-        geo_provider,
-    )
-    .await
+    if let Err(save_error) =
+        save_current(&mut tx, &history, &projection_report, stamp, geo_provider).await
     {
         return storage_error(&request_id.0, "save current observations", &save_error);
     }
@@ -9729,10 +9813,340 @@ mod tests {
             v2_acceptance(&submit_v2(&state, &first_agent, first_changed).await).revision,
             2
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #274 / ADR 0014: freshness, history and alert evidence are judged on
+    // the instant an observation was taken, never on the instant its Report was
+    // received.
+    // -----------------------------------------------------------------------
+
+    const ISSUE_274_NODE: &str = "0195f2a1-0014-4014-8014-000000000014";
+
+    /// A Report taken `offset` from now on the Agent's own clock, whose clock
+    /// reads `clock_skew_ms` ahead of Server time (a negative reading is a clock
+    /// that runs behind).
+    ///
+    /// The Report carries a successful consensus observation because a Node's
+    /// freshness is the oldest of its RPC, sync and consensus observation
+    /// instants, and the minimal fixture reports consensus as `unsupported`.
+    fn report_observed(offset: time::Duration, clock_skew_ms: i64) -> serde_json::Value {
+        let mut raw: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        restamp_fixture(&mut raw, now_utc() + offset);
+        let observed = raw["nodes"][0]["chain"]["sync"]["latest_observed_at"].clone();
+        raw["host"]["clock_skew"]["latest"] = serde_json::json!(clock_skew_ms);
+        raw["nodes"][0]["chain"]["consensus"] = serde_json::json!({
+            "status": "ok",
+            "attempted_at": observed.clone(),
+            "latest_observed_at": observed,
+            "state_revision": 1,
+            "value_revision": 1,
+            "latest": {
+                "epoch": 100,
+                "view_number": 500,
+                "validator": false,
+                "highest_qc_block": 9007199254740993u64,
+                "highest_lock_block": 9007199254740992u64,
+                "highest_commit_block": 9007199254740991u64
+            }
+        });
+        raw
+    }
+
+    /// The instant a Report says its sync observation happened, as the Report
+    /// carries it.
+    fn report_instant(report: &serde_json::Value) -> String {
+        report["nodes"][0]["chain"]["sync"]["latest_observed_at"]
+            .as_str()
+            .expect("the report stamps its sync observation")
+            .to_owned()
+    }
+
+    /// The Server-clock instant stored for an instant an Agent clock
+    /// `skew_ms` ahead of Server time reported: corrected by the measured skew and
+    /// truncated to a second, the way every stored instant is.
+    fn server_instant(observed: &str, skew_ms: i64) -> String {
+        clock_text(
+            crate::auth::parse_rfc3339(observed).expect("the report instant parses")
+                - time::Duration::milliseconds(skew_ms),
+        )
+    }
+
+    /// An instant exactly as the Server stores one.
+    fn clock_text(at: time::OffsetDateTime) -> String {
+        format_rfc3339(at.replace_nanosecond(0).unwrap())
+    }
+
+    fn seconds_from_now(instant: &str) -> i64 {
+        let instant = crate::auth::parse_rfc3339(instant).expect("the stored instant parses");
+        (instant - now_utc()).whole_seconds()
+    }
+
+    /// The stored observation instant of one Node component.
+    async fn component_instant(state: &AppState, component: &str) -> Option<String> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT observation_at FROM component_status WHERE node_id=$1 AND component_key=$2",
+        )
+        .bind(ISSUE_274_NODE)
+        .bind(component)
+        .fetch_optional(state.db().pool())
+        .await
+        .unwrap();
+        row.and_then(|(instant,)| instant)
+    }
+
+    /// The evaluation fact a Node rule extracts from the stored projections.
+    async fn extracted(state: &AppState, rule_key: &str) -> crate::alerts::EvalInput {
+        let mut connection = state.db().pool().acquire().await.unwrap();
+        crate::alerts::extract_input(
+            &mut connection,
+            rule_key,
+            crate::alerts::SubjectKind::Node,
+            ISSUE_274_NODE,
+            now_utc(),
+            120,
+        )
+        .await
+        .unwrap()
+    }
+
+    /// One Peer of a Peer Snapshot, as the Agent reports it.
+    fn peer_current(peer_id: &str, remote_ip: &str, direction: &str) -> serde_json::Value {
+        serde_json::json!({
+            "peer_id": peer_id,
+            "remote_ip": remote_ip,
+            "direction": direction,
+            "trusted": false,
+            "static_peer": false,
+            "consensus_peer": false,
+            "caps": [],
+        })
+    }
+
+    /// One Peer Snapshot of a spool being replayed: observed at `observed` on an
+    /// Agent clock that agrees with the Server, delivered now.
+    fn replayed_peer_report(
+        report: (&str, i64),
+        revision: i64,
+        observed: &str,
+        peers: serde_json::Value,
+    ) -> Vec<u8> {
+        let (report_id, report_sequence) = report;
+        let mut value = peer_snapshot_body(peers);
+        value["report_id"] = serde_json::json!(report_id);
+        value["report_sequence"] = serde_json::json!(report_sequence);
+        value["host"]["clock_skew"]["latest"] = serde_json::json!(0);
+        let snapshot = &mut value["nodes"][0]["chain"]["peers"];
+        snapshot["attempted_at"] = serde_json::json!(observed);
+        snapshot["latest_observed_at"] = serde_json::json!(observed);
+        snapshot["state_revision"] = serde_json::json!(revision);
+        snapshot["value_revision"] = serde_json::json!(revision);
+        serde_json::to_vec(&value).unwrap()
+    }
+
+    /// Acceptance of issue #274: a batch of Reports generated two hours ago keeps
+    /// the Node Stale from the first ingested Report on — freshness, health, the
+    /// Reference Head and the Node alerts all judge the observation instant, never
+    /// the receipt instant.
+    #[tokio::test]
+    async fn a_replayed_backlog_keeps_the_node_stale_and_off_the_reference_head() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let report = report_observed(time::Duration::hours(-2), 0);
+        let observed = report_instant(&report);
         assert_eq!(
-            accepted_inventory_revision(&state, second_agent).await,
-            1,
-            "another identity's sequence must not move"
+            submit(&state, &agent_id, serde_json::to_vec(&report).unwrap())
+                .await
+                .disposition,
+            ReceiptDisposition::Accepted
         );
+
+        let stored = component_instant(&state, "sync").await.unwrap();
+        assert_eq!(stored, server_instant(&observed, 0));
+        assert!(
+            seconds_from_now(&stored) < -7_000,
+            "the Node was observed two hours ago: {stored}"
+        );
+
+        let node = public_home_node(&state, ISSUE_274_NODE).await;
+        assert_eq!(node["health"], "unknown", "{node}");
+        assert_eq!(
+            node["healthReason"],
+            "one or more observations are stale or unknown"
+        );
+        let freshness = node["freshness"]
+            .as_str()
+            .expect("every observation instant is known");
+        assert!(
+            seconds_from_now(freshness) < -7_000,
+            "freshness is the observation instant: {freshness}"
+        );
+        assert!(
+            node["networkReferenceHead"].is_null(),
+            "a replayed Node is never a source: {node}"
+        );
+        assert_eq!(node["networkReferenceConfidence"], "unknown");
+        let reference: (Option<i64>, String) = sqlx::query_as(
+            "SELECT block_number, confidence FROM network_reference_heads WHERE network_key='platon-mainnet'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(reference, (None, "unknown".to_owned()));
+
+        for rule in [
+            "node.rpc_unreachable",
+            "node.sync_lag",
+            "node.block_stalled",
+        ] {
+            let input = extracted(&state, rule).await;
+            assert!(
+                matches!(input, crate::alerts::EvalInput::Stale { .. }),
+                "{rule} judges the observation instant: {input:?}"
+            );
+        }
+    }
+
+    /// Acceptance of issue #274: a measured skew below the Clock Unreliable
+    /// threshold moves the observation onto the Server clock, so a three-minute
+    /// skew is corrected by rather than read as the Agent stamped it.
+    #[tokio::test]
+    async fn a_measured_three_minute_skew_corrects_the_freshness_window() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        // The observation happened four minutes ago; the Agent clock runs three
+        // minutes ahead, so the Report itself stamps it one minute ago. Reading the
+        // stamped instant would call a four-minute-old observation current.
+        let report = report_observed(time::Duration::minutes(-1), 180_000);
+        let observed = report_instant(&report);
+        assert!(
+            seconds_from_now(&observed) > -120,
+            "the stamped instant is inside the freshness window: {observed}"
+        );
+        assert_eq!(
+            submit(&state, &agent_id, serde_json::to_vec(&report).unwrap())
+                .await
+                .disposition,
+            ReceiptDisposition::Accepted
+        );
+
+        let stored = component_instant(&state, "sync").await.unwrap();
+        assert_eq!(stored, server_instant(&observed, 180_000));
+        assert!(
+            (-245..=-235).contains(&seconds_from_now(&stored)),
+            "the three-minute skew is corrected on the Server clock: {stored}"
+        );
+
+        let node = public_home_node(&state, ISSUE_274_NODE).await;
+        assert_eq!(
+            node["freshness"].as_str(),
+            Some(stored.as_str()),
+            "freshness is the corrected observation instant"
+        );
+        assert_eq!(node["health"], "unknown", "{node}");
+        assert_eq!(
+            node["healthReason"],
+            "one or more observations are stale or unknown"
+        );
+    }
+
+    /// Acceptance of issue #274: a Clock Unreliable reading is not corrected by.
+    /// The Agent's clock is unusable, so the receipt instant is the only instant
+    /// the Server can defend, exactly as before ADR 0014.
+    #[tokio::test]
+    async fn an_unreliable_clock_falls_back_to_the_receipt_instant() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let report = report_observed(time::Duration::hours(-2), 600_000);
+        let observed = report_instant(&report);
+        assert_eq!(
+            submit(&state, &agent_id, serde_json::to_vec(&report).unwrap())
+                .await
+                .disposition,
+            ReceiptDisposition::Accepted
+        );
+
+        let stored = component_instant(&state, "sync").await.unwrap();
+        assert_ne!(
+            stored,
+            server_instant(&observed, 600_000),
+            "an untrustworthy skew is not corrected by"
+        );
+        assert!(
+            seconds_from_now(&stored).abs() <= 60,
+            "the receipt instant stands in: {stored}"
+        );
+        let node = public_home_node(&state, ISSUE_274_NODE).await;
+        assert_eq!(node["health"], "healthy", "{node}");
+    }
+
+    /// Acceptance of issue #274: the Peer presence interval a replayed snapshot
+    /// opens is stamped with the instant its sample was observed, so a two-hour
+    /// catch-up writes two hours of history where it belongs instead of squeezing
+    /// it into the catch-up window.
+    #[tokio::test]
+    async fn a_replayed_peer_snapshot_stamps_history_with_the_observation_instant() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        // One spool, filled two hours and one hour ago, delivered in one catch-up
+        // now: the baseline the Server holds no predecessor for, then an arrival.
+        let baseline_at = clock_text(now_utc() - time::Duration::hours(2));
+        let arrival_at = clock_text(now_utc() - time::Duration::hours(1));
+        let baseline = replayed_peer_report(
+            ("0195f2a1-0274-4274-8274-000000000001", 1),
+            1,
+            &baseline_at,
+            serde_json::json!([peer_current("peer-a", "8.8.8.8", "inbound")]),
+        );
+        let arrival = replayed_peer_report(
+            ("0195f2a1-0274-4274-8274-000000000002", 2),
+            2,
+            &arrival_at,
+            serde_json::json!([
+                peer_current("peer-a", "8.8.8.8", "inbound"),
+                peer_current("peer-b", "192.0.2.10", "outbound"),
+            ]),
+        );
+        for body in [baseline, arrival] {
+            assert_eq!(
+                submit(&state, &agent_id, body).await.disposition,
+                ReceiptDisposition::Accepted
+            );
+        }
+
+        let intervals: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT peer_id, opened_at, closed_at FROM peer_presence_intervals WHERE node_id=$1 ORDER BY peer_id",
+        )
+        .bind(ISSUE_274_NODE)
+        .fetch_all(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            intervals,
+            vec![("peer-b".to_owned(), arrival_at.clone(), None)],
+            "the arrival is stamped when it was observed, not when it was delivered"
+        );
+
+        let buckets: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT bucket_start, first_observed_at, last_observed_at FROM peer_aggregate_5m WHERE node_id=$1 ORDER BY bucket_start",
+        )
+        .bind(ISSUE_274_NODE)
+        .fetch_all(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|(_, first, _)| first.clone())
+                .collect::<Vec<_>>(),
+            vec![baseline_at, arrival_at],
+            "each replayed snapshot fills the bucket of its own instant: {buckets:?}"
+        );
+        for (bucket_start, first, last) in &buckets {
+            assert_eq!(first, last, "one replayed snapshot is one sample");
+            assert!(
+                bucket_start.as_str() <= first.as_str(),
+                "the bucket {bucket_start} cannot start after its sample {first}"
+            );
+        }
     }
 }

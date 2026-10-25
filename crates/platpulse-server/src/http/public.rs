@@ -629,14 +629,16 @@ pub struct PublicPeerInsight {
     /// Agent-reported collection state. The WebUI presents this separately
     /// from freshness and value availability.
     pub state: String,
-    /// Server-owned freshness of the last successful Peer Snapshot.
+    /// Server-owned freshness of the last successful Peer Snapshot, judged on
+    /// the Server-clock observation instant (ADR 0014).
     pub freshness: String,
     /// The last successful observation time. No peer identity or address is
     /// included in the Public projection.
     pub observed_at: Option<String>,
     /// Server receipt time for the last accepted Peer snapshot.
     pub received_at: Option<String>,
-    /// Server-computed boundary at which the last observation became stale.
+    /// Server-computed boundary at which the last observation became stale: the
+    /// observation instant plus the freshness window.
     pub stale_since: Option<String>,
     /// `None` means no successful snapshot has ever been observed; `Some(0)`
     /// is an authoritative successful empty snapshot.
@@ -675,13 +677,15 @@ pub struct PublicConsensusInsight {
     /// Agent-reported collection state. The WebUI presents this separately
     /// from freshness and value availability.
     pub state: String,
-    /// Server-owned freshness of the last successful consensus observation.
+    /// Server-owned freshness of the last successful consensus observation,
+    /// judged on the Server-clock observation instant (ADR 0014).
     pub freshness: String,
     /// The last successful observation time.
     pub observed_at: Option<String>,
     /// Server receipt time for the last accepted consensus observation.
     pub received_at: Option<String>,
-    /// Server-computed boundary at which the last observation became stale.
+    /// Server-computed boundary at which the last observation became stale: the
+    /// observation instant plus the freshness window.
     pub stale_since: Option<String>,
     /// Current epoch from the last good consensus observation.
     pub epoch: Option<i64>,
@@ -2451,6 +2455,11 @@ pub struct PublicNode {
     pub network_key: String,
     pub health: String,
     pub health_reason: String,
+    /// The oldest Server-clock instant at which the RPC, sync and consensus
+    /// observations behind this projection were taken: the Report's own
+    /// observation time corrected by the Agent's measured clock skew, falling
+    /// back to the Server receipt time when that skew is unmeasured or the Agent
+    /// is Clock Unreliable (ADR 0014).
     pub freshness: Option<String>,
     pub rpc_state: String,
     pub sync_state: String,
@@ -2520,7 +2529,7 @@ struct PublicNodeRow {
     lifecycle: String,
     rpc_state: Option<String>,
     identity_state: Option<String>,
-    updated_at: Option<String>,
+    rpc_observation_at: Option<String>,
     process_cpu_percent: Option<f64>,
     process_memory_percent: Option<f64>,
     process_started_at: Option<String>,
@@ -2536,11 +2545,12 @@ struct PublicNodeRow {
     sync_state: Option<String>,
     consensus_state: Option<String>,
     process_state: Option<String>,
-    sync_received_at: Option<String>,
-    consensus_received_at: Option<String>,
+    sync_observation_at: Option<String>,
+    consensus_observation_at: Option<String>,
     peer_state: Option<String>,
     peer_observed_at: Option<String>,
     peer_value_received_at: Option<String>,
+    peer_value_observation_at: Option<String>,
     peer_value_revision: Option<i64>,
     peer_count: Option<i64>,
     peer_inbound_count: Option<i64>,
@@ -2551,6 +2561,7 @@ struct PublicNodeRow {
     auto_validator_identity_state: Option<String>,
     consensus_observed_at: Option<String>,
     consensus_value_received_at: Option<String>,
+    consensus_value_observation_at: Option<String>,
     consensus_value_revision: Option<i64>,
     consensus_epoch: Option<i64>,
     consensus_view_number: Option<i64>,
@@ -2575,6 +2586,12 @@ fn fresh(timestamp: Option<&str>, now: time::OffsetDateTime) -> bool {
         .is_some_and(|observed| (now - observed).whole_seconds().abs() <= FRESHNESS_LIMIT_SECONDS)
 }
 
+/// Judge a Node's current health.
+///
+/// The three observation instants are Server-clock instants: how old an
+/// observation is says when it was *taken*, not when its Report arrived, so a
+/// Node being replayed from a backlog is never presented as current (ADR 0014,
+/// issue #274).
 #[allow(clippy::too_many_arguments)]
 fn health_for(
     lifecycle: &str,
@@ -2583,9 +2600,9 @@ fn health_for(
     sync: Option<&str>,
     consensus: Option<&str>,
     process: Option<&str>,
-    received_at: Option<&str>,
-    sync_received_at: Option<&str>,
-    consensus_received_at: Option<&str>,
+    rpc_observation_at: Option<&str>,
+    sync_observation_at: Option<&str>,
+    consensus_observation_at: Option<&str>,
 ) -> (&'static str, &'static str) {
     if lifecycle == "retired" {
         return ("unknown", "node is retired");
@@ -2616,9 +2633,9 @@ fn health_for(
         return ("unhealthy", "consensus observation failed");
     }
     let current = crate::auth::now_utc();
-    if !fresh(received_at, current)
-        || !fresh(sync_received_at, current)
-        || !fresh(consensus_received_at, current)
+    if !fresh(rpc_observation_at, current)
+        || !fresh(sync_observation_at, current)
+        || !fresh(consensus_observation_at, current)
     {
         return ("unknown", "one or more observations are stale or unknown");
     }
@@ -2633,9 +2650,9 @@ fn health_for(
 }
 fn freshness_for(row: &PublicNodeRow) -> Option<String> {
     let mut timestamps = [
-        row.updated_at.as_ref(),
-        row.sync_received_at.as_ref(),
-        row.consensus_received_at.as_ref(),
+        row.rpc_observation_at.as_ref(),
+        row.sync_observation_at.as_ref(),
+        row.consensus_observation_at.as_ref(),
     ];
     if timestamps.iter().any(Option::is_none) {
         return None;
@@ -2647,7 +2664,7 @@ fn freshness_for(row: &PublicNodeRow) -> Option<String> {
 fn public_peer_insight(row: &PublicNodeRow) -> PublicPeerInsight {
     let has_value = row.peer_value_revision.unwrap_or_default() > 0;
     let freshness = if has_value {
-        match row.peer_value_received_at.as_deref() {
+        match row.peer_value_observation_at.as_deref() {
             Some(timestamp) if fresh(Some(timestamp), crate::auth::now_utc()) => "current",
             Some(_) => "stale",
             None => "unknown",
@@ -2656,13 +2673,15 @@ fn public_peer_insight(row: &PublicNodeRow) -> PublicPeerInsight {
         "unknown"
     };
     let stale_since = if freshness == "stale" {
-        row.peer_value_received_at.as_deref().and_then(|timestamp| {
-            crate::auth::parse_rfc3339(timestamp).map(|received| {
-                crate::auth::format_rfc3339(
-                    received + time::Duration::seconds(FRESHNESS_LIMIT_SECONDS),
-                )
+        row.peer_value_observation_at
+            .as_deref()
+            .and_then(|timestamp| {
+                crate::auth::parse_rfc3339(timestamp).map(|observed| {
+                    crate::auth::format_rfc3339(
+                        observed + time::Duration::seconds(FRESHNESS_LIMIT_SECONDS),
+                    )
+                })
             })
-        })
     } else {
         None
     };
@@ -2687,7 +2706,7 @@ fn public_peer_insight(row: &PublicNodeRow) -> PublicPeerInsight {
 fn public_consensus_insight(row: &PublicNodeRow) -> PublicConsensusInsight {
     let has_value = row.consensus_value_revision.unwrap_or_default() > 0;
     let freshness = if has_value {
-        match row.consensus_value_received_at.as_deref() {
+        match row.consensus_value_observation_at.as_deref() {
             Some(timestamp) if fresh(Some(timestamp), crate::auth::now_utc()) => "current",
             Some(_) => "stale",
             None => "unknown",
@@ -2696,12 +2715,12 @@ fn public_consensus_insight(row: &PublicNodeRow) -> PublicConsensusInsight {
         "unknown"
     };
     let stale_since = if freshness == "stale" {
-        row.consensus_value_received_at
+        row.consensus_value_observation_at
             .as_deref()
             .and_then(|timestamp| {
-                crate::auth::parse_rfc3339(timestamp).map(|received| {
+                crate::auth::parse_rfc3339(timestamp).map(|observed| {
                     crate::auth::format_rfc3339(
-                        received + time::Duration::seconds(FRESHNESS_LIMIT_SECONDS),
+                        observed + time::Duration::seconds(FRESHNESS_LIMIT_SECONDS),
                     )
                 })
             })
@@ -3234,9 +3253,9 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
         row.sync_state.as_deref(),
         row.consensus_state.as_deref(),
         row.process_state.as_deref(),
-        row.updated_at.as_deref(),
-        row.sync_received_at.as_deref(),
-        row.consensus_received_at.as_deref(),
+        row.rpc_observation_at.as_deref(),
+        row.sync_observation_at.as_deref(),
+        row.consensus_observation_at.as_deref(),
     );
     let freshness = freshness_for(&row);
     let peers = public_peer_insight(&row);
@@ -3295,8 +3314,10 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
 
 const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
        n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state,
-       p.state AS process_state, i.state AS identity_state, s.received_at AS updated_at,
-       sy.received_at AS sync_received_at, co.received_at AS consensus_received_at,
+       p.state AS process_state, i.state AS identity_state,
+       COALESCE(s.observation_at, s.received_at) AS rpc_observation_at,
+       COALESCE(sy.observation_at, sy.received_at) AS sync_observation_at,
+       COALESCE(co.observation_at, co.received_at) AS consensus_observation_at,
        CASE WHEN p.state IN ('ok', 'error') THEN proc.cpu_percent ELSE NULL END AS process_cpu_percent,
        CASE WHEN p.state IN ('ok', 'error') AND h.memory_total_bytes > 0 THEN (CAST(proc.memory_bytes AS REAL) * 100.0 / h.memory_total_bytes) ELSE NULL END AS process_memory_percent,
        CASE WHEN p.state IN ('ok', 'error') THEN proc.started_at ELSE NULL END AS process_started_at,
@@ -3311,6 +3332,7 @@ const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.netw
        h.network_tx_bytes_per_sec AS host_network_tx_bytes_per_sec,
        ps.state AS peer_state, ps.observed_at AS peer_observed_at,
        ps.value_received_at AS peer_value_received_at,
+       COALESCE(ps.value_observation_at, ps.value_received_at) AS peer_value_observation_at,
        ps.value_revision AS peer_value_revision,
        vis.state AS auto_validator_identity_state,
        CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.peer_count, 0) ELSE NULL END AS peer_count,
@@ -3321,6 +3343,7 @@ const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.netw
        CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.consensus_count, 0) ELSE NULL END AS peer_consensus_count,
        co.observed_at AS consensus_observed_at,
        co.value_received_at AS consensus_value_received_at,
+       COALESCE(co.value_observation_at, co.value_received_at) AS consensus_value_observation_at,
        co.value_revision AS consensus_value_revision,
        c.consensus_epoch,
        c.consensus_view_number,
@@ -8037,17 +8060,17 @@ mod tests {
     }
 
     #[test]
-    fn freshness_uses_oldest_complete_component_receipt_and_rejects_missing() {
+    fn freshness_uses_oldest_complete_component_observation_and_rejects_missing() {
         let mut row = PublicNodeRow {
-            updated_at: Some("2026-08-20T00:05:00Z".to_owned()),
-            sync_received_at: Some("2026-08-20T00:07:00Z".to_owned()),
-            consensus_received_at: Some("2026-08-20T00:06:00Z".to_owned()),
+            rpc_observation_at: Some("2026-08-20T00:05:00Z".to_owned()),
+            sync_observation_at: Some("2026-08-20T00:07:00Z".to_owned()),
+            consensus_observation_at: Some("2026-08-20T00:06:00Z".to_owned()),
             ..Default::default()
         };
 
         assert_eq!(freshness_for(&row).as_deref(), Some("2026-08-20T00:05:00Z"));
 
-        row.consensus_received_at = None;
+        row.consensus_observation_at = None;
         assert_eq!(freshness_for(&row), None);
     }
 

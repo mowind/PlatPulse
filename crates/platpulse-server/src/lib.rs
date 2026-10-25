@@ -43,6 +43,7 @@ pub mod migration;
 pub mod network;
 pub mod node_purge;
 pub mod notifications;
+pub mod observation_time;
 pub mod openapi;
 pub mod operations;
 pub mod ownership;
