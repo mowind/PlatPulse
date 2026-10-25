@@ -1,6 +1,6 @@
 import { Menu, LayoutDashboard, Cpu, Server, Network, BadgeCheck, Settings, PanelsTopLeft, ListChecks, SlidersHorizontal, TriangleAlert, BellOff, BellRing, CalendarClock, ClipboardList, Stethoscope, Archive, Hourglass } from 'lucide-react'
 import BackgroundDecoration from '../components/BackgroundDecoration'
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { Suspense, useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link, NavLink, Outlet, useOutletContext } from 'react-router'
 import { QueryClientProvider } from '@tanstack/react-query'
 import SignOutButton from '../components/SignOutButton'
@@ -21,6 +21,7 @@ import { useIsScrolled } from '../hooks/use-is-scrolled'
 import { useMediaQuery } from '../hooks/use-media-query'
 import { cn } from '../lib/utils'
 import platpulseMark from '../../../assets/platpulse-mark.png'
+import { RouteLoadingFallback } from '../components/RouteFallback'
 
 /** Emerald navigation row: a quiet muteless link that lifts on hover and marks
  * the current page group through the accent surface. */
@@ -448,7 +449,9 @@ export default function AdminLayout() {
                   Revalidating Admin access…
                 </p>
               ) : (
-                <Outlet context={{ realtime }} />
+                <Suspense fallback={<RouteLoadingFallback />}>
+                  <Outlet context={{ realtime }} />
+                </Suspense>
               )}
             </div>
           </main>

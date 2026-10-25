@@ -1,38 +1,9 @@
 import type { ReactNode } from 'react'
-import { useEffect, useState } from 'react'
+import { lazy, useEffect, useState } from 'react'
 import { createBrowserRouter, Navigate, useLocation } from 'react-router'
 import { RouterProvider } from 'react-router/dom'
-import AdminLayout from './layouts/AdminLayout'
 import HomeLayout from './layouts/HomeLayout'
-import LoginPage from './pages/LoginPage'
 import { NodePage } from './pages/HomePages'
-import AdminHome from './pages/AdminHome'
-import AdminAgentsList, { AdminAgentDetail, AdminAgentEnroll } from './pages/AdminAgents'
-import AdminNodesList, { AdminNodeDetail } from './pages/AdminNodes'
-import AdminNodeInvestigation from './pages/AdminNodeInvestigation'
-import AdminNetworksList, {
-  AdminNetworkDetailPage,
-} from './pages/AdminNetworks'
-import AdminValidatorsList, { AdminValidatorDetail } from './pages/AdminValidators'
-import AdminSessions from './pages/AdminSessions'
-import AdminAudit from './pages/AdminAudit'
-import AdminSettings from './pages/AdminSettings'
-import AdminIncidentsList, { AdminIncidentDetailPage } from './pages/AdminIncidents'
-import AdminRulesList, { AdminRuleDetailPage } from './pages/AdminRules'
-import AdminSilencesList from './pages/AdminSilences'
-import AdminMaintenanceList from './pages/AdminMaintenance'
-import AdminOperationsList, { AdminOperationDetailPage } from './pages/AdminOperations'
-import AdminBackupsList, { AdminBackupDetailPage } from './pages/AdminBackups'
-import AdminDoctor from './pages/AdminDoctor'
-import AdminRetention from './pages/AdminRetention'
-import AdminNotifications from './pages/AdminNotifications'
-import AdminNotificationEvents, {
-  AdminNotificationEventDetailPage,
-} from './pages/AdminNotificationEvents'
-import AdminNotificationDeliveries, {
-  AdminNotificationDeliveryDetailPage,
-} from './pages/AdminNotificationDeliveries'
-import AdminNotificationChannels from './pages/AdminNotificationChannels'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { ThemeProvider } from './theme/ThemeProvider'
 import { Toaster } from './components/ui/sonner'
@@ -42,6 +13,84 @@ import { CardX } from './components/ui/card-x'
 import { SURFACE_CARD_STATIC } from './lib/surface'
 import HomeDashboard from './components/HomeDashboard'
 import { useHomeRealtimeContext } from './layouts/HomeLayout'
+import { RouteErrorFallback, withSuspense } from './components/RouteFallback'
+
+// Lazy-loaded routes (issue #275): Admin management pages, AdminLayout and LoginPage
+// are dynamically imported so the public Home screen does not download or parse
+// the ~27 admin route components upfront.
+const routePromises: Promise<unknown>[] = []
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function lazyRoute<T extends React.ComponentType<any>>(
+  factory: () => Promise<{ default: T }>,
+) {
+  let Component: T | null = null
+
+  if (import.meta.env.MODE === 'test') {
+    routePromises.push(
+      factory().then((mod) => {
+        Component = mod.default
+      }),
+    )
+  }
+
+  const Lazy = lazy(factory)
+
+  return function LazyRouteWrapper(props: React.ComponentProps<T>) {
+    if (Component) {
+      const Comp = Component
+      return <Comp {...props} />
+    }
+    return <Lazy {...props} />
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function lazyNamed<T extends Record<string, any>, K extends keyof T>(
+  factory: () => Promise<T>,
+  name: K,
+) {
+  return lazyRoute(() => factory().then((mod) => ({ default: mod[name] })))
+}
+
+const LoginPage = lazyRoute(() => import('./pages/LoginPage'))
+const AdminLayout = lazyRoute(() => import('./layouts/AdminLayout'))
+const AdminHome = lazyRoute(() => import('./pages/AdminHome'))
+const AdminAgentsList = lazyRoute(() => import('./pages/AdminAgents'))
+const AdminAgentDetail = lazyNamed(() => import('./pages/AdminAgents'), 'AdminAgentDetail')
+const AdminAgentEnroll = lazyNamed(() => import('./pages/AdminAgents'), 'AdminAgentEnroll')
+const AdminNodesList = lazyRoute(() => import('./pages/AdminNodes'))
+const AdminNodeDetail = lazyNamed(() => import('./pages/AdminNodes'), 'AdminNodeDetail')
+const AdminNodeInvestigation = lazyRoute(() => import('./pages/AdminNodeInvestigation'))
+const AdminNetworksList = lazyRoute(() => import('./pages/AdminNetworks'))
+const AdminNetworkDetailPage = lazyNamed(() => import('./pages/AdminNetworks'), 'AdminNetworkDetailPage')
+const AdminValidatorsList = lazyRoute(() => import('./pages/AdminValidators'))
+const AdminValidatorDetail = lazyNamed(() => import('./pages/AdminValidators'), 'AdminValidatorDetail')
+const AdminSessions = lazyRoute(() => import('./pages/AdminSessions'))
+const AdminAudit = lazyRoute(() => import('./pages/AdminAudit'))
+const AdminSettings = lazyRoute(() => import('./pages/AdminSettings'))
+const AdminIncidentsList = lazyRoute(() => import('./pages/AdminIncidents'))
+const AdminIncidentDetailPage = lazyNamed(() => import('./pages/AdminIncidents'), 'AdminIncidentDetailPage')
+const AdminRulesList = lazyRoute(() => import('./pages/AdminRules'))
+const AdminRuleDetailPage = lazyNamed(() => import('./pages/AdminRules'), 'AdminRuleDetailPage')
+const AdminSilencesList = lazyRoute(() => import('./pages/AdminSilences'))
+const AdminMaintenanceList = lazyRoute(() => import('./pages/AdminMaintenance'))
+const AdminOperationsList = lazyRoute(() => import('./pages/AdminOperations'))
+const AdminOperationDetailPage = lazyNamed(() => import('./pages/AdminOperations'), 'AdminOperationDetailPage')
+const AdminBackupsList = lazyRoute(() => import('./pages/AdminBackups'))
+const AdminBackupDetailPage = lazyNamed(() => import('./pages/AdminBackups'), 'AdminBackupDetailPage')
+const AdminDoctor = lazyRoute(() => import('./pages/AdminDoctor'))
+const AdminRetention = lazyRoute(() => import('./pages/AdminRetention'))
+const AdminNotifications = lazyRoute(() => import('./pages/AdminNotifications'))
+const AdminNotificationEvents = lazyRoute(() => import('./pages/AdminNotificationEvents'))
+const AdminNotificationEventDetailPage = lazyNamed(() => import('./pages/AdminNotificationEvents'), 'AdminNotificationEventDetailPage')
+const AdminNotificationDeliveries = lazyRoute(() => import('./pages/AdminNotificationDeliveries'))
+const AdminNotificationDeliveryDetailPage = lazyNamed(() => import('./pages/AdminNotificationDeliveries'), 'AdminNotificationDeliveryDetailPage')
+const AdminNotificationChannels = lazyRoute(() => import('./pages/AdminNotificationChannels'))
+
+if (import.meta.env.MODE === 'test') {
+  await Promise.all(routePromises)
+}
 
 /**
  * Route gates (webui.md §3.2, §3.3): Home and Admin are private by default.
@@ -166,10 +215,12 @@ function OwnerRequiredPanel() {
 const router = createBrowserRouter([
   {
     path: '/login',
-    element: <LoginPage />,
+    errorElement: <RouteErrorFallback />,
+    element: withSuspense(<LoginPage />),
   },
   {
     path: '/',
+    errorElement: <RouteErrorFallback />,
     element: (
       <RequireSession>
         <HomeLayout />
@@ -183,9 +234,10 @@ const router = createBrowserRouter([
   },
   {
     path: '/admin',
+    errorElement: <RouteErrorFallback />,
     element: (
       <RequireOwner>
-        <AdminLayout />
+        {withSuspense(<AdminLayout />)}
       </RequireOwner>
     ),
     children: [
@@ -251,6 +303,10 @@ const router = createBrowserRouter([
       { path: '*', element: <AdminSectionFallback /> },
     ],
   },
+  {
+    path: '*',
+    element: <Navigate to="/" replace />,
+  },
 ])
 
 export default function App() {
@@ -306,3 +362,6 @@ function AdminSectionFallback() {
     </section>
   )
 }
+
+export { HomeLayout, RequireOwner, OwnerRequiredPanel }
+export { useHomeRealtimeContext }
