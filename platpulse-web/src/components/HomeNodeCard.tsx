@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { Info } from 'lucide-react'
 import type { PublicNetwork, PublicNode } from '../api/generated'
@@ -57,7 +57,16 @@ export function healthLabel(value: string): string {
  * area, and every explanation the compaction removed from the face of the card
  * stays in the identity entry.
  */
-export function HomeNodeCard({ network, node, linkState }: HomeNodeCardProps) {
+function areHomeNodeCardPropsEqual(prev: HomeNodeCardProps, next: HomeNodeCardProps): boolean {
+  return (
+    prev.node === next.node &&
+    prev.linkState === next.linkState &&
+    prev.network.displayName === next.network.displayName &&
+    prev.network.networkKey === next.network.networkKey
+  )
+}
+
+export const HomeNodeCard = memo(function HomeNodeCard({ network, node, linkState }: HomeNodeCardProps) {
   const tone = healthTone(node.health)
   const diagnostic = exceptionalDiagnostic(node)
   const resyncing = (node.resyncState ?? '').toLowerCase() === 'resyncing'
@@ -278,7 +287,8 @@ export function HomeNodeCard({ network, node, linkState }: HomeNodeCardProps) {
       </CardX>
     </article>
   )
-}
+}, areHomeNodeCardPropsEqual)
+HomeNodeCard.displayName = 'HomeNodeCard'
 
 /** Home's short form of the evidence-backed comparison (#239): the gated offset
  *  and its display tone are the Node Detail page's own (`networkHeadOffset`),

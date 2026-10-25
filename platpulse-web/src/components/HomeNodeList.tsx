@@ -1,3 +1,4 @@
+import { memo, useCallback } from 'react'
 import { Link } from 'react-router'
 import type { PublicNetwork, PublicNode } from '../api/generated'
 import { NodeHealthMarker } from './StatusBadge'
@@ -9,6 +10,83 @@ import { formatPercent } from './HomeResourceMetrics'
 export type NodeRecord = { network: PublicNetwork; node: PublicNode }
 export type HomeReturnLinkState = (nodeId: string, index: number, count: number) => HomeReturnState
 export type NodeRowRefs = (nodeId: string, element: HTMLElement | null) => void
+
+export type HomeNodeListRowProps = {
+  network: PublicNetwork
+  node: PublicNode
+  linkState: HomeReturnState
+  registerRow: NodeRowRefs
+}
+
+function areHomeNodeListRowPropsEqual(prev: HomeNodeListRowProps, next: HomeNodeListRowProps): boolean {
+  return (
+    prev.node === next.node &&
+    prev.linkState === next.linkState &&
+    prev.registerRow === next.registerRow &&
+    prev.network.displayName === next.network.displayName &&
+    prev.network.networkKey === next.network.networkKey
+  )
+}
+
+export const HomeNodeListRow = memo(function HomeNodeListRow({
+  network,
+  node,
+  linkState,
+  registerRow,
+}: HomeNodeListRowProps) {
+  const handleRef = useCallback(
+    (element: HTMLElement | null) => {
+      registerRow(node.nodeId, element)
+    },
+    [node.nodeId, registerRow],
+  )
+
+  return (
+    <tr data-slot="node-list-row" ref={handleRef}>
+      <td data-column="name">
+        <Link
+          to={'/nodes/' + node.nodeId}
+          state={linkState}
+          data-slot="node-link"
+          aria-label={homeNodeLabel(node)}
+          title={homeNodeLabel(node)}
+          className="inline-flex min-h-11 min-w-11 max-w-full items-center rounded-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        >
+          <span className="truncate">{homeNodeLabel(node)}</span>
+        </Link>
+      </td>
+      <td data-column="network" className="text-muted-foreground">
+        <span className="block truncate" title={network.displayName}>
+          {network.displayName}
+        </span>
+      </td>
+      <td data-column="health">
+        <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+          <NodeHealthMarker health={node.health} />
+          {healthLabel(node.health)}
+        </span>
+      </td>
+      <td data-column="head" className="text-right tabular-nums">
+        {formatNumber(node.currentHead)}
+      </td>
+      <td data-column="peers" className="text-right tabular-nums">
+        {formatPeerCount(node)}
+        {peerRetentionCue(node) && (
+          <small data-slot="node-list-peers-cue" className="block text-[11px] text-muted-foreground">
+            {peerRetentionCue(node)}
+          </small>
+        )}
+      </td>
+      <td data-column="process-cpu" className="text-right tabular-nums">
+        {formatPercent(node.processCpuPercent)}
+      </td>
+      <td data-column="process-memory" className="text-right tabular-nums">
+        {formatPercent(node.processMemoryPercent)}
+      </td>
+    </tr>
+  )
+}, areHomeNodeListRowPropsEqual)
+HomeNodeListRow.displayName = 'HomeNodeListRow'
 
 export type HomeNodeListProps = {
   records: readonly NodeRecord[]
@@ -23,7 +101,7 @@ export type HomeNodeListProps = {
  * and the same formatter the card uses, so a metric the Server never attested
  * still reads Unknown here and a real zero still reads 0. QC, Locked and
  * Committed stay card-only columns, exactly as the design says. */
-export function HomeNodeList({ records, linkState, registerRow }: HomeNodeListProps) {
+export const HomeNodeList = memo(function HomeNodeList({ records, linkState, registerRow }: HomeNodeListProps) {
   return (
     <div data-slot="node-list-scroll" className="overflow-x-auto rounded-md bg-background">
       <table data-slot="node-list" aria-label="Active Nodes" className="w-full text-sm">
@@ -54,51 +132,17 @@ export function HomeNodeList({ records, linkState, registerRow }: HomeNodeListPr
         </thead>
         <tbody>
           {records.map(({ network, node }, index) => (
-            <tr key={node.nodeId} data-slot="node-list-row" ref={(element) => registerRow(node.nodeId, element)}>
-              <td data-column="name">
-                <Link
-                  to={'/nodes/' + node.nodeId}
-                  state={linkState(node.nodeId, index, records.length)}
-                  data-slot="node-link"
-                  aria-label={homeNodeLabel(node)}
-                  title={homeNodeLabel(node)}
-                  className="inline-flex min-h-11 min-w-11 max-w-full items-center rounded-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                >
-                  <span className="truncate">{homeNodeLabel(node)}</span>
-                </Link>
-              </td>
-              <td data-column="network" className="text-muted-foreground">
-                <span className="block truncate" title={network.displayName}>
-                  {network.displayName}
-                </span>
-              </td>
-              <td data-column="health">
-                <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-                  <NodeHealthMarker health={node.health} />
-                  {healthLabel(node.health)}
-                </span>
-              </td>
-              <td data-column="head" className="text-right tabular-nums">
-                {formatNumber(node.currentHead)}
-              </td>
-              <td data-column="peers" className="text-right tabular-nums">
-                {formatPeerCount(node)}
-                {peerRetentionCue(node) && (
-                  <small data-slot="node-list-peers-cue" className="block text-[11px] text-muted-foreground">
-                    {peerRetentionCue(node)}
-                  </small>
-                )}
-              </td>
-              <td data-column="process-cpu" className="text-right tabular-nums">
-                {formatPercent(node.processCpuPercent)}
-              </td>
-              <td data-column="process-memory" className="text-right tabular-nums">
-                {formatPercent(node.processMemoryPercent)}
-              </td>
-            </tr>
+            <HomeNodeListRow
+              key={node.nodeId}
+              network={network}
+              node={node}
+              linkState={linkState(node.nodeId, index, records.length)}
+              registerRow={registerRow}
+            />
           ))}
         </tbody>
       </table>
     </div>
   )
-}
+})
+HomeNodeList.displayName = 'HomeNodeList'

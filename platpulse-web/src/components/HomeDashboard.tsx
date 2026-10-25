@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useSearchParams } from 'react-router'
 import { Server, HeartPulse, TriangleAlert } from 'lucide-react'
-import type { PublicNetwork } from '../api/generated'
+import type { PublicNetwork, PublicNode } from '../api/generated'
 import { realtimeStreamLabel } from './RealtimeNotice'
 import GeoMapBoundary from './GeoMapBoundary'
 import GeoWorldMap from './GeoWorldMap'
@@ -23,6 +23,7 @@ import {
   landHomeReturn,
   readHomeReturn,
   type HomeReturn,
+  type HomeReturnState,
 } from '../homeReturn'
 import { ValidatorTotalCard } from './ValidatorTotals'
 import { SummaryMetricCard } from './SummaryMetricCard'
@@ -30,7 +31,12 @@ import { RewardWalletCard, type RewardWalletReading } from './RewardWalletCard'
 import { OverviewBand } from './OverviewBand'
 import { HomeToolbar } from './HomeToolbar'
 import { HomeNodeCard } from './HomeNodeCard'
-import { HomeNodeList, type NodeRecord, type HomeReturnLinkState } from './HomeNodeList'
+import {
+  HomeNodeList,
+  type NodeRecord,
+  type HomeReturnLinkState,
+  type NodeRowRefs,
+} from './HomeNodeList'
 
 export { RATE_DIRECTION_CLASSES, HomeResourceMetrics } from './HomeResourceMetrics'
 export { HomeToolbar } from './HomeToolbar'
@@ -89,10 +95,28 @@ export default function HomeDashboard({
   // and a value this deployment cannot honour falls back visibly instead of
   // being obeyed or silently dropped.
   const { filters, rejected } = useMemo(() => readHomeFilters(search), [search])
-  const records = useMemo<NodeRecord[]>(
-    () => networks.flatMap((network) => network.nodes.map((node) => ({ network, node }))),
-    [networks],
-  )
+  const renderedSearch = search.toString()
+
+  // Stable NodeRecord identity: reuse the record wrapper when both the node and
+  // network reference have not changed across renders (#276).
+  const recordCache = useRef<Map<string, NodeRecord>>(new Map())
+  const records = useMemo<NodeRecord[]>(() => {
+    const nextRecordCache = new Map<string, NodeRecord>()
+    const result = networks.flatMap((network) =>
+      network.nodes.map((node) => {
+        const cached = recordCache.current.get(node.nodeId)
+        if (cached && cached.network === network && cached.node === node) {
+          nextRecordCache.set(node.nodeId, cached)
+          return cached
+        }
+        const record = { network, node }
+        nextRecordCache.set(node.nodeId, record)
+        return record
+      }),
+    )
+    recordCache.current = nextRecordCache
+    return result
+  }, [networks])
   const hasProjection = !loading && (error === null || hasLastGood)
   // Only the projection can say whether a Network selection still exists, so
   // the selection stays provisional until a projection is available.
@@ -131,12 +155,39 @@ export default function HomeDashboard({
   // Rows are located through React's own refs, keyed by Node ID: the returned
   // row is the one this render put on screen, never a private DOM lookup.
   const nodeRows = useRef(new Map<string, HTMLElement>())
-  const registerNodeRow = (nodeId: string, element: HTMLElement | null) => {
+  const registerNodeRow = useCallback((nodeId: string, element: HTMLElement | null) => {
     if (element === null) nodeRows.current.delete(nodeId)
     else nodeRows.current.set(nodeId, element)
-  }
-  const nodeLinkState: HomeReturnLinkState = (nodeId, index, count) =>
-    homeReturnState(nodeId, search, index, count, homeReturnTab())
+  }, [])
+
+  // Stabilize linkState references so React.memo shallow comparison on node
+  // cards and list rows is not defeated by per-render object reallocation (#276).
+  // The cache key includes the current document reading token (homeReturnTab)
+  // so rotating the reading token invalidates stale return positions.
+  const linkStateCache = useRef<Map<string, { key: string; state: HomeReturnState }>>(new Map())
+  const nodeLinkState: HomeReturnLinkState = useCallback(
+    (nodeId: string, index: number, count: number): HomeReturnState => {
+      const tab = homeReturnTab()
+      const cacheKey = `${nodeId}:${index}:${count}:${renderedSearch}:${tab}`
+      const cached = linkStateCache.current.get(nodeId)
+      if (cached && cached.key === cacheKey) {
+        return cached.state
+      }
+      const state = homeReturnState(nodeId, search, index, count, tab)
+      linkStateCache.current.set(nodeId, { key: cacheKey, state })
+      return state
+    },
+    [renderedSearch, search],
+  )
+
+  useEffect(() => {
+    const activeNodeIds = new Set(records.map((r) => r.node.nodeId))
+    for (const key of linkStateCache.current.keys()) {
+      if (!activeNodeIds.has(key)) {
+        linkStateCache.current.delete(key)
+      }
+    }
+  }, [records])
 
   // One arrival, and every landing it is still owed.
   useEffect(() => {
@@ -182,7 +233,6 @@ export default function HomeDashboard({
   // value on focus and again on press, and asking the address bar for the same
   // URL twice would leave a Back step that appears to do nothing.
   const issuedSearch = useRef<string | null>(null)
-  const renderedSearch = search.toString()
   useEffect(() => {
     issuedSearch.current = null
   }, [renderedSearch])
@@ -394,18 +444,13 @@ export default function HomeDashboard({
                   aria-label="Active Nodes"
                 >
                   {matching.map(({ network, node }, index) => (
-                    <div
-                      data-slot="node-card-frame"
-                      className="min-w-0"
+                    <HomeNodeCardFrame
                       key={node.nodeId}
-                      ref={(element) => registerNodeRow(node.nodeId, element)}
-                    >
-                      <HomeNodeCard
-                        network={network}
-                        node={node}
-                        linkState={nodeLinkState(node.nodeId, index, matching.length)}
-                      />
-                    </div>
+                      network={network}
+                      node={node}
+                      linkState={nodeLinkState(node.nodeId, index, matching.length)}
+                      registerRow={registerNodeRow}
+                    />
                   ))}
                 </div>
               )}
@@ -416,6 +461,34 @@ export default function HomeDashboard({
     </section>
   )
 }
+
+type HomeNodeCardFrameProps = {
+  network: PublicNetwork
+  node: PublicNode
+  linkState: HomeReturnState
+  registerRow: NodeRowRefs
+}
+
+const HomeNodeCardFrame = memo(function HomeNodeCardFrame({
+  network,
+  node,
+  linkState,
+  registerRow,
+}: HomeNodeCardFrameProps) {
+  const handleRef = useCallback(
+    (element: HTMLElement | null) => {
+      registerRow(node.nodeId, element)
+    },
+    [node.nodeId, registerRow],
+  )
+
+  return (
+    <div data-slot="node-card-frame" className="min-w-0" ref={handleRef}>
+      <HomeNodeCard network={network} node={node} linkState={linkState} />
+    </div>
+  )
+})
+HomeNodeCardFrame.displayName = 'HomeNodeCardFrame'
 
 const ATTENTION_CAPTION = 'Unhealthy or Unknown'
 const ATTENTION_HINT =
