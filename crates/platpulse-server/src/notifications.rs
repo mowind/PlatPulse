@@ -615,14 +615,24 @@ pub async fn insert_notification_request(
     Ok(inserted.rows_affected() > 0)
 }
 
-/// The most recent accepted test command time (the durable cooldown clock).
+/// The most recent accepted test command time (the durable cooldown clock),
+/// ignoring one request id.
 /// `created_at` is RFC3339 UTC, so the lexical maximum is chronological.
+///
+/// A request id is excluded because a *duplicate* of a concurrent command must
+/// reach the ledger's unique-key replay, not a cooldown refusal: PostgreSQL's
+/// READ COMMITTED snapshot can show this transaction the row a twin committed
+/// after our own ledger read, and counting that row would make a command refuse
+/// itself 429. Excluding it never admits a second send — the excluded id is
+/// already recorded, so its own insert is what conflicts and replays.
 pub async fn last_test_request_created_at(
     executor: &mut AnyConnection,
+    except_request_id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     sqlx::query_scalar(
-        "SELECT MAX(created_at) FROM notification_requests WHERE command_kind = 'test'",
+        "SELECT MAX(created_at) FROM notification_requests WHERE command_kind = 'test' AND request_id <> $1",
     )
+    .bind(except_request_id)
     .fetch_one(&mut *executor)
     .await
 }
@@ -1062,7 +1072,7 @@ pub async fn send_test_delivery(
         let _ = tx.rollback().await;
         return replay_recorded_test_request(state, request_id, &fingerprint, now).await;
     }
-    let last_test = last_test_request_created_at(&mut tx)
+    let last_test = last_test_request_created_at(&mut tx, request_id)
         .await
         .map_err(|_| TestSendError::Unavailable)?;
     if let Some(retry_after_seconds) =

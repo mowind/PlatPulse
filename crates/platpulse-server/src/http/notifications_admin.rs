@@ -2251,6 +2251,34 @@ mod tests {
         assert_eq!(events, 0);
     }
 
+    /// The durable cooldown clock must not count a command's own recorded
+    /// attempt: a duplicate of a concurrent request is reconciled by the
+    /// ledger's unique key, and PostgreSQL's READ COMMITTED snapshot can show
+    /// this transaction the twin row committed after our own ledger read, so
+    /// counting it would answer the duplicate 429 instead of replaying it.
+    #[tokio::test]
+    async fn a_request_id_is_not_its_own_cooldown_clock() {
+        let (_dir, state, _provider) = test_state().await;
+        let first = test_command(&state, "req-own-clock").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let mut conn = state.db().pool().acquire().await.unwrap();
+        let other =
+            crate::notifications::last_test_request_created_at(&mut conn, "req-other-clock")
+                .await
+                .unwrap();
+        assert!(
+            other.is_some(),
+            "a different request id still sees the accepted test"
+        );
+        let own = crate::notifications::last_test_request_created_at(&mut conn, "req-own-clock")
+            .await
+            .unwrap();
+        assert_eq!(
+            own, None,
+            "the request's own accepted test is not its cooldown"
+        );
+    }
+
     #[tokio::test]
     async fn concurrent_identical_requests_produce_one_command() {
         let (_dir, state, provider) = test_state().await;
