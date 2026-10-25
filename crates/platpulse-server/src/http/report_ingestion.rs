@@ -10458,9 +10458,12 @@ mod tests {
         // The fresh face of the same Report does fall back: a Clock Unreliable
         // Agent cannot say whether its Node is current, so freshness keeps the
         // receipt instant while history keeps the observation instant.
+        // The window is loose on purpose: it only has to separate "the receipt
+        // instant, a second or so ago" from "the observation instant, an hour
+        // ago", and a tight bound would fail this test after a long pause.
         let component = component_instant(&state, "peers").await.unwrap();
         assert!(
-            seconds_from_now(&component).abs() <= 60,
+            seconds_from_now(&component).abs() <= 900,
             "freshness falls back to the receipt instant: {component}"
         );
     }

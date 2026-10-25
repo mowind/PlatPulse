@@ -42,8 +42,10 @@ struct StoredEvent {
 struct HubState {
     next_id: u64,
     events: VecDeque<StoredEvent>,
-    /// Highest event ID removed because the bounded buffer overflowed.
-    /// Coalescing may create ID gaps without losing replay coverage.
+    /// Highest event ID this hub can no longer replay: removed because the
+    /// bounded buffer overflowed, or issued by an earlier Server process
+    /// before this hub's sequence started. Coalescing may create ID gaps
+    /// without losing replay coverage.
     dropped_through: u64,
     closed: bool,
 }
@@ -73,9 +75,22 @@ impl Drop for ConnectionGuard {
 }
 
 impl Default for RealtimeHub {
+    /// The serving hub. Its sequence starts at the wall clock so every ID it
+    /// issues is above any ID an earlier process issued: the buffer is in
+    /// memory, and an open tab reconnecting with a cursor from before a
+    /// restart must be told to reset instead of waiting in silence until the
+    /// new sequence climbs past it.
     fn default() -> Self {
-        Self::new(DEFAULT_BUFFER_CAPACITY)
+        Self::starting_at(DEFAULT_BUFFER_CAPACITY, process_sequence_start())
     }
+}
+
+/// Microseconds since the Unix epoch. A process cannot issue one event per
+/// microsecond of its lifetime, so the next process starts above the last ID
+/// of the previous one, and the value stays a safe JavaScript integer until
+/// the year 2255.
+fn process_sequence_start() -> u64 {
+    u64::try_from(OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000).unwrap_or(0)
 }
 
 /// What a bound Human stream may do after re-checking its Session.
@@ -113,15 +128,22 @@ async fn bound_session(
 }
 
 impl RealtimeHub {
+    #[cfg(test)]
     pub(crate) fn new(capacity: usize) -> Self {
+        Self::starting_at(capacity, 0)
+    }
+
+    /// A hub whose first event ID is `start + 1`. Every cursor below `start`
+    /// belongs to an earlier sequence and is answered with a reset.
+    fn starting_at(capacity: usize, start: u64) -> Self {
         assert!(capacity > 0, "SSE buffer capacity must be positive");
         Self {
             inner: Arc::new(HubInner {
                 capacity,
                 state: Mutex::new(HubState {
-                    next_id: 0,
+                    next_id: start,
                     events: VecDeque::new(),
-                    dropped_through: 0,
+                    dropped_through: start,
                     closed: false,
                 }),
                 notify: Notify::new(),
@@ -253,11 +275,16 @@ impl RealtimeHub {
     }
     fn next_after(&self, cursor: &mut u64) -> Option<Invalidation> {
         let state = self.inner.state.lock().expect("SSE hub mutex poisoned");
-        let first = state.events.front()?.event.event_id;
         if *cursor < state.dropped_through {
-            // Only an actual bounded-buffer eviction means the cursor missed
-            // authoritative notifications. Event-ID gaps caused by
-            // same-resource coalescing are still replayable.
+            // Only an actual bounded-buffer eviction, or a cursor from an
+            // earlier process, means the cursor missed authoritative
+            // notifications. Event-ID gaps caused by same-resource coalescing
+            // are still replayable. A stale cursor is answered even before
+            // this process publishes anything.
+            let first = state
+                .events
+                .front()
+                .map_or(state.next_id, |stored| stored.event.event_id);
             *cursor = first;
             return Some(Invalidation {
                 version: EVENT_VERSION,
@@ -614,6 +641,50 @@ mod tests {
             .unwrap()
             .unwrap();
         let _ = item;
+    }
+
+    /// The sequence lives in memory, so a restarted Server starts a new one
+    /// while an open tab still holds the cursor the previous process issued.
+    /// That cursor must be answered with a collection reset — never with
+    /// silence until the new sequence happens to climb past it.
+    #[test]
+    fn a_cursor_from_an_earlier_server_process_is_answered_with_a_reset() {
+        let earlier = RealtimeHub::default();
+        for node in 0..40 {
+            earlier.publish("node", Some(format!("node-{node}")), 0);
+        }
+        let kept_cursor = earlier.current_id();
+        earlier.shutdown("server_shutdown");
+        // A restart takes far longer than the sequence's clock tick.
+        std::thread::sleep(Duration::from_millis(2));
+
+        let restarted = RealtimeHub::default();
+        // Nothing published yet: the stale cursor is answered right away.
+        let mut cursor = kept_cursor;
+        let event = restarted
+            .next_after(&mut cursor)
+            .expect("a stale cursor is answered before any new event");
+        assert_eq!(event.reset, Some(true));
+        assert_eq!(event.resource_id, None);
+
+        restarted.publish("network", Some("platon-mainnet"), 0);
+        let mut cursor = kept_cursor;
+        let event = restarted
+            .next_after(&mut cursor)
+            .expect("a stale cursor is answered once the new process publishes");
+        assert_eq!(event.reset, Some(true));
+        assert_eq!(event.resource_id, None);
+
+        // The browser refetches REST after the reset and resumes from the new
+        // process's own cursor, which is ahead of the one it kept.
+        assert!(restarted.current_id() > kept_cursor);
+        let mut cursor = restarted.current_id();
+        restarted.publish("node", Some("node-0"), 0);
+        let event = restarted
+            .next_after(&mut cursor)
+            .expect("the new process's cursor replays its own events");
+        assert_eq!(event.reset, None);
+        assert_eq!(event.resource_id.as_deref(), Some("node-0"));
     }
 
     #[test]

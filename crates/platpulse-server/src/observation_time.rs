@@ -93,12 +93,18 @@ pub fn history_instant(observed: Rfc3339, skew_ms: Option<i64>) -> Rfc3339 {
 /// smaller, and would move in either direction depending on where the Agent's
 /// own instant happens to fall inside its second.
 ///
-/// Rounding also keeps a repeated fact on the instant it was first stamped on.
-/// Every instant a Report carries already has second precision, so the only
-/// fraction a correction can introduce is the skew's own: two readings of the
-/// same drift must not place a carried Peer Snapshot or an unchanged component
-/// status on a neighbouring second. Truncating a sub-millisecond correction
-/// would do exactly that, in the direction the Agent's instant happens to fall.
+/// Rounding also keeps a sub-second correction on the second the fact already
+/// sits in. Every instant a Report carries has second precision, so the only
+/// fraction a correction can introduce is the skew's own: a correction well
+/// inside one second must not place a carried Peer Snapshot or an unchanged
+/// component status on a neighbouring second in whichever direction the Agent's
+/// instant happens to fall inside its own.
+///
+/// Rounding is not an identity guarantee. A correction that does cross a second
+/// boundary moves the instant, so a fact whose *identity* has to survive a
+/// re-measured skew (a numeric metric sample, keyed by its observation instant)
+/// keeps the Agent's raw instant instead of the corrected one — see ADR 0014 and
+/// #279.
 fn corrected_instant(observed: Rfc3339, skew_ms: i64) -> Option<time::OffsetDateTime> {
     let corrected = observed
         .as_datetime()

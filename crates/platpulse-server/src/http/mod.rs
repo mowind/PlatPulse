@@ -3835,10 +3835,10 @@ mod tests {
     async fn projection_responses_capture_the_route_group_realtime_cursor() {
         let (_, _, state) = test_state().await;
         seed_owner(&state).await;
-        state
+        let public_cursor = state
             .public_realtime()
             .publish("networks", None::<String>, 0);
-        state
+        let admin_cursor = state
             .admin_realtime()
             .publish("overview", None::<String>, 0);
 
@@ -3849,9 +3849,17 @@ mod tests {
             .next()
             .unwrap()
             .to_owned();
-        for (uri, header_name) in [
-            ("/api/public/v1/networks", &PUBLIC_REALTIME_CURSOR_HEADER),
-            ("/api/admin/v1/overview", &ADMIN_REALTIME_CURSOR_HEADER),
+        for (uri, header_name, cursor) in [
+            (
+                "/api/public/v1/networks",
+                &PUBLIC_REALTIME_CURSOR_HEADER,
+                public_cursor,
+            ),
+            (
+                "/api/admin/v1/overview",
+                &ADMIN_REALTIME_CURSOR_HEADER,
+                admin_cursor,
+            ),
         ] {
             let request = Request::builder()
                 .uri(uri)
@@ -3860,7 +3868,11 @@ mod tests {
                 .unwrap();
             let response = app.clone().oneshot(request).await.unwrap();
             assert_eq!(response.status(), StatusCode::OK, "{uri}");
-            assert_eq!(response.headers()[header_name], "1", "{uri}");
+            assert_eq!(
+                response.headers()[header_name],
+                cursor.to_string().as_str(),
+                "{uri}"
+            );
         }
     }
 
