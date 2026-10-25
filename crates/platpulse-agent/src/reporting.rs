@@ -2528,9 +2528,14 @@ mod catch_up_tests {
             0,
             "the backlog must be gone, not just smaller"
         );
+        // Two samples can land inside one delivery pass under load, so the
+        // sampled depth repeats instead of falling by the pass size. What the
+        // test is about is that the backlog never grows while it drains: a
+        // strictly falling sequence would make passing the test a question of
+        // sampler timing rather than of catch-up behaviour.
         assert!(
-            depths.windows(2).all(|pair| pair[1] < pair[0]),
-            "the backlog must decrease at every sample, saw {depths:?}"
+            depths.windows(2).all(|pair| pair[1] <= pair[0]),
+            "the backlog must never grow while it drains, saw {depths:?}"
         );
         store.close().await.unwrap();
     }
