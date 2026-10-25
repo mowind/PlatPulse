@@ -46,9 +46,55 @@ after the refusal too: the same configuration started again, reported its
 migrated deployment needs no repair tool. The SQLite file is a fallback point, not
 a rollback target.
 
+### Durable Spool catch-up measurement (#268)
+
+The 2026-10-24 report showed a two-hour backlog replaying without converging: the
+Agent re-hashed its whole spool for every delivery, the delivery loop stopped after
+about one Report per second, and the Server's cost per Report grew with the Node's
+Peer count. #269–#274 fixed the cost, the loop, the Server's per-Report work, the
+freshness semantics and the default capacity. This is the deployment-environment
+evidence those fixes were accepted on; the CI harness below cannot stop a Server for
+half an hour, so the numbers come from the reference deployment itself.
+
+- **Environment** — `60a67d2` on the reference deployment: user-level
+  `platpulse-server.service` and `platpulse-agent.service`, Server on the PostgreSQL
+  Storage Backend (ADR 0013), Agent on its own SQLite store,
+  `collection_interval_seconds = 1`, and no `[spool]` override, so the Agent ran the
+  shipped default `spool.max_bytes` of 512 MiB.
+- **Outage** — the Server was stopped at `03:45:37Z` and answered `/health/ready`
+  again at `04:15:44Z`, 30.1 minutes later. The Agent was not restarted, so every
+  Report produced in the window stayed in its Durable Spool.
+- **Backlog at restart** — 1,801 Reports / 59.7 MB (56.9 MiB), head generated
+  `03:45:43Z`, mean Report 33.1 KB, mean production interval 1.000 s against a
+  0.991 Report/s baseline.
+- **Drain** — the spool was back at its steady-state depth 5.12 minutes after
+  readiness (`04:20:51Z`). The Agent kept collecting at 1.000 Report/s throughout
+  (sequence 1,932 → 2,234), so 2,103 Reports were accepted in 307 seconds: **6.96
+  Reports/s, 7.0× the steady-state production rate** (design §7.2 requires at least
+  3×). The Server logged 2,650 accepted Reports over the same window (8.63/s) — the
+  deployment hosts three Agents, all catching up at once.
+- **Ingest cost** — the Agent that produced the 30-minute backlog ingested at
+  p50 115 ms, p90 164 ms, max 448 ms, against the p50 292 ms recorded for the same
+  Agent (59 Peers) on `f7d54b6`. Cost per Report no longer follows Peer count (#271).
+- **Spool Backlog Age** — delivery is oldest-first, so the head of the spool is the
+  Report being ingested and its age is the Spool Backlog Age: 30.0 min at readiness,
+  23.7 at +1 min, 17.3 at +2, 10.5 at +3, 4.1 at +4, 0 at +5.1. The curve is
+  monotone; no Report is skipped, coalesced or re-ordered (#19, #20).
+- **Capacity** — at 33.1 KB per Report the shipped 512 MiB default holds about
+  16,200 Reports, roughly 4.5 hours of this collection cadence, which is the
+  conversion design §7.2 documents.
+
+What this measures and what it does not: it is evidence that a 30-minute outage
+drains in about five minutes at seven times the production rate with the collection
+rhythm intact, on the shipped defaults and a real PostgreSQL backend. It does not
+turn the `agent_outage` scenario below into a `PASS` — the offline harness still
+cannot suspend an Agent's clock, so the Clock Unreliable path and the freshness
+assertions of ADR 0014 stay covered by the workspace tests rather than by the
+profile.
+
 ## Final release qualification job
 
-Run `scripts/final-release-qualification.sh --profile release/qualification/ci.toml --allow-known-not-run --require-all` for the final Phase 5 gate (use `soak.toml` for the scheduled soak profile). The explicit `--allow-known-not-run` exception keeps the documented `partial_receipt`, `worker_failure`, `agent_outage`, `transport_timeout`, and `alert_outbox_restart` seams visible as `INCOMPLETE` residual risks (the offline harness drives no notification provider, so Alert/Notification outbox durability is only asserted when the profile actually produces incidents or deliveries); every other unavailable check still blocks sign-off. The GitHub workflow provisions Rust format/lint components, `cargo-deny`, `cargo-audit`, npm dependencies, and the fixed Playwright Chromium browser before invoking the same runner.
+Run `scripts/final-release-qualification.sh --profile release/qualification/ci.toml --allow-known-not-run --require-all` for the final Phase 5 gate (use `soak.toml` for the scheduled soak profile). The explicit `--allow-known-not-run` exception keeps the documented `partial_receipt`, `worker_failure`, `agent_outage`, `transport_timeout`, and `alert_outbox_restart` seams visible as `INCOMPLETE` residual risks (the offline harness drives no notification provider, so Alert/Notification outbox durability is only asserted when the profile actually produces incidents or deliveries); every other unavailable check still blocks sign-off. The Durable Spool catch-up measurement (#268) above is the deployment-environment evidence behind the `agent_outage` risk, which the offline harness cannot drive on its own. The GitHub workflow provisions Rust format/lint components, `cargo-deny`, `cargo-audit`, npm dependencies, and the fixed Playwright Chromium browser before invoking the same runner.
 
 The runner executes Rust formatting, Clippy with warnings denied, workspace tests, dependency audits, WebUI lint/typecheck/unit/build, OpenAPI and generated browser-client freshness, the four fixed Playwright projects (`phone-360-touch`, `phone-390-touch`, `tablet-768-touch`, and `desktop-1280`) with the configured single worker, package validation, native package/Docker-context checks when available, the release-candidate harness, recovery rehearsal, and the load/fault/soak profile. It also scans packaged artifacts for forbidden secrets and GeoLite data and verifies that unsigned artifacts are not described as a verified supply chain.
 
