@@ -1622,12 +1622,30 @@ fn first_observation_in_grace(first_seen_at: &str, diagnostic: &NodeDiagnostic) 
             .is_none_or(|c| c.value_revision <= 0)
 }
 
-fn current_observation(timestamp: Option<&str>) -> bool {
-    timestamp
-        .and_then(crate::auth::parse_rfc3339)
-        .is_some_and(|value| {
-            (crate::auth::now_utc() - value).whole_seconds().abs() <= FRESHNESS_LIMIT_SECONDS
-        })
+/// Server-clock observation instants of the four judged components, read from
+/// `component_status` by `node_diagnostic`.
+///
+/// They make the Admin Node view judge freshness on the same clock as the
+/// Public projection: the instant is the Report's own observation time
+/// corrected by the Agent's measured clock skew, falling back to the receipt
+/// instant when that skew is unmeasured or the Agent is Clock Unreliable
+/// (ADR 0014, issue #274).
+#[derive(Debug, Default)]
+struct ComponentObservationInstants {
+    rpc: Option<String>,
+    sync: Option<String>,
+    consensus: Option<String>,
+    peers: Option<String>,
+}
+
+impl ComponentObservationInstants {
+    /// Every retained component instant, oldest or newest — `derive_freshness`
+    /// picks the newest.
+    fn iter(&self) -> impl Iterator<Item = &str> {
+        [&self.rpc, &self.sync, &self.consensus, &self.peers]
+            .into_iter()
+            .filter_map(|instant| instant.as_deref())
+    }
 }
 
 fn derive_health(
@@ -1635,6 +1653,7 @@ fn derive_health(
     rpc: Option<&RpcDiagnostic>,
     sync: Option<&SyncDiagnostic>,
     consensus: Option<&ConsensusDiagnostic>,
+    instants: &ComponentObservationInstants,
 ) -> (&'static str, &'static str) {
     if lifecycle == "retired" {
         return ("unknown", "node is retired");
@@ -1648,15 +1667,19 @@ fn derive_health(
     if consensus.is_some_and(|component| component.state == "error") {
         return ("unhealthy", "consensus collection failed");
     }
-    let fresh = rpc
-        .and_then(|component| component.received_at.as_deref())
-        .is_some_and(|value| current_observation(Some(value)))
-        && sync
-            .and_then(|component| component.received_at.as_deref())
-            .is_some_and(|value| current_observation(Some(value)))
-        && consensus
-            .and_then(|component| component.received_at.as_deref())
-            .is_some_and(|value| current_observation(Some(value)));
+    // A component that was never observed has no observation instant and is not
+    // fresh. A replayed Report stamps an old observation instant, so the Node
+    // stays Unknown during catch-up (ADR 0014, issue #274).
+    let now = crate::auth::now_utc();
+    let fresh = [
+        (rpc.is_some(), instants.rpc.as_deref()),
+        (sync.is_some(), instants.sync.as_deref()),
+        (consensus.is_some(), instants.consensus.as_deref()),
+    ]
+    .into_iter()
+    .all(|(observed, instant)| {
+        observed && crate::observation_time::is_fresh(instant, now, FRESHNESS_LIMIT_SECONDS)
+    });
     if !fresh {
         return ("unknown", "one or more observations are stale or unknown");
     }
@@ -2143,16 +2166,34 @@ async fn node_diagnostic(
     let sync = sync_diagnostic(state, &node_id).await;
     let consensus = consensus_diagnostic(state, &node_id).await;
     let peers = peer_diagnostic(state, &node_id).await;
-    let (health, health_reason) =
-        derive_health(&lifecycle, rpc.as_ref(), sync.as_ref(), consensus.as_ref());
-    let freshness = derive_freshness(
-        rpc.as_ref()
-            .and_then(|c| c.received_at.as_deref())
-            .into_iter()
-            .chain(sync.as_ref().and_then(|c| c.received_at.as_deref()))
-            .chain(consensus.as_ref().and_then(|c| c.received_at.as_deref()))
-            .chain(peers.as_ref().and_then(|c| c.received_at.as_deref())),
+    // Health and freshness are judged on the same Server-clock observation
+    // instants the Public projection uses, so a replayed Report cannot present
+    // an hours-old observation as current (ADR 0014, issue #274).
+    let mut instants = ComponentObservationInstants::default();
+    let component_instants = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT component_key, COALESCE(observation_at, received_at) FROM component_status WHERE node_id = $1 AND scope = 'node'",
+    )
+    .bind(&node_id)
+    .fetch_all(state.db().pool())
+    .await
+    .unwrap_or_default();
+    for (component_key, instant) in component_instants {
+        match component_key.as_str() {
+            "rpc" => instants.rpc = instant,
+            "sync" => instants.sync = instant,
+            "consensus" => instants.consensus = instant,
+            "peers" => instants.peers = instant,
+            _ => {}
+        }
+    }
+    let (health, health_reason) = derive_health(
+        &lifecycle,
+        rpc.as_ref(),
+        sync.as_ref(),
+        consensus.as_ref(),
+        &instants,
     );
+    let freshness = derive_freshness(instants.iter());
     let history = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<String>, Option<i64>, Option<String>)>(
         "SELECT c.current_block, h.historical_high_watermark, h.resync_state, r.block_number, r.confidence FROM current_node_chain_observations c LEFT JOIN block_history_state h ON h.node_id=c.node_id LEFT JOIN nodes n ON n.node_id=c.node_id LEFT JOIN network_reference_heads r ON r.network_key=n.network_key WHERE c.node_id=$1"
     ).bind(&node_id).fetch_optional(state.db().pool()).await.ok().flatten();
@@ -9449,17 +9490,162 @@ mod tests {
             highest_lock_block: Some(10),
             highest_commit_block: Some(10),
         };
+        let fresh_instants = ComponentObservationInstants {
+            rpc: Some(recent.clone()),
+            sync: Some(recent.clone()),
+            consensus: Some(recent.clone()),
+            peers: None,
+        };
         assert_eq!(
-            derive_health("active", Some(&rpc), Some(&sync), Some(&consensus)),
+            derive_health(
+                "active",
+                Some(&rpc),
+                Some(&sync),
+                Some(&consensus),
+                &fresh_instants
+            ),
+            ("healthy", "RPC, sync, and consensus are current")
+        );
+        let stale_sync_instants = ComponentObservationInstants {
+            rpc: Some(recent.clone()),
+            sync: Some(stale.clone()),
+            consensus: Some(recent.clone()),
+            peers: None,
+        };
+        assert_eq!(
+            derive_health(
+                "active",
+                Some(&rpc),
+                Some(&sync),
+                Some(&consensus),
+                &stale_sync_instants
+            ),
             ("unknown", "one or more observations are stale or unknown")
         );
-        let mut stale_consensus = consensus;
-        stale_consensus.received_at = Some(stale);
+        let stale_consensus = consensus;
+        let stale_consensus_instants = ComponentObservationInstants {
+            rpc: Some(recent.clone()),
+            sync: Some(stale.clone()),
+            consensus: Some(stale),
+            peers: None,
+        };
         assert_eq!(
-            derive_health("active", Some(&rpc), Some(&sync), Some(&stale_consensus)),
+            derive_health(
+                "active",
+                Some(&rpc),
+                Some(&sync),
+                Some(&stale_consensus),
+                &stale_consensus_instants
+            ),
             ("unknown", "one or more observations are stale or unknown")
+        );
+        // The receipt instants stay in the DTOs as Agent-clock display fields;
+        // they no longer decide health.
+        let mut recent_receipts = stale_consensus_instants;
+        recent_receipts.rpc = Some(recent.clone());
+        recent_receipts.sync = Some(recent.clone());
+        recent_receipts.consensus = Some(recent.clone());
+        assert_eq!(
+            derive_health(
+                "active",
+                Some(&rpc),
+                Some(&sync),
+                Some(&stale_consensus),
+                &recent_receipts
+            ),
+            ("healthy", "RPC, sync, and consensus are current")
         );
     }
+    /// A replayed Report must not make the Admin Node view look current: health
+    /// and freshness are judged on the Server-clock observation instants, exactly
+    /// as the Public projection judges them (ADR 0014, issue #274).
+    #[tokio::test]
+    async fn node_diagnostic_judges_freshness_on_the_observation_instant() {
+        let dir = tempdir().unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let auth = crate::auth::AuthConfig::development(
+            crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+            "http://127.0.0.1:8080".to_owned(),
+        );
+        let state = AppState::new(database, None, auth);
+        let now = crate::auth::now_utc();
+        let receipt = crate::auth::format_rfc3339(now);
+        let replayed = crate::auth::format_rfc3339(now - time::Duration::hours(2));
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ($1, 1, $2, $3)")
+            .bind("agent-admin-274")
+            .bind(&receipt)
+            .bind(&receipt)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('platon-mainnet', 'PlatON Mainnet', '0xgenesis', 210425, 210425, 'lat', $1, $1)")
+            .bind(&receipt)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('node-admin-274', 'agent-admin-274', 'platon-mainnet', 'ws://127.0.0.1:1', 'active', 'public', 1, $1, $1)")
+            .bind(&receipt)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        for component_key in ["rpc", "sync", "consensus"] {
+            sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, state_revision, value_revision) VALUES ($1, 'node', $2, $2, $3, 'ok', $4, $4, $5, $4, 1, 1)")
+                .bind("agent-admin-274")
+                .bind("node-admin-274")
+                .bind(component_key)
+                .bind(&replayed)
+                .bind(&receipt)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+
+        // Delivered now, but observed two hours ago: the Admin view is stale and
+        // Unknown while the receipt instants are current.
+        let diagnostic = node_diagnostic(
+            &state,
+            "node-admin-274".to_owned(),
+            "platon-mainnet".to_owned(),
+            None,
+            "active".to_owned(),
+            1,
+            "visible".to_owned(),
+        )
+        .await;
+        assert_eq!(diagnostic.freshness, "stale");
+        assert_eq!(diagnostic.health, "unknown");
+        assert_eq!(
+            diagnostic.health_reason,
+            "one or more observations are stale or unknown"
+        );
+
+        // The same rows with a fresh observation instant are current and Healthy.
+        sqlx::query("UPDATE component_status SET observation_at = $1 WHERE node_id = $2")
+            .bind(&receipt)
+            .bind("node-admin-274")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let diagnostic = node_diagnostic(
+            &state,
+            "node-admin-274".to_owned(),
+            "platon-mainnet".to_owned(),
+            None,
+            "active".to_owned(),
+            1,
+            "visible".to_owned(),
+        )
+        .await;
+        assert_eq!(diagnostic.freshness, "current");
+        assert_eq!(diagnostic.health, "healthy");
+        assert_eq!(
+            diagnostic.health_reason,
+            "RPC, sync, and consensus are current"
+        );
+    }
+
     #[tokio::test]
     async fn host_diagnostics_include_failure_and_freshness_fields() {
         let dir = tempdir().unwrap();

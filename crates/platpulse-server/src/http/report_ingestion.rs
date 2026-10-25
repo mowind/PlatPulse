@@ -919,36 +919,55 @@ async fn update_network_references(
     for network_key in network_keys {
         // The window is judged here on parsed instants: an unparseable evidence
         // instant is never fresh.
-        let fresh_since = crate::auth::parse_rfc3339(now)
-            .map(|instant| instant - time::Duration::seconds(REFERENCE_SOURCE_FRESHNESS_SECONDS));
+        let now_instant = crate::auth::parse_rfc3339(now);
         // A Node whose head was never observed is not a source: its NULL head
         // must not stand in as block 0 (the native SQLite decode once did).
-        let rows = sqlx::query_as::<_, (String, i64, Option<String>, Option<String>)>(
-            "SELECT n.node_id, c.current_block, h.resync_state, COALESCE(sy.observation_at, sy.received_at) FROM nodes n JOIN current_node_chain_observations c ON c.node_id=n.node_id LEFT JOIN block_history_state h ON h.node_id=n.node_id LEFT JOIN component_status sy ON sy.agent_id=n.agent_id AND sy.scope='node' AND sy.scope_key=n.node_id AND sy.component_key='sync' WHERE n.network_key=$1 AND n.lifecycle='active' AND c.current_block IS NOT NULL ORDER BY c.current_block DESC",
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                i64,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            ),
+        >(
+            "SELECT n.node_id, c.current_block, h.resync_state, COALESCE(rpc.observation_at, rpc.received_at), COALESCE(sy.observation_at, sy.received_at), COALESCE(co.observation_at, co.received_at) FROM nodes n JOIN current_node_chain_observations c ON c.node_id=n.node_id LEFT JOIN block_history_state h ON h.node_id=n.node_id LEFT JOIN component_status sy ON sy.agent_id=n.agent_id AND sy.scope='node' AND sy.scope_key=n.node_id AND sy.component_key='sync' LEFT JOIN component_status rpc ON rpc.agent_id=n.agent_id AND rpc.scope='node' AND rpc.scope_key=n.node_id AND rpc.component_key='rpc' LEFT JOIN component_status co ON co.agent_id=n.agent_id AND co.scope='node' AND co.scope_key=n.node_id AND co.component_key='consensus' WHERE n.network_key=$1 AND n.lifecycle='active' AND c.current_block IS NOT NULL ORDER BY c.current_block DESC",
         )
         .bind(network_key)
         .fetch_all(&mut **tx)
         .await?
         .into_iter()
-        .filter(|(_, _, _, evidence_at)| {
-            fresh_since.is_some_and(|since| {
-                evidence_at
-                    .as_deref()
-                    .and_then(crate::auth::parse_rfc3339)
-                    .is_some_and(|at| at >= since)
+        .filter(|(_, _, _, rpc_at, sync_at, consensus_at)| {
+            // A source must be a Node the Public projection would also call
+            // fresh: every one of the three component observation instants
+            // inside the window, in either direction. Judging sync alone let a
+            // Node whose RPC and consensus were observed hours ago hold the
+            // reference head (ADR 0014, issue #274).
+            now_instant.is_some_and(|now| {
+                [rpc_at, sync_at, consensus_at].into_iter().all(|at| {
+                    crate::observation_time::is_fresh(
+                        at.as_deref(),
+                        now,
+                        REFERENCE_SOURCE_FRESHNESS_SECONDS,
+                    )
+                })
             })
         })
         .collect::<Vec<_>>();
         let eligible = rows
             .iter()
-            .filter(|(_, _, state, _)| state.as_deref() != Some("resyncing"))
+            .filter(|(_, _, state, _, _, _)| state.as_deref() != Some("resyncing"))
             .collect::<Vec<_>>();
         let candidates = if eligible.is_empty() {
             rows.iter().collect::<Vec<_>>()
         } else {
             eligible
         };
-        let Some((node_id, head, _, evidence_at)) = candidates.first() else {
+        // The head is a sync fact, so the instant it was observed is the sync
+        // component's observation instant.
+        let Some((node_id, head, _, _, sync_at, _)) = candidates.first() else {
             // No Node was observed recently enough to hold a reference: the row
             // records that the Server looked at its own clock `now` and found
             // none, which is why the reference is Unknown rather than stale.
@@ -960,7 +979,7 @@ async fn update_network_references(
         // The reference head is the head of the winning source at the instant it
         // was observed, not the instant this Report arrived.
         sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence, eligible_source_count, contributing_node_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(network_key) DO UPDATE SET block_number=excluded.block_number, observed_at=excluded.observed_at, confidence=excluded.confidence, eligible_source_count=excluded.eligible_source_count, contributing_node_id=excluded.contributing_node_id")
-            .bind(network_key).bind(*head).bind(evidence_at.as_deref().unwrap_or(now)).bind(confidence).bind(candidates.len() as i64).bind(node_id)
+            .bind(network_key).bind(*head).bind(sync_at.as_deref().unwrap_or(now)).bind(confidence).bind(candidates.len() as i64).bind(node_id)
             .execute(&mut **tx).await?;
     }
     Ok(())
@@ -10033,8 +10052,17 @@ mod tests {
 
         let stored = component_instant(&state, "sync").await.unwrap();
         assert_eq!(stored, server_instant(&observed, 180_000));
-        assert!(
-            (-245..=-235).contains(&seconds_from_now(&stored)),
+        // The correction is judged against the instant the Report itself
+        // stamped, so a full-suite run slow enough to blur wall-clock offsets
+        // still fails only on a real regression.
+        let judged_at = now_utc();
+        let age = |instant: &str| {
+            (crate::auth::parse_rfc3339(instant).expect("the stored instant parses") - judged_at)
+                .whole_seconds()
+        };
+        assert_eq!(
+            age(&observed) - age(&stored),
+            180,
             "the three-minute skew is corrected on the Server clock: {stored}"
         );
 
@@ -10049,6 +10077,88 @@ mod tests {
             node["healthReason"],
             "one or more observations are stale or unknown"
         );
+    }
+
+    /// Acceptance of issue #274: a Node is a source for the Observed Network Head
+    /// only while every component's observation instant is fresh. A Node whose RPC
+    /// observation is two hours old is Stale to the Public projection, so a fresh
+    /// sync observation must not make it hold the head.
+    #[tokio::test]
+    async fn a_mixed_age_node_is_not_a_reference_head_source() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut report = report_observed(time::Duration::ZERO, 0);
+        // Sync and consensus were observed just now; RPC still holds the value of
+        // an observation taken two hours ago.
+        let old_rpc_at = clock_text(now_utc() - time::Duration::hours(2));
+        report["nodes"][0]["chain"]["rpc"]["attempted_at"] = serde_json::json!(old_rpc_at);
+        report["nodes"][0]["chain"]["rpc"]["latest_observed_at"] = serde_json::json!(old_rpc_at);
+        assert_eq!(
+            submit(&state, &agent_id, serde_json::to_vec(&report).unwrap())
+                .await
+                .disposition,
+            ReceiptDisposition::Accepted
+        );
+
+        assert_eq!(
+            component_instant(&state, "rpc").await.as_deref(),
+            Some(old_rpc_at.as_str())
+        );
+        let node = public_home_node(&state, ISSUE_274_NODE).await;
+        assert_eq!(
+            node["freshness"].as_str(),
+            Some(old_rpc_at.as_str()),
+            "freshness is the oldest of the three observation instants: {node}"
+        );
+        assert_eq!(node["health"], "unknown", "{node}");
+        assert!(
+            node["networkReferenceHead"].is_null(),
+            "a partially stale Node is never a source: {node}"
+        );
+        assert_eq!(node["networkReferenceConfidence"], "unknown");
+        let reference: (Option<i64>, String) = sqlx::query_as(
+            "SELECT block_number, confidence FROM network_reference_heads WHERE network_key='platon-mainnet'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(reference, (None, "unknown".to_owned()));
+    }
+
+    /// Acceptance of issue #274: the freshness window is symmetric, so a Node
+    /// whose observation instants lie in the future is not fresh either and must
+    /// not hold the Observed Network Head.
+    #[tokio::test]
+    async fn a_future_stamped_node_is_not_a_reference_head_source() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let report = report_observed(time::Duration::hours(2), 0);
+        let observed = report_instant(&report);
+        assert_eq!(
+            submit(&state, &agent_id, serde_json::to_vec(&report).unwrap())
+                .await
+                .disposition,
+            ReceiptDisposition::Accepted
+        );
+
+        let stored = component_instant(&state, "sync").await.unwrap();
+        assert_eq!(stored, server_instant(&observed, 0));
+        assert!(
+            seconds_from_now(&stored) > 7_000,
+            "the Node claims to be observed two hours from now: {stored}"
+        );
+        let node = public_home_node(&state, ISSUE_274_NODE).await;
+        assert_eq!(node["health"], "unknown", "{node}");
+        assert!(
+            node["networkReferenceHead"].is_null(),
+            "an instant in the future is not a fresh observation: {node}"
+        );
+        assert_eq!(node["networkReferenceConfidence"], "unknown");
+        let reference: (Option<i64>, String) = sqlx::query_as(
+            "SELECT block_number, confidence FROM network_reference_heads WHERE network_key='platon-mainnet'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(reference, (None, "unknown".to_owned()));
     }
 
     /// Acceptance of issue #274: a Clock Unreliable reading is not corrected by.
@@ -10148,5 +10258,32 @@ mod tests {
                 "the bucket {bucket_start} cannot start after its sample {first}"
             );
         }
+
+        // A later snapshot, observed half an hour ago, no longer carries peer-b:
+        // the interval closes at the instant the departure was observed, not at
+        // the instant its Report arrived.
+        let departure_at = clock_text(now_utc() - time::Duration::minutes(30));
+        let departure = replayed_peer_report(
+            ("0195f2a1-0274-4274-8274-000000000003", 3),
+            3,
+            &departure_at,
+            serde_json::json!([peer_current("peer-a", "8.8.8.8", "inbound")]),
+        );
+        assert_eq!(
+            submit(&state, &agent_id, departure).await.disposition,
+            ReceiptDisposition::Accepted
+        );
+        let closed: Option<String> = sqlx::query_scalar(
+            "SELECT closed_at FROM peer_presence_intervals WHERE node_id=$1 AND peer_id='peer-b'",
+        )
+        .bind(ISSUE_274_NODE)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            closed.as_deref(),
+            Some(departure_at.as_str()),
+            "a departure closes the interval at the instant it was observed"
+        );
     }
 }

@@ -42,17 +42,35 @@ pub fn observation_instant(
     fallback: &str,
 ) -> String {
     match (observed, measured_skew(skew_ms)) {
-        (Some(observed), Some(skew)) => {
-            let corrected = observed.as_datetime() - time::Duration::milliseconds(skew);
-            // Every stored instant is second-precision, so a sub-second skew
-            // must not produce a value the rest of the Server cannot compare.
-            let canonical = corrected
-                .replace_nanosecond(0)
-                .expect("zero nanoseconds is a valid component value");
-            crate::auth::format_rfc3339(canonical)
-        }
+        // `observed` comes from the Agent, so the Server cannot assume it sits
+        // comfortably inside the calendar: a Report may legally stamp
+        // 9999-12-31T23:59:59Z, and correcting that by a millisecond overflows
+        // `time` (its `Sub` panics). An instant the Server cannot correct is an
+        // instant it cannot judge, so it falls back like an unmeasured skew.
+        // The arithmetic also drops sub-second precision, because every other
+        // stored instant is second-precision and the rest of the Server compares
+        // them as strings.
+        (Some(observed), Some(skew)) => observed
+            .as_datetime()
+            .checked_sub(time::Duration::milliseconds(skew))
+            .and_then(|corrected| corrected.replace_nanosecond(0).ok())
+            .map(crate::auth::format_rfc3339)
+            .unwrap_or_else(|| fallback.to_owned()),
         _ => fallback.to_owned(),
     }
+}
+
+/// Whether `instant` sits within `window_seconds` of `now`, counting both
+/// directions.
+///
+/// The Public projection, the Admin projection and the Observed Network Head
+/// source filter all ask the same question, and they must read the same answer:
+/// a future instant is as untrustworthy as an old one, so the window is
+/// symmetric (ADR 0014, issue #274).
+pub fn is_fresh(instant: Option<&str>, now: time::OffsetDateTime, window_seconds: i64) -> bool {
+    instant
+        .and_then(crate::auth::parse_rfc3339)
+        .is_some_and(|at| (now - at).whole_seconds().abs() <= window_seconds)
 }
 
 #[cfg(test)]
@@ -123,6 +141,31 @@ mod tests {
             observation_instant(None, None, "2026-08-12T10:00:00Z"),
             "2026-08-12T10:00:00Z"
         );
+    }
+
+    #[test]
+    fn an_instant_the_calendar_cannot_hold_falls_back_to_the_receipt_instant() {
+        // A Report may legally stamp the last representable second; correcting
+        // it by a measured skew must fall back, never panic.
+        assert_eq!(
+            observation_instant(
+                Some(instant("9999-12-31T23:59:59Z")),
+                Some(-1_000),
+                "2026-08-12T10:00:00Z"
+            ),
+            "2026-08-12T10:00:00Z"
+        );
+    }
+
+    #[test]
+    fn freshness_is_a_window_on_both_sides_of_now() {
+        let now = instant("2026-08-12T10:00:00Z").as_datetime();
+        assert!(is_fresh(Some("2026-08-12T09:58:00Z"), now, 120));
+        assert!(is_fresh(Some("2026-08-12T10:02:00Z"), now, 120));
+        assert!(!is_fresh(Some("2026-08-12T09:57:59Z"), now, 120));
+        assert!(!is_fresh(Some("2026-08-12T10:02:01Z"), now, 120));
+        assert!(!is_fresh(None, now, 120));
+        assert!(!is_fresh(Some("2026-08-12T09:58"), now, 120));
     }
 
     #[test]

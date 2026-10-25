@@ -2581,9 +2581,7 @@ struct PublicNodeRow {
 const FRESHNESS_LIMIT_SECONDS: i64 = 120;
 
 fn fresh(timestamp: Option<&str>, now: time::OffsetDateTime) -> bool {
-    timestamp
-        .and_then(crate::auth::parse_rfc3339)
-        .is_some_and(|observed| (now - observed).whole_seconds().abs() <= FRESHNESS_LIMIT_SECONDS)
+    crate::observation_time::is_fresh(timestamp, now, FRESHNESS_LIMIT_SECONDS)
 }
 
 /// Judge a Node's current health.
