@@ -932,6 +932,53 @@ pub(crate) async fn freshness_bound(
     Ok(condition.threshold.map(|t| t as i64).unwrap_or(120).max(1))
 }
 
+/// Why the Node's Current Projection is not current, when it is not.
+///
+/// A lag figure is a statement about the Node as it is now, so it is only as
+/// good as the Node's currency. Public judges a Node by all three of its
+/// component observation instants sitting inside one symmetric window
+/// (ADR 0014, issue #274); a head-lag rule that skipped that judgement could
+/// open an Incident against a Node the Owner's own view calls Stale, and could
+/// call a Node "6,000 blocks behind" while its sync evidence alone was fresh.
+///
+/// `None` means the projection is current enough for a lag figure. A component
+/// with no recorded row at all is not a gate: a component the Agent never
+/// reports is a different fact from a stale one, and the rule's own checks
+/// still decide what its evidence supports.
+async fn not_current_input(
+    executor: &mut sqlx::AnyConnection,
+    node_id: &str,
+    now: OffsetDateTime,
+) -> Result<Option<EvalInput>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT component_key, COALESCE(observation_at, received_at) FROM component_status WHERE node_id = $1 AND component_key IN ('rpc', 'sync', 'consensus')",
+    )
+    .bind(node_id)
+    .fetch_all(&mut *executor)
+    .await?;
+    for (component, instant) in rows {
+        if crate::observation_time::is_fresh(
+            instant.as_deref(),
+            now,
+            crate::observation_time::FRESHNESS_LIMIT_SECONDS,
+        ) {
+            continue;
+        }
+        let age = age_secs(instant.as_deref(), now);
+        let detail = match age {
+            Some(age) if age > 0 => format!("{component} observation is {age}s old"),
+            Some(age) => format!("{component} observation is {}s in the future", -age),
+            None => format!("{component} observation has no instant"),
+        };
+        return Ok(Some(EvalInput::Stale {
+            value: 0.0,
+            age_secs: age.unwrap_or(i64::MAX),
+            detail,
+        }));
+    }
+    Ok(None)
+}
+
 /// Extract the typed evaluation fact for one `(rule, subject)` from the
 /// accepted Current Projection. Every rule maps onto honest
 /// projection facts; missing facts are `Unknown`, never zero/Healthy.
@@ -1040,6 +1087,9 @@ pub async fn extract_input(
             })
         }
         (SubjectKind::Node, "node.block_stalled") => {
+            if let Some(stale) = not_current_input(executor, subject_key, now).await? {
+                return Ok(stale);
+            }
             let row = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>)>(
                 "SELECT h.current_head, n.network_key, COALESCE(h.observation_at, h.updated_at) FROM block_history_state h JOIN nodes n ON n.node_id = h.node_id WHERE h.node_id = $1",
             )
@@ -1093,6 +1143,9 @@ pub async fn extract_input(
             }
         }
         (SubjectKind::Node, "node.sync_lag") => {
+            if let Some(stale) = not_current_input(executor, subject_key, now).await? {
+                return Ok(stale);
+            }
             let row = sqlx::query_as::<_, SyncRow>(
                 "SELECT s.state, c.syncing, c.current_block, c.highest_block, COALESCE(s.observation_at, s.received_at) FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'sync'",
             )
@@ -3294,6 +3347,72 @@ mod tests {
             .unwrap();
         let input = extract(&pool, "node.sync_lag", SubjectKind::Node, "node-a", now).await;
         assert!(input.fires(10.0));
+    }
+
+    #[tokio::test]
+    async fn lag_rules_are_only_as_trustworthy_as_the_nodes_currency() {
+        // Head lag is a comparison against another Node's reference head, so a
+        // Node the Public view already calls Stale has no business producing a
+        // lag figure at all: one stale observation is enough to disqualify it,
+        // and the same window judges both the view and the alert (ADR 0014).
+        let (_dir, pool) = test_pool().await;
+        seed_subject(&pool, "agent-a", "node-a").await;
+        let now = base_time();
+        let now_text = format_rfc3339(now);
+        let two_hours_ago = format_rfc3339(now - time::Duration::hours(2));
+        sqlx::query("INSERT INTO block_history_state (node_id, updated_at, current_head) VALUES ('node-a', $1, 100)")
+            .bind(&now_text)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence) VALUES ('mainnet', 500, $1, 'high')")
+            .bind(&now_text)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO current_node_chain_observations (node_id, syncing, current_block, highest_block, updated_at) VALUES ('node-a', 0, 100, 500, $1)")
+            .bind(&now_text)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, observation_at, received_at, state_revision, value_revision) VALUES ('agent-a', 'node', 'node-a', 'node-a', 'sync', 'ok', $1, $2, $3, $4, 1, 1)")
+            .bind(&now_text).bind(&now_text).bind(&now_text).bind(&now_text)
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Sync and the head are current, RPC is two hours old on the Server
+        // clock while its Report still arrived just now.
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, observation_at, received_at, state_revision, value_revision) VALUES ('agent-a', 'node', 'node-a', 'node-a', 'rpc', 'ok', $1, $2, $3, $4, 1, 1)")
+            .bind(&two_hours_ago).bind(&two_hours_ago).bind(&two_hours_ago).bind(&now_text)
+            .execute(&pool)
+            .await
+            .unwrap();
+        for rule in ["node.block_stalled", "node.sync_lag"] {
+            let input = extract(&pool, rule, SubjectKind::Node, "node-a", now).await;
+            assert_eq!(
+                input.kind_str(),
+                "stale",
+                "{rule} must not report a lag for a Node whose RPC observation is stale"
+            );
+        }
+
+        // The same fixture with every observation current is a known lag again.
+        sqlx::query("UPDATE component_status SET observed_at=$1, observation_at=$1 WHERE node_id='node-a' AND component_key='rpc'")
+            .bind(&now_text)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let input = extract(
+            &pool,
+            "node.block_stalled",
+            SubjectKind::Node,
+            "node-a",
+            now,
+        )
+        .await;
+        assert_eq!(input.value(), Some(400.0));
+        let input = extract(&pool, "node.sync_lag", SubjectKind::Node, "node-a", now).await;
+        assert_eq!(input.value(), Some(400.0));
     }
 
     #[tokio::test]

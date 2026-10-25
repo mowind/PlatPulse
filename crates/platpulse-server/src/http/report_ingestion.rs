@@ -199,6 +199,16 @@ impl<'a> ReportStamp<'a> {
     fn observed_at(&self, observed: Option<Rfc3339>) -> String {
         crate::observation_time::observation_instant(observed, self.skew_ms, self.received)
     }
+
+    /// The Server-clock instant to stamp a history fact derived from `observed`.
+    ///
+    /// The same correction as [`Self::observed_at`], except that an
+    /// untrustworthy skew leaves the Agent's own instant in place: a history row
+    /// records when the Node did something, so it can never borrow the instant
+    /// the Server happened to receive the Report.
+    fn history_at(&self, observed: Rfc3339) -> Rfc3339 {
+        crate::observation_time::history_instant(observed, self.skew_ms)
+    }
 }
 
 /// A polled Chain Head can trail the subscribed Block History by the blocks
@@ -899,10 +909,6 @@ async fn close_coverage_height(
     Ok(())
 }
 
-/// How recently a Node's chain observation must have happened for the Node to
-/// count as a source of a Network Reference Head.
-const REFERENCE_SOURCE_FRESHNESS_SECONDS: i64 = 120;
-
 /// Recompute the Network Reference Head of every Network this Report touched.
 ///
 /// A source must have been *observed* within the window on the Server clock, not
@@ -950,7 +956,7 @@ async fn update_network_references(
                     crate::observation_time::is_fresh(
                         at.as_deref(),
                         now,
-                        REFERENCE_SOURCE_FRESHNESS_SECONDS,
+                        crate::observation_time::FRESHNESS_LIMIT_SECONDS,
                     )
                 })
             })
@@ -1234,9 +1240,16 @@ async fn block_network_identity_rejections<I: ReportInventory>(
     Ok(rejections)
 }
 
+/// Record the identity evidence one Block Summary adds to its Node's window,
+/// and the divergence observation a contradicted stamp produces.
+///
+/// `observed_at` is the skew-corrected observation instant of the sample
+/// ([ReportStamp::history_at], ADR 0014), never the receipt instant: this history
+/// remembers when the Node's chain said something, not when its Report arrived.
 async fn observe_block_identity(
     tx: &mut Transaction<'_, Any>,
     sample: &platpulse_core::block::BlockSummary,
+    observed_at: Rfc3339,
     received_at: &str,
 ) -> Result<bool, sqlx::Error> {
     const MAX_WINDOW_HEIGHTS: i64 = 2_048;
@@ -1265,7 +1278,7 @@ async fn observe_block_identity(
                 .bind(&node_id)
                 .bind(sample.block_number as i64)
                 .bind(&observed_hash)
-                .bind(sample.observed_at.to_string())
+                .bind(observed_at.to_string())
                 .bind(&node_id)
                 .bind(sample.block_number as i64)
                 .execute(&mut **tx)
@@ -1273,7 +1286,7 @@ async fn observe_block_identity(
             return Ok(true);
         }
         sqlx::query("UPDATE block_identity_window SET observed_at=$1, retained_until=$2 WHERE node_id=$3 AND height=$4")
-            .bind(sample.observed_at.to_string())
+            .bind(observed_at.to_string())
             .bind(retention_until)
             .bind(&node_id)
             .bind(sample.block_number as i64)
@@ -1286,7 +1299,7 @@ async fn observe_block_identity(
         .bind(sample.block_number as i64)
         .bind(&observed_hash)
         .bind(retention_until)
-        .bind(sample.observed_at.to_string())
+        .bind(observed_at.to_string())
         .execute(&mut **tx)
         .await?;
     sqlx::query("DELETE FROM block_identity_window WHERE node_id=$1 AND height NOT IN (SELECT height FROM block_identity_window WHERE node_id=$2 ORDER BY height DESC LIMIT $3)")
@@ -1818,7 +1831,10 @@ async fn save_current<I: ReportInventory>(
                 crate::state_history::COMPONENT_SYNC,
             )
             .await?,
-            crate::state_history::component_instant(&node.chain.sync, report.generated_at),
+            stamp.history_at(crate::state_history::component_instant(
+                &node.chain.sync,
+                report.generated_at,
+            )),
             received_instant(received_at, report.generated_at),
         );
         crate::state_history::record_state(
@@ -1842,7 +1858,10 @@ async fn save_current<I: ReportInventory>(
                 crate::state_history::COMPONENT_CONSENSUS,
             )
             .await?,
-            crate::state_history::component_instant(&node.chain.consensus, report.generated_at),
+            stamp.history_at(crate::state_history::component_instant(
+                &node.chain.consensus,
+                report.generated_at,
+            )),
             received_instant(received_at, report.generated_at),
         );
         crate::state_history::record_state(
@@ -2277,7 +2296,7 @@ async fn save_current<I: ReportInventory>(
         let inserted = sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_key_fingerprint, seal_signer_match, node_key_fingerprint, node_key_valid_from, node_key_valid_until, node_key_history_complete, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, accepted_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26) ON CONFLICT DO NOTHING")
             .bind(&node_id).bind(sample.block_number as i64).bind(sample.block_hash.to_string()).bind(sample.parent_hash.to_string())
             .bind(sample.network_identity.genesis_hash.to_string()).bind(sample.network_identity.chain_id as i64).bind(sample.network_identity.p2p_network_id as i64).bind(sample.network_identity.address_hrp.as_deref().unwrap_or(""))
-            .bind(sample.block_timestamp_ms as i64).bind(sample.observed_at.to_string()).bind(sample.transaction_count as i64).bind(sample.block_interval_ms.map(|v| v as i64)).bind(match sample.source { platpulse_core::block::BlockSource::Subscription => "subscription", platpulse_core::block::BlockSource::GapBackfill => "gap_backfill" })
+            .bind(sample.block_timestamp_ms as i64).bind(stamp.history_at(sample.observed_at).to_string()).bind(sample.transaction_count as i64).bind(sample.block_interval_ms.map(|v| v as i64)).bind(match sample.source { platpulse_core::block::BlockSource::Subscription => "subscription", platpulse_core::block::BlockSource::GapBackfill => "gap_backfill" })
             .bind(sample.attribution.coinbase.to_string()).bind(sample.attribution.seal_signer_key_fingerprint.as_ref().map(ToString::to_string)).bind(signer).bind(sample.attribution.node_key.as_ref().map(|key| key.fingerprint.to_string())).bind(sample.attribution.node_key.as_ref().and_then(|key| key.valid_from.map(|value| value.to_string()))).bind(sample.attribution.node_key.as_ref().and_then(|key| key.valid_until.map(|value| value.to_string()))).bind(sample.attribution.node_key.as_ref().is_some_and(|key| key.history_complete) as i64).bind(sample.attribution.seal_recovery_rule.as_deref()).bind(sample.attribution.seal_evidence.as_deref()).bind(proposer.0).bind(proposer.1).bind(&sample.attribution.attribution_reason).bind(received_at)
             .execute(&mut **tx).await?;
         if inserted.rows_affected() == 0 {
@@ -2290,7 +2309,7 @@ async fn save_current<I: ReportInventory>(
         }
 
         sqlx::query("INSERT INTO observed_network_heads (node_id, block_number, block_hash, observed_at, confidence, eligible_sources) VALUES ($1, $2, $3, $4, 'unknown', '[\\\"subscription\\\"]') ON CONFLICT(node_id) DO UPDATE SET block_number=excluded.block_number, block_hash=excluded.block_hash, observed_at=excluded.observed_at, confidence=excluded.confidence, eligible_sources=excluded.eligible_sources")
-            .bind(&node_id).bind(sample.block_number as i64).bind(sample.block_hash.to_string()).bind(sample.observed_at.to_string()).execute(&mut **tx).await?;
+            .bind(&node_id).bind(sample.block_number as i64).bind(sample.block_hash.to_string()).bind(stamp.history_at(sample.observed_at).to_string()).execute(&mut **tx).await?;
         // last_accepted_summary_at is the durable proof that this Node's
         // history was accepted again (ADR 0011 decision 4). The Admin refusal
         // diagnosis compares its newest Server-authored gap against it, so the
@@ -2304,7 +2323,7 @@ async fn save_current<I: ReportInventory>(
         // The block tiers (issue #248) advance exactly where the cumulative
         // counters do: only for a Block Summary this transaction has just
         // inserted, so Block history dedup decides for both.
-        let observed_at = sample.observed_at.to_string();
+        let observed_at = stamp.history_at(sample.observed_at).to_string();
         crate::block_aggregates::record_accepted_block(
             tx,
             crate::block_aggregates::AcceptedBlock {
@@ -3369,7 +3388,8 @@ async fn ingest_report<I: ReportInventory>(
         if !candidate {
             continue;
         }
-        match observe_block_identity(&mut tx, sample, &now_text).await {
+        let block_observed_at = stamp.history_at(sample.observed_at);
+        match observe_block_identity(&mut tx, sample, block_observed_at, &now_text).await {
             Ok(true) => {
                 divergence_samples.insert((sample.node_id, sample.block_number));
             }
@@ -7340,7 +7360,7 @@ mod tests {
         let second = make_sample(hash_b);
         let mut tx = state.db().pool().begin().await.unwrap();
         assert!(
-            !observe_block_identity(&mut tx, &first, "2026-08-12T09:00:00Z")
+            !observe_block_identity(&mut tx, &first, first.observed_at, "2026-08-12T09:00:00Z")
                 .await
                 .unwrap()
         );
@@ -7348,12 +7368,12 @@ mod tests {
             .bind(node_id.to_string()).bind(42_i64).bind(hash_a.to_string()).bind(first.parent_hash.to_string()).bind(identity.genesis_hash.to_string()).bind(210425_i64).bind(210425_i64).bind("lat").bind(1000_i64).bind(first.observed_at.to_string()).bind(3_i64).bind(first.attribution.coinbase.to_string()).bind("2026-08-12T09:00:00Z").execute(&mut *tx).await.unwrap();
         sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, updated_at) VALUES ($1, 42, 1, 3, 0, $2)").bind(node_id.to_string()).bind("2026-08-12T09:00:00Z").execute(&mut *tx).await.unwrap();
         assert!(
-            observe_block_identity(&mut tx, &second, "2026-08-12T09:01:00Z")
+            observe_block_identity(&mut tx, &second, second.observed_at, "2026-08-12T09:01:00Z")
                 .await
                 .unwrap()
         );
         assert!(
-            observe_block_identity(&mut tx, &second, "2026-08-12T09:01:00Z")
+            observe_block_identity(&mut tx, &second, second.observed_at, "2026-08-12T09:01:00Z")
                 .await
                 .unwrap()
         );

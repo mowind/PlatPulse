@@ -2112,7 +2112,7 @@ fn window_point(
     }
     // A bucket point's cadence is its own width (`bucket_range_point`).
     let grain_seconds = point.cadence_seconds;
-    let end = crate::auth::parse_rfc3339(&point.instant)? + time::Duration::seconds(grain_seconds);
+    let end = crate::observation_time::shift_instant(&point.instant, grain_seconds)?;
     Some(PublicMetricPoint {
         sampled_at: point.instant.clone(),
         value: point.max_value,
@@ -2578,10 +2578,12 @@ struct PublicNodeRow {
     network_reference_confidence: Option<String>,
 }
 
-const FRESHNESS_LIMIT_SECONDS: i64 = 120;
-
 fn fresh(timestamp: Option<&str>, now: time::OffsetDateTime) -> bool {
-    crate::observation_time::is_fresh(timestamp, now, FRESHNESS_LIMIT_SECONDS)
+    crate::observation_time::is_fresh(
+        timestamp,
+        now,
+        crate::observation_time::FRESHNESS_LIMIT_SECONDS,
+    )
 }
 
 /// Judge a Node's current health.
@@ -2671,15 +2673,10 @@ fn public_peer_insight(row: &PublicNodeRow) -> PublicPeerInsight {
         "unknown"
     };
     let stale_since = if freshness == "stale" {
-        row.peer_value_observation_at
-            .as_deref()
-            .and_then(|timestamp| {
-                crate::auth::parse_rfc3339(timestamp).map(|observed| {
-                    crate::auth::format_rfc3339(
-                        observed + time::Duration::seconds(FRESHNESS_LIMIT_SECONDS),
-                    )
-                })
-            })
+        crate::observation_time::stale_since(
+            row.peer_value_observation_at.as_deref(),
+            crate::observation_time::FRESHNESS_LIMIT_SECONDS,
+        )
     } else {
         None
     };
@@ -2713,15 +2710,10 @@ fn public_consensus_insight(row: &PublicNodeRow) -> PublicConsensusInsight {
         "unknown"
     };
     let stale_since = if freshness == "stale" {
-        row.consensus_value_observation_at
-            .as_deref()
-            .and_then(|timestamp| {
-                crate::auth::parse_rfc3339(timestamp).map(|observed| {
-                    crate::auth::format_rfc3339(
-                        observed + time::Duration::seconds(FRESHNESS_LIMIT_SECONDS),
-                    )
-                })
-            })
+        crate::observation_time::stale_since(
+            row.consensus_value_observation_at.as_deref(),
+            crate::observation_time::FRESHNESS_LIMIT_SECONDS,
+        )
     } else {
         None
     };
@@ -6775,6 +6767,38 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_obsolete_observation_renders_stale_without_a_boundary() {
+        // A Report may legally stamp the far end of the calendar, so a judgement
+        // of its freshness must answer Stale without doing arithmetic that the
+        // calendar cannot hold: the reading states Staleness and no boundary
+        // instead of failing the request (AGENTS.md: the Server is the trust
+        // boundary).
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, observed_at, received_at, value_received_at, value_observation_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-public', 'node-public', 'peers', 'ok', $1, $2, $3, $4, 1, 1)")
+            .bind("9999-12-31T23:59:59Z")
+            .bind(&now)
+            .bind(&now)
+            .bind("9999-12-31T23:59:59Z")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let response = public_node_detail(
+            State(state.clone()),
+            Path("node-public".to_owned()),
+            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["peers"]["freshness"], "stale");
+        assert!(value["peers"]["staleSince"].is_null());
     }
 
     #[tokio::test]

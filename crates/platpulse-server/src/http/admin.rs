@@ -1599,7 +1599,6 @@ pub struct ComponentDiagnostic {
     pub value_revision: i64,
 }
 
-const FRESHNESS_LIMIT_SECONDS: i64 = 120;
 const FIRST_OBSERVATION_GRACE_SECONDS: i64 = 120;
 
 fn first_observation_in_grace(first_seen_at: &str, diagnostic: &NodeDiagnostic) -> bool {
@@ -1678,7 +1677,12 @@ fn derive_health(
     ]
     .into_iter()
     .all(|(observed, instant)| {
-        observed && crate::observation_time::is_fresh(instant, now, FRESHNESS_LIMIT_SECONDS)
+        observed
+            && crate::observation_time::is_fresh(
+                instant,
+                now,
+                crate::observation_time::FRESHNESS_LIMIT_SECONDS,
+            )
     });
     if !fresh {
         return ("unknown", "one or more observations are stale or unknown");
@@ -1704,8 +1708,11 @@ fn derive_freshness<'a>(observed_at: impl Iterator<Item = &'a str>) -> &'static 
     match latest {
         None => "unknown",
         Some(value)
-            if (crate::auth::now_utc() - value).whole_seconds().abs()
-                <= FRESHNESS_LIMIT_SECONDS =>
+            if crate::observation_time::is_fresh_at(
+                value,
+                crate::auth::now_utc(),
+                crate::observation_time::FRESHNESS_LIMIT_SECONDS,
+            ) =>
         {
             "current"
         }
