@@ -3871,10 +3871,22 @@ mod tests {
             // themselves inapplicable instead of inventing a warning.
             assert!(statuses.contains("not_applicable"));
             assert!(statuses.contains("not_configured")); // no notification channels
-            assert!(
-                !statuses.contains("skipped"),
-                "a skipped backup check is a SQLite-only claim: {body}"
-            );
+            // A skipped check is legitimate on both backends (the Agent Spool
+            // backlog check has nothing to judge until an Agent reports), so
+            // the backend distinction is asserted on the Backup checks that
+            // the PostgreSQL operator owns.
+            for check in checks {
+                let check_id = check["checkId"].as_str().unwrap();
+                if matches!(
+                    check_id,
+                    "backup_storage" | "latest_backup" | "backup_age" | "backup_residue"
+                ) {
+                    assert_eq!(
+                        check["status"], "not_applicable",
+                        "a {check_id} check must defer to the PostgreSQL operator: {body}"
+                    );
+                }
+            }
         } else {
             assert!(statuses.contains("warning")); // backup dir missing at this point
             assert!(statuses.contains("not_configured")); // no notification channels

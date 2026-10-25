@@ -583,6 +583,10 @@ pub async fn load_notification_request(
 }
 
 /// Insert one request row inside the caller's transaction.
+///
+/// `Ok(false)` means a concurrent transaction already recorded the same
+/// request id: the unique key, not the caller's earlier read, is the arbiter
+/// of a replay, so the caller rolls back and answers with the recorded result.
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_notification_request(
     executor: &mut AnyConnection,
@@ -594,9 +598,9 @@ pub async fn insert_notification_request(
     audit_event_id: i64,
     now: OffsetDateTime,
     retention_seconds: i64,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO notification_requests (request_id, command_kind, intent_fingerprint, event_id, delivery_id, audit_event_id, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+) -> Result<bool, sqlx::Error> {
+    let inserted = sqlx::query(
+        "INSERT INTO notification_requests (request_id, command_kind, intent_fingerprint, event_id, delivery_id, audit_event_id, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (request_id) DO NOTHING",
     )
     .bind(request_id)
     .bind(command_kind)
@@ -608,7 +612,7 @@ pub async fn insert_notification_request(
     .bind(format_rfc3339(now + Duration::from_secs(retention_seconds.max(0) as u64)))
     .execute(&mut *executor)
     .await?;
-    Ok(())
+    Ok(inserted.rows_affected() > 0)
 }
 
 /// The most recent accepted test command time (the durable cooldown clock).
@@ -976,6 +980,43 @@ pub struct TestSendOutcome {
     pub deduplicated: bool,
 }
 
+/// Answer a test command whose request id a concurrent transaction recorded
+/// after this call's own read: the same request-replay result a sequential
+/// duplicate receives, with no second Event, Delivery, or Audit row.
+async fn replay_recorded_test_request(
+    state: &crate::http::AppState,
+    request_id: &str,
+    fingerprint: &str,
+    now: OffsetDateTime,
+) -> Result<TestSendOutcome, TestSendError> {
+    let mut tx = state
+        .db()
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| TestSendError::Unavailable)?;
+    let existing = load_notification_request(&mut tx, request_id, now)
+        .await
+        .map_err(|_| TestSendError::Unavailable)?
+        .ok_or(TestSendError::Unavailable)?;
+    if existing.intent_fingerprint != fingerprint {
+        let _ = tx.rollback().await;
+        return Err(TestSendError::RequestConflict);
+    }
+    let delivery = load_delivery(&mut tx, &existing.delivery_id)
+        .await
+        .map_err(|_| TestSendError::Unavailable)?
+        .ok_or(TestSendError::Unavailable)?;
+    let event_id = existing.event_id.ok_or(TestSendError::Unavailable)?;
+    tx.commit().await.map_err(|_| TestSendError::Unavailable)?;
+    Ok(TestSendOutcome {
+        event_id,
+        delivery,
+        audit_event_id: existing.audit_event_id,
+        deduplicated: true,
+    })
+}
+
 /// Synchronous send path used by the Owner test action. The test Event,
 /// Delivery, Audit row, and request-ledger row are committed together BEFORE
 /// any external handoff, so a lost response or restart reconciles to the same
@@ -1013,26 +1054,13 @@ pub async fn send_test_delivery(
         .await
         .map_err(|_| TestSendError::Unavailable)?;
     // Same request id: same Server command result, or an explicit conflict.
-    if let Some(existing) = load_notification_request(&mut tx, request_id, now)
+    if load_notification_request(&mut tx, request_id, now)
         .await
         .map_err(|_| TestSendError::Unavailable)?
+        .is_some()
     {
-        if existing.intent_fingerprint != fingerprint {
-            let _ = tx.rollback().await;
-            return Err(TestSendError::RequestConflict);
-        }
-        let delivery = load_delivery(&mut tx, &existing.delivery_id)
-            .await
-            .map_err(|_| TestSendError::Unavailable)?
-            .ok_or(TestSendError::Unavailable)?;
-        let event_id = existing.event_id.ok_or(TestSendError::Unavailable)?;
-        tx.commit().await.map_err(|_| TestSendError::Unavailable)?;
-        return Ok(TestSendOutcome {
-            event_id,
-            delivery,
-            audit_event_id: existing.audit_event_id,
-            deduplicated: true,
-        });
+        let _ = tx.rollback().await;
+        return replay_recorded_test_request(state, request_id, &fingerprint, now).await;
     }
     let last_test = last_test_request_created_at(&mut tx)
         .await
@@ -1077,7 +1105,7 @@ pub async fn send_test_delivery(
             return Err(TestSendError::Unavailable);
         }
     };
-    insert_notification_request(
+    match insert_notification_request(
         &mut tx,
         request_id,
         "test",
@@ -1089,7 +1117,17 @@ pub async fn send_test_delivery(
         i64::from(channels.dedup_retention_seconds),
     )
     .await
-    .map_err(|_| TestSendError::Unavailable)?;
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = tx.rollback().await;
+            return replay_recorded_test_request(state, request_id, &fingerprint, now).await;
+        }
+        Err(_) => {
+            let _ = tx.rollback().await;
+            return Err(TestSendError::Unavailable);
+        }
+    }
     tx.commit().await.map_err(|_| TestSendError::Unavailable)?;
 
     // Claim and send synchronously. If the worker already claimed the

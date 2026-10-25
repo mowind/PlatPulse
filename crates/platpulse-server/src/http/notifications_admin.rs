@@ -211,6 +211,41 @@ async fn resolve_request_replay(
     }
 }
 
+/// The recorded answer to a Retry request id, when a transaction recorded it:
+/// the same request-replay result a sequential duplicate receives, with no
+/// second re-arm, Audit row, or ledger entry. `None` means no transaction has
+/// recorded this request id yet, so the caller keeps whatever answer it was
+/// about to give.
+async fn recorded_retry_replay(
+    state: &AppState,
+    request_id: &str,
+    fingerprint: &str,
+    now: OffsetDateTime,
+) -> Option<Response> {
+    let mut tx = match state.db().pool().begin().await {
+        Ok(tx) => tx,
+        Err(_) => return None,
+    };
+    let replay = match resolve_request_replay(&mut tx, request_id, fingerprint, now).await {
+        Err(RequestReplayError::Conflict) => Some(request_id_conflict(request_id)),
+        Err(RequestReplayError::Unavailable) | Ok(None) => None,
+        Ok(Some(existing)) => match load_delivery(&mut tx, &existing.delivery_id).await {
+            Ok(Some(delivery)) => Some(
+                Json(DeliveryRetryResponse {
+                    delivery,
+                    audit_event_id: existing.audit_event_id,
+                    request_id: request_id.to_owned(),
+                    deduplicated: true,
+                })
+                .into_response(),
+            ),
+            _ => None,
+        },
+    };
+    let _ = tx.rollback().await;
+    replay
+}
+
 /// A Server persistence failure during a mutation: the command did not take
 /// effect and the Owner may retry it with the same request id.
 fn unavailable_error(request_id: &str) -> Response {
@@ -637,22 +672,11 @@ pub(crate) async fn retry_delivery(
             let _ = tx.rollback().await;
             return unavailable_error(&request_id.0);
         }
-        Ok(Some(existing)) => {
-            let delivery = match load_delivery(&mut tx, &existing.delivery_id).await {
-                Ok(Some(delivery)) => delivery,
-                _ => {
-                    let _ = tx.rollback().await;
-                    return unavailable_error(&request_id.0);
-                }
-            };
+        Ok(Some(_)) => {
             let _ = tx.rollback().await;
-            return Json(DeliveryRetryResponse {
-                delivery,
-                audit_event_id: existing.audit_event_id,
-                request_id: payload.request_id,
-                deduplicated: true,
-            })
-            .into_response();
+            return recorded_retry_replay(&state, &payload.request_id, &fingerprint, now)
+                .await
+                .unwrap_or_else(|| unavailable_error(&request_id.0));
         }
         Ok(None) => {}
     }
@@ -669,6 +693,11 @@ pub(crate) async fn retry_delivery(
         }
         Err(RetryError::AlreadyQueued) => {
             let _ = tx.rollback().await;
+            if let Some(response) =
+                recorded_retry_replay(&state, &payload.request_id, &fingerprint, now).await
+            {
+                return response;
+            }
             return (
                 StatusCode::CONFLICT,
                 Json(crate::http::ApiErrorBody::with_fields(
@@ -682,6 +711,11 @@ pub(crate) async fn retry_delivery(
         }
         Err(RetryError::NotRetryable { state: _ }) => {
             let _ = tx.rollback().await;
+            if let Some(response) =
+                recorded_retry_replay(&state, &payload.request_id, &fingerprint, now).await
+            {
+                return response;
+            }
             return (
                 StatusCode::CONFLICT,
                 Json(crate::http::ApiErrorBody::with_fields(
@@ -714,7 +748,7 @@ pub(crate) async fn retry_delivery(
             return unavailable_error(&request_id.0);
         }
     };
-    if insert_notification_request(
+    match insert_notification_request(
         &mut tx,
         &payload.request_id,
         "retry",
@@ -726,10 +760,18 @@ pub(crate) async fn retry_delivery(
         i64::from(state.channels().dedup_retention_seconds),
     )
     .await
-    .is_err()
     {
-        let _ = tx.rollback().await;
-        return unavailable_error(&request_id.0);
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = tx.rollback().await;
+            return recorded_retry_replay(&state, &payload.request_id, &fingerprint, now)
+                .await
+                .unwrap_or_else(|| unavailable_error(&request_id.0));
+        }
+        Err(_) => {
+            let _ = tx.rollback().await;
+            return unavailable_error(&request_id.0);
+        }
     }
     if tx.commit().await.is_err() {
         return unavailable_error(&request_id.0);

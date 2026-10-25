@@ -3836,6 +3836,33 @@ async fn ingest_report<I: ReportInventory>(
             return receipt_response(receipt);
         }
         Err(insert_failure) => {
+            // PostgreSQL admits two concurrent Reports of one Boot into this
+            // insert, so the unique key (agent_id, agent_epoch, boot_id,
+            // report_sequence) is the last sequence barrier the earlier read
+            // cannot be. A sequence another Report already holds is the same
+            // refusal a sequential duplicate receives, not a storage failure.
+            // The failed statement aborted this transaction, so the security
+            // event is recorded on a fresh one.
+            if matches!(
+                insert_failure,
+                sqlx::Error::Database(ref database) if database.is_unique_violation()
+            ) {
+                let _ = tx.rollback().await;
+                if let Ok(mut retry_tx) = state.db().pool().begin().await {
+                    if record_security_event(&mut retry_tx, &auth.agent_id)
+                        .await
+                        .is_ok()
+                    {
+                        let _ = retry_tx.commit().await;
+                    }
+                }
+                return error(
+                    &request_id.0,
+                    StatusCode::CONFLICT,
+                    "conflicting_boot",
+                    "Boot sequence conflicts with a stored report",
+                );
+            }
             state.note_database_error(&insert_failure);
             return storage_error(&request_id.0, "store report receipt", &insert_failure);
         }
