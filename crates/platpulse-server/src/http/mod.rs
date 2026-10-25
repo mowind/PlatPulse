@@ -15,6 +15,7 @@ pub(crate) mod admin;
 pub(crate) mod agent;
 pub(crate) mod alerts_admin;
 pub(crate) mod health;
+pub(crate) mod ingest_fence;
 pub(crate) mod notifications_admin;
 pub(crate) mod operations_admin;
 pub(crate) mod public;
@@ -50,6 +51,7 @@ use crate::database::ServerDatabase;
 use crate::enrollment::{
     ENROLL_MAX_ATTEMPTS, ENROLL_RATE_LIMIT_WINDOW, authenticate_agent_credential,
 };
+use crate::http::ingest_fence::AgentIngestFence;
 use crate::http::realtime::RealtimeHub;
 
 pub(crate) const PUBLIC_REALTIME_CURSOR_HEADER: HeaderName =
@@ -485,6 +487,9 @@ pub struct AppState {
     pub(crate) admin_realtime: RealtimeHub,
     metrics: crate::metrics::MetricsRegistry,
     capacity: Arc<crate::capacity::CapacityProtection>,
+    /// Serializes Report acceptance per Agent (ADR 0007, ADR 0013); see
+    /// `http::ingest_fence`.
+    ingest_fence: Arc<AgentIngestFence>,
 }
 
 impl AppState {
@@ -651,6 +656,7 @@ impl AppState {
             admin_realtime: RealtimeHub::default(),
             metrics: crate::metrics::MetricsRegistry::new(),
             capacity,
+            ingest_fence: Arc::new(AgentIngestFence::new()),
         }
     }
 
@@ -665,6 +671,11 @@ impl AppState {
     /// The resolved capacity protection policy and its current state.
     pub fn capacity(&self) -> &crate::capacity::CapacityProtection {
         &self.capacity
+    }
+
+    /// The per-Agent Report acceptance fence (see `http::ingest_fence`).
+    pub(crate) fn ingest_fence(&self) -> &AgentIngestFence {
+        &self.ingest_fence
     }
 
     pub(crate) fn begin_shutdown(&self) {

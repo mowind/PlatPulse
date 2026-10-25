@@ -56,13 +56,9 @@ pub fn observation_instant(
         // 9999-12-31T23:59:59Z, and correcting that by a millisecond overflows
         // `time` (its `Sub` panics). An instant the Server cannot correct is an
         // instant it cannot judge, so it falls back like an unmeasured skew.
-        // The arithmetic also drops sub-second precision, because every other
-        // stored instant is second-precision and the rest of the Server compares
-        // them as strings.
-        (Some(observed), Some(skew)) => observed
-            .as_datetime()
-            .checked_sub(time::Duration::milliseconds(skew))
-            .and_then(|corrected| corrected.replace_nanosecond(0).ok())
+        // The arithmetic also rounds to the second precision every stored
+        // instant uses, because the rest of the Server compares them as strings.
+        (Some(observed), Some(skew)) => corrected_instant(observed, skew)
             .map(crate::auth::format_rfc3339)
             .unwrap_or_else(|| fallback.to_owned()),
         _ => fallback.to_owned(),
@@ -80,14 +76,38 @@ pub fn observation_instant(
 /// every Peer presence interval already carries (ADR 0014).
 pub fn history_instant(observed: Rfc3339, skew_ms: Option<i64>) -> Rfc3339 {
     match measured_skew(skew_ms) {
-        Some(skew) => observed
-            .as_datetime()
-            .checked_sub(time::Duration::milliseconds(skew))
-            .and_then(|corrected| corrected.replace_nanosecond(0).ok())
+        Some(skew) => corrected_instant(observed, skew)
             .and_then(|corrected| crate::auth::format_rfc3339(corrected).parse().ok())
             .unwrap_or(observed),
         None => observed,
     }
+}
+
+/// `observed` on the Server clock, at the second precision every stored instant
+/// uses. `None` when the calendar cannot hold the corrected instant.
+///
+/// The correction is **rounded** to the nearest second, not truncated. A stored
+/// instant has second precision, so a correction smaller than a second cannot be
+/// represented: truncating a 3 ms skew would turn `…T12:00:00Z` into
+/// `…T11:59:59Z`, a whole second of error for a correction a thousand times
+/// smaller, and would move in either direction depending on where the Agent's
+/// own instant happens to fall inside its second.
+///
+/// Rounding also keeps a metric sample's identity stable. A sample's
+/// observation instant is its identity — the raw row's key, the series ledger's
+/// high-water mark and the aggregate buckets all key on it — while the skew is
+/// re-measured in every Report, and the Agent carries a last-good observation
+/// into later Reports. A sub-second difference between two readings must
+/// therefore leave the identity alone; with truncation, a carry could land on
+/// the neighbouring second and be counted as a second observation (#213).
+fn corrected_instant(observed: Rfc3339, skew_ms: i64) -> Option<time::OffsetDateTime> {
+    let corrected = observed
+        .as_datetime()
+        .checked_sub(time::Duration::milliseconds(skew_ms))?;
+    let rounded = corrected
+        .checked_add(time::Duration::milliseconds(500))
+        .unwrap_or(corrected);
+    rounded.replace_nanosecond(0).ok()
 }
 
 /// Whether `instant` sits within `window_seconds` of `now`, counting both
@@ -166,13 +186,49 @@ mod tests {
     }
 
     #[test]
-    fn a_sub_second_skew_never_produces_a_sub_second_instant() {
-        let corrected = observation_instant(
-            Some(instant("2026-08-12T09:00:00Z")),
-            Some(1_500),
-            "2026-08-12T10:00:00Z",
+    fn a_sub_second_skew_rounds_to_the_nearest_second_instead_of_shifting_one() {
+        // A stored instant has second precision, so a correction below half a
+        // second cannot be represented and must leave the instant where it is.
+        // Truncating it instead would move a sample a whole second back, and a
+        // last-good observation carried into a Report that re-measured its skew
+        // would then land on a different instant — a different identity, which
+        // the series ledger counts as a second observation (#213).
+        assert_eq!(
+            observation_instant(
+                Some(instant("2026-08-12T09:00:00Z")),
+                Some(320),
+                "2026-08-12T10:00:00Z",
+            ),
+            "2026-08-12T09:00:00Z"
         );
-        assert_eq!(corrected, "2026-08-12T08:59:58Z");
+        assert_eq!(
+            history_instant(instant("2026-08-12T09:00:00Z"), Some(-320)).to_string(),
+            "2026-08-12T09:00:00Z"
+        );
+        // Past the half second the correction is real, and it rounds away from
+        // the observation rather than toward it.
+        assert_eq!(
+            observation_instant(
+                Some(instant("2026-08-12T09:00:00Z")),
+                Some(1_500),
+                "2026-08-12T10:00:00Z",
+            ),
+            "2026-08-12T08:59:59Z"
+        );
+        assert_eq!(
+            history_instant(instant("2026-08-12T09:00:00Z"), Some(-1_200)).to_string(),
+            "2026-08-12T09:00:01Z"
+        );
+        // Whatever the skew, the stored instant never keeps a sub-second part:
+        // every other stored instant is second-precision and compared as text.
+        for skew in [-1_500, -320, 0, 320, 1_500] {
+            assert_eq!(
+                history_instant(instant("2026-08-12T09:00:00.750Z"), Some(skew))
+                    .as_datetime()
+                    .nanosecond(),
+                0
+            );
+        }
     }
 
     #[test]

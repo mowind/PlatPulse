@@ -1450,12 +1450,19 @@ async fn save_metric_sample(
     tx: &mut Transaction<'_, Any>,
     history: &crate::capacity::HistoryGate,
     scope: &crate::metric_history::SeriesScope<'_>,
+    stamp: ReportStamp<'_>,
     observed_at: Rfc3339,
-    received_at: &str,
     raw_cutoff: &str,
     value: f64,
 ) -> Result<(), sqlx::Error> {
-    let observed_at = observed_at.to_string();
+    // A metric sample is history derived from a Report, so it is stamped with
+    // the skew-corrected observation instant and never with the receipt instant
+    // (ADR 0014, issue #274). Correcting here rather than at each call site keeps
+    // every series — Host and Node, raw row and rollup bucket — on the same
+    // timeline: a reliable skew that shifted one series but not its neighbours
+    // would make the Server's own history disagree with itself.
+    let observed_at = stamp.history_at(observed_at).to_string();
+    let received_at = stamp.received_at();
     // What the Server already holds for this observation time, and how the
     // series ledger classifies this delivery: new history, a replay of an
     // observation it already has, or a correction to one (issue #213). The
@@ -1731,8 +1738,8 @@ async fn save_current<I: ReportInventory>(
             tx,
             history,
             &crate::metric_history::SeriesScope::host(&agent_id, metric, dimension),
+            stamp,
             observed_at,
-            received_at,
             &raw_cutoff,
             value,
         )
@@ -2010,8 +2017,8 @@ async fn save_current<I: ReportInventory>(
                 tx,
                 history,
                 &crate::metric_history::SeriesScope::node(&node_id, "process_cpu_percent"),
+                stamp,
                 observed_at,
-                received_at,
                 &raw_cutoff,
                 process.cpu_percent,
             )
@@ -2021,8 +2028,8 @@ async fn save_current<I: ReportInventory>(
                     tx,
                     history,
                     &crate::metric_history::SeriesScope::node(&node_id, "process_memory_percent"),
+                    stamp,
                     observed_at,
-                    received_at,
                     &raw_cutoff,
                     process.memory_bytes as f64 * 100.0 / memory.total_bytes as f64,
                 )
@@ -2052,8 +2059,8 @@ async fn save_current<I: ReportInventory>(
                 tx,
                 history,
                 &crate::metric_history::SeriesScope::node(&node_id, "data_directory_percent"),
+                stamp,
                 size_observed_at.min(capacity_observed_at),
-                received_at,
                 &raw_cutoff,
                 size as f64 * 100.0 / capacity as f64,
             )
@@ -2073,8 +2080,8 @@ async fn save_current<I: ReportInventory>(
                 tx,
                 history,
                 &crate::metric_history::SeriesScope::node(&node_id, "peer_inbound_count"),
+                stamp,
                 observed_at,
-                received_at,
                 &raw_cutoff,
                 inbound as f64,
             )
@@ -2083,8 +2090,8 @@ async fn save_current<I: ReportInventory>(
                 tx,
                 history,
                 &crate::metric_history::SeriesScope::node(&node_id, "peer_outbound_count"),
+                stamp,
                 observed_at,
-                received_at,
                 &raw_cutoff,
                 outbound as f64,
             )
@@ -2114,8 +2121,8 @@ async fn save_current<I: ReportInventory>(
                     tx,
                     history,
                     &crate::metric_history::SeriesScope::node(&node_id, metric),
+                    stamp,
                     observed_at,
-                    received_at,
                     &raw_cutoff,
                     height as f64,
                 )
@@ -2138,8 +2145,8 @@ async fn save_current<I: ReportInventory>(
                     tx,
                     history,
                     &crate::metric_history::SeriesScope::node(&node_id, metric),
+                    stamp,
                     observed_at,
-                    received_at,
                     &raw_cutoff,
                     height as f64,
                 )
@@ -2667,6 +2674,16 @@ async fn ingest_report<I: ReportInventory>(
             "Converted deployment awaits the coordinated Inventory cutover; stop the Server and run 'platpulse-server cutover resume'",
         );
     }
+    // Acceptance below reads this Agent's active Boot, last accepted sequence
+    // and Inventory revision and then writes the next state from them, which is
+    // a read-then-write invariant two concurrent Reports of one Agent would
+    // break (ADR 0007, ADR 0013): the newer Report could commit first and the
+    // older one afterwards, moving the sequence and the Current Projection
+    // backwards. The fence is taken before the transaction so a waiting Report
+    // holds no connection, and it is per Agent, so Reports of different Agents
+    // still ingest in parallel. SQLite's single write connection made this hold
+    // already; the PostgreSQL work connections do not.
+    let _agent_fence = state.ingest_fence().hold(&auth.agent_id).await;
     // Hold the retention sweep off this receipt: retention and ingestion write
     // the same series-state rows, and on PostgreSQL the deadlock that follows
     // may abort the Report. Hygiene must never be able to refuse a Report, so

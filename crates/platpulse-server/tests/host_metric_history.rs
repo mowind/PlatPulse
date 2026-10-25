@@ -390,6 +390,15 @@ fn fixture_report(agent_id: &str, sequence: u64, host: &HostReport, observed_at:
     serde_json::to_vec(&value).unwrap()
 }
 
+/// The same Report with a different `clock_skew` reading: the Agent re-measures
+/// its skew against Server time in every Report, so a carried observation can be
+/// delivered twice with two readings a few milliseconds apart.
+fn with_skew(report: Vec<u8>, skew_ms: i64) -> Vec<u8> {
+    let mut value: Value = serde_json::from_slice(&report).unwrap();
+    value["host"]["clock_skew"]["latest"] = Value::from(skew_ms);
+    serde_json::to_vec(&value).unwrap()
+}
+
 /// The Node identity the multi-Node fixture declares for the [index]-th Node,
 /// so a test can address a Node it asked for by number.
 fn declared_node_id(index: usize) -> String {
@@ -593,6 +602,77 @@ async fn a_report_stores_each_host_quantity_once_for_the_agent_that_collected_it
         10
     );
 }
+/// A last-good observation carried into a later Report keeps one identity. The
+/// Agent re-measures its clock skew for every Report, and a metric sample's
+/// observation instant is what the Server keys its history on — the raw row's
+/// key, the series ledger's high-water mark and the aggregate buckets — so two
+/// near-zero readings of the same carried instant must land on the same second
+/// instead of counting the carry as a second observation (issue #213).
+#[tokio::test]
+async fn a_carried_sample_keeps_its_identity_when_the_skew_is_remeasured() {
+    let harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (agent_id, credential) = enroll_agent(&harness, &session).await;
+    let instant = auth::now_utc() - time::Duration::minutes(5);
+    let observed_at = auth::format_rfc3339(instant);
+    let host = HostReport::default().mount("/data", 1000, 100);
+
+    // The same Host observation, carried: the same instant and the same values,
+    // with a skew reading a few milliseconds apart that crossed zero between the
+    // two Reports.
+    for (sequence, skew_ms) in [(1u64, 3i64), (2, -2)] {
+        let report = with_skew(
+            fixture_report(&agent_id, sequence, &host, &observed_at),
+            skew_ms,
+        );
+        let (status, body) = submit(&harness, &credential, report).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    let agent_rows = format!("agent_id = '{agent_id}'");
+    assert_eq!(
+        harness
+            .count_where(
+                "host_metric_samples",
+                &format!("{agent_rows} AND metric = 'cpu_percent'")
+            )
+            .await,
+        1,
+        "the carried observation is one sample, not one per Report that carried it"
+    );
+    assert_eq!(
+        harness
+            .count_where(
+                "host_metric_series_state",
+                &format!("{agent_rows} AND metric = 'cpu_percent'")
+            )
+            .await,
+        1,
+        "the ledger keeps one series entry for the carried observation"
+    );
+
+    let from = auth::format_rfc3339(instant - time::Duration::hours(1));
+    let to = auth::format_rfc3339(auth::now_utc() + time::Duration::minutes(1));
+    let (status, body) = read_history(
+        &harness,
+        Some(&session.cookie),
+        &agent_history_uri(&agent_id, "cpu_percent", "", Some(&from), Some(&to)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["series"]["observationCount"],
+        Value::from(1),
+        "the carry is a replay, not a second counted observation: {body}"
+    );
+    let item = single_item(&body, "cpu_percent");
+    assert_eq!(
+        item["observedAt"],
+        Value::String(observed_at.clone()),
+        "the sample keeps the instant the Agent observed it: {body}"
+    );
+}
+
 /// Story 51: the Host evidence belongs to the Agent, so every Node page of that
 /// Agent reads the same stored series and still names the Agent it came from.
 #[tokio::test]

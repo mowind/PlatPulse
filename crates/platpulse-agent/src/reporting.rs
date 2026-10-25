@@ -624,13 +624,12 @@ async fn deliver_one_typed<T: ReportTransport>(
     // A whole-report rejection is an applied receipt, not a transport failure:
     // it must reach the caller as data so the delivery loop can tell the
     // operator why every report is being refused (issue #181).
-    let rejection = (receipt_disposition == ReceiptDisposition::Rejected).then(|| {
-        format!(
-            "report {} rejected by Server: {}",
-            report.report_id,
-            rejection_summary(&envelope_receipt)
-        )
-    });
+    // The summary names the condition, not the Report: the delivery loop
+    // aggregates repeated refusals on it (design logging.md), and a catch-up
+    // that refuses thousands of Reports must produce one line per minute rather
+    // than one per Report. The Report's identity travels beside it.
+    let rejection = (receipt_disposition == ReceiptDisposition::Rejected)
+        .then(|| rejection_summary(&envelope_receipt));
     if major == platpulse_core::protocol::PROTOCOL_VERSION_V2 {
         apply_receipt_typed::<InventoryDeclaration>(
             store,
@@ -999,6 +998,16 @@ pub struct DeliveryPass {
     pub stop: DeliveryStop,
 }
 
+/// The operator-facing line for a Report the Server refused whole.
+///
+/// It names the refusal condition and never the Report, so a catch-up that
+/// refuses thousands of Reports is one condition the delivery loop's throttle
+/// can print once per minute (design logging.md) while the Report's identity
+/// stays available as a field.
+pub(crate) fn rejection_line(reason: &str) -> String {
+    format!("Agent report rejected by Server: {reason}")
+}
+
 /// Deliver queued Reports oldest-first, one at a time, until the spool is empty.
 ///
 /// A single queued report is the steady state: collection produced it and the
@@ -1021,13 +1030,15 @@ pub struct DeliveryPass {
 ///
 /// `on_rejection` runs as each refused receipt is applied, so a rejection seen
 /// early in a long catch-up reaches the operator immediately instead of after
-/// the queue drains.
+/// the queue drains. It is handed the refused Report's identity and the refusal
+/// condition separately, because the operator-facing line is aggregated on the
+/// condition while the identity stays available as a field.
 pub(crate) async fn deliver_backlog_with_send_timeout<T: ReportTransport>(
     store: &mut AgentStore,
     transport: &T,
     send_timeout: std::time::Duration,
     cancel: &tokio_util::sync::CancellationToken,
-    on_rejection: impl FnMut(&str),
+    on_rejection: impl FnMut(&str, &str),
 ) -> DeliveryPass {
     deliver_backlog(store, transport, Some(send_timeout), cancel, on_rejection).await
 }
@@ -1042,7 +1053,7 @@ pub async fn deliver_periodic<T: ReportTransport>(
         transport,
         None,
         &tokio_util::sync::CancellationToken::new(),
-        |_| {},
+        |_, _| {},
     )
     .await;
     match pass.stop {
@@ -1056,7 +1067,7 @@ async fn deliver_backlog<T: ReportTransport>(
     transport: &T,
     send_timeout: Option<std::time::Duration>,
     cancel: &tokio_util::sync::CancellationToken,
-    mut on_rejection: impl FnMut(&str),
+    mut on_rejection: impl FnMut(&str, &str),
 ) -> DeliveryPass {
     let mut outcome = DeliveryOutcome::default();
     loop {
@@ -1073,8 +1084,11 @@ async fn deliver_backlog<T: ReportTransport>(
             Ok(Some(step)) => {
                 outcome.applied += 1;
                 if let Some(rejection) = step.rejection {
-                    on_rejection(&rejection);
-                    outcome.rejections.push(rejection);
+                    on_rejection(&step.report.report_id, &rejection);
+                    outcome.rejections.push(format!(
+                        "report {} rejected by Server: {rejection}",
+                        step.report.report_id
+                    ));
                 }
             }
             Ok(None) => {
@@ -2293,7 +2307,7 @@ mod catch_up_tests {
             &transport,
             Duration::from_millis(100),
             &CancellationToken::new(),
-            |_| {},
+            |_, _| {},
         )
         .await;
 
@@ -2341,7 +2355,7 @@ mod catch_up_tests {
             &transport,
             Duration::from_millis(100),
             &CancellationToken::new(),
-            |_| {},
+            |_, _| {},
         )
         .await;
 
@@ -2377,7 +2391,11 @@ mod catch_up_tests {
             &transport,
             Duration::from_secs(5),
             &CancellationToken::new(),
-            |rejection| reported.lock().unwrap().push(rejection.to_owned()),
+            |report_id, rejection| {
+                reported.lock().unwrap().push(format!(
+                    "report {report_id} rejected by Server: {rejection}"
+                ))
+            },
         )
         .await;
 
@@ -2405,6 +2423,68 @@ mod catch_up_tests {
             assert!(
                 reported[0].contains(&spool_backlog_fixture::report_id(2)),
                 "the reported refusal must name the refused Report: {reported:?}"
+            );
+        }
+        assert!(matches!(pass.stop, DeliveryStop::SpoolEmpty));
+        assert_eq!(spooled_reports(&mut store).await, 0);
+    }
+
+    /// A Server that refuses every Report whole: the worst case for the
+    /// operator-facing line, because each refused Report carries its own
+    /// identity and the receipt's refusal condition is identical for all.
+    struct RefusesEveryReport;
+
+    impl ReportTransport for RefusesEveryReport {
+        fn send<'a>(
+            &'a self,
+            body: &'a [u8],
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, ReportStoreError>> + Send + 'a>> {
+            let report_id = queued_report_id(body);
+            Box::pin(async move {
+                Ok(super::delivery_tests::rejected_receipt_body(
+                    &report_id, body,
+                ))
+            })
+        }
+    }
+
+    /// A catch-up the Server refuses whole is one condition however many Reports
+    /// carry it: the line handed to the caller is identical for every Report, so
+    /// the delivery loop's throttle can print it once per minute during catch-up
+    /// (design logging.md) instead of once per refused Report. The pass still
+    /// records each refused Report for the summary.
+    #[tokio::test]
+    async fn a_fully_refused_backlog_yields_one_condition_for_the_throttle() {
+        const BACKLOG: u64 = 4;
+        let (_directory, _permit, mut store) = seeded_store(BACKLOG).await;
+
+        let conditions = Arc::new(Mutex::new(Vec::<String>::new()));
+        let recorded = Arc::clone(&conditions);
+        let pass = deliver_backlog_with_send_timeout(
+            &mut store,
+            &RefusesEveryReport,
+            Duration::from_secs(5),
+            &CancellationToken::new(),
+            |_, reason| recorded.lock().unwrap().push(rejection_line(reason)),
+        )
+        .await;
+
+        assert_eq!(pass.outcome.rejections.len() as u64, BACKLOG);
+        assert_eq!(
+            pass.outcome
+                .rejections
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len() as u64,
+            BACKLOG,
+            "the rejected Reports stay distinguishable in the summary"
+        );
+        {
+            let conditions = conditions.lock().unwrap();
+            assert_eq!(conditions.len() as u64, BACKLOG);
+            assert!(
+                conditions.iter().all(|line| *line == conditions[0]),
+                "each refused Report produced its own condition: {conditions:?}"
             );
         }
         assert!(matches!(pass.stop, DeliveryStop::SpoolEmpty));
@@ -2476,7 +2556,7 @@ mod catch_up_tests {
                     &*transport,
                     SEND_TIMEOUT,
                     &cancel,
-                    |_| {},
+                    |_, _| {},
                 )
                 .await;
                 let DeliveryPass { outcome, stop } = pass;
@@ -2571,7 +2651,7 @@ mod catch_up_tests {
                     &*transport,
                     Duration::from_secs(5),
                     &cancel,
-                    |_| {},
+                    |_, _| {},
                 )
                 .await
             }

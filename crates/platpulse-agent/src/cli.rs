@@ -664,15 +664,21 @@ async fn run_delivery_loop(
                     &transport,
                     send_timeout,
                     &cancel,
-                    |rejection| {
+                    |report_id, rejection| {
                         // A whole-report rejection is an applied receipt, not a
                         // transport error, so it never reaches the deferral
                         // warning below. Without this the console stays silent
                         // while every report is refused and the projections
                         // freeze (issue #177).
-                        let line = format!("Agent report rejected by Server: {rejection}");
+                        //
+                        // The line names the condition, never the Report: a
+                        // catch-up that refuses thousands of Reports is one
+                        // condition, so the throttle below prints it once per
+                        // minute (design logging.md) and the refused Report
+                        // stays identifiable through its field.
+                        let line = crate::reporting::rejection_line(rejection);
                         if let Some(printed) = rejections.observe(&line, Instant::now()) {
-                            tracing::warn!(outcome = "rejected", "{printed}");
+                            tracing::warn!(outcome = "rejected", report_id, "{printed}");
                         }
                     },
                 )
