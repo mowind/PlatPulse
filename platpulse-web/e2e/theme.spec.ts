@@ -31,6 +31,7 @@ async function resolvedTheme(page: Page) {
 /** Read the shared public top atmosphere (issue #151). The fields default to
  *  empty so a missing layer fails an explicit assertion instead of throwing. */
 async function readAtmosphere(page: Page) {
+  await page.locator('[data-slot="background-decoration"]').waitFor({ state: 'attached', timeout: 5_000 }).catch(() => {})
   return page.evaluate(() => {
     const empty = {
       ready: false,
