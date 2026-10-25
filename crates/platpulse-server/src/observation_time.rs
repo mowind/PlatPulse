@@ -93,13 +93,12 @@ pub fn history_instant(observed: Rfc3339, skew_ms: Option<i64>) -> Rfc3339 {
 /// smaller, and would move in either direction depending on where the Agent's
 /// own instant happens to fall inside its second.
 ///
-/// Rounding also keeps a metric sample's identity stable. A sample's
-/// observation instant is its identity — the raw row's key, the series ledger's
-/// high-water mark and the aggregate buckets all key on it — while the skew is
-/// re-measured in every Report, and the Agent carries a last-good observation
-/// into later Reports. A sub-second difference between two readings must
-/// therefore leave the identity alone; with truncation, a carry could land on
-/// the neighbouring second and be counted as a second observation (#213).
+/// Rounding also keeps a repeated fact on the instant it was first stamped on.
+/// Every instant a Report carries already has second precision, so the only
+/// fraction a correction can introduce is the skew's own: two readings of the
+/// same drift must not place a carried Peer Snapshot or an unchanged component
+/// status on a neighbouring second. Truncating a sub-millisecond correction
+/// would do exactly that, in the direction the Agent's instant happens to fall.
 fn corrected_instant(observed: Rfc3339, skew_ms: i64) -> Option<time::OffsetDateTime> {
     let corrected = observed
         .as_datetime()

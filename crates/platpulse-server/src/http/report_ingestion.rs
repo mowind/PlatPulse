@@ -1450,19 +1450,25 @@ async fn save_metric_sample(
     tx: &mut Transaction<'_, Any>,
     history: &crate::capacity::HistoryGate,
     scope: &crate::metric_history::SeriesScope<'_>,
-    stamp: ReportStamp<'_>,
     observed_at: Rfc3339,
+    received_at: &str,
     raw_cutoff: &str,
     value: f64,
 ) -> Result<(), sqlx::Error> {
-    // A metric sample is history derived from a Report, so it is stamped with
-    // the skew-corrected observation instant and never with the receipt instant
-    // (ADR 0014, issue #274). Correcting here rather than at each call site keeps
-    // every series — Host and Node, raw row and rollup bucket — on the same
-    // timeline: a reliable skew that shifted one series but not its neighbours
-    // would make the Server's own history disagree with itself.
-    let observed_at = stamp.history_at(observed_at).to_string();
-    let received_at = stamp.received_at();
+    // A metric sample is stamped with the instant the Agent observed it, never
+    // with the instant the Server received the Report, so a replayed Report
+    // cannot look newly observed (ADR 0014, issue #274).
+    //
+    // It is deliberately not skew-corrected. The observation instant is this
+    // sample's identity: the series ledger and the rollup bucket both address
+    // the row by it, so one carried sample must arrive at one instant. A
+    // per-Report skew reading jitters by milliseconds, and a correction that
+    // jitters moves a replayed sample past the ledger's high-water mark into a
+    // neighbouring second, where it is counted twice (issue #213). Correcting
+    // the timeline therefore costs the invariant that keeps it honest; the
+    // Agent-reported instant stays, and Current Projection freshness carries
+    // the correction instead (ADR 0014, numeric metric samples exception).
+    let observed_at = observed_at.to_string();
     // What the Server already holds for this observation time, and how the
     // series ledger classifies this delivery: new history, a replay of an
     // observation it already has, or a correction to one (issue #213). The
@@ -1738,8 +1744,8 @@ async fn save_current<I: ReportInventory>(
             tx,
             history,
             &crate::metric_history::SeriesScope::host(&agent_id, metric, dimension),
-            stamp,
             observed_at,
+            received_at,
             &raw_cutoff,
             value,
         )
@@ -1945,8 +1951,17 @@ async fn save_current<I: ReportInventory>(
             // clock; the presence interval and the history bucket both belong to
             // that instant, so a replayed snapshot produces its own window instead
             // of one stretched across the catch-up (ADR 0014, #274).
-            let peers_observed_at =
-                stamp.observed_at(peers.latest_observed_at.or(peers.attempted_at));
+            //
+            // The snapshot carries its own observation instant, so the history
+            // instant is taken without the receipt-time fallback that freshness
+            // allows: borrowing the receipt instant here is exactly the
+            // compression of history this rule forbids. Only a snapshot that
+            // names no instant at all falls back, and then the receipt instant is
+            // the only instant the Server can defend.
+            let peers_observed_at = match peers.latest_observed_at.or(peers.attempted_at) {
+                Some(observed) => stamp.history_at(observed).to_string(),
+                None => stamp.observed_at(None),
+            };
             let presence_delta = match snapshot {
                 None => PeerPresenceDelta::default(),
                 Some(snapshot) => {
@@ -2017,8 +2032,8 @@ async fn save_current<I: ReportInventory>(
                 tx,
                 history,
                 &crate::metric_history::SeriesScope::node(&node_id, "process_cpu_percent"),
-                stamp,
                 observed_at,
+                received_at,
                 &raw_cutoff,
                 process.cpu_percent,
             )
@@ -2028,8 +2043,8 @@ async fn save_current<I: ReportInventory>(
                     tx,
                     history,
                     &crate::metric_history::SeriesScope::node(&node_id, "process_memory_percent"),
-                    stamp,
                     observed_at,
+                    received_at,
                     &raw_cutoff,
                     process.memory_bytes as f64 * 100.0 / memory.total_bytes as f64,
                 )
@@ -2059,8 +2074,8 @@ async fn save_current<I: ReportInventory>(
                 tx,
                 history,
                 &crate::metric_history::SeriesScope::node(&node_id, "data_directory_percent"),
-                stamp,
                 size_observed_at.min(capacity_observed_at),
+                received_at,
                 &raw_cutoff,
                 size as f64 * 100.0 / capacity as f64,
             )
@@ -2080,8 +2095,8 @@ async fn save_current<I: ReportInventory>(
                 tx,
                 history,
                 &crate::metric_history::SeriesScope::node(&node_id, "peer_inbound_count"),
-                stamp,
                 observed_at,
+                received_at,
                 &raw_cutoff,
                 inbound as f64,
             )
@@ -2090,8 +2105,8 @@ async fn save_current<I: ReportInventory>(
                 tx,
                 history,
                 &crate::metric_history::SeriesScope::node(&node_id, "peer_outbound_count"),
-                stamp,
                 observed_at,
+                received_at,
                 &raw_cutoff,
                 outbound as f64,
             )
@@ -2121,8 +2136,8 @@ async fn save_current<I: ReportInventory>(
                     tx,
                     history,
                     &crate::metric_history::SeriesScope::node(&node_id, metric),
-                    stamp,
                     observed_at,
+                    received_at,
                     &raw_cutoff,
                     height as f64,
                 )
@@ -2145,8 +2160,8 @@ async fn save_current<I: ReportInventory>(
                     tx,
                     history,
                     &crate::metric_history::SeriesScope::node(&node_id, metric),
-                    stamp,
                     observed_at,
+                    received_at,
                     &raw_cutoff,
                     height as f64,
                 )
@@ -10017,11 +10032,23 @@ mod tests {
         observed: &str,
         peers: serde_json::Value,
     ) -> Vec<u8> {
+        replayed_peer_report_with_skew(report, revision, observed, peers, 0)
+    }
+
+    /// The same replayed Peer Snapshot, on an Agent clock whose measured skew is
+    /// `clock_skew_ms` — at or beyond Clock Unreliable when the caller means it.
+    fn replayed_peer_report_with_skew(
+        report: (&str, i64),
+        revision: i64,
+        observed: &str,
+        peers: serde_json::Value,
+        clock_skew_ms: i64,
+    ) -> Vec<u8> {
         let (report_id, report_sequence) = report;
         let mut value = peer_snapshot_body(peers);
         value["report_id"] = serde_json::json!(report_id);
         value["report_sequence"] = serde_json::json!(report_sequence);
-        value["host"]["clock_skew"]["latest"] = serde_json::json!(0);
+        value["host"]["clock_skew"]["latest"] = serde_json::json!(clock_skew_ms);
         let snapshot = &mut value["nodes"][0]["chain"]["peers"];
         snapshot["attempted_at"] = serde_json::json!(observed);
         snapshot["latest_observed_at"] = serde_json::json!(observed);
@@ -10348,6 +10375,93 @@ mod tests {
             closed.as_deref(),
             Some(departure_at.as_str()),
             "a departure closes the interval at the instant it was observed"
+        );
+    }
+
+    /// Acceptance of issue #274: a replayed Peer Snapshot is stamped with its own
+    /// observation instant even when the Agent is Clock Unreliable. Freshness may
+    /// fall back to the receipt instant because it answers "is this Node current
+    /// right now", but history must not: the presence interval and the aggregate
+    /// bucket keep the instant the snapshot names, or a drained backlog piles
+    /// hours of history onto the minutes of catch-up.
+    #[tokio::test]
+    async fn a_replayed_peer_snapshot_keeps_its_instant_when_the_clock_is_unreliable() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let baseline_at = clock_text(now_utc() - time::Duration::hours(2));
+        let arrival_at = clock_text(now_utc() - time::Duration::hours(1));
+        let skew_ms = crate::http::agent::CLOCK_UNRELIABLE_THRESHOLD_MS + 1;
+        let mut bodies = Vec::new();
+        for (report, revision, observed, peers) in [
+            (
+                ("0195f2a1-0274-4274-8274-000000000011", 1),
+                1,
+                baseline_at.as_str(),
+                serde_json::json!([peer_current("peer-a", "8.8.8.8", "inbound")]),
+            ),
+            (
+                ("0195f2a1-0274-4274-8274-000000000012", 2),
+                2,
+                arrival_at.as_str(),
+                serde_json::json!([
+                    peer_current("peer-a", "8.8.8.8", "inbound"),
+                    peer_current("peer-b", "192.0.2.10", "outbound"),
+                ]),
+            ),
+        ] {
+            bodies.push(replayed_peer_report_with_skew(
+                report, revision, observed, peers, skew_ms,
+            ));
+        }
+        for body in bodies {
+            assert_eq!(
+                submit(&state, &agent_id, body).await.disposition,
+                ReceiptDisposition::Accepted
+            );
+        }
+
+        let intervals: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT peer_id, opened_at, closed_at FROM peer_presence_intervals WHERE node_id=$1 ORDER BY peer_id",
+        )
+        .bind(ISSUE_274_NODE)
+        .fetch_all(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            intervals,
+            vec![("peer-b".to_owned(), arrival_at.clone(), None)],
+            "an unusable skew does not move a presence interval onto the receipt instant"
+        );
+
+        let buckets: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT bucket_start, first_observed_at, last_observed_at FROM peer_aggregate_5m WHERE node_id=$1 ORDER BY bucket_start",
+        )
+        .bind(ISSUE_274_NODE)
+        .fetch_all(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|(_, first, _)| first.clone())
+                .collect::<Vec<_>>(),
+            vec![baseline_at, arrival_at],
+            "each replayed snapshot fills the bucket of its own instant: {buckets:?}"
+        );
+        for (bucket_start, first, last) in &buckets {
+            assert_eq!(first, last, "one replayed snapshot is one sample");
+            assert!(
+                bucket_start.as_str() <= first.as_str(),
+                "the bucket {bucket_start} cannot start after its sample {first}"
+            );
+        }
+
+        // The fresh face of the same Report does fall back: a Clock Unreliable
+        // Agent cannot say whether its Node is current, so freshness keeps the
+        // receipt instant while history keeps the observation instant.
+        let component = component_instant(&state, "peers").await.unwrap();
+        assert!(
+            seconds_from_now(&component).abs() <= 60,
+            "freshness falls back to the receipt instant: {component}"
         );
     }
 }

@@ -605,9 +605,12 @@ async fn a_report_stores_each_host_quantity_once_for_the_agent_that_collected_it
 /// A last-good observation carried into a later Report keeps one identity. The
 /// Agent re-measures its clock skew for every Report, and a metric sample's
 /// observation instant is what the Server keys its history on — the raw row's
-/// key, the series ledger's high-water mark and the aggregate buckets — so two
-/// near-zero readings of the same carried instant must land on the same second
-/// instead of counting the carry as a second observation (issue #213).
+/// key, the series ledger's high-water mark and the aggregate buckets — so a
+/// re-measured skew must not move the instant the carry lands on. That holds for
+/// readings near zero and for readings either side of the half-second a
+/// correction would round on: a corrected instant would put the carry on the
+/// neighbouring second and count it as a second observation (issue #213,
+/// ADR 0014).
 #[tokio::test]
 async fn a_carried_sample_keeps_its_identity_when_the_skew_is_remeasured() {
     let harness = Harness::boot().await;
@@ -621,6 +624,17 @@ async fn a_carried_sample_keeps_its_identity_when_the_skew_is_remeasured() {
     // with a skew reading a few milliseconds apart that crossed zero between the
     // two Reports.
     for (sequence, skew_ms) in [(1u64, 3i64), (2, -2)] {
+        let report = with_skew(
+            fixture_report(&agent_id, sequence, &host, &observed_at),
+            skew_ms,
+        );
+        let (status, body) = submit(&harness, &credential, report).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    // The same observation once more, carried by Reports whose measured skew sits
+    // either side of the half second a correction rounds on: 501 ms and 499 ms.
+    for (sequence, skew_ms) in [(3u64, 501i64), (4, 499)] {
         let report = with_skew(
             fixture_report(&agent_id, sequence, &host, &observed_at),
             skew_ms,
