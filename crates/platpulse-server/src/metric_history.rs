@@ -1391,20 +1391,39 @@ pub async fn record_delivery(
     Ok(())
 }
 
+/// A stored sample's current value and its placement on the Server timeline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredSample {
+    pub value: f64,
+    pub observed_at: String,
+}
+
+/// Look up a stored sample by its stable source identity.
+pub async fn stored_sample(
+    tx: &mut Transaction<'_, Any>,
+    scope: &SeriesScope<'_>,
+    source_observed_at: &str,
+) -> Result<Option<StoredSample>, sqlx::Error> {
+    let sql = scope.sql(
+        "SELECT value, observed_at FROM {raw} WHERE {scope} = ? AND metric = ?{dim_predicate} AND source_observed_at = ?",
+    );
+    let row: Option<(f64, String)> = scope
+        .bind_series(sqlx::query_as(&sql))
+        .bind(source_observed_at)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(row.map(|(value, observed_at)| StoredSample { value, observed_at }))
+}
+
 /// The value the Server already holds for one observation time, if any.
 pub async fn stored_value(
     tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
-    observed_at: &str,
+    source_observed_at: &str,
 ) -> Result<Option<f64>, sqlx::Error> {
-    let sql = scope.sql(
-        "SELECT value FROM {raw} WHERE {scope} = ? AND metric = ?{dim_predicate} AND observed_at = ?",
-    );
-    scope
-        .bind_series(sqlx::query_scalar(&sql))
-        .bind(observed_at)
-        .fetch_optional(&mut **tx)
-        .await
+    Ok(stored_sample(tx, scope, source_observed_at)
+        .await?
+        .map(|s| s.value))
 }
 
 /// Store one raw observation, or restate the value of a stored one.
@@ -1413,18 +1432,28 @@ pub async fn stored_value(
 /// matched on its dimension: two mounts observed in the same Report keep their
 /// own rows, and a restatement reaches the mount path it names rather than the
 /// first row that shares an instant.
+///
+/// A sample's stable observation identity (source_observed_at) is kept
+/// separate from its skew-corrected timeline (observed_at) — see ADR 0014
+/// and issue #279.
+///
+/// On conflict (a restatement / correction with the same source identity),
+/// only `value` is updated; `observed_at` and `received_at` remain pinned
+/// to their initial placement so the row never moves buckets.
 pub async fn store_sample(
     tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
+    source_observed_at: &str,
     observed_at: &str,
     received_at: &str,
     value: f64,
 ) -> Result<(), sqlx::Error> {
     let sql = scope.sql(
-        "INSERT INTO {raw} ({scope}, metric{dim_column}, observed_at, received_at, value) VALUES (?, ?{dim_bind}, ?, ?, ?) ON CONFLICT({scope}, metric{dim_column}, observed_at) DO UPDATE SET value = excluded.value",
+        "INSERT INTO {raw} ({scope}, metric{dim_column}, source_observed_at, observed_at, received_at, value) VALUES (?, ?{dim_bind}, ?, ?, ?, ?) ON CONFLICT({scope}, metric{dim_column}, source_observed_at) DO UPDATE SET value = excluded.value",
     );
     scope
         .bind_series(sqlx::query(&sql))
+        .bind(source_observed_at)
         .bind(observed_at)
         .bind(received_at)
         .bind(value)
@@ -2646,7 +2675,7 @@ pub struct HostSeriesCoverage {
 /// Migration 0069's `host_metric_series_state_mount_idx` is what makes that order
 /// and that limit an index walk instead of a sort of every mount path the Agent
 /// has ever reported.
-const HOST_COVERAGE_SQL: &str = "SELECT l.dimension, l.first_observed_at, l.last_observed_at, l.last_received_at, l.observation_count, l.replayed_count, l.corrected_count, l.released_before, s.value, s.received_at FROM host_metric_series_state l LEFT JOIN host_metric_samples s ON s.agent_id = l.agent_id AND s.metric = l.metric AND s.dimension = l.dimension AND s.observed_at = l.last_observed_at WHERE l.agent_id = $1 AND l.metric = $2 ORDER BY l.last_observed_at DESC, l.dimension ASC LIMIT $3";
+const HOST_COVERAGE_SQL: &str = "SELECT l.dimension, l.first_observed_at, l.last_observed_at, l.last_received_at, l.observation_count, l.replayed_count, l.corrected_count, l.released_before, s.value, s.received_at FROM host_metric_series_state l LEFT JOIN host_metric_samples s ON s.agent_id = l.agent_id AND s.metric = l.metric AND s.dimension = l.dimension AND s.source_observed_at = l.last_observed_at WHERE l.agent_id = $1 AND l.metric = $2 ORDER BY l.last_observed_at DESC, l.dimension ASC LIMIT $3";
 
 /// One Agent's mount paths for one storage series, newest first.
 ///
@@ -3387,9 +3416,10 @@ mod tests {
     }
 
     async fn keep_raw(pool: &sqlx::AnyPool, observed_at: &str, value: f64) {
-        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ($1, $2, $3, $4, $5)")
+        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, source_observed_at, observed_at, received_at, value) VALUES ($1, $2, $3, $4, $5, $6)")
             .bind(TIER_NODE)
             .bind(TIER_METRIC)
+            .bind(observed_at)
             .bind(observed_at)
             .bind(observed_at)
             .bind(value)
@@ -4447,10 +4477,11 @@ mod tests {
         observed_at: &str,
         value: f64,
     ) {
-        sqlx::query("INSERT INTO host_metric_samples (agent_id, metric, dimension, observed_at, received_at, value) VALUES ($1, $2, $3, $4, $5, $6)")
+        sqlx::query("INSERT INTO host_metric_samples (agent_id, metric, dimension, source_observed_at, observed_at, received_at, value) VALUES ($1, $2, $3, $4, $5, $6, $7)")
             .bind(HOST_AGENT)
             .bind(HOST_STORAGE_METRIC)
             .bind(mount_path)
+            .bind(observed_at)
             .bind(observed_at)
             .bind(observed_at)
             .bind(value)
@@ -4718,9 +4749,16 @@ mod tests {
         )
         .await
         .unwrap();
-        store_sample(&mut tx, &scope, observed_at, received_at, value)
-            .await
-            .unwrap();
+        store_sample(
+            &mut tx,
+            &scope,
+            observed_at,
+            observed_at,
+            received_at,
+            value,
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
     }
 

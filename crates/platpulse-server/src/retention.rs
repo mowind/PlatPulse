@@ -211,13 +211,13 @@ const TARGET_RAW_METRIC_SAMPLES: &[CleanupTarget] = &[
         table: "node_metric_samples",
         kind: CleanupKind::Delete,
         count_sql: "SELECT COUNT(*) FROM node_metric_samples WHERE observed_at < $1",
-        delete_sql: "DELETE FROM node_metric_samples WHERE (node_id, metric, observed_at) IN (SELECT node_id, metric, observed_at FROM node_metric_samples WHERE observed_at < $1 ORDER BY observed_at, node_id, metric LIMIT 4096)",
+        delete_sql: "DELETE FROM node_metric_samples WHERE (node_id, metric, source_observed_at) IN (SELECT node_id, metric, source_observed_at FROM node_metric_samples WHERE observed_at < $1 ORDER BY observed_at, node_id, metric LIMIT 4096)",
     },
     CleanupTarget {
         table: "host_metric_samples",
         kind: CleanupKind::Delete,
         count_sql: "SELECT COUNT(*) FROM host_metric_samples WHERE observed_at < $1",
-        delete_sql: "DELETE FROM host_metric_samples WHERE (agent_id, metric, dimension, observed_at) IN (SELECT agent_id, metric, dimension, observed_at FROM host_metric_samples WHERE observed_at < $1 ORDER BY observed_at, agent_id, metric LIMIT 512)",
+        delete_sql: "DELETE FROM host_metric_samples WHERE (agent_id, metric, dimension, source_observed_at) IN (SELECT agent_id, metric, dimension, source_observed_at FROM host_metric_samples WHERE observed_at < $1 ORDER BY observed_at, agent_id, metric LIMIT 512)",
     },
 ];
 
@@ -3460,7 +3460,7 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
-        let insert = "INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ('metric-node', 'process_cpu_percent', $1, $2, 1.0)";
+        let insert = "INSERT INTO node_metric_samples (node_id, metric, source_observed_at, observed_at, received_at, value) VALUES ('metric-node', 'process_cpu_percent', $1, $2, $3, 1.0)";
         // The Node batch is sized for a whole maximal Report (see
         // NODE_METRIC_CLEANUP_BATCH), so this test proves the bound is applied
         // and then drains what is left over — not that 128 rows is the bound.
@@ -3470,11 +3470,13 @@ mod tests {
             sqlx::query(insert)
                 .bind(&observed_at)
                 .bind(&observed_at)
+                .bind(&observed_at)
                 .execute(pool)
                 .await
                 .unwrap();
         }
         sqlx::query(insert)
+            .bind(&fresh)
             .bind(&fresh)
             .bind(&fresh)
             .execute(pool)
@@ -3557,9 +3559,10 @@ mod tests {
             for metric in crate::metric_history::NODE_METRIC_SERIES {
                 let observed_at =
                     crate::auth::format_rfc3339(expired_at - time::Duration::seconds(inserted));
-                sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ($1, $2, $3, $4, 1.0)")
+                sqlx::query("INSERT INTO node_metric_samples (node_id, metric, source_observed_at, observed_at, received_at, value) VALUES ($1, $2, $3, $4, $5, 1.0)")
                     .bind(&node_id)
                     .bind(metric)
+                    .bind(&observed_at)
                     .bind(&observed_at)
                     .bind(&observed_at)
                     .execute(&mut *tx)

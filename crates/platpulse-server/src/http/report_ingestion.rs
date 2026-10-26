@@ -1450,37 +1450,41 @@ async fn save_metric_sample(
     tx: &mut Transaction<'_, Any>,
     history: &crate::capacity::HistoryGate,
     scope: &crate::metric_history::SeriesScope<'_>,
-    observed_at: Rfc3339,
-    received_at: &str,
+    stamp: ReportStamp<'_>,
+    source_observed_at: Rfc3339,
     raw_cutoff: &str,
     value: f64,
 ) -> Result<(), sqlx::Error> {
-    // A metric sample is stamped with the instant the Agent observed it, never
-    // with the instant the Server received the Report, so a replayed Report
-    // cannot look newly observed (ADR 0014, issue #274).
+    // A metric sample's stable observation identity is kept separate from its
+    // skew-corrected timeline (ADR 0014, issue #279).
     //
-    // It is deliberately not skew-corrected. The observation instant is this
-    // sample's identity: the series ledger and the rollup bucket both address
-    // the row by it, so one carried sample must arrive at one instant. A
+    // The Agent's raw observation instant serves as identity: the raw table's
+    // unique key, stored_value lookup, and the series ledger's delivery
+    // classification (last_observed_at high-water mark) all use it. A
     // per-Report skew reading jitters by milliseconds, and a correction that
-    // jitters moves a replayed sample past the ledger's high-water mark into a
-    // neighbouring second, where it is counted twice (issue #213). Correcting
-    // the timeline therefore costs the invariant that keeps it honest; the
-    // Agent-reported instant stays, and Current Projection freshness carries
-    // the correction instead (ADR 0014, numeric metric samples exception).
-    let observed_at = observed_at.to_string();
+    // crosses a second boundary (e.g. 501 ms vs 499 ms) moves the corrected
+    // instant into a neighbouring second. If the instant were both identity
+    // and timeline, a carried last-good sample crossing that boundary would appear
+    // past the ledger's high-water mark and be double-counted (issue #213).
+    //
+    // Skew-corrected `observed_at` places the sample on the Server timeline for
+    // range queries, aggregate buckets and retention expiry.
+    let source_observed_str = source_observed_at.to_string();
+    let observed_at = stamp.history_at(source_observed_at).to_string();
+    let received_at = stamp.received_at();
     // What the Server already holds for this observation time, and how the
     // series ledger classifies this delivery: new history, a replay of an
     // observation it already has, or a correction to one (issue #213). The
     // ledger and the raw window's own cutoff answer that, not the sample row
     // alone: retention releases the row once it leaves the window while the
     // ledger keeps counting.
-    let stored = crate::metric_history::stored_value(tx, scope, &observed_at).await?;
+    let stored = crate::metric_history::stored_sample(tx, scope, &source_observed_str).await?;
+    let stored_value = stored.as_ref().map(|s| s.value);
     let delivery = crate::metric_history::classify_delivery(
         tx,
         scope,
-        &observed_at,
-        stored,
+        &source_observed_str,
+        stored_value,
         value,
         raw_cutoff,
     )
@@ -1510,9 +1514,18 @@ async fn save_metric_sample(
     // widened window covers its instant again: the row was released on purpose,
     // and recreating it would invent coverage and a fresh receipt for a stretch
     // the Server deliberately stopped holding (issue #213).
-    let released = crate::metric_history::outside_retained_window(stored, &observed_at, raw_cutoff);
+    let released =
+        crate::metric_history::outside_retained_window(stored_value, &observed_at, raw_cutoff);
     if !released && delivery != Delivery::Replay {
-        crate::metric_history::store_sample(tx, scope, &observed_at, received_at, value).await?;
+        crate::metric_history::store_sample(
+            tx,
+            scope,
+            &source_observed_str,
+            &observed_at,
+            received_at,
+            value,
+        )
+        .await?;
     }
     // The tiers beyond the raw window accumulate in this same transaction: an
     // observation the Server counted advances its minute and five-minute
@@ -1528,10 +1541,14 @@ async fn save_metric_sample(
                 .await?;
         }
         Delivery::Correction => {
+            let target_observed_at = stored
+                .as_ref()
+                .map(|s| s.observed_at.as_str())
+                .unwrap_or(observed_at.as_str());
             crate::metric_history::recompute_aggregates(
                 tx,
                 scope,
-                &observed_at,
+                target_observed_at,
                 received_at,
                 value,
             )
@@ -1541,14 +1558,15 @@ async fn save_metric_sample(
     }
     // The ledger moves with the sample it describes, so a committed Report can
     // never leave the count describing a sample the Server does not hold.
-    crate::metric_history::record_delivery(tx, scope, &observed_at, received_at, delivery).await?;
+    crate::metric_history::record_delivery(tx, scope, &source_observed_str, received_at, delivery)
+        .await?;
     // A first-time observation the window cannot hold is counted while it is
     // stored nowhere, so the instant it was counted at is recorded as evidence
     // the Server no longer holds: a later carry of the same instant — after the
     // Operator widens the window back over it — is a replay, never a second
     // observation.
     if released && delivery == Delivery::Observed {
-        if let Some(floor) = crate::metric_history::counted_evidence_floor(&observed_at) {
+        if let Some(floor) = crate::metric_history::counted_evidence_floor(&source_observed_str) {
             crate::metric_history::stamp_evidence_floor(tx, scope, &floor).await?;
         }
     }
@@ -1744,8 +1762,8 @@ async fn save_current<I: ReportInventory>(
             tx,
             history,
             &crate::metric_history::SeriesScope::host(&agent_id, metric, dimension),
+            stamp,
             observed_at,
-            received_at,
             &raw_cutoff,
             value,
         )
@@ -2032,8 +2050,8 @@ async fn save_current<I: ReportInventory>(
                 tx,
                 history,
                 &crate::metric_history::SeriesScope::node(&node_id, "process_cpu_percent"),
+                stamp,
                 observed_at,
-                received_at,
                 &raw_cutoff,
                 process.cpu_percent,
             )
@@ -2043,8 +2061,8 @@ async fn save_current<I: ReportInventory>(
                     tx,
                     history,
                     &crate::metric_history::SeriesScope::node(&node_id, "process_memory_percent"),
+                    stamp,
                     observed_at,
-                    received_at,
                     &raw_cutoff,
                     process.memory_bytes as f64 * 100.0 / memory.total_bytes as f64,
                 )
@@ -2074,8 +2092,8 @@ async fn save_current<I: ReportInventory>(
                 tx,
                 history,
                 &crate::metric_history::SeriesScope::node(&node_id, "data_directory_percent"),
+                stamp,
                 size_observed_at.min(capacity_observed_at),
-                received_at,
                 &raw_cutoff,
                 size as f64 * 100.0 / capacity as f64,
             )
@@ -2095,8 +2113,8 @@ async fn save_current<I: ReportInventory>(
                 tx,
                 history,
                 &crate::metric_history::SeriesScope::node(&node_id, "peer_inbound_count"),
+                stamp,
                 observed_at,
-                received_at,
                 &raw_cutoff,
                 inbound as f64,
             )
@@ -2105,8 +2123,8 @@ async fn save_current<I: ReportInventory>(
                 tx,
                 history,
                 &crate::metric_history::SeriesScope::node(&node_id, "peer_outbound_count"),
+                stamp,
                 observed_at,
-                received_at,
                 &raw_cutoff,
                 outbound as f64,
             )
@@ -2136,8 +2154,8 @@ async fn save_current<I: ReportInventory>(
                     tx,
                     history,
                     &crate::metric_history::SeriesScope::node(&node_id, metric),
+                    stamp,
                     observed_at,
-                    received_at,
                     &raw_cutoff,
                     height as f64,
                 )
@@ -2160,8 +2178,8 @@ async fn save_current<I: ReportInventory>(
                     tx,
                     history,
                     &crate::metric_history::SeriesScope::node(&node_id, metric),
+                    stamp,
                     observed_at,
-                    received_at,
                     &raw_cutoff,
                     height as f64,
                 )

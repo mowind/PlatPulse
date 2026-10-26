@@ -397,8 +397,8 @@ async fn seed_directly_owned_rows(
         .bind(node_id).bind(now).execute(pool).await.unwrap();
     sqlx::query("INSERT INTO observed_network_heads (node_id, block_number, block_hash, observed_at, confidence, eligible_sources) VALUES ($1, 1, '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', $2, 'high', '[\"subscription\"]') ON CONFLICT DO NOTHING")
         .bind(node_id).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ($1, 'process_cpu_percent', $2, $3, 1.0) ON CONFLICT DO NOTHING")
-        .bind(node_id).bind(now).bind(now).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO node_metric_samples (node_id, metric, source_observed_at, observed_at, received_at, value) VALUES ($1, 'process_cpu_percent', $2, $3, $4, 1.0) ON CONFLICT DO NOTHING")
+        .bind(node_id).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
     // The series ledger is Node-owned too: it describes what the Node's series
     // observed, so it is purged with them (issue #213).
     sqlx::query("INSERT INTO node_metric_series_state (node_id, metric, first_observed_at, last_observed_at, last_received_at, observation_count, replayed_count, corrected_count, updated_at) VALUES ($1, 'process_cpu_percent', $2, $3, $4, 1, 0, 0, $5) ON CONFLICT DO NOTHING")

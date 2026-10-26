@@ -102,9 +102,9 @@ pub fn history_instant(observed: Rfc3339, skew_ms: Option<i64>) -> Rfc3339 {
 ///
 /// Rounding is not an identity guarantee. A correction that does cross a second
 /// boundary moves the instant, so a fact whose *identity* has to survive a
-/// re-measured skew (a numeric metric sample, keyed by its observation instant)
-/// keeps the Agent's raw instant instead of the corrected one — see ADR 0014 and
-/// #279.
+/// re-measured skew (a numeric metric sample) stores the Agent's raw instant in
+/// `source_observed_at` as its stable identity, while `observed_at` holds the
+/// skew-corrected instant on the Server timeline — see ADR 0014 and #279.
 fn corrected_instant(observed: Rfc3339, skew_ms: i64) -> Option<time::OffsetDateTime> {
     let corrected = observed
         .as_datetime()

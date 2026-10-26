@@ -5166,8 +5166,9 @@ mod tests {
                 25.0,
             ),
         ] {
-            sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ('node-public', $1, $2, $3, $4)")
+            sqlx::query("INSERT INTO node_metric_samples (node_id, metric, source_observed_at, observed_at, received_at, value) VALUES ('node-public', $1, $2, $3, $4, $5)")
                 .bind(metric)
+                .bind(observed_at)
                 .bind(observed_at)
                 .bind(received_at)
                 .bind(value)
@@ -5175,7 +5176,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        sqlx::query("INSERT INTO host_metric_samples (agent_id, metric, observed_at, received_at, value) VALUES ('agent-public-test', 'network_rx_bytes_per_sec', '2026-01-01T00:01:00Z', $1, 2048)")
+        sqlx::query("INSERT INTO host_metric_samples (agent_id, metric, source_observed_at, observed_at, received_at, value) VALUES ('agent-public-test', 'network_rx_bytes_per_sec', '2026-01-01T00:01:00Z', '2026-01-01T00:01:00Z', $1, 2048)")
             .bind(&recent)
             .execute(state.db().pool())
             .await
@@ -5264,8 +5265,9 @@ mod tests {
     }
 
     async fn keep_raw_sample(state: &AppState, metric: &str, observed_at: &str, value: f64) {
-        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ('node-public', $1, $2, $3, $4)")
+        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, source_observed_at, observed_at, received_at, value) VALUES ('node-public', $1, $2, $3, $4, $5)")
             .bind(metric)
+            .bind(observed_at)
             .bind(observed_at)
             .bind(observed_at)
             .bind(value)
@@ -6282,7 +6284,8 @@ mod tests {
         seed_public_data(&state).await;
         let now = crate::auth::now_utc();
         let stamp = |offset: i64| format_rfc3339(now - time::Duration::seconds(offset));
-        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ('node-public', 'process_cpu_percent', $1, $2, 12.5)")
+        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, source_observed_at, observed_at, received_at, value) VALUES ('node-public', 'process_cpu_percent', $1, $2, $3, 12.5)")
+            .bind(stamp(4000))
             .bind(stamp(4000))
             .bind(stamp(4000))
             .execute(state.db().pool())
@@ -6436,7 +6439,8 @@ mod tests {
         // A six second cadence whose newest intervals prove it, with a hole the
         // two-minute floor of every longer answer would excuse.
         for offset in [56, 50, 44, 18, 12, 6] {
-            sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ('node-public', 'process_cpu_percent', $1, $2, 12.5)")
+            sqlx::query("INSERT INTO node_metric_samples (node_id, metric, source_observed_at, observed_at, received_at, value) VALUES ('node-public', 'process_cpu_percent', $1, $2, $3, 12.5)")
+                .bind(stamp(offset))
                 .bind(stamp(offset))
                 .bind(stamp(offset))
                 .execute(state.db().pool())
@@ -6445,7 +6449,8 @@ mod tests {
         }
         // A series whose newest observation arrived before the window: the
         // last-good value the chart draws, which has to be dated.
-        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES ('node-public', 'process_memory_percent', $1, $2, 25.0)")
+        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, source_observed_at, observed_at, received_at, value) VALUES ('node-public', 'process_memory_percent', $1, $2, $3, 25.0)")
+            .bind(stamp(90))
             .bind(stamp(90))
             .bind(stamp(90))
             .execute(state.db().pool())

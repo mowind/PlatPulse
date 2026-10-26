@@ -271,13 +271,13 @@ with sqlite3.connect(path) as db:
         (chart_new, 18.4, 12.5, 50.0, 1, 2),
     ):
         db.executemany(
-            "INSERT INTO node_metric_samples (node_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO node_metric_samples (node_id, metric, source_observed_at, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?, ?)",
             [
-                (node_a, "process_cpu_percent", sampled_at, sampled_at, cpu),
-                (node_a, "process_memory_percent", sampled_at, sampled_at, memory),
-                (node_a, "data_directory_percent", sampled_at, sampled_at, disk),
-                (node_a, "peer_inbound_count", sampled_at, sampled_at, inbound),
-                (node_a, "peer_outbound_count", sampled_at, sampled_at, outbound),
+                (node_a, "process_cpu_percent", sampled_at, sampled_at, sampled_at, cpu),
+                (node_a, "process_memory_percent", sampled_at, sampled_at, sampled_at, memory),
+                (node_a, "data_directory_percent", sampled_at, sampled_at, sampled_at, disk),
+                (node_a, "peer_inbound_count", sampled_at, sampled_at, sampled_at, inbound),
+                (node_a, "peer_outbound_count", sampled_at, sampled_at, sampled_at, outbound),
             ],
         )
     for sampled_at, rx, tx in (
@@ -285,10 +285,10 @@ with sqlite3.connect(path) as db:
         (chart_new, 892416, 245760),
     ):
         db.executemany(
-            "INSERT INTO host_metric_samples (agent_id, metric, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO host_metric_samples (agent_id, metric, source_observed_at, observed_at, received_at, value) VALUES (?, ?, ?, ?, ?, ?)",
             [
-                (agent_id, "network_rx_bytes_per_sec", sampled_at, sampled_at, rx),
-                (agent_id, "network_tx_bytes_per_sec", sampled_at, sampled_at, tx),
+                (agent_id, "network_rx_bytes_per_sec", sampled_at, sampled_at, sampled_at, rx),
+                (agent_id, "network_tx_bytes_per_sec", sampled_at, sampled_at, sampled_at, tx),
             ],
         )
     # Issue #247: the longer Metric Windows read the aggregate tiers, which

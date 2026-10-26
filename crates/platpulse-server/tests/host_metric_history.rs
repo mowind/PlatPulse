@@ -602,15 +602,14 @@ async fn a_report_stores_each_host_quantity_once_for_the_agent_that_collected_it
         10
     );
 }
-/// A last-good observation carried into a later Report keeps one identity. The
-/// Agent re-measures its clock skew for every Report, and a metric sample's
-/// observation instant is what the Server keys its history on — the raw row's
-/// key, the series ledger's high-water mark and the aggregate buckets — so a
-/// re-measured skew must not move the instant the carry lands on. That holds for
-/// readings near zero and for readings either side of the half-second a
-/// correction would round on: a corrected instant would put the carry on the
-/// neighbouring second and count it as a second observation (issue #213,
-/// ADR 0014).
+/// A last-good observation carried into a later Report keeps one identity.
+/// The Agent's uncorrected observation instant (`source_observed_at`) serves as the
+/// stable sample identity (raw primary key, series ledger delivery classification,
+/// and stored lookup), while the skew-corrected instant (`observed_at`) records the
+/// Server-clock timeline for range queries and aggregate buckets (ADR 0014, #279).
+/// Re-measuring skew across rounding boundaries (e.g. 501 ms vs 499 ms) leaves the
+/// stable identity intact and classifies the carried sample as a replay, keeping it
+/// from double-counting or splitting aggregate buckets (issue #213).
 #[tokio::test]
 async fn a_carried_sample_keeps_its_identity_when_the_skew_is_remeasured() {
     let harness = Harness::boot().await;
@@ -685,6 +684,209 @@ async fn a_carried_sample_keeps_its_identity_when_the_skew_is_remeasured() {
         Value::String(observed_at.clone()),
         "the sample keeps the instant the Agent observed it: {body}"
     );
+}
+
+/// Issue #279 regression test:
+/// A carried sample in consecutive Reports with 501 ms / 499 ms measured clock skew
+/// (which crosses a rounding boundary and changes the corrected second) must keep
+/// its stable identity (`source_observed_at`):
+/// - Exactly 1 raw sample is retained
+/// - `observation_count` increments exactly once (second report is a replay)
+/// - Aggregate bucket records the sample only once
+#[tokio::test]
+async fn carried_sample_with_boundary_crossing_skew_preserves_single_sample_and_bucket() {
+    let harness = Harness::boot().await;
+    let session = owner_session(&harness).await;
+    let (agent_id, credential) = enroll_agent(&harness, &session).await;
+    // Pin the instant to a 5-minute / minute boundary (:00 second, minute divisible by 5)
+    // so that 501 ms vs 499 ms skew crosses BOTH the 60s and 300s bucket boundaries
+    // (e.g. 11:59:59 in the previous bucket vs 12:00:00 in the next bucket).
+    let now = auth::now_utc();
+    let minute = (now.minute() / 5) * 5;
+    let instant = now
+        .replace_minute(minute)
+        .unwrap()
+        .replace_second(0)
+        .unwrap()
+        .replace_nanosecond(0)
+        .unwrap()
+        - time::Duration::minutes(15);
+    let source_observed_at = auth::format_rfc3339(instant);
+    let host = HostReport::default().mount("/data", 1000, 100);
+
+    // Report 1 has 501 ms clock skew.
+    // Skew correction: instant - 501ms + 500ms rounds down across the second boundary
+    // to 1 second before the minute boundary (in the earlier 60s and 300s buckets).
+    let report_1 = with_skew(
+        fixture_report(&agent_id, 1, &host, &source_observed_at),
+        501,
+    );
+    let (status, body) = submit(&harness, &credential, report_1).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Report 2 carries the identical observation, but with 499 ms clock skew.
+    // If identity followed the corrected instant, this would land on 12:00:00
+    // (crossing both 60s and 300s boundaries) and be misclassified as a new observation,
+    // double-counting the sample and creating split buckets.
+    // With source_observed_at as identity, it is classified as a Replay.
+    let report_2 = with_skew(
+        fixture_report(&agent_id, 2, &host, &source_observed_at),
+        499,
+    );
+    let (status, body) = submit(&harness, &credential, report_2).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let agent_rows = format!("agent_id = '{agent_id}'");
+
+    // 1. Exactly 1 raw sample is kept.
+    assert_eq!(
+        harness
+            .count_where(
+                "host_metric_samples",
+                &format!("{agent_rows} AND metric = 'cpu_percent'")
+            )
+            .await,
+        1,
+        "carried sample with boundary-crossing skew must result in exactly 1 raw sample"
+    );
+
+    // 2. observation_count incremented exactly once (replayed_count = 1).
+    let from = auth::format_rfc3339(instant - time::Duration::hours(1));
+    let to = auth::format_rfc3339(auth::now_utc() + time::Duration::minutes(1));
+    let (status, body) = read_history(
+        &harness,
+        Some(&session.cookie),
+        &agent_history_uri(&agent_id, "cpu_percent", "", Some(&from), Some(&to)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["series"]["observationCount"],
+        Value::from(1),
+        "observationCount must be 1 (second report is a replay): {body}"
+    );
+
+    // Check ledger counts directly in host_metric_series_state
+    let (obs_count, replay_count, corrected_count): (i64, i64, i64) = sqlx::query_as(
+        "SELECT observation_count, replayed_count, corrected_count FROM host_metric_series_state WHERE agent_id = $1 AND metric = 'cpu_percent'"
+    )
+    .bind(&agent_id)
+    .fetch_one(harness.state.db().pool())
+    .await
+    .unwrap();
+    assert_eq!(obs_count, 1, "ledger observation_count must be 1");
+    assert_eq!(replay_count, 1, "ledger replayed_count must be 1");
+    assert_eq!(corrected_count, 0, "ledger corrected_count must be 0");
+
+    // 3. Aggregate bucket only records the sample once for both 60s and 300s grains.
+    for grain in [60, 300] {
+        assert_eq!(
+            harness
+                .count_where(
+                    "host_metric_aggregates",
+                    &format!("{agent_rows} AND metric = 'cpu_percent' AND grain_seconds = {grain}")
+                )
+                .await,
+            1,
+            "exactly 1 {grain}s aggregate bucket recorded"
+        );
+        let sample_count: i64 = sqlx::query_scalar(
+            &format!("SELECT sample_count FROM host_metric_aggregates WHERE agent_id = $1 AND metric = 'cpu_percent' AND grain_seconds = {grain}")
+        )
+        .bind(&agent_id)
+        .fetch_one(harness.state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(sample_count, 1, "{grain}s aggregate sample_count must be 1");
+    }
+
+    // Verify source_observed_at and observed_at in the raw table:
+    let (stored_source, stored_observed): (String, String) = sqlx::query_as(
+        "SELECT source_observed_at, observed_at FROM host_metric_samples WHERE agent_id = $1 AND metric = 'cpu_percent'"
+    )
+    .bind(&agent_id)
+    .fetch_one(harness.state.db().pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        stored_source, source_observed_at,
+        "source_observed_at matches Agent raw instant"
+    );
+    // With 501ms skew, instant - 501ms + 500ms is 1 second before source_observed_at
+    let expected_corrected = auth::format_rfc3339(instant - time::Duration::seconds(1));
+    assert_eq!(
+        stored_observed, expected_corrected,
+        "observed_at matches skew-corrected instant on Server clock"
+    );
+
+    // 4. Correction path: Report 3 carries the same source_observed_at with a restated
+    // value and 499 ms skew. The correction must update the existing row's value,
+    // keep observed_at pinned to its initial placement, recompute the original bucket,
+    // and increment corrected_count without creating a second bucket.
+    let mut host_corrected = HostReport::default().mount("/data", 1000, 100);
+    host_corrected.cpu_percent = Some(77.0);
+    let report_3 = with_skew(
+        fixture_report(&agent_id, 3, &host_corrected, &source_observed_at),
+        499,
+    );
+    let (status, body) = submit(&harness, &credential, report_3).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Exactly 1 raw sample remains, with updated value and immutable observed_at:
+    let (corr_val, corr_source, corr_observed): (f64, String, String) = sqlx::query_as(
+        "SELECT value, source_observed_at, observed_at FROM host_metric_samples WHERE agent_id = $1 AND metric = 'cpu_percent'"
+    )
+    .bind(&agent_id)
+    .fetch_one(harness.state.db().pool())
+    .await
+    .unwrap();
+    assert_eq!(corr_val, 77.0, "value updated on correction");
+    assert_eq!(
+        corr_source, source_observed_at,
+        "source_observed_at remains stable"
+    );
+    assert_eq!(
+        corr_observed, expected_corrected,
+        "observed_at stays pinned to initial placement"
+    );
+
+    // Ledger counts reflect exactly 1 observation, 1 replay, 1 correction:
+    let (obs_c, rep_c, cor_c): (i64, i64, i64) = sqlx::query_as(
+        "SELECT observation_count, replayed_count, corrected_count FROM host_metric_series_state WHERE agent_id = $1 AND metric = 'cpu_percent'"
+    )
+    .bind(&agent_id)
+    .fetch_one(harness.state.db().pool())
+    .await
+    .unwrap();
+    assert_eq!(obs_c, 1, "observation_count unchanged on correction");
+    assert_eq!(rep_c, 1, "replayed_count unchanged on correction");
+    assert_eq!(cor_c, 1, "corrected_count incremented to 1");
+
+    // Both grains still have exactly 1 bucket with sample_count = 1 and updated value:
+    for grain in [60, 300] {
+        assert_eq!(
+            harness
+                .count_where(
+                    "host_metric_aggregates",
+                    &format!("{agent_rows} AND metric = 'cpu_percent' AND grain_seconds = {grain}")
+                )
+                .await,
+            1,
+            "still exactly 1 {grain}s aggregate bucket after correction"
+        );
+        let (sc, max_v): (i64, f64) = sqlx::query_as(
+            &format!("SELECT sample_count, max_value FROM host_metric_aggregates WHERE agent_id = $1 AND metric = 'cpu_percent' AND grain_seconds = {grain}")
+        )
+        .bind(&agent_id)
+        .fetch_one(harness.state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(sc, 1, "{grain}s sample_count remains 1 after correction");
+        assert_eq!(
+            max_v, 77.0,
+            "{grain}s max_value recomputed for corrected value"
+        );
+    }
 }
 
 /// Story 51: the Host evidence belongs to the Agent, so every Node page of that

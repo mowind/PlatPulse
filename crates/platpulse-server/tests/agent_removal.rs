@@ -327,8 +327,8 @@ async fn seed_shared_evidence(harness: &Harness, agent_id: &str, node_id: &str) 
         .bind(now).bind(now).execute(pool).await.unwrap();
     sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence, eligible_source_count, contributing_node_id) VALUES ($1, 1, $2, 'high', 1, NULL) ON CONFLICT DO NOTHING")
         .bind(NETWORK_KEY).bind(now).execute(pool).await.unwrap();
-    sqlx::query("INSERT INTO host_metric_samples (agent_id, metric, observed_at, received_at, value) VALUES ($1, 'network_rx_bytes_per_sec', $2, $3, 1.0) ON CONFLICT DO NOTHING")
-        .bind(agent_id).bind(now).bind(now).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO host_metric_samples (agent_id, metric, source_observed_at, observed_at, received_at, value) VALUES ($1, 'network_rx_bytes_per_sec', $2, $3, $4, 1.0) ON CONFLICT DO NOTHING")
+        .bind(agent_id).bind(now).bind(now).bind(now).execute(pool).await.unwrap();
     let rule_key: String = sqlx::query_scalar("SELECT rule_key FROM alert_rules LIMIT 1")
         .fetch_one(pool)
         .await
