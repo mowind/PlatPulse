@@ -2151,8 +2151,11 @@ mod catch_up_tests {
     /// only succeeds against gap rows the Agent Store already holds, so this one
     /// carries no samples: the permit probe needs a real persistence through the
     /// collection path, not the sample bookkeeping.
-    fn collection_report_body(sequence: u64) -> Vec<u8> {
-        let body = spool_backlog_fixture::report_body(BOOT_ID, &now_rfc3339(), sequence);
+    /// The body carries `generated_at`, and the spool stores it again as the
+    /// Report's identity, so a caller passes the same timestamp to both: two
+    /// separate clock reads can straddle a second boundary.
+    fn collection_report_body(generated_at: &str, sequence: u64) -> Vec<u8> {
+        let body = spool_backlog_fixture::report_body(BOOT_ID, generated_at, sequence);
         let mut report: serde_json::Value = serde_json::from_slice(&body).unwrap();
         report["history_gaps"] = serde_json::json!([]);
         serde_json::to_vec(&report).unwrap()
@@ -2661,7 +2664,8 @@ mod catch_up_tests {
             .await
             .expect("the pass must reach its first send");
 
-        let body = collection_report_body(2);
+        let generated_at = now_rfc3339();
+        let body = collection_report_body(&generated_at, 2);
         tokio::time::timeout(
             Duration::from_secs(5),
             persist_immutable_report(
@@ -2670,7 +2674,7 @@ mod catch_up_tests {
                 1,
                 BOOT_ID,
                 2,
-                &now_rfc3339(),
+                &generated_at,
                 &body,
             ),
         )
