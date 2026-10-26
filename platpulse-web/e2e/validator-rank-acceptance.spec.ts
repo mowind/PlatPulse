@@ -8,6 +8,8 @@ import { startDisposableServer, type DisposableServer } from './server-harness'
 
 const VALIDATOR_ID = 'rank-refresh-validator'
 const DETAIL_PATH = '/api/admin/v1/validators/' + VALIDATOR_ID
+/** One 30s refresh interval plus the PlatScan round trip and polling slack. */
+const REFRESH_TRANSITION_TIMEOUT = 45_000
 
 async function insight(server: DisposableServer): Promise<AdminValidatorInsight | null | undefined> {
   const detail = await server.expectAdminGet(DETAIL_PATH, 200) as ValidatorDetail
@@ -27,11 +29,17 @@ test('rank and detail refresh failures remain independently explicit in every Ad
     validatorProvider: {
       timezone: 'UTC',
       deployments: { 'platon-mainnet': replay.baseUrl },
-      refreshSeconds: 5,
+      // Metrics freshness is age-based (two refresh intervals), so the
+      // detail-failure phase below must read "Fresh metrics" for as long as
+      // its ten page loads take after the last good detail. At a 5s refresh
+      // that budget was 10s, which a slower CI page load overran ("Retained
+      // metrics (stale) … Last-good metric age 11s"); 30s leaves a 60s window
+      // and every refresh transition below still lands inside its poll.
+      refreshSeconds: 30,
     },
   })
   try {
-    await expect.poll(async () => (await insight(server))?.rankOutcome, { timeout: 30_000 }).toBe('success')
+    await expect.poll(async () => (await insight(server))?.rankOutcome, { timeout: REFRESH_TRANSITION_TIMEOUT }).toBe('success')
     const good = await insight(server)
     expect(good?.rank).toBe(1)
     expect(good?.rankFreshness).toBe('fresh')
@@ -39,7 +47,7 @@ test('rank and detail refresh failures remain independently explicit in every Ad
     expect(replay.rankingPages.slice(0, 5)).toEqual([1, 2, 3, 4, 5])
 
     replay.setRankingFailure(true)
-    await expect.poll(async () => (await insight(server))?.rankOutcome, { timeout: 30_000 }).toBe('error')
+    await expect.poll(async () => (await insight(server))?.rankOutcome, { timeout: REFRESH_TRANSITION_TIMEOUT }).toBe('error')
     const failed = await insight(server)
     expect(failed?.outcome).toBe('success')
     expect(failed?.freshness).toBe('fresh')
@@ -100,14 +108,14 @@ test('rank and detail refresh failures remain independently explicit in every Ad
       await expect.poll(async () => {
         const current = await insight(server)
         return [current?.outcome, current?.rankOutcome]
-      }, { timeout: 30_000 }).toEqual(['success', 'success'])
+      }, { timeout: REFRESH_TRANSITION_TIMEOUT }).toEqual(['success', 'success'])
       const detailGood = await insight(server)
       expect(detailGood?.lastGoodReceivedAt).toBeTruthy()
       replay.setDetailFailure(true)
       await expect.poll(async () => {
         const current = await insight(server)
         return [current?.outcome, current?.rankOutcome]
-      }, { timeout: 30_000 }).toEqual(['error', 'success'])
+      }, { timeout: REFRESH_TRANSITION_TIMEOUT }).toEqual(['error', 'success'])
       const detailFailed = await insight(server)
       expect(detailFailed?.freshness).toBe('fresh')
       expect(detailFailed?.lastGoodReceivedAt).toBe(detailGood?.lastGoodReceivedAt)

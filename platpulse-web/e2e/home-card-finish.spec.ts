@@ -1,10 +1,11 @@
 import { expect, test, type Locator } from '@playwright/test'
 import type { PublicNetwork, PublicValidatorInsight } from '../src/api/generated'
-import { closeHomeSurface, expectNoHorizontalOverflow, loginAs, openHomeSort } from './helpers'
+import { closeHomeSurface, expectNoHorizontalOverflow, loginAs, openHomeSort, waitForAnimationsToSettle } from './helpers'
 
 // Measure the painted Home cards, not an internal layout hook. Row membership
 // comes from their actual top coordinates, so one-column layouts work too.
 async function cardGeometry(cards: Locator) {
+  await waitForAnimationsToSettle(cards.page())
   await expect.poll(() => cards.evaluateAll(elements => elements.every(card =>
     Math.abs(card.getBoundingClientRect().top - card.parentElement!.getBoundingClientRect().top) <= 1,
   ))).toBe(true)
@@ -210,6 +211,7 @@ test('mixed Validator identity states keep per-row heights without empty placeho
         'Confirmed non-Validator status retained.',
         null,
       ])
+    await waitForAnimationsToSettle(page)
     const geometry = await cards.evaluateAll(elements => elements.map(card => {
       const box = card.getBoundingClientRect()
       const region = card.querySelector('[data-node-region="validator"]')!.getBoundingClientRect()
@@ -270,6 +272,7 @@ test('a constrained Home container chooses readable tracks independently of view
     // Constrain the rendered page, not its viewport or a test-only component prop.
     await page.locator('main').evaluate(element => { element.style.maxWidth = '600px' })
     await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark)
+    await waitForAnimationsToSettle(page)
     const geometry = await cards.evaluateAll(elements => elements.map(card => {
       const rect = card.getBoundingClientRect()
       return { x: rect.x, y: rect.y, width: rect.width }

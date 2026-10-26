@@ -5,6 +5,7 @@ import {
   expectVisibleInteractiveTargets,
   loginAs,
   setPageZoom,
+  waitForAnimationsToSettle,
 } from './helpers'
 
 /**
@@ -215,7 +216,8 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
     await expect(page.getByRole('link', { name: PUBLIC_NETWORK_NAME, exact: true })).toHaveCount(0)
     await expect(page.getByRole('link', { name: /View Node Details/ })).toHaveCount(0)
 
-    // Touch target: the Node Detail title link stays at least 44px.
+    // Touch target: the Node Detail title link stays at least 44px at rest.
+    await waitForAnimationsToSettle(page)
     const box = await cardLink.boundingBox()
     expect(box!.width).toBeGreaterThanOrEqual(44)
     expect(box!.height).toBeGreaterThanOrEqual(44)

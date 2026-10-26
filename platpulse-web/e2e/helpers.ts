@@ -254,12 +254,40 @@ export async function expectResourceColumns(scope: Locator, values?: string[]) {
   if (values) await expect(region.locator('[data-slot="resource-value"]')).toHaveText(values)
 }
 
+/** Wait until every finite animation and transition on the page has finished.
+ *
+ * Geometry contracts (44px targets, row heights, track counts) describe the
+ * page at rest. The Home Node cards play a staggered entrance (issue #278:
+ * `translateY(8px) scale(0.985)` -> none, up to 250ms delay + 220ms) whenever
+ * the grid mounts or a Network/filter/Sort change remounts it, so a box read
+ * during that entrance is a transient frame, not the layout under test (a 44px
+ * link reads 43.3px at the first keyframe). Infinite animations (spinners,
+ * pulses) never finish and are ignored. Polled every animation frame, so a
+ * remount that starts a fresh entrance is waited for too. */
+export async function waitForAnimationsToSettle(page: Page) {
+  await page.waitForFunction(() => document.getAnimations().every((animation) => {
+    if (animation.playState !== 'running' && !animation.pending) return true
+    return animation.effect?.getComputedTiming().endTime === Infinity
+  }))
+}
+
 /** Every visible control in a fixed-viewport scenario must remain a usable
  * 44px touch target. The selector is intentionally limited to native
  * interactive elements; it does not depend on component implementation
- * classes or private state. */
+ * classes or private state. Measured at rest (see waitForAnimationsToSettle),
+ * and re-read until it holds: a debounced search remounts the Node grid up to
+ * 150ms after the keystroke that precedes this check, so its entrance can
+ * start after the first settle. A genuinely undersized target never recovers
+ * and still fails with the controls it lists. */
 export async function expectVisibleInteractiveTargets(page: Page) {
-  const undersized = await page.locator('a[href],button,input,select,textarea,summary').evaluateAll((elements) =>
+  await expect.poll(async () => {
+    await waitForAnimationsToSettle(page)
+    return undersizedInteractiveTargets(page)
+  }, { message: 'visible interactive controls must have hit-tested targets of at least 44px' }).toEqual([])
+}
+
+function undersizedInteractiveTargets(page: Page) {
+  return page.locator('a[href],button,input,select,textarea,summary').evaluateAll((elements) =>
     elements.flatMap((element) => {
       const html = element as HTMLElement
       const style = getComputedStyle(html)
@@ -303,7 +331,6 @@ export async function expectVisibleInteractiveTargets(page: Page) {
         : []
     }),
   )
-  expect(undersized, 'visible interactive controls must have hit-tested targets of at least 44px').toEqual([])
 }
 
 /** Simulate browser zoom by applying its equivalent reduced CSS viewport. */

@@ -758,11 +758,16 @@ PY
 # longer, so the healthy/current assertions on Node A would age out
 # mid-run without a refresher. This mirrors the existing seeding pattern
 # (the harness already provisions fixtures directly in SQLite); Node B
-# stays deliberately stale. The refresher is bounded to 60 minutes so the
-# one-minute chart samples survive the whole fixed-viewport matrix (a cold CI
-# runner can exceed 20 minutes), and self-terminates when the suite's
+# stays deliberately stale. The refresher lives exactly as long as the
+# Server: no wall-clock bound, because the fixed-viewport matrix has no fixed
+# length (it passed 80 minutes on CI once the routes became lazy, #275) and a
+# refresher that stops before the last project leaves desktop-1440 reading
+# aged-out chart samples. It stays in this script's process group, so
+# Playwright's teardown kills it with the Server, and it exits on its own once
+# the Server process (this shell's PID after the final `exec`) or the
 # temporary state directory is gone.
-timeout 3600 python3 - "$STATE_DIR/platpulse.db" "$WEB_DIR/e2e" > /dev/null 2>&1 <<'REFRESH' &
+python3 - "$STATE_DIR/platpulse.db" "$WEB_DIR/e2e" "$$" > /dev/null 2>&1 <<'REFRESH' &
+import os
 import sqlite3
 import sys
 import time
@@ -773,9 +778,24 @@ path = sys.argv[1]
 sys.path.insert(0, sys.argv[2])
 sys.dont_write_bytecode = True
 import metric_buckets
+server_pid = int(sys.argv[3])
 node_a = "0195f2a1-0014-4014-8014-000000000014"
 agent_a = "0195f2a1-0011-4011-8011-000000000011"
-while True:
+
+
+def server_alive():
+    if not os.path.exists(path):
+        return False
+    try:
+        os.kill(server_pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
+
+
+while server_alive():
     fresh = (datetime.now(timezone.utc) - timedelta(seconds=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         with sqlite3.connect(path, timeout=5) as db:
