@@ -298,6 +298,20 @@ export default function HomeDashboard({
   const geoStatus = geoMapStatus(geoOverview, { loading, hasProjection })
   const streamLabel = realtimeStreamLabel(realtimeStatus)
 
+  // The card grid is keyed by the reading it shows, so a Network, filter,
+  // Sort, or view change remounts it. Its cards play the staggered entrance
+  // (#278, webui.md §15.39) only on such a change: the first grid Home shows
+  // appears at rest, as Emerald's switch transition does not run on appear.
+  const gridKey = `${scope.network}:${writeHomeFilters({ ...filters, network: scope.network }).toString()}`
+  const showsGrid = !(loading || (error && !hasLastGood)) && matching.length > 0 && filters.view !== 'list'
+  const [gridEntrance, setGridEntrance] = useState<{ key: string | null; animate: boolean }>({
+    key: null,
+    animate: false,
+  })
+  if (showsGrid && gridEntrance.key !== gridKey) {
+    setGridEntrance({ key: gridKey, animate: gridEntrance.key !== null })
+  }
+
   return (
     <section aria-label="Home">
       <div className="px-4 pt-4" data-realtime-status={realtimeStatus}>
@@ -441,9 +455,10 @@ export default function HomeDashboard({
                 <HomeNodeList records={matching} linkState={nodeLinkState} registerRow={registerNodeRow} />
               ) : (
                 <div
-                  key={`${scope.network}:${writeHomeFilters({ ...filters, network: scope.network }).toString()}`}
+                  key={gridKey}
                   className="grid grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(min(100%,22.5rem),1fr))]"
                   data-slot="node-grid"
+                  data-entrance={gridEntrance.animate && gridEntrance.key === gridKey ? 'stagger' : undefined}
                   aria-label="Active Nodes"
                 >
                   {matching.map(({ network, node }, index) => (

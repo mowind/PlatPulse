@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { render } from '@testing-library/react'
+import { act, render } from '@testing-library/react'
+import { useState } from 'react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import {
   nodeCardStaggerDelay,
@@ -130,26 +131,26 @@ const mockNetworkTestnet: PublicNetwork = {
   nodes: [mockNodeTestnet],
 }
 
-function renderHome(networks: PublicNetwork[], search = '') {
-  const router = createMemoryRouter(
-    [
-      {
-        path: '/',
-        element: (
-          <HomeDashboard
-            networks={networks}
-            realtimeStatus="connected"
-            online
-            resetting={false}
-            error={null}
-            loading={false}
-          />
-        ),
-      },
-    ],
-    { initialEntries: [{ pathname: '/', search }] },
-  )
-  return render(<RouterProvider router={router} />)
+function renderHome(networks: PublicNetwork[], search = '', initiallyLoading = false) {
+  let finishLoading = () => {}
+  function Harness() {
+    const [loading, setLoading] = useState(initiallyLoading)
+    finishLoading = () => setLoading(false)
+    return (
+      <HomeDashboard
+        networks={loading ? [] : networks}
+        realtimeStatus="connected"
+        online
+        resetting={false}
+        error={null}
+        loading={loading}
+      />
+    )
+  }
+  const router = createMemoryRouter([{ path: '/', element: <Harness /> }], {
+    initialEntries: [{ pathname: '/', search }],
+  })
+  return { ...render(<RouterProvider router={router} />), router, finishLoading: () => finishLoading() }
 }
 
 
@@ -229,6 +230,32 @@ describe('Node card staggered entrance animation (Issue #278)', () => {
     })
   })
 
+  describe('entrance trigger (webui.md §15.39: Network/filter change only)', () => {
+    const entrance = (container: HTMLElement) =>
+      container.querySelector('[data-slot="node-grid"]')?.getAttribute('data-entrance') ?? null
+
+    it('shows the first grid at rest, including after the projection finishes loading', () => {
+      expect(entrance(renderHome([mockNetworkMainnet]).container)).toBeNull()
+
+      const loading = renderHome([mockNetworkMainnet], '', true)
+      expect(loading.container.querySelector('[data-slot="node-grid"]')).toBeNull()
+      act(() => loading.finishLoading())
+      expect(loading.container.querySelector('[data-slot="node-grid"]')).not.toBeNull()
+      expect(entrance(loading.container)).toBeNull()
+    })
+
+    it('staggers the cards when a filter or Network change remounts the grid', async () => {
+      const { container, router } = renderHome([mockNetworkMainnet, mockNetworkTestnet])
+      expect(entrance(container)).toBeNull()
+
+      await act(() => router.navigate('/?network=testnet'))
+      expect(entrance(container)).toBe('stagger')
+
+      await act(() => router.navigate('/?health=unhealthy'))
+      expect(entrance(container)).toBe('stagger')
+    })
+  })
+
   describe('emerald.css animation keyframes and accessibility compliance', () => {
     it('defines @keyframes node-card-enter with translateY, scale, and opacity', () => {
       expect(emeraldCss).toContain('@keyframes node-card-enter')
@@ -239,7 +266,7 @@ describe('Node card staggered entrance animation (Issue #278)', () => {
     })
 
     it('binds animation to [data-slot="node-card-frame"] with var(--node-item-delay) and backwards fill-mode', () => {
-      expect(emeraldCss).toContain("[data-slot='node-card-frame']")
+      expect(emeraldCss).toContain("[data-slot='node-grid'][data-entrance='stagger'] > [data-slot='node-card-frame']")
       expect(emeraldCss).toContain('animation-name: node-card-enter')
       expect(emeraldCss).toContain('var(--node-item-delay, 0ms)')
       expect(emeraldCss).toContain('animation-fill-mode: backwards')
