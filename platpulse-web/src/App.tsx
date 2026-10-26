@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { lazy, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createBrowserRouter, Navigate, useLocation } from 'react-router'
 import { RouterProvider } from 'react-router/dom'
 import HomeLayout from './layouts/HomeLayout'
@@ -14,45 +14,12 @@ import { SURFACE_CARD_STATIC } from './lib/surface'
 import HomeDashboard from './components/HomeDashboard'
 import { useHomeRealtimeContext } from './layouts/HomeLayout'
 import { RouteErrorFallback, withSuspense } from './components/RouteFallback'
+import { lazyNamed, lazyRoute, preloadLazyRoutes } from './lazyRoute'
 
 // Lazy-loaded routes (issue #275): Admin management pages, AdminLayout and LoginPage
 // are dynamically imported so the public Home screen does not download or parse
-// the ~27 admin route components upfront.
-const routePromises: Promise<unknown>[] = []
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function lazyRoute<T extends React.ComponentType<any>>(
-  factory: () => Promise<{ default: T }>,
-) {
-  let Component: T | null = null
-
-  if (import.meta.env.MODE === 'test') {
-    routePromises.push(
-      factory().then((mod) => {
-        Component = mod.default
-      }),
-    )
-  }
-
-  const Lazy = lazy(factory)
-
-  return function LazyRouteWrapper(props: React.ComponentProps<T>) {
-    if (Component) {
-      const Comp = Component
-      return <Comp {...props} />
-    }
-    return <Lazy {...props} />
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function lazyNamed<T extends Record<string, any>, K extends keyof T>(
-  factory: () => Promise<T>,
-  name: K,
-) {
-  return lazyRoute(() => factory().then((mod) => ({ default: mod[name] })))
-}
-
+// the ~27 admin route components upfront; main.tsx preloads them once the app
+// has started (see lazyRoute.tsx).
 const LoginPage = lazyRoute(() => import('./pages/LoginPage'))
 const AdminLayout = lazyRoute(() => import('./layouts/AdminLayout'))
 const AdminHome = lazyRoute(() => import('./pages/AdminHome'))
@@ -89,7 +56,7 @@ const AdminNotificationDeliveryDetailPage = lazyNamed(() => import('./pages/Admi
 const AdminNotificationChannels = lazyRoute(() => import('./pages/AdminNotificationChannels'))
 
 if (import.meta.env.MODE === 'test') {
-  await Promise.all(routePromises)
+  await preloadLazyRoutes()
 }
 
 /**
