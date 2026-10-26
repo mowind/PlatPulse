@@ -24,6 +24,12 @@ import type { HomeReturnState } from '../homeReturn'
 import { LinkedValidatorSection, validatorDataStatus, validatorIdentityStatement, type ValidatorDataStatus } from './LinkedValidator'
 import { ValidatorActivityBadge } from './ValidatorActivityBadge'
 import { HomeResourceMetrics } from './HomeResourceMetrics'
+import {
+  NODE_CARD_DISCLOSURES,
+  RESYNC_DISCLOSURES,
+  formatNodeIdentityDescription,
+  formatResourceMetricsExplanation,
+} from '../lib/nodeDisclosures'
 import { SURFACE_CARD_INTERACTIVE } from '../lib/surface'
 import { cn } from '../lib/utils'
 
@@ -180,33 +186,15 @@ export const HomeNodeCard = memo(function HomeNodeCard({ network, node, linkStat
                   <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm">
                     <DialogTitle className="pr-10 [overflow-wrap:anywhere]">{homeNodeLabel(node)}</DialogTitle>
                     <DialogDescription className="[overflow-wrap:anywhere]">
-                      Network: {network.displayName} · Uptime {formatDuration(node.processUptimeMs)}. Node role describes
-                      the Node’s consensus membership, not its linked Validator’s current staking validity or the
-                      freshness of Provider data.
+                      {formatNodeIdentityDescription(network.displayName, formatDuration(node.processUptimeMs))}
                     </DialogDescription>
-                    <p className="text-sm text-muted-foreground">
-                      Active Nodes are in the latest Agent Inventory, not necessarily online. Healthy reflects
-                      successful, fresh RPC, sync and consensus observations. Process errors, a stopped or Unknown
-                      process state, or Network Identity Mismatch prevent Healthy; disabled process monitoring does not.
-                      Healthy does not mean synchronization is complete; Resyncing is shown independently.
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      Home Attention counts Active Nodes that are not Healthy, including Unknown. It counts Active Nodes
-                      and nothing else: a chain-height difference never enters it, and Observing is not an abnormal state.
-                      While nothing is narrowed, these counters and the Peer map read the whole Network selection. Once
-                      search, health, or Validator status narrows the list, they read the Active Nodes that matched
-                      instead, so a Node's countries count only where that Node is listed — while the two cumulative
-                      Validator cells keep the Network selection, and the list still reports how many Nodes matched.
-                    </p>
+                    <p className="text-sm text-muted-foreground">{NODE_CARD_DISCLOSURES.activeAndHealth}</p>
+                    <p className="text-sm text-muted-foreground">{NODE_CARD_DISCLOSURES.attention}</p>
                     <p data-slot="node-head-explanation" className="text-sm text-muted-foreground">
                       Block Height: {headComparisonExplanation(node)}
                     </p>
                     <p className="text-sm text-muted-foreground">
-                      CPU and Memory are the monitored PlatON process's own percentages, not the Host's. Disk is the
-                      Node data directory's size as a share of the capacity of the filesystem that holds it, not
-                      whole-filesystem fullness. Speed is the Agent Host's own interface throughput, drawn on every Node
-                      card that Host reports for, so it is not a rate attributable to this Node alone.
-                      {nodeDataBytes ? ' Node data: ' + nodeDataBytes + '.' : ''}
+                      {formatResourceMetricsExplanation(nodeDataBytes)}
                     </p>
                     {peerObservation && (
                       <p className="text-sm text-muted-foreground">Peer observation: {peerObservation}.</p>
@@ -429,17 +417,13 @@ export function ResyncCue({ node }: { node: PublicNode }) {
       </DialogTrigger>
       <DialogContent className="max-h-[85dvh] overflow-y-auto rounded-md shadow-sm">
         <DialogTitle>Resync progress</DialogTitle>
-        <DialogDescription>
-          The last recorded advance toward the Historical High-Water Mark, not the latest report time. The target is the
-          Node’s retained historical height, not the Network Head.
-        </DialogDescription>
+        <DialogDescription>{RESYNC_DISCLOSURES.target}</DialogDescription>
         <p className="m-0 text-sm tabular-nums">
           {formatNumber(current)} / {formatNumber(target)}
         </p>
         {percent === null && (
           <p data-slot="resync-progress-unavailable" className="m-0 text-sm">
-            No percentage is asserted: a percentage needs a valid current Block Height and a valid, computable
-            Historical High-Water Mark target.
+            {RESYNC_DISCLOSURES.percentageUnavailable}
           </p>
         )}
         {progress !== null && progress.approximate && (
