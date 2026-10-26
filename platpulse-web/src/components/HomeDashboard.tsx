@@ -38,6 +38,8 @@ import {
   type NodeRowRefs,
 } from './HomeNodeList'
 
+import { nodeCardStaggerDelay } from './nodeCardStagger'
+
 export { RATE_DIRECTION_CLASSES, HomeResourceMetrics } from './HomeResourceMetrics'
 export { HomeToolbar } from './HomeToolbar'
 export { HomeNodeCard } from './HomeNodeCard'
@@ -439,6 +441,7 @@ export default function HomeDashboard({
                 <HomeNodeList records={matching} linkState={nodeLinkState} registerRow={registerNodeRow} />
               ) : (
                 <div
+                  key={`${scope.network}:${writeHomeFilters({ ...filters, network: scope.network }).toString()}`}
                   className="grid grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(min(100%,22.5rem),1fr))]"
                   data-slot="node-grid"
                   aria-label="Active Nodes"
@@ -450,6 +453,7 @@ export default function HomeDashboard({
                       node={node}
                       linkState={nodeLinkState(node.nodeId, index, matching.length)}
                       registerRow={registerNodeRow}
+                      index={index}
                     />
                   ))}
                 </div>
@@ -467,6 +471,7 @@ type HomeNodeCardFrameProps = {
   node: PublicNode
   linkState: HomeReturnState
   registerRow: NodeRowRefs
+  index: number
 }
 
 const HomeNodeCardFrame = memo(function HomeNodeCardFrame({
@@ -474,6 +479,7 @@ const HomeNodeCardFrame = memo(function HomeNodeCardFrame({
   node,
   linkState,
   registerRow,
+  index,
 }: HomeNodeCardFrameProps) {
   const handleRef = useCallback(
     (element: HTMLElement | null) => {
@@ -482,8 +488,18 @@ const HomeNodeCardFrame = memo(function HomeNodeCardFrame({
     [node.nodeId, registerRow],
   )
 
+  const delayMs = nodeCardStaggerDelay(index)
+  const style = {
+    '--node-item-delay': `${delayMs}ms`,
+  } as React.CSSProperties
+
   return (
-    <div data-slot="node-card-frame" className="min-w-0" ref={handleRef}>
+    <div
+      data-slot="node-card-frame"
+      className="min-w-0"
+      style={style}
+      ref={handleRef}
+    >
       <HomeNodeCard network={network} node={node} linkState={linkState} />
     </div>
   )

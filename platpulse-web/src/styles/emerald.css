@@ -181,6 +181,11 @@
     transition-delay: 0s !important;
     scroll-behavior: auto !important;
   }
+  [data-slot='node-card-frame'] {
+    animation: none !important;
+    transform: none !important;
+    opacity: 1 !important;
+  }
 }
 
 /* Native disclosure expansion (PlatPulse deviation): Emerald ships no
@@ -448,9 +453,36 @@
  * no grid row is equalized with another, so every card is as tall as its own
  * content and only the row an exceptional card sits in grows. Cards inside one
  * row still stretch to that row, which is what keeps their bottoms aligned. */
+
+/* Staggered node-card entrance animation (#278, Emerald deviation 43):
+ * Reference: komari-theme-emerald HomeView.vue (.node-card-switch-enter-active).
+ * Subtle entrance: translateY(8px), scale(0.985), and opacity (0 -> 1) over 220ms
+ * with cubic-bezier(0.22, 1, 0.36, 1) and per-card delay var(--node-item-delay).
+ * animation-fill-mode: backwards applies the initial keyframe during the stagger
+ * delay, then releases the transform at rest so [data-slot='node-card-frame']
+ * does not create an isolated stacking context, preserving hover:z-1 lift
+ * and tooltips (webui.md §15.27). */
+@keyframes node-card-enter {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 @layer components {
   [data-slot='node-grid'] > * { height: 100%; }
   [data-slot='node-grid'] [data-slot='node-card'] { height: 100%; }
+  [data-slot='node-card-frame'] {
+    animation-name: node-card-enter;
+    animation-duration: 220ms;
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+    animation-delay: var(--node-item-delay, 0ms);
+    animation-fill-mode: backwards;
+  }
   [data-slot='node-card'] [data-slot='card-x-content'] {
     display: grid;
     row-gap: 0.625rem;
