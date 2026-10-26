@@ -41,7 +41,7 @@ cargo test --workspace
 # PLATPULSE_TEST_STORAGE=postgres PLATPULSE_TEST_POSTGRES_URL=postgres://user:pass@host:5432/postgres cargo test --workspace
 # A SQLite-only test is annotated `#[cfg_attr(storage_postgres, ignore = "<reason>")]`; crates/platpulse-server/build.rs
 # turns PLATPULSE_TEST_STORAGE into that cfg so a PostgreSQL run reports the test as ignored with its reason, never passed.
-cargo deny check && cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2026-0381
+cargo deny check && cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2026-0381 --ignore RUSTSEC-2026-0387
 
 # Design references: "design §X.Y" = docs/design/platpulse.md, "webui.md §X.Y" = docs/design/webui.md
 python3 scripts/check-design-refs.py

@@ -916,8 +916,12 @@ compatible replacement yet. `RUSTSEC-2026-0381` (`webpki-roots` 0.26.11, the
 bundled root store Alloy's WebSocket transport pulls through
 tokio-tungstenite) is ignored by both gates: the advisory patches only the 1.0
 line, every published tungstenite release through 0.30 still requires `^0.26`,
-and the workspace's own 1.0 root store is on the patched release. See the
-residual-risk entry in the security review. The remaining cargo-audit warnings stay visible in
+and the workspace's own 1.0 root store is on the patched release.
+`RUSTSEC-2026-0387` (`crypto-bigint` 0.5.5, non-constant-time arithmetic) is
+ignored by both gates: it arrives through Alloy's k256/elliptic-curve 0.13 stack,
+the fix exists only in the incompatible 0.7 line, and PlatPulse never holds a
+secret key (the Agent never signs; it only parses public keys and public
+signatures). See the residual-risk entries in the security review. The remaining cargo-audit warnings stay visible in
 the evidence for release signoff. Checksums and SBOMs are
 integrity and inventory metadata only;
 they are not artifact signatures. Until an artifact-signing workflow is added,

@@ -142,7 +142,7 @@ Quality gates for both halves of the workspace:
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
-cargo deny check && cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2026-0381
+cargo deny check && cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253 --ignore RUSTSEC-2026-0381 --ignore RUSTSEC-2026-0387
 
 # Design section references in code, tests, and Web comments
 python3 scripts/check-design-refs.py

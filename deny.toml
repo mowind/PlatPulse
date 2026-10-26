@@ -9,7 +9,12 @@
 # only the 1.0 line (>= 1.0.10, which this workspace also resolves and keeps
 # patched). Removing it needs the Alloy fork to offer native roots; the
 # residual risk is recorded in docs/security-review.md.
-ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2024-0436", "RUSTSEC-2026-0381"]
+# `crypto-bigint` 0.5.5 (RUSTSEC-2026-0387, non-constant-time arithmetic) comes
+# from Alloy's k256/elliptic-curve 0.13 stack; the fix is only in 0.7.6+, which
+# no Alloy release depends on. PlatPulse holds no secret key: the Agent never
+# signs, and only parses public keys and public signatures, so there is no
+# secret for a timing side channel to leak. Recorded in docs/security-review.md.
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2024-0436", "RUSTSEC-2026-0381", "RUSTSEC-2026-0387"]
 
 [licenses]
 allow = [
