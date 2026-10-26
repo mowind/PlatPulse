@@ -340,10 +340,16 @@ test.describe('Converged Public Home (issue #102)', () => {
     await loginAs(page)
 
     // Narrow to the convergence Network first so tab order is bounded, then
-    // tab to the whole-card Node H link and activate with Enter.
-    await page.getByRole('tab', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()
+    // tab to the whole-card Node H link and activate with Enter. The Network
+    // tabs activate on focus and commit through navigation, and each scope
+    // change remounts the card grid: wait for the narrowed scope to commit and
+    // start from its own (already selected) tab, so no later commit can
+    // remount the grid under the focused card link.
+    const convergenceTab = page.getByRole('tab', { name: CONVERGENCE_NETWORK_NAME, exact: true })
+    await convergenceTab.click()
+    await expect(convergenceTab).toHaveAttribute('aria-selected', 'true')
     await expect(nodeCard(page, /Node H/)).toBeVisible({ timeout: 15_000 })
-    await page.getByRole('tab', { name: 'All Networks', exact: true }).focus()
+    await convergenceTab.focus()
 
     let activeHref = ''
     for (let i = 0; i < 30; i++) {
