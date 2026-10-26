@@ -2300,6 +2300,34 @@ mod tests {
         assert_eq!(provider.texts.lock().unwrap().len(), 1);
     }
 
+    /// Two test commands with different request ids racing the cooldown must
+    /// produce exactly one send and one refusal (issue #280). On the
+    /// PostgreSQL work connections both once read "no test inside the
+    /// cooldown" before either wrote its ledger row, and both reached the
+    /// provider. Each round runs the two commands truly in parallel.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn different_request_ids_racing_the_cooldown_send_exactly_once() {
+        for round in 0..6 {
+            let (_dir, state, provider) = test_state().await;
+            let commands = ["a", "b"].map(|suffix| {
+                let state = state.clone();
+                let command_id = format!("req-race-{round}-{suffix}");
+                tokio::spawn(async move { test_command(&state, &command_id).await.status() })
+            });
+            let mut statuses = Vec::new();
+            for command in commands {
+                statuses.push(command.await.unwrap());
+            }
+            statuses.sort();
+            assert_eq!(
+                statuses,
+                vec![StatusCode::OK, StatusCode::TOO_MANY_REQUESTS],
+                "round {round}: one command sends, the other is inside its cooldown"
+            );
+            assert_eq!(provider.texts.lock().unwrap().len(), 1);
+        }
+    }
+
     #[tokio::test]
     async fn worker_processes_retry_schedule_until_dead_letter() {
         let (_dir, state, _provider) = test_state().await;

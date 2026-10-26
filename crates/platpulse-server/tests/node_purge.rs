@@ -1812,3 +1812,57 @@ async fn v2_transfer_conditions_are_evaluated_even_when_the_declaration_is_uncha
     assert_eq!(owner_now, target_agent);
     let _ = late;
 }
+
+/// A Report of the Node's own Agent racing the Owner's Purge must never
+/// rebuild the Node the Purge deletes (issue #280). The Report reads the
+/// purge tombstone and then upserts the projection; on the PostgreSQL work
+/// connections a Purge committing between those two steps once left a live
+/// Node row next to its tombstone. Each round runs the two writes truly in
+/// parallel: whichever order they serialize in, the Purge wins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_report_racing_the_purge_never_rebuilds_the_purged_node() {
+    for round in 0..6u64 {
+        let harness = std::sync::Arc::new(Harness::boot().await);
+        let owner = login(&harness, OWNER_LOGIN_BODY).await;
+        let (agent_id, credential) = enroll_agent(&harness, &owner).await;
+        let first = fixture_report(&agent_id, 1);
+        let node_id = first.inventory.nodes[0].node_id.to_string();
+        let (status, value) = post_report(&harness, &credential, &first).await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+        assert_eq!(value["receipt"]["disposition"], "accepted", "{value}");
+
+        let mut next = fixture_report(&agent_id, 1);
+        next.report_sequence = first.report_sequence + 1;
+        next.report_id = format!("0195f2a1-0031-4031-8031-{:012}", 31 + round)
+            .parse()
+            .unwrap();
+
+        let report = tokio::spawn({
+            let harness = std::sync::Arc::clone(&harness);
+            async move { post_report(&harness, &credential, &next).await }
+        });
+        let purge = tokio::spawn({
+            let harness = std::sync::Arc::clone(&harness);
+            let node_id = node_id.clone();
+            let session = Session {
+                cookie: owner.cookie.clone(),
+                csrf: owner.csrf.clone(),
+            };
+            async move { purge_node(&harness, &session, &node_id).await }
+        });
+        purge.await.unwrap();
+        let (status, value) = report.await.unwrap();
+        assert_eq!(status, StatusCode::OK, "{value}");
+
+        assert_eq!(
+            node_row_count(&harness, &node_id).await,
+            0,
+            "a Report committed after the Purge rebuilt the Node (round {round}): {value}"
+        );
+        assert_eq!(
+            count_for_node(&harness, "current_node_chain_observations", &node_id).await,
+            0,
+            "a Report committed after the Purge wrote the Node's current observation"
+        );
+    }
+}

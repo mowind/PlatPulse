@@ -650,6 +650,11 @@ pub(crate) async fn purge_node(
             "confirmation does not match the Node being deleted",
         );
     }
+    // A Report admitting this Node reads its purge tombstone before it
+    // upserts the projection; holding the Node fence keeps a Purge from
+    // committing between those two steps and the Report rebuilding the Node
+    // it has just deleted (issue #280).
+    let _node_fence = state.write_fences().nodes.hold(&node_id).await;
     match crate::node_purge::execute(state.db().pool(), &node_id, &principal.0.user_id).await {
         Ok(Some(outcome)) => {
             // A purge is a collection change for both namespaces. The Admin
@@ -935,6 +940,18 @@ pub(crate) async fn remove_agent(
             "confirmation does not match the Agent being removed",
         );
     }
+    // Agent Removal purges every owned Node through the Node Purge path, so it
+    // shares the Purge's boundaries (issue #280): the Agent fence keeps a
+    // Report already past authentication from committing between the removal's
+    // reads and its deletes, and the Node fences keep a Transfer of a confirmed
+    // Node from being created alongside it. A confirmed set that no longer
+    // matches the owned Nodes is refused by the removal itself.
+    let fences = state.write_fences();
+    let _agent_fence = fences.agents.hold(&agent_id).await;
+    let _node_fences = fences
+        .nodes
+        .hold_all(body.confirmed_node_ids.iter().cloned())
+        .await;
     match crate::agent_removal::execute(
         state.db().pool(),
         &agent_id,
@@ -7414,6 +7431,10 @@ pub(crate) async fn create_node_transfer(
     let now_text = crate::auth::format_rfc3339(crate::auth::now_utc());
     let expires_at =
         crate::auth::format_rfc3339(crate::auth::now_utc() + time::Duration::hours(expiry_hours));
+    // The owner this Transfer is created from must still own the Node when it
+    // commits; a Report admitting or completing a Transfer for the same Node
+    // writes ownership under the same fence (issue #280).
+    let _node_fence = state.write_fences().nodes.hold(&node_id).await;
     let mut tx = match state.db().pool().begin().await {
         Ok(tx) => tx,
         Err(_) => {
@@ -7762,6 +7783,30 @@ pub(crate) async fn cancel_node_transfer(
     if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, false) {
         return response;
     }
+    // A Report completing this Transfer and the Owner cancelling it decide
+    // on the same pending row; both hold the Transfer's Node fence so exactly
+    // one of them wins (issue #280). A Transfer never changes its Node, so the
+    // Node ID read before the fence is the one the fence must cover.
+    let transfer_node: Result<Option<String>, sqlx::Error> =
+        sqlx::query_scalar("SELECT node_id FROM node_transfers WHERE transfer_id=$1")
+            .bind(&transfer_id)
+            .fetch_optional(state.db().pool())
+            .await;
+    let transfer_node = match transfer_node {
+        Ok(node) => node,
+        Err(_) => {
+            return mutation_error(
+                &request_id.0,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "server database is unavailable",
+            );
+        }
+    };
+    let _node_fence = match &transfer_node {
+        Some(node_id) => Some(state.write_fences().nodes.hold(node_id).await),
+        None => None,
+    };
     let mut tx = match state.db().pool().begin().await {
         Ok(tx) => tx,
         Err(_) => {

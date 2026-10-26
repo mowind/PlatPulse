@@ -1045,6 +1045,17 @@ pub async fn send_test_delivery(
     if !validate_request_id(request_id) {
         return Err(TestSendError::InvalidRequestId);
     }
+    // The cooldown is read from the request ledger and restarted by the
+    // ledger row this command writes; two commands with different request ids
+    // must not both read "no recent test" and both send (issue #280). The
+    // channel fence covers exactly that read-to-commit span, and `now` is
+    // taken inside it so a waiter judges the cooldown at the moment it
+    // actually decides.
+    let channel_fence = state
+        .write_fences()
+        .notification_channels
+        .hold("telegram")
+        .await;
     let now = now_utc();
     let channels = state.channels();
     let Some(telegram) = channels.telegram() else {
@@ -1139,6 +1150,9 @@ pub async fn send_test_delivery(
         }
     }
     tx.commit().await.map_err(|_| TestSendError::Unavailable)?;
+    // The next command now sees this one's ledger row; the external send that
+    // follows needs no serialization of its own.
+    drop(channel_fence);
 
     // Claim and send synchronously. If the worker already claimed the
     // Delivery, return it as-is (the worker finishes it; no double send).

@@ -922,6 +922,26 @@ async fn update_network_references(
     network_keys: &[String],
     now: &str,
 ) -> Result<(), sqlx::Error> {
+    // The head is recomputed from every Node of the Network, so it is a
+    // read-then-write over rows other Agents' Reports write concurrently on
+    // the PostgreSQL work connections (issue #280). Locking the Network's head
+    // row before the read serializes the recomputations: a receipt waiting
+    // here reads the Nodes the previous one committed (each statement of a
+    // READ COMMITTED transaction takes a fresh snapshot), so the last head
+    // written counts every source. The rows are locked in ascending key order
+    // so two Reports touching the same Networks never wait on each other in
+    // a cycle. On SQLite the single writer serializes this already, and the
+    // no-op update costs nothing.
+    let mut locked_keys = network_keys.iter().collect::<Vec<_>>();
+    locked_keys.sort();
+    locked_keys.dedup();
+    for network_key in locked_keys {
+        sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence, eligible_source_count, contributing_node_id) VALUES ($1, NULL, $2, 'unknown', 0, NULL) ON CONFLICT(network_key) DO UPDATE SET confidence=network_reference_heads.confidence")
+            .bind(network_key)
+            .bind(now)
+            .execute(&mut **tx)
+            .await?;
+    }
     for network_key in network_keys {
         // The window is judged here on parsed instants: an unparseable evidence
         // instant is never fresh.
@@ -2716,7 +2736,38 @@ async fn ingest_report<I: ReportInventory>(
     // holds no connection, and it is per Agent, so Reports of different Agents
     // still ingest in parallel. SQLite's single write connection made this hold
     // already; the PostgreSQL work connections do not.
-    let _agent_fence = state.ingest_fence().hold(&auth.agent_id).await;
+    let fences = state.write_fences();
+    let _agent_fence = fences.agents.hold(&auth.agent_id).await;
+    // Node admission is a read-then-write invariant across Agents and the
+    // Owner (issue #280): the receipt reads a Node's purge tombstone and owner
+    // and then upserts its projection. Two Agents first declaring one Node, or
+    // a Purge or Transfer committing between that read and the upsert, would
+    // otherwise let a Report take over another Agent's Node or rebuild a
+    // purged one. Every Node this Report names is held, in ascending order,
+    // before any connection is taken.
+    let _node_fences = fences
+        .nodes
+        .hold_all(
+            parsed
+                .inventory
+                .nodes()
+                .iter()
+                .map(|node| node.node_id.to_string())
+                .chain(parsed.nodes.iter().map(|node| node.node_id.to_string()))
+                .chain(
+                    parsed
+                        .block_summaries
+                        .iter()
+                        .map(|sample| sample.node_id.to_string()),
+                )
+                .chain(
+                    parsed
+                        .history_gaps
+                        .iter()
+                        .map(|gap| gap.node_id.to_string()),
+                ),
+        )
+        .await;
     // Hold the retention sweep off this receipt: retention and ingestion write
     // the same series-state rows, and on PostgreSQL the deadlock that follows
     // may abort the Report. Hygiene must never be able to refuse a Report, so
@@ -3284,15 +3335,35 @@ async fn ingest_report<I: ReportInventory>(
         if rejected_nodes.contains(&node.node_id) {
             continue;
         }
-        let result = sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ($1, $2, $3, $4, $5, 'active', 'private', $6, $7, $8) ON CONFLICT(node_id) DO UPDATE SET network_key=excluded.network_key, display_name=COALESCE(nodes.display_name, excluded.display_name), rpc_endpoint=excluded.rpc_endpoint, lifecycle='active', inventory_revision=excluded.inventory_revision, updated_at=excluded.updated_at")
+        let result = sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ($1, $2, $3, $4, $5, 'active', 'private', $6, $7, $8) ON CONFLICT(node_id) DO UPDATE SET network_key=excluded.network_key, display_name=COALESCE(nodes.display_name, excluded.display_name), rpc_endpoint=excluded.rpc_endpoint, lifecycle='active', inventory_revision=excluded.inventory_revision, updated_at=excluded.updated_at WHERE nodes.agent_id=excluded.agent_id")
             .bind(node.node_id.to_string()).bind(&auth.agent_id).bind(node.network_key.as_str()).bind(&node.display_name).bind(node.rpc_endpoint.as_str()).bind(effective_inventory_revision as i64).bind(&now_text).bind(&now_text).execute(&mut *tx).await;
-        if result.is_err() {
-            return error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
+        match result {
+            Ok(done) if done.rows_affected() == 1 => {}
+            // The projection only ever follows its owner: a row another Agent
+            // owns is never overwritten here, even if a writer got past the
+            // Node fence. The receipt is refused whole, so nothing of this
+            // decision commits and the Agent's retry is judged against the
+            // owner it can now see (issue #280).
+            Ok(_) => {
+                tracing::warn!(
+                    node_id = %node.node_id,
+                    "node owner changed between admission and projection; report refused for retry"
+                );
+                return error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Node ownership changed while the report was admitted; retry the report",
+                );
+            }
+            Err(_) => {
+                return error(
+                    &request_id.0,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "Server database is unavailable",
+                );
+            }
         }
         // Record the relations the Server accepted with this Report (issue
         // #221). A first Report opens the intervals; a change of reporting
@@ -8287,6 +8358,101 @@ mod tests {
         assert_eq!(owner, source_agent);
     }
 
+    /// Two Agents first declaring one Node at the same instant must leave it
+    /// with exactly one owner whose projection it carries (issue #280). The
+    /// per-Agent fence serializes one Agent only; on the PostgreSQL work
+    /// connections both receipts once read "no owner", and the second upsert
+    /// kept the first Agent as owner while overwriting the projection with the
+    /// second Agent's declaration — a takeover without a Transfer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_agents_first_declaring_one_node_together_leave_exactly_one_owner() {
+        for _round in 0..6 {
+            let (_dir, state, first_agent) = state_with_agent().await;
+            let second_agent = "0195f2a1-0019-4019-8019-000000000019".to_owned();
+            sqlx::query("INSERT INTO agents (agent_id, agent_epoch, active_boot_id, last_report_sequence, last_received_at, created_at, updated_at) VALUES ($1, 1, NULL, NULL, NULL, $2, $3)")
+                .bind(&second_agent)
+                .bind("2026-08-12T08:00:00Z")
+                .bind("2026-08-12T08:00:00Z")
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+            let first_report: AgentReport = serde_json::from_slice(include_bytes!(
+                "../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+            ))
+            .unwrap();
+            let node_id = first_report.inventory.nodes[0].node_id.to_string();
+            let mut second_report = target_declaration(&first_report, &second_agent, true, false);
+            second_report.inventory.nodes[0].rpc_endpoint = "ws://127.0.0.1:6791".parse().unwrap();
+            second_report.validate().unwrap();
+            let endpoints = [
+                (
+                    first_agent.clone(),
+                    first_report.inventory.nodes[0].rpc_endpoint.to_string(),
+                ),
+                (second_agent.clone(), "ws://127.0.0.1:6791".to_owned()),
+            ];
+
+            let first = tokio::spawn({
+                let state = state.clone();
+                let agent = first_agent.clone();
+                let body = serde_json::to_vec(&first_report).unwrap();
+                async move { submit(&state, &agent, body).await }
+            });
+            let second = tokio::spawn({
+                let state = state.clone();
+                let agent = second_agent.clone();
+                let body = serde_json::to_vec(&second_report).unwrap();
+                async move { submit(&state, &agent, body).await }
+            });
+            let receipts = [first.await.unwrap(), second.await.unwrap()];
+
+            let admitted = receipts
+                .iter()
+                .filter(|receipt| receipt.nodes[0].current == NodeCurrentDisposition::Accepted)
+                .count();
+            assert_eq!(
+                admitted, 1,
+                "exactly one Agent's declaration admits the Node"
+            );
+            let refused = receipts
+                .iter()
+                .find(|receipt| receipt.nodes[0].current == NodeCurrentDisposition::Rejected)
+                .expect("the other declaration is refused");
+            assert_eq!(
+                refused.nodes[0].rejections[0].code,
+                platpulse_core::RejectionCode::NodeOwnershipMismatch
+            );
+
+            let (owner, endpoint): (String, String) =
+                sqlx::query_as("SELECT agent_id, rpc_endpoint FROM nodes WHERE node_id=$1")
+                    .bind(&node_id)
+                    .fetch_one(state.db().pool())
+                    .await
+                    .unwrap();
+            let owned_endpoint = endpoints
+                .iter()
+                .find(|(agent, _)| *agent == owner)
+                .map(|(_, endpoint)| endpoint.clone())
+                .unwrap();
+            assert_eq!(
+                endpoint, owned_endpoint,
+                "the Node projection is the owning Agent's declaration"
+            );
+            let agent_relations: Vec<String> = sqlx::query_scalar(
+                "SELECT related_key FROM node_relationship_intervals WHERE node_id=$1 AND relation_kind='agent'",
+            )
+            .bind(&node_id)
+            .fetch_all(state.db().pool())
+            .await
+            .unwrap();
+            assert_eq!(
+                agent_relations,
+                vec![owner.clone()],
+                "only the owner holds an Agent relation"
+            );
+        }
+    }
+
     /// The Registry tuple of the Network `state_with_agent` registers.
     fn registered_identity() -> platpulse_core::network::NetworkIdentity {
         platpulse_core::network::NetworkIdentity {
@@ -10231,6 +10397,71 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(reference, (None, "unknown".to_owned()));
+    }
+
+    /// Two Agents reporting fresh Nodes of one Network at the same instant
+    /// must leave a Reference Head both Reports' sources stand behind (issue
+    /// #280). Each receipt recomputes the head from the Nodes it can see; on
+    /// the PostgreSQL work connections neither saw the other's uncommitted
+    /// Node, so whichever committed last overwrote the head with a snapshot
+    /// that counted one source where the Network had two.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_reports_of_one_network_leave_a_head_counting_every_source() {
+        const SECOND_AGENT: &str = "0195f2a1-0019-4019-8019-000000000019";
+        const SECOND_NODE: &str = "0195f2a1-0015-4015-8015-000000000015";
+        for round in 0..6 {
+            let (_dir, state, first_agent) = state_with_agent().await;
+            sqlx::query("INSERT INTO agents (agent_id, agent_epoch, active_boot_id, last_report_sequence, last_received_at, created_at, updated_at) VALUES ($1, 1, NULL, NULL, NULL, $2, $3)")
+                .bind(SECOND_AGENT)
+                .bind("2026-08-12T08:00:00Z")
+                .bind("2026-08-12T08:00:00Z")
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+            let first_report = report_observed(time::Duration::ZERO, 0);
+            let mut second_report = report_observed(time::Duration::ZERO, 0);
+            second_report["agent_id"] = serde_json::json!(SECOND_AGENT);
+            second_report["report_id"] = serde_json::json!("0195f2a1-0032-4032-8032-000000000032");
+            second_report["inventory"]["nodes"][0]["node_id"] = serde_json::json!(SECOND_NODE);
+            second_report["inventory"]["nodes"][0]["rpc_endpoint"] =
+                serde_json::json!("ws://127.0.0.1:6791");
+            for section in ["nodes", "block_summaries", "history_gaps"] {
+                if let Some(entries) = second_report[section].as_array_mut() {
+                    for entry in entries {
+                        entry["node_id"] = serde_json::json!(SECOND_NODE);
+                    }
+                }
+            }
+
+            let first = tokio::spawn({
+                let state = state.clone();
+                let agent = first_agent.clone();
+                let body = serde_json::to_vec(&first_report).unwrap();
+                async move { submit(&state, &agent, body).await }
+            });
+            let second = tokio::spawn({
+                let state = state.clone();
+                let body = serde_json::to_vec(&second_report).unwrap();
+                async move { submit(&state, SECOND_AGENT, body).await }
+            });
+            for receipt in [first.await.unwrap(), second.await.unwrap()] {
+                assert_eq!(receipt.disposition, ReceiptDisposition::Accepted);
+                assert_eq!(receipt.nodes[0].current, NodeCurrentDisposition::Accepted);
+            }
+
+            let reference: (Option<i64>, String, i64) = sqlx::query_as(
+                "SELECT block_number, confidence, eligible_source_count FROM network_reference_heads WHERE network_key='platon-mainnet'",
+            )
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+            assert!(reference.0.is_some(), "round {round}: {reference:?}");
+            assert_eq!(
+                (reference.1.as_str(), reference.2),
+                ("high", 2),
+                "round {round}: the head counts both fresh sources"
+            );
+        }
     }
 
     /// Acceptance of issue #274: the freshness window is symmetric, so a Node

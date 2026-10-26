@@ -365,7 +365,7 @@ tooling that owns the database replaces it:
 publish no sample; `platpulse_capacity_paused` is still published and reads `0`. |
 | `doctor` backup checks | Backup age, backup residue and the SQLite integrity check are reported `not_applicable`; the four `postgres_*` checks represent this backend. |
 | `/health/ready` and `platpulse_readiness` | Report the backend-named component `postgres`; the storage component this deployment does not use is omitted from both surfaces and never blocks readiness. |
-| Operational metrics | `platpulse_storage_database_bytes` comes from `pg_database_size`; `platpulse_sqlite_page_count`, `platpulse_sqlite_freelist_pages` and `platpulse_sqlite_wal_bytes` have no sample (an unknown is never published as zero), and the pool gauges describe the single work connection. |
+| Operational metrics | `platpulse_storage_database_bytes` comes from `pg_database_size`; `platpulse_sqlite_page_count`, `platpulse_sqlite_freelist_pages` and `platpulse_sqlite_wal_bytes` have no sample (an unknown is never published as zero), and the pool gauges describe the work connection pool (8 connections). |
 
 ### Storage Snapshots on PostgreSQL are unsanitized host data
 

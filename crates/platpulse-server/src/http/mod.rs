@@ -15,13 +15,13 @@ pub(crate) mod admin;
 pub(crate) mod agent;
 pub(crate) mod alerts_admin;
 pub(crate) mod health;
-pub(crate) mod ingest_fence;
 pub(crate) mod notifications_admin;
 pub(crate) mod operations_admin;
 pub(crate) mod public;
 pub(crate) mod realtime;
 pub(crate) mod report_ingestion;
 pub(crate) mod validators_admin;
+pub(crate) mod write_fence;
 
 use ipnet::IpNet;
 use std::path::PathBuf;
@@ -51,8 +51,8 @@ use crate::database::ServerDatabase;
 use crate::enrollment::{
     ENROLL_MAX_ATTEMPTS, ENROLL_RATE_LIMIT_WINDOW, authenticate_agent_credential,
 };
-use crate::http::ingest_fence::AgentIngestFence;
 use crate::http::realtime::RealtimeHub;
+use crate::http::write_fence::WriteFences;
 
 pub(crate) const PUBLIC_REALTIME_CURSOR_HEADER: HeaderName =
     HeaderName::from_static("x-platpulse-public-realtime-cursor");
@@ -487,9 +487,10 @@ pub struct AppState {
     pub(crate) admin_realtime: RealtimeHub,
     metrics: crate::metrics::MetricsRegistry,
     capacity: Arc<crate::capacity::CapacityProtection>,
-    /// Serializes Report acceptance per Agent (ADR 0007, ADR 0013); see
-    /// `http::ingest_fence`.
-    ingest_fence: Arc<AgentIngestFence>,
+    /// Serializes the read-then-write invariants that share a subject per
+    /// Agent, Node and notification channel (ADR 0007, ADR 0013); see
+    /// `http::write_fence`.
+    write_fences: Arc<WriteFences>,
 }
 
 impl AppState {
@@ -656,7 +657,7 @@ impl AppState {
             admin_realtime: RealtimeHub::default(),
             metrics: crate::metrics::MetricsRegistry::new(),
             capacity,
-            ingest_fence: Arc::new(AgentIngestFence::new()),
+            write_fences: Arc::new(WriteFences::new()),
         }
     }
 
@@ -673,9 +674,10 @@ impl AppState {
         &self.capacity
     }
 
-    /// The per-Agent Report acceptance fence (see `http::ingest_fence`).
-    pub(crate) fn ingest_fence(&self) -> &AgentIngestFence {
-        &self.ingest_fence
+    /// The Agent, Node and notification-channel write fences (see
+    /// `http::write_fence`).
+    pub(crate) fn write_fences(&self) -> &WriteFences {
+        &self.write_fences
     }
 
     pub(crate) fn begin_shutdown(&self) {
