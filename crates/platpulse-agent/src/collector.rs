@@ -1685,6 +1685,8 @@ struct NodeRecoveryWrite {
     pending_trigger: Option<String>,
     pending_reason: Option<String>,
     observed_at: Rfc3339,
+    /// The declared range a later backlog step may still backfill (#281).
+    backlog: Option<(u64, u64)>,
 }
 
 struct NodeRecoveryRequest<'a> {
@@ -1711,6 +1713,7 @@ async fn persist_recovery_state(
         pending_trigger,
         pending_reason,
         observed_at,
+        backlog,
     } = update;
     let _write_permit = store.acquire_write().await;
     let mut tx = store.connection().begin().await?;
@@ -1739,6 +1742,9 @@ async fn persist_recovery_state(
         }
         for gap in gaps {
             crate::block::insert_history_gap(&mut tx, gap).await?;
+        }
+        if let Some(range) = backlog {
+            crate::block::queue_backfill_backlog(&mut tx, node_id, range, &created_at).await?;
         }
         sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, pending_from, pending_to, pending_trigger, pending_reason, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id,last_head=excluded.last_head,pending_from=excluded.pending_from,pending_to=excluded.pending_to,pending_trigger=excluded.pending_trigger,pending_reason=excluded.pending_reason,updated_at=excluded.updated_at")
             .bind(node_id.to_string())
@@ -1835,6 +1841,7 @@ async fn recover_node_blocks(
                     .map(|_| format!("{:?}", plan.trigger).to_lowercase()),
                 pending_reason: outcome.gaps.first().map(|gap| gap.reason.clone()),
                 observed_at,
+                backlog: outcome.remainder,
             },
             &outcome.summaries,
             &outcome.gaps,
@@ -1852,12 +1859,60 @@ async fn recover_node_blocks(
                 pending_trigger: None,
                 pending_reason: None,
                 observed_at,
+                backlog: None,
             },
             &[],
             &[],
         )
         .await?;
     }
+    Ok(true)
+}
+
+/// Take one bounded step through the lowest declared range a recovery could
+/// not finish (issue #281). The range is already a declared History Gap, so a
+/// step only adds the Block Summaries it recovered and leaves the rest queued;
+/// it never declares the gap again. Returns whether a range was worked on.
+async fn advance_backfill_backlog(
+    store: &mut AgentStore,
+    transport: &WebSocketBlockTransport,
+    config: &AgentConfig,
+    node: &InventoryNode,
+    identity: NetworkIdentity,
+) -> Result<bool, CollectionError> {
+    let Some(range) = crate::block::next_backfill_backlog(store.connection(), node.node_id).await?
+    else {
+        return Ok(false);
+    };
+    let bounds = crate::block::backlog_step_bounds(crate::block::BackfillBounds {
+        max_height_span: config.backfill.max_height_span,
+        max_block_count: config.backfill.max_block_count,
+        max_time: std::time::Duration::from_millis(config.backfill.max_time_ms),
+    });
+    let observed_at = timestamp();
+    let outcome = transport
+        .gap_backfill(
+            &node.rpc_endpoint,
+            node.node_id,
+            identity,
+            observed_at,
+            range.from_height,
+            range.to_height,
+            bounds,
+            crate::block::BackfillTrigger::Backlog,
+        )
+        .await;
+    let next = range.after_step(&outcome);
+    let created_at = observed_at.to_string();
+    let _write_permit = store.acquire_write().await;
+    let mut tx = store.connection().begin().await?;
+    for summary in &outcome.summaries {
+        store_block_summary_result(
+            crate::block::insert_block_summary(&mut tx, summary, &created_at).await,
+        )?;
+    }
+    crate::block::settle_backfill_backlog(&mut tx, node.node_id, range, next, &created_at).await?;
+    tx.commit().await?;
     Ok(true)
 }
 
@@ -1974,6 +2029,7 @@ pub(crate) async fn run_node_block_worker(
         if recovery_succeeded {
             subscription.clear_loss();
         }
+        let mut last_backlog_step = std::time::Instant::now();
 
         'connected: loop {
             while let Some(header) = subscription.front_header().cloned() {
@@ -2028,6 +2084,32 @@ pub(crate) async fn run_node_block_worker(
                     };
                 }
                 subscription.pop_front();
+            }
+
+            // Issue #281: between live heads, take one bounded step through a
+            // range an earlier recovery declared as a gap, at most once per
+            // second so the subscription keeps priority.
+            if last_backlog_step.elapsed() >= std::time::Duration::from_secs(1) {
+                last_backlog_step = std::time::Instant::now();
+                let step = tokio::select! {
+                    _ = cancel.cancelled() => {
+                        transport.drain_live_heads(&mut live, &mut subscription);
+                        return BlockWorkerExit { subscription, error: None };
+                    }
+                    result = advance_backfill_backlog(
+                        &mut store,
+                        &transport,
+                        &config,
+                        &node,
+                        identity.clone(),
+                    ) => result,
+                };
+                if let Err(error) = step {
+                    return BlockWorkerExit {
+                        subscription,
+                        error: Some(error),
+                    };
+                }
             }
 
             let header = tokio::select! {
@@ -2222,13 +2304,15 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
             NodeRecoveryRequest {
                 config,
                 node,
-                identity,
+                identity: identity.clone(),
                 boot_id: report.boot_id,
                 observed_at: report.generated_at,
                 reconnect_needed,
             },
         )
         .await?;
+        // Issue #281: each round also advances one declared backlog range.
+        advance_backfill_backlog(&mut store, transport, config, node, identity).await?;
         if recovery_succeeded {
             if let Some(subscription) = subscriptions
                 .iter_mut()
@@ -3108,6 +3192,7 @@ mod tests {
                 pending_trigger: Some("backfill".to_owned()),
                 pending_reason: Some("stale".to_owned()),
                 observed_at: "2026-01-01T00:00:01Z".parse().unwrap(),
+                backlog: Some((11, 12)),
             },
             &[],
             &[gap],
@@ -3123,6 +3208,53 @@ mod tests {
                 .await
                 .unwrap(),
             0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM backfill_backlog")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0,
+            "a stale outcome queues no backlog either"
+        );
+
+        // The current owner's outcome declares the gap and queues the same
+        // range for later bounded steps in the one transaction (issue #281).
+        persist_recovery_state(
+            &mut store,
+            node_id,
+            NodeRecoveryWrite {
+                expected: Some((
+                    Some("new-boot".to_owned()),
+                    Some(10),
+                    None,
+                    None,
+                    None,
+                    None,
+                )),
+                boot_id: "new-boot".to_owned(),
+                head: 12,
+                pending: Some((11, 12)),
+                pending_trigger: Some("backfill".to_owned()),
+                pending_reason: Some("exceeded".to_owned()),
+                observed_at: "2026-01-01T00:00:01Z".parse().unwrap(),
+                backlog: Some((11, 12)),
+            },
+            &[],
+            &[crate::shutdown::shutdown_gap(
+                node_id,
+                (11, 12),
+                "2026-01-01T00:00:01Z".parse().unwrap(),
+                "exceeded",
+            )],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            crate::block::next_backfill_backlog(store.connection(), node_id)
+                .await
+                .unwrap(),
+            Some(crate::block::BacklogRange::declared((11, 12)))
         );
     }
 

@@ -209,7 +209,7 @@ The retrieval and verification of a subscribed block by its header hash before p
 _Avoid_: Fetch by height without hash verification, Full transaction ingestion
 
 **Gap Backfill**:
-A bounded point-query recovery of blocks missed across startup, reconnection, or a detected subscription jump. It is distinct from normal subscription ingestion and records a History Gap when the recoverable range is exceeded.
+A bounded point-query recovery of blocks missed across startup, reconnection, or a detected subscription jump. It is distinct from normal subscription ingestion and records a History Gap when the recoverable range is exceeded; the Agent keeps working through that declared rest in bounded steps, and the Server admits a backfilled height only into a hole it observes itself, confirming a hole missing once it stays unfilled for a whole raw Block History window.
 _Avoid_: Continuous polling, Full-chain scan
 
 **Block Summary**:

@@ -2471,6 +2471,93 @@ async fn block_history_rejection(state: &AppState, node_id: &str) -> Option<Bloc
     })
 }
 
+/// The holes in one Node's Block history the Server tracks itself (issue
+/// #281): heights an Agent declared it could not recover within its bounds,
+/// either still awaiting backfill or confirmed missing after no Agent filled
+/// them for a whole raw Block History window. Both come from the Server's own
+/// coverage state, never from an Agent's reason text, so the panel can show
+/// what is missing even when the Server rejected nothing.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct BlockHistoryHoles {
+    /// Heights still missing that a backfill may yet fill.
+    pub awaiting_backfill_heights: i64,
+    /// Heights confirmed missing; the Server no longer admits a backfill.
+    pub confirmed_missing_heights: i64,
+    /// The newest holes, highest first, at most [`BLOCK_HISTORY_HOLE_LIMIT`].
+    pub intervals: Vec<BlockHistoryHole>,
+}
+
+/// One contiguous hole in a Node's Block history.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct BlockHistoryHole {
+    pub from_height: i64,
+    pub to_height: i64,
+    pub state: BlockHistoryHoleState,
+    /// When the Server first recorded the hole.
+    pub since: String,
+    /// When the hole last narrowed or changed state.
+    pub updated_at: String,
+}
+
+/// Whether a hole can still be filled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockHistoryHoleState {
+    /// An open recoverable gap: a GapBackfill may still fill it.
+    AwaitingBackfill,
+    /// A permanent gap: no backfill arrived within the raw Block History
+    /// window, and the Server no longer admits one.
+    ConfirmedMissing,
+}
+
+/// How many holes the Node detail lists; the totals still count every hole.
+const BLOCK_HISTORY_HOLE_LIMIT: i64 = 20;
+
+/// Read the holes the Server tracks for one Node; None when it has none.
+async fn block_history_holes(state: &AppState, node_id: &str) -> Option<BlockHistoryHoles> {
+    let pool = state.db().pool();
+    let (awaiting_backfill_heights, confirmed_missing_heights) = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT CAST(COALESCE(SUM(CASE WHEN status = 'open_recoverable_gap' THEN last_height - first_height + 1 ELSE 0 END), 0) AS BIGINT), CAST(COALESCE(SUM(CASE WHEN status = 'permanent_gap' THEN last_height - first_height + 1 ELSE 0 END), 0) AS BIGINT) FROM block_coverage_intervals WHERE node_id = $1",
+    )
+    .bind(node_id)
+    .fetch_one(pool)
+    .await
+    .ok()?;
+    if awaiting_backfill_heights == 0 && confirmed_missing_heights == 0 {
+        return None;
+    }
+    let rows = sqlx::query_as::<_, (i64, i64, String, String, String)>(
+        "SELECT first_height, last_height, status, created_at, updated_at FROM block_coverage_intervals WHERE node_id = $1 AND status IN ('open_recoverable_gap', 'permanent_gap') ORDER BY last_height DESC LIMIT $2",
+    )
+    .bind(node_id)
+    .bind(BLOCK_HISTORY_HOLE_LIMIT)
+    .fetch_all(pool)
+    .await
+    .ok()?;
+    Some(BlockHistoryHoles {
+        awaiting_backfill_heights,
+        confirmed_missing_heights,
+        intervals: rows
+            .into_iter()
+            .map(
+                |(from_height, to_height, status, since, updated_at)| BlockHistoryHole {
+                    from_height,
+                    to_height,
+                    state: if status == "permanent_gap" {
+                        BlockHistoryHoleState::ConfirmedMissing
+                    } else {
+                        BlockHistoryHoleState::AwaitingBackfill
+                    },
+                    since,
+                    updated_at,
+                },
+            )
+            .collect(),
+    })
+}
+
 fn redact_optional_message(value: Option<String>) -> Option<String> {
     value.map(|message| crate::redaction::redact_sensitive(&message))
 }
@@ -2667,6 +2754,9 @@ pub struct AdminNodeDetail {
     /// field never grows into a stale alarm after the Node recovers (ADR 0011
     /// decision 4, issue #235).
     pub block_history_rejection: Option<BlockHistoryRejection>,
+    /// Block history holes the Server tracks for this Node, awaiting backfill
+    /// or confirmed missing; None when its history has no hole (issue #281).
+    pub block_history_holes: Option<BlockHistoryHoles>,
     pub process: Option<ProcessDiagnostic>,
     pub data_directory: Option<DataDirectoryDiagnostic>,
     pub rpc: Option<RpcDiagnostic>,
@@ -2753,6 +2843,7 @@ async fn admin_node_detail(
     let agent_spool_backlog_age = spool_backlog_age_diagnostic(&state, &row.agent_id).await;
     let identity = node_identity_status(&state, &row.node_id, &row.network_key).await;
     let block_history_rejection = block_history_rejection(&state, &row.node_id).await;
+    let block_history_holes = block_history_holes(&state, &row.node_id).await;
     let transfer = sqlx::query_as::<_, NodeTransferRow>(&format!(
         "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE node_id=$1 ORDER BY created_at DESC LIMIT 1"
     ))
@@ -2795,6 +2886,7 @@ async fn admin_node_detail(
         freshness: diagnostic.freshness.clone(),
         identity,
         block_history_rejection,
+        block_history_holes,
         process: diagnostic.process,
         data_directory: diagnostic.data_directory,
         rpc: diagnostic.rpc,
@@ -10816,6 +10908,59 @@ mod tests {
         assert_eq!(
             value["block_history_rejection"]["recorded_at"],
             "2026-08-12T12:00:00Z"
+        );
+    }
+
+    /// Issue #281: the Node detail shows the holes the Server tracks, awaiting
+    /// backfill or confirmed missing, even when nothing was Server-rejected.
+    #[tokio::test]
+    async fn admin_node_detail_lists_block_history_holes() {
+        let (_dir, state) = node_inventory_state().await;
+
+        async fn detail(state: &AppState, node_id: &str) -> Value {
+            let response = admin_node_detail(
+                State(state.clone()),
+                Path(node_id.to_owned()),
+                Extension(lifecycle_session()),
+                Extension(request_id()),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap()
+        }
+        let value = detail(&state, "node-healthy").await;
+        assert!(
+            value["block_history_holes"].is_null(),
+            "a Node without holes carries no hole panel"
+        );
+        let interval = "INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ('node-healthy', $1, $2, $3, $4, $5)";
+        for (first, last, status, since) in [
+            (1_i64, 9_i64, "covered", "2026-08-12T09:00:00Z"),
+            (10, 14, "permanent_gap", "2026-08-01T09:00:00Z"),
+            (15, 29, "covered", "2026-08-12T09:00:00Z"),
+            (30, 32, "open_recoverable_gap", "2026-08-12T10:00:00Z"),
+        ] {
+            sqlx::query(interval)
+                .bind(first)
+                .bind(last)
+                .bind(status)
+                .bind(since)
+                .bind(since)
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+        }
+        let value = detail(&state, "node-healthy").await;
+        let holes = &value["block_history_holes"];
+        assert_eq!(holes["awaiting_backfill_heights"], 3);
+        assert_eq!(holes["confirmed_missing_heights"], 5);
+        assert_eq!(
+            holes["intervals"],
+            serde_json::json!([
+                {"from_height": 30, "to_height": 32, "state": "awaiting_backfill", "since": "2026-08-12T10:00:00Z", "updated_at": "2026-08-12T10:00:00Z"},
+                {"from_height": 10, "to_height": 14, "state": "confirmed_missing", "since": "2026-08-01T09:00:00Z", "updated_at": "2026-08-01T09:00:00Z"}
+            ])
         );
     }
 

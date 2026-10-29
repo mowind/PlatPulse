@@ -856,6 +856,65 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     expect(within(panel).getAllByText(/Block Identity Stamp/).length).toBeGreaterThan(0)
   })
 
+  it('lists the Block history holes the Server tracks', async () => {
+    // Issue #281: holes the Agent declared show even when the Server
+    // rejected nothing, split into awaiting backfill and confirmed missing.
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse(
+          {
+            ...NODE_A_DETAIL,
+            block_history_holes: {
+              awaiting_backfill_heights: 1200,
+              confirmed_missing_heights: 3,
+              intervals: [
+                {
+                  from_height: 12842000,
+                  to_height: 12843199,
+                  state: 'awaiting_backfill',
+                  since: '2026-08-12T08:00:00Z',
+                  updated_at: '2026-08-12T08:05:00Z',
+                },
+                {
+                  from_height: 12800000,
+                  to_height: 12800002,
+                  state: 'confirmed_missing',
+                  since: '2026-08-01T08:00:00Z',
+                  updated_at: '2026-08-09T08:00:00Z',
+                },
+              ],
+            },
+          },
+          200,
+        ),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=diagnostics')
+
+    await screen.findByRole('heading', { level: 1, name: /Node A/ })
+    expect(screen.getByRole('list', { name: 'Current Node findings' }).textContent).toContain(
+      "Part of this Node's Block history is confirmed missing.",
+    )
+    expect(await screen.findByRole('heading', { name: 'Block history holes' })).toBeTruthy()
+    const list = screen.getByRole('list', { name: 'Newest Block history holes' })
+    expect(within(list).getByText('12,842,000 to 12,843,199')).toBeTruthy()
+    expect(within(list).getByText('12,800,000 to 12,800,002')).toBeTruthy()
+    expect(within(list).getByText('Awaiting backfill')).toBeTruthy()
+    expect(within(list).getByText('Confirmed missing')).toBeTruthy()
+    expect(screen.getByText('1,200')).toBeTruthy()
+  })
+
+  it('shows no Block history holes panel when the Server reports none', async () => {
+    mockFetch({
+      '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
+      '/api/admin/v1/nodes/0195f2a1-0014-4014-8014-000000000014': () =>
+        jsonResponse({ ...NODE_A_DETAIL, block_history_holes: null }, 200),
+    })
+    renderAt('/admin/nodes/0195f2a1-0014-4014-8014-000000000014?section=diagnostics')
+    await screen.findByRole('heading', { level: 1, name: /Node A/ })
+    expect(screen.queryByRole('heading', { name: 'Block history holes' })).toBeNull()
+  })
+
   it('shows the Retired lifecycle from Node Inventory, separate from health', async () => {
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),

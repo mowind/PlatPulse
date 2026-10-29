@@ -388,6 +388,7 @@ impl WebSocketBlockTransport {
                             observed_at,
                             format!("{} point query failed: {error}", trigger.label()),
                         )],
+                        remainder: Some((height, to_height)),
                     };
                 }
             };
@@ -401,23 +402,31 @@ impl WebSocketBlockTransport {
                         observed_at,
                         format!("{} point query identity mismatch", trigger.label()),
                     )],
+                    remainder: None,
                 };
             }
             summaries.push(BlockSummary { node_id, network_identity: identity.clone(), block_number: block.block_number, block_hash: block.block_hash, parent_hash: block.parent_hash, block_timestamp_ms: block.block_timestamp_ms, observed_at, transaction_count: block.transaction_hashes.len() as u64, block_interval_ms: None, source: BlockSource::GapBackfill, attribution: BlockProductionAttribution::unknown_attribution(block.coinbase, "seal recovery rule is not verified for this fork; protocol proposer evidence is unavailable") });
             height = height.saturating_add(1);
         }
-        let gaps = if height <= to_height {
-            vec![make_gap(
-                node_id,
-                height,
-                to_height,
-                observed_at,
-                format!("{} exceeded configured backfill bounds", trigger.label()),
-            )]
+        let (gaps, remainder) = if height <= to_height {
+            (
+                vec![make_gap(
+                    node_id,
+                    height,
+                    to_height,
+                    observed_at,
+                    format!("{} exceeded configured backfill bounds", trigger.label()),
+                )],
+                Some((height, to_height)),
+            )
         } else {
-            vec![]
+            (vec![], None)
         };
-        BackfillOutcome { summaries, gaps }
+        BackfillOutcome {
+            summaries,
+            gaps,
+            remainder,
+        }
     }
 
     pub async fn collect_node_summaries_into(
@@ -697,6 +706,9 @@ pub enum BackfillTrigger {
     HeightJump,
     QueueOverflow,
     Shutdown,
+    /// A later step through a range an earlier recovery declared as a gap
+    /// because it exceeded its bounds (issue #281).
+    Backlog,
 }
 
 impl BackfillTrigger {
@@ -708,6 +720,7 @@ impl BackfillTrigger {
             Self::HeightJump => "head height jump",
             Self::QueueOverflow => "header queue overflow",
             Self::Shutdown => "unresolved shutdown range",
+            Self::Backlog => "declared gap backlog",
         }
     }
 }
@@ -782,6 +795,148 @@ impl Default for BackfillBounds {
 pub struct BackfillOutcome {
     pub summaries: Vec<BlockSummary>,
     pub gaps: Vec<platpulse_core::gap::HistoryGap>,
+    /// The declared range a later step may still backfill: set when the
+    /// recovery stopped at its bounds or at a failed point query, never on an
+    /// identity mismatch, which no retry can repair (issue #281).
+    pub remainder: Option<(u64, u64)>,
+}
+
+/// How many declared ranges one Node keeps queued for later backfill. The
+/// highest ranges win: the Server confirms an unfilled hole missing after its
+/// raw Block History window, so the oldest range is the least useful one.
+pub(crate) const BACKFILL_BACKLOG_LIMIT: i64 = 16;
+
+/// How many consecutive backlog steps may make no progress before the range
+/// is given up; the Server later confirms what stayed missing.
+pub(crate) const BACKFILL_BACKLOG_STALL_LIMIT: u32 = 8;
+
+/// The most heights one backlog step queries, whatever the configured
+/// recovery bounds allow.
+const BACKLOG_STEP_MAX_HEIGHTS: u64 = 64;
+
+/// The longest one backlog step may run, so the live subscription keeps
+/// flowing between steps.
+const BACKLOG_STEP_MAX_TIME: Duration = Duration::from_secs(1);
+
+/// A declared range queued for later bounded backfill steps (issue #281).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BacklogRange {
+    pub from_height: u64,
+    pub to_height: u64,
+    /// Consecutive steps that recovered nothing.
+    pub stalls: u32,
+}
+
+impl BacklogRange {
+    /// A freshly declared range.
+    pub fn declared((from_height, to_height): (u64, u64)) -> Self {
+        Self {
+            from_height,
+            to_height,
+            stalls: 0,
+        }
+    }
+
+    /// What a step over this range leaves queued: the remainder with its
+    /// stall count, or None once the range is complete, unrepairable (an
+    /// identity mismatch leaves no remainder), or stalled too long.
+    pub fn after_step(self, outcome: &BackfillOutcome) -> Option<Self> {
+        let (from_height, to_height) = outcome.remainder?;
+        let stalls = if outcome.summaries.is_empty() {
+            self.stalls.saturating_add(1)
+        } else {
+            0
+        };
+        (stalls < BACKFILL_BACKLOG_STALL_LIMIT).then_some(Self {
+            from_height,
+            to_height,
+            stalls,
+        })
+    }
+}
+
+/// The bounds of one backlog step: small enough that the live subscription
+/// keeps flowing between steps, whatever the configured recovery bounds are.
+pub fn backlog_step_bounds(bounds: BackfillBounds) -> BackfillBounds {
+    BackfillBounds {
+        max_height_span: bounds.max_height_span.min(BACKLOG_STEP_MAX_HEIGHTS),
+        max_block_count: bounds.max_block_count.min(BACKLOG_STEP_MAX_HEIGHTS),
+        max_time: bounds.max_time.min(BACKLOG_STEP_MAX_TIME),
+    }
+}
+
+async fn upsert_backfill_backlog(
+    connection: &mut SqliteConnection,
+    node: &str,
+    range: BacklogRange,
+    updated_at: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO backfill_backlog (node_id, from_height, to_height, stalls, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(node_id, from_height) DO UPDATE SET to_height = MAX(backfill_backlog.to_height, excluded.to_height), stalls = MIN(backfill_backlog.stalls, excluded.stalls), updated_at = excluded.updated_at")
+        .bind(node)
+        .bind(range.from_height as i64)
+        .bind(range.to_height as i64)
+        .bind(i64::from(range.stalls))
+        .bind(updated_at)
+        .execute(&mut *connection)
+        .await?;
+    Ok(())
+}
+
+/// Queue a declared range for later backfill, keeping only the newest
+/// [`BACKFILL_BACKLOG_LIMIT`] ranges of the Node.
+pub(crate) async fn queue_backfill_backlog(
+    connection: &mut SqliteConnection,
+    node_id: NodeId,
+    range: (u64, u64),
+    updated_at: &str,
+) -> Result<(), sqlx::Error> {
+    let node = node_id.to_string();
+    upsert_backfill_backlog(connection, &node, BacklogRange::declared(range), updated_at).await?;
+    sqlx::query("DELETE FROM backfill_backlog WHERE node_id = ? AND from_height NOT IN (SELECT from_height FROM backfill_backlog WHERE node_id = ? ORDER BY from_height DESC LIMIT ?)")
+        .bind(&node)
+        .bind(&node)
+        .bind(BACKFILL_BACKLOG_LIMIT)
+        .execute(&mut *connection)
+        .await?;
+    Ok(())
+}
+
+/// The lowest queued range of a Node.
+pub(crate) async fn next_backfill_backlog(
+    connection: &mut SqliteConnection,
+    node_id: NodeId,
+) -> Result<Option<BacklogRange>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT from_height, to_height, stalls FROM backfill_backlog WHERE node_id = ? ORDER BY from_height LIMIT 1",
+    )
+    .bind(node_id.to_string())
+    .fetch_optional(&mut *connection)
+    .await?;
+    Ok(row.map(|(from_height, to_height, stalls)| BacklogRange {
+        from_height: from_height.max(0) as u64,
+        to_height: to_height.max(0) as u64,
+        stalls: u32::try_from(stalls).unwrap_or(BACKFILL_BACKLOG_STALL_LIMIT),
+    }))
+}
+
+/// Replace the range a step worked on with what it left behind.
+pub(crate) async fn settle_backfill_backlog(
+    connection: &mut SqliteConnection,
+    node_id: NodeId,
+    worked: BacklogRange,
+    next: Option<BacklogRange>,
+    updated_at: &str,
+) -> Result<(), sqlx::Error> {
+    let node = node_id.to_string();
+    sqlx::query("DELETE FROM backfill_backlog WHERE node_id = ? AND from_height = ?")
+        .bind(&node)
+        .bind(worked.from_height as i64)
+        .execute(&mut *connection)
+        .await?;
+    if let Some(next) = next {
+        upsert_backfill_backlog(connection, &node, next, updated_at).await?;
+    }
+    Ok(())
 }
 
 /// Perform one finite height point-query recovery for an explicit trigger.
@@ -818,6 +973,7 @@ pub fn backfill_missing<T: BlockTransport>(
                     observed_at,
                     format!("{} point query failed: {error}", trigger.label()),
                 ));
+                outcome.remainder = Some((height, to_height));
                 return outcome;
             }
         };
@@ -842,6 +998,7 @@ pub fn backfill_missing<T: BlockTransport>(
             observed_at,
             format!("{} exceeded configured backfill bounds", trigger.label()),
         ));
+        outcome.remainder = Some((height, to_height));
     }
     outcome
 }
@@ -1211,9 +1368,9 @@ pub async fn load_history_gaps(
         .collect::<Vec<_>>();
     let in_scope = vec!["?"; monitored.len()].join(", ");
     let query = format!(
-        "SELECT g.node_id, g.from_height, g.to_height, g.kind, g.created_at FROM history_gaps g WHERE g.node_id IN ({in_scope}) AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=g.node_id AND a.sample_kind='gap' AND a.from_height=g.from_height AND a.to_height=g.to_height) AND g.gap_id = (SELECT MIN(candidate.gap_id) FROM history_gaps candidate WHERE candidate.node_id=g.node_id AND candidate.from_height=g.from_height AND candidate.to_height=g.to_height AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=candidate.node_id AND a.sample_kind='gap' AND a.from_height=candidate.from_height AND a.to_height=candidate.to_height)) ORDER BY g.created_at, g.gap_id LIMIT ?"
+        "SELECT g.node_id, g.from_height, g.to_height, g.kind, g.created_at, g.reason FROM history_gaps g WHERE g.node_id IN ({in_scope}) AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=g.node_id AND a.sample_kind='gap' AND a.from_height=g.from_height AND a.to_height=g.to_height) AND g.gap_id = (SELECT MIN(candidate.gap_id) FROM history_gaps candidate WHERE candidate.node_id=g.node_id AND candidate.from_height=g.from_height AND candidate.to_height=g.to_height AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id=candidate.node_id AND a.sample_kind='gap' AND a.from_height=candidate.from_height AND a.to_height=candidate.to_height)) ORDER BY g.created_at, g.gap_id LIMIT ?"
     );
-    let mut select = sqlx::query_as::<_, (String, i64, i64, String, String)>(&query);
+    let mut select = sqlx::query_as::<_, (String, i64, i64, String, String, String)>(&query);
     for node_id in &monitored {
         select = select.bind(node_id);
     }
@@ -1222,7 +1379,7 @@ pub async fn load_history_gaps(
         .fetch_all(store.connection())
         .await?;
     rows.into_iter()
-        .map(|(node_id, from, to, kind, at)| {
+        .map(|(node_id, from, to, kind, at, reason)| {
             let kind = match kind.as_str() {
                 "server_rejected" => platpulse_core::gap::GapKind::ServerRejected,
                 "spool_overflow" => platpulse_core::gap::GapKind::SpoolOverflow,
@@ -1235,7 +1392,14 @@ pub async fn load_history_gaps(
                 kind,
                 from_height: from as u64,
                 to_height: to as u64,
-                reason: "locally retained history gap".to_owned(),
+                // The reason recorded with the gap travels with it (issue
+                // #281), bounded to the contract limit; an empty one falls
+                // back to a neutral description.
+                reason: if reason.trim().is_empty() {
+                    "locally retained history gap".to_owned()
+                } else {
+                    reason.chars().take(512).collect()
+                },
                 recorded_at: at
                     .parse()
                     .map_err(|_| sqlx::Error::Protocol("gap timestamp".into()))?,
@@ -2583,6 +2747,181 @@ mod tests {
         );
         assert_eq!(result.gaps[0].from_height, 11);
         assert_eq!(result.gaps[0].to_height, 12);
+        assert_eq!(
+            result.remainder,
+            Some((11, 12)),
+            "the declared rest of the range stays queued for later steps"
+        );
+
+        // Issue #281: a later backlog step backfills the declared rest, and a
+        // finished range leaves nothing queued.
+        let step = backfill_missing(
+            &transport,
+            &endpoint,
+            "0195f2a1-0014-4014-8014-000000000014".parse().unwrap(),
+            identity(),
+            at,
+            11,
+            12,
+            backlog_step_bounds(BackfillBounds::default()),
+            BackfillTrigger::Backlog,
+        );
+        assert_eq!(
+            step.summaries
+                .iter()
+                .map(|sample| sample.block_number)
+                .collect::<Vec<_>>(),
+            vec![11, 12]
+        );
+        assert!(step.gaps.is_empty());
+        assert_eq!(BacklogRange::declared((11, 12)).after_step(&step), None);
+    }
+
+    #[test]
+    fn a_backlog_range_stays_queued_until_done_or_stalled() {
+        let progressed = BackfillOutcome {
+            summaries: vec![summary(
+                5,
+                'a',
+                1_000,
+                "2026-01-01T00:00:00Z".parse().unwrap(),
+            )],
+            gaps: vec![],
+            remainder: Some((6, 9)),
+        };
+        let stalled_range = BacklogRange {
+            from_height: 5,
+            to_height: 9,
+            stalls: 3,
+        };
+        assert_eq!(
+            stalled_range.after_step(&progressed),
+            Some(BacklogRange {
+                from_height: 6,
+                to_height: 9,
+                stalls: 0
+            }),
+            "progress resets the stall count"
+        );
+        let stalled = BackfillOutcome {
+            summaries: vec![],
+            gaps: vec![],
+            remainder: Some((5, 9)),
+        };
+        assert_eq!(
+            BacklogRange::declared((5, 9)).after_step(&stalled),
+            Some(BacklogRange {
+                from_height: 5,
+                to_height: 9,
+                stalls: 1
+            })
+        );
+        assert_eq!(
+            BacklogRange {
+                stalls: BACKFILL_BACKLOG_STALL_LIMIT - 1,
+                ..stalled_range
+            }
+            .after_step(&stalled),
+            None,
+            "a range that keeps failing is given up; the Server confirms it missing"
+        );
+        let mismatched = BackfillOutcome {
+            summaries: vec![],
+            gaps: vec![],
+            remainder: None,
+        };
+        assert_eq!(BacklogRange::declared((5, 9)).after_step(&mismatched), None);
+        let bounds = backlog_step_bounds(BackfillBounds {
+            max_height_span: 10_000,
+            max_block_count: 10_000,
+            max_time: Duration::from_secs(60),
+        });
+        assert_eq!(bounds.max_block_count, 64);
+        assert_eq!(bounds.max_time, Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn the_backfill_backlog_keeps_the_newest_ranges_and_settles_steps() {
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        let node = test_node_id();
+        for index in 0..(BACKFILL_BACKLOG_LIMIT as u64 + 2) {
+            let from = 100 + index * 10;
+            queue_backfill_backlog(
+                store.connection(),
+                node,
+                (from, from + 4),
+                "2026-01-01T00:00:00Z",
+            )
+            .await
+            .unwrap();
+        }
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM backfill_backlog")
+            .fetch_one(store.connection())
+            .await
+            .unwrap();
+        assert_eq!(count, BACKFILL_BACKLOG_LIMIT);
+        assert_eq!(
+            next_backfill_backlog(store.connection(), node)
+                .await
+                .unwrap(),
+            Some(BacklogRange::declared((120, 124))),
+            "the two lowest ranges were dropped"
+        );
+        let remainder = BacklogRange {
+            from_height: 123,
+            to_height: 124,
+            stalls: 2,
+        };
+        settle_backfill_backlog(
+            store.connection(),
+            node,
+            BacklogRange::declared((120, 124)),
+            Some(remainder),
+            "2026-01-01T00:00:01Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            next_backfill_backlog(store.connection(), node)
+                .await
+                .unwrap(),
+            Some(remainder)
+        );
+        settle_backfill_backlog(
+            store.connection(),
+            node,
+            remainder,
+            None,
+            "2026-01-01T00:00:02Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            next_backfill_backlog(store.connection(), node)
+                .await
+                .unwrap(),
+            Some(BacklogRange::declared((130, 134)))
+        );
+    }
+
+    /// Issue #281: a reported gap keeps the reason it was recorded with.
+    #[tokio::test]
+    async fn a_loaded_history_gap_keeps_its_recorded_reason() {
+        let observed_at: Rfc3339 = "2026-10-15T03:24:42Z".parse().unwrap();
+        let dir = tempdir().unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(dir.path().join("agent.db")))
+            .await
+            .unwrap();
+        let mut declared = gap(test_node_id(), 20, 21, observed_at);
+        declared.reason = "subscription reconnect exceeded configured backfill bounds".to_owned();
+        persist_history_gap(&mut store, &declared).await.unwrap();
+        let loaded = load_history_gaps(&mut store, &[test_node_id()])
+            .await
+            .unwrap();
+        assert_eq!(loaded[0].reason, declared.reason);
     }
 
     #[test]

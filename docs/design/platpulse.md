@@ -243,7 +243,8 @@ Consensus 表示 Node 当前的协议状态，不等于 Validator 管理。当�
 - Agent 把新采集的 Block Summary 放进 AgentReport 顶层 `block_summaries[]`，把显式缺口放进顶层 `history_gaps[]`；二者按 Node 归属。
 - Agent 端只保留有界的 Block Summary 与 History Gap 待上报项，不拥有 Server 的历史高水位或网络级历史。
 - Server 从已验证 report 追加近期 Block History，并以 Node 为范围维护 Historical High-Water Mark、coverage intervals、可恢复 Gap coverage、chain divergence 与 resync replay 诊断。
-- History 是 best-effort，但不是“从不恢复”：显式 Gap Backfill 只在对应的 open recoverable gap 内接受；超出配置边界的范围会留下 gap。普通 resync replay（低于 high-water mark 且不在 open gap）不重复写入或计数。
+- History 是 best-effort，但不是“从不恢复”：显式 Gap Backfill 只在 Server 自己观察到的空洞内接受——Agent 声明的 open recoverable gap、高于 high-water mark 的新高度，或 Server 已覆盖区间之间既无任何 coverage 记录、也未被 Server 自己写入的 `server_rejected` gap 占据的高度（issue #281；Agent 回传的拒绝副本不算 Server 的判定，ADR 0011 决策 3 不变）；低于该 Node 首个已覆盖高度、已覆盖、已确认缺失或 Server 拒绝的高度一律 `GapBackfillOutsideOpenGap`。超出配置边界的范围由 Agent 声明为 `unrecoverable_backfill` gap，Server 只为其中未覆盖、未被 Server 拒绝的部分打开 open recoverable gap；Agent 则把剩余范围放入有界的本地 backfill backlog（每 Node 最多 16 段、单步受更小的查询数与时间预算约束、连续 8 步无进展即放弃），之后在实时订阅间隙逐步补齐。普通 resync replay（低于 high-water mark 且不在空洞内）不重复写入或计数。
+- 空洞有终态（issue #281）：被补齐的高度合并进 covered 区间；一段 open recoverable gap 在整个原始 Block History 保留窗口内都未再被补齐时，保留清理周期把它转为 `permanent_gap`（确认缺失，不再接受回填），并合并相邻同状态区间，使 coverage 行数不随时间无界增长；当 Agent 声明的 `unrecoverable_backfill` History Gap 范围内不再有 open gap 时，Server 写入其 `resolved_at`（修复前已补齐但没有 coverage 记录的高度在此时补记为 covered，避免原始摘要过期后被重复计数）；Agent 回传的 `server_rejected` 副本在超过原始 Block History 窗口后也被标记 resolved，两者之后都由 history gap 保留策略清理。Admin Node Detail 的 Diagnostics 用 `block_history_holes` 显示等待回填与确认缺失的高度及最新 20 段空洞，独立于 Server 拒绝诊断。
 
 ### 6.3 全局历史窗口
 

@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use sqlx::{Any, FromRow, Transaction};
+use sqlx::{Any, AnyConnection, FromRow, Transaction};
 
 use crate::enrollment::AgentAuthInfo;
 use crate::http::{AppState, ROUTE_GROUP_HEADER, RequestId};
@@ -804,6 +804,75 @@ async fn save_current_peers(
     Ok(())
 }
 
+/// Open the part of an Agent-declared `unrecoverable_backfill` range the
+/// Server has not already settled (issue #281).
+///
+/// A declared range can reach heights the Server already accepted (the Agent
+/// backfilled them before a restart, or a live summary arrived first) or ones
+/// it already confirmed missing. Opening those again would let a later
+/// GapBackfill rewrite an accepted height after its raw summary expired and
+/// count it twice, so only the uncovered stretches become open gaps. A height
+/// the Server itself refused for an identity mismatch is never opened either
+/// (ADR 0011 decision 3).
+async fn open_uncovered_gap(
+    tx: &mut Transaction<'_, Any>,
+    node_id: &str,
+    from_height: u64,
+    to_height: u64,
+    created_at: &str,
+) -> Result<(), sqlx::Error> {
+    let stretches =
+        unsettled_stretches(tx, node_id, from_height, to_height, SETTLED_FOR_OPENING_SQL).await?;
+    for (from, to) in stretches {
+        open_coverage_gap(tx, node_id, from, to, created_at).await?;
+    }
+    Ok(())
+}
+
+/// Heights a declared gap may not open: covered, confirmed missing, or held
+/// by a Server-authored refusal (ADR 0011 decision 3). Open intervals are left
+/// out on purpose, because opening extends them.
+const SETTLED_FOR_OPENING_SQL: &str = "SELECT first_height, last_height FROM block_coverage_intervals WHERE node_id = $1 AND status IN ('covered', 'permanent_gap') AND first_height <= $2 AND last_height >= $3 UNION ALL SELECT from_height, to_height FROM block_history_gaps WHERE node_id = $4 AND kind = 'server_rejected' AND authored_by = 'server' AND from_height <= $5 AND to_height >= $6 ORDER BY 1";
+
+/// Heights with any coverage record, or a Server-authored refusal.
+const RECORDED_HEIGHTS_SQL: &str = "SELECT first_height, last_height FROM block_coverage_intervals WHERE node_id = $1 AND first_height <= $2 AND last_height >= $3 UNION ALL SELECT from_height, to_height FROM block_history_gaps WHERE node_id = $4 AND kind = 'server_rejected' AND authored_by = 'server' AND from_height <= $5 AND to_height >= $6 ORDER BY 1";
+
+/// The stretches of `from_height..=to_height` none of the ranges `settled_sql`
+/// selects overlaps, lowest first.
+async fn unsettled_stretches(
+    conn: &mut AnyConnection,
+    node_id: &str,
+    from_height: u64,
+    to_height: u64,
+    settled_sql: &str,
+) -> Result<Vec<(u64, u64)>, sqlx::Error> {
+    let settled = sqlx::query_as::<_, (i64, i64)>(settled_sql)
+        .bind(node_id)
+        .bind(to_height as i64)
+        .bind(from_height as i64)
+        .bind(node_id)
+        .bind(to_height as i64)
+        .bind(from_height as i64)
+        .fetch_all(&mut *conn)
+        .await?;
+    let mut stretches = Vec::new();
+    let mut next = from_height;
+    for (first, last) in settled {
+        let (first, last) = (first.max(0) as u64, last.max(0) as u64);
+        if first > next {
+            stretches.push((next, first - 1));
+        }
+        if last >= to_height {
+            return Ok(stretches);
+        }
+        next = next.max(last + 1);
+    }
+    if next <= to_height {
+        stretches.push((next, to_height));
+    }
+    Ok(stretches)
+}
+
 async fn open_coverage_gap(
     tx: &mut Transaction<'_, Any>,
     node_id: &str,
@@ -828,30 +897,85 @@ async fn open_coverage_gap(
     Ok(())
 }
 
-async fn append_coverage_height(
+/// Record one accepted height as covered, merging it with the covered
+/// intervals that end just below it and start just above it.
+///
+/// A height is accepted out of order whenever a hole is backfilled (issue
+/// #281), so extending only the newest interval would leave one row per
+/// backfilled height. Merging both neighbours keeps a fully backfilled hole
+/// one interval, which is also what proves a History Gap resolved.
+async fn mark_covered_height(
     tx: &mut Transaction<'_, Any>,
     node_id: &str,
     height: u64,
-    created_at: &str,
+    now_text: &str,
 ) -> Result<(), sqlx::Error> {
-    let previous = sqlx::query_as::<_, (i64, i64, i64)>(
-        "SELECT coverage_id, first_height, last_height FROM block_coverage_intervals WHERE node_id=$1 AND status='covered' AND last_height < $2 ORDER BY last_height DESC LIMIT 1",
+    let below = match height.checked_sub(1) {
+        Some(previous) => sqlx::query_scalar::<_, i64>(
+            "SELECT coverage_id FROM block_coverage_intervals WHERE node_id=$1 AND status='covered' AND last_height=$2 ORDER BY coverage_id LIMIT 1",
+        )
+        .bind(node_id)
+        .bind(previous as i64)
+        .fetch_optional(&mut **tx)
+        .await?,
+        None => None,
+    };
+    let above = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT coverage_id, last_height FROM block_coverage_intervals WHERE node_id=$1 AND status='covered' AND first_height=$2 ORDER BY coverage_id LIMIT 1",
     )
-    .bind(node_id).bind(height as i64).fetch_optional(&mut **tx).await?;
-    if let Some((coverage_id, first, last)) = previous {
-        if last + 1 == height as i64 {
-            sqlx::query("UPDATE block_coverage_intervals SET last_height=$1,updated_at=$2 WHERE coverage_id=$3")
-                .bind(height as i64).bind(created_at).bind(coverage_id).execute(&mut **tx).await?;
-            return Ok(());
+    .bind(node_id)
+    .bind(height as i64 + 1)
+    .fetch_optional(&mut **tx)
+    .await?;
+    // A neighbour the coverage compaction merged away concurrently updates no
+    // row; the height is then recorded on its own row, which the next
+    // compaction merges, so a covered height is never lost.
+    let extended = match (below, above) {
+        (Some(below), Some((above, above_last))) => {
+            let extended = sqlx::query("UPDATE block_coverage_intervals SET last_height=$1, updated_at=$2 WHERE coverage_id=$3")
+                .bind(above_last).bind(now_text).bind(below)
+                .execute(&mut **tx).await?.rows_affected() == 1;
+            if extended {
+                sqlx::query("DELETE FROM block_coverage_intervals WHERE coverage_id=$1")
+                    .bind(above)
+                    .execute(&mut **tx)
+                    .await?;
+            }
+            extended
         }
-        let _ = (first, last);
+        (Some(below), None) => {
+            sqlx::query("UPDATE block_coverage_intervals SET last_height=$1, updated_at=$2 WHERE coverage_id=$3")
+                .bind(height as i64).bind(now_text).bind(below)
+                .execute(&mut **tx).await?.rows_affected() == 1
+        }
+        (None, Some((above, _))) => {
+            sqlx::query("UPDATE block_coverage_intervals SET first_height=$1, updated_at=$2 WHERE coverage_id=$3")
+                .bind(height as i64).bind(now_text).bind(above)
+                .execute(&mut **tx).await?.rows_affected() == 1
+        }
+        (None, None) => false,
+    };
+    if !extended {
+        insert_covered_interval(tx, node_id, height, height, now_text).await?;
     }
-    sqlx::query("INSERT INTO block_coverage_intervals (node_id,first_height,last_height,status,created_at,updated_at) VALUES ($1, $2, $3, 'covered', $4, $5) ON CONFLICT DO NOTHING")
-        .bind(node_id).bind(height as i64).bind(height as i64).bind(created_at).bind(created_at).execute(&mut **tx).await?;
     Ok(())
 }
 
-async fn coverage_allows_backfill(
+async fn insert_covered_interval(
+    conn: &mut AnyConnection,
+    node_id: &str,
+    first_height: u64,
+    last_height: u64,
+    now_text: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO block_coverage_intervals (node_id,first_height,last_height,status,created_at,updated_at) VALUES ($1, $2, $3, 'covered', $4, $5)")
+        .bind(node_id).bind(first_height as i64).bind(last_height as i64).bind(now_text).bind(now_text)
+        .execute(&mut *conn).await?;
+    Ok(())
+}
+
+/// The open recoverable gap that contains `height`, if any.
+async fn open_gap_containing(
     tx: &mut Transaction<'_, Any>,
     node_id: &str,
     height: u64,
@@ -859,6 +983,119 @@ async fn coverage_allows_backfill(
     sqlx::query_scalar("SELECT coverage_id FROM block_coverage_intervals WHERE node_id=$1 AND status='open_recoverable_gap' AND first_height <= $2 AND last_height >= $3 LIMIT 1")
         .bind(node_id).bind(height as i64).bind(height as i64).fetch_optional(&mut **tx).await
 }
+
+/// Whether the Server admits one GapBackfill sample (issue #281).
+///
+/// The Server is the authority on which heights its history is missing, so an
+/// Agent-declared open gap is one source of that boundary, not the only one.
+/// A GapBackfill height is admitted when it is
+///
+/// - inside an open recoverable gap;
+/// - above the Node's Historical High-Water Mark: new history, not a rewrite
+///   (the head of a recovery range lands here before any gap is declared);
+/// - a Server-observed hole: below the High-Water Mark but above the first
+///   height the Server ever covered, and settled by nothing — no coverage
+///   interval of any status, no Server-authored `server_rejected` gap (those
+///   identity-mismatch holes are never backfilled, ADR 0011 decision 3), no
+///   retained Block Summary, and no `unrecoverable_backfill` gap around it
+///   (before #281 a height backfilled into a declared gap left no coverage
+///   record; [`settle_history_gaps`] records it covered).
+///
+/// An Agent-authored `server_rejected` gap is only the Agent's copy of an
+/// earlier refusal, such as this very `GapBackfillOutsideOpenGap`, so it never
+/// makes a hole unrecoverable.
+///
+/// Every other height is a plain resync replay and stays
+/// `GapBackfillOutsideOpenGap`, so the dedup rule still holds: an accepted
+/// height is covered and can never be counted twice.
+async fn backfill_admitted(
+    tx: &mut Transaction<'_, Any>,
+    node_id: &str,
+    height: u64,
+) -> Result<bool, sqlx::Error> {
+    if open_gap_containing(tx, node_id, height).await?.is_some() {
+        return Ok(true);
+    }
+    let high_water_mark: Option<i64> = sqlx::query_scalar(
+        "SELECT historical_high_watermark FROM block_history_state WHERE node_id=$1",
+    )
+    .bind(node_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if high_water_mark.is_none_or(|mark| height as i64 > mark) {
+        return Ok(true);
+    }
+    let height = height as i64;
+    let hole: i64 = sqlx::query_scalar(
+        "SELECT CASE WHEN EXISTS (SELECT 1 FROM block_coverage_intervals WHERE node_id=$1 AND status='covered' AND first_height < $2) AND NOT EXISTS (SELECT 1 FROM block_coverage_intervals WHERE node_id=$3 AND first_height <= $4 AND last_height >= $5) AND NOT EXISTS (SELECT 1 FROM block_history_gaps WHERE node_id=$6 AND ((kind='server_rejected' AND authored_by='server') OR kind='unrecoverable_backfill') AND from_height <= $7 AND to_height >= $8) AND NOT EXISTS (SELECT 1 FROM block_summaries WHERE node_id=$9 AND block_number=$10) THEN 1 ELSE 0 END",
+    )
+    .bind(node_id).bind(height)
+    .bind(node_id).bind(height).bind(height)
+    .bind(node_id).bind(height).bind(height)
+    .bind(node_id).bind(height)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(hole == 1)
+}
+
+/// Resolve the `unrecoverable_backfill` History Gaps the Server has settled.
+///
+/// Such a gap opens coverage for its uncovered heights in the transaction that
+/// records it, and a height leaves the open state only when it is backfilled
+/// (covered) or confirmed missing (`permanent_gap`). A gap no open interval
+/// overlaps therefore has its final disposition, which is what makes
+/// `resolved_at` mean something and lets retention bound the table (issue
+/// #281). The confirmed-missing fact itself stays on the protected coverage
+/// interval, so resolving the row never hides a hole.
+///
+/// Before #281 a height backfilled into a declared gap only narrowed the open
+/// interval and left no coverage record, so a settled gap can still hold
+/// heights with no record at all. Every such height was backfilled (nothing
+/// else removed an open height), so it is recorded covered before the gap is
+/// resolved: otherwise it would read as a Server-observed hole once its raw
+/// summary expired and be counted twice. `node_id` None settles every Node
+/// (the retention sweep); returns how many gaps were resolved.
+pub(crate) async fn settle_history_gaps(
+    conn: &mut AnyConnection,
+    node_id: Option<&str>,
+    now_text: &str,
+) -> Result<u64, sqlx::Error> {
+    let mut resolved = 0;
+    loop {
+        let settled = sqlx::query_as::<_, (i64, String, i64, i64)>(SETTLED_HISTORY_GAPS_SQL)
+            .bind(node_id)
+            .bind(node_id)
+            .bind(HISTORY_GAP_SETTLE_BATCH)
+            .fetch_all(&mut *conn)
+            .await?;
+        for (gap_id, gap_node, from_height, to_height) in &settled {
+            let (from_height, to_height) = (*from_height as u64, *to_height as u64);
+            for (first, last) in
+                unsettled_stretches(conn, gap_node, from_height, to_height, RECORDED_HEIGHTS_SQL)
+                    .await?
+            {
+                insert_covered_interval(conn, gap_node, first, last, now_text).await?;
+            }
+            resolved += sqlx::query(
+                "UPDATE block_history_gaps SET resolved_at = $1 WHERE gap_id = $2 AND resolved_at IS NULL",
+            )
+            .bind(now_text)
+            .bind(gap_id)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected();
+        }
+        if (settled.len() as i64) < HISTORY_GAP_SETTLE_BATCH {
+            return Ok(resolved);
+        }
+    }
+}
+
+/// One bounded batch of History Gap settlement.
+const HISTORY_GAP_SETTLE_BATCH: i64 = 128;
+
+/// Unresolved `unrecoverable_backfill` gaps no open interval overlaps.
+const SETTLED_HISTORY_GAPS_SQL: &str = "SELECT g.gap_id, g.node_id, g.from_height, g.to_height FROM block_history_gaps g WHERE g.resolved_at IS NULL AND g.kind = 'unrecoverable_backfill' AND ($1 IS NULL OR g.node_id = $2) AND NOT EXISTS (SELECT 1 FROM block_coverage_intervals c WHERE c.node_id = g.node_id AND c.status = 'open_recoverable_gap' AND c.first_height <= g.to_height AND c.last_height >= g.from_height) ORDER BY g.gap_id LIMIT $3";
 
 async fn close_coverage_height(
     tx: &mut Transaction<'_, Any>,
@@ -2330,9 +2567,7 @@ async fn save_current<I: ReportInventory>(
             platpulse_core::block::SealSignerMatch::Unknown => "unknown",
         };
         if sample.source == platpulse_core::block::BlockSource::GapBackfill
-            && coverage_allows_backfill(&mut *tx, &node_id, sample.block_number)
-                .await?
-                .is_none()
+            && !backfill_admitted(&mut *tx, &node_id, sample.block_number).await?
         {
             continue;
         }
@@ -2348,11 +2583,6 @@ async fn save_current<I: ReportInventory>(
                 continue;
             }
         }
-        let coverage_id = if sample.source == platpulse_core::block::BlockSource::GapBackfill {
-            coverage_allows_backfill(&mut *tx, &node_id, sample.block_number).await?
-        } else {
-            None
-        };
         let inserted = sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_key_fingerprint, seal_signer_match, node_key_fingerprint, node_key_valid_from, node_key_valid_until, node_key_history_complete, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, accepted_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26) ON CONFLICT DO NOTHING")
             .bind(&node_id).bind(sample.block_number as i64).bind(sample.block_hash.to_string()).bind(sample.parent_hash.to_string())
             .bind(sample.network_identity.genesis_hash.to_string()).bind(sample.network_identity.chain_id as i64).bind(sample.network_identity.p2p_network_id as i64).bind(sample.network_identity.address_hrp.as_deref().unwrap_or(""))
@@ -2362,14 +2592,22 @@ async fn save_current<I: ReportInventory>(
         if inserted.rows_affected() == 0 {
             continue;
         }
-        if let Some(coverage_id) = coverage_id {
+        // Any accepted height leaves the open gap that contained it (a live
+        // summary can land inside a declared range too) and becomes covered,
+        // so it can never be admitted, rewritten, or counted again.
+        if let Some(coverage_id) =
+            open_gap_containing(&mut *tx, &node_id, sample.block_number).await?
+        {
             close_coverage_height(&mut *tx, coverage_id, sample.block_number, received_at).await?;
-        } else {
-            append_coverage_height(&mut *tx, &node_id, sample.block_number, received_at).await?;
         }
+        mark_covered_height(&mut *tx, &node_id, sample.block_number, received_at).await?;
 
-        sqlx::query("INSERT INTO observed_network_heads (node_id, block_number, block_hash, observed_at, confidence, eligible_sources) VALUES ($1, $2, $3, $4, 'unknown', '[\\\"subscription\\\"]') ON CONFLICT(node_id) DO UPDATE SET block_number=excluded.block_number, block_hash=excluded.block_hash, observed_at=excluded.observed_at, confidence=excluded.confidence, eligible_sources=excluded.eligible_sources")
-            .bind(&node_id).bind(sample.block_number as i64).bind(sample.block_hash.to_string()).bind(stamp.history_at(sample.observed_at).to_string()).execute(&mut **tx).await?;
+        // Only the live subscription reports the head; a backfilled hole lies
+        // below it and must never move the observed network head backwards.
+        if sample.source == platpulse_core::block::BlockSource::Subscription {
+            sqlx::query("INSERT INTO observed_network_heads (node_id, block_number, block_hash, observed_at, confidence, eligible_sources) VALUES ($1, $2, $3, $4, 'unknown', '[\\\"subscription\\\"]') ON CONFLICT(node_id) DO UPDATE SET block_number=excluded.block_number, block_hash=excluded.block_hash, observed_at=excluded.observed_at, confidence=excluded.confidence, eligible_sources=excluded.eligible_sources")
+                .bind(&node_id).bind(sample.block_number as i64).bind(sample.block_hash.to_string()).bind(stamp.history_at(sample.observed_at).to_string()).execute(&mut **tx).await?;
+        }
         // last_accepted_summary_at is the durable proof that this Node's
         // history was accepted again (ADR 0011 decision 4). The Admin refusal
         // diagnosis compares its newest Server-authored gap against it, so the
@@ -3416,11 +3654,9 @@ async fn ingest_report<I: ReportInventory>(
         if sample.source != platpulse_core::block::BlockSource::GapBackfill {
             continue;
         }
-        match coverage_allows_backfill(&mut tx, &sample.node_id.to_string(), sample.block_number)
-            .await
-        {
-            Ok(Some(_)) => {}
-            Ok(None) => {
+        match backfill_admitted(&mut tx, &sample.node_id.to_string(), sample.block_number).await {
+            Ok(true) => {}
+            Ok(false) => {
                 outside_open_gap.insert((sample.node_id, sample.block_number));
             }
             Err(failure) => {
@@ -3631,7 +3867,7 @@ async fn ingest_report<I: ReportInventory>(
         if matches!(
             gap.kind,
             platpulse_core::gap::GapKind::UnrecoverableBackfill
-        ) && open_coverage_gap(
+        ) && open_uncovered_gap(
             &mut tx,
             &gap.node_id.to_string(),
             gap.from_height,
@@ -3647,6 +3883,24 @@ async fn ingest_report<I: ReportInventory>(
                 "unavailable",
                 "Server database is unavailable",
             );
+        }
+    }
+    // A backfill in this Report, or a gap it declared over heights already
+    // covered, can settle a History Gap: resolve it in the same transaction so
+    // resolved_at always agrees with the coverage it is derived from.
+    let mut settled_nodes: Vec<String> = parsed
+        .block_summaries
+        .iter()
+        .map(|sample| sample.node_id)
+        .chain(parsed.history_gaps.iter().map(|gap| gap.node_id))
+        .filter(|node_id| !rejected_nodes.contains(node_id))
+        .map(|node_id| node_id.to_string())
+        .collect();
+    settled_nodes.sort();
+    settled_nodes.dedup();
+    for node_id in &settled_nodes {
+        if let Err(failure) = settle_history_gaps(&mut tx, Some(node_id), &now_text).await {
+            return storage_error(&request_id.0, "resolve settled history gaps", &failure);
         }
     }
     let nodes: Vec<NodeReceipt> = parsed
@@ -3783,7 +4037,7 @@ async fn ingest_report<I: ReportInventory>(
                     if outside_open_gap.contains(&(sample.node_id, sample.block_number)) {
                         return rejection(
                             platpulse_core::RejectionCode::GapBackfillOutsideOpenGap,
-                            "GapBackfill sample is outside an explicit open recoverable gap",
+                            "GapBackfill sample is not a recoverable hole: the height is already covered, confirmed missing, Server-rejected, or below the Node's first covered height",
                         );
                     }
                     if divergence_samples.contains(&(sample.node_id, sample.block_number)) {
@@ -6983,6 +7237,7 @@ mod tests {
             vec![
                 (10, 10, "covered".to_owned()),
                 (11, 14, "open_recoverable_gap".to_owned()),
+                (15, 15, "covered".to_owned()),
                 (16, 20, "open_recoverable_gap".to_owned()),
             ]
         );
@@ -7037,10 +7292,10 @@ mod tests {
         assert_eq!(
             coverage_intervals(&state, &node_id).await,
             vec![
-                (10, 10, "covered".to_owned()),
+                (10, 11, "covered".to_owned()),
                 (12, 20, "open_recoverable_gap".to_owned()),
             ],
-            "closing the gap's first height moves its lower bound up by one"
+            "closing the gap's first height moves its lower bound up by one and covers it"
         );
 
         let upper = report_with_blocks(
@@ -7057,11 +7312,379 @@ mod tests {
         assert_eq!(
             coverage_intervals(&state, &node_id).await,
             vec![
-                (10, 10, "covered".to_owned()),
+                (10, 11, "covered".to_owned()),
                 (12, 19, "open_recoverable_gap".to_owned()),
+                (20, 20, "covered".to_owned()),
             ],
             "closing the gap's last height moves its upper bound down by one"
         );
+    }
+
+    /// A report carrying the given Block Summaries plus Agent-declared
+    /// `unrecoverable_backfill` gaps, as one bounded recovery round sends them.
+    fn report_with_blocks_and_gaps(
+        report_id: &str,
+        sequence: u64,
+        blocks: &[(u64, u64, String, u64, platpulse_core::block::BlockSource)],
+        gaps: &[(u64, u64)],
+    ) -> AgentReport {
+        let mut report = report_with_blocks(report_id, sequence, blocks);
+        let node_id = report.inventory.nodes[0].node_id;
+        for (from_height, to_height) in gaps.iter().copied() {
+            report.history_gaps.push(platpulse_core::HistoryGap {
+                node_id,
+                kind: platpulse_core::GapKind::UnrecoverableBackfill,
+                from_height,
+                to_height,
+                reason: "subscription reconnect exceeded configured backfill bounds".to_owned(),
+                recorded_at: report.generated_at,
+            });
+        }
+        report.validate().unwrap();
+        report
+    }
+
+    /// Every `unrecoverable_backfill` History Gap of a Node as
+    /// (from_height, to_height, resolved).
+    async fn backfill_gap_rows(state: &AppState, node_id: &str) -> Vec<(i64, i64, bool)> {
+        let rows: Vec<(i64, i64, Option<String>)> = sqlx::query_as(
+            "SELECT from_height, to_height, resolved_at FROM block_history_gaps WHERE node_id=$1 AND kind='unrecoverable_backfill' ORDER BY from_height",
+        )
+        .bind(node_id)
+        .fetch_all(state.db().pool())
+        .await
+        .unwrap();
+        rows.into_iter()
+            .map(|(from, to, resolved)| (from, to, resolved.is_some()))
+            .collect()
+    }
+
+    async fn cumulative_block_count(state: &AppState, node_id: &str) -> i64 {
+        sqlx::query_scalar(
+            "SELECT cumulative_block_count FROM block_history_state WHERE node_id=$1",
+        )
+        .bind(node_id)
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap()
+    }
+
+    /// The rejection code of every Block Summary sample of a receipt, in order.
+    fn rejections(receipt: &ReportReceipt) -> Vec<Option<platpulse_core::RejectionCode>> {
+        receipt
+            .samples
+            .iter()
+            .filter(|sample| {
+                matches!(
+                    sample.sample,
+                    platpulse_core::receipt::SampleRef::Block { .. }
+                )
+            })
+            .map(|sample| sample.rejection.as_ref().map(|rejection| rejection.code))
+            .collect()
+    }
+
+    /// Issue #281 runtime regression: a bounded recovery round backfills the
+    /// head of a hole and declares the rest a gap, while a live summary has
+    /// already raised the High-Water Mark past the whole hole. The head of the
+    /// hole lies in no open gap (the gap is declared in the same Report, after
+    /// the samples), yet the Server must still admit it as a hole it observes
+    /// itself; the declared rest is backfilled by a later round; and the hole
+    /// ends as one covered interval with its History Gap resolved.
+    #[tokio::test]
+    async fn a_hole_whose_head_is_outside_any_open_gap_still_backfills() {
+        use platpulse_core::block::BlockSource::{GapBackfill, Subscription};
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let base = block_base();
+        let live = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000361",
+            1,
+            &[
+                (10, 1_000, at(base, 1), 1, Subscription),
+                (11, 2_000, at(base, 2), 1, Subscription),
+                (20, 11_000, at(base, 11), 1, Subscription),
+            ],
+        );
+        let node_id = live.inventory.nodes[0].node_id.to_string();
+        submit(&state, &agent_id, serde_json::to_vec(&live).unwrap()).await;
+
+        // The bounded round: heights 12..=14 backfilled, 15..=19 declared.
+        let round = report_with_blocks_and_gaps(
+            "0195f2a1-0013-4013-8013-000000000362",
+            2,
+            &[
+                (12, 3_000, at(base, 12), 1, GapBackfill),
+                (13, 4_000, at(base, 12), 1, GapBackfill),
+                (14, 5_000, at(base, 12), 1, GapBackfill),
+            ],
+            &[(15, 19)],
+        );
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&round).unwrap()).await;
+        assert_eq!(
+            rejections(&receipt),
+            vec![None, None, None],
+            "the head of a Server-observed hole is admitted without an open gap"
+        );
+        assert_eq!(
+            coverage_intervals(&state, &node_id).await,
+            vec![
+                (10, 14, "covered".to_owned()),
+                (15, 19, "open_recoverable_gap".to_owned()),
+                (20, 20, "covered".to_owned()),
+            ]
+        );
+        assert_eq!(
+            backfill_gap_rows(&state, &node_id).await,
+            vec![(15, 19, false)]
+        );
+
+        // A later round backfills the declared rest of the hole.
+        let rest: Vec<_> = (15..=19)
+            .map(|height| (height, height * 1_000 - 9_000, at(base, 13), 1, GapBackfill))
+            .collect();
+        let rest = report_with_blocks("0195f2a1-0013-4013-8013-000000000363", 3, &rest);
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&rest).unwrap()).await;
+        assert_eq!(rejections(&receipt), vec![None; 5]);
+        assert_eq!(
+            coverage_intervals(&state, &node_id).await,
+            vec![(10, 20, "covered".to_owned())],
+            "a fully backfilled hole is one covered interval"
+        );
+        assert_eq!(
+            backfill_gap_rows(&state, &node_id).await,
+            vec![(15, 19, true)],
+            "the History Gap is resolved once nothing of it is open"
+        );
+        assert_eq!(cumulative_block_count(&state, &node_id).await, 11);
+
+        // A settled height is a replay again, even after its raw row expired:
+        // it is never counted twice.
+        sqlx::query("DELETE FROM block_summaries WHERE node_id=$1")
+            .bind(&node_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let replay = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000364",
+            4,
+            &[(13, 4_000, at(base, 14), 1, GapBackfill)],
+        );
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&replay).unwrap()).await;
+        assert_eq!(
+            rejections(&receipt),
+            vec![Some(
+                platpulse_core::RejectionCode::GapBackfillOutsideOpenGap
+            )]
+        );
+        assert_eq!(cumulative_block_count(&state, &node_id).await, 11);
+    }
+
+    /// Issue #281: the Server-observed hole is bounded by what the Server
+    /// itself settled. A height above the High-Water Mark is new history; a
+    /// height below the first covered height, or one a `server_rejected` gap
+    /// holds (ADR 0011 decision 3), is never admitted.
+    #[tokio::test]
+    async fn a_backfill_is_admitted_only_into_a_hole_the_server_observes() {
+        use platpulse_core::block::BlockSource::{GapBackfill, Subscription};
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let base = block_base();
+        let live = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000371",
+            1,
+            &[
+                (10, 1_000, at(base, 1), 1, Subscription),
+                (20, 11_000, at(base, 11), 1, Subscription),
+            ],
+        );
+        let node_id = live.inventory.nodes[0].node_id.to_string();
+        submit(&state, &agent_id, serde_json::to_vec(&live).unwrap()).await;
+        sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES ($1, 15, 15, 'server_rejected', 'identity mismatch', '2026-08-12T09:00:12Z', 'server')")
+            .bind(&node_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        // The Agent's own copy of an earlier GapBackfillOutsideOpenGap refusal
+        // is not the Server's verdict and never makes a hole unrecoverable.
+        sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES ($1, 17, 17, 'server_rejected', 'GapBackfill sample is outside an explicit open recoverable gap', '2026-08-12T09:00:12Z', 'agent')")
+            .bind(&node_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let probe = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000372",
+            2,
+            &[
+                (9, 500, at(base, 12), 1, GapBackfill),
+                (14, 5_000, at(base, 12), 1, GapBackfill),
+                (15, 6_000, at(base, 12), 1, GapBackfill),
+                (17, 8_000, at(base, 12), 1, GapBackfill),
+                (21, 12_000, at(base, 12), 1, GapBackfill),
+            ],
+        );
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&probe).unwrap()).await;
+        let outside = Some(platpulse_core::RejectionCode::GapBackfillOutsideOpenGap);
+        assert_eq!(
+            rejections(&receipt),
+            vec![outside, None, outside, None, None]
+        );
+        assert_eq!(
+            coverage_intervals(&state, &node_id).await,
+            vec![
+                (10, 10, "covered".to_owned()),
+                (14, 14, "covered".to_owned()),
+                (17, 17, "covered".to_owned()),
+                (20, 21, "covered".to_owned()),
+            ]
+        );
+        let head: i64 =
+            sqlx::query_scalar("SELECT block_number FROM observed_network_heads WHERE node_id=$1")
+                .bind(&node_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(head, 20, "a backfill never moves the observed network head");
+
+        // A declared range never opens a height the Server refused itself.
+        let declared = report_with_blocks_and_gaps(
+            "0195f2a1-0013-4013-8013-000000000373",
+            3,
+            &[],
+            &[(15, 16)],
+        );
+        submit(&state, &agent_id, serde_json::to_vec(&declared).unwrap()).await;
+        assert!(coverage_intervals(&state, &node_id).await.contains(&(
+            16,
+            16,
+            "open_recoverable_gap".to_owned()
+        )));
+        assert!(
+            !coverage_intervals(&state, &node_id)
+                .await
+                .iter()
+                .any(|(first, last, _)| *first <= 15 && 15 <= *last)
+        );
+    }
+
+    /// Before #281 a height backfilled into a declared gap only narrowed the
+    /// open interval and left no coverage record. Such a height is never a
+    /// Server-observed hole, and settling its gap records it covered, so it
+    /// cannot be admitted and counted again once its raw summary expires.
+    #[tokio::test]
+    async fn a_height_backfilled_before_the_fix_is_never_counted_twice() {
+        use platpulse_core::block::BlockSource::{GapBackfill, Subscription};
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let base = block_base();
+        let live = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000391",
+            1,
+            &[
+                (10, 1_000, at(base, 1), 1, Subscription),
+                (20, 11_000, at(base, 11), 1, Subscription),
+            ],
+        );
+        let node_id = live.inventory.nodes[0].node_id.to_string();
+        submit(&state, &agent_id, serde_json::to_vec(&live).unwrap()).await;
+        // The legacy shape: gap 12..=14 declared and fully backfilled, so no
+        // interval is left for it, and the raw rows have expired.
+        sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES ($1, 12, 14, 'unrecoverable_backfill', 'legacy', '2026-08-12T09:00:12Z', 'agent')")
+            .bind(&node_id)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let count = cumulative_block_count(&state, &node_id).await;
+
+        let probe = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000392",
+            2,
+            &[
+                (13, 4_000, at(base, 12), 1, GapBackfill),
+                (16, 7_000, at(base, 12), 1, GapBackfill),
+            ],
+        );
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&probe).unwrap()).await;
+        assert_eq!(
+            rejections(&receipt),
+            vec![
+                Some(platpulse_core::RejectionCode::GapBackfillOutsideOpenGap),
+                None
+            ]
+        );
+        assert_eq!(cumulative_block_count(&state, &node_id).await, count + 1);
+        // The Report settled the legacy gap: its heights are now covered.
+        assert_eq!(
+            backfill_gap_rows(&state, &node_id).await,
+            vec![(12, 14, true)]
+        );
+        assert!(coverage_intervals(&state, &node_id).await.contains(&(
+            12,
+            14,
+            "covered".to_owned()
+        )));
+    }
+
+    /// Issue #281: a declared range that reaches heights the Server already
+    /// covered opens only its uncovered stretches, so a later backfill can
+    /// never rewrite an accepted height, and the gap resolves as soon as those
+    /// stretches are backfilled.
+    #[tokio::test]
+    async fn a_declared_gap_opens_only_its_uncovered_heights() {
+        use platpulse_core::block::BlockSource::{GapBackfill, Subscription};
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let base = block_base();
+        let live = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000381",
+            1,
+            &[
+                (10, 1_000, at(base, 1), 1, Subscription),
+                (11, 2_000, at(base, 2), 1, Subscription),
+                (14, 5_000, at(base, 5), 1, Subscription),
+            ],
+        );
+        let node_id = live.inventory.nodes[0].node_id.to_string();
+        submit(&state, &agent_id, serde_json::to_vec(&live).unwrap()).await;
+        let declared =
+            report_with_blocks_and_gaps("0195f2a1-0013-4013-8013-000000000382", 2, &[], &[(9, 16)]);
+        submit(&state, &agent_id, serde_json::to_vec(&declared).unwrap()).await;
+        assert_eq!(
+            coverage_intervals(&state, &node_id).await,
+            vec![
+                (9, 9, "open_recoverable_gap".to_owned()),
+                (10, 11, "covered".to_owned()),
+                (12, 13, "open_recoverable_gap".to_owned()),
+                (14, 14, "covered".to_owned()),
+                (15, 16, "open_recoverable_gap".to_owned()),
+            ]
+        );
+        assert_eq!(
+            backfill_gap_rows(&state, &node_id).await,
+            vec![(9, 16, false)]
+        );
+
+        let backfill: Vec<_> = [9, 12, 13, 15, 16]
+            .into_iter()
+            .map(|height| {
+                (
+                    height,
+                    height * 1_000 - 9_000 + 1,
+                    at(base, 20),
+                    1,
+                    GapBackfill,
+                )
+            })
+            .collect();
+        let backfill = report_with_blocks("0195f2a1-0013-4013-8013-000000000383", 3, &backfill);
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&backfill).unwrap()).await;
+        assert_eq!(rejections(&receipt), vec![None; 5]);
+        assert_eq!(
+            coverage_intervals(&state, &node_id).await,
+            vec![(9, 16, "covered".to_owned())]
+        );
+        assert_eq!(
+            backfill_gap_rows(&state, &node_id).await,
+            vec![(9, 16, true)]
+        );
+        assert_eq!(cumulative_block_count(&state, &node_id).await, 8);
     }
 
     /// Issue #248: the buckets are written inside the receipt transaction, so a
@@ -8914,8 +9537,9 @@ mod tests {
         assert_eq!(gaps.len(), 1);
         assert_eq!(gaps[0].2, rejection.reason);
 
-        // The same sample shape with a matching stamp is still refused for the
-        // backfill protocol, and the Server records no identity gap for it.
+        // The same sample shape with a matching stamp is new history above the
+        // High-Water Mark, which a backfill may supply (issue #281), and the
+        // Server records no identity gap for it.
         let mut matching = report_with_stamped_samples(
             "0195f2a1-0013-4013-8013-000000000307",
             &registered_identity(),
@@ -8926,11 +9550,7 @@ mod tests {
         matching.block_summaries[0].source = platpulse_core::block::BlockSource::GapBackfill;
         matching.validate().unwrap();
         let receipt = submit(&state, &agent_id, serde_json::to_vec(&matching).unwrap()).await;
-        let rejection = receipt.samples[0].rejection.as_ref().unwrap();
-        assert_eq!(
-            rejection.code,
-            platpulse_core::RejectionCode::GapBackfillOutsideOpenGap
-        );
+        assert!(receipt.samples[0].rejection.is_none());
         assert_eq!(recorded_gap_reasons(&state, node_id).await, gaps);
     }
 

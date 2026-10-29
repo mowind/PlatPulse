@@ -8665,6 +8665,17 @@
               }
             ]
           },
+          "block_history_holes": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BlockHistoryHoles",
+                "description": "Block history holes the Server tracks for this Node, awaiting backfill\nor confirmed missing; None when its history has no hole (issue #281)."
+              }
+            ]
+          },
           "block_history_rejection": {
             "oneOf": [
               {
@@ -12003,6 +12014,74 @@
               "null"
             ],
             "description": "The most recent Operation that verified this artifact, so the page can\nlink the recorded outcome to the task that produced it. Absent means no\nverification task ever recorded a result for this artifact."
+          }
+        }
+      },
+      "BlockHistoryHole": {
+        "type": "object",
+        "description": "One contiguous hole in a Node's Block history.",
+        "required": [
+          "from_height",
+          "to_height",
+          "state",
+          "since",
+          "updated_at"
+        ],
+        "properties": {
+          "from_height": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "since": {
+            "type": "string",
+            "description": "When the Server first recorded the hole."
+          },
+          "state": {
+            "$ref": "#/components/schemas/BlockHistoryHoleState"
+          },
+          "to_height": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "When the hole last narrowed or changed state."
+          }
+        }
+      },
+      "BlockHistoryHoleState": {
+        "type": "string",
+        "description": "Whether a hole can still be filled.",
+        "enum": [
+          "awaiting_backfill",
+          "confirmed_missing"
+        ]
+      },
+      "BlockHistoryHoles": {
+        "type": "object",
+        "description": "The holes in one Node's Block history the Server tracks itself (issue\n#281): heights an Agent declared it could not recover within its bounds,\neither still awaiting backfill or confirmed missing after no Agent filled\nthem for a whole raw Block History window. Both come from the Server's own\ncoverage state, never from an Agent's reason text, so the panel can show\nwhat is missing even when the Server rejected nothing.",
+        "required": [
+          "awaiting_backfill_heights",
+          "confirmed_missing_heights",
+          "intervals"
+        ],
+        "properties": {
+          "awaiting_backfill_heights": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Heights still missing that a backfill may yet fill."
+          },
+          "confirmed_missing_heights": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Heights confirmed missing; the Server no longer admits a backfill."
+          },
+          "intervals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BlockHistoryHole"
+            },
+            "description": "The newest holes, highest first, at most [`BLOCK_HISTORY_HOLE_LIMIT`]."
           }
         }
       },

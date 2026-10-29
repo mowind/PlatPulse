@@ -521,6 +521,7 @@ export type AdminNetworkNode = {
 export type AdminNodeDetail = {
     agent_id: string;
     agent_spool_backlog_age?: null | SpoolBacklogAgeDiagnostic;
+    block_history_holes?: null | BlockHistoryHoles;
     block_history_rejection?: null | BlockHistoryRejection;
     consensus?: null | ConsensusDiagnostic;
     current_head?: number | null;
@@ -1914,6 +1915,51 @@ export type BackupArtifactSummary = {
      * verification task ever recorded a result for this artifact.
      */
     verifyOperationId?: string | null;
+};
+
+/**
+ * One contiguous hole in a Node's Block history.
+ */
+export type BlockHistoryHole = {
+    from_height: number;
+    /**
+     * When the Server first recorded the hole.
+     */
+    since: string;
+    state: BlockHistoryHoleState;
+    to_height: number;
+    /**
+     * When the hole last narrowed or changed state.
+     */
+    updated_at: string;
+};
+
+/**
+ * Whether a hole can still be filled.
+ */
+export type BlockHistoryHoleState = 'awaiting_backfill' | 'confirmed_missing';
+
+/**
+ * The holes in one Node's Block history the Server tracks itself (issue
+ * #281): heights an Agent declared it could not recover within its bounds,
+ * either still awaiting backfill or confirmed missing after no Agent filled
+ * them for a whole raw Block History window. Both come from the Server's own
+ * coverage state, never from an Agent's reason text, so the panel can show
+ * what is missing even when the Server rejected nothing.
+ */
+export type BlockHistoryHoles = {
+    /**
+     * Heights still missing that a backfill may yet fill.
+     */
+    awaiting_backfill_heights: number;
+    /**
+     * Heights confirmed missing; the Server no longer admits a backfill.
+     */
+    confirmed_missing_heights: number;
+    /**
+     * The newest holes, highest first, at most [`BLOCK_HISTORY_HOLE_LIMIT`].
+     */
+    intervals: Array<BlockHistoryHole>;
 };
 
 /**

@@ -918,6 +918,7 @@ export function AdminNodeDetail() {
                   content: (
                     <>
                       <IdentityPanel node={data} />
+                      <BlockHistoryHolesPanel node={data} />
                       <ValidatorIdentityPanel node={data} />
                       <RpcDiagnosticsPanel node={data} />
                       <ComponentDiagnosticsPanel node={data} />
@@ -989,6 +990,20 @@ function nodeDetailNotices(node: AdminNodeDetailDto): DetailNotice[] {
       tone: 'error',
       status: 'History rejected',
       message: "The Server is refusing this Node's Block history.",
+      section: 'diagnostics',
+      sectionLabel: 'Diagnostics',
+    })
+  }
+  if (node.block_history_holes) {
+    const holes = node.block_history_holes
+    notices.push({
+      key: 'history-holes',
+      tone: holes.confirmed_missing_heights > 0 ? 'error' : 'warning',
+      status: 'History holes',
+      message:
+        holes.confirmed_missing_heights > 0
+          ? "Part of this Node's Block history is confirmed missing."
+          : "Part of this Node's Block history is awaiting backfill.",
       section: 'diagnostics',
       sectionLabel: 'Diagnostics',
     })
@@ -2069,6 +2084,87 @@ function ValidatorIdentityPanel({ node }: { node: AdminNodeDetailDto }) {
             {identity ? lifecycleLabel(identity.lifecycle).label : 'Unknown'}
           </DetailItem>
         </DetailList>
+      </div>
+    </CardX>
+  )
+}
+
+const HOLE_STATE_LABEL: Record<string, { label: string; tone: 'warning' | 'error' }> = {
+  awaiting_backfill: { label: 'Awaiting backfill', tone: 'warning' },
+  confirmed_missing: { label: 'Confirmed missing', tone: 'error' },
+}
+
+/**
+ * The holes in this Node's Block history the Server tracks itself (issue
+ * #281): heights the Agent could not recover within its bounds, still
+ * awaiting backfill or confirmed missing once no backfill arrived for a whole
+ * raw Block History window. Rendered only when the Server reports holes, so a
+ * Node whose coverage is unknown is never presented as complete.
+ */
+function BlockHistoryHolesPanel({ node }: { node: AdminNodeDetailDto }) {
+  const holes = node.block_history_holes
+  if (!holes) return null
+  const confirmed = holes.confirmed_missing_heights > 0
+  return (
+    <CardX
+      size="medium"
+      className={CARD_SURFACE}
+      header={
+        <>
+          <h2 className={ADMIN_SECTION_TITLE}>Block history holes</h2>
+          <StatusBadge
+            status={confirmed ? 'Confirmed missing' : 'Awaiting backfill'}
+            tone={confirmed ? 'error' : 'warning'}
+          />
+        </>
+      }
+    >
+      <div className="space-y-2 text-sm" data-slot="block-history-holes">
+        <p className="text-muted-foreground">
+          Heights the Agent could not recover within its backfill bounds. A hole awaiting
+          backfill is filled as the Agent works through its backlog; one that stays unfilled
+          for a whole raw Block History window is confirmed missing and never backfilled.
+        </p>
+        <DetailList>
+          <DetailItem label="Awaiting backfill">
+            <span className="tabular-nums">
+              {holes.awaiting_backfill_heights.toLocaleString()}
+            </span>{' '}
+            heights
+          </DetailItem>
+          <DetailItem label="Confirmed missing">
+            <span className="tabular-nums">
+              {holes.confirmed_missing_heights.toLocaleString()}
+            </span>{' '}
+            heights
+          </DetailItem>
+        </DetailList>
+        <ul className="space-y-1" aria-label="Newest Block history holes">
+          {holes.intervals.map((hole) => {
+            const state = HOLE_STATE_LABEL[hole.state] ?? {
+              label: hole.state,
+              tone: 'warning' as const,
+            }
+            return (
+              <li
+                key={hole.from_height + '-' + hole.state}
+                className="flex flex-wrap items-center gap-2"
+              >
+                <StatusBadge status={state.label} tone={state.tone} />
+                <span className="tabular-nums">
+                  {hole.from_height === hole.to_height
+                    ? hole.from_height.toLocaleString()
+                    : hole.from_height.toLocaleString() +
+                      ' to ' +
+                      hole.to_height.toLocaleString()}
+                </span>
+                <span className="text-muted-foreground">
+                  since {formatObservedAt(hole.since)}
+                </span>
+              </li>
+            )
+          })}
+        </ul>
       </div>
     </CardX>
   )
