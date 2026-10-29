@@ -503,6 +503,11 @@ zero.
 | `platpulse_sqlite_pool_size` | gauge | none | Pool connection capacity. |
 | `platpulse_sqlite_pool_idle` | gauge | none | Idle pool connections. |
 | `platpulse_ingestion_in_flight` | gauge | none | AgentReport ingestions currently executing. |
+| `platpulse_history_gap_settlements_total` | counter | `path` | History Gap settlement passes on the `report` or `retention` path. |
+| `platpulse_history_gap_settlement_slow_total` | counter | `path` | Settlement passes that took 500 ms or longer (each also logs a warning). |
+| `platpulse_history_gap_settlement_milliseconds_total` | counter | `path` | Time spent settling History Gaps. |
+| `platpulse_history_gap_settlement_examined_total` | counter | `path` | Unresolved `unrecoverable_backfill` gaps examined; tracks touched gaps, not table size. |
+| `platpulse_history_gap_settlement_resolved_total` | counter | `path` | History Gaps resolved by settlement. |
 | `platpulse_metrics_scrapes_total` | counter | none | Scrapes served by this process. |
 | `platpulse_metrics_listener_failures_total` | counter | none | Redacted listener startup/runtime failures. |
 | `platpulse_metrics_listener_enabled` | gauge | none | Whether the listener is configured. |

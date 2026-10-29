@@ -999,7 +999,7 @@ async fn open_gap_containing(
 ///   identity-mismatch holes are never backfilled, ADR 0011 decision 3), no
 ///   retained Block Summary, and no `unrecoverable_backfill` gap around it
 ///   (before #281 a height backfilled into a declared gap left no coverage
-///   record; [`settle_history_gaps`] records it covered).
+///   record; [`settle_history_gaps_in_range`] records it covered).
 ///
 /// An Agent-authored `server_rejected` gap is only the Agent's copy of an
 /// earlier refusal, such as this very `GapBackfillOutsideOpenGap`, so it never
@@ -1038,7 +1038,50 @@ async fn backfill_admitted(
     Ok(hole == 1)
 }
 
-/// Resolve the `unrecoverable_backfill` History Gaps the Server has settled.
+/// What one History Gap settlement pass did (issue #282): how many unresolved
+/// `unrecoverable_backfill` gaps it examined and how many of them it resolved.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GapSettlement {
+    pub(crate) examined: u64,
+    pub(crate) resolved: u64,
+}
+
+impl GapSettlement {
+    pub(crate) fn add(&mut self, other: GapSettlement) {
+        self.examined += other.examined;
+        self.resolved += other.resolved;
+    }
+}
+
+/// A settlement pass slower than this is logged (issue #282): it is the early
+/// signal that settlement is drifting back toward a whole-table scan.
+pub(crate) const GAP_SETTLEMENT_SLOW: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Count one settlement pass in the metrics and warn when it was slow.
+/// `path` is `report` or `retention`.
+pub(crate) fn observe_gap_settlement(
+    metrics: &crate::metrics::MetricsRegistry,
+    path: &'static str,
+    settlement: GapSettlement,
+    elapsed: std::time::Duration,
+) {
+    let slow = elapsed >= GAP_SETTLEMENT_SLOW;
+    metrics.observe_gap_settlement(path, settlement, elapsed, slow);
+    if slow {
+        // The pass time goes in the message, not in `duration_ms`: that field
+        // is the request duration in the logging field vocabulary, and on the report path the
+        // request's completion line carries its own.
+        tracing::warn!(
+            "history gap settlement on the {path} path was slow: {} ms, examined {} unresolved gaps, resolved {}",
+            elapsed.as_millis(),
+            settlement.examined,
+            settlement.resolved
+        );
+    }
+}
+
+/// Resolve the `unrecoverable_backfill` History Gaps of one Node that overlap
+/// `from_height..=to_height` and that the Server has settled.
 ///
 /// Such a gap opens coverage for its uncovered heights in the transaction that
 /// records it, and a height leaves the open state only when it is backfilled
@@ -1048,54 +1091,223 @@ async fn backfill_admitted(
 /// #281). The confirmed-missing fact itself stays on the protected coverage
 /// interval, so resolving the row never hides a hole.
 ///
+/// A gap becomes settled only at the moment its last open height leaves the
+/// open state, and that height lies inside the gap. So whoever closes open
+/// heights (Report Ingestion backfilling them, retention confirming them
+/// missing) settles exactly the gaps around those heights, and nothing else
+/// has to be looked at: issue #282 replaced the per-Report pass that probed
+/// every unresolved gap of the table with this range-bounded one.
+pub(crate) async fn settle_history_gaps_in_range(
+    conn: &mut AnyConnection,
+    node_id: &str,
+    from_height: u64,
+    to_height: u64,
+    now_text: &str,
+) -> Result<GapSettlement, sqlx::Error> {
+    let mut settlement = GapSettlement::default();
+    // Keyset cursor in the index order (to_height, gap_id); it starts just
+    // below the range.
+    let mut after = (from_height as i64 - 1, 0_i64);
+    loop {
+        let candidates = sqlx::query_as::<_, GapCandidate>(GAP_CANDIDATES_IN_RANGE_SQL)
+            .bind(node_id)
+            .bind(from_height as i64)
+            .bind(to_height as i64)
+            .bind(after.0)
+            .bind(after.0)
+            .bind(after.1)
+            .bind(HISTORY_GAP_SETTLE_BATCH)
+            .fetch_all(&mut *conn)
+            .await?;
+        settlement.add(settle_candidates(conn, &candidates, now_text).await?);
+        match candidates.last() {
+            Some(last) if candidates.len() as i64 == HISTORY_GAP_SETTLE_BATCH => {
+                after = (last.to_height, last.gap_id);
+            }
+            _ => return Ok(settlement),
+        }
+    }
+}
+
+/// One Node's heights that left the open state, or that a History Gap was
+/// declared over: the only places a gap can have become settled (issue #282).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct TouchedRange {
+    pub(crate) node_id: String,
+    pub(crate) from_height: u64,
+    pub(crate) to_height: u64,
+}
+
+/// Settle the gaps around every touched range, merging the overlapping and
+/// adjacent ranges of one Node first so a run of backfilled heights is one
+/// bounded lookup rather than one per height.
+pub(crate) async fn settle_touched_history_gaps(
+    conn: &mut AnyConnection,
+    touched: &[TouchedRange],
+    now_text: &str,
+) -> Result<GapSettlement, sqlx::Error> {
+    let mut settlement = GapSettlement::default();
+    for range in merge_touched_ranges(touched) {
+        settlement.add(
+            settle_history_gaps_in_range(
+                conn,
+                &range.node_id,
+                range.from_height,
+                range.to_height,
+                now_text,
+            )
+            .await?,
+        );
+    }
+    Ok(settlement)
+}
+
+/// Sort the touched ranges per Node and merge the overlapping and adjacent ones.
+fn merge_touched_ranges(touched: &[TouchedRange]) -> Vec<TouchedRange> {
+    let mut ranges = touched.to_vec();
+    ranges.sort();
+    let mut merged: Vec<TouchedRange> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        match merged.last_mut() {
+            Some(last)
+                if last.node_id == range.node_id
+                    && range.from_height <= last.to_height.saturating_add(1) =>
+            {
+                last.to_height = last.to_height.max(range.to_height);
+            }
+            _ => merged.push(range),
+        }
+    }
+    merged
+}
+
+/// Examine one bounded batch of every Node's unresolved `unrecoverable_backfill`
+/// gaps after `after_gap_id` and resolve the settled ones.
+///
+/// This is the retention sweep's safety net, not the main settlement path: it
+/// finds the gaps no range-bounded settlement reached, such as gaps settled
+/// before issue #281 shipped. Each call reads at most one batch, so a large
+/// backlog costs a bounded amount of work per sweep instead of one whole-table
+/// pass (issue #282). Returns the settlement and the last gap examined, or
+/// `None` once the scan reached the end and starts over.
+pub(crate) async fn settle_history_gaps_after(
+    conn: &mut AnyConnection,
+    after_gap_id: i64,
+    now_text: &str,
+) -> Result<(GapSettlement, Option<i64>), sqlx::Error> {
+    let candidates = sqlx::query_as::<_, GapCandidate>(GAP_CANDIDATES_AFTER_SQL)
+        .bind(after_gap_id)
+        .bind(HISTORY_GAP_SETTLE_BATCH)
+        .fetch_all(&mut *conn)
+        .await?;
+    let settlement = settle_candidates(conn, &candidates, now_text).await?;
+    let next = match candidates.last() {
+        Some(last) if candidates.len() as i64 == HISTORY_GAP_SETTLE_BATCH => Some(last.gap_id),
+        _ => None,
+    };
+    Ok((settlement, next))
+}
+
+/// One unresolved `unrecoverable_backfill` gap read for settlement, with
+/// whether an open interval still overlaps it (0 or 1, decoded as an integer
+/// because `Any` has no portable boolean).
+#[derive(Debug, sqlx::FromRow)]
+struct GapCandidate {
+    gap_id: i64,
+    node_id: String,
+    from_height: i64,
+    to_height: i64,
+    still_open: i64,
+}
+
+/// Resolve the candidates no open interval overlaps any more.
+async fn settle_candidates(
+    conn: &mut AnyConnection,
+    candidates: &[GapCandidate],
+    now_text: &str,
+) -> Result<GapSettlement, sqlx::Error> {
+    let mut settlement = GapSettlement::default();
+    for candidate in candidates {
+        settlement.examined += 1;
+        if candidate.still_open == 0 {
+            settlement.resolved += resolve_settled_gap(
+                conn,
+                candidate.gap_id,
+                &candidate.node_id,
+                candidate.from_height,
+                candidate.to_height,
+                now_text,
+            )
+            .await?;
+        }
+    }
+    Ok(settlement)
+}
+
+/// Resolve one settled gap.
+///
 /// Before #281 a height backfilled into a declared gap only narrowed the open
 /// interval and left no coverage record, so a settled gap can still hold
 /// heights with no record at all. Every such height was backfilled (nothing
 /// else removed an open height), so it is recorded covered before the gap is
 /// resolved: otherwise it would read as a Server-observed hole once its raw
-/// summary expired and be counted twice. `node_id` None settles every Node
-/// (the retention sweep); returns how many gaps were resolved.
-pub(crate) async fn settle_history_gaps(
+/// summary expired and be counted twice.
+async fn resolve_settled_gap(
     conn: &mut AnyConnection,
-    node_id: Option<&str>,
+    gap_id: i64,
+    node_id: &str,
+    from_height: i64,
+    to_height: i64,
     now_text: &str,
 ) -> Result<u64, sqlx::Error> {
-    let mut resolved = 0;
-    loop {
-        let settled = sqlx::query_as::<_, (i64, String, i64, i64)>(SETTLED_HISTORY_GAPS_SQL)
-            .bind(node_id)
-            .bind(node_id)
-            .bind(HISTORY_GAP_SETTLE_BATCH)
-            .fetch_all(&mut *conn)
-            .await?;
-        for (gap_id, gap_node, from_height, to_height) in &settled {
-            let (from_height, to_height) = (*from_height as u64, *to_height as u64);
-            for (first, last) in
-                unsettled_stretches(conn, gap_node, from_height, to_height, RECORDED_HEIGHTS_SQL)
-                    .await?
-            {
-                insert_covered_interval(conn, gap_node, first, last, now_text).await?;
-            }
-            resolved += sqlx::query(
-                "UPDATE block_history_gaps SET resolved_at = $1 WHERE gap_id = $2 AND resolved_at IS NULL",
-            )
-            .bind(now_text)
-            .bind(gap_id)
-            .execute(&mut *conn)
-            .await?
-            .rows_affected();
-        }
-        if (settled.len() as i64) < HISTORY_GAP_SETTLE_BATCH {
-            return Ok(resolved);
-        }
+    let (from_height, to_height) = (from_height.max(0) as u64, to_height.max(0) as u64);
+    for (first, last) in
+        unsettled_stretches(conn, node_id, from_height, to_height, RECORDED_HEIGHTS_SQL).await?
+    {
+        insert_covered_interval(conn, node_id, first, last, now_text).await?;
     }
+    Ok(sqlx::query(
+        "UPDATE block_history_gaps SET resolved_at = $1 WHERE gap_id = $2 AND resolved_at IS NULL",
+    )
+    .bind(now_text)
+    .bind(gap_id)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected())
 }
 
 /// One bounded batch of History Gap settlement.
 const HISTORY_GAP_SETTLE_BATCH: i64 = 128;
 
-/// Unresolved `unrecoverable_backfill` gaps no open interval overlaps.
-const SETTLED_HISTORY_GAPS_SQL: &str = "SELECT g.gap_id, g.node_id, g.from_height, g.to_height FROM block_history_gaps g WHERE g.resolved_at IS NULL AND g.kind = 'unrecoverable_backfill' AND ($1 IS NULL OR g.node_id = $2) AND NOT EXISTS (SELECT 1 FROM block_coverage_intervals c WHERE c.node_id = g.node_id AND c.status = 'open_recoverable_gap' AND c.first_height <= g.to_height AND c.last_height >= g.from_height) ORDER BY g.gap_id LIMIT $3";
+/// The unresolved `unrecoverable_backfill` gaps matching `$filter`, read as
+/// [`GapCandidate`] rows. The `still_open` probe is an index-only scan of the
+/// open-interval partial index of migration 0080, bounded by the Node's open
+/// intervals above the gap; open intervals may overlap, so it cannot be a
+/// single `LIMIT 1` seek.
+macro_rules! gap_candidates_sql {
+    ($filter:literal) => {
+        concat!(
+            "SELECT g.gap_id, g.node_id, g.from_height, g.to_height, ",
+            "CASE WHEN EXISTS (SELECT 1 FROM block_coverage_intervals c WHERE c.node_id = g.node_id AND c.status = 'open_recoverable_gap' AND c.first_height <= g.to_height AND c.last_height >= g.from_height) THEN 1 ELSE 0 END AS still_open ",
+            "FROM block_history_gaps g WHERE g.resolved_at IS NULL AND g.kind = 'unrecoverable_backfill' AND ",
+            $filter
+        )
+    };
+}
+
+/// One Node's gaps overlapping a height range, in batches keyed by
+/// `(to_height, gap_id)`. The lookup walks the unsettled-gap partial index of
+/// migration 0080 from the bottom of the range; ordering by anything the index
+/// does not lead with (such as `gap_id` alone) would let the planner walk every
+/// unresolved gap instead. The Node is a plain equality: an `IS NULL` branch
+/// would let the planner fall back to a whole-table scan (issue #282).
+const GAP_CANDIDATES_IN_RANGE_SQL: &str = gap_candidates_sql!(
+    "g.node_id = $1 AND g.to_height >= $2 AND g.from_height <= $3 AND (g.to_height > $4 OR (g.to_height = $5 AND g.gap_id > $6)) ORDER BY g.to_height, g.gap_id LIMIT $7"
+);
+
+/// Every Node's gaps after a `gap_id` keyset cursor.
+const GAP_CANDIDATES_AFTER_SQL: &str =
+    gap_candidates_sql!("g.gap_id > $1 ORDER BY g.gap_id LIMIT $2");
 
 async fn close_coverage_height(
     tx: &mut Transaction<'_, Any>,
@@ -1836,7 +2048,7 @@ async fn save_current<I: ReportInventory>(
     report: &AgentReport<I>,
     stamp: ReportStamp<'_>,
     geo_provider: crate::geo::GeoProvider,
-) -> Result<(), sqlx::Error> {
+) -> Result<Vec<TouchedRange>, sqlx::Error> {
     let received_at = stamp.received_at();
     // Both retention windows are read once for the whole Report: they depend
     // on the policy in this transaction's snapshot and on the clock, never on
@@ -2539,6 +2751,9 @@ async fn save_current<I: ReportInventory>(
             }
         }
     }
+    // The heights this Report took out of an open History Gap: the only places
+    // a gap can have become settled (issue #282).
+    let mut closed_heights = Vec::new();
     for sample in &report.block_summaries {
         let node_id = sample.node_id.to_string();
         let registered_identity = sqlx::query_as::<_, (String, i64, i64, String)>("SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks n JOIN nodes nd ON nd.network_key = n.network_key WHERE nd.node_id = $1")
@@ -2599,6 +2814,11 @@ async fn save_current<I: ReportInventory>(
             open_gap_containing(&mut *tx, &node_id, sample.block_number).await?
         {
             close_coverage_height(&mut *tx, coverage_id, sample.block_number, received_at).await?;
+            closed_heights.push(TouchedRange {
+                node_id: node_id.clone(),
+                from_height: sample.block_number,
+                to_height: sample.block_number,
+            });
         }
         mark_covered_height(&mut *tx, &node_id, sample.block_number, received_at).await?;
 
@@ -2635,7 +2855,7 @@ async fn save_current<I: ReportInventory>(
         )
         .await?;
     }
-    Ok(())
+    Ok(closed_heights)
 }
 
 /// Outcome of evaluating one Agent's Inventory declaration of a Node it does
@@ -3774,11 +3994,13 @@ async fn ingest_report<I: ReportInventory>(
     // read through the pool: ingestion already holds the single write
     // connection, and a second acquire inside the transaction would deadlock.
     let history = state.capacity().history_gate();
-    if let Err(save_error) =
-        save_current(&mut tx, &history, &projection_report, stamp, geo_provider).await
-    {
-        return storage_error(&request_id.0, "save current observations", &save_error);
-    }
+    let mut touched_heights =
+        match save_current(&mut tx, &history, &projection_report, stamp, geo_provider).await {
+            Ok(closed_heights) => closed_heights,
+            Err(save_error) => {
+                return storage_error(&request_id.0, "save current observations", &save_error);
+            }
+        };
     // Only admitted Nodes feed the Network-scoped reference head; a purged
     // Node's unvalidated Network key must not reach shared Network state.
     let network_keys = projection_report
@@ -3887,20 +4109,35 @@ async fn ingest_report<I: ReportInventory>(
     }
     // A backfill in this Report, or a gap it declared over heights already
     // covered, can settle a History Gap: resolve it in the same transaction so
-    // resolved_at always agrees with the coverage it is derived from.
-    let mut settled_nodes: Vec<String> = parsed
-        .block_summaries
-        .iter()
-        .map(|sample| sample.node_id)
-        .chain(parsed.history_gaps.iter().map(|gap| gap.node_id))
-        .filter(|node_id| !rejected_nodes.contains(node_id))
-        .map(|node_id| node_id.to_string())
-        .collect();
-    settled_nodes.sort();
-    settled_nodes.dedup();
-    for node_id in &settled_nodes {
-        if let Err(failure) = settle_history_gaps(&mut tx, Some(node_id), &now_text).await {
-            return storage_error(&request_id.0, "resolve settled history gaps", &failure);
+    // resolved_at always agrees with the coverage it is derived from. Only the
+    // gaps around the heights this Report closed and the ranges it declared
+    // can have settled, so a live tip Report examines no gap at all (#282).
+    touched_heights.extend(
+        parsed
+            .history_gaps
+            .iter()
+            .filter(|gap| !rejected_nodes.contains(&gap.node_id))
+            .filter(|gap| {
+                matches!(
+                    gap.kind,
+                    platpulse_core::gap::GapKind::UnrecoverableBackfill
+                )
+            })
+            .map(|gap| TouchedRange {
+                node_id: gap.node_id.to_string(),
+                from_height: gap.from_height,
+                to_height: gap.to_height,
+            }),
+    );
+    if !touched_heights.is_empty() {
+        let started = std::time::Instant::now();
+        match settle_touched_history_gaps(&mut tx, &touched_heights, &now_text).await {
+            Ok(settlement) => {
+                observe_gap_settlement(&state.metrics(), "report", settlement, started.elapsed());
+            }
+            Err(failure) => {
+                return storage_error(&request_id.0, "resolve settled history gaps", &failure);
+            }
         }
     }
     let nodes: Vec<NodeReceipt> = parsed
@@ -7384,6 +7621,101 @@ mod tests {
             .collect()
     }
 
+    /// Issue #282 regression: History Gap settlement on the Report path is
+    /// bounded by what the Report touched, not by the size of the tables. A
+    /// Node carries 10,000 open recoverable intervals, each under an unresolved
+    /// `unrecoverable_backfill` gap. A live tip Report closes nothing and runs
+    /// no settlement at all; a backfill of one height examines and resolves
+    /// only the gap around it; a gap declared over covered heights examines
+    /// only itself.
+    #[tokio::test]
+    async fn gap_settlement_examines_only_the_gaps_a_report_touched() {
+        use platpulse_core::block::BlockSource::{GapBackfill, Subscription};
+        const OPEN_GAPS: i64 = 10_000;
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let base = block_base();
+        let live = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000371",
+            1,
+            &[
+                (10, 10_000, at(base, 1), 1, Subscription),
+                (11, 11_000, at(base, 2), 1, Subscription),
+                (50_000, 50_000_000, at(base, 3), 1, Subscription),
+            ],
+        );
+        let node_id = live.inventory.nodes[0].node_id.to_string();
+        submit(&state, &agent_id, serde_json::to_vec(&live).unwrap()).await;
+
+        // One single-height open interval and one unresolved gap at every
+        // even height from 20,000, as a long-unfilled recovery leaves them.
+        let stamp = format_rfc3339(now_utc());
+        let pool = state.db().pool();
+        sqlx::query("WITH RECURSIVE seq(k) AS (SELECT 0 UNION ALL SELECT k + 1 FROM seq WHERE k + 1 < $1) INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) SELECT $2, 20000 + 2 * k, 20000 + 2 * k, 'open_recoverable_gap', $3, $4 FROM seq")
+            .bind(OPEN_GAPS).bind(&node_id).bind(&stamp).bind(&stamp)
+            .execute(pool).await.unwrap();
+        sqlx::query("WITH RECURSIVE seq(k) AS (SELECT 0 UNION ALL SELECT k + 1 FROM seq WHERE k + 1 < $1) INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) SELECT $2, 20000 + 2 * k, 20000 + 2 * k, 'unrecoverable_backfill', 'seeded', $3, 'agent' FROM seq")
+            .bind(OPEN_GAPS).bind(&node_id).bind(&stamp)
+            .execute(pool).await.unwrap();
+        let unresolved = || async {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM block_history_gaps WHERE node_id=$1 AND kind='unrecoverable_backfill' AND resolved_at IS NULL",
+            )
+            .bind(&node_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        };
+        assert_eq!(unresolved().await, OPEN_GAPS);
+        let metrics = state.metrics();
+        assert_eq!(metrics.gap_settlement_counters("report")[0], 0);
+
+        // A live tip Report touches no open height: no settlement runs.
+        let tip = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000372",
+            2,
+            &[(50_001, 50_001_000, at(base, 4), 1, Subscription)],
+        );
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&tip).unwrap()).await;
+        assert_eq!(rejections(&receipt), vec![None]);
+        let [runs, _, _, examined, resolved] = metrics.gap_settlement_counters("report");
+        assert_eq!((runs, examined, resolved), (0, 0, 0));
+        assert_eq!(unresolved().await, OPEN_GAPS);
+
+        // Backfilling one height settles exactly the gap around it.
+        let backfill = report_with_blocks(
+            "0195f2a1-0013-4013-8013-000000000373",
+            3,
+            &[(30_000, 30_000_000, at(base, 5), 1, GapBackfill)],
+        );
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&backfill).unwrap()).await;
+        assert_eq!(rejections(&receipt), vec![None]);
+        let [runs, _, _, examined, resolved] = metrics.gap_settlement_counters("report");
+        assert_eq!((runs, examined, resolved), (1, 1, 1));
+        assert_eq!(unresolved().await, OPEN_GAPS - 1);
+        let settled: Option<String> = sqlx::query_scalar(
+            "SELECT resolved_at FROM block_history_gaps WHERE node_id=$1 AND from_height=30000",
+        )
+        .bind(&node_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert!(settled.is_some(), "the backfilled gap is resolved");
+
+        // A gap declared over heights already covered settles at once, and
+        // examines nothing but itself.
+        let declared = report_with_blocks_and_gaps(
+            "0195f2a1-0013-4013-8013-000000000374",
+            4,
+            &[(50_002, 50_002_000, at(base, 6), 1, Subscription)],
+            &[(10, 11)],
+        );
+        let receipt = submit(&state, &agent_id, serde_json::to_vec(&declared).unwrap()).await;
+        assert_eq!(rejections(&receipt), vec![None]);
+        let [runs, _, _, examined, resolved] = metrics.gap_settlement_counters("report");
+        assert_eq!((runs, examined, resolved), (2, 2, 2));
+        assert_eq!(unresolved().await, OPEN_GAPS - 1);
+    }
+
     /// Issue #281 runtime regression: a bounded recovery round backfills the
     /// head of a hole and declares the rest a gap, while a live summary has
     /// already raised the High-Water Mark past the whole hole. The head of the
@@ -7570,6 +7902,10 @@ mod tests {
     /// open interval and left no coverage record. Such a height is never a
     /// Server-observed hole, and settling its gap records it covered, so it
     /// cannot be admitted and counted again once its raw summary expires.
+    ///
+    /// Since #282 a Report settles only the gaps around the heights it closed,
+    /// so a legacy gap no Report touches is settled by the retention sweep's
+    /// bounded catch-up walk instead.
     #[tokio::test]
     async fn a_height_backfilled_before_the_fix_is_never_counted_twice() {
         use platpulse_core::block::BlockSource::{GapBackfill, Subscription};
@@ -7611,7 +7947,16 @@ mod tests {
             ]
         );
         assert_eq!(cumulative_block_count(&state, &node_id).await, count + 1);
-        // The Report settled the legacy gap: its heights are now covered.
+        // The Report closed height 16 only, so it leaves the legacy gap alone.
+        assert_eq!(
+            backfill_gap_rows(&state, &node_id).await,
+            vec![(12, 14, false)]
+        );
+        // The retention sweep's catch-up walk settles it: its heights are now
+        // covered.
+        crate::retention::compact_block_coverage(state.db().pool(), crate::auth::now_utc(), &mut 0)
+            .await
+            .unwrap();
         assert_eq!(
             backfill_gap_rows(&state, &node_id).await,
             vec![(12, 14, true)]

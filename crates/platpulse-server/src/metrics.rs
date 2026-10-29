@@ -37,6 +37,32 @@ const READINESS_COMPONENTS: [&str; 8] = [
     "corruption",
 ];
 const REALTIME_SURFACES: [&str; 2] = ["public", "admin"];
+/// The two paths that settle History Gaps (issue #282): Report Ingestion and
+/// the retention sweep.
+const GAP_SETTLEMENT_PATHS: [&str; 2] = ["report", "retention"];
+/// The History Gap settlement counters, each kept per settlement path.
+const GAP_SETTLEMENT_METRICS: [(&str, &str); 5] = [
+    (
+        "platpulse_history_gap_settlements_total",
+        "History Gap settlement passes by settlement path.",
+    ),
+    (
+        "platpulse_history_gap_settlement_slow_total",
+        "History Gap settlement passes slower than 500 ms by settlement path.",
+    ),
+    (
+        "platpulse_history_gap_settlement_milliseconds_total",
+        "Milliseconds spent settling History Gaps by settlement path.",
+    ),
+    (
+        "platpulse_history_gap_settlement_examined_total",
+        "Unresolved History Gaps examined for settlement by settlement path.",
+    ),
+    (
+        "platpulse_history_gap_settlement_resolved_total",
+        "History Gaps resolved by settlement path.",
+    ),
+];
 const OPERATION_STATUSES: [&str; 6] = [
     "queued",
     "running",
@@ -66,6 +92,8 @@ struct MetricsInner {
     receipts: [AtomicU64; OUTCOMES.len()],
     readiness: [AtomicU64; READINESS_COMPONENTS.len()],
     realtime_connections: [AtomicU64; REALTIME_SURFACES.len()],
+    /// Indexed by [`GAP_SETTLEMENT_PATHS`], then [`GAP_SETTLEMENT_METRICS`].
+    gap_settlements: [[AtomicU64; GAP_SETTLEMENT_METRICS.len()]; GAP_SETTLEMENT_PATHS.len()],
     scrapes: AtomicU64,
     listener_failures: AtomicU64,
     listener_enabled: AtomicU64,
@@ -93,6 +121,9 @@ impl MetricsRegistry {
                 receipts: std::array::from_fn(|_| AtomicU64::new(0)),
                 readiness: std::array::from_fn(|_| AtomicU64::new(0)),
                 realtime_connections: std::array::from_fn(|_| AtomicU64::new(0)),
+                gap_settlements: std::array::from_fn(|_| {
+                    std::array::from_fn(|_| AtomicU64::new(0))
+                }),
                 scrapes: AtomicU64::new(0),
                 listener_failures: AtomicU64::new(0),
                 listener_enabled: AtomicU64::new(0),
@@ -139,6 +170,47 @@ impl MetricsRegistry {
         if let Some(index) = REALTIME_SURFACES.iter().position(|value| *value == surface) {
             self.inner.realtime_connections[index].store(count, Ordering::Relaxed);
         }
+    }
+
+    /// Count one History Gap settlement pass on `path` (`report` or
+    /// `retention`); an unknown path is ignored.
+    pub(crate) fn observe_gap_settlement(
+        &self,
+        path: &str,
+        settlement: crate::http::report_ingestion::GapSettlement,
+        elapsed: std::time::Duration,
+        slow: bool,
+    ) {
+        let Some(index) = GAP_SETTLEMENT_PATHS.iter().position(|value| *value == path) else {
+            return;
+        };
+        let values = [
+            1,
+            slow as u64,
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+            settlement.examined,
+            settlement.resolved,
+        ];
+        for (counter, value) in self.inner.gap_settlements[index].iter().zip(values) {
+            counter.fetch_add(value, Ordering::Relaxed);
+        }
+    }
+
+    /// The History Gap settlement counters of `path`, in
+    /// [`GAP_SETTLEMENT_METRICS`] order: passes, slow passes, milliseconds,
+    /// gaps examined, gaps resolved.
+    #[cfg(test)]
+    pub(crate) fn gap_settlement_counters(
+        &self,
+        path: &str,
+    ) -> [u64; GAP_SETTLEMENT_METRICS.len()] {
+        let index = GAP_SETTLEMENT_PATHS
+            .iter()
+            .position(|value| *value == path)
+            .expect("a known settlement path");
+        std::array::from_fn(|metric| {
+            self.inner.gap_settlements[index][metric].load(Ordering::Relaxed)
+        })
     }
 
     pub(crate) fn set_listener_enabled(&self, enabled: bool) {
@@ -272,6 +344,18 @@ impl MetricsRegistry {
                 &["surface", surface],
                 self.inner.realtime_connections[index].load(Ordering::Relaxed),
             );
+        }
+        for (metric_index, (name, help)) in GAP_SETTLEMENT_METRICS.iter().enumerate() {
+            metric_header(&mut output, name, help, "counter");
+            for (path_index, path) in GAP_SETTLEMENT_PATHS.iter().enumerate() {
+                metric_counter(
+                    &mut output,
+                    name,
+                    help,
+                    &["path", path],
+                    self.inner.gap_settlements[path_index][metric_index].load(Ordering::Relaxed),
+                );
+            }
         }
         metric_header(
             &mut output,
