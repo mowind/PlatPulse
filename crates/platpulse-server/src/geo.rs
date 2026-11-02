@@ -43,7 +43,7 @@ pub const PROVIDER_GEOJS: &str = "geojs";
 pub const SETTING_GEO_PROVIDER: &str = "geo_provider";
 pub const SETTING_GEO_PROVIDER_GENERATION: &str = "geo_provider_generation";
 
-pub const CACHE_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+pub const CACHE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 pub const CACHE_REBUILD_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 pub const DATABASE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 pub const MAX_PEER_IP_CACHE_ROWS: i64 = 1024;
@@ -761,7 +761,7 @@ pub fn cache_expiry(now: &str) -> String {
 /// Choose the row birth time and expiry for a successful lookup. A row that
 /// reaches the hard retention boundary is rebuilt; otherwise its absolute
 /// expiry is capped at that boundary even when successful lookups refresh the
-/// normal 24-hour TTL.
+/// normal seven-day TTL.
 pub fn cache_refresh_window(existing_created_at: Option<&str>, now: &str) -> (String, String) {
     let now = crate::auth::parse_rfc3339(now).unwrap_or_else(crate::auth::now_utc);
     let cutoff = now - time::Duration::seconds(CACHE_REBUILD_AGE.as_secs() as i64);
@@ -930,14 +930,14 @@ mod tests {
             cache_refresh_window(Some("2025-12-01T00:00:00Z"), "2026-01-01T00:00:00Z"),
             (
                 "2026-01-01T00:00:00Z".to_owned(),
-                "2026-01-02T00:00:00Z".to_owned()
+                "2026-01-08T00:00:00Z".to_owned()
             )
         );
     }
 
     #[test]
-    fn cache_expiry_is_one_day_after_observation() {
-        assert_eq!(cache_expiry("2026-01-01T00:00:00Z"), "2026-01-02T00:00:00Z");
+    fn cache_expiry_is_seven_days_after_observation() {
+        assert_eq!(cache_expiry("2026-01-01T00:00:00Z"), "2026-01-08T00:00:00Z");
         assert_eq!(
             cache_rebuild_cutoff("2026-01-31T00:00:00Z"),
             "2026-01-01T00:00:00Z"

@@ -284,7 +284,7 @@ fn merge_rows(existing: &DbAggregateRow, incoming: &AggregateValues) -> Aggregat
 /// sample taken at `received_at`.
 ///
 /// A country result stays usable for the whole hard cache-retention boundary,
-/// not only for its 24-hour TTL: that is the same retained last-good rule the
+/// not only for its seven-day TTL: that is the same retained last-good rule the
 /// Public Geo Insight applies, so both Public projections of one cache agree.
 /// Beyond the boundary the result is no longer retained and counts as unknown.
 async fn snapshot_countries(

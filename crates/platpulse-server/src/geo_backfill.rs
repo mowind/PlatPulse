@@ -548,7 +548,7 @@ mod tests {
         assert_eq!(row.0.as_deref(), Some("SE"));
         assert_eq!(row.1, "current");
         assert_eq!(row.2.as_deref(), Some(NOW));
-        assert_eq!(row.3.as_deref(), Some("2026-08-13T10:00:00Z"));
+        assert_eq!(row.3.as_deref(), Some("2026-08-19T10:00:00Z"));
         assert_eq!(row.4.as_deref(), Some(NOW));
         assert_eq!(row.5, NOW);
         // One retained row per address, regardless of how many Peer records
@@ -574,23 +574,75 @@ mod tests {
         insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
         assert_eq!(run_pass(&state, NOW).await.unwrap().resolved, 1);
 
-        // 25 hours later the 24-hour result is expired: it stays usable as
-        // last-good, and the pass refreshes it while keeping its birth time
-        // inside the 30-day retention boundary.
-        let later = "2026-08-13T11:00:00Z";
+        // The result is still fresh after the old 24-hour TTL and until one
+        // second before the new seven-day deadline.
+        for time in ["2026-08-13T11:00:00Z", "2026-08-19T09:59:59Z"] {
+            assert_eq!(
+                run_pass(&state, time).await.unwrap(),
+                BackfillSummary::default()
+            );
+            assert_eq!(
+                cache_row(&state, RESOLVABLE).await.unwrap().4.as_deref(),
+                Some(NOW)
+            );
+        }
+
+        // At expiry, refresh keeps the original birth time and gives the
+        // successful lookup a new seven-day window.
+        let later = "2026-08-19T10:00:00Z";
         assert_eq!(run_pass(&state, later).await.unwrap().resolved, 1);
         let row = cache_row(&state, RESOLVABLE).await.unwrap();
         assert_eq!(row.2.as_deref(), Some(NOW));
-        assert_eq!(row.3.as_deref(), Some("2026-08-14T11:00:00Z"));
+        assert_eq!(row.3.as_deref(), Some("2026-08-26T10:00:00Z"));
         assert_eq!(row.4.as_deref(), Some(later));
 
-        // Beyond the hard boundary the birth time is rebuilt instead of
-        // extending an unretainable row.
-        let rebuild = "2026-09-11T11:00:00Z";
+        // Near 30 days, expiry is capped at the original birth + 30 days.
+        let near_boundary = "2026-09-09T10:00:00Z";
+        assert_eq!(run_pass(&state, near_boundary).await.unwrap().resolved, 1);
+        let row = cache_row(&state, RESOLVABLE).await.unwrap();
+        assert_eq!(row.2.as_deref(), Some(NOW));
+        assert_eq!(row.3.as_deref(), Some("2026-09-11T10:00:00Z"));
+
+        // At the hard boundary the row is rebuilt with a new seven-day window.
+        let rebuild = "2026-09-11T10:00:00Z";
         assert_eq!(run_pass(&state, rebuild).await.unwrap().resolved, 1);
         let row = cache_row(&state, RESOLVABLE).await.unwrap();
         assert_eq!(row.2.as_deref(), Some(rebuild));
-        assert_eq!(row.3.as_deref(), Some("2026-09-12T11:00:00Z"));
+        assert_eq!(row.3.as_deref(), Some("2026-09-18T10:00:00Z"));
+    }
+
+    #[tokio::test]
+    async fn pre_upgrade_expiry_is_honored_until_the_next_success() {
+        let dir = tempdir().unwrap();
+        let state = backfill_state(&dir, true, GeoProvider::LocalMmdb).await;
+        seed_node(&state, "geo-node-a").await;
+        insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
+        // A retained success written by a previous version had a 24-hour TTL.
+        sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', $1, 'SE', 'current', $2, $3, $4, $5, $6)")
+            .bind(RESOLVABLE)
+            .bind(NOW)
+            .bind(NOW)
+            .bind(NOW)
+            .bind(NOW)
+            .bind("2026-08-13T10:00:00Z")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            run_pass(&state, "2026-08-13T09:59:59Z").await.unwrap(),
+            BackfillSummary::default()
+        );
+        assert_eq!(
+            cache_row(&state, RESOLVABLE).await.unwrap().3.as_deref(),
+            Some("2026-08-13T10:00:00Z")
+        );
+        let expiry = "2026-08-13T10:00:00Z";
+        assert_eq!(run_pass(&state, expiry).await.unwrap().resolved, 1);
+        let row = cache_row(&state, RESOLVABLE).await.unwrap();
+        assert_eq!(row.2.as_deref(), Some(NOW));
+        assert_eq!(row.3.as_deref(), Some("2026-08-20T10:00:00Z"));
+        assert_eq!(row.4.as_deref(), Some(expiry));
     }
 
     #[tokio::test]
@@ -634,7 +686,7 @@ mod tests {
         assert_eq!(retry.resolved, 1);
         let row = cache_row(&state, RESOLVABLE).await.unwrap();
         assert_eq!(row.1, "current");
-        assert_eq!(row.3.as_deref(), Some("2026-08-13T11:30:00Z"));
+        assert_eq!(row.3.as_deref(), Some("2026-08-19T11:30:00Z"));
     }
 
     #[tokio::test]
@@ -863,7 +915,7 @@ mod tests {
         seed_node(&state, "geo-node-a").await;
         insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
 
-        // A country result whose 24-hour TTL is long past but whose birth
+        // A legacy country result whose 24-hour TTL is long past but whose birth
         // time is still inside the 30-day hard boundary: exactly the
         // retained last-good state the projections serve as Stale.
         sqlx::query("INSERT INTO geo_location_cache (provider, canonical_ip, country_code, state, created_at, last_attempt_at, last_success_at, last_referenced_at, expires_at) VALUES ('local_mmdb', $1, 'SE', 'failed', '2026-08-01T09:00:00Z', '2026-08-12T09:00:00Z', '2026-08-01T09:00:00Z', '2026-08-12T09:00:00Z', '2026-08-02T09:00:00Z')")
@@ -942,7 +994,7 @@ mod tests {
             return;
         }
         let dir = tempdir().unwrap();
-        // The pass time comes from the real clock so the retained 24-hour
+        // The pass time comes from the real clock so the retained seven-day
         // result is still valid after the restart below.
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
         {
@@ -1086,6 +1138,46 @@ mod tests {
 
     async fn geojs_state(dir: &tempfile::TempDir, stub: &StubServer) -> AppState {
         external_state(dir, stub, GeoProvider::GeoJs).await
+    }
+
+    #[tokio::test]
+    async fn external_providers_reuse_successful_results_for_seven_days() {
+        for provider in [GeoProvider::Ipinfo, GeoProvider::GeoJs] {
+            let dir = tempdir().unwrap();
+            // Both external profiles accept their own country field.
+            let stub = StubServer::start(vec![StubReply::document(
+                r#"{"country":"SE","country_code":"SE"}"#,
+            )])
+            .await;
+            let state = external_state(&dir, &stub, provider).await;
+            seed_node(&state, "geo-node-a").await;
+            insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
+
+            assert_eq!(run_pass(&state, NOW).await.unwrap().resolved, 1);
+            assert_eq!(
+                provider_cache_row(&state, provider, RESOLVABLE)
+                    .await
+                    .unwrap()
+                    .3
+                    .as_deref(),
+                Some("2026-08-19T10:00:00Z")
+            );
+            for time in ["2026-08-13T11:00:00Z", "2026-08-19T09:59:59Z"] {
+                assert_eq!(
+                    run_pass(&state, time).await.unwrap(),
+                    BackfillSummary::default()
+                );
+                assert_eq!(stub.request_count(), 1);
+            }
+            assert_eq!(
+                run_pass(&state, "2026-08-19T10:00:00Z")
+                    .await
+                    .unwrap()
+                    .resolved,
+                1
+            );
+            assert_eq!(stub.request_count(), 2);
+        }
     }
 
     /// One address shared by three Peer records across two Nodes is one
@@ -1437,7 +1529,7 @@ mod tests {
         }
         let dir = tempdir().unwrap();
         let stub = StubServer::start(vec![StubReply::country("SE")]).await;
-        // The pass time comes from the real clock so the retained 24-hour
+        // The pass time comes from the real clock so the retained seven-day
         // result is still valid after the restart below.
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
         {
@@ -1817,7 +1909,7 @@ mod tests {
             r#"{"country":"Sweden","country_code":"SE"}"#,
         )])
         .await;
-        // The pass time comes from the real clock so the retained 24-hour
+        // The pass time comes from the real clock so the retained seven-day
         // result is still valid after the restart below.
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
         {

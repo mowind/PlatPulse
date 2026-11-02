@@ -2,7 +2,7 @@
 //!
 //! The Owner-only Settings action re-resolves the country of every Peer
 //! address the Server currently references, deliberately bypassing the
-//! 24-hour validity of the retained cache. It reuses the one background
+//! seven-day validity of the retained cache. It reuses the one background
 //! execution path in `crate::geo_backfill`: the same provider resolver,
 //! the same bounded concurrency, the same generation-guarded cache write. A
 //! refresh never clears the cache and never reports success merely because a
@@ -865,7 +865,7 @@ mod tests {
     }
 
     /// The core promise of the feature: a retained country that is still
-    /// inside its 24-hour validity is re-resolved anyway, and the new result
+    /// inside its seven-day validity is re-resolved anyway, and the new result
     /// is really written. Clearing the cache would leave the wrong country in
     /// place; this test seeds a deliberately wrong one.
     #[tokio::test]

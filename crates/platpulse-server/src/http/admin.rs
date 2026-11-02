@@ -8307,7 +8307,7 @@ async fn record_geo_refresh_audit(
 /// Owner-only global Peer geolocation refresh (issue #136).
 ///
 /// It re-resolves every eligible public Peer address the Server currently
-/// references, bypassing the 24-hour validity of the retained cache, through
+/// references, bypassing the seven-day validity of the retained cache, through
 /// the same provider path the automatic background pass uses. The response is
 /// the run itself: the Settings surface reads real per-address progress from
 /// `GET /api/admin/v1/geo` and follows it through the existing Geo
