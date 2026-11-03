@@ -150,7 +150,7 @@ Conditions common to both runs: `target/release/platpulse-server` built 2026-10-
 - **Numbering correction:** the tasking asked for the design section to be §11.6, but §11.6 is already taken by issue #213-#216 (docs/design/platpulse.md:621), so the #217 material is §11.7. The code comments that cite "design §11.6" (crates/platpulse-server/migrations/0070_sync_consensus_history.sql:12, crates/platpulse-server/src/state_history.rs, crates/platpulse-server/src/http/admin.rs) cite it for the numeric-heights engine and remain correct.
 - docs/design/webui.md: the new subsection `### 15.19 Recorded sync and consensus state history on the Node detail page (issue #217, delivered)` was added after §15.18 (docs/design/webui.md:1261; ten bullets quoting the panel's own copy), the delivered-control lists gained it (docs/design/webui.md:3 and :38), the §4.3 prose tail (docs/design/webui.md:198) names the state-history read beside the storage mount list, the Operations paragraph (docs/design/webui.md:247) names it with §15.15-§15.18, the §14 change-log table gained the #217 row (docs/design/webui.md:1008), and the three statements that said the Node page carries exactly two panels were corrected (docs/design/webui.md:1244, docs/design/platpulse.md:655, docs/design/platpulse.md:744). 15.19 was the next free number in that series.
 - docs/openapi/openapi.json was already in sync before this pass (the route at :3587 and the response description at :9033); this pass did not regenerate it.
-- docs/research/issue-217-findings.md: this note.
+- docs/research/archive/issue-217-findings.md: this note.
 
 ## WORKFLOW
 
@@ -169,7 +169,7 @@ Conditions common to both runs: `target/release/platpulse-server` built 2026-10-
 - **Last-good / Unknown semantics preserved:** a failed probe stores no `syncing` and no fresh value; the Server's fallback is recorded as `last_good` with the earlier instant (crates/platpulse-server/src/state_history.rs:171, :221).
 - **Server is the trust boundary:** the state is derived from the Agent's own component observation and the Server's projection, never from a client-supplied string; the component pair is validated server-side and answered with 400 (crates/platpulse-server/src/http/admin.rs:4947-4948).
 - **Owner-only read, no-store, no control surface:** the route is under `/api/admin/v1` with the existing Owner middleware, answers through `no_store`, and no new endpoint writes, pauses or deletes anything.
-- **Documentation voice:** §11.7 is factual Chinese prose with bold lead-ins and file:line evidence, matching §11.4-§11.6; the research note follows the section order of docs/research/issue-216-findings.md.
+- **Documentation voice:** §11.7 is factual Chinese prose with bold lead-ins and file:line evidence, matching §11.4-§11.6; the research note follows the section order of docs/research/archive/issue-216-findings.md.
 
 ### Spec
 
