@@ -81,6 +81,14 @@ jobs:
       - name: Check code-quality baselines
         run: python3 scripts/check-baselines.py
 
+      # Every Markdown document stays readable end to end: 8,000 words for a
+      # new one, a shrink-only ceiling for the documents already over it.
+      - name: Document budget check self-test
+        run: python3 scripts/check-doc-budgets.py --self-test
+
+      - name: Check document budgets
+        run: python3 scripts/check-doc-budgets.py
+
       # docs/visual-migration/ keeps its existing screenshots but must stop
       # growing; new evidence goes to the PR or an Actions artifact (#283).
       # Squash merges make every push to main one commit, so HEAD^1 is the
