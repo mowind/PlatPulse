@@ -1,4 +1,4 @@
-import { QueryClient, useQuery } from '@tanstack/react-query'
+import { QueryClient, useQuery, type QueryFilters } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import {
   publicAccessSettings,
@@ -302,8 +302,9 @@ function samePrefix(queryKey: readonly unknown[], prefix: readonly unknown[]): b
  * stream can publish a Network change on every Agent report, and one refetch
  * per event cancels the previous in-flight REST read before it can complete.
  * Pending keys are flushed at most once per window, and the flush never cancels
- * a request that is already in flight, so the projection still converges while
- * the request rate stays bounded.
+ * a request that is already in flight; a query whose read was in flight is
+ * asked again once that read settles, so the projection still converges on
+ * the last event while the request rate stays bounded.
  */
 export const PUBLIC_INVALIDATION_COALESCE_MS = 250
 
@@ -330,22 +331,25 @@ function flushPublicInvalidations(): void {
   const entries = [...pendingPublicInvalidations.values()]
   pendingPublicInvalidations.clear()
   for (const entry of entries) {
-    if (entry.kind === 'exact') {
-      void publicQueryClient.invalidateQueries(
-        { queryKey: [...entry.queryKey, entry.generation], exact: true, refetchType: 'active' },
-        { cancelRefetch: false },
-      )
-      continue
+    const filters: QueryFilters = entry.kind === 'exact'
+      ? { queryKey: [...entry.queryKey, entry.generation], exact: true }
+      : {
+          // A clock-refreshed Metric Window answers to its own interval only.
+          predicate: ({ queryKey, meta }) =>
+            samePrefix(queryKey, entry.namespace) && queryKey.at(-1) === entry.generation && !clockRefreshed(meta),
+        }
+    // A read already in flight began before this event, so it may answer from
+    // before the change. Invalidating joins that read instead of starting
+    // another, and its success clears the invalidation, so each such query is
+    // asked again in the next window, after the read has settled.
+    const inFlight = publicQueryClient
+      .getQueryCache()
+      .findAll(filters)
+      .filter(({ state }) => state.fetchStatus === 'fetching')
+    void publicQueryClient.invalidateQueries({ ...filters, refetchType: 'active' }, { cancelRefetch: false })
+    for (const { queryKey } of inFlight) {
+      schedulePublicInvalidation({ kind: 'exact', queryKey: queryKey.slice(0, -1), generation: entry.generation })
     }
-    void publicQueryClient.invalidateQueries(
-      {
-        // A clock-refreshed Metric Window answers to its own interval only.
-        predicate: ({ queryKey, meta }) =>
-          samePrefix(queryKey, entry.namespace) && queryKey.at(-1) === entry.generation && !clockRefreshed(meta),
-        refetchType: 'active',
-      },
-      { cancelRefetch: false },
-    )
   }
 }
 

@@ -2041,14 +2041,17 @@ function applyAdminInvalidation(resource: string, resourceId: string | undefined
         keys.some((prefix) => samePrefix(queryKey, prefix)) && queryKey.at(-1) === generation,
     })
     .map(({ queryKey }) => queryKey)
-  void Promise.all(
-    matchingKeys.map((queryKey) =>
-      adminQueryClient.invalidateQueries(
-        { queryKey, exact: true, refetchType: 'active' },
-        { cancelRefetch: false },
-      ),
-    ),
-  )
+  for (const queryKey of matchingKeys) invalidateAdminQuery(queryKey)
+}
+
+function invalidateAdminQuery(queryKey: readonly unknown[]): void {
+  // A read already in flight began before this event, so it may answer from
+  // before the change. Invalidating joins that read instead of starting
+  // another, and its success clears the invalidation, so the query is asked
+  // again in the next window, after the read has settled.
+  const inFlight = adminQueryClient.getQueryCache().find({ queryKey, exact: true })?.state.fetchStatus === 'fetching'
+  void adminQueryClient.invalidateQueries({ queryKey, exact: true, refetchType: 'active' }, { cancelRefetch: false })
+  if (inFlight) scheduleAdminInvalidation(`query:${JSON.stringify(queryKey)}`, { kind: 'query', queryKey })
 }
 
 /**
@@ -2056,17 +2059,24 @@ function applyAdminInvalidation(resource: string, resourceId: string | undefined
  * ingestion publishes a Node/Peer/Geo signal for every accepted report, and one
  * refetch per event cancels the previous in-flight REST read before it can
  * complete. Pending resources are flushed at most once per window, and the
- * flush never cancels a request that is already in flight.
+ * flush never cancels a request that is already in flight; a query whose read
+ * was in flight is asked again once that read settles.
  */
 export const ADMIN_INVALIDATION_COALESCE_MS = 250
 
-type PendingAdminInvalidation = { resource: string; resourceId?: string; generation: number }
+type PendingAdminInvalidation =
+  | { kind: 'resource'; resource: string; resourceId?: string; generation: number }
+  | { kind: 'query'; queryKey: readonly unknown[] }
 
 const pendingAdminInvalidations = new Map<string, PendingAdminInvalidation>()
 let adminInvalidationTimer: ReturnType<typeof setTimeout> | null = null
 
 function invalidateAdminResource(resource: string, resourceId: string | undefined, generation: number): void {
-  pendingAdminInvalidations.set(`${resource}:${resourceId ?? ''}:${generation}`, { resource, resourceId, generation })
+  scheduleAdminInvalidation(`resource:${resource}:${resourceId ?? ''}:${generation}`, { kind: 'resource', resource, resourceId, generation })
+}
+
+function scheduleAdminInvalidation(token: string, entry: PendingAdminInvalidation): void {
+  pendingAdminInvalidations.set(token, entry)
   if (adminInvalidationTimer !== null) return
   adminInvalidationTimer = setTimeout(flushAdminInvalidations, ADMIN_INVALIDATION_COALESCE_MS)
 }
@@ -2075,7 +2085,10 @@ function flushAdminInvalidations(): void {
   adminInvalidationTimer = null
   const entries = [...pendingAdminInvalidations.values()]
   pendingAdminInvalidations.clear()
-  for (const entry of entries) applyAdminInvalidation(entry.resource, entry.resourceId, entry.generation)
+  for (const entry of entries) {
+    if (entry.kind === 'query') invalidateAdminQuery(entry.queryKey)
+    else applyAdminInvalidation(entry.resource, entry.resourceId, entry.generation)
+  }
 }
 
 function acceptAdminEvent(resource: string, resourceId: string | undefined, eventId: number | undefined): boolean {
@@ -2087,7 +2100,7 @@ function acceptAdminEvent(resource: string, resourceId: string | undefined, even
   return true
 }
 
-function handleAdminInvalidation(data: string, generation: number): boolean {
+export function handleAdminInvalidation(data: string, generation: number): boolean {
   try {
     const event = JSON.parse(data) as { eventId?: unknown; resource?: unknown; resourceId?: unknown; revision?: unknown; reset?: unknown }
     if (event.reset === true) {

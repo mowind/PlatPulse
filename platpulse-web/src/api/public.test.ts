@@ -1,3 +1,4 @@
+import { QueryObserver } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { adminQueryClient } from './admin'
 import { client } from './generated/client.gen'
@@ -161,6 +162,32 @@ describe('Public adapter and query namespace', () => {
       refetchType: 'active',
     })
     expect(invalidate.mock.calls[0]?.[1]).toEqual({ cancelRefetch: false })
+  })
+
+  it('reads again after a read that was already in flight when the event arrived', async () => {
+    vi.useFakeTimers()
+    const answers: Array<(value: string) => void> = []
+    const queryFn = vi.fn(() => new Promise<string>((resolve) => answers.push(resolve)))
+    const observer = new QueryObserver(publicQueryClient, { queryKey: [...publicKeys.networks, 0], queryFn })
+    const unsubscribe = observer.subscribe(() => {})
+    expect(queryFn).toHaveBeenCalledTimes(1)
+
+    // The change lands while the first read is still on the wire, so that
+    // read may answer from before it: the flush cannot satisfy the event by
+    // joining it.
+    invalidatePublicResource('network', 'network-a', 1)
+    await vi.advanceTimersByTimeAsync(PUBLIC_INVALIDATION_COALESCE_MS)
+    expect(queryFn).toHaveBeenCalledTimes(1)
+    answers[0]?.('before the change')
+    await vi.advanceTimersByTimeAsync(PUBLIC_INVALIDATION_COALESCE_MS)
+
+    expect(queryFn).toHaveBeenCalledTimes(2)
+    answers[1]?.('after the change')
+    await vi.advanceTimersByTimeAsync(PUBLIC_INVALIDATION_COALESCE_MS)
+    expect(observer.getCurrentResult().data).toBe('after the change')
+    // Once a read starts after the event, the event is answered: no third read.
+    expect(queryFn).toHaveBeenCalledTimes(2)
+    unsubscribe()
   })
 
   it('drops queued invalidations when the namespace is reset', () => {
