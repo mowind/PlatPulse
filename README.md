@@ -256,7 +256,7 @@ The Enrollment Token cannot submit Agent Reports or reach human-facing APIs; the
 - [`docs/design/webui.md`](docs/design/webui.md) — WebUI page/route contracts and the routed-surface matrix
 - [`CONTEXT.md`](CONTEXT.md) — domain terminology and banned synonyms
 - [`docs/adr/`](docs/adr/) — architecture decision records (Agent Store receipt lifecycle, Emerald visual authority, Admin workspace, Owner removal/Node purge, automatic Validator identity, Home Node Card, Server-managed Inventory Revision, offline backup, receipt body slimming, Home list-selection geo aggregate, Agent-stamped Block Summary identity, Public Node Detail Metric Window, and the accepted, in-progress PostgreSQL Storage Backend)
-- [`docs/deployment.md`](docs/deployment.md) — release bundles, installation, and the single-process layout
+- [`docs/deployment.md`](docs/deployment.md) — release bundles, installation, and the single-process layout (an index; its topics live in [`docs/deployment/`](docs/deployment/))
 - [`docs/release-qualification.md`](docs/release-qualification.md) — resilience, recovery rehearsal, and final qualification
 - [`docs/security-review.md`](docs/security-review.md) — Phase 5 security matrix and residual risks
 - [`docs/openapi/openapi.json`](docs/openapi/openapi.json) — generated OpenAPI 3.1 reference

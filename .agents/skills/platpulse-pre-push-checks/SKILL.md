@@ -65,7 +65,7 @@ npx playwright test e2e/<spec>.spec.ts --project=desktop-1280 --project=phone-39
 
 Pick the specs that exercise the changed screens, components or API; run the whole suite only when the change is cross-cutting (layout shell, shared helpers, `e2e/helpers.ts`, the start script). Local runs use zero retries, so a pass is a real pass.
 
-**release_package**: `scripts/test-release-packaging.sh`, then `scripts/package-release.sh` when packaging inputs change (`scripts/build-release.sh`, `docs/deployment.md`, `LICENSE`, packaging metadata).
+**release_package**: `scripts/test-release-packaging.sh`, then `scripts/package-release.sh` when packaging inputs change (`scripts/build-release.sh`, `docs/deployment.md` and `docs/deployment/`, `LICENSE`, packaging metadata).
 
 **rc_harness**: `scripts/release-candidate-harness.sh` when the change touches release qualification, the Agent binary's runtime behaviour, or packaging; otherwise CI covers it.
 

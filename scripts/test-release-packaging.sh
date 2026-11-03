@@ -10,13 +10,14 @@ make_fixture() {
   mkdir -p "$root/usr/bin" "$root/usr/lib/systemd/system"
   if [[ "$kind" == server ]]; then
     mkdir -p "$root/etc/platpulse"
-    mkdir -p "$root/usr/share/platpulse/web/assets" "$root/usr/share/doc/platpulse-server/examples"
+    mkdir -p "$root/usr/share/platpulse/web/assets" "$root/usr/share/doc/platpulse-server/examples" "$root/usr/share/doc/platpulse-server/deployment"
     printf '#!/bin/sh\n' > "$root/usr/bin/platpulse-server"
     chmod 755 "$root/usr/bin/platpulse-server"
     printf '<!doctype html>\n' > "$root/usr/share/platpulse/web/index.html"
     printf 'asset\n' > "$root/usr/share/platpulse/web/assets/app.js"
     printf '# config\n' > "$root/etc/platpulse/server.example.toml"
-    printf '# deployment\n' > "$root/usr/share/doc/platpulse-server/deployment.md"
+    printf '# deployment\n\n[topic](deployment/topic.md#a)\n' > "$root/usr/share/doc/platpulse-server/deployment.md"
+    printf '[index](../deployment.md)\n\n## A\n' > "$root/usr/share/doc/platpulse-server/deployment/topic.md"
     printf 'MIT License\n' > "$root/usr/share/doc/platpulse-server/LICENSE"
     printf '# caddy\n' > "$root/usr/share/doc/platpulse-server/examples/Caddyfile"
     printf '# compose\n' > "$root/usr/share/doc/platpulse-server/examples/compose.yml"
@@ -24,11 +25,12 @@ make_fixture() {
     printf '# geo\n' > "$root/usr/share/doc/platpulse-server/examples/geoipupdate.compose.yml"
     printf '[Service]\nUser=platpulse-server\nGroup=platpulse-server\nReadWritePaths=/var/lib/platpulse /var/backups/platpulse\n' > "$root/usr/lib/systemd/system/platpulse-server.service"
   else
-    mkdir -p "$root/etc/platpulse-agent" "$root/usr/share/doc/platpulse-agent"
+    mkdir -p "$root/etc/platpulse-agent" "$root/usr/share/doc/platpulse-agent/deployment"
     printf '#!/bin/sh\n' > "$root/usr/bin/platpulse-agent"
     chmod 755 "$root/usr/bin/platpulse-agent"
     printf '# config\n' > "$root/etc/platpulse-agent/agent.toml.example"
-    printf '# deployment\n' > "$root/usr/share/doc/platpulse-agent/deployment.md"
+    printf '# deployment\n\n[topic](deployment/topic.md)\n' > "$root/usr/share/doc/platpulse-agent/deployment.md"
+    printf '[index](../deployment.md)\n' > "$root/usr/share/doc/platpulse-agent/deployment/topic.md"
     printf 'MIT License\n' > "$root/usr/share/doc/platpulse-agent/LICENSE"
     printf '[Service]\nUser=platpulse-agent\nGroup=platpulse-agent\n' > "$root/usr/lib/systemd/system/platpulse-agent.service"
   fi
@@ -107,6 +109,30 @@ if "$VALIDATOR" --root "$BAD_EMPTY" --kind server; then
   exit 1
 fi
 
+BAD_GUIDE_LINK="$RUN_ROOT/bad-guide-link"
+cp -a "$PASS_ROOT" "$BAD_GUIDE_LINK"
+printf '[gone](deployment/missing.md)\n' >> "$BAD_GUIDE_LINK/usr/share/doc/platpulse-server/deployment.md"
+if "$VALIDATOR" --root "$BAD_GUIDE_LINK" --kind server; then
+  echo 'validator accepted a deployment guide link to a file the package does not carry' >&2
+  exit 1
+fi
+
+BAD_GUIDE_TOPICS="$RUN_ROOT/bad-guide-topics"
+cp -a "$PASS_AGENT_ROOT" "$BAD_GUIDE_TOPICS"
+rm -r "$BAD_GUIDE_TOPICS/usr/share/doc/platpulse-agent/deployment"
+if "$VALIDATOR" --root "$BAD_GUIDE_TOPICS" --kind agent; then
+  echo 'validator accepted a deployment guide index without its topic files' >&2
+  exit 1
+fi
+
+BAD_GUIDE_EXTRA="$RUN_ROOT/bad-guide-extra"
+cp -a "$PASS_ROOT" "$BAD_GUIDE_EXTRA"
+printf 'not a topic\n' > "$BAD_GUIDE_EXTRA/usr/share/doc/platpulse-server/deployment/notes.txt"
+if "$VALIDATOR" --root "$BAD_GUIDE_EXTRA" --kind server; then
+  echo 'validator accepted a non-Markdown file in the deployment guide' >&2
+  exit 1
+fi
+
 BIN_DIR="$RUN_ROOT/bin"
 WEB_DIR="$RUN_ROOT/web"
 OUTPUT_DIR="$RUN_ROOT/output"
@@ -134,6 +160,11 @@ grep -q 'not releasable' "$OUTPUT_DIR/sbom-results.txt"
 test -f "$OUTPUT_DIR/audit-results.txt"
 test -f "$OUTPUT_DIR/package-results.txt"
 test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/deployment.md"
+# The packaged guide is the index plus every topic file of docs/deployment/.
+diff <(cd "$ROOT/docs/deployment" && ls) <(cd "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/deployment" && ls)
+diff <(cd "$ROOT/docs/deployment" && ls) <(cd "$OUTPUT_DIR/staging/agent/root/usr/share/doc/platpulse-agent/deployment" && ls)
+tar -tzf "$OUTPUT_DIR/platpulse-server-9.8.7-linux-x86_64.tar.gz" | grep -qx 'usr/share/doc/platpulse-server/deployment/upgrade-and-rollback.md'
+tar -tzf "$OUTPUT_DIR/platpulse-agent-9.8.7-linux-x86_64.tar.gz" | grep -qx 'usr/share/doc/platpulse-agent/deployment/upgrade-and-rollback.md'
 test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/LICENSE"
 test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/examples/Caddyfile"
 test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/examples/compose.yml"
@@ -148,6 +179,7 @@ OVERLAP="$(comm -12 <(cd "$OUTPUT_DIR/staging/server/root" && find . -type f -pr
 "$VALIDATOR" --root "$OUTPUT_DIR/staging/server/root" --kind server
 "$VALIDATOR" --root "$OUTPUT_DIR/staging/agent/root" --kind agent
 "$VALIDATOR" --archive "$OUTPUT_DIR/platpulse-server-9.8.7-linux-x86_64.tar.gz" --kind server
+"$VALIDATOR" --archive "$OUTPUT_DIR/platpulse-agent-9.8.7-linux-x86_64.tar.gz" --kind agent
 
 UNSAFE_ROOT="$RUN_ROOT/unsafe"
 mkdir -p "$UNSAFE_ROOT"

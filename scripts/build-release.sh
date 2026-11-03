@@ -79,9 +79,19 @@ mkdir -p "$SERVER_ROOT/usr/share/platpulse/web" "$AGENT_ROOT/usr/share/doc/platp
 cp -a "$WEB_DIR/." "$SERVER_ROOT/usr/share/platpulse/web/"
 install -Dm644 "$ROOT/crates/platpulse-server/server.example.toml" "$SERVER_ROOT/etc/platpulse/server.example.toml"
 install -Dm644 "$ROOT/crates/platpulse-agent/agent.example.toml" "$AGENT_ROOT/etc/platpulse-agent/agent.toml.example"
-install -Dm644 "$ROOT/docs/deployment.md" "$SERVER_ROOT/usr/share/doc/platpulse-server/deployment.md"
+# The deployment guide is an index (deployment.md) and its topic files
+# (deployment/); both packages carry the pair side by side so the index's
+# relative links resolve in the installed documentation directory.
+install_deployment_guide() {
+  local doc_dir="$1" topic
+  install -Dm644 "$ROOT/docs/deployment.md" "$doc_dir/deployment.md"
+  for topic in "$ROOT"/docs/deployment/*.md; do
+    install -Dm644 "$topic" "$doc_dir/deployment/${topic##*/}"
+  done
+}
+install_deployment_guide "$SERVER_ROOT/usr/share/doc/platpulse-server"
 install -Dm644 "$ROOT/LICENSE" "$SERVER_ROOT/usr/share/doc/platpulse-server/LICENSE"
-install -Dm644 "$ROOT/docs/deployment.md" "$AGENT_ROOT/usr/share/doc/platpulse-agent/deployment.md"
+install_deployment_guide "$AGENT_ROOT/usr/share/doc/platpulse-agent"
 install -Dm644 "$ROOT/LICENSE" "$AGENT_ROOT/usr/share/doc/platpulse-agent/LICENSE"
 install -Dm644 "$ROOT/release/examples/Caddyfile" "$SERVER_ROOT/usr/share/doc/platpulse-server/examples/Caddyfile"
 install -Dm644 "$ROOT/release/compose/server.compose.yml" "$SERVER_ROOT/usr/share/doc/platpulse-server/examples/compose.yml"

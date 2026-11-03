@@ -13,7 +13,8 @@ is fully checked until a rule says otherwise. The repository checks lane
 selected here.
 
   docs/openapi/**                       rust, web (spec freshness, generated client)
-  docs/deployment.md, LICENSE           release-package, rc-harness (packaged)
+  docs/deployment.md, docs/deployment/**,
+  LICENSE                               release-package, rc-harness (packaged)
   docs/visual-migration/**/*.json       e2e (frozen fixtures read by specs)
   .github/pull_request_template.md,
   .github/ISSUE_TEMPLATE/**,
@@ -47,7 +48,7 @@ ALL = frozenset(LANES)
 # "*" also matches "/", so "docs/*.md" covers every Markdown file under docs/.
 RULES: tuple[tuple[tuple[str, ...], frozenset[str]], ...] = (
     (("docs/openapi/*",), frozenset({"rust", "web"})),
-    (("docs/deployment.md", "LICENSE"), frozenset({"release_package", "rc_harness"})),
+    (("docs/deployment.md", "docs/deployment/*", "LICENSE"), frozenset({"release_package", "rc_harness"})),
     (("docs/visual-migration/*.json",), frozenset({"e2e"})),
     ((".github/pull_request_template.md", ".github/ISSUE_TEMPLATE/*", ".agents/skills/*.md"), frozenset()),
     (("docs/*.md",), frozenset()),
@@ -92,6 +93,7 @@ def self_test() -> int:
         ([".agents/skills/some-skill/helper.py"], ALL),
         (["docs/openapi/openapi.json"], frozenset({"rust", "web"})),
         (["docs/deployment.md"], frozenset({"release_package", "rc_harness"})),
+        (["docs/deployment/upgrade-and-rollback.md"], frozenset({"release_package", "rc_harness"})),
         (["docs/visual-migration/mobile-map/networks.json"], frozenset({"e2e"})),
         (["crates/platpulse-agent/src/config.rs"], frozenset({"rust", "rust_postgres", "release_package", "rc_harness"})),
         (["crates/platpulse-server/src/http/admin.rs"], ALL),

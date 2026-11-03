@@ -96,11 +96,11 @@ forbidden="$(find "$ROOT" -type f \( \
 allowed_file() {
   if [[ "$KIND" == server ]]; then
     case "$1" in
-      usr/bin/platpulse-server|usr/share/platpulse/web/*|etc/platpulse/server.example.toml|usr/lib/systemd/system/platpulse-server.service|usr/share/doc/platpulse-server/deployment.md|usr/share/doc/platpulse-server/LICENSE|usr/share/doc/platpulse-server/examples/Caddyfile|usr/share/doc/platpulse-server/examples/compose.yml|usr/share/doc/platpulse-server/examples/compose-server.toml|usr/share/doc/platpulse-server/examples/geoipupdate.compose.yml) return 0 ;;
+      usr/bin/platpulse-server|usr/share/platpulse/web/*|etc/platpulse/server.example.toml|usr/lib/systemd/system/platpulse-server.service|usr/share/doc/platpulse-server/deployment.md|usr/share/doc/platpulse-server/deployment/*.md|usr/share/doc/platpulse-server/LICENSE|usr/share/doc/platpulse-server/examples/Caddyfile|usr/share/doc/platpulse-server/examples/compose.yml|usr/share/doc/platpulse-server/examples/compose-server.toml|usr/share/doc/platpulse-server/examples/geoipupdate.compose.yml) return 0 ;;
     esac
   else
     case "$1" in
-      usr/bin/platpulse-agent|etc/platpulse-agent/agent.toml.example|usr/lib/systemd/system/platpulse-agent.service|usr/share/doc/platpulse-agent/deployment.md|usr/share/doc/platpulse-agent/LICENSE) return 0 ;;
+      usr/bin/platpulse-agent|etc/platpulse-agent/agent.toml.example|usr/lib/systemd/system/platpulse-agent.service|usr/share/doc/platpulse-agent/deployment.md|usr/share/doc/platpulse-agent/deployment/*.md|usr/share/doc/platpulse-agent/LICENSE) return 0 ;;
     esac
   fi
   return 1
@@ -147,6 +147,29 @@ effective_service_value() {
     END { print value }
   ' "$unit"
 }
+# The deployment guide ships as an index plus its topic files. Every relative
+# link that stays inside the guide (to deployment.md or into deployment/) must
+# name a packaged file, so the installed copy reads as one document.
+require_deployment_guide() {
+  local doc_dir="$ROOT/$1" source target resolved
+  require_file "$1/deployment.md"
+  [[ -d "$doc_dir/deployment" ]] || fail "missing deployment guide topics: $1/deployment/"
+  find "$doc_dir/deployment" -type f -name '*.md' -print -quit | grep -q . || fail "deployment guide topics are empty: $1/deployment/"
+  while IFS= read -r source; do
+    while IFS= read -r target; do
+      target="${target#](}"
+      target="${target%)}"
+      target="${target%%#*}"
+      [[ -n "$target" && "$target" != *://* && "$target" != mailto:* ]] || continue
+      resolved="$(realpath -m "$(dirname "$source")/$target")"
+      case "$resolved" in
+        "$doc_dir/deployment.md"|"$doc_dir/deployment"|"$doc_dir/deployment/"*)
+          [[ -e "$resolved" ]] || fail "broken deployment guide link in ${source#"$ROOT"/}: $target" ;;
+      esac
+    done < <(grep -o '](\([^)]*\))' "$source" || true)
+  done < <(find "$doc_dir/deployment.md" "$doc_dir/deployment" -type f -name '*.md' -print)
+}
+
 require_service_identity() {
   local unit="$ROOT/$1" expected="$2"
   [[ "$(effective_service_value "$unit" User)" == "$expected" ]] || fail "$1 has an unsafe effective Service User"
@@ -160,7 +183,7 @@ case "$KIND" in
     [[ -d "$ROOT/usr/share/platpulse/web/assets" ]] || fail 'missing WebUI assets directory'
     find "$ROOT/usr/share/platpulse/web/assets" -type f -print -quit | grep -q . || fail 'WebUI assets directory is empty'
     require_file etc/platpulse/server.example.toml
-    require_file usr/share/doc/platpulse-server/deployment.md
+    require_deployment_guide usr/share/doc/platpulse-server
     require_file usr/share/doc/platpulse-server/LICENSE
     require_file usr/share/doc/platpulse-server/examples/compose-server.toml
     require_file usr/lib/systemd/system/platpulse-server.service
@@ -172,7 +195,7 @@ case "$KIND" in
   agent)
     require_executable usr/bin/platpulse-agent
     require_file etc/platpulse-agent/agent.toml.example
-    require_file usr/share/doc/platpulse-agent/deployment.md
+    require_deployment_guide usr/share/doc/platpulse-agent
     require_file usr/share/doc/platpulse-agent/LICENSE
     require_file usr/lib/systemd/system/platpulse-agent.service
     require_service_identity usr/lib/systemd/system/platpulse-agent.service platpulse-agent

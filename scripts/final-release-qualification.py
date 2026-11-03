@@ -520,7 +520,8 @@ class FinalQualification:
 
     def phase_provenance(self) -> None:
         check = self.check("unsigned-supply-chain-claims", "artifacts")
-        docs = [ROOT / "docs/deployment.md", ROOT / "docs/release-qualification.md",
+        docs = [ROOT / "docs/deployment.md", *sorted((ROOT / "docs/deployment").glob("*.md")),
+                ROOT / "docs/release-qualification.md",
                 ROOT / "docs/security-review.md", ROOT / "README.md"]
         positive: list[str] = []
         disclaimer_ok = False
