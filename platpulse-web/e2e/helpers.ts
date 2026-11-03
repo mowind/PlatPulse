@@ -271,6 +271,22 @@ export async function waitForAnimationsToSettle(page: Page) {
   }))
 }
 
+/** Wait until Home has finished starting, so its layout no longer moves.
+ *
+ * Three startup lines sit above the overview and leave once their answer
+ * arrives: "Starting Home…" (the first Networks read), "Checking server
+ * status…" (the first liveness probe, 46px) and "Connecting to live updates"
+ * (the SSE stream, 24px). Together they shift everything below by about 100px
+ * up to ~350ms after load, later on a loaded CI runner, so a geometry read or a
+ * pointer target taken before they leave lands on a different layout from the
+ * next one (issues #297, #299). Then waits for animations to settle. */
+export async function waitForHomeStarted(page: Page) {
+  await expect(page.getByText('Starting Home…', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('Checking server status…', { exact: true })).toHaveCount(0)
+  await expect(page.locator('[data-realtime-status="connected"]')).toHaveCount(1)
+  await waitForAnimationsToSettle(page)
+}
+
 /** Every visible control in a fixed-viewport scenario must remain a usable
  * 44px touch target. The selector is intentionally limited to native
  * interactive elements; it does not depend on component implementation

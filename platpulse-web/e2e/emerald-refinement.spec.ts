@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { execSync } from 'node:child_process'
-import { loginAs, expectNoHorizontalOverflow, expectVisibleInteractiveTargets, openHomeFilters, closeHomeSurface } from './helpers'
+import { loginAs, expectNoHorizontalOverflow, expectVisibleInteractiveTargets, openHomeFilters, closeHomeSurface, waitForHomeStarted } from './helpers'
 
 async function fixture(page: Page, scenario = 'normal') {
   await page.route('**/api/public/v1/networks*', async route => {
@@ -20,6 +20,9 @@ async function fixture(page: Page, scenario = 'normal') {
   await page.emulateMedia({ reducedMotion: 'reduce', colorScheme: 'light' })
   await page.goto('/')
   await expect(page.getByRole('tab', { name: 'Testnet', exact: true })).toBeVisible()
+  // A pointer aimed from a box read while the startup notices are still
+  // leaving lands on whatever moved under it (#299).
+  await waitForHomeStarted(page)
   await page.emulateMedia({ reducedMotion: 'reduce', colorScheme: 'light' })
 }
 
