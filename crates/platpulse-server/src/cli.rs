@@ -1029,6 +1029,12 @@ pub async fn run_storage_migrate_abort(
 /// assets until shutdown.
 pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::Error>> {
     crate::init::restrict_umask();
+    // The stop signals are taken over before anything else, so a SIGTERM or
+    // SIGINT that arrives while the Server is still starting is held and
+    // answered by the same graceful drain once startup finishes, instead of
+    // falling through to the default disposition that kills the process with
+    // no drain and no checkpoint.
+    let mut shutdown_signals = ShutdownSignals::install()?;
     tracing::info!("{} starting", crate::startup_version_line());
     let native_tls = match config.tls.as_ref() {
         Some(tls) => Some(crate::transport::load_rustls_config(tls).await?),
@@ -1604,7 +1610,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         let mut cause = ShutdownCause::Signal;
         tokio::select! {
             result = &mut server => result?,
-            _ = wait_for_shutdown_signal() => {}
+            _ = shutdown_signals.recv() => {}
             _ = &mut ownership_lost => cause = ShutdownCause::OwnershipLost,
         }
         log_shutdown_cause(cause);
@@ -1635,7 +1641,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         let mut cause = ShutdownCause::Signal;
         tokio::select! {
             result = &mut server => result?,
-            _ = wait_for_shutdown_signal() => {}
+            _ = shutdown_signals.recv() => {}
             _ = &mut ownership_lost => cause = ShutdownCause::OwnershipLost,
         }
         log_shutdown_cause(cause);
@@ -1859,19 +1865,50 @@ async fn drain_workers(
     drained
 }
 
-async fn wait_for_shutdown_signal() {
+/// The stop signals of a serving process (SIGTERM and SIGINT on Unix).
+///
+/// Installing replaces the default disposition at once, and a signal that
+/// arrives before [`ShutdownSignals::recv`] is first awaited is kept, so the
+/// Server can install these first and still answer a stop sent during startup.
+struct ShutdownSignals {
     #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        let mut terminate = signal(SignalKind::terminate()).expect("SIGTERM handler");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = terminate.recv() => {}
+    terminate: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    interrupt: tokio::signal::unix::Signal,
+}
+
+impl ShutdownSignals {
+    fn install() -> Result<Self, String> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            let handler = |kind: SignalKind, name: &str| {
+                signal(kind).map_err(|error| format!("cannot install the {name} handler: {error}"))
+            };
+            Ok(Self {
+                terminate: handler(SignalKind::terminate(), "SIGTERM")?,
+                interrupt: handler(SignalKind::interrupt(), "SIGINT")?,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(Self {})
         }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
+
+    /// Wait until a stop signal has arrived since [`ShutdownSignals::install`].
+    async fn recv(&mut self) {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = self.terminate.recv() => {}
+                _ = self.interrupt.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
     }
 }
 

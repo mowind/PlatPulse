@@ -422,3 +422,61 @@ fn serve_logs_lifecycle_as_json_on_stderr_and_leaves_stdout_empty() {
         "{stderr}"
     );
 }
+
+/// Issue #331: a SIGTERM that reaches the serving process while it is still
+/// starting (opening the database, running the startup retention tasks,
+/// spawning workers) is a stop request like any other. The Server installs
+/// its signal handlers before it logs `starting`, so the signal is held until
+/// startup finishes and then drains; it never falls through to the default
+/// disposition that kills the process without a checkpoint.
+#[cfg(unix)]
+#[test]
+fn a_server_signalled_while_starting_still_shuts_down_gracefully() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let deployment = Deployment::new();
+    assert!(deployment.run(&["init"]).status.success());
+    let port = free_port();
+    deployment.append_listen(port);
+
+    let stderr_path = deployment.state.join("serve.stderr");
+    let mut server = Command::new(env!("CARGO_BIN_EXE_platpulse-server"))
+        .args(["--log-format", "json", "serve", "--config"])
+        .arg(&deployment.config)
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()))
+        .spawn()
+        .unwrap();
+
+    // The first lifecycle line is the earliest point the process says it is
+    // the Server; signal it there, before it has listened.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !fs::read_to_string(&stderr_path)
+        .unwrap_or_default()
+        .contains("starting")
+    {
+        assert!(Instant::now() < deadline, "Server never logged starting");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let signalled = Command::new("kill")
+        .args(["-TERM", &server.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(signalled.success());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = server.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "Server did not stop on SIGTERM");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let stderr = fs::read_to_string(&stderr_path).unwrap();
+    assert_eq!(
+        status.signal(),
+        None,
+        "the startup SIGTERM killed the Server instead of stopping it: {stderr}"
+    );
+    assert!(status.success(), "graceful shutdown failed: {stderr}");
+    assert!(stderr.contains("shutdown complete"), "{stderr}");
+}
