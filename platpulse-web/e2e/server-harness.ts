@@ -1,22 +1,23 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { findRepoRoot } from './repo-root'
+import { freePort } from './free-port'
+import { findRepoRoot, serverBinary } from './repo-root'
 
 /**
  * Disposable Server harness for the management acceptance suite (issue #166,
  * part of #165).
  *
- * The fixed-viewport suite shares one long-lived Server and must not gain
- * Agent/Node state from a mutation test. This harness boots a second, entirely
+ * Each Playwright worker's seeded Server (e2e/worker-server.ts) is shared by
+ * every test that worker runs and must not gain Agent/Node state from a
+ * mutation test. This harness boots a second, entirely
  * disposable `platpulse-server` on an ephemeral port with its own temporary
  * state directory and SQLite database, so a test can onboard a throwaway Agent
  * through the real Admin/Agent HTTP API, submit a real report with the minted
  * credential, restart the process in place, and then remove every artifact
- * without touching the shared Server.
+ * without touching the worker's Server.
  *
  * It is deliberately built on the production binary and the real wire routes
  * (`/api/admin/v1/...`, `/api/agent/v1/...`), not on a test-only injection
@@ -114,7 +115,7 @@ export interface DisposableServer {
 }
 
 const REPO_ROOT = findRepoRoot()
-const SERVER_BINARY = join(REPO_ROOT, 'target', 'debug', 'platpulse-server')
+const SERVER_BINARY = serverBinary(REPO_ROOT)
 const WEB_ROOT = join(REPO_ROOT, 'platpulse-web', 'dist')
 const REPORT_FIXTURE = join(
   REPO_ROOT,
@@ -127,23 +128,6 @@ const REPORT_FIXTURE = join(
 
 const delay = (milliseconds: number) =>
   new Promise<void>((resolveDelay) => setTimeout(resolveDelay, milliseconds))
-
-async function freePort(): Promise<number> {
-  return new Promise<number>((resolvePort, rejectPort) => {
-    const probe = createServer()
-    probe.once('error', rejectPort)
-    probe.listen(0, '127.0.0.1', () => {
-      const address = probe.address()
-      if (address === null || typeof address === 'string') {
-        probe.close()
-        rejectPort(new Error('could not allocate an ephemeral port'))
-        return
-      }
-      const port = address.port
-      probe.close(() => resolvePort(port))
-    })
-  })
-}
 
 function ensureBuildInputs(): void {
   if (!existsSync(SERVER_BINARY)) {

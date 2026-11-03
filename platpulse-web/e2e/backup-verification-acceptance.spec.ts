@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test'
+import { expect, test, type Page, type Route } from './fixtures'
 import type { OperationMutationResponse } from '../src/api/generated/types.gen'
 import {
   VIEWPORTS,

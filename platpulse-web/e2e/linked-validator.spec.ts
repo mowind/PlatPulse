@@ -1,4 +1,4 @@
-import { expect, test, type Locator } from '@playwright/test'
+import { expect, test, type Locator } from './fixtures'
 import type { PublicNetwork, PublicNode } from '../src/api/generated'
 import { expectNoHorizontalOverflow, loginAs } from './helpers'
 

@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { expectNoHorizontalOverflow, loginAs } from './helpers'
 
 // The real Server fixture deduplicates linked Validators before exposing groups:

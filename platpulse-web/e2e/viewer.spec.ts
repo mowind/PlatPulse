@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import {
   E2E_VIEWER_PASSWORD,
   E2E_VIEWER_USERNAME,

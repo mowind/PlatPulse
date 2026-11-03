@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import type { AdminValidatorInsight, Validator, ValidatorDetail } from '../src/api/generated'
 import { formatObservedAt } from '../src/components/StatusBadge'
 import { VIEWPORTS, expectResolvedTheme, gotoAuthenticated, loginToDisposableServer } from './admin-flow'

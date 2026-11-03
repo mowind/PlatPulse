@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { expectNoHorizontalOverflow, loginAs } from './helpers'
 
 const PUBLIC_NODE_ID = '0195f2a1-0014-4014-8014-000000000014'

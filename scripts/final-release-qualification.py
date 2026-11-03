@@ -269,8 +269,9 @@ class FinalQualification:
             self.run_unavailable(check, "Playwright chromium", "not installed (npx playwright install chromium)")
             return
         env = {**os.environ, "CI": "1"}
-        # The fixed-viewport matrix (five projects, workers: 1) takes ~48 min on a
-        # GitHub ubuntu-24.04 runner; keep headroom within the 180-min job budget.
+        # The fixed-viewport matrix (five projects) took ~48 min on a GitHub
+        # ubuntu-24.04 runner with one worker; CI=1 now runs two, each against its
+        # own Server (#289). Keep headroom within the 180-min job budget.
         self.run_present(check, ["npm", "run", "e2e"], cwd=web, timeout=5400, env=env)
 
     # ------------------------------------------------------------- artifacts

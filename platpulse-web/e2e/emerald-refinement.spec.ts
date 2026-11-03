@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page } from './fixtures'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import { loginAs, expectNoHorizontalOverflow, expectVisibleInteractiveTargets, openHomeFilters, closeHomeSurface, waitForHomeStarted } from './helpers'

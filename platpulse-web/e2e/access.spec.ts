@@ -1,4 +1,4 @@
-import { expect, test, type Page, type TestInfo } from '@playwright/test'
+import { expect, test, type Page, type TestInfo } from './fixtures'
 import {
   E2E_VIEWER_PASSWORD,
   E2E_VIEWER_USERNAME,

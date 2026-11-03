@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './fixtures'
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { evidenceDir } from './evidence'
 import { loginAs, expectNoHorizontalOverflow } from './helpers'

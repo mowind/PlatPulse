@@ -1,4 +1,4 @@
-import { test, expect, type Locator, type Page } from '@playwright/test'
+import { test, expect, type Locator, type Page } from './fixtures'
 import { expectNoHorizontalOverflow, loginAs } from './helpers'
 
 // Admin information layering (webui.md §8.7) against the seeded local e2e
