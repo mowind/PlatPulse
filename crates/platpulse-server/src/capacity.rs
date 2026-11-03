@@ -5,7 +5,7 @@
 //!
 //! * The core ingestion transaction: the current projection, the Report
 //!   allocation and its receipt. It must either commit or fail loudly
-//!   (report_ingestion.rs), and nothing here weakens that obligation.
+//!   (http::report_ingestion), and nothing here weakens that obligation.
 //! * Optional generic metric history (save_node_metric / save_host_metric). It
 //!   is bounded per series and is an extra, not a promise the rest of the
 //!   Server depends on.
