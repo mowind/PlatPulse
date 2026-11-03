@@ -15,4 +15,4 @@ Local Node Inventory must remain Agent-owned, but an Owner must be able to remov
 
 This irreversible boundary is deliberate: allowing a deleted identity to reappear makes the Owner's removal meaningless; erasing every reference would destroy shared Validator data and evidence of past security/operational actions. API shapes, physical deletion ordering, and retryable operation mechanics remain implementation work, not claims made by this ADR.
 
-The complete accepted, not-yet-implemented contract and verification scenarios are in [main design §15](../design/platpulse.md#accepted-management-target); interactions are in [WebUI §15](../design/webui.md#accepted-management-ui-target). No runtime or data change is performed by this documentation decision.
+The complete accepted, not-yet-implemented contract and verification scenarios are in [main design §15](../design/platpulse.md#accepted-management-target); interactions are in [WebUI §15](../design/webui/15-agent-node-management.md#accepted-management-ui-target). No runtime or data change is performed by this documentation decision.

@@ -7,6 +7,13 @@ Code, tests and Web comments cite the design documents by section number:
                        authority named by AGENTS.md);
   * "webui.md §X.Y" -> a heading in docs/design/webui.md.
 
+A document may be split into files: its sections then live in the Markdown
+files of a directory beside it named after it (docs/design/webui/ for
+docs/design/webui.md), each section keeping its number and heading. A
+reference resolves against the headings of the document and of every file in
+that directory together, so a section moved into its own file keeps its
+citation.
+
 A reference is a run that starts with one of those prefixes and may continue
 with more section numbers joined by ",", "/", "and", "or", "to", "–" or "-",
 for example "design §11.4, §11.6 and §11.7" or "webui.md §6.1–§6.3". Each
@@ -15,8 +22,11 @@ checked at both ends.
 
 The check fails when
 
-  * a cited section number has no heading in the document it names
-    (a dangling reference, such as a section of an earlier design revision);
+  * a cited section number has no heading in the document it names, nor in
+    any file of its directory (a dangling reference, such as a section of an
+    earlier design revision);
+  * a cited section number is headed in more than one of those files, so the
+    reference is ambiguous;
   * a "design §" number is not a section number at all (for example a line
     number such as "design §561");
   * a "§" appears without a recognised source prefix, so a reader cannot tell
@@ -40,13 +50,18 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-DESIGN_DOC = Path("docs/design/platpulse.md")
-WEBUI_DOC = Path("docs/design/webui.md")
+# Each reference source names a document; its sections may also live in the
+# files of the directory of the same name beside it (see split_directory).
+DOCUMENTS = {
+    "design": Path("docs/design/platpulse.md"),
+    "webui.md": Path("docs/design/webui.md"),
+}
 
 SCAN_ROOTS = (
     Path("crates"),
@@ -95,8 +110,9 @@ class Finding:
         return f"{self.path}:{self.line}: {self.reference}: {self.reason}"
 
 
-def headings(text: str) -> set[str]:
-    found: set[str] = set()
+def headings(text: str) -> list[str]:
+    """The section numbers headed in one Markdown text, in order."""
+    found: list[str] = []
     in_fence = False
     for raw in text.splitlines():
         line = raw.strip()
@@ -107,12 +123,48 @@ def headings(text: str) -> set[str]:
             continue
         match = HEADING.match(line)
         if match:
-            found.add(match.group(1))
+            found.append(match.group(1))
     return found
 
 
-def check_text(path: str, text: str, design: set[str], webui: set[str]) -> list[Finding]:
-    documents = {"design": (design, "docs/design/platpulse.md"), "webui.md": (webui, "docs/design/webui.md")}
+# Where each section number of one document is headed: section -> the files
+# (the document itself and the files of its directory) that head it.
+SectionIndex = dict[str, list[str]]
+
+
+def section_index(files: dict[str, str]) -> SectionIndex:
+    """Index the headings of a document's files, given as {path: text}."""
+    index: SectionIndex = {}
+    for path, text in files.items():
+        for section in headings(text):
+            index.setdefault(section, []).append(path)
+    return index
+
+
+def split_directory(document: Path) -> Path:
+    """The directory holding the files a document was split into."""
+    return document.with_suffix("")
+
+
+def document_files(root: Path, document: Path) -> dict[str, str]:
+    """The document and every Markdown file of its split directory."""
+    files = {document.as_posix(): (root / document).read_text(encoding="utf-8")}
+    directory = root / split_directory(document)
+    if directory.is_dir():
+        for path in sorted(directory.rglob("*.md")):
+            files[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8")
+    return files
+
+
+def describe(document: Path) -> str:
+    return f"{document.as_posix()} or {split_directory(document).as_posix()}/"
+
+
+def check_text(path: str, text: str, design: SectionIndex, webui: SectionIndex) -> list[Finding]:
+    documents = {
+        "design": (design, describe(DOCUMENTS["design"])),
+        "webui.md": (webui, describe(DOCUMENTS["webui.md"])),
+    }
     findings: list[Finding] = []
     # The source a wrapped reference carries onto the next line, if any.
     carried: str | None = None
@@ -153,6 +205,9 @@ def check_text(path: str, text: str, design: set[str], webui: set[str]) -> list[
                 elif section not in sections:
                     findings.append(Finding(path, number, reference,
                         f"§{section} has no heading in {document}"))
+                elif len(sections[section]) > 1:
+                    findings.append(Finding(path, number, reference,
+                        f"§{section} is ambiguous: headed in {', '.join(sections[section])}"))
         for index, char in enumerate(line):
             if char != "§":
                 continue
@@ -183,8 +238,8 @@ def scanned_files(root: Path):
 
 
 def check_repository(root: Path) -> list[Finding]:
-    design = headings((root / DESIGN_DOC).read_text(encoding="utf-8"))
-    webui = headings((root / WEBUI_DOC).read_text(encoding="utf-8"))
+    design = section_index(document_files(root, DOCUMENTS["design"]))
+    webui = section_index(document_files(root, DOCUMENTS["webui.md"]))
     findings: list[Finding] = []
     for relative, path in scanned_files(root):
         try:
@@ -195,9 +250,44 @@ def check_repository(root: Path) -> list[Finding]:
     return findings
 
 
+def split_cases() -> list[tuple[str, dict[str, str], int]]:
+    """Repositories whose documents are split into files: (label, files, findings)."""
+    design = {"docs/design/platpulse.md": "# Design\n## 10. 身份\n"}
+    webui_index = {"docs/design/webui.md": "# WebUI\n## 1. Purpose\n"}
+    webui_child = {"docs/design/webui/15-management.md": "## 15. Accepted\n### 15.16 Metric history\n"}
+    design_child = {"docs/design/platpulse/20-later.md": "## 20. Later\n"}
+    return [
+        ("a section headed in a child file resolves",
+         {**design, **webui_index, **webui_child, "crates/a.rs": "// webui.md §15.16 and §1\n"}, 0),
+        ("a section headed in no file is rejected",
+         {**design, **webui_index, **webui_child, "crates/a.rs": "// webui.md §15.99\n"}, 1),
+        ("a section headed in two files is ambiguous",
+         {**design, **webui_index, **webui_child,
+          "docs/design/webui/15-copy.md": "### 15.16 Metric history again\n",
+          "crates/a.rs": "// webui.md §15.16\n"}, 1),
+        ("a section in the index and a child file is ambiguous",
+         {**design, "docs/design/webui.md": "# WebUI\n## 15. Accepted\n", **webui_child,
+          "crates/a.rs": "// webui.md §15\n"}, 1),
+        ("a design section headed in a child file resolves",
+         {**design, **design_child, **webui_index, "crates/a.rs": "// design §20 and §10\n"}, 0),
+        ("a child file of the other document does not count",
+         {**design, **webui_index, **webui_child, "crates/a.rs": "// design §15.16\n"}, 1),
+    ]
+
+
+def run_split_case(files: dict[str, str]) -> int:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for relative, text in files.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        return len(check_repository(root))
+
+
 def self_test() -> int:
-    design = headings("# Title\n## 10. 身份\n### 10.2 Human\n### 15.4.1 Trend\n~~~text\n# 99.9 not a heading\n~~~\n")
-    webui = headings("## 15. Accepted\n### 15.16 Metric history\n")
+    design = section_index({"platpulse.md": "# Title\n## 10. 身份\n### 10.2 Human\n### 15.4.1 Trend\n~~~text\n# 99.9 not a heading\n~~~\n"})
+    webui = section_index({"webui.md": "## 15. Accepted\n### 15.16 Metric history\n"})
     cases = [
         ("// design §10.2 governs sessions", 0),
         ("// design §10, §10.2 and §15.4.1", 0),
@@ -230,9 +320,15 @@ def self_test() -> int:
         if got != expected:
             failures += 1
             print(f"self-test FAILED: {text!r}: expected {expected} finding(s), got {got}")
+    splits = split_cases()
+    for label, files, expected in splits:
+        got = run_split_case(files)
+        if got != expected:
+            failures += 1
+            print(f"self-test FAILED: {label}: expected {expected} finding(s), got {got}")
     if failures:
         return 1
-    print(f"self-test passed ({len(cases)} cases)")
+    print(f"self-test passed ({len(cases) + len(splits)} cases)")
     return 0
 
 
