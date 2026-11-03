@@ -414,6 +414,32 @@ pub const ONE_MINUTE_MAX_AGE_DAYS: i64 = 7;
 /// inside the horizon the range contract promises.
 pub const FIVE_MINUTE_MAX_AGE_DAYS: i64 = 30;
 
+/// How far a requested start may sit before the investigation horizon and still
+/// count as the horizon: one 5-minute bucket, the grain the tier answers that
+/// age with. A caller asking for "the last 30 days" stamps its start on its own
+/// clock before the request arrives, so it misses the horizon by its latency and
+/// its clock offset; calling that partial would report a shortfall finer than
+/// anything the answer can show. The answered `from` still starts at the
+/// horizon, so the answer never claims history it does not hold.
+pub const HORIZON_TOLERANCE_SECONDS: i64 = FIVE_MINUTE_SECONDS;
+
+/// Whether a requested range fits the investigation horizon: `None` when it
+/// does (within [`HORIZON_TOLERANCE_SECONDS`]), `unavailable` when it ends at
+/// or before the horizon, `partial` when only its start lies beyond it.
+pub fn horizon_availability(
+    from: time::OffsetDateTime,
+    to: time::OffsetDateTime,
+    horizon_cutoff: time::OffsetDateTime,
+) -> Option<&'static str> {
+    if from >= horizon_cutoff - time::Duration::seconds(HORIZON_TOLERANCE_SECONDS) {
+        None
+    } else if to <= horizon_cutoff {
+        Some("unavailable")
+    } else {
+        Some("partial")
+    }
+}
+
 /// The bucket widths the Server writes for one counted observation, finest
 /// first.
 pub const AGGREGATE_GRAINS: [i64; 2] = [ONE_MINUTE_SECONDS, FIVE_MINUTE_SECONDS];
@@ -2963,6 +2989,32 @@ mod tests {
             last_skipped_at: last.to_owned(),
             skipped_count: skipped,
         }
+    }
+
+    #[test]
+    fn a_start_within_one_bucket_of_the_horizon_is_the_horizon() {
+        let cutoff = time::macros::datetime!(2026-01-01 00:00:00 UTC);
+        let to = cutoff + time::Duration::days(30);
+        let seconds = time::Duration::seconds;
+        assert_eq!(horizon_availability(cutoff, to, cutoff), None);
+        assert_eq!(horizon_availability(cutoff - seconds(1), to, cutoff), None);
+        assert_eq!(
+            horizon_availability(cutoff - seconds(HORIZON_TOLERANCE_SECONDS), to, cutoff),
+            None
+        );
+        assert_eq!(
+            horizon_availability(cutoff - seconds(HORIZON_TOLERANCE_SECONDS + 1), to, cutoff),
+            Some("partial")
+        );
+        let old_from = cutoff - time::Duration::days(10);
+        assert_eq!(
+            horizon_availability(old_from, cutoff, cutoff),
+            Some("unavailable")
+        );
+        assert_eq!(
+            horizon_availability(old_from, cutoff - time::Duration::days(1), cutoff),
+            Some("unavailable")
+        );
     }
 
     #[test]
