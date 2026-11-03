@@ -95,13 +95,18 @@ async function scrollList(page: Page, offset: number): Promise<number> {
   }, offset)
 }
 
-/** Wait for the list to settle on exactly "letters", then read the rows again. */
+/**
+ * Wait for the list to settle on exactly "letters", then read the rows again.
+ * The order is polled rather than read once: the router writes a new sort into
+ * the address bar before React commits the list it describes (router state
+ * updates render in a transition), so a URL that already names the sort can
+ * still sit above the previous order for a moment.
+ */
 async function expectList(page: Page, letters: string[]): Promise<string[]> {
   await expect(listTable(page)).toBeVisible()
   await expect(listRows(page)).toHaveCount(letters.length)
-  const listed = await listedLetters(page)
-  expect(listed).toEqual(letters)
-  return listed
+  await expect.poll(() => listedLetters(page), { message: `the list settles on ${letters.join(', ')}` }).toEqual(letters)
+  return listedLetters(page)
 }
 
 /** Every attested value ranks above every never-observed value, and the
