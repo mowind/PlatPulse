@@ -913,9 +913,9 @@ smoke tests run in the release CI's disposable package environments.
 Every release set contains `SHA256SUMS`, an SPDX inventory, and recorded Rust/npm
 audit evidence. Normal release builds fail when cargo-deny, cargo-audit, or npm audit
 is unavailable or exits non-zero; only fixture/harness builds use the explicit audit
-skip. `RUSTSEC-2023-0071` is ignored because `rsa` is lockfile-only behind disabled
-SQLx features (`cargo tree -i rsa` is empty). `RUSTSEC-2026-0253` is ignored because
-the current `lru` release has no fixed upgrade; `RUSTSEC-2024-0436` (`paste`) is
+skip. The ignored advisories are configured once per tool, in `deny.toml` and
+`.cargo/audit.toml`. `RUSTSEC-2023-0071` is ignored because `rsa` is lockfile-only behind disabled
+SQLx features (`cargo tree -i rsa` is empty). `RUSTSEC-2024-0436` (`paste`) is
 ignored only by cargo-deny because Alloy's proc-macro graph has no maintained
 compatible replacement yet. `RUSTSEC-2026-0381` (`webpki-roots` 0.26.11, the
 bundled root store Alloy's WebSocket transport pulls through
