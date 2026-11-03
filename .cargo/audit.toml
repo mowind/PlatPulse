@@ -1,0 +1,11 @@
+# cargo-audit configuration, read by every `cargo audit` run in this workspace
+# (AGENTS.md, README.md, scripts/build-release.sh, scripts/final-release-qualification.py,
+# .github/workflows/release.yml). Do not repeat this list as --ignore flags.
+#
+# The reasons live with the matching cargo-deny ignores in deny.toml and in the
+# residual-risk entries of docs/security-review.md. The lists differ on purpose:
+# - RUSTSEC-2024-0436 (`paste`, unmaintained) is ignored only by cargo-deny.
+#   cargo-audit reports unmaintained, unsound and yanked crates as warnings that
+#   do not fail the run, so they stay visible in the release audit evidence.
+[advisories]
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0381", "RUSTSEC-2026-0387"]
