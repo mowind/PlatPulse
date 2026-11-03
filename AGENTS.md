@@ -53,6 +53,10 @@ python3 scripts/check-logging.py
 # and `as any`/`as unknown`/`: any` in platpulse-web/src. Comments state the current contract; history goes in the PR.
 python3 scripts/check-baselines.py
 
+# Document length (scripts/doc-budgets.json): 8,000 words per Markdown file, CJK characters counted one each.
+# Files already over it are frozen and may only shrink; offset added text or move a section into its own file.
+python3 scripts/check-doc-budgets.py
+
 # Screenshots under docs/visual-migration/ are frozen: no added or rewritten images
 python3 scripts/check-no-new-screenshots.py --base origin/main
 
