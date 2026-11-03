@@ -6405,13 +6405,8 @@ async fn metric_history_response(
     let raw_cutoff = crate::metric_history::raw_window_cutoff(now);
     let horizon_cutoff =
         now - time::Duration::days(crate::metric_history::FIVE_MINUTE_MAX_AGE_DAYS);
-    let availability = if from >= horizon_cutoff {
-        None
-    } else if to <= horizon_cutoff {
-        Some("unavailable".to_owned())
-    } else {
-        Some("partial".to_owned())
-    };
+    let availability =
+        crate::metric_history::horizon_availability(from, to, horizon_cutoff).map(str::to_owned);
     let effective_from = from.max(horizon_cutoff);
     let effective_to = before.unwrap_or(to);
     let limit = params

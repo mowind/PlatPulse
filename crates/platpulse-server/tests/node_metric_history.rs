@@ -898,6 +898,32 @@ async fn history_older_than_the_retention_floor_is_reported_not_faked() {
         Value::from(30 * 86_400),
         "the answered range is the horizon, not the range nobody can serve: {body}"
     );
+
+    // The WebUI's widest preset is exactly the horizon, stamped by the
+    // browser's clock before the request reaches the Server. A start that
+    // misses the horizon by less than one 5-minute bucket is the preset, not a
+    // request for history the tiers never held, so it is not called partial.
+    let preset_from =
+        auth::format_rfc3339(now - time::Duration::days(30) - time::Duration::seconds(2));
+    let (status, body) = metric_history(
+        &harness,
+        Some(&session.cookie),
+        NODE_ID,
+        "process_cpu_percent",
+        Some(&preset_from),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body["availability"].is_null(),
+        "a start within one bucket of the horizon is the horizon: {body}"
+    );
+    assert_eq!(body["requestedFrom"], Value::String(preset_from.clone()));
+    assert!(
+        body["from"].as_str().unwrap() > preset_from.as_str(),
+        "the answer still names the horizon it starts at: {body}"
+    );
 }
 
 /// The reviewer's scenario at the HTTP boundary: an observation counted below
