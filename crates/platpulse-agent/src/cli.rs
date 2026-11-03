@@ -163,6 +163,11 @@ pub enum AgentCliError {
     Collection(String),
     #[error("{0}")]
     Checkpoint(String),
+    #[error("cannot install the {signal} handler: {source}")]
+    SignalHandler {
+        signal: &'static str,
+        source: std::io::Error,
+    },
 }
 
 impl From<crate::config::AgentConfigError> for AgentCliError {
@@ -712,6 +717,12 @@ fn node_span(node_id: &NodeId) -> tracing::Span {
 }
 
 pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
+    // The stop signals are taken over before anything else, so a SIGTERM or
+    // SIGINT that arrives while the Agent is still starting is held and
+    // answered by the same graceful shutdown once startup finishes, instead of
+    // falling through to the default disposition that kills the process with
+    // no Closing report and drops the queued log lines.
+    let mut shutdown_signals = ShutdownSignals::install()?;
     tracing::info!("{} starting", crate::startup_version_line());
     let config = AgentConfig::resolve(&args.config)?;
     let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
@@ -822,14 +833,11 @@ pub async fn run_agent(args: &RunArgs) -> Result<(), AgentCliError> {
         cancel.clone(),
         write_permit,
     ));
-    let signal = wait_for_shutdown_signal();
-    tokio::pin!(signal);
-
     let mut subscriptions = Vec::with_capacity(node_ids.len());
     let mut report_worker_finished = false;
     let mut delivery_worker_finished = false;
     let runtime_result = tokio::select! {
-        _ = &mut signal => Ok(()),
+        _ = shutdown_signals.recv() => Ok(()),
         result = &mut report_worker => {
             report_worker_finished = true;
             match result {
@@ -1182,19 +1190,53 @@ async fn persist_abandoned_block_worker_gaps(
     Ok(())
 }
 
-async fn wait_for_shutdown_signal() {
+/// The stop signals of a running Agent (SIGTERM and SIGINT on Unix).
+///
+/// Installing replaces the default disposition at once, and a signal that
+/// arrives before [`ShutdownSignals::recv`] is first awaited is kept, so the
+/// Agent can install these first and still answer a stop sent during startup.
+struct ShutdownSignals {
     #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        let mut terminate = signal(SignalKind::terminate()).expect("SIGTERM handler");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = terminate.recv() => {}
+    terminate: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    interrupt: tokio::signal::unix::Signal,
+}
+
+impl ShutdownSignals {
+    fn install() -> Result<Self, AgentCliError> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            let handler = |kind: SignalKind, name: &'static str| {
+                signal(kind).map_err(|source| AgentCliError::SignalHandler {
+                    signal: name,
+                    source,
+                })
+            };
+            Ok(Self {
+                terminate: handler(SignalKind::terminate(), "SIGTERM")?,
+                interrupt: handler(SignalKind::interrupt(), "SIGINT")?,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(Self {})
         }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
+
+    /// Wait until a stop signal has arrived since [`ShutdownSignals::install`].
+    async fn recv(&mut self) {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = self.terminate.recv() => {}
+                _ = self.interrupt.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
     }
 }
 

@@ -86,32 +86,6 @@ impl Default for AgentRuntime {
     }
 }
 
-/// Production entry point used by supervisors: it waits for SIGTERM/ctrl-c
-/// and performs the same cancellation-safe drain as an explicit request.
-pub async fn run_until_signal(
-    config: &crate::config::AgentConfig,
-) -> Result<ShutdownOutcome, crate::collector::CollectionError> {
-    let _runtime_lock = crate::database::AgentRuntimeLock::acquire(&config.state_db)
-        .map_err(|error| crate::collector::CollectionError::RuntimeOwnership(error.to_string()))?;
-    let write_permit = crate::database::AgentStoreWritePermit::new();
-    let runtime = AgentRuntime::new();
-    let token = runtime.cancellation_token();
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => runtime.request_shutdown(),
-        _ = token.cancelled() => {}
-    }
-    let mut queues = Vec::new();
-    graceful_shutdown_with_subscriptions_with_permit(
-        config,
-        &FailClosedRpcAdapter,
-        &mut queues,
-        Duration::from_secs(5),
-        Duration::from_secs(5),
-        write_permit,
-    )
-    .await
-}
-
 /// Async hash resolver used while draining one Node subscription.
 pub trait AsyncBlockResolver {
     fn resolve<'a>(
