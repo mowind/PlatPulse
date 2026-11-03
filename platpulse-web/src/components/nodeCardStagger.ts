@@ -2,7 +2,7 @@
  * Staggered entrance animation parameters for node cards on Home.
  *
  * Visual authority: komari-theme-emerald HomeView.vue (.node-card-switch-enter-active)
- * Registered deviation: Emerald deviation 43 (docs/visual-migration/emerald/README.md)
+ * Registered deviation: Emerald deviation 43 (docs/visual-migration/emerald/deviation-register-28-43.md)
  * Design authority: docs/design/webui.md §15.39
  * Issue #278: Reference Emerald to implement staggered micro-entrance animation for node cards.
  */

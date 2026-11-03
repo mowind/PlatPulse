@@ -1,7 +1,4 @@
 {
   "default": 8000,
-  "frozen": {
-    "docs/deployment.md": 10993,
-    "docs/visual-migration/emerald/README.md": 20507
-  }
+  "frozen": {}
 }

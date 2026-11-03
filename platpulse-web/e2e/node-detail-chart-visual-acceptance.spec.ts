@@ -57,7 +57,8 @@ function measuredWidths(testInfo: TestInfo): number[] {
 /**
  * Emerald's declared chart geometry, quoted from the reference the port cites
  * (\`src/components/LoadChart.vue\`, commit c2c5e88; recorded in
- * docs/visual-migration/emerald/README.md sections 1 and 35):
+ * docs/visual-migration/emerald/README.md section 1 and
+ * docs/visual-migration/emerald/node-detail-six-chart-deck.md section 35):
  *
  *   chartMargin          { top: 30, right: 24, bottom: 32, left: 56 }
  *   chartMargin + legend { top: 30, right: 24, bottom: 52, left: 56 }

@@ -11,7 +11,7 @@ import type { MetricObservation } from '../metricCoverage'
  * `window`, no timers — the option is unit-testable and server-renderable.
  *
  * Two deliberate departures from upstream, both recorded in the visual
- * migration register (docs/visual-migration/emerald/README.md):
+ * migration register (docs/visual-migration/emerald/deviation-register-28-43.md):
  *   1. A missing observation is never drawn as zero. Emerald plots
  *      `r.ram ?? 0`, which turns a collection silence into a drop to the
  *      baseline; PlatPulse breaks the curve instead.
