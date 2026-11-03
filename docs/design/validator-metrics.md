@@ -7,7 +7,7 @@ Historical metric-delivery baseline: the earlier metrics interview decisions wer
 Automatic Validator identification and Current Validator Status are
 **implemented by #173**, and the associated one-time history cutover is
 **implemented by #174**. The target is defined by
-[the main design, section 15](platpulse.md#accepted-management-target),
+[the main design, section 15](platpulse/15-management-and-validator-identity.md#accepted-management-target),
 [ADR 0005: automatic Validator identity](../adr/0005-automatic-validator-identity.md)
 and the [accepted Provider identity contract](validator-provider.md#accepted-target-automatic-validator-identity-implemented-by-173-and-174).
 This document retains the historically implemented #154–#159 metric behavior

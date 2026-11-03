@@ -4,7 +4,7 @@
 
 PlatPulse is a Server–Agent–WebUI monitoring suite for PlatON nodes, developed as a **Rust workspace** (Agent/Server) plus a **Node.js/TypeScript frontend** (WebUI).
 
-- Design authority: `docs/design/platpulse.md`
+- Design authority: `docs/design/platpulse.md` (an index; its sections live in `docs/design/platpulse/`, each keeping its number)
 - Domain terminology: root `CONTEXT.md` (use its vocabulary, avoid synonyms it explicitly bans)
 - Status: v0.2.0 released; 0.3.0 adds the PostgreSQL Storage Backend (ADR 0013). Keep ChainDash architecture, TUI, endpoint failover, and remote-control features out of PlatPulse.
 
@@ -46,7 +46,7 @@ cargo test --workspace
 cargo deny check && cargo audit   # ignores: .cargo/audit.toml (reasons in deny.toml)
 
 # Design references: "design §X.Y" = docs/design/platpulse.md, "webui.md §X.Y" = docs/design/webui.md
-# (an index; its sections live under docs/design/webui/, each keeping its number)
+# (both are indexes; their sections live under docs/design/platpulse/ and docs/design/webui/, each keeping its number)
 python3 scripts/check-design-refs.py
 
 # Logging discipline: no bare eprintln!/dbg!, stdout only in main.rs/cli.rs, log fields from the vocabulary (docs/design/logging.md)

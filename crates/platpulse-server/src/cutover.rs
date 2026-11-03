@@ -1,7 +1,7 @@
 //! Coordinated v1 -> v2 production cutover gate (issue #192).
 //!
 //! [ADR 0007](../../docs/adr/0007-server-managed-inventory-revision.md) and
-//! [main design 15.10.4/15.10.5](../../docs/design/platpulse.md#server-managed-inventory-revision-target)
+//! [main design 15.10.4/15.10.5](../../docs/design/platpulse/15.10-server-managed-inventory-revision.md#server-managed-inventory-revision-target)
 //! make the offline baseline conversion an authorization-free preparation step:
 //! it must stay impossible to serve a converted deployment as if the switch had
 //! happened. This module owns the single explicit switch gate.

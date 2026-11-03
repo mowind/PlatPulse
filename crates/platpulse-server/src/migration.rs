@@ -1,7 +1,7 @@
 //! Offline Server-managed Inventory baseline conversion (issue #191).
 //!
 //! [ADR 0007](../../docs/adr/0007-server-managed-inventory-revision.md) and
-//! [main design 15.10.4](../../docs/design/platpulse.md#server-managed-inventory-revision-target)
+//! [main design 15.10.4](../../docs/design/platpulse/15.10-server-managed-inventory-revision.md#server-managed-inventory-revision-target)
 //! require the frozen-v1 -> v2 cutover to convert, from a *verified coordinated
 //! checkpoint*, the Server accepted baseline and the Agent Inventory
 //! Declaration Record to the v2 canonical declaration fingerprint while keeping
