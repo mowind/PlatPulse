@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { closeHomeSurface, homeFilterEntry, loginAs, openHomeSort } from './helpers'
 
 // Measure painted geography, not just the full-width canvas element.

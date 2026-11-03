@@ -261,8 +261,8 @@ jobs:
   # project. Playwright's --shard follows project order, so plain 5-way
   # sharding puts one project in each shard; desktop-1280 runs the acceptance
   # specs the other projects skip (27 min against 12-15 min), so it gets two
-  # jobs. Each job boots its own Server, so the single-worker rule in
-  # playwright.config.ts still holds inside a job.
+  # jobs. Inside a job, playwright.config.ts runs two workers, and each worker
+  # boots its own seeded Server on its own port and data directory (#289).
   web-e2e:
     name: WebUI e2e (${{ matrix.project }} ${{ matrix.shard }})
     needs: changes

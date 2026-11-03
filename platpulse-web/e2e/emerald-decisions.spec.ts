@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { expectNoHorizontalOverflow, expectVisibleInteractiveTargets, loginAs } from './helpers'
 
 test('Login has an accessible brand header in both themes', async ({ page }) => {

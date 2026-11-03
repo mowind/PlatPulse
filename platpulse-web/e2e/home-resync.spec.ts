@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test'
+import { expect, test, type Locator, type Page, type TestInfo } from './fixtures'
 import type { PublicNetwork, PublicNode } from '../src/api/generated'
 import { closeHomeSurface, expectNoHorizontalOverflow, loginAs, openHomeSort } from './helpers'
 

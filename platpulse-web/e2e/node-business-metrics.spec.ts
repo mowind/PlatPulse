@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import type { PublicNetwork } from '../src/api/generated'
 import { expectMetricRowsAligned, expectNoHorizontalOverflow, expectResourceColumns, expectResourceColumnsAligned, homeNodeColumns, loginAs } from './helpers'
 

@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { expectNoHorizontalOverflow, loginAs } from './helpers'
 
 // Read-only fixture: a browser-local response override cannot rename shared Nodes.

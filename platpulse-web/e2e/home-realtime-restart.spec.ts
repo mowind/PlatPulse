@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
 
 import { loginToDisposableServer } from "./admin-flow";
 import { startDisposableServer } from "./server-harness";

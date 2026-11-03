@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { expectNoHorizontalOverflow, loginAs } from './helpers'
 
 /** Tablet/mobile use the drawer; desktop has the persistent sidebar. */

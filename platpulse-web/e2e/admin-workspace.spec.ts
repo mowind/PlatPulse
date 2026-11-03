@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { loginAs, expectNoHorizontalOverflow } from './helpers'
 
 // One desktop project drives the full geometry matrix; drawer/focus interactions

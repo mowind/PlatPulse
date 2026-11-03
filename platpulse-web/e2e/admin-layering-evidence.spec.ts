@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Page } from './fixtures'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { loginAs } from './helpers'
 import { evidenceDir } from './evidence'

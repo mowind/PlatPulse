@@ -56,10 +56,10 @@ npm run lint && npm run typecheck && npm test && npm run build
 npm run generate:api && git diff --exit-code src/api/generated
 ```
 
-**e2e**: the specs the change affects, on the projects they run on. The disposable Server serves `platpulse-web/dist`, so build first (a fresh worktree has none).
+**e2e**: the specs the change affects, on the projects they run on. The global setup builds `platpulse-web/dist` and the Server, then each worker boots its own seeded Server; `E2E_PORT=<port>` instead attaches one worker to a Server already running there.
 
 ```bash
-cd platpulse-web && npm run build
+cd platpulse-web
 npx playwright test e2e/<spec>.spec.ts --project=desktop-1280 --project=phone-390-touch
 ```
 

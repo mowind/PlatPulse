@@ -1,4 +1,4 @@
-import { test, expect, type Locator, type Page } from '@playwright/test'
+import { test, expect, type Locator, type Page } from './fixtures'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { expectNoHorizontalOverflow, loginAs } from './helpers'
 import { evidenceDir } from './evidence'

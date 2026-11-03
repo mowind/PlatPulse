@@ -18,7 +18,7 @@ CI retries a Playwright test once to record a second trace, and `failOnFlakyTest
 
 - **timeout budget**: a heavy flow exceeds the 30 s budget; mark that test `test.slow()` with a comment saying why it is slow. The global timeout stays as it is.
 - **race**: the test waits on time instead of state; wait for the explicit state.
-- **shared data**: the test depends on state another test changes; give it its own data.
+- **shared data**: the test depends on state another test changes; give it its own data. Each Playwright worker runs its own seeded Server (`platpulse-web/e2e/worker-server.ts`), so only tests in the same worker share data, and the retry runs against a freshly seeded Server; a test whose writes must stay out of the seed data uses a disposable Server (`e2e/server-harness.ts`).
 
 When the flaky test is unrelated to your change, open its issue first; then re-run the failed jobs (`gh run rerun <run-id> --failed`) and link the issue in a pull request comment.
 

@@ -3,6 +3,18 @@
 # one Owner plus one Viewer for the Playwright suite. The suite runs against
 # the real Server serving the production WebUI build, so login and the
 # Home/Admin shells are exercised end to end (design §10.2, §12).
+#
+# Every Playwright worker runs this script for its own Server
+# (e2e/worker-server.ts) and sets:
+#   E2E_PORT                  the free port the worker picked
+#   E2E_STATE_DIR             an empty state directory the worker owns
+#   E2E_BACKUP_DIR            an empty Backup directory the worker owns
+#   E2E_SKIP_BUILD=1          the global setup already built the WebUI bundle
+#   PLATPULSE_E2E_SERVER_BIN  the Server binary the global setup built
+#   E2E_PARENT_PID            the worker's PID; when it dies, the watchdog below
+#                             stops this script's process group
+# Run by hand (docs/visual-migration/), it needs none of them: it builds the
+# bundle, uses `cargo run`, and makes its own temporary directories.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -10,13 +22,31 @@ WEB_DIR="$ROOT/platpulse-web"
 PORT="${E2E_PORT:-4173}"
 PASSWORD="${PLATPULSE_E2E_PASSWORD:-platpulse-e2e-admin-2026}"
 VIEWER_PASSWORD="${PLATPULSE_E2E_VIEWER_PASSWORD:-platpulse-e2e-viewer-2026}"
-STATE_DIR="$(mktemp -d /tmp/platpulse-e2e-XXXXXX)"
-BACKUP_DIR="$(mktemp -d /tmp/platpulse-e2e-backups-XXXXXX)"
+STATE_DIR="${E2E_STATE_DIR:-$(mktemp -d /tmp/platpulse-e2e-XXXXXX)}"
+BACKUP_DIR="${E2E_BACKUP_DIR:-$(mktemp -d /tmp/platpulse-e2e-backups-XXXXXX)}"
+mkdir -p "$STATE_DIR" "$BACKUP_DIR"
 CONFIG="$STATE_DIR/server.toml"
+if [ -n "${PLATPULSE_E2E_SERVER_BIN:-}" ]; then
+  SERVER=("$PLATPULSE_E2E_SERVER_BIN")
+else
+  SERVER=(cargo run -q -p platpulse-server --)
+fi
+
+# A worker spawns this script as the leader of its own process group. If the
+# worker dies without tearing its Server down, stop the whole group (the
+# Server and both fixture refreshers) instead of leaving them listening.
+if [ -n "${E2E_PARENT_PID:-}" ]; then
+  (
+    while kill -0 "$E2E_PARENT_PID" 2>/dev/null; do sleep 2; done
+    kill -TERM 0
+  ) >/dev/null 2>&1 &
+fi
 
 # Build the production bundle the Server will host.
 cd "$WEB_DIR"
-npm run build >/dev/null
+if [ -z "${E2E_SKIP_BUILD:-}" ]; then
+  npm run build >/dev/null
+fi
 
 cat > "$CONFIG" <<EOF
 state_dir = "$STATE_DIR"
@@ -59,9 +89,9 @@ cp "$ROOT/crates/platpulse-server/test-data/GeoIP2-Country-Test.mmdb" "$STATE_DI
 chmod 600 "$STATE_DIR/GeoIP2-Country-Test.mmdb"
 
 cd "$ROOT"
-cargo run -q -p platpulse-server -- init --config "$CONFIG" >/dev/null
-printf '%s\n' "$PASSWORD" | cargo run -q -p platpulse-server -- owner create --config "$CONFIG" --username admin >/dev/null
-printf '%s\n' "$VIEWER_PASSWORD" | cargo run -q -p platpulse-server -- viewer create --config "$CONFIG" --username viewer >/dev/null
+"${SERVER[@]}" init --config "$CONFIG" >/dev/null
+printf '%s\n' "$PASSWORD" | "${SERVER[@]}" owner create --config "$CONFIG" --username admin >/dev/null
+printf '%s\n' "$VIEWER_PASSWORD" | "${SERVER[@]}" viewer create --config "$CONFIG" --username viewer >/dev/null
 
 # Seed independent Nodes for the local Playwright release-candidate run.
 # Every Active Node appears in the Public Projection; Node B retains a legacy
@@ -763,7 +793,8 @@ PY
 # length (it passed 80 minutes on CI once the routes became lazy, #275) and a
 # refresher that stops before the last project leaves desktop-1440 reading
 # aged-out chart samples. It stays in this script's process group, so
-# Playwright's teardown kills it with the Server, and it exits on its own once
+# the worker's teardown (or Playwright's, for the attached Server) kills it
+# with the Server, and it exits on its own once
 # the Server process (this shell's PID after the final `exec`) or the
 # temporary state directory is gone.
 python3 - "$STATE_DIR/platpulse.db" "$WEB_DIR/e2e" "$$" > /dev/null 2>&1 <<'REFRESH' &
@@ -963,12 +994,6 @@ print("seeded restore artifacts")
 PY
 
 cd "$ROOT"
-# The e2e suite needs the backup directory to exercise failure
-# preservation (tampering with an artifact must fail verification without
-# deleting the artifact). The marker lives in /tmp because Playwright
-# clears its test-results output directory after the server starts.
-printf '%s\n' "$BACKUP_DIR" > /tmp/platpulse-e2e-backup-dir
-
 # The seeded "fresh" fixtures (Agent 0011 liveness, Node A observations)
 # decay against the Server's 120s liveness/freshness windows while the
 # suite runs for 5+ minutes; a background refresher keeps only the
@@ -1056,4 +1081,4 @@ while True:
     time.sleep(30)
 PY
 
-exec cargo run -q -p platpulse-server -- serve --config "$CONFIG"
+exec "${SERVER[@]}" serve --config "$CONFIG"

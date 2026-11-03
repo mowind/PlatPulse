@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Response } from "@playwright/test";
+import { expect, test, type Page, type Response } from "./fixtures";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 

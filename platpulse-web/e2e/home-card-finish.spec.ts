@@ -1,4 +1,4 @@
-import { expect, test, type Locator } from '@playwright/test'
+import { expect, test, type Locator } from './fixtures'
 import type { PublicNetwork, PublicValidatorInsight } from '../src/api/generated'
 import { closeHomeSurface, expectNoHorizontalOverflow, loginAs, openHomeSort, waitForAnimationsToSettle } from './helpers'
 
