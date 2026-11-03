@@ -366,16 +366,19 @@ async function expectQuietMap(page: Page) {
     // The corner figure now sits near the top of the phone page, so a prior
     // interaction further down can leave it outside the viewport.
     await counters.scrollIntoViewIfNeeded()
-    const counterBox = (await counters.boundingBox())!
     const pointerEvents = await counters.evaluate(element => getComputedStyle(element).pointerEvents)
     const desktop = page.viewportSize()!.width >= 768
     expect(pointerEvents).toBe(desktop ? 'auto' : 'none')
     await expect(counters).toHaveAttribute('aria-label', /Peer records in scope/)
     await expect(counters).toHaveAttribute('title', /not unique Peers or Node locations/)
-    const probe = await page.evaluate(({ x, y }) => {
-      const element = document.elementFromPoint(x, y)
+    // Measure the chip and hit-test its centre in one frame: a separate
+    // boundingBox() round trip can land before a late layout shift (a startup
+    // notice leaving above Home), and the stale centre then hits the map.
+    const probe = await counters.evaluate(chip => {
+      const box = chip.getBoundingClientRect()
+      const element = document.elementFromPoint(Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2))
       return element ? (element.closest('[data-slot="geo-counters"]') ? 'counter' : 'map') : 'none'
-    }, { x: Math.round(counterBox.x + counterBox.width / 2), y: Math.round(counterBox.y + counterBox.height / 2) })
+    })
     expect(probe).toBe(desktop ? 'counter' : 'map')
     for (const figure of await counters.locator('[data-slot="geo-counter"]').all()) {
       await expect(figure.locator('[data-slot="geo-counter-dot"]')).toHaveCount(1)
