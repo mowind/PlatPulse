@@ -2,7 +2,7 @@ import { test, expect, type Page, type Route } from '@playwright/test'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expectNoHorizontalOverflow, loginAs } from './helpers'
-import { findRepoRoot } from './repo-root'
+import { evidenceDir } from './evidence'
 
 // Admin Node / Network editor state round against the seeded local e2e
 // Server: the read view follows the Server, Cancel discards a round, a
@@ -20,7 +20,7 @@ import { findRepoRoot } from './repo-root'
 const NODE_A = '0195f2a1-0014-4014-8014-000000000014'
 const NETWORK = 'platon-e2e'
 const evidence = Boolean(process.env.ADMIN_EDITORS_EVIDENCE)
-const OUT = join(findRepoRoot(), 'docs/visual-migration/emerald/admin-editors')
+const OUT = evidenceDir('admin-editors')
 
 
 /** A write that answers only when released, and then fails. */

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { evidenceDir } from './evidence'
 import { loginAs } from './helpers'
 
 /**
@@ -11,7 +12,8 @@ import { loginAs } from './helpers'
  *
  * Run explicitly, once a build is being served:
  *   EMERALD_EVIDENCE=1 npx playwright test e2e/visual-evidence.spec.ts
- * Output: docs/visual-migration/emerald/screenshots/<project>/<page>.png
+ * Output: platpulse-web/evidence/screenshots/<project>/<page>.png (ignored; attach
+ * to the pull request or upload as an artifact)
  */
 const enabled = Boolean(process.env.EMERALD_EVIDENCE)
 test.skip(!enabled, 'set EMERALD_EVIDENCE=1 to capture visual evidence')
@@ -73,7 +75,7 @@ async function waitForChartsSettled(page: import('@playwright/test').Page) {
   await expect(page.getByRole('group', { name: 'Node key summary' })).toBeVisible()
 }
 
-const OUTPUT = '../docs/visual-migration/emerald/screenshots'
+const OUTPUT = evidenceDir('screenshots')
 
 /**
  * The acceptance surfaces, not every page: six captures per viewport keep the

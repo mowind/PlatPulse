@@ -2,7 +2,7 @@
 import { chromium, expect } from '@playwright/test'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 const phase = process.argv[2] || 'after'
-const dir = '../docs/visual-migration/desktop-home'
+const dir = 'evidence/desktop-home'
 mkdirSync(dir, { recursive: true })
 const source = JSON.parse(readFileSync('../docs/visual-migration/mobile-map/networks.json', 'utf8'))
 const browser = await chromium.launch()

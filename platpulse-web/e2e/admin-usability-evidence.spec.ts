@@ -1,8 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { mkdir } from 'node:fs/promises'
-import { join } from 'node:path'
 import { loginAs } from './helpers'
-import { findRepoRoot } from './repo-root'
+import { evidenceDir } from './evidence'
 
 // Opt-in matched captures for the Admin usability round (marker tones, Nodes
 // sort/empty/filter chips, Audit paging and deep-link feedback, Overview setup
@@ -13,7 +12,7 @@ import { findRepoRoot } from './repo-root'
 const phase = process.env.ADMIN_USABILITY_EVIDENCE
 test.skip(!phase, 'Set ADMIN_USABILITY_EVIDENCE=before or after for matched captures')
 
-const ROOT = join(findRepoRoot(), 'docs/visual-migration/emerald/admin-usability')
+const ROOT = evidenceDir('admin-usability')
 const NODE_B = '0195f2a1-0015-4015-8015-000000000015'
 const AGENT = '0195f2a1-0011-4011-8011-000000000011'
 

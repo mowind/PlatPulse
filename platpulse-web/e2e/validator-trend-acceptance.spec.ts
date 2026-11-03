@@ -18,14 +18,13 @@
  * by UTC midnight would fail this spec instead of passing on a zone whose offset
  * happens to be zero.
  *
- * The viewport matrix also captures the panel as screenshot evidence under
- * docs/visual-migration/emerald/validator-trend-219 (ADR 0002: evidence at the
+ * The viewport matrix also captures the panel as screenshot evidence in the
+ * test's output directory, which CI uploads with a failed run (ADR 0002: evidence at the
  * fixed viewport matrix, never a gate — no baseline is recorded, no screenshot
  * is compared, and the assertions above and below are what fail this spec).
  */
 
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { mkdir } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 
 import type { AdminValidatorTrendResponse } from '../src/api/generated'
@@ -77,8 +76,6 @@ const LONG_DAYS = 90
 const LONG_LIMIT = 31
 const DAY_MS = 86_400_000
 const TREND_QUERY = '/trend?'
-/** Where the matrix's evidence captures land, relative to platpulse-web. */
-const EVIDENCE = '../docs/visual-migration/emerald/validator-trend-219'
 
 // ---------------------------------------------------------- configured calendar
 
@@ -841,9 +838,8 @@ test('the trend panel holds its geometry and disclosure at every viewport and th
           await expectNoHorizontalOverflow(page)
           // Evidence, taken before the narrow passes change the window so every
           // capture shows the same default preset. Nothing compares these files.
-          await mkdir(EVIDENCE, { recursive: true })
           await page.screenshot({
-            path: EVIDENCE + '/' + viewport.width + 'x' + viewport.height + '-' + colorScheme + '.png',
+            path: testInfo.outputPath(viewport.width + 'x' + viewport.height + '-' + colorScheme + '.png'),
             fullPage: true,
             animations: 'disabled',
           })

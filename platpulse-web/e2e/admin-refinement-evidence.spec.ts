@@ -1,8 +1,7 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import { mkdir, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
 import { expectNoHorizontalOverflow, loginAs } from './helpers'
-import { findRepoRoot } from './repo-root'
+import { evidenceDir } from './evidence'
 
 // Opt-in evidence for the Admin follow-up round, not screenshot baselines.
 // Run once per revision with ADMIN_REFINEMENT_EVIDENCE=before|after against the
@@ -14,7 +13,7 @@ import { findRepoRoot } from './repo-root'
 const phase = process.env.ADMIN_REFINEMENT_EVIDENCE
 test.skip(!phase, 'Set ADMIN_REFINEMENT_EVIDENCE=before or after for matched captures')
 
-const ROOT = join(findRepoRoot(), 'docs/visual-migration/emerald/admin-followup')
+const ROOT = evidenceDir('admin-followup')
 const SEEDED_AGENT = '0195f2a1-0011-4011-8011-000000000011'
 const SEEDED_GENESIS = '0x' + '1'.repeat(64)
 const PAGES = [

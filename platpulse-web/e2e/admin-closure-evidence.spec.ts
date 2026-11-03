@@ -1,8 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { mkdir } from 'node:fs/promises'
-import { join } from 'node:path'
 import { loginAs } from './helpers'
-import { findRepoRoot } from './repo-root'
+import { evidenceDir } from './evidence'
 
 // Opt-in matched captures for the Admin interaction closure round: the Node
 // detail header's context links, the Back to results / unavailable return
@@ -14,7 +13,7 @@ import { findRepoRoot } from './repo-root'
 const phase = process.env.ADMIN_CLOSURE_EVIDENCE
 test.skip(!phase, 'Set ADMIN_CLOSURE_EVIDENCE=before or after for matched captures')
 
-const ROOT = join(findRepoRoot(), 'docs/visual-migration/emerald/admin-closure')
+const ROOT = evidenceDir('admin-closure')
 const NODE_B = '0195f2a1-0015-4015-8015-000000000015'
 const LONG_NETWORK = 'PlatON Long Regional Network Display Name For Wrapping Checks'
 

@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import { loginAs, expectNoHorizontalOverflow, expectVisibleInteractiveTargets, openHomeFilters, closeHomeSurface, waitForHomeStarted } from './helpers'
+import { evidenceDir } from './evidence'
 
 async function fixture(page: Page, scenario = 'normal') {
   await page.route('**/api/public/v1/networks*', async route => {
@@ -103,7 +104,7 @@ test('refinement scenarios and measured evidence', async ({ page }, info) => {
     measurements[scenario] = geometry
     await closeHomeSurface(page)
     if (process.env.REFINEMENT_EVIDENCE) {
-      const dir = `../docs/visual-migration/emerald/refinement/${process.env.REFINEMENT_EVIDENCE}/${info.project.name}`
+      const dir = evidenceDir('refinement', process.env.REFINEMENT_EVIDENCE, info.project.name)
       mkdirSync(dir, { recursive: true })
       await page.screenshot({ path: `${dir}/${scenario}.png`, fullPage: true })
       if (scenario === 'normal') {
@@ -170,7 +171,7 @@ test('shared chrome keeps business layout, bundled outline icons and background'
   await expect(page.getByRole('heading', { name: 'Sign in to PlatPulse' })).toBeVisible()
   const capture = async (name: string) => {
     if (!process.env.REFINEMENT_EVIDENCE) return
-    const dir = `../docs/visual-migration/emerald/refinement/${process.env.REFINEMENT_EVIDENCE}/${info.project.name}`
+    const dir = evidenceDir('refinement', process.env.REFINEMENT_EVIDENCE, info.project.name)
     mkdirSync(dir, { recursive: true })
     for (const dark of [false, true]) {
       await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark)

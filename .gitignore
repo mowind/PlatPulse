@@ -32,6 +32,8 @@ platpulse-web/dist.staging/
 # Playwright (platpulse-web)
 platpulse-web/test-results/
 platpulse-web/playwright-report/
+# Opt-in evidence captures (platpulse-web/e2e/evidence.ts); attach them to the PR
+platpulse-web/evidence/
 
 # Local design references (not deliverables)
 /emerald.jpg

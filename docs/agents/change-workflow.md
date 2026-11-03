@@ -24,4 +24,4 @@ When the flaky test is unrelated to your change, open its issue first; then re-r
 
 ## Screenshots
 
-Acceptance screenshots go into the pull request description or a GitHub Actions artifact. `docs/visual-migration/` keeps its existing images frozen: `scripts/check-no-new-screenshots.py` fails CI on any added or rewritten image there.
+Acceptance screenshots go into the pull request description or a GitHub Actions artifact. `docs/visual-migration/` keeps its existing images frozen: `scripts/check-no-new-screenshots.py` fails CI on any added or rewritten image there. The opt-in evidence specs and scripts (`*_EVIDENCE=…`, `scripts/*-evidence.mjs`) write to the ignored `platpulse-web/evidence/` directory; attach what a reviewer needs from there.
