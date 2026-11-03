@@ -16,7 +16,8 @@ selected here.
   docs/deployment.md, LICENSE           release-package, rc-harness (packaged)
   docs/visual-migration/**/*.json       e2e (frozen fixtures read by specs)
   .github/pull_request_template.md,
-  .github/ISSUE_TEMPLATE/**             nothing
+  .github/ISSUE_TEMPLATE/**,
+  .agents/skills/**/*.md                nothing
   docs/**/*.md, top-level *.md          nothing
   crates/platpulse-agent/**             rust, rust-postgres, release-package, rc-harness
   crates/platpulse-server/**,
@@ -48,7 +49,7 @@ RULES: tuple[tuple[tuple[str, ...], frozenset[str]], ...] = (
     (("docs/openapi/*",), frozenset({"rust", "web"})),
     (("docs/deployment.md", "LICENSE"), frozenset({"release_package", "rc_harness"})),
     (("docs/visual-migration/*.json",), frozenset({"e2e"})),
-    ((".github/pull_request_template.md", ".github/ISSUE_TEMPLATE/*"), frozenset()),
+    ((".github/pull_request_template.md", ".github/ISSUE_TEMPLATE/*", ".agents/skills/*.md"), frozenset()),
     (("docs/*.md",), frozenset()),
     (("crates/platpulse-agent/*",), frozenset({"rust", "rust_postgres", "release_package", "rc_harness"})),
     (
@@ -87,6 +88,8 @@ def self_test() -> int:
         (["docs/adr/0014-x.md"], frozenset()),
         (["README.md", "AGENTS.md", "docs/research/archive/a.md"], frozenset()),
         ([".github/pull_request_template.md"], frozenset()),
+        ([".agents/skills/platpulse-schema-change/SKILL.md"], frozenset()),
+        ([".agents/skills/some-skill/helper.py"], ALL),
         (["docs/openapi/openapi.json"], frozenset({"rust", "web"})),
         (["docs/deployment.md"], frozenset({"release_package", "rc_harness"})),
         (["docs/visual-migration/mobile-map/networks.json"], frozenset({"e2e"})),
