@@ -12,6 +12,7 @@ import {
   loginToDisposableServer,
 } from './admin-flow'
 import {
+  canonicalClock,
   expectFocusedElementHasVisibleFocus,
   expectNoHorizontalOverflow,
   expectVisibleInteractiveTargets,
@@ -1305,8 +1306,9 @@ test.describe('Shared Host resource history (issue #215)', () => {
         { seconds: 10 * MINUTE_SECONDS, value: 14 },
         { seconds: 5 * MINUTE_SECONDS, value: 15 },
       ]
+      const at = canonicalClock()
       for (const observation of observations) {
-        await report(canonicalAgo(observation.seconds), {
+        await report(at(observation.seconds), {
           cpuPercent: observation.value,
         })
       }
@@ -1433,9 +1435,10 @@ test.describe('Shared Host resource history (issue #215)', () => {
       // delivery below must name the very same instant, and recomputing it
       // across a second boundary would describe a new observation instead.
       let lastObservedAt = ''
+      const at = canonicalClock()
       for (const reading of readings) {
         sequence += 1
-        lastObservedAt = canonicalAgo(reading.age)
+        lastObservedAt = at(reading.age)
         await server.submitReport(
           agent.agentId,
           agent.credential,
@@ -1456,7 +1459,7 @@ test.describe('Shared Host resource history (issue #215)', () => {
       await server.submitReport(
         agent.agentId,
         agent.credential,
-        hostProbeReport(canonicalAgo(5 * MINUTE_SECONDS), sequence, {
+        hostProbeReport(at(5 * MINUTE_SECONDS), sequence, {
           value: 23,
           observedAt: lastObservedAt,
           ok: false,
