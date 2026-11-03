@@ -14,7 +14,7 @@ Closes #
 ## Breaking change
 
 <!-- Required: answer "No", or "Yes" and list every externally visible effect:
-     configuration keys, CLI, data format / schema, Agent–Server version compatibility.
-     These notes feed the next release's upgrade guide. -->
+     configuration keys, CLI, data format / schema, Agent–Server version compatibility, HTTP API.
+     "Yes" also adds the operator action to docs/upgrade-guide/v<next>/README.md in this pull request. -->
 
 No
