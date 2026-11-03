@@ -40,3 +40,4 @@ platpulse-web/playwright-report/
 
 # Python bytecode (scripts/)
 __pycache__/
+/test-results/

@@ -6,7 +6,7 @@ PlatPulse is a Server–Agent–WebUI monitoring suite for PlatON nodes, develop
 
 - Design authority: `docs/design/platpulse.md`
 - Domain terminology: root `CONTEXT.md` (use its vocabulary, avoid synonyms it explicitly bans)
-- Status: greenfield, pre-implementation. Do not inherit ChainDash architecture, TUI, endpoint failover, or remote-control features.
+- Status: v0.2.0 released; 0.3.0 adds the PostgreSQL Storage Backend (ADR 0013). Keep ChainDash architecture, TUI, endpoint failover, and remote-control features out of PlatPulse.
 
 ## Tech stack
 
@@ -49,13 +49,19 @@ python3 scripts/check-design-refs.py
 # Logging discipline: no bare eprintln!/dbg!, stdout only in main.rs/cli.rs, log fields from the vocabulary (docs/design/logging.md)
 python3 scripts/check-logging.py
 
+# Screenshots under docs/visual-migration/ are frozen: no added or rewritten images
+python3 scripts/check-no-new-screenshots.py --base origin/main
+
+# CI lanes a change selects (CI runs only those on a pull request)
+git diff --name-only origin/main | python3 scripts/ci-lanes.py
+
 # Web (platpulse-web)
 npm run lint && npm run typecheck && npm test && npm run build
 
 # OpenAPI: regenerate platpulse-web/src/api/generated/ and verify no diff
 ```
 
-CI also runs Playwright across fixed projects: `phone-360-touch` (360×800), `phone-390-touch` (390×844), `tablet-768-touch` (768×1024), `desktop-1280` (1280×800), `desktop-1440` (1440×900). The 1440 project exists for the Emerald visual-migration acceptance matrix (docs/adr/0002).
+CI also runs Playwright, one job per project (desktop-1280 split in two), across fixed projects: `phone-360-touch` (360×800), `phone-390-touch` (390×844), `tablet-768-touch` (768×1024), `desktop-1280` (1280×800), `desktop-1440` (1440×900). The 1440 project exists for the Emerald visual-migration acceptance matrix (docs/adr/0002).
 
 ## Engineering conventions
 
@@ -75,6 +81,10 @@ CI also runs Playwright across fixed projects: `phone-360-touch` (360×800), `ph
 - **No remote control** — the Server never pushes RPC endpoints, commands, or upgrades to Agents.
 
 ## Agent skills
+
+### Change workflow
+
+Every change, including docs, lands on `main` through a squash-merged pull request whose required check is `all-checks-passed`; the work is done when the pull request is merged. Follow `docs/agents/change-workflow.md` when branching, opening a pull request, watching CI, or handling a flaky test.
 
 ### Issue tracker
 
