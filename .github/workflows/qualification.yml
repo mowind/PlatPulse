@@ -64,3 +64,21 @@ jobs:
             target/release-candidate-runs/
             target/recovery-rehearsal/
             platpulse-web/test-results/
+
+  # A failed scheduled or manual qualification opens (or updates) the ci-red
+  # issue instead of waiting for someone to notice the red run (issue #283).
+  report-failure:
+    name: Report qualification failure
+    needs: qualify
+    if: failure()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Open or update the ci-red issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: scripts/report-ci-red.sh "${{ github.workflow }}"

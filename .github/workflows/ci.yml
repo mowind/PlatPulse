@@ -5,12 +5,58 @@ on:
     branches: [main]
   pull_request:
 
+# Every change reaches main through a pull request whose only required check
+# is `all-checks-passed` (issue #283). A newer push to the same pull request
+# cancels its older run; runs on main are never cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  design-references:
-    name: Design section references
+  # Picks the lanes a pull request needs from the paths it changes
+  # (scripts/ci-lanes.py documents the rules). A push to main runs every lane.
+  # Path filtering happens here rather than in `on.pull_request.paths`: a
+  # workflow skipped that way never reports its required check.
+  changes:
+    name: Select lanes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.lanes.outputs.rust }}
+      rust_postgres: ${{ steps.lanes.outputs.rust_postgres }}
+      web: ${{ steps.lanes.outputs.web }}
+      e2e: ${{ steps.lanes.outputs.e2e }}
+      release_package: ${{ steps.lanes.outputs.release_package }}
+      rc_harness: ${{ steps.lanes.outputs.rc_harness }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # A pull_request run checks out the merge commit; its first parent is
+          # the base branch tip, so HEAD^1..HEAD is exactly the change.
+          fetch-depth: 2
+
+      - name: Lane selector self-test
+        run: python3 scripts/ci-lanes.py --self-test
+
+      - name: Select lanes
+        id: lanes
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            lanes="$(git diff --name-only HEAD^1 HEAD | python3 scripts/ci-lanes.py)"
+          else
+            lanes="$(python3 scripts/ci-lanes.py --all)"
+          fi
+          printf '%s\n' "$lanes" >> "$GITHUB_OUTPUT"
+          { echo '### Selected lanes'; echo; echo '```'; printf '%s\n' "$lanes"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$lanes"
+
+  repo-checks:
+    name: Repository checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       # Code, tests and Web comments cite docs/design/platpulse.md as
       # "design §X.Y" and docs/design/webui.md as "webui.md §X.Y"; every
@@ -27,8 +73,20 @@ jobs:
       - name: Check logging discipline
         run: python3 scripts/check-logging.py
 
+      # docs/visual-migration/ keeps its existing screenshots but must stop
+      # growing; new evidence goes to the PR or an Actions artifact (#283).
+      # Squash merges make every push to main one commit, so HEAD^1 is the
+      # right base for both events.
+      - name: Screenshot check self-test
+        run: python3 scripts/check-no-new-screenshots.py --self-test
+
+      - name: Check for new screenshots
+        run: python3 scripts/check-no-new-screenshots.py --base HEAD^1
+
   rust:
     name: Rust workspace
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,6 +126,8 @@ jobs:
   # cloned from one migrated template (crates/platpulse-server/src/test_support.rs).
   rust-postgres:
     name: Rust workspace (PostgreSQL ${{ matrix.postgres }})
+    needs: changes
+    if: needs.changes.outputs.rust_postgres == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -111,6 +171,8 @@ jobs:
 
   web:
     name: WebUI
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -147,6 +209,8 @@ jobs:
 
   release-package:
     name: Release package
+    needs: changes
+    if: needs.changes.outputs.release_package == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -177,9 +241,18 @@ jobs:
           scripts/validate-release.sh --archive target/release-package/release-set/platpulse-agent-*.tar.gz --kind agent
           (cd target/release-package/release-set && sha256sum -c SHA256SUMS)
 
+  # The suite runs every fixed viewport on every pull request, split into
+  # shards. Each shard boots its own Server, so the single-worker rule in
+  # playwright.config.ts still holds inside a shard.
   web-e2e:
-    name: WebUI e2e (fixed viewports)
+    name: WebUI e2e (shard ${{ matrix.shard }}/5)
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
     defaults:
       run:
         working-directory: platpulse-web
@@ -190,6 +263,11 @@ jobs:
         # The e2e suite boots a real dev-mode platpulse-server
         # (e2e/start-server.sh), so the Server binary must build here.
         run: rustup toolchain install stable --profile minimal
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: web-e2e
 
       - uses: actions/setup-node@v4
         with:
@@ -204,18 +282,20 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run Playwright projects
-        run: npm run e2e
+        run: npm run e2e -- --shard=${{ matrix.shard }}/5
 
       - name: Upload Playwright failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-test-results
+          name: playwright-test-results-shard-${{ matrix.shard }}
           path: platpulse-web/test-results/
           retention-days: 7
 
   release-candidate-harness:
     name: Release-candidate harness
+    needs: changes
+    if: needs.changes.outputs.rc_harness == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -240,7 +320,14 @@ jobs:
           scripts/release-candidate-harness.sh
           status=$?
           if [ "$status" -eq 2 ]; then
-            echo "The release-candidate harness is unavailable in this environment; checks are distinguished as UNAVAILABLE."
+            # UNAVAILABLE is not PASS: it does not block the merge, but the
+            # run says so in its summary and annotations instead of looking green.
+            echo "::warning title=Release-candidate harness UNAVAILABLE::The harness could not run in this environment; its checks are UNAVAILABLE, not passed."
+            {
+              echo '### Release-candidate harness: UNAVAILABLE'
+              echo
+              echo 'The harness exited with status 2: this environment cannot run it. Its checks are UNAVAILABLE, not passed.'
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           exit "$status"
@@ -255,3 +342,54 @@ jobs:
             target/release-candidate-recovery/
           if-no-files-found: ignore
           retention-days: 7
+
+  # The single required check for branch protection. A lane the selector
+  # skipped counts as passed; a failed or cancelled lane fails this job.
+  all-checks-passed:
+    name: all-checks-passed
+    if: always()
+    needs:
+      - changes
+      - repo-checks
+      - rust
+      - rust-postgres
+      - web
+      - release-package
+      - web-e2e
+      - release-candidate-harness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every lane to pass or be deselected
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          if [ "$(printf '%s' "$NEEDS" | jq -r '.changes.result')" != success ]; then
+            echo '::error::The lane selector did not succeed, so skipped lanes prove nothing.'
+            exit 1
+          fi
+          bad="$(printf '%s' "$NEEDS" | jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")')"
+          if [ -n "$bad" ]; then
+            echo "::error::Lanes failed or were cancelled: $bad"
+            exit 1
+          fi
+
+  # A failure on main is a post-merge regression: open (or update) the
+  # ci-red issue so it is handled instead of left red.
+  report-main-failure:
+    name: Report main failure
+    needs: all-checks-passed
+    if: always() && github.event_name == 'push' && needs.all-checks-passed.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Open or update the ci-red issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: scripts/report-ci-red.sh "${{ github.workflow }}"
