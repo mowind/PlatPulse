@@ -638,7 +638,7 @@ async fn insert_human_user(
 ) -> Result<String, IdentityError> {
     let user_id = uuid::Uuid::new_v4().to_string();
     let now = format_rfc3339(now_utc());
-    let mut transaction = db.pool().begin().await?;
+    let mut transaction = crate::database::begin(db.pool()).await?;
 
     let insert = sqlx::query(
         "INSERT INTO users (user_id, username, role, password_hash, disabled_at, created_at, updated_at) VALUES ($1, $2, $3, $4, NULL, $5, $6)",
@@ -939,7 +939,7 @@ fn session_expiry(expires_at: &str) -> OffsetDateTime {
 /// Expiry is lazy: the first request that presents an otherwise valid expired
 /// token performs the durable transition; later requests observe the revoke.
 async fn expire_session(db: &ServerDatabase, session_id: &str) -> Result<(), sqlx::Error> {
-    let mut transaction = db.pool().begin().await?;
+    let mut transaction = crate::database::begin(db.pool()).await?;
     let result = sqlx::query(
         "UPDATE sessions SET revoked_at = $1 WHERE session_id = $2 AND revoked_at IS NULL",
     )
@@ -995,7 +995,9 @@ pub async fn login(
             .map(|existing| existing.session_id),
         None => None,
     };
-    let mut transaction = db.pool().begin().await.map_err(LoginError::Database)?;
+    let mut transaction = crate::database::begin(db.pool())
+        .await
+        .map_err(LoginError::Database)?;
 
     if let Some(session_id) = presented_session_id {
         sqlx::query(
@@ -1039,7 +1041,7 @@ pub async fn login(
 
 /// Revoke one session by id; the owning user stays intact.
 pub async fn revoke_session(db: &ServerDatabase, session_id: &str) -> Result<bool, sqlx::Error> {
-    let mut transaction = db.pool().begin().await?;
+    let mut transaction = crate::database::begin(db.pool()).await?;
     let result = sqlx::query(
         "UPDATE sessions SET revoked_at = $1 WHERE session_id = $2 AND revoked_at IS NULL",
     )

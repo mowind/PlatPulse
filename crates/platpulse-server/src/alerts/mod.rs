@@ -1912,7 +1912,7 @@ pub async fn evaluate_validator(
     channels: &crate::config::NotificationChannels,
     now: OffsetDateTime,
 ) -> Result<usize, AlertError> {
-    let mut tx = db.pool().begin().await?;
+    let mut tx = crate::database::begin(db.pool()).await?;
     let changes = evaluate_validator_in_transaction(&mut tx, validator_id, channels, now).await?;
     tx.commit().await?;
     Ok(changes)
@@ -2027,7 +2027,7 @@ pub async fn sweep(state: &crate::http::AppState) -> Result<usize, AlertError> {
         return Ok(0);
     };
     let now = now_utc();
-    let mut tx = state.db().pool().begin().await?;
+    let mut tx = crate::database::begin(state.db().pool()).await?;
     let mut changes = 0usize;
 
     // A removed Agent (deleted_at) is no longer a subject: the deletion

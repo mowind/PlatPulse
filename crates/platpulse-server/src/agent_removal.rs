@@ -277,7 +277,7 @@ pub async fn execute(
     confirmed_node_ids: &[String],
     actor_user_id: &str,
 ) -> Result<AgentRemovalOutcome, sqlx::Error> {
-    let mut transaction = pool.begin().await?;
+    let mut transaction = crate::database::begin(pool).await?;
     let Some(impact) = measure(&mut transaction, agent_id).await? else {
         transaction.rollback().await?;
         return Ok(AgentRemovalOutcome::NotFound);

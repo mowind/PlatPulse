@@ -137,7 +137,7 @@ pub async fn create_operation(
     event_kind: &str,
 ) -> Result<(String, i64), OperationError> {
     let (sanitized_params, params_text) = prepare_params(params)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::database::begin(pool).await?;
     let ids = insert_operation(
         &mut tx,
         kind,
@@ -171,7 +171,7 @@ pub async fn create_operation_once(
 ) -> Result<QueueOutcome, OperationError> {
     let now = crate::auth::now_utc();
     let (sanitized_params, params_text) = prepare_params(params)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::database::begin(pool).await?;
 
     // Whatever the browser believes about its own last attempt, a recorded
     // identity is the answer: the same command replays, a reused identity for a
@@ -692,7 +692,7 @@ pub async fn finalize(
         .as_ref()
         .map(serde_json::to_string)
         .transpose()?;
-    let mut tx = state.db().pool().begin().await?;
+    let mut tx = crate::database::begin(state.db().pool()).await?;
     sqlx::query(
         "UPDATE operations SET status = $1, result_json = $2, finished_at = $3 WHERE operation_id = $4",
     )

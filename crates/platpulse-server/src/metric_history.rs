@@ -3400,7 +3400,7 @@ mod tests {
     }
 
     async fn record(pool: &sqlx::AnyPool, observed_at: &str, received_at: &str, value: f64) {
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = crate::database::begin(pool).await.unwrap();
         record_aggregates(&mut tx, &tier_scope(), observed_at, received_at, value)
             .await
             .unwrap();
@@ -3408,7 +3408,7 @@ mod tests {
     }
 
     async fn correct(pool: &sqlx::AnyPool, observed_at: &str, received_at: &str, value: f64) {
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = crate::database::begin(pool).await.unwrap();
         recompute_aggregates(&mut tx, &tier_scope(), observed_at, received_at, value)
             .await
             .unwrap();
@@ -4429,7 +4429,7 @@ mod tests {
         received_at: &str,
         value: f64,
     ) {
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = crate::database::begin(pool).await.unwrap();
         record_delivery(
             &mut tx,
             &host_scope(mount_path),
@@ -4458,7 +4458,7 @@ mod tests {
         received_at: &str,
         value: f64,
     ) {
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = crate::database::begin(pool).await.unwrap();
         recompute_aggregates(
             &mut tx,
             &host_scope(mount_path),
@@ -4739,7 +4739,7 @@ mod tests {
         value: f64,
     ) {
         let scope = SeriesScope::host(COVERAGE_AGENT, metric, mount_path);
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = crate::database::begin(pool).await.unwrap();
         record_delivery(
             &mut tx,
             &scope,
@@ -5116,7 +5116,7 @@ mod tests {
         // A whole new mount contract is in flight inside one transaction: it is
         // not the ledger yet, and an answer that opened a snapshot of its own
         // would not see a single row of it.
-        let mut snapshot = pool.begin().await.unwrap();
+        let mut snapshot = crate::database::begin(&pool).await.unwrap();
         for metric in [HOST_MOUNT_USED_METRIC, HOST_MOUNT_CAPACITY_METRIC] {
             for index in 0..=MOUNT_COVERAGE_LIMIT {
                 let mount_path = format!("/bulk-{index:03}");
@@ -5149,7 +5149,7 @@ mod tests {
         snapshot.rollback().await.unwrap();
 
         // The batch never landed, so it is not half of a later answer either.
-        let mut snapshot = pool.begin().await.unwrap();
+        let mut snapshot = crate::database::begin(&pool).await.unwrap();
         let coverage = load_mount_coverage(&mut snapshot, COVERAGE_AGENT)
             .await
             .unwrap();

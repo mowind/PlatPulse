@@ -1042,7 +1042,7 @@ mod tests {
         // Past the hard retention boundary: no longer retainable.
         insert("8.8.8.8", "2025-11-01T00:00:00Z", "2025-11-02T00:00:00Z").await;
 
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = crate::database::begin(&pool).await.unwrap();
         // One lookup resolves every distinct address the snapshot names: the
         // retained last-good result of the selected provider, and nothing else.
         let countries = countries_for_ips(

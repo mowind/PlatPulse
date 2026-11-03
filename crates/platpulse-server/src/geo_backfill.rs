@@ -306,7 +306,7 @@ pub(crate) async fn record_lookup(
         generation: config.generation,
     };
     let canonical_ip = ip.to_string();
-    let mut tx = state.db().pool().begin().await?;
+    let mut tx = crate::database::begin(state.db().pool()).await?;
     if geo::read_provider_selection(&mut *tx).await? != Some(expected) {
         let _ = tx.rollback().await;
         return Ok(false);

@@ -406,7 +406,7 @@ pub(crate) async fn update_history_window(
         )
             .into_response();
     }
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -901,7 +901,7 @@ pub(crate) async fn cancel_operation(
         return response;
     }
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -1314,7 +1314,7 @@ pub(crate) async fn update_retention_policy(
         )
             .into_response();
     }
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -4094,7 +4094,7 @@ mod tests {
         let state = state.with_capacity(capacity.clone());
 
         // One optional series, skipped twice inside the ingestion transaction.
-        let mut tx = state.db().pool().begin().await.unwrap();
+        let mut tx = crate::database::begin(state.db().pool()).await.unwrap();
         for observed_at in ["2026-08-12T00:00:00Z", "2026-08-12T00:01:00Z"] {
             crate::capacity::record_skipped_series(
                 &mut tx,

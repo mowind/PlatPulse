@@ -1,0 +1,3 @@
+disallowed-methods = [
+    { path = "sqlx_core::pool::Pool::begin", reason = "use crate::database::begin: a deferred SQLite BEGIN fails at once with SQLITE_BUSY when another connection writes before it upgrades (issue #292)" },
+]

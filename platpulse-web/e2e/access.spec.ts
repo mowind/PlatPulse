@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import {
   E2E_VIEWER_PASSWORD,
   E2E_VIEWER_USERNAME,
@@ -20,10 +20,16 @@ import {
  */
 test.describe.configure({ mode: 'serial' })
 
-const OPS_USERNAME = 'ops'
 const OPS_PASSWORD = 'platpulse-e2e-ops-2026'
-const ALICE_USERNAME = 'alice'
 const ALICE_PASSWORD = 'platpulse-e2e-alice-2026'
+
+/** A username owned by the current attempt. A retry reruns the whole serial
+ * file against the same Server, where the first attempt's users and their
+ * Sessions still exist, so each attempt creates its own users instead of
+ * colliding with `username_taken`. */
+function attemptUsername(base: string, testInfo: TestInfo): string {
+  return testInfo.retry === 0 ? base : `${base}-retry${testInfo.retry}`
+}
 
 /** Change a user's role through the real Admin API. The People page is
  * deferred beyond the MVP WebUI (issue #92); the Server capability and
@@ -91,6 +97,7 @@ test.describe('PAGE-ACCESS-SESSIONS (Human Sessions)', () => {
     // Mutates Session state; only the desktop project runs it so parallel
     // projects never lose their own admin Sessions.
     test.skip(testInfo.project.name !== 'desktop-1280', 'session revoke runs once')
+    const ALICE_USERNAME = attemptUsername('alice', testInfo)
 
     // A dedicated Owner keeps this scenario hermetic: only alice's two
     // Sessions exist, so the row-level revoke is deterministic and no
@@ -145,6 +152,7 @@ test.describe('SCN-ACCESS-ROLE-CHANGE', () => {
   ) => {
     // Depends on the desktop-only ops user and mutates roles.
     test.skip(testInfo.project.name !== 'desktop-1280', 'role change runs once')
+    const OPS_USERNAME = attemptUsername('ops', testInfo)
 
     // Create ops as a Viewer through the Admin API, then promote them:
     // the People page is deferred beyond the MVP WebUI (issue #92) while
@@ -207,19 +215,29 @@ test.describe('PAGE-ACCESS-AUDIT (Audit review)', () => {
     // query runs, so the waits assert CONTENT, not
     // counts: every rendered item must match the selected kind before the
     // next step reads the list.
+    // Events are matched by their target user, so a retried attempt asserts
+    // its own ops user and not the earlier attempt's.
+    const targeting = (username: string) =>
+      auditItems.filter({
+        has: page
+          .locator('td[data-label="Target"]')
+          .getByRole('link', { name: username, exact: true }),
+      })
+    const opsUsername = attemptUsername('ops', testInfo)
     await page.getByLabel('Event kind').selectOption('viewer_created')
     await expect(
       auditItems.filter({ hasNotText: 'viewer_created' }),
     ).toHaveCount(0, { timeout: 15_000 })
-    // The seeded Viewer plus the created ops user: exactly two creations.
-    await expect(auditItems).toHaveCount(2, { timeout: 15_000 })
+    // The seeded Viewer and the created ops user are each created once.
+    await expect(targeting(E2E_VIEWER_USERNAME)).toHaveCount(1, { timeout: 15_000 })
+    await expect(targeting(opsUsername)).toHaveCount(1, { timeout: 15_000 })
 
     // The promote/demote pair from the role-change scenario.
     await page.getByLabel('Event kind').selectOption('user_role_changed')
     await expect(
       auditItems.filter({ hasNotText: 'user_role_changed' }),
     ).toHaveCount(0, { timeout: 15_000 })
-    await expect(auditItems).toHaveCount(2, { timeout: 15_000 })
+    await expect(targeting(opsUsername)).toHaveCount(2, { timeout: 15_000 })
 
     // The row-level revoke filter returns only revoke events (other
     // suites also sign out, so the exact count is not asserted — only

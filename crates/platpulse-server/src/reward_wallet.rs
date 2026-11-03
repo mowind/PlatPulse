@@ -289,7 +289,7 @@ pub async fn record(
     at: OffsetDateTime,
 ) -> Result<bool, sqlx::Error> {
     let at = crate::auth::format_rfc3339(at);
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::database::begin(pool).await?;
     let before = load(&mut *tx).await?;
     match outcome {
         Ok(balance) => {

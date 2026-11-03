@@ -889,7 +889,7 @@ pub(crate) async fn compact_block_coverage(
     // agrees with the coverage it is derived from. Settling may record legacy
     // backfilled heights covered, so it runs before the merge that folds them
     // into their neighbours.
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::database::begin(pool).await?;
     let confirmed: Vec<(String, i64, i64)> = sqlx::query_as(CONFIRM_STALE_OPEN_GAPS_SQL)
         .bind(&now_text)
         .bind(&cutoff)
@@ -952,7 +952,7 @@ async fn merge_adjacent_intervals(
     lower: i64,
     upper: i64,
 ) -> Result<u64, sqlx::Error> {
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::database::begin(pool).await?;
     let interval_sql = "SELECT node_id, status, first_height, last_height, updated_at FROM block_coverage_intervals WHERE coverage_id = $1";
     let lower_interval: Option<CoverageInterval> = sqlx::query_as(interval_sql)
         .bind(lower)
@@ -1324,7 +1324,7 @@ pub async fn sweep(state: &AppState, gap_cursor: &mut i64) -> u64 {
 /// be kept alive by a row that predates the tier.
 pub async fn ensure_seeded(pool: &AnyPool) -> Result<(), sqlx::Error> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::database::begin(pool).await?;
     for policy in POLICY_CATALOG {
         let sql = if aggregate_grain_seconds(policy.family).is_some() {
             "INSERT INTO retention_policies (family, retention_days, min_days, max_days, supported, enabled, updated_at, updated_by) VALUES ($1, $2, $3, $4, $5, 1, $6, 'defaults') ON CONFLICT(family) DO UPDATE SET retention_days = excluded.retention_days, min_days = excluded.min_days, max_days = excluded.max_days, supported = excluded.supported WHERE retention_policies.retention_days <> excluded.retention_days OR retention_policies.min_days <> excluded.min_days OR retention_policies.max_days <> excluded.max_days OR retention_policies.supported <> excluded.supported"
@@ -1795,7 +1795,7 @@ pub async fn create_preview(
     let expires_at = crate::auth::format_rfc3339(now + time::Duration::hours(PREVIEW_TTL_HOURS));
     let preview_id = preview_id(&version, &scope_json, &created_at);
 
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::database::begin(pool).await?;
     // Only live previews matter, so expired rows are pruned in the same
     // transaction — bounded exactly like every other cleanup.
     sqlx::query("DELETE FROM retention_previews WHERE preview_id IN (SELECT preview_id FROM retention_previews WHERE expires_at <= $1 LIMIT 128)")
@@ -2198,7 +2198,7 @@ pub async fn execute_step(
     // cancellation summary reports "already released" as work that happened, so
     // a crash between the deletion and the plan write must not leave rows
     // deleted while the record still says they were never touched.
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::database::begin(pool).await?;
     let result: Result<u64, sqlx::Error> = match target.kind {
         // ADR 0009: slimming rewrites the body in place instead of deleting the
         // row, so it cannot use the declared DELETE statements.
@@ -3937,7 +3937,7 @@ mod tests {
         let expired_at = now - time::Duration::hours(25);
         let maximum_report_rows = platpulse_core::protocol::MAX_NODE_OBSERVATIONS
             * crate::metric_history::NODE_METRIC_SERIES.len();
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = crate::database::begin(pool).await.unwrap();
         sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('batch-agent', 1, $1, $2)")
             .bind(&fresh)
             .bind(&fresh)
@@ -4042,7 +4042,7 @@ mod tests {
         let expired = crate::auth::format_rfc3339(now - time::Duration::days(31));
         let maximum_report_entries = platpulse_core::protocol::MAX_NODE_OBSERVATIONS
             * crate::state_history::STATE_COMPONENTS.len();
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = crate::database::begin(pool).await.unwrap();
         sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('state-agent', 1, $1, $2)")
             .bind(&fresh)
             .bind(&fresh)
