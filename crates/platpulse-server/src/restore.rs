@@ -630,8 +630,6 @@ pub async fn apply(
         let _ = std::fs::remove_file(&temp_safety);
         return Err(error.into());
     }
-    let safety_copy = Some(safety_copy);
-
     // Atomic replacement: copy the artifact next to the database (same
     // filesystem), fsync, then rename over the database file.
     let db_dir = config
@@ -660,9 +658,7 @@ pub async fn apply(
         .ok();
         current.close().await;
         let _ = std::fs::remove_file(&temp_db);
-        if let Some(path) = safety_copy.as_ref() {
-            let _ = std::fs::remove_file(path);
-        }
+        let _ = std::fs::remove_file(&safety_copy);
         return Err(error);
     }
     if let Err(error) = check_artifact(
@@ -685,9 +681,7 @@ pub async fn apply(
         .ok();
         current.close().await;
         let _ = std::fs::remove_file(&temp_db);
-        if let Some(path) = safety_copy.as_ref() {
-            let _ = std::fs::remove_file(path);
-        }
+        let _ = std::fs::remove_file(&safety_copy);
         return Err(error);
     }
     // The pool must be fully closed before the rename so no descriptor
@@ -713,17 +707,12 @@ pub async fn apply(
             rolled_back.close().await;
         }
         let _ = std::fs::remove_file(&temp_db);
-        if let Some(path) = safety_copy.as_ref() {
-            let _ = std::fs::remove_file(path);
-        }
+        let _ = std::fs::remove_file(&safety_copy);
         return Err(error.into());
     }
     if let Err(error) = crate::file_security::secure_new_file(&config.db_path) {
-        let rollback = safety_copy
-            .as_ref()
-            .ok_or_else(|| RestoreError::domain(ERROR_IO, "restore safety copy is unavailable"))
-            .and_then(|copy| rollback_to_safety_copy(&config.db_path, copy));
-        sanitize_or_remove(safety_copy.as_ref().expect("safety copy exists")).await;
+        let rollback = rollback_to_safety_copy(&config.db_path, &safety_copy);
+        sanitize_or_remove(&safety_copy).await;
         if let Err(rollback_error) = rollback {
             tracing::error!(error = %rollback_error, "restore rollback failed");
         }
@@ -766,16 +755,14 @@ pub async fn apply(
             // safety copy back so the previous database stays
             // authoritative, then record the recoverable typed failure.
             let message = error.to_string();
-            if let Err(rollback_error) =
-                rollback_to_safety_copy(&config.db_path, safety_copy.as_ref().unwrap())
-            {
+            if let Err(rollback_error) = rollback_to_safety_copy(&config.db_path, &safety_copy) {
                 tracing::error!(
                     error = %rollback_error,
                     "restore rollback failed; manual recovery from {} is needed",
-                    safety_copy.as_ref().unwrap().display()
+                    safety_copy.display()
                 );
             }
-            sanitize_or_remove(safety_copy.as_ref().unwrap()).await;
+            sanitize_or_remove(&safety_copy).await;
             let _ = record_execution_failure(
                 config,
                 artifact_id,
@@ -801,7 +788,7 @@ pub async fn apply(
             "filename": identity.filename,
             "schemaVersion": identity.schema_version,
             "restoredAt": crate::auth::format_rfc3339(crate::auth::now_utc()),
-            "safetyCopy": safety_copy.as_ref().and_then(|path| path.file_name()).map(|name| name.to_string_lossy().into_owned()),
+            "safetyCopy": safety_copy.file_name().map(|name| name.to_string_lossy().into_owned()),
         })),
     )
     .await
@@ -817,15 +804,13 @@ pub async fn apply(
         }
     };
     restored.close().await;
-    if let Some(path) = safety_copy.as_ref() {
-        sanitize_or_remove(path).await;
-    }
+    sanitize_or_remove(&safety_copy).await;
     Ok(ApplyOutcome {
         status,
         artifact_id: artifact_id.to_owned(),
         filename: identity.filename,
         schema_version: identity.schema_version,
-        safety_copy,
+        safety_copy: Some(safety_copy),
         warnings,
         already_matching: false,
         outcome_recorded,

@@ -10,6 +10,11 @@
 //!
 //! Without the variable the tests skip, so normal CI stays deterministic.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use platpulse_agent::block::{ResolvedBlock, WebSocketBlockTransport};
 use platpulse_agent::collector::{ProbeValue, RpcAdapter};
 use platpulse_agent::rpc::AlloyRpcAdapter;

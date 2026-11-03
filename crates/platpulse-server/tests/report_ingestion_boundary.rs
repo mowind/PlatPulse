@@ -14,6 +14,11 @@
 //! Every test owns its own `TempDir` and database, so nothing is shared with
 //! the parallel unit tests.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};

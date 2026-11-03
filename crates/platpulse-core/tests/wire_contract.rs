@@ -4,6 +4,11 @@
 //! change to the wire types (field removal, enum renaming, unit changes,
 //! optionality changes, …) must surface here as a failure.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use platpulse_core::{
     AgentCapability, AgentReport, BlockSource, BootTransition, ComponentStatus, GapKind,
     InventoryDisposition, NodeCurrentDisposition, ProtocolProposer, ReceiptDisposition,

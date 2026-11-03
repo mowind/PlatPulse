@@ -11,6 +11,11 @@
 //! mid-step verification leaves the last recorded outcome intact, and a Viewer
 //! or anonymous caller can neither read nor start anything.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};

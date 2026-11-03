@@ -10,6 +10,11 @@
 //! swallow it, Node prompts are never acknowledged, liveness/health are
 //! unchanged, and the Audit Event records the accountable facts.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};

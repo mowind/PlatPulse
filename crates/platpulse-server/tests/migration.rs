@@ -7,6 +7,11 @@
 //! database in isolation and proves the first v2 Report keeps the preserved
 //! revision and completes the pending DrainedPrevious Boot linkage.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

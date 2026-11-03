@@ -17,6 +17,11 @@
 //! PLATPULSE_TEST_POSTGRES_URL; without it the test reports itself skipped
 //! instead of passing on a backend it never exercised.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};

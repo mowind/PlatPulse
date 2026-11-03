@@ -11,6 +11,11 @@
 //! incident_id) are cancelled, already-sent/handed-off facts survive, and no
 //! other subject's notification policy is touched.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use std::sync::{Arc, Mutex};
 
 use axum::Router;

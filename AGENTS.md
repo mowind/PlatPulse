@@ -34,6 +34,8 @@ platpulse-web/          # React SPA; generated API client lives in src/api/gener
 # Rust (Agent/Server)
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
+# clippy::unwrap_used is on: production code handles the None/Err (or uses expect with the invariant);
+# #[test] code may unwrap (clippy.toml), and an integration test file whose helpers unwrap allows it at the top.
 cargo test --workspace
 # Server tests pick their Storage Backend through the shared helper platpulse_server::test_support (ADR 0013).
 # SQLite remains the default (PLATPULSE_TEST_STORAGE=sqlite); PostgreSQL clones a fresh database per test

@@ -5,6 +5,11 @@
 //! it reaches the Store and refuses only because no verified preparation
 //! exists, still without leaving a partial checkpoint directory.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};

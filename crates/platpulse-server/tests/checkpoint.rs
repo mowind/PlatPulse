@@ -9,6 +9,11 @@
 //! the fact that the checkpoint preserves a sensitive receipt value verbatim
 //! where the sanitized Admin Backup rewrites it.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

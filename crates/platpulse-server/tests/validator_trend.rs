@@ -10,6 +10,11 @@
 //! the full application with build_app against a temporary SQLite database, run
 //! the real discovery pass, and read the trend back over HTTP.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};

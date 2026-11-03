@@ -1,5 +1,10 @@
 //! Agent diagnostics egress (issue #250): leveled, structured, redacted.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 

@@ -8,6 +8,11 @@
 //! does not apply on PostgreSQL instead of reporting a disabled one, and the
 //! Public Projection grows no storage field at all.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};

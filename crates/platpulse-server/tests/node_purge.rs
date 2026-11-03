@@ -9,6 +9,11 @@
 //! remain, the minimal deletion identity is persisted, and the public detail
 //! URL becomes non-leakingly unavailable.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};

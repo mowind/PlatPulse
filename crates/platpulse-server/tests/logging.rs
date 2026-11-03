@@ -4,6 +4,11 @@
 //! come out of the writer an operator's journal would receive. Nothing here
 //! looks at the formatter's internals.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
