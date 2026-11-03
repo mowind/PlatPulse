@@ -241,18 +241,27 @@ jobs:
           scripts/validate-release.sh --archive target/release-package/release-set/platpulse-agent-*.tar.gz --kind agent
           (cd target/release-package/release-set && sha256sum -c SHA256SUMS)
 
-  # The suite runs every fixed viewport on every pull request, split into
-  # shards. Each shard boots its own Server, so the single-worker rule in
-  # playwright.config.ts still holds inside a shard.
+  # The suite runs every fixed viewport on every pull request, one job per
+  # project. Playwright's --shard follows project order, so plain 5-way
+  # sharding puts one project in each shard; desktop-1280 runs the acceptance
+  # specs the other projects skip (27 min against 12-15 min), so it gets two
+  # jobs. Each job boots its own Server, so the single-worker rule in
+  # playwright.config.ts still holds inside a job.
   web-e2e:
-    name: WebUI e2e (shard ${{ matrix.shard }}/5)
+    name: WebUI e2e (${{ matrix.project }} ${{ matrix.shard }})
     needs: changes
     if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        include:
+          - { project: phone-360-touch, shard: 1/1 }
+          - { project: phone-390-touch, shard: 1/1 }
+          - { project: tablet-768-touch, shard: 1/1 }
+          - { project: desktop-1280, shard: 1/2 }
+          - { project: desktop-1280, shard: 2/2 }
+          - { project: desktop-1440, shard: 1/1 }
     defaults:
       run:
         working-directory: platpulse-web
@@ -282,13 +291,13 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run Playwright projects
-        run: npm run e2e -- --shard=${{ matrix.shard }}/5
+        run: npm run e2e -- --project=${{ matrix.project }} --shard=${{ matrix.shard }}
 
       - name: Upload Playwright failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-test-results-shard-${{ matrix.shard }}
+          name: playwright-test-results-${{ matrix.project }}-${{ strategy.job-index }}
           path: platpulse-web/test-results/
           retention-days: 7
 

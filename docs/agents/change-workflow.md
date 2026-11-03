@@ -8,7 +8,7 @@ Every change reaches `main` through a pull request. Branch protection applies to
 2. **Check locally** what the change touches, using the commands in `AGENTS.md`. CI runs the full matrix; `scripts/ci-lanes.py` shows which lanes a set of paths selects (`git diff --name-only origin/main | python3 scripts/ci-lanes.py`).
 3. **Open the pull request** with the template in `.github/pull_request_template.md`: title `type(scope,#N): summary`, body `Closes #N`, the Testing section filled with the commands and results you actually ran, and Breaking change answered.
 4. **Enable auto-merge**: `gh pr merge --auto --squash`. Squash is the only merge method; the pull request title becomes the commit on `main`.
-5. **Watch CI to the end**: `gh pr checks --watch`. On red, read the failure (`gh run view <run-id> --log-failed`, Playwright traces in the `playwright-test-results-shard-N` artifact), fix it on the same branch, push, and watch again. Repeat until the pull request is merged: `gh pr view --json state` reports `MERGED`.
+5. **Watch CI to the end**: `gh pr checks --watch`. On red, read the failure (`gh run view <run-id> --log-failed`, Playwright traces in the `playwright-test-results-<project>-<n>` artifact), fix it on the same branch, push, and watch again. Repeat until the pull request is merged: `gh pr view --json state` reports `MERGED`.
 
 For parallel work, use a separate worktree and session per issue; each one follows these steps on its own branch.
 
