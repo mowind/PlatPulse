@@ -49,6 +49,10 @@ python3 scripts/check-design-refs.py
 # Logging discipline: no bare eprintln!/dbg!, stdout only in main.rs/cli.rs, log fields from the vocabulary (docs/design/logging.md)
 python3 scripts/check-logging.py
 
+# Counts that may only go down (scripts/baselines.json): `issue #N` in crates/*/src and platpulse-web/src,
+# and `as any`/`as unknown`/`: any` in platpulse-web/src. Comments state the current contract; history goes in the PR.
+python3 scripts/check-baselines.py
+
 # Screenshots under docs/visual-migration/ are frozen: no added or rewritten images
 python3 scripts/check-no-new-screenshots.py --base origin/main
 
