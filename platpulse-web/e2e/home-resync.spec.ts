@@ -274,19 +274,21 @@ async function progressDialog(page: Page, testInfo: TestInfo, name: string) {
   await expect(dialog).toBeHidden()
 }
 
-test('minimal resync status and accessible last progress preserve Home in light and dark', async ({ page }, testInfo) => {
-  await fixture(page)
-  const viewports = [page.viewportSize()!]
-  // Reuse the approved matrix; cover extra-wide within one desktop project.
-  if (testInfo.project.name === 'desktop-1440') viewports.push({ width: 1920, height: 1080 })
-  for (const viewport of viewports) {
-    await page.setViewportSize(viewport)
-    for (const dark of [false, true]) {
-      await page.evaluate(value => document.documentElement.classList.toggle('dark', value), dark)
-      const name = 'home-resync-' + viewport.width + (dark ? '-dark' : '-light')
+// One pass opens and closes eight dialogs and waits out every open and close
+// animation, about 6 s on CI. Each theme, and the extra-wide viewport, is its own
+// test so no single test carries several passes against one 30 s budget.
+for (const theme of ['light', 'dark'] as const) {
+  for (const wide of [false, true]) {
+    test(`minimal resync status and accessible last progress preserve Home in ${theme}${wide ? ' at 1920 px' : ''}`, async ({ page }, testInfo) => {
+      // Reuse the approved matrix; cover extra-wide within one desktop project.
+      test.skip(wide && testInfo.project.name !== 'desktop-1440', 'the extra-wide viewport is covered by desktop-1440 only')
+      await fixture(page)
+      if (wide) await page.setViewportSize({ width: 1920, height: 1080 })
+      await page.evaluate(value => document.documentElement.classList.toggle('dark', value), theme === 'dark')
+      const name = 'home-resync-' + page.viewportSize()!.width + '-' + theme
       await statusAndGeometry(page, testInfo)
       await evidence(page, testInfo, name)
       await progressDialog(page, testInfo, name)
-    }
+    })
   }
-})
+}
