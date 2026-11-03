@@ -90,6 +90,10 @@ CI also runs Playwright, one job per project (desktop-1280 split in two), across
 
 Every change, including docs, lands on `main` through a squash-merged pull request whose required check is `all-checks-passed`; the work is done when the pull request is merged. Follow `docs/agents/change-workflow.md` when branching, opening a pull request, watching CI, or handling a flaky test.
 
+### Repository skills
+
+`.agents/skills/` holds the skills specific to this repository: `platpulse-pre-push-checks` picks and runs the local checks a change needs before it is pushed, and `platpulse-schema-change` is the checklist for a Server or Agent schema change (paired SQLite and PostgreSQL migrations).
+
 ### Issue tracker
 
 Issues and specs live in GitHub Issues; use the `gh` CLI. See `docs/agents/issue-tracker.md`.
