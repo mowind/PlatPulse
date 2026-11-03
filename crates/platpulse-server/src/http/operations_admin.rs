@@ -1290,7 +1290,7 @@ pub(crate) async fn update_retention_policy(
     if let Some(response) = mutation_guard(&headers, &principal, state.auth(), &request_id, true) {
         return response;
     }
-    if crate::retention::catalog_family(&family).is_none() {
+    let Some(catalog) = crate::retention::catalog_family(&family) else {
         return (
             StatusCode::NOT_FOUND,
             Json(ApiErrorBody::with_fields(
@@ -1301,7 +1301,7 @@ pub(crate) async fn update_retention_policy(
             )),
         )
             .into_response();
-    }
+    };
     if let Err(message) = crate::retention::validate_policy_days(&family, request.retention_days) {
         return (
             StatusCode::BAD_REQUEST,
@@ -1436,7 +1436,6 @@ pub(crate) async fn update_retention_policy(
             "Server database is unavailable",
         );
     };
-    let catalog = crate::retention::catalog_family(&family).unwrap();
     Json(RetentionPolicyMutationResponse {
         policy: RetentionPolicyDto {
             label: catalog.label.to_owned(),

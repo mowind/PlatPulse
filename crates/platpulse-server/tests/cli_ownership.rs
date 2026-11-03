@@ -9,6 +9,11 @@
 //! process against real temporary SQLite files in non-development
 //! configurations.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;

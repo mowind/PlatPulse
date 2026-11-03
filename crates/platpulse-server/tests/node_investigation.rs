@@ -8,6 +8,11 @@
 //! the Admin and Agent HTTP APIs, submits real Reports, and reads the
 //! investigation back through the Owner-only Admin route.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

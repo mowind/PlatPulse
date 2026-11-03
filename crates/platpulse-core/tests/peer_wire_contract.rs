@@ -1,3 +1,8 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use platpulse_core::{AgentReport, WireError};
 use serde_json::{Value, json};
 

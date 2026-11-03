@@ -9,6 +9,11 @@
 //! build_app against a temporary SQLite database, drive the real discovery
 //! pass, and read the results back over HTTP.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use async_trait::async_trait;
 use axum::Router;
 use axum::body::{Body, to_bytes};

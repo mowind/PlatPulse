@@ -21,6 +21,11 @@
 //! Every test owns its own TempDir and database, so nothing is shared with the
 //! parallel unit tests.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

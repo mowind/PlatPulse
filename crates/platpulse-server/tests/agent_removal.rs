@@ -12,6 +12,11 @@
 //! an outstanding Recovery Token, a late Report, or a restart cannot resurrect
 //! the identity.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "helpers outside #[test] functions unwrap test fixtures"
+)]
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
