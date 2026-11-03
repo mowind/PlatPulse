@@ -2,7 +2,7 @@
 //!
 //! A Node's reporting Agent and its Network are both mutable. A completed Node
 //! Transfer moves `nodes.agent_id` (see
-//! `http::report_ingestion::resolve_node_transfer`), and a later Report may
+//! `http::report_ingestion::transfer::resolve_node_transfer`), and a later Report may
 //! declare another `network_key`. Reading those columns to answer a question
 //! about a past window would apply the relation the Node has *now* to a stretch
 //! the Server never observed it in, which Story 61 forbids.
