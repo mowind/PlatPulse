@@ -349,22 +349,33 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
       await expectDetailMetrics(detail)
       const width = page.viewportSize()!.width
       expect((await detail.boundingBox())!.height, 'closed overview stays compact').toBeLessThanOrEqual(width >= 1024 ? 360 : width >= 640 ? 440 : 640)
-      const identity = detail.locator('code').first()
-      const identityLabel = detail.getByText('Validator ID', { exact: true })
-      const copy = detail.getByRole('button', { name: 'Copy full Validator identifier' })
       const show = detail.getByRole('button', { name: 'Show full ID' })
-      const textBox = await identity.evaluate(element => {
+      await expect(detail.getByText('Validator ID', { exact: true })).toBeVisible()
+      await expect(detail.getByRole('button', { name: 'Copy full Validator identifier' })).toBeVisible()
+      await expect(show).toBeVisible()
+      // Every box is read in one frame: separate round trips can straddle a late
+      // layout shift above the card and compare positions from different frames.
+      const { textBox, labelBox, copyBox, showBox } = await detail.evaluate(card => {
+        const box = (element: Element) => {
+          const rect = element.getBoundingClientRect()
+          return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+        }
+        const label = [...card.querySelectorAll('span')].find(element => element.textContent?.trim() === 'Validator ID')!
+        const button = (name: string) => card.querySelector('button[aria-label="' + name + '"]')!
+        const identity = card.querySelector('code')!
         const range = document.createRange()
-        range.selectNodeContents(element)
+        range.selectNodeContents(identity)
         const rect = range.getBoundingClientRect()
         // Wrapped ID lines leave natural whitespace before the adjacent controls.
         // For a single line, measure the text itself to reject a stretched desktop ID.
-        const wrapped = rect.height > parseFloat(getComputedStyle(element).lineHeight) + 1
-        return { right: wrapped ? element.getBoundingClientRect().right : rect.right, y: rect.y, bottom: rect.bottom }
+        const wrapped = rect.height > parseFloat(getComputedStyle(identity).lineHeight) + 1
+        return {
+          textBox: { right: wrapped ? identity.getBoundingClientRect().right : rect.right, y: rect.y, bottom: rect.bottom },
+          labelBox: box(label),
+          copyBox: box(button('Copy full Validator identifier')),
+          showBox: box(button('Show full ID')),
+        }
       })
-      const labelBox = (await identityLabel.boundingBox())!
-      const copyBox = (await copy.boundingBox())!
-      const showBox = (await show.boundingBox())!
       if (copyBox.y >= textBox.bottom - 1) {
         // Narrow widths wrap the paired controls beneath the ID; they keep the
         // row start rather than drifting to the far edge.
