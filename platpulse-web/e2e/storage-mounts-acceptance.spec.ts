@@ -9,6 +9,7 @@ import {
   loginToDisposableServer,
 } from './admin-flow'
 import {
+  canonicalClock,
   expectFocusedElementHasVisibleFocus,
   expectNoHorizontalOverflow,
   expectVisibleInteractiveTargets,
@@ -47,11 +48,6 @@ type HostEvidence = {
   mounts?: { mountPath: string; totalBytes: number; usedBytes: number }[]
 }
 
-/** Canonical second-precision instant, seconds before now. */
-function canonicalAgo(seconds: number): string {
-  const instant = Math.floor(Date.now() / 1000) * 1000 - seconds * 1000
-  return new Date(instant).toISOString().replace(/\.\d{3}Z$/, 'Z')
-}
 
 /** The identity every Report in this file carries. An observation is recognised
  * by its own instant, never by this stamp. */
@@ -156,6 +152,7 @@ test.describe('Storage by mount path (issue #216)', () => {
     try {
       const agent = await server.enrollAgent()
       const report = hostReporter(server, agent)
+      const canonicalAgo = canonicalClock()
 
       // Five Reports five minutes apart: a cadence the Server can measure. One
       // path is reported by every one of them, and one stopped being reported
@@ -323,6 +320,7 @@ test.describe('Storage by mount path (issue #216)', () => {
     try {
       const agent = await server.enrollAgent()
       const report = hostReporter(server, agent)
+      const canonicalAgo = canonicalClock()
       // One Report is one observation: too few for the Server to measure a
       // cadence, so no silence may be declared for any path of this Agent.
       await report(canonicalAgo(10 * MINUTE_SECONDS), {
@@ -383,6 +381,7 @@ test.describe('Storage by mount path (issue #216)', () => {
     try {
       const agent = await server.enrollAgent()
       const report = hostReporter(server, agent)
+      const canonicalAgo = canonicalClock()
       // One Report carries at most 128 mounts, so three Reports hold more paths
       // than the list carries: 300 paths against a limit of 256.
       const group = (prefix: string) =>
@@ -445,6 +444,7 @@ test.describe('Storage by mount path (issue #216)', () => {
     try {
       const agent = await server.enrollAgent()
       const report = hostReporter(server, agent)
+      const canonicalAgo = canonicalClock()
       const at = [
         25 * MINUTE_SECONDS,
         20 * MINUTE_SECONDS,

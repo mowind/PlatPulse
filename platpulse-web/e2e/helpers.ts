@@ -496,3 +496,12 @@ export async function expectLiftedUp(locator: Locator, pixels: number) {
     )
     .toBe(true)
 }
+
+/** Canonical second-precision instants (the Server's own timestamp format),
+ * each `seconds` before one now fixed when the clock is made. A series written
+ * across a second boundary keeps the spacing it was given, so five minutes
+ * apart is a 300s cadence and never 301s (issue #298). */
+export function canonicalClock(): (seconds: number) => string {
+  const now = Math.floor(Date.now() / 1000) * 1000
+  return (seconds) => new Date(now - seconds * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+}
