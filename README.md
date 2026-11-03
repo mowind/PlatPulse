@@ -154,7 +154,7 @@ npm run lint && npm run typecheck && npm test && npm run build
 npm run test:e2e   # fixed Playwright projects against a temporary dev-mode Server
 ```
 
-Code, tests, and Web comments cite the design documents by section: `design §X.Y` means a heading of [`docs/design/platpulse.md`](docs/design/platpulse.md) and `webui.md §X.Y` a heading of [`docs/design/webui.md`](docs/design/webui.md). `scripts/check-design-refs.py` fails on a cited section that no longer exists, on a line number written as a section, and on a bare `§` without its source; Server migrations and the generated client are excluded.
+Code, tests, and Web comments cite the design documents by section: `design §X.Y` means a heading of [`docs/design/platpulse.md`](docs/design/platpulse.md) and `webui.md §X.Y` a heading of [`docs/design/webui.md`](docs/design/webui.md) or of the files under `docs/design/webui/` its index lists. `scripts/check-design-refs.py` fails on a cited section that no longer exists, on a line number written as a section, and on a bare `§` without its source; Server migrations and the generated client are excluded.
 
 The e2e suite (`npm run test:e2e`) boots a fresh temporary SQLite Server around the production WebUI build, provisions an Owner and Viewer through the password-from-stdin CLI, seeds independent Nodes, and runs the fixed Playwright projects: `phone-360-touch`, `phone-390-touch`, `tablet-768-touch`, `desktop-1280`, and `desktop-1440` (the Emerald visual-migration acceptance matrix). The state directory is temporary and its seed data is only for the local test process; it is not a production bootstrap path.
 

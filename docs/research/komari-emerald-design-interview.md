@@ -108,7 +108,7 @@
 - Peer 桶使用 Server received_at；first_observed_at/last_observed_at 当前实际上也赋值为 received_at。读取固定最近 288 个 5 分钟桶/168 个小时桶，没有任意时间范围（[时间赋值](../../crates/platpulse-server/src/peer_history.rs#L360-L361)、[分桶](../../crates/platpulse-server/src/peer_history.rs#L443-L458)、[API](../../crates/platpulse-server/src/http/admin.rs#L2541-L2569)）。
 - Block from/to 是高度不是墙钟时间；链时间与 Agent observed_at 分开，历史混有 Gap/Divergence。Incident 当前也没有 from/to 或 subjectKey 过滤；打开/恢复时间是 Server 评估时间，不是异常样本时刻（[Block](../../crates/platpulse-server/src/http/admin.rs#L4082-L4112)、[Incident filters](../../crates/platpulse-server/src/http/alerts_admin.rs#L288-L294)、[评估时间](../../crates/platpulse-server/src/alerts/mod.rs#L1585-L1610)）。
 - Validator sample_at 优先 Provider 时间、否则接收时间；日/月边界按配置 IANA 时区，历史/分析仅条数限制而非统一 from/to。联查必须保留来源/延迟/日期边界，不冒称同步采样或直接因果（[时间口径](../../crates/platpulse-server/src/validator.rs#L1913-L1937)、[日 DTO](../../crates/platpulse-server/src/http/validators_admin.rs#L103-L118)）。
-- 现有 Home 折线排序后直连所有有限点，并把最后值持平延伸到右边界，没有缺样分段；长历史不能照搬后宣称已符合 Unknown/Gap 要求。无样本不自动补零和真实缺口断线是不同问题（[绘图](../../platpulse-web/src/pages/HomePages.tsx#L569-L600)、[状态原则](../design/webui.md#L199-L218)）。
+- 现有 Home 折线排序后直连所有有限点，并把最后值持平延伸到右边界，没有缺样分段；长历史不能照搬后宣称已符合 Unknown/Gap 要求。无样本不自动补零和真实缺口断线是不同问题（[绘图](../../platpulse-web/src/pages/HomePages.tsx#L569-L600)、[状态原则](../design/webui/05-state-data-flow-and-patterns.md)）。
 
 ### 对上一份比较的勘误
 

@@ -46,6 +46,7 @@ cargo test --workspace
 cargo deny check && cargo audit   # ignores: .cargo/audit.toml (reasons in deny.toml)
 
 # Design references: "design §X.Y" = docs/design/platpulse.md, "webui.md §X.Y" = docs/design/webui.md
+# (an index; its sections live under docs/design/webui/, each keeping its number)
 python3 scripts/check-design-refs.py
 
 # Logging discipline: no bare eprintln!/dbg!, stdout only in main.rs/cli.rs, log fields from the vocabulary (docs/design/logging.md)
