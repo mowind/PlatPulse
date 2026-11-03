@@ -66,7 +66,17 @@ function HomeLayoutContent() {
   const authRef = useRef(status)
   authRef.current = status
 
-  useEffect(() => subscribeSiteAccessGeneration(setGeneration), [])
+  useEffect(() => {
+    const unsubscribe = subscribeSiteAccessGeneration(setGeneration)
+    // The first render read the generation before this subscription existed.
+    // A Site Access answer that landed in between notified nobody, and the
+    // shell would key every Public read by the fallback while Invalidation
+    // Events address the Server's generation, so none would ever refetch the
+    // page. Read it again now that later answers are heard.
+    const current = getSiteAccessGeneration()
+    if (current !== null) setGeneration(current)
+    return unsubscribe
+  }, [])
 
   useEffect(() => {
     // A fresh Home shell must fetch an authoritative Public Projection after
