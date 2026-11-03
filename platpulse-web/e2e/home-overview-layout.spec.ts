@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test'
 import type { PublicNetwork } from '../src/api/generated'
-import { closeHomeSurface, expectNoHorizontalOverflow, homeNodeColumns, loginAs, openHomeSort, waitForAnimationsToSettle } from './helpers'
+import { closeHomeSurface, expectNoHorizontalOverflow, homeNodeColumns, loginAs, openHomeSort, waitForAnimationsToSettle, waitForHomeStarted } from './helpers'
 
 // #246: Balance replaced Networks, and the reading/DOM order is the visual
 // order at every width (two rows of three from 640px, three rows of two below).
@@ -49,8 +49,9 @@ async function expectPerRowCardHeights(cards: Locator) {
 }
 
 async function overviewGeometry(page: Page) {
-  // A Sort change just before this remounts the grid with its entrance (#278).
-  await waitForAnimationsToSettle(page)
+  // Startup notices above the overview move it until they leave, and a Sort
+  // change just before this remounts the grid with its entrance (#278).
+  await waitForHomeStarted(page)
   const width = page.viewportSize()!.width
   const home = page.getByRole('region', { name: 'Home', exact: true })
   const summary = page.locator('[aria-label="Home summary"]')
