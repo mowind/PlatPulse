@@ -126,7 +126,7 @@ Test coverage added:
   `PAGE-ADMIN-BACKUP-DETAIL` (/admin/backups/:artifactId), rewrote the paragraph after the table, removed
   Backup from the unrouted enumerations (lines 13 and 38), and added §15.12 for issue #209.
 - The historical note at docs/design/webui.md:978 stays as history: it records the deferral, not a current route.
-- docs/research/issue-209-findings.md is this file (the #208 precedent is docs/research/issue-208-findings.md).
+- docs/research/archive/issue-209-findings.md is this file (the #208 precedent is docs/research/archive/issue-208-findings.md).
 
 ## REVIEW
 - /code-review ran at the fixed point HEAD b0c5160 (#208) over the uncommitted work, on two parallel axes using
