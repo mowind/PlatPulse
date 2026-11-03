@@ -222,7 +222,7 @@ async fn recorded_retry_replay(
     fingerprint: &str,
     now: OffsetDateTime,
 ) -> Option<Response> {
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => return None,
     };
@@ -652,7 +652,7 @@ pub(crate) async fn retry_delivery(
     };
     let now = now_utc();
     let fingerprint = request_intent_fingerprint("retry", &delivery_id);
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => return unavailable_error(&request_id.0),
     };

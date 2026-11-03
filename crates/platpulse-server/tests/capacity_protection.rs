@@ -856,7 +856,9 @@ async fn skipped_counting_advances_only_on_a_reading_newer_than_the_mark() {
         "2026-03-01T02:05:00Z",
         "2026-03-01T02:10:00Z",
     ] {
-        let mut tx = harness.pool().begin().await.unwrap();
+        let mut tx = platpulse_server::database::begin(harness.pool())
+            .await
+            .unwrap();
         record_skipped_series(
             &mut tx,
             INTERVAL,

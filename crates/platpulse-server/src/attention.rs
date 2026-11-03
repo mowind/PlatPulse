@@ -571,7 +571,7 @@ pub async fn acknowledge(
     requested: &[AttentionAcknowledgment],
     actor_user_id: Option<&str>,
 ) -> Result<AcknowledgeOutcome, sqlx::Error> {
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::database::begin(pool).await?;
     let row = sqlx::query_as::<_, AgentAttentionRow>(&format!(
         "{AGENT_ATTENTION_SELECT} AND a.agent_id = $1"
     ))

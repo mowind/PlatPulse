@@ -707,7 +707,7 @@ async fn apply_to_target(
     let source_description = plan.source_description;
     let target_description = plan.target_description;
     let started = plan.started;
-    let mut transaction = database.pool().begin().await?;
+    let mut transaction = crate::database::begin(database.pool()).await?;
     // Tables are copied in name order, so a child table can precede the parent
     // its foreign key needs. Every Server foreign key is DEFERRABLE, so the
     // check waits for the commit instead of failing the copy.
@@ -803,7 +803,7 @@ async fn abort_inner(
     target_description: &str,
     marker: &MigrationMarker,
 ) -> Result<AbortSummary, StorageMigrationError> {
-    let mut transaction = database.pool().begin().await?;
+    let mut transaction = crate::database::begin(database.pool()).await?;
     // Deleting in name order removes parents before children, so the foreign
     // keys are deferred to the commit exactly as they are during the copy.
     crate::database::defer_foreign_keys(&mut transaction).await?;
@@ -2645,7 +2645,7 @@ mod tests {
         let (started, mut started_rx) = tokio::sync::oneshot::channel();
         let (_release, release_rx) = tokio::sync::oneshot::channel::<()>();
         let work = async {
-            let mut transaction = database.pool().begin().await?;
+            let mut transaction = crate::database::begin(database.pool()).await?;
             sqlx::query("CREATE TABLE ownership_probe (height BIGINT)")
                 .execute(&mut *transaction)
                 .await?;
@@ -2763,7 +2763,9 @@ mod tests {
         let holder = ServerDatabase::open_for_maintenance(target.clone())
             .await
             .expect("open the target");
-        let mut transaction = holder.pool().begin().await.expect("begin the cleanup");
+        let mut transaction = crate::database::begin(holder.pool())
+            .await
+            .expect("begin the cleanup");
         crate::database::defer_foreign_keys(&mut transaction)
             .await
             .expect("defer the foreign keys");
@@ -2872,7 +2874,9 @@ mod tests {
         let migrated = ServerDatabase::open_for_maintenance(target.clone())
             .await
             .expect("open the migrated target");
-        let mut transaction = migrated.pool().begin().await.expect("begin a write");
+        let mut transaction = crate::database::begin(migrated.pool())
+            .await
+            .expect("begin a write");
         sqlx::query(
             "INSERT INTO audit_events (actor_user_id, event_kind, target_kind, target_id, before_json, after_json, created_at) VALUES (NULL, 'network.update', 'network', 'lat1', NULL, NULL, '2026-10-20T00:02:00Z')",
         )

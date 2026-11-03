@@ -153,7 +153,7 @@ pub(crate) async fn set_visibility(
             "visibility must be private or public",
         );
     }
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -315,7 +315,7 @@ pub(crate) async fn set_node_metadata(
             "display name must be 1..=128 characters without control characters",
         );
     }
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -6033,7 +6033,7 @@ async fn admin_agent_storage_mounts(
     // one side only and a merged list longer than the limit the answer states.
     // They are merged by the path the Agent reported, never by an identity the
     // Server would have to invent.
-    let mut snapshot = match state.db().pool().begin().await {
+    let mut snapshot = match crate::database::begin(state.db().pool()).await {
         Ok(snapshot) => snapshot,
         Err(_) => return unavailable_response(&request_id.0),
     };
@@ -6896,7 +6896,7 @@ pub(crate) async fn create_network(
         }
     };
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -7106,7 +7106,7 @@ pub(crate) async fn update_network(
         .into_response();
     }
     let changed_at = crate::auth::format_rfc3339(crate::auth::now_utc());
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -7383,7 +7383,7 @@ async fn admin_node_transfers(
     Extension(_session): Extension<super::AuthenticatedSession>,
     Extension(request_id): Extension<super::RequestId>,
 ) -> Response {
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -7527,7 +7527,7 @@ pub(crate) async fn create_node_transfer(
     // commits; a Report admitting or completing a Transfer for the same Node
     // writes ownership under the same fence (issue #280).
     let _node_fence = state.write_fences().nodes.hold(&node_id).await;
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -7797,7 +7797,7 @@ async fn admin_transfer_detail(
     Extension(_session): Extension<super::AuthenticatedSession>,
     Extension(request_id): Extension<super::RequestId>,
 ) -> Response {
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -7899,7 +7899,7 @@ pub(crate) async fn cancel_node_transfer(
         Some(node_id) => Some(state.write_fences().nodes.hold(node_id).await),
         None => None,
     };
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -8281,7 +8281,9 @@ async fn record_geo_refresh_audit(
     snapshot: &crate::geo_refresh::GeoRefreshSnapshot,
     started: bool,
 ) -> Result<i64, ()> {
-    let mut tx = state.db().pool().begin().await.map_err(|_| ())?;
+    let mut tx = crate::database::begin(state.db().pool())
+        .await
+        .map_err(|_| ())?;
     let audit_event_id = crate::auth::insert_audit_change(
         &mut *tx,
         Some(&principal.0.user_id),
@@ -8439,7 +8441,7 @@ pub(crate) async fn update_geo_provider(
     }
 
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(

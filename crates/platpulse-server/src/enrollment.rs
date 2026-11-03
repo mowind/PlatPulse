@@ -205,7 +205,7 @@ pub async fn create_enrollment_token(
             .expect("enrollment token lifetime fits in time::Duration"),
     );
 
-    let mut transaction = db.pool().begin().await?;
+    let mut transaction = crate::database::begin(db.pool()).await?;
     sqlx::query(
         "INSERT INTO enrollment_tokens (token_id, token_digest, created_at, expires_at, consumed_at, consumed_agent_id, revoked_at) VALUES ($1, $2, $3, $4, NULL, NULL, NULL)",
     )
@@ -301,7 +301,7 @@ pub async fn create_recovery_token(
             .expect("recovery token lifetime fits in time::Duration"),
     );
 
-    let mut transaction = db.pool().begin().await?;
+    let mut transaction = crate::database::begin(db.pool()).await?;
     // A removed Agent is not recoverable: the durable removal boundary hides
     // the identity and refuses a fresh credential, so an outstanding or newly
     // requested Recovery Token must not resurrect it (design §15.2, #171).
@@ -367,7 +367,7 @@ pub async fn recover(
         return Err(RecoveryError::Invalid);
     };
 
-    let mut transaction = db.pool().begin().await?;
+    let mut transaction = crate::database::begin(db.pool()).await?;
     let row: Option<RecoveryRow> = sqlx::query_as(
         "SELECT token_digest, agent_id, expires_at, consumed_at, revoked_at FROM recovery_tokens WHERE token_id = $1",
     )
@@ -495,7 +495,7 @@ pub async fn enroll(
         return Err(EnrollmentError::Invalid);
     };
 
-    let mut transaction = db.pool().begin().await?;
+    let mut transaction = crate::database::begin(db.pool()).await?;
     let row: Option<EnrollmentRow> = sqlx::query_as(
         "SELECT token_digest, expires_at, consumed_at, revoked_at FROM enrollment_tokens WHERE token_id = $1",
     )
@@ -702,7 +702,7 @@ pub async fn rotate_agent_credential(
     }
     let now = now_utc();
     let now_text = format_rfc3339(now);
-    let mut transaction = db.pool().begin().await?;
+    let mut transaction = crate::database::begin(db.pool()).await?;
     // A removed Agent is not rotatable: rotation must not mint a fresh
     // credential on an identity the Owner permanently deleted (#171).
     let agent_live = sqlx::query_scalar::<_, String>(
@@ -839,7 +839,7 @@ pub async fn revoke_agent_credential(
     credential_id: &str,
 ) -> Result<RevokedCredential, RevokeError> {
     let now_text = format_rfc3339(now_utc());
-    let mut transaction = db.pool().begin().await?;
+    let mut transaction = crate::database::begin(db.pool()).await?;
     // A removed Agent is not addressable; revocation is refused as not-found
     // so the missing identity is indistinguishable from any other unknown one.
     let agent_live: Option<String> = sqlx::query_scalar(
@@ -1011,7 +1011,7 @@ pub async fn update_agent_metadata(
         notes: normalize_agent_notes(notes)?,
     };
 
-    let mut transaction = db.pool().begin().await?;
+    let mut transaction = crate::database::begin(db.pool()).await?;
     let existing = sqlx::query_as::<_, (Option<String>, Option<String>)>(
         "SELECT display_name, notes FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
     )

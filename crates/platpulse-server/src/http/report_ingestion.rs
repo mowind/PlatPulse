@@ -3231,7 +3231,7 @@ async fn ingest_report<I: ReportInventory>(
     // may abort the Report. Hygiene must never be able to refuse a Report, so
     // the sweep waits for the receipts in flight instead.
     let _sweep_off = crate::retention::hold_sweep_off().await;
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(db_error) => {
             state.note_database_error(&db_error);
@@ -4480,7 +4480,7 @@ async fn ingest_report<I: ReportInventory>(
                 sqlx::Error::Database(ref database) if database.is_unique_violation()
             ) {
                 let _ = tx.rollback().await;
-                if let Ok(mut retry_tx) = state.db().pool().begin().await {
+                if let Ok(mut retry_tx) = crate::database::begin(state.db().pool()).await {
                     if record_security_event(&mut retry_tx, &auth.agent_id)
                         .await
                         .is_ok()
@@ -8447,7 +8447,7 @@ mod tests {
                 .unwrap();
         let first = make_sample(hash_a.clone());
         let second = make_sample(hash_b);
-        let mut tx = state.db().pool().begin().await.unwrap();
+        let mut tx = crate::database::begin(state.db().pool()).await.unwrap();
         assert!(
             !observe_block_identity(&mut tx, &first, first.observed_at, "2026-08-12T09:00:00Z")
                 .await

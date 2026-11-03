@@ -492,7 +492,7 @@ pub async fn execute(
     node_id: &str,
     actor_user_id: &str,
 ) -> Result<Option<NodePurgeOutcome>, sqlx::Error> {
-    let mut transaction = pool.begin().await?;
+    let mut transaction = crate::database::begin(pool).await?;
     let Some(impact) = measure(&mut transaction, node_id).await? else {
         transaction.rollback().await?;
         return Ok(None);

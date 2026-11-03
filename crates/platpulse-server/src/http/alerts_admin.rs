@@ -921,7 +921,7 @@ pub(crate) async fn alert_rule_detail(
     Path(rule_key): Path<String>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -1067,7 +1067,7 @@ pub(crate) async fn update_alert_rule(
                 .into_response();
         }
     }
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -1330,7 +1330,7 @@ pub(crate) async fn preview_alert_rule(
     let draft_severity = body.severity.unwrap_or(current_severity);
     let draft_condition = body.condition.unwrap_or(base_condition);
 
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -1619,7 +1619,7 @@ pub(crate) async fn upsert_rule_override(
             "override target does not exist",
         );
     }
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -1813,7 +1813,7 @@ pub(crate) async fn delete_rule_override(
             "invalid override scope",
         );
     }
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -2484,7 +2484,7 @@ pub(crate) async fn acknowledge_incident(
             "mutation validation failed",
         );
     }
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -2817,7 +2817,7 @@ pub(crate) async fn create_silence(
             "silence target does not exist",
         );
     }
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -2993,7 +2993,7 @@ pub(crate) async fn cancel_silence(
     {
         return response;
     }
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -3345,7 +3345,7 @@ pub(crate) async fn create_maintenance_window(
             "maintenance scope target does not exist",
         );
     }
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -3503,7 +3503,7 @@ pub(crate) async fn cancel_maintenance_window(
     {
         return response;
     }
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(

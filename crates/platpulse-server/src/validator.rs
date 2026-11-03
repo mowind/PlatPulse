@@ -1498,7 +1498,7 @@ pub async fn create_validator(
     validate_display_name(display_name)?;
     let now = format_rfc3339(now_utc());
     let validator_id = uuid::Uuid::new_v4().to_string();
-    let mut tx = db.pool().begin().await?;
+    let mut tx = crate::database::begin(db.pool()).await?;
 
     let known: Option<i64> = sqlx::query_scalar("SELECT 1 FROM networks WHERE network_key = $1")
         .bind(network_key)
@@ -1663,7 +1663,7 @@ pub async fn create_link(
     let (valid_from, valid_until) = canonical_validity(valid_from, valid_until)?;
     let now = format_rfc3339(now_utc());
     let link_id = uuid::Uuid::new_v4().to_string();
-    let mut tx = db.pool().begin().await?;
+    let mut tx = crate::database::begin(db.pool()).await?;
     validate_link_parentage(&mut tx, node_id, validator_id).await?;
     if link_overlaps(&mut tx, node_id, &valid_from, valid_until.as_deref(), None).await? {
         return Err(ValidatorError::LinkOverlap);
@@ -1775,7 +1775,7 @@ pub async fn update_link(
     validate_role(role)?;
     let (valid_from, valid_until) = canonical_validity(valid_from, valid_until)?;
     let now = format_rfc3339(now_utc());
-    let mut tx = db.pool().begin().await?;
+    let mut tx = crate::database::begin(db.pool()).await?;
     let existing = sqlx::query_as::<_, (String, String, String, String, Option<String>)>(
         "SELECT node_id, validator_id, role, valid_from, valid_until FROM node_validator_links WHERE link_id = $1",
     )
@@ -1866,7 +1866,7 @@ pub async fn end_link(
     let now = format_rfc3339(now_utc());
     let end = canonical_timestamp(ended_at.unwrap_or(&now))?;
     let end_time = parse_timestamp(&end)?;
-    let mut tx = db.pool().begin().await?;
+    let mut tx = crate::database::begin(db.pool()).await?;
     let valid_from = sqlx::query_as::<_, (String, Option<String>)>(
         "SELECT valid_from, valid_until FROM node_validator_links WHERE link_id = $1",
     )
@@ -3003,7 +3003,7 @@ pub async fn refresh_all_with_channels_in_timezone(
         attempted: provider_results.len(),
         ..RefreshSummary::default()
     };
-    let mut tx = db.pool().begin().await?;
+    let mut tx = crate::database::begin(db.pool()).await?;
     for (validator_id, network_key, validator_node_id, result) in provider_results {
         let detail =
             apply_provider_result(&mut tx, provider.source(), &validator_id, result, timezone)
@@ -3131,7 +3131,7 @@ pub async fn discover_automatic_links(
     db: &ServerDatabase,
 ) -> Result<IdentityDiscoverySummary, ValidatorError> {
     let now = format_rfc3339(now_utc());
-    let mut tx = db.pool().begin().await?;
+    let mut tx = crate::database::begin(db.pool()).await?;
     let rows = sqlx::query_as::<_, IdentityCandidateRow>(
         "SELECT n.node_id, n.network_key, c.network_genesis_hash, c.network_chain_id, c.network_p2p_network_id, c.network_address_hrp, c.enode, r.genesis_hash AS registered_genesis_hash, r.chain_id AS registered_chain_id, r.p2p_network_id AS registered_p2p_network_id, r.address_hrp AS registered_address_hrp FROM nodes n JOIN networks r ON r.network_key = n.network_key LEFT JOIN current_node_chain_observations c ON c.node_id = n.node_id WHERE n.lifecycle = 'active' ORDER BY n.node_id",
     )

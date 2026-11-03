@@ -718,7 +718,7 @@ pub async fn process_due_deliveries(
     // claimed but never recorded; re-queue it (at-least-once allows the
     // duplicate the provider may have already seen).
     {
-        let mut tx = state.db().pool().begin().await?;
+        let mut tx = crate::database::begin(state.db().pool()).await?;
         sqlx::query(
             "UPDATE notification_deliveries SET state = 'pending', next_attempt_at = NULL, updated_at = $1 WHERE state = 'in_flight'",
         )
@@ -744,7 +744,7 @@ pub async fn process_due_deliveries(
         // Claim atomically: a parallel retry/test path or a previous pass
         // may already hold this row.
         let claimed = {
-            let mut tx = state.db().pool().begin().await?;
+            let mut tx = crate::database::begin(state.db().pool()).await?;
             let result = sqlx::query(
                 "UPDATE notification_deliveries SET state = 'in_flight', updated_at = $1 WHERE delivery_id = $2 AND state IN ('pending', 'retry_scheduled')",
             )
@@ -786,7 +786,7 @@ pub async fn process_due_deliveries(
                     .await?
                 };
                 if deleted {
-                    let mut tx = state.db().pool().begin().await?;
+                    let mut tx = crate::database::begin(state.db().pool()).await?;
                     sqlx::query(
                         "UPDATE notification_deliveries SET state = 'cancelled', next_attempt_at = NULL, last_result = $1, last_error_kind = NULL, updated_at = $2 WHERE delivery_id = $3 AND state = 'in_flight'",
                     )
@@ -831,7 +831,7 @@ pub async fn process_due_deliveries(
                     .next()
             };
             if let Some(matched) = matched {
-                let mut tx = state.db().pool().begin().await?;
+                let mut tx = crate::database::begin(state.db().pool()).await?;
                 sqlx::query(
                     "UPDATE notification_deliveries SET state = 'suppressed', next_attempt_at = NULL, last_result = $1, last_error_kind = NULL, updated_at = $2 WHERE delivery_id = $3 AND state = 'in_flight'",
                 )
@@ -920,7 +920,7 @@ pub async fn process_due_deliveries(
                 )
             };
 
-        let mut tx = state.db().pool().begin().await?;
+        let mut tx = crate::database::begin(state.db().pool()).await?;
         if !is_config_error {
             if let Err(error) = &send_result {
                 sqlx::query(
@@ -999,10 +999,7 @@ async fn replay_recorded_test_request(
     fingerprint: &str,
     now: OffsetDateTime,
 ) -> Result<TestSendOutcome, TestSendError> {
-    let mut tx = state
-        .db()
-        .pool()
-        .begin()
+    let mut tx = crate::database::begin(state.db().pool())
         .await
         .map_err(|_| TestSendError::Unavailable)?;
     let existing = load_notification_request(&mut tx, request_id, now)
@@ -1065,10 +1062,7 @@ pub async fn send_test_delivery(
         return Err(TestSendError::Disabled);
     }
     let fingerprint = request_intent_fingerprint("test", "telegram");
-    let mut tx = state
-        .db()
-        .pool()
-        .begin()
+    let mut tx = crate::database::begin(state.db().pool())
         .await
         .map_err(|_| TestSendError::Unavailable)?;
     prune_expired_notification_requests(&mut tx, now)
@@ -1188,10 +1182,7 @@ pub async fn send_test_delivery(
         .expect("test event exists");
         let send_result = provider.send(telegram, &message_text(&event)).await;
         let attempted_at = format_rfc3339(now_utc());
-        let mut tx = state
-            .db()
-            .pool()
-            .begin()
+        let mut tx = crate::database::begin(state.db().pool())
             .await
             .map_err(|_| TestSendError::Unavailable)?;
         match &send_result {

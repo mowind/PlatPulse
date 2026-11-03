@@ -1110,7 +1110,7 @@ mod tests {
             panic!("expected protection to open");
         };
 
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = crate::database::begin(pool).await.unwrap();
         record_skipped_series(
             &mut tx,
             &interval_id,
@@ -1222,7 +1222,7 @@ mod tests {
 
         // Rolling back the ingestion transaction removes the gap record with
         // the rest of that Report's writes.
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = crate::database::begin(pool).await.unwrap();
         record_skipped_series(
             &mut tx,
             &interval_id,

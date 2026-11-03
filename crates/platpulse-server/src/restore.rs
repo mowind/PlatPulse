@@ -868,7 +868,7 @@ async fn record_outcome(
         .map(crate::redaction::redact_json_value)
         .collect::<Vec<_>>();
     let result = result.map(crate::redaction::redact_json_value);
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     sqlx::query(
         "INSERT INTO operations (operation_id, kind, status, progress_percent, progress_label, request_id, params_json, warnings_json, errors_json, result_json, created_at, started_at, finished_at) VALUES ($1, 'restore', $2, 100, 'Restored', $3, $4, $5, $6, $7, $8, $9, $10)",
     )

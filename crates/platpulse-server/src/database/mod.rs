@@ -330,6 +330,26 @@ pub(crate) struct StoragePages {
     pub freelist_pages: Option<u64>,
 }
 
+/// Begin a Server transaction that may write.
+///
+/// On SQLite a plain `BEGIN` is deferred: the transaction reads under a
+/// shared lock and asks for the write lock only at its first write. If
+/// another connection wrote in between, that upgrade fails at once with
+/// `SQLITE_BUSY` and the busy timeout never applies, so the whole transaction
+/// is lost. `BEGIN IMMEDIATE` takes the write lock up front, where the busy
+/// timeout does wait. PostgreSQL has no such upgrade and uses a plain `BEGIN`.
+pub async fn begin(pool: &AnyPool) -> Result<sqlx::Transaction<'static, sqlx::Any>, sqlx::Error> {
+    if pool.connect_options().database_url.scheme() == "sqlite" {
+        pool.begin_with("BEGIN IMMEDIATE").await
+    } else {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "PostgreSQL has no deferred lock upgrade"
+        )]
+        pool.begin().await
+    }
+}
+
 /// A nullable flag column, decoded from its portable 0/1 INTEGER storage.
 ///
 /// Flags are stored as INTEGER on every Storage Backend (ADR 0013): the
@@ -1477,7 +1497,7 @@ mod tests {
         seed.close().await;
 
         let external = external_pool(&path).await;
-        let mut writer = external.begin().await.unwrap();
+        let mut writer = external.begin_with("BEGIN IMMEDIATE").await.unwrap();
         sqlx::query(
             "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ('writer', '1', '2026-01-01T00:00:00Z')",
         )
@@ -1503,6 +1523,61 @@ mod tests {
         .unwrap();
         assert_eq!(committed.as_deref(), Some("1"));
         holder.await.unwrap();
+    }
+
+    /// A Server transaction that reads before it writes must wait for an
+    /// external writer through the busy timeout instead of failing the moment
+    /// it upgrades its lock (issue #292).
+    #[tokio::test]
+    async fn read_then_write_transaction_waits_for_an_external_writer() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("server.db");
+        let database = ServerDatabase::open(ServerDatabaseConfig::for_deployment(&path, true))
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ('counter', '0', '2026-01-01T00:00:00Z')",
+        )
+        .execute(database.pool())
+        .await
+        .unwrap();
+
+        let external = external_pool(&path).await;
+        let mut writer = external.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        sqlx::query(
+            "INSERT INTO server_settings (setting_key, setting_value, updated_at) VALUES ('writer', '1', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&mut *writer)
+        .await
+        .unwrap();
+        let holder = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            writer.commit().await.unwrap();
+            external.close().await;
+        });
+
+        let mut tx = begin(database.pool()).await.unwrap();
+        let counter: String = sqlx::query_scalar(
+            "SELECT setting_value FROM server_settings WHERE setting_key = 'counter'",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE server_settings SET setting_value = $1 WHERE setting_key = 'counter'")
+            .bind((counter.parse::<i64>().unwrap() + 1).to_string())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        holder.await.unwrap();
+
+        let counter: String = sqlx::query_scalar(
+            "SELECT setting_value FROM server_settings WHERE setting_key = 'counter'",
+        )
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(counter, "1");
     }
 
     async fn locking_mode(database: &ServerDatabase) -> String {

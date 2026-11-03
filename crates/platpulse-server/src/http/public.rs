@@ -333,7 +333,7 @@ pub(crate) async fn logout_handler(
     // the response fails loudly and the cookie is kept so the client does
     // not believe it signed out while the session is still valid.
     let result = async {
-        let mut transaction = state.db().pool().begin().await?;
+        let mut transaction = crate::database::begin(state.db().pool()).await?;
         let revoked = sqlx::query(
             "UPDATE sessions SET revoked_at = $1 WHERE session_id = $2 AND revoked_at IS NULL",
         )
@@ -5257,7 +5257,7 @@ mod tests {
         } else {
             crate::metric_history::SeriesScope::host("agent-public-test", metric, "")
         };
-        let mut tx = state.db().pool().begin().await.unwrap();
+        let mut tx = crate::database::begin(state.db().pool()).await.unwrap();
         crate::metric_history::record_aggregates(&mut tx, &scope, observed_at, observed_at, value)
             .await
             .unwrap();
@@ -5715,7 +5715,7 @@ mod tests {
         observed_at: &str,
         transactions: i64,
     ) {
-        let mut tx = state.db().pool().begin().await.unwrap();
+        let mut tx = crate::database::begin(state.db().pool()).await.unwrap();
         sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, source, coinbase, seal_signer_match, protocol_proposer_kind, attribution_reason, accepted_at) VALUES ('node-public', $1, $2, '0xparent', '0xgenesis', 1, 1, 'lat', $3, $4, $5, 'subscription', '0x0000000000000000000000000000000000000000', 'unknown', 'unknown', 'test', $6)")
             .bind(height)
             .bind(format!("0xblock-{height}"))

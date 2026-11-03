@@ -134,7 +134,7 @@ pub async fn create_network(
     )?;
     let now = format_rfc3339(now_utc());
 
-    let mut transaction = db.pool().begin().await?;
+    let mut transaction = crate::database::begin(db.pool()).await?;
     let insert = sqlx::query(
         "INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )

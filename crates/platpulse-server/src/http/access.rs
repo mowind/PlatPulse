@@ -428,7 +428,7 @@ pub(crate) async fn set_person_role(
             "role must be owner or viewer",
         );
     }
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -555,7 +555,7 @@ pub(crate) async fn set_person_status(
             );
         }
     };
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -707,7 +707,7 @@ pub(crate) async fn reset_person_password(
             );
         }
     };
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -879,7 +879,7 @@ pub(crate) async fn revoke_session(
             "mutation validation failed",
         );
     }
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -992,7 +992,7 @@ pub(crate) async fn revoke_other_sessions(
             "mutation validation failed",
         );
     }
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
@@ -1221,7 +1221,7 @@ pub(crate) async fn set_access_settings(
             "changing Site Access Mode requires confirmation",
         );
     }
-    let mut tx = match state.db().pool().begin().await {
+    let mut tx = match crate::database::begin(state.db().pool()).await {
         Ok(tx) => tx,
         Err(_) => {
             return mutation_error(
