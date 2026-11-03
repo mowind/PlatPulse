@@ -1,8 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { mkdir, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
 import { loginAs } from './helpers'
-import { findRepoRoot } from './repo-root'
+import { evidenceDir } from './evidence'
 
 // Opt-in matched evidence for the Admin information-layering round. Run once
 // per revision with ADMIN_LAYERING_EVIDENCE=before|after against the local
@@ -20,9 +19,7 @@ test.skip(!phase, 'Set ADMIN_LAYERING_EVIDENCE=before or after for matched captu
 // Each layering round keeps its own matched pair; the first round's captures
 // stay in admin-layering/, later rounds name theirs (for example
 // ADMIN_LAYERING_EVIDENCE_DIR=admin-layering-closure).
-const ROOT = join(
-  findRepoRoot(),
-  'docs/visual-migration/emerald',
+const ROOT = evidenceDir(
   process.env.ADMIN_LAYERING_EVIDENCE_DIR ?? 'admin-layering',
 )
 const NODE_A = '0195f2a1-0014-4014-8014-000000000014'

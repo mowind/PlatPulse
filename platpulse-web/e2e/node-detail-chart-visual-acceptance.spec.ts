@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test'
+import { evidenceDir } from './evidence'
 import { loginAs } from './helpers'
 
 /**
@@ -549,10 +550,10 @@ test.describe('Node Detail six-chart visual acceptance', () => {
         expect(new Set(charts.map((chart) => Math.round(Math.max(...chart.splits.map((line) => line.right))))).size, width + ': one shared right edge').toBe(1)
 
         // Evidence: the deck as it renders. Always attached to the run; written into
-        // the migration record too when EMERALD_EVIDENCE is set.
+        // platpulse-web/evidence/ too when EMERALD_EVIDENCE is set.
         const shot = await page.locator('[data-slot="node-metrics-section"]').screenshot()
         await testInfo.attach('six-charts-' + theme + '-' + width + '.png', { body: shot, contentType: 'image/png' })
-        const dir = '../docs/visual-migration/emerald/screenshots/chart-acceptance/' + testInfo.project.name
+        const dir = evidenceDir('chart-acceptance', testInfo.project.name)
         const keepEvidence = process.env.EMERALD_EVIDENCE === '1'
         if (keepEvidence) {
           await mkdir(dir, { recursive: true })
@@ -561,7 +562,7 @@ test.describe('Node Detail six-chart visual acceptance', () => {
         // The two widths a reader compares against Emerald by hand: the phone and
         // the desktop. The chart region itself is attached to every run - the deck
         // screenshot is too small to judge a tick against its gutter - and written
-        // into the migration record with its measured geometry when evidence is on,
+        // into platpulse-web/evidence/ with its measured geometry when evidence is on,
         // so the comparison is against numbers this run produced rather than a
         // memory of what the chart used to look like.
         if (width === 390 || width === 1440) {

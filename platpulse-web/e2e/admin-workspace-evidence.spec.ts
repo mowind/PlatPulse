@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { evidenceDir } from './evidence'
 import { loginAs, expectNoHorizontalOverflow } from './helpers'
 
 // Opt-in evidence, not screenshot baselines. Browser-local frozen REST responses
@@ -8,7 +9,7 @@ const phase = process.env.ADMIN_WORKSPACE_EVIDENCE
 test.skip(!phase, 'Set ADMIN_WORKSPACE_EVIDENCE=before or after for matched captures')
 test('matched Admin workspace evidence', async ({ page }, info) => {
   test.setTimeout(180_000)
-  const root = '../docs/visual-migration/emerald/admin-workspace'
+  const root = evidenceDir('admin-workspace')
   await mkdir(`${root}/fixtures`, { recursive: true })
   await loginAs(page)
   for (const name of ['overview', 'nodes', 'agents']) {

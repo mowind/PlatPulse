@@ -2,7 +2,9 @@
 import { chromium } from '@playwright/test'
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 const phase = process.argv[2] || 'after'
-const dir = '../docs/visual-migration/mobile-map'
+// Captures go to the ignored evidence/ directory; the frozen networks.json the
+// specs read stays in docs/visual-migration/mobile-map.
+const dir = 'evidence/mobile-map'
 mkdirSync(dir, { recursive: true })
 const browser = await chromium.launch({ headless: true })
 const page = await browser.newPage({ hasTouch: true, reducedMotion: 'reduce' })
@@ -19,7 +21,7 @@ if (!await provider.getByRole('radio', { name: 'Local MMDB' }).isChecked()) {
  await provider.getByRole('button', { name: 'Save Geo provider' }).click()
  await provider.getByText('Geo provider is now Local MMDB').waitFor()
 }
-const fixturePath = dir + '/networks.json'
+const fixturePath = '../docs/visual-migration/mobile-map/networks.json'
 if (!existsSync(fixturePath)) {
  const response = await page.request.get('http://127.0.0.1:4173/api/public/v1/networks')
  writeFileSync(fixturePath, JSON.stringify(await response.json(), null, 2))
