@@ -28,7 +28,7 @@ The four attributable counters and the Peer country map read the current list se
 - **The response grows, and that is the accepted price.** Every listed Node now carries a compact bucket. The per-Node shape is deliberately a bucket and not a full `PublicGeoInsight` (no per-Node attribution, no per-Node provider status, no per-Node freshness object), because those are Network-level facts a Node cannot have independently. The measured magnitude case is 256 Active Nodes across 10 countries in one Network; no payload size budget was set, so a future growth in Nodes × countries is a payload question to revisit, not a correctness one.
 - **One accepted reference edge case.** If a Node retained Peer rows while its accepted Peer snapshot has `value_revision = 0`, that Node reads `unobserved` and the Network reading no longer counts those rows. The state is not production-reachable: crates/platpulse-server/src/http/report_ingestion.rs `upsert_peer_snapshot` returns early unless the component status is `Ok` with a latest value, and the DELETE + INSERT of `current_node_peers` happens in the same transaction that records the accepted snapshot. Fixtures that had modelled the unreachable state were corrected by seeding the snapshot the Server would have required, not by weakening the expectations.
 - **The two cumulative cards are the one deliberate scope inconsistency** in the band. It is absorbed by the on-card note and by docs/design/webui.md §15.28; if a future issue wants them to follow too, that is a new decision record, because the totals are Network-level by construction.
-- **The Home scope rule now reads once**, in docs/design/webui.md §15.23 as revised by §15.28, and in the Attention tooltip; docs/design/platpulse.md:513-515 and the Home scenario rows carry the same rule.
+- **The Home scope rule now reads once**, in docs/design/webui.md §15.23 as revised by §15.28, and in the Attention tooltip; docs/design/platpulse.md §9.1 and the Home scenario rows carry the same rule.
 - **Vocabulary.** The reading is a Node Selection Geo Aggregate (节点选择国家聚合) in CONTEXT.md — a set of Nodes, distinct from a Network's Geo Insight and from one Node's Node Peer Country View. "Filtered Geo Insight" stays forbidden for both.
 
 ## Alternatives considered
@@ -43,5 +43,5 @@ The four attributable counters and the Peer country map read the current list se
 
 - Issue #233 (GitHub), child of the accepted Home scope target; the earlier scope rule was decided for issue #222, Story 71.
 - docs/design/webui.md §15.23 (revised), §15.28 (this decision), §15.36 (the shortened cumulative scope note, issue #245), SCN-HOME-NETWORK-LIST, SCN-HOME-GEO-MAP.
-- docs/design/platpulse.md:513-515 (Home 口径).
+- docs/design/platpulse.md §9.1 (Home 口径).
 - CONTEXT.md: Geo Insight, Node Peer Country View, Node Selection Geo Aggregate.

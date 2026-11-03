@@ -1,7 +1,7 @@
 //! Coordinated upgrade checkpoint (issue #190).
 //!
 //! [ADR 0007](../../docs/adr/0007-server-managed-inventory-revision.md) and
-//! [main design 15.10.4](../../docs/design/platpulse.md#server-managed-inventory-revision-target)
+//! [main design 15.10.4](../../docs/design/platpulse/15.10-server-managed-inventory-revision.md#server-managed-inventory-revision-target)
 //! require the v1 -> v2 cutover to pass through a coordinated checkpoint: with
 //! every writer paused, preserve an exact logical copy of the Server database, the Agent Store,
 //! the old configuration, identity/credential material and the verified

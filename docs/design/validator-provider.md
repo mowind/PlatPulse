@@ -16,7 +16,7 @@ identity contract.
 The following automatic-identity design is **accepted and implemented by
 #173** for discovery, automatic correspondence, Current Validator Status and
 the Public projection. Its cross-feature authority is
-[the main design, section 15](platpulse.md#accepted-management-target) and
+[the main design, section 15](platpulse/15-management-and-validator-identity.md#accepted-management-target) and
 [ADR 0005: automatic Validator identity](../adr/0005-automatic-validator-identity.md).
 The one-time history migration and deletion of the legacy manual generation are
 **implemented by #174**: since the cutover migration commits, `origin = manual`

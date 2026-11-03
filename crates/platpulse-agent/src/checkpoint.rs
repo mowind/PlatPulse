@@ -1,7 +1,7 @@
 //! Coordinated-checkpoint Agent half (issue #190).
 //!
 //! [ADR 0007](../../docs/adr/0007-server-managed-inventory-revision.md) and
-//! [main design 15.10.4](../../docs/design/platpulse.md#server-managed-inventory-revision-target)
+//! [main design 15.10.4](../../docs/design/platpulse/15.10-server-managed-inventory-revision.md#server-managed-inventory-revision-target)
 //! require a coordinated v1 -> v2 cutover. Issue #189 delivers the preparation
 //! bridge: stop ordinary reporting, drain the immutable backlog, complete the
 //! final Closing, and prove its original v1 declaration against the Server's

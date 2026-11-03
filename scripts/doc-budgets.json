@@ -2,7 +2,6 @@
   "default": 8000,
   "frozen": {
     "docs/deployment.md": 10993,
-    "docs/design/platpulse.md": 48550,
     "docs/visual-migration/emerald/README.md": 20507
   }
 }

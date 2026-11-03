@@ -14,7 +14,7 @@ The prior optional, explicit, time-bounded Node Validator Link could express pri
 
 The rejected alternative—keeping old manual Links until automatic lookup succeeds—would avoid temporary Unknown values but continue the very ambiguity this change removes. The accepted cost is temporary Unknown/lower selection totals and loss of old Validator-local time series; future readers must not restore manual roles or silently synthesize the discarded history.
 
-This supersedes the manual-Link/role **target design** in earlier domain and Validator documents, not their records of historical implementations or live captures. See [main design §15](../design/platpulse.md#accepted-management-target), [Validator Provider](../design/validator-provider.md), [Validator metrics](../design/validator-metrics.md), and the distinct [Owner removal boundary](0004-owner-removal-and-node-purge.md). No migration or data deletion is authorized to run merely by updating these documents.
+This supersedes the manual-Link/role **target design** in earlier domain and Validator documents, not their records of historical implementations or live captures. See [main design §15](../design/platpulse/15-management-and-validator-identity.md#accepted-management-target), [Validator Provider](../design/validator-provider.md), [Validator metrics](../design/validator-metrics.md), and the distinct [Owner removal boundary](0004-owner-removal-and-node-purge.md). No migration or data deletion is authorized to run merely by updating these documents.
 
 ## Amendment log
 
