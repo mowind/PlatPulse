@@ -150,6 +150,19 @@ async function expectListAgreesWithSummary(page: Page) {
   return reading()
 }
 
+/** Apply a filter change and wait until the listed Nodes are a different set.
+ *  The change commits through the URL and paints a frame later; until then the
+ *  previous list and summary still agree, so reading the agreed figure right
+ *  away returns the selection from before the change (issue #307). Use it only
+ *  where the change is known to alter the listed set. */
+async function changeListBy(page: Page, change: () => Promise<unknown>) {
+  const links = nodeGrid(page).locator('a[href^="/nodes/"]')
+  const hrefs = () => links.evaluateAll((elements) => elements.map((element) => element.getAttribute('href')).join(' '))
+  const before = await hrefs()
+  await change()
+  await expect.poll(hrefs, { message: 'the filter change replaces the listed Nodes' }).not.toBe(before)
+}
+
 /** Wait for the convergence Network's six Active Nodes to be the listed set. */
 async function expectConvergenceList(page: Page): Promise<string[]> {
   const names = await expectListedNodes(page, CONVERGENCE_NODE_LETTERS.length)
@@ -234,7 +247,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
 
     // Node H is Healthy, so the health filter alone drops it; the Unknown Node
     // states the Server cannot attest are what remains.
-    await (await healthFilter(page)).selectOption('unknown')
+    await changeListBy(page, async () => (await healthFilter(page)).selectOption('unknown'))
     const filtered = await expectListAgreesWithSummary(page)
     expect(filtered.matching, 'the Unknown Node states the Server cannot attest remain').toBeGreaterThan(0)
     expect(filtered.matching, 'the health filter narrows the list').toBeLessThan(activeNodes)
@@ -608,7 +621,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
 
     // Validator status is the Server's own Linked-Validator answer, so the Nodes
     // it links leave the list and the counters read what is left.
-    await (await validatorFilter(page)).selectOption('not_validator')
+    await changeListBy(page, async () => (await validatorFilter(page)).selectOption('not_validator'))
     await expect(page).toHaveURL(/[?&]validator=not_validator$/)
     const notValidator = await expectListAgreesWithSummary(page)
     const notValidatorNames = await listedNodes(page)
@@ -618,7 +631,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
 
     // Unknown is its own answer, never folded into Not a Validator, and the two
     // cannot overlap because each Node carries exactly one status.
-    await (await validatorFilter(page)).selectOption('unknown')
+    await changeListBy(page, async () => (await validatorFilter(page)).selectOption('unknown'))
     const unknown = await expectListAgreesWithSummary(page)
     const unknownNames = await listedNodes(page)
     expect(unknown.matching, 'an Unlinked Validator status is listed as Unknown').toBeGreaterThan(0)
@@ -626,7 +639,7 @@ test.describe('Public Home search and filter URLs (issue #222)', () => {
 
     // The three statuses partition the Active Node set: nothing is left outside
     // the vocabulary the Server publishes.
-    await (await validatorFilter(page)).selectOption('validator')
+    await changeListBy(page, async () => (await validatorFilter(page)).selectOption('validator'))
     const validators = await expectListAgreesWithSummary(page)
     expect(validators.matching + unknown.matching + notValidator.matching).toBe(activeNodes)
     const validatorNames = await expectListedNodes(page, validators.matching)
