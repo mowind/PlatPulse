@@ -9,8 +9,8 @@ treats a lane skipped here as passed. A push to `main` runs every lane
 Each changed path selects lanes by the first matching rule below. A path no
 rule recognises selects every lane, so a new top-level directory or tool file
 is fully checked until a rule says otherwise. The repository checks lane
-(design references, logging discipline, screenshots) always runs and is not
-selected here.
+(design references, logging, baselines, document budgets, screenshots,
+frozen migrations) always runs and is not selected here.
 
   docs/openapi/**                       rust, web (spec freshness, generated client)
   docs/deployment.md, docs/deployment/**,

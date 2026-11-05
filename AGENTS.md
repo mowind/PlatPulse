@@ -63,6 +63,9 @@ python3 scripts/check-doc-budgets.py
 # Screenshots under docs/visual-migration/ are frozen: no added or rewritten images
 python3 scripts/check-no-new-screenshots.py --base origin/main
 
+# Committed migrations are frozen (sqlx checksums them at startup): add a new version, never edit, delete or rename one
+python3 scripts/check-frozen-migrations.py --base origin/main
+
 # CI lanes a change selects (CI runs only those on a pull request)
 git diff --name-only origin/main | python3 scripts/ci-lanes.py
 

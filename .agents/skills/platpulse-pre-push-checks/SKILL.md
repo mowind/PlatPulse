@@ -23,7 +23,10 @@ Include uncommitted work in the list when it will be part of the push (`git diff
 ```bash
 python3 scripts/check-design-refs.py
 python3 scripts/check-logging.py
+python3 scripts/check-baselines.py
+python3 scripts/check-doc-budgets.py
 python3 scripts/check-no-new-screenshots.py --base origin/main
+python3 scripts/check-frozen-migrations.py --base origin/main
 ```
 
 Add `python3 scripts/<name>.py --self-test` for any of these scripts the change edits, and `python3 scripts/ci-lanes.py --self-test` when the lane rules change.
