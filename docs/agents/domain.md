@@ -44,6 +44,16 @@ When your output names a domain concept (in an issue title, a refactor proposal,
 
 If the concept you need isn't in the glossary yet, that's a signal — either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
 
+## ADR Status
+
+The first line after an ADR's title is its Status, checked by `scripts/check-adr-status.py`:
+
+```md
+**Status:** Accepted — <optional sentence on the current state>
+```
+
+The value is `Proposed`, `Accepted`, `Rejected`, `Deprecated`, or `Superseded by [ADR NNNN](NNNN-slug.md)`. `Accepted` means delivered: a decision whose implementation has not landed is `Proposed` and becomes `Accepted` in the pull request that delivers it. The line states what holds now, in at most 200 characters, without issue references; which issues delivered it belongs in the pull requests. A later change to the decision goes in an `## Amendment history` section; when a new ADR replaces it, mark the old one `Superseded by`.
+
 ## Flag ADR conflicts
 
 If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:

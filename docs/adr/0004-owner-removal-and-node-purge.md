@@ -1,6 +1,6 @@
 # ADR 0004: Owner removal is a permanent admission boundary, not retirement
 
-**Status:** Accepted; implementation pending.
+**Status:** Accepted
 
 Local Node Inventory must remain Agent-owned, but an Owner must be able to remove an invalid deployment even when it is still declared or its Host will never report again. We choose explicit Agent Removal and permanent Node Purge with retained deletion identities over retirement-only cleanup, recoverable hiding, or an ordinary row delete that the next valid Inventory could undo. The Owner accepts loss of Node monitoring history and must use a new Node ID to monitor the deployment again; Server admission changes do not remotely edit configuration or stop processes.
 

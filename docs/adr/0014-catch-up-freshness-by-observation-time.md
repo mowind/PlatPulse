@@ -1,6 +1,6 @@
 # ADR 0014: Catch-up replays oldest-first; current freshness follows observation time
 
-**Status:** Accepted (design interview for [issue #268](https://github.com/mowind/PlatPulse/issues/268)).
+**Status:** Accepted
 
 ## Context
 

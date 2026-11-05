@@ -1,6 +1,8 @@
 # ADR 0006: Show PlatScan Validator Activity on the Home Node card
 
-**Status:** Accepted; implemented by the Home Node-card top-right status badge. Amended 2026-09-27 to show PlatScan `candidate` distinctly from `active`, and 2026-10-15 so the Node Health marker beside the name names all three health states rather than two (see Amendment history). This reverses the Home-card decision recorded by commit `288421f` ("refit Home overview, map and Node cards to the Emerald reference"), which deliberately rendered Validator Activity nowhere on a Home card and left Node Health as the only header status cue.
+**Status:** Accepted
+
+This reverses the Home-card decision recorded by commit `288421f` ("refit Home overview, map and Node cards to the Emerald reference"), which deliberately rendered Validator Activity nowhere on a Home card and left Node Health as the only header status cue.
 
 ## Context
 
