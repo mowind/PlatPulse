@@ -103,6 +103,10 @@ CI also runs Playwright, one job per project (desktop-1280 split in two), two wo
 
 Every change, including docs, lands on `main` through a squash-merged pull request whose required check is `all-checks-passed`; the work is done when the pull request is merged. Follow `docs/agents/change-workflow.md` when branching, opening a pull request, watching CI, or handling a flaky test.
 
+### Review
+
+`CODING_STANDARDS.md` holds the rules a reviewer checks in the diff (blocking items and the defect classes PlatPulse has hit). Check a change against it before opening its pull request and when reviewing one; the `code-review` skill's Standards review reads it.
+
 ### Repository skills
 
 `.agents/skills/` holds the skills specific to this repository: `platpulse-pre-push-checks` picks and runs the local checks a change needs before it is pushed, and `platpulse-schema-change` is the checklist for a Server or Agent schema change (paired SQLite and PostgreSQL migrations).
