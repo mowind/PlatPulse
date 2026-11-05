@@ -1,6 +1,8 @@
 # ADR 0012: Public Node Detail Metric Window
 
-**Status:** Accepted (design interview 2026-10-20). Delivery is split into two issues: #247 (the Metric Window for the four sample-backed charts) and #248 (the block-series aggregate tiers) — both **implemented**. Supersedes deviation 29 (h) of the Emerald register (docs/visual-migration/emerald/deviation-register-28-43.md) for the range switcher only; every other part of deviation 29 stands.
+**Status:** Accepted
+
+This supersedes deviation 29 (h) of the Emerald register (docs/visual-migration/emerald/deviation-register-28-43.md) for the range switcher only; every other part of deviation 29 stands.
 
 ## Context
 

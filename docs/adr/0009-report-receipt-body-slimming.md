@@ -1,6 +1,6 @@
 # ADR 0009: Report Receipt identity is permanent; the receipt body is slimmed after a bounded window
 
-- **Status:** Accepted; implementation pending.
+- **Status:** Accepted
 - **Date:** 2026-09-23
 
 `agent_report_receipts` is the Server's only idempotency record for an Agent Report and part of the evidence Agent Removal must keep, yet it grows with every report and has no retention policy (field: 1.58M rows / 4.3 GB, `receipt_body` up to 175 KB of per-Node and per-sample/range detail). Deleting rows would break replay deduplication and erase evidence; keeping whole bodies forever makes every Offline Backup Window scale with total history ([ADR 0008](0008-offline-server-backup.md)). We keep the identity row permanently and slim only the large `receipt_body` after a fixed window.

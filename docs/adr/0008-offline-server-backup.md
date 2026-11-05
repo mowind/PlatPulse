@@ -1,9 +1,9 @@
 # ADR 0008: Server backups are an offline operation, redacted at write time
 
-- **Status:** Accepted; amended 2026-09-23 — the default deployment ships no automatic backup. Implementation pending.
+- **Status:** Accepted — the default deployment ships no automatic backup.
 - **Date:** 2026-09-23
 
-This supersedes the in-process online-backup route that `platpulse-server` implemented — the Server-owned `[backup_schedule]` and the `VACUUM INTO` + snapshot-sanitize path behind the Admin `backup_create` Operation. [Issue #193](https://github.com/mowind/PlatPulse/issues/193) cites that route as "design §20.1", but the current design document no longer carries that section, so this ADR is the authority. The code reduction is a follow-up implementation slice, with the bounded-scan, retention, single-pass and residue-cleanup prerequisites tracked by [#183](https://github.com/mowind/PlatPulse/issues/183), [#184](https://github.com/mowind/PlatPulse/issues/184), [#185](https://github.com/mowind/PlatPulse/issues/185) and [#195](https://github.com/mowind/PlatPulse/issues/195). The amendments below — agreed while re-scoping those issues — delete the packaged automation, record the layout guard and residue handling, and fix the interface with the runtime integrity monitor ([#194](https://github.com/mowind/PlatPulse/issues/194)).
+This supersedes the in-process online-backup route that `platpulse-server` implemented — the Server-owned `[backup_schedule]` and the `VACUUM INTO` + snapshot-sanitize path behind the Admin `backup_create` Operation. [Issue #193](https://github.com/mowind/PlatPulse/issues/193) cites that route as "design §20.1", but the current design document no longer carries that section, so this ADR is the authority. The code reduction followed, after the bounded-scan, retention, single-pass and residue-cleanup prerequisites of [#183](https://github.com/mowind/PlatPulse/issues/183), [#184](https://github.com/mowind/PlatPulse/issues/184), [#185](https://github.com/mowind/PlatPulse/issues/185) and [#195](https://github.com/mowind/PlatPulse/issues/195). The amendments below — agreed while re-scoping those issues — delete the packaged automation, record the layout guard and residue handling, and fix the interface with the runtime integrity monitor ([#194](https://github.com/mowind/PlatPulse/issues/194)).
 
 ## Context
 

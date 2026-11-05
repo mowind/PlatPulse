@@ -1,6 +1,8 @@
 # ADR 0010: Read the Home counters and Peer country map over the current list selection
 
-**Status:** Accepted; implemented by issue #233 (Server slice in crates/platpulse-server/src/http/public.rs, Web slice in platpulse-web/src/homeGeo.ts and platpulse-web/src/components/). This revises the Home scope rule settled for issue #222 (Story 71), which had made the whole overview band and the Peer country map follow only the Network selection while the search, Health and Validator status filters narrowed the Node list.
+**Status:** Accepted
+
+This revises the Home scope rule settled for issue #222 (Story 71), which had made the whole overview band and the Peer country map follow only the Network selection while the search, Health and Validator status filters narrowed the Node list.
 
 **Amended:** Networks counter replaced by Reward Wallet Balance; three attributable counters (issue #246, docs/design/webui.md §15.37). The Balance tile reads the fixed Reward Wallet and follows no selection, so the counters that read the current list selection are now Active Nodes, Healthy Nodes and Attention; every other decision below stands.
 

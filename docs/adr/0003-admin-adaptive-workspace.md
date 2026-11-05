@@ -1,6 +1,6 @@
 # ADR 0003: Adaptive Admin workspace within Emerald
 
-Status: Accepted
+**Status:** Accepted
 
 ## Context
 
