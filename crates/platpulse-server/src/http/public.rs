@@ -3900,7 +3900,7 @@ mod tests {
     /// that has never produced one.
     async fn mark_peer_snapshot(state: &AppState, node_id: &str, value_revision: i64) {
         let now = seconds_ago(0);
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', $1, $2, 'peers', 'ok', $3, $4, $5, $6, 1, $7) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state = 'ok', value_revision = excluded.value_revision, received_at = excluded.received_at, observed_at = excluded.observed_at, value_received_at = excluded.value_received_at")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, value_received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', $1, $2, 'peers', 'ok', $3, $4, $5, $5, $6, 1, $7) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state = 'ok', value_revision = excluded.value_revision, received_at = excluded.received_at, observation_at = excluded.observation_at, observed_at = excluded.observed_at, value_received_at = excluded.value_received_at")
             .bind(node_id)
             .bind(node_id)
             .bind(&now)
@@ -4209,7 +4209,7 @@ mod tests {
         // A failed collection keeps the retained Peer Snapshot and its own
         // stale state; Geo being Current never claims the Peers are fresh.
         let stale_received = seconds_ago(600);
-        sqlx::query("UPDATE component_status SET state = 'error', state_revision = 2, received_at = $1, observed_at = $2, value_received_at = $3 WHERE node_id = 'geo-failed' AND component_key = 'peers'")
+        sqlx::query("UPDATE component_status SET state = 'error', state_revision = 2, received_at = $1, observation_at = $1, observed_at = $2, value_received_at = $3 WHERE node_id = 'geo-failed' AND component_key = 'peers'")
             .bind(&stale_received)
             .bind(&stale_received)
             .bind(&stale_received)
@@ -5099,9 +5099,9 @@ mod tests {
                 .bind(node_id).bind(format!("{node_id} display")).bind(lifecycle).bind(visibility)
                 .execute(state.db().pool()).await.unwrap();
         }
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-public', 'node-public', 'rpc', 'ok', '2026-01-01T00:00:00Z', 1, 1)")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, received_at, observation_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-public', 'node-public', 'rpc', 'ok', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1)")
             .execute(state.db().pool()).await.unwrap();
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-public', 'node-public', 'process', 'ok', '2026-01-01T00:00:00Z', 1, 1)")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, received_at, observation_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-public', 'node-public', 'process', 'ok', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1)")
             .execute(state.db().pool()).await.unwrap();
         sqlx::query("INSERT INTO current_host_observations (agent_id, cpu_percent, memory_total_bytes, memory_used_bytes, updated_at) VALUES ('agent-public-test', 42.5, 10000, 5000, '2026-01-01T00:00:00Z')")
             .execute(state.db().pool()).await.unwrap();
@@ -6750,7 +6750,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', $1, $2, 'consensus', $3, $4, $5, $6, 1, $7)")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, observed_at, received_at, observation_at, value_received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', $1, $2, 'consensus', $3, $4, $5, $5, $6, 1, $7)")
             .bind(node_id)
             .bind(node_id)
             .bind(component_state)
@@ -6784,7 +6784,7 @@ mod tests {
         let (_dir, state) = test_state().await;
         seed_public_data(&state).await;
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, observed_at, received_at, value_received_at, value_observation_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-public', 'node-public', 'peers', 'ok', $1, $2, $3, $4, 1, 1)")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, observed_at, received_at, observation_at, value_received_at, value_observation_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-public', 'node-public', 'peers', 'ok', $1, $2, $2, $3, $4, 1, 1)")
             .bind("9999-12-31T23:59:59Z")
             .bind(&now)
             .bind(&now)
@@ -6811,7 +6811,7 @@ mod tests {
         let (_dir, state) = test_state().await;
         seed_public_data(&state).await;
         let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-public', 'node-public', 'peers', 'ok', $1, $2, $3, 1, 1)")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, observed_at, received_at, observation_at, value_received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-public', 'node-public', 'peers', 'ok', $1, $2, $2, $3, 1, 1)")
             .bind(&now)
             .bind(&now)
             .bind(&now)
@@ -6866,7 +6866,7 @@ mod tests {
 
         let stale_received =
             crate::auth::format_rfc3339(crate::auth::now_utc() - time::Duration::minutes(5));
-        sqlx::query("UPDATE component_status SET state='ok', state_revision=2, observed_at=$1, received_at=$2, value_received_at=$3 WHERE node_id='node-public' AND component_key='peers'")
+        sqlx::query("UPDATE component_status SET state='ok', state_revision=2, observed_at=$1, received_at=$2, observation_at=$2, value_received_at=$3 WHERE node_id='node-public' AND component_key='peers'")
             .bind(&now)
             .bind(&stale_received)
             .bind(&stale_received)
@@ -6902,7 +6902,7 @@ mod tests {
         assert_eq!(value["peers"]["receivedAt"], stale_received);
         assert_eq!(value["peers"]["peerCount"], 2);
 
-        sqlx::query("UPDATE component_status SET state='ok', state_revision=4, value_revision=2, observed_at=$1, received_at=$2, value_received_at=$3 WHERE node_id='node-public' AND component_key='peers'")
+        sqlx::query("UPDATE component_status SET state='ok', state_revision=4, value_revision=2, observed_at=$1, received_at=$2, observation_at=$2, value_received_at=$3 WHERE node_id='node-public' AND component_key='peers'")
             .bind(&now)
             .bind(&now)
             .bind(&now)
@@ -6930,7 +6930,7 @@ mod tests {
     async fn public_peer_projection_includes_all_active_nodes_without_raw_peer_data() {
         let (_dir, state) = test_state().await;
         seed_public_data(&state).await;
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-private', 'node-private', 'peers', 'ok', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1)")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, observed_at, received_at, observation_at, value_received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-private', 'node-private', 'peers', 'ok', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1)")
             .execute(state.db().pool())
             .await
             .unwrap();
@@ -7957,7 +7957,7 @@ mod tests {
         // Make the Provider-failed Node fully healthy so the assertion
         // proves Provider Activity never changes Node Health.
         for component in ["rpc", "sync", "consensus", "process"] {
-            sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-error-good', 'node-error-good', $1, 'ok', $2, 1, 1)")
+            sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, received_at, observation_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-error-good', 'node-error-good', $1, 'ok', $2, $2, 1, 1)")
                 .bind(component)
                 .bind(&now)
                 .execute(state.db().pool())

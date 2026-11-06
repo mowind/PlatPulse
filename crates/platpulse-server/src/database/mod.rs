@@ -101,7 +101,7 @@ pub struct PostgresFacts {
 }
 
 /// The latest migration version compiled into the Server binary.
-pub const SERVER_SCHEMA_VERSION: i64 = 80;
+pub const SERVER_SCHEMA_VERSION: i64 = 81;
 
 /// SQLite allows one writer at a time, so the SQLite Storage Backend keeps
 /// exactly one pool connection: more would only trade correctness for lock
@@ -1014,6 +1014,21 @@ mod tests {
         }
     }
 
+    fn postgres_migrations_through(version: i64) -> Migrator {
+        Migrator {
+            migrations: Cow::Owned(
+                postgres::POSTGRES_MIGRATOR
+                    .iter()
+                    .filter(|migration| migration.version <= version)
+                    .cloned()
+                    .collect(),
+            ),
+            ignore_missing: false,
+            locking: true,
+            no_tx: false,
+        }
+    }
+
     #[tokio::test]
     async fn confirmed_verdict_migration_preserves_metrics_and_does_not_guess_failed_history() {
         let directory = tempdir().unwrap();
@@ -1219,6 +1234,88 @@ mod tests {
             database.schema_version().await.unwrap(),
             SERVER_SCHEMA_VERSION
         );
+    }
+
+    /// The observation instant migration backfills the rows written before
+    /// ingestion recorded `observation_at`, so the receipt instant is no
+    /// longer a fallback every reader repeats: a row without an observation
+    /// instant takes its receipt instant, a recorded instant is kept, and a
+    /// row that was never received stays without one. Runs on the selected
+    /// Storage Backend.
+    #[tokio::test]
+    async fn observation_instant_migration_backfills_the_receipt_instant() {
+        const SCHEMA_BEFORE_BACKFILL: i64 = 80;
+        const STAGED: &[&str] = &[
+            "INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('mainnet', 'Mainnet', '0xgenesis', 1, 1, 'lat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            "INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('agent-1', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            "INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, inventory_revision, first_seen_at, updated_at) VALUES ('node-a', 'agent-1', 'mainnet', 'ws://127.0.0.1:1', 'active', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            // Written before ingestion recorded an observation instant.
+            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-1', 'node', 'node-a', 'node-a', 'rpc', 'ok', '2026-01-01T00:00:04Z', '2026-01-01T00:00:04Z', '2026-01-01T00:00:05Z', 1, 1)",
+            // Written by ingestion with a skew-corrected observation instant.
+            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, state_revision, value_revision) VALUES ('agent-1', 'node', 'node-a', 'node-a', 'sync', 'ok', '2026-01-01T00:00:08Z', '2026-01-01T00:00:08Z', '2026-01-01T00:00:09Z', '2026-01-01T00:00:03Z', 1, 1)",
+            // Declared but never received.
+            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, state_revision, value_revision) VALUES ('agent-1', 'node', 'node-a', 'node-a', 'consensus', 'starting', 1, 0)",
+        ];
+
+        let directory = tempdir().unwrap();
+        let database = match crate::test_support::TestStorage::from_env() {
+            crate::test_support::TestStorage::Sqlite => {
+                let path = directory.path().join("server.db");
+                let pool = SqlitePoolOptions::new()
+                    .max_connections(SERVER_WRITE_CONNECTIONS)
+                    .connect_with(sqlite::connect_options(&config(&path), true))
+                    .await
+                    .unwrap();
+                migrations_through(SCHEMA_BEFORE_BACKFILL)
+                    .run(&pool)
+                    .await
+                    .unwrap();
+                for statement in STAGED {
+                    sqlx::query(statement).execute(&pool).await.unwrap();
+                }
+                pool.close().await;
+                ServerDatabase::open(config(&path)).await.unwrap()
+            }
+            crate::test_support::TestStorage::Postgres => {
+                let target = crate::test_support::optional_postgres_connect_config()
+                    .await
+                    .expect("a PostgreSQL run configures its test server");
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(1)
+                    .connect_with(target.native_options())
+                    .await
+                    .unwrap();
+                postgres_migrations_through(SCHEMA_BEFORE_BACKFILL)
+                    .run(&pool)
+                    .await
+                    .unwrap();
+                for statement in STAGED {
+                    sqlx::query(statement).execute(&pool).await.unwrap();
+                }
+                pool.close().await;
+                ServerDatabase::open(target).await.unwrap()
+            }
+        };
+        assert_eq!(
+            database.schema_version().await.unwrap(),
+            SERVER_SCHEMA_VERSION
+        );
+
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT component_key, observation_at FROM component_status WHERE node_id = 'node-a' ORDER BY component_key",
+        )
+        .fetch_all(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("consensus".to_owned(), None),
+                ("rpc".to_owned(), Some("2026-01-01T00:00:05Z".to_owned())),
+                ("sync".to_owned(), Some("2026-01-01T00:00:03Z".to_owned())),
+            ]
+        );
+        database.close().await;
     }
 
     /// Issue #132: an existing installation keeps its retained local MMDB

@@ -36,7 +36,7 @@ v0.3.0 adds PostgreSQL as an opt-in Server Storage Backend ([ADR 0013](../../adr
 
 | | v0.2.0 | v0.3.0 |
 |---|---|---|
-| Server (`SERVER_SCHEMA_VERSION`) | 75 | 80 |
+| Server (`SERVER_SCHEMA_VERSION`) | 75 | 81 |
 | Agent (`AGENT_SCHEMA_VERSION`) | 17 | 19 |
 
 Server (SQLite, `crates/platpulse-server/migrations/`), applied automatically at startup:
@@ -46,6 +46,7 @@ Server (SQLite, `crates/platpulse-server/migrations/`), applied automatically at
 - `0078_observation_time` — observation-time columns for Current Projection freshness ([ADR 0014](../../adr/0014-catch-up-freshness-by-observation-time.md)).
 - `0079_metric_source_observed_at` — **rebuilds `node_metric_samples` and `host_metric_samples`** to add `source_observed_at` to their key (09cbde1). Every raw metric row is copied into a new table, so the run time and the temporary disk use grow with the stored raw metric history. Do not interrupt the first start.
 - `0080_bounded_gap_settlement` — three partial indexes for History Gap settlement.
+- `0081_backfill_observation_at` — fills the observation instant of component rows written before `0078`, from their receipt instant. No schema change.
 
 Agent (`crates/platpulse-agent/migrations/`), applied automatically at startup:
 
@@ -54,7 +55,7 @@ Agent (`crates/platpulse-agent/migrations/`), applied automatically at startup:
 
 A v0.2.0 Agent refuses an Agent Store at schema 19.
 
-The PostgreSQL migrations (`crates/platpulse-server/migrations-postgres/`, baseline 0075 through 0080) are used only by the new PostgreSQL Storage Backend.
+The PostgreSQL migrations (`crates/platpulse-server/migrations-postgres/`, baseline 0075 through 0081) are used only by the new PostgreSQL Storage Backend.
 
 ## Configuration changes
 

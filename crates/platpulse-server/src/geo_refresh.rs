@@ -1148,7 +1148,7 @@ mod tests {
         seed_node(&state, "geo-node-a").await;
         insert_peer(&state, "geo-node-a", "p1", RESOLVABLE).await;
         // A successful Peer Snapshot basis so the projection has a denominator.
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-geo-refresh', 'node', 'geo-node-a', 'geo-node-a', 'peers', 'ok', $1, $2, $3, $4, 1, 1)")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, value_received_at, state_revision, value_revision) VALUES ('agent-geo-refresh', 'node', 'geo-node-a', 'geo-node-a', 'peers', 'ok', $1, $2, $3, $3, $4, 1, 1)")
             .bind(NOW)
             .bind(NOW)
             .bind(NOW)

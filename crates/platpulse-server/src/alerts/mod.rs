@@ -2323,7 +2323,7 @@ mod tests {
     ) {
         let now = format_rfc3339(observed_at);
         let (error_code, error_message) = error.unwrap_or(("", ""));
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES ($1, 'node', $2, $3, 'rpc', $4, $5, $6, $7, 1, 1, $8, $9) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, received_at=excluded.received_at, state_revision=component_status.state_revision+1, error_code=excluded.error_code, error_message=excluded.error_message")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, state_revision, value_revision, error_code, error_message) VALUES ($1, 'node', $2, $3, 'rpc', $4, $5, $6, $7, $7, 1, 1, $8, $9) ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, received_at=excluded.received_at, observation_at=excluded.observation_at, state_revision=component_status.state_revision+1, error_code=excluded.error_code, error_message=excluded.error_message")
             .bind(agent_id)
             .bind(node_id)
             .bind(node_id)
@@ -2882,7 +2882,7 @@ mod tests {
         let now = base_time();
         // A very old `ok` observation must NOT count as fresh recovery.
         sqlx::query(
-            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-a', 'node', 'node-a', 'node-a', 'rpc', 'ok', $1, $2, $3, 1, 1)",
+            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, state_revision, value_revision) VALUES ('agent-a', 'node', 'node-a', 'node-a', 'rpc', 'ok', $1, $2, $3, $3, 1, 1)",
         )
         .bind(format_rfc3339(now - time::Duration::hours(2)))
         .bind(format_rfc3339(now - time::Duration::hours(2)))
@@ -3340,7 +3340,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-a', 'node', 'node-a', 'node-a', 'sync', 'ok', $1, $2, $3, 1, 1)")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, state_revision, value_revision) VALUES ('agent-a', 'node', 'node-a', 'node-a', 'sync', 'ok', $1, $2, $3, $3, 1, 1)")
             .bind(&now_text).bind(&now_text).bind(&now_text)
             .execute(&pool)
             .await
