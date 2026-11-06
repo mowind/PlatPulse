@@ -27,11 +27,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{Any, AnyPool, Transaction};
 
-use crate::http::AppState;
-use crate::http::report_ingestion::{
+use crate::block_history::{
     GapSettlement, TouchedRange, observe_gap_settlement, settle_history_gaps_after,
     settle_touched_history_gaps,
 };
+use crate::http::AppState;
 
 /// Phase 1 raw Block Summary retention baseline from design §6.3.
 pub const RAW_BLOCK_SUMMARY_RETENTION_DAYS: i64 = 7;
