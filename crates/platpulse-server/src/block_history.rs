@@ -1,15 +1,17 @@
-//! Block history coverage: covered intervals, History Gap opening, backfill
-//! admission and History Gap settlement, shared by Report ingestion and
-//! retention.
+//! Block history: Block Summary admission for Report ingestion, and the
+//! coverage compaction retention runs. Covered intervals, History Gap opening
+//! and History Gap settlement stay behind those two entry points.
 
 use sqlx::{Any, AnyConnection, Transaction};
 
 mod admission;
+mod compaction;
 mod identity;
 #[cfg(test)]
 mod tests;
 
 pub(crate) use admission::{NodeAdmission, Refusal, admit};
+pub(crate) use compaction::compact;
 
 /// Open the part of an Agent-declared `unrecoverable_backfill` range the
 /// Server has not already settled (issue #281).
@@ -21,7 +23,7 @@ pub(crate) use admission::{NodeAdmission, Refusal, admit};
 /// count it twice, so only the uncovered stretches become open gaps. A height
 /// the Server itself refused for an identity mismatch is never opened either
 /// (ADR 0011 decision 3).
-pub(crate) async fn open_uncovered_gap(
+async fn open_uncovered_gap(
     tx: &mut Transaction<'_, Any>,
     node_id: &str,
     from_height: u64,
@@ -111,7 +113,7 @@ async fn open_coverage_gap(
 /// #281), so extending only the newest interval would leave one row per
 /// backfilled height. Merging both neighbours keeps a fully backfilled hole
 /// one interval, which is also what proves a History Gap resolved.
-pub(crate) async fn mark_covered_height(
+async fn mark_covered_height(
     tx: &mut Transaction<'_, Any>,
     node_id: &str,
     height: u64,
@@ -182,7 +184,7 @@ async fn insert_covered_interval(
 }
 
 /// The open recoverable gap that contains `height`, if any.
-pub(crate) async fn open_gap_containing(
+async fn open_gap_containing(
     tx: &mut Transaction<'_, Any>,
     node_id: &str,
     height: u64,
@@ -215,7 +217,7 @@ pub(crate) async fn open_gap_containing(
 /// Every other height is a plain resync replay and stays
 /// `GapBackfillOutsideOpenGap`, so the dedup rule still holds: an accepted
 /// height is covered and can never be counted twice.
-pub(crate) async fn backfill_admitted(
+async fn backfill_admitted(
     tx: &mut Transaction<'_, Any>,
     node_id: &str,
     height: u64,
@@ -262,7 +264,7 @@ impl GapSettlement {
 
 /// A settlement pass slower than this is logged (issue #282): it is the early
 /// signal that settlement is drifting back toward a whole-table scan.
-pub(crate) const GAP_SETTLEMENT_SLOW: std::time::Duration = std::time::Duration::from_millis(500);
+const GAP_SETTLEMENT_SLOW: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Count one settlement pass in the metrics and warn when it was slow.
 /// `path` is `report` or `retention`.
@@ -304,7 +306,7 @@ pub(crate) fn observe_gap_settlement(
 /// missing) settles exactly the gaps around those heights, and nothing else
 /// has to be looked at: issue #282 replaced the per-Report pass that probed
 /// every unresolved gap of the table with this range-bounded one.
-pub(crate) async fn settle_history_gaps_in_range(
+async fn settle_history_gaps_in_range(
     conn: &mut AnyConnection,
     node_id: &str,
     from_height: u64,
@@ -339,16 +341,16 @@ pub(crate) async fn settle_history_gaps_in_range(
 /// One Node's heights that left the open state, or that a History Gap was
 /// declared over: the only places a gap can have become settled (issue #282).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct TouchedRange {
-    pub(crate) node_id: String,
-    pub(crate) from_height: u64,
-    pub(crate) to_height: u64,
+struct TouchedRange {
+    node_id: String,
+    from_height: u64,
+    to_height: u64,
 }
 
 /// Settle the gaps around every touched range, merging the overlapping and
 /// adjacent ranges of one Node first so a run of backfilled heights is one
 /// bounded lookup rather than one per height.
-pub(crate) async fn settle_touched_history_gaps(
+async fn settle_touched_history_gaps(
     conn: &mut AnyConnection,
     touched: &[TouchedRange],
     now_text: &str,
@@ -397,7 +399,7 @@ fn merge_touched_ranges(touched: &[TouchedRange]) -> Vec<TouchedRange> {
 /// backlog costs a bounded amount of work per sweep instead of one whole-table
 /// pass (issue #282). Returns the settlement and the last gap examined, or
 /// `None` once the scan reached the end and starts over.
-pub(crate) async fn settle_history_gaps_after(
+async fn settle_history_gaps_after(
     conn: &mut AnyConnection,
     after_gap_id: i64,
     now_text: &str,
@@ -516,7 +518,7 @@ const GAP_CANDIDATES_IN_RANGE_SQL: &str = gap_candidates_sql!(
 const GAP_CANDIDATES_AFTER_SQL: &str =
     gap_candidates_sql!("g.gap_id > $1 ORDER BY g.gap_id LIMIT $2");
 
-pub(crate) async fn close_coverage_height(
+async fn close_coverage_height(
     tx: &mut Transaction<'_, Any>,
     coverage_id: i64,
     height: u64,
