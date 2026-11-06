@@ -567,7 +567,9 @@ test.describe('Linked Validator metrics (#154, #155, #156, #157, #158)', () => {
     const identityBox = (await identity.boundingBox())!
     expect(regionBox.height, 'the identity line is the whole region').toBeLessThanOrEqual(48)
     expect(identityBox.y - regionBox.y).toBeLessThanOrEqual(13)
-    const cardHeight = await card.evaluate(element => element.getBoundingClientRect().height)
+    // The card stretches to the tallest card in its grid row, so its natural
+    // height is its content's, which the row does not stretch.
+    const cardHeight = await card.locator('[data-slot="card-x"]').first().evaluate(element => element.getBoundingClientRect().height)
     expect(cardHeight, 'a card without a confirmed Validator keeps its natural height').toBeLessThanOrEqual(300)
     await expectNoHorizontalOverflow(page)
   })
