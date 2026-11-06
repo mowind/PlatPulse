@@ -44,11 +44,12 @@ impl Refusal {
 
     /// The operator-facing reason, already redacted.
     pub(crate) fn reason(&self) -> String {
-        match self {
-            Self::Purged => redacted("Node was permanently purged by the Owner"),
-            Self::OwnershipMismatch => redacted("Node belongs to another Agent"),
-            Self::IdentityMismatch(evidence) => redacted(&evidence.reason()),
-        }
+        let reason = match self {
+            Self::Purged => "Node was permanently purged by the Owner".to_owned(),
+            Self::OwnershipMismatch => "Node belongs to another Agent".to_owned(),
+            Self::IdentityMismatch(evidence) => evidence.reason(),
+        };
+        redacted(&reason)
     }
 
     /// The Receipt rejection for this refusal.
@@ -179,8 +180,9 @@ pub(crate) struct BlockAdmission {
     pub(crate) settlement: Option<(GapSettlement, std::time::Duration)>,
 }
 
-/// What admission keeps about one Node for the rest of the Report. The
-/// transaction holds the write lock and retention never reads or writes the
+/// What admission keeps about one Node for the rest of the Report. Ingestion
+/// holds the fence of every Node the Report names for the whole transaction,
+/// on either Storage Backend, and retention never reads or writes the
 /// high-water mark, so the value read once stays true as long as admission
 /// advances it with every summary it writes. Coverage intervals are not kept:
 /// compaction merges them in transactions of its own.
@@ -240,19 +242,32 @@ pub(crate) async fn admit<I: ReportInventory>(
     let mut histories: HashMap<NodeId, NodeHistory> = HashMap::new();
     let mut touched = Vec::new();
     let mut samples = Vec::with_capacity(report.block_summaries.len());
+    let mut identity_contradicted = false;
     for sample in &report.block_summaries {
-        let outcome = match nodes.refusal(sample.node_id) {
-            Some(refusal) => BlockOutcome::Refused(refusal.clone()),
-            None => {
-                let history = match histories.entry(sample.node_id) {
-                    Entry::Occupied(entry) => entry.into_mut(),
-                    Entry::Vacant(entry) => {
-                        entry.insert(NodeHistory::load(tx, report, sample.node_id).await?)
-                    }
-                };
+        let refusal = nodes.refusal(sample.node_id);
+        // A purged Node has no Network projection left to compare against and
+        // never raises an identity contradiction.
+        if matches!(refusal, Some(Refusal::Purged)) {
+            samples.push(BlockOutcome::Refused(Refusal::Purged));
+            continue;
+        }
+        let history = match histories.entry(sample.node_id) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                entry.insert(NodeHistory::load(tx, report, sample.node_id).await?)
+            }
+        };
+        // A contradicted stamp is a security event for the reporting Agent
+        // even when the Node is refused for its owner, and it never touches
+        // the identity window: mismatched samples can never merge into history.
+        let contradiction = history.registered.contradiction(report, sample);
+        identity_contradicted |= contradiction.is_some();
+        let outcome = match (refusal, contradiction) {
+            (Some(refusal), _) => BlockOutcome::Refused(refusal.clone()),
+            (None, Some(evidence)) => BlockOutcome::Refused(Refusal::IdentityMismatch(evidence)),
+            (None, None) => {
                 admit_sample(
                     tx,
-                    report,
                     sample,
                     history,
                     received_at,
@@ -341,9 +356,6 @@ pub(crate) async fn admit<I: ReportInventory>(
         Some((settlement, started.elapsed()))
     };
 
-    let identity_contradicted = samples
-        .iter()
-        .any(|outcome| matches!(outcome, BlockOutcome::Refused(Refusal::IdentityMismatch(_))));
     Ok(BlockAdmission {
         samples,
         gaps,
@@ -353,20 +365,14 @@ pub(crate) async fn admit<I: ReportInventory>(
 }
 
 /// Judge one sample of an admitted Node and, when it is admitted, write it.
-async fn admit_sample<I: ReportInventory>(
+async fn admit_sample(
     tx: &mut Transaction<'_, Any>,
-    report: &AgentReport<I>,
     sample: &BlockSummary,
     history: &mut NodeHistory,
     received_at: &str,
     observed_at: Rfc3339,
     touched: &mut Vec<TouchedRange>,
 ) -> Result<BlockOutcome, sqlx::Error> {
-    // A contradicted stamp never touches the identity window: mismatched
-    // samples can never merge into history.
-    if let Some(evidence) = history.registered.contradiction(report, sample) {
-        return Ok(BlockOutcome::Refused(Refusal::IdentityMismatch(evidence)));
-    }
     let node_id = sample.node_id.to_string();
     let height = sample.block_number as i64;
     match sample.source {

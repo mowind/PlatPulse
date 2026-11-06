@@ -601,6 +601,61 @@ mod tests {
         assert_eq!(events, 0);
     }
 
+    /// A block sample whose stamp contradicts the Registry is a security
+    /// event even while its Node is refused for its owner and the transfer
+    /// stays pending: the refusal does not hide the contradiction.
+    #[tokio::test]
+    pub(super) async fn a_contradicted_stamp_of_a_refused_node_is_still_a_security_event() {
+        let (_dir, state, source_agent, target_agent, node_id) =
+            state_with_source_and_target().await;
+        pending_transfer(&state, &node_id, &source_agent, &target_agent).await;
+        let source_report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        // The sample keeps the fixture stamp (0xaaa…, no hrp), which
+        // contradicts the Registry; the identity probe itself failed, so the
+        // transfer cannot be resolved by this declaration.
+        let mut declaration = target_declaration(&source_report, &target_agent, false, true);
+        declaration.nodes[0].chain.network_identity.status = ComponentStatus::Error;
+        declaration.nodes[0].chain.network_identity.latest = None;
+        declaration.nodes[0]
+            .chain
+            .network_identity
+            .latest_observed_at = None;
+        declaration.nodes[0].chain.network_identity.error =
+            Some(platpulse_core::component::BoundedError {
+                code: "rpc_unreachable".into(),
+                message: "identity probe failed".into(),
+            });
+        declaration.validate().unwrap();
+        let receipt = submit(
+            &state,
+            &target_agent,
+            serde_json::to_vec(&declaration).unwrap(),
+        )
+        .await;
+        assert_eq!(receipt.nodes[0].current, NodeCurrentDisposition::Rejected);
+        assert_eq!(
+            receipt.samples[0].rejection.as_ref().unwrap().code,
+            platpulse_core::RejectionCode::NodeOwnershipMismatch
+        );
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM node_transfers WHERE transfer_id='transfer-pending-1'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(status, "pending");
+        let events: i64 =
+            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=$1")
+                .bind(&target_agent)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(events, 1);
+    }
+
     #[tokio::test]
     pub(super) async fn expired_transfer_is_materialized_and_declaration_stays_rejected() {
         let (_dir, state, source_agent, target_agent, node_id) =
