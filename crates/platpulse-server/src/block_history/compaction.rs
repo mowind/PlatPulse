@@ -39,19 +39,19 @@ pub(crate) struct CoverageCompaction {
 
 /// Keep Block coverage bounded without deleting a coverage fact.
 ///
-/// One retention step confirms open gaps no Agent filled since `window_start`,
-/// the start of the raw Block History window, as missing (`permanent_gap`), merges adjacent intervals of
-/// the same status into one row, resolves the `unrecoverable_backfill`
-/// History Gaps nothing open overlaps any more, and resolves Agent copies of
-/// Server refusals older than `window_start`, so the history-gap retention family can release them.
-/// Every height keeps exactly the disposition it had: a merge only changes how
-/// many rows describe it, and the High-Water Mark and cumulative counters are
-/// never read or written here.
+/// One retention step confirms open gaps no Agent filled since `window_start`
+/// (the start of the raw Block History window) as missing (`permanent_gap`),
+/// merges adjacent intervals of the same status into one row, resolves the
+/// `unrecoverable_backfill` History Gaps nothing open overlaps any more, and
+/// resolves Agent copies of Server refusals older than `window_start`, so the
+/// history-gap retention family can release them. Every height keeps exactly
+/// the disposition it had: a merge only changes how many rows describe it, and
+/// the High-Water Mark and cumulative counters are never read or written here.
 ///
-/// Settlement is bounded: the gaps around the ranges this step
-/// confirmed are settled directly, and one batch of the remaining unresolved
-/// gaps after `gap_cursor` is examined as a safety net, the cursor moving on
-/// so successive sweeps walk the table instead of rescanning it.
+/// Settlement is bounded: the gaps around the ranges this step confirmed are
+/// settled directly, and one batch of the remaining unresolved gaps after
+/// `gap_cursor` is examined as a safety net, the cursor moving on so
+/// successive sweeps walk the table instead of rescanning it.
 pub(crate) async fn compact(
     pool: &AnyPool,
     now: OffsetDateTime,

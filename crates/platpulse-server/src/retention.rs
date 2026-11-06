@@ -1131,13 +1131,13 @@ pub async fn sweep(state: &AppState, gap_cursor: &mut i64) -> u64 {
         Ok(count) => removed += count,
         Err(error) => tracing::warn!(error = %error, "aggregate metric retention sweep deferred"),
     }
-    // Issue #281: coverage is compacted, never deleted, so its rows stay
-    // bounded and an open gap no Agent fills ends as a confirmed-missing fact.
-    let compaction = async {
+    // Coverage is compacted, never deleted, so its rows stay bounded and an
+    // open gap no Agent fills ends as a confirmed-missing fact.
+    let compaction_step = async {
         let window_start = family_cutoff(now, raw_block_summary_retention_days(pool).await?);
         crate::block_history::compact(pool, now, window_start, gap_cursor).await
     };
-    match compaction.await {
+    match compaction_step.await {
         Ok(compaction) => {
             tracing::debug!(
                 "block coverage compaction changed {} rows",
@@ -2641,6 +2641,66 @@ mod tests {
                 "{report_id} lost its per-Node detail"
             );
         }
+    }
+
+    /// The sweep confirms an open gap missing by the raw Block History window
+    /// the Owner set, not by the default: a gap idle for longer than the
+    /// default but shorter than the configured window stays open.
+    #[tokio::test]
+    async fn the_sweep_compacts_coverage_by_the_configured_block_history_window() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
+        let pool = database.pool();
+        ensure_seeded(pool).await.unwrap();
+        sqlx::query("UPDATE retention_policies SET retention_days = 14 WHERE family = $1")
+            .bind(FAMILY_RAW_BLOCK_SUMMARY)
+            .execute(pool)
+            .await
+            .unwrap();
+        let now = crate::auth::now_utc();
+        let stamp = |days: i64| crate::auth::format_rfc3339(now - time::Duration::days(days));
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('window-agent', 1, $1, $2)")
+            .bind(stamp(0)).bind(stamp(0)).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('window-network', 'Window', '0xgenesis', 1, 1, 'lat', $1, $2)")
+            .bind(stamp(0)).bind(stamp(0)).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('window-node', 'window-agent', 'window-network', 'ws://127.0.0.1:1', 'active', 'private', 1, $1, $2)")
+            .bind(stamp(0)).bind(stamp(0)).execute(pool).await.unwrap();
+        for (height, idle_days) in [(10_i64, RAW_BLOCK_SUMMARY_RETENTION_DAYS + 3), (20, 15)] {
+            sqlx::query("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ('window-node', $1, $2, 'open_recoverable_gap', $3, $4)")
+                .bind(height)
+                .bind(height)
+                .bind(stamp(idle_days))
+                .bind(stamp(idle_days))
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let state = AppState::new(
+            database,
+            None,
+            crate::auth::AuthConfig::development(
+                crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+                "http://127.0.0.1:8080".to_owned(),
+            ),
+        );
+
+        sweep(&state, &mut 0).await;
+
+        let intervals: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT first_height, status FROM block_coverage_intervals WHERE node_id = 'window-node' ORDER BY first_height",
+        )
+        .fetch_all(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            intervals,
+            vec![
+                (10, "open_recoverable_gap".to_owned()),
+                (20, "permanent_gap".to_owned()),
+            ]
+        );
     }
 
     #[tokio::test]
