@@ -84,10 +84,23 @@ impl History {
         admission
     }
 
-    /// Run seeding SQL whose only parameter, $1, is the Node ID.
-    async fn seed(&self, sql: &str) {
+    /// Run arranging SQL (insert, update or delete) whose only parameter, $1,
+    /// is the Node ID.
+    async fn execute(&self, sql: &str) {
         sqlx::query(sql)
             .bind(&self.node_id)
+            .execute(self.pool())
+            .await
+            .unwrap();
+    }
+
+    /// Open a recoverable gap over `first..=last`, as an earlier Report's
+    /// declared gap would have.
+    async fn open_gap(&self, first: i64, last: i64) {
+        sqlx::query("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ($1, $2, $3, 'open_recoverable_gap', '2026-08-12T09:00:06Z', '2026-08-12T09:00:06Z')")
+            .bind(&self.node_id)
+            .bind(first)
+            .bind(last)
             .execute(self.pool())
             .await
             .unwrap();
@@ -309,10 +322,10 @@ async fn a_resync_replay_below_the_high_water_mark_never_rewrites_or_accumulates
         vec![BlockOutcome::Accepted]
     );
     history
-        .seed("DELETE FROM block_summaries WHERE node_id=$1")
+        .execute("DELETE FROM block_summaries WHERE node_id=$1")
         .await;
     history
-        .seed("UPDATE block_history_state SET historical_high_watermark=100 WHERE node_id=$1")
+        .execute("UPDATE block_history_state SET historical_high_watermark=100 WHERE node_id=$1")
         .await;
 
     assert_eq!(
@@ -346,7 +359,7 @@ async fn an_open_gap_backfill_accumulates_once_and_completes_its_child_interval(
         Some((2, 7, 3, 4, 0, None, None)),
         "neither block has a held parent yet"
     );
-    history.seed("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ($1, 11, 11, 'open_recoverable_gap', '2026-08-12T09:00:06Z', '2026-08-12T09:00:06Z')").await;
+    history.open_gap(11, 11).await;
 
     let backfill = blocks(&[(11, 2_500, at(base, 210), 6, GapBackfill)]);
     assert_eq!(
@@ -390,7 +403,7 @@ async fn a_backfill_inside_an_open_gap_splits_the_interval() {
     history
         .admit(&blocks(&[(10, 1_000, at(base, 1), 3, Subscription)]))
         .await;
-    history.seed("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ($1, 11, 20, 'open_recoverable_gap', '2026-08-12T09:00:06Z', '2026-08-12T09:00:06Z')").await;
+    history.open_gap(11, 20).await;
 
     let backfill = blocks(&[(15, 5_000, at(base, 5), 4, GapBackfill)]);
     assert_eq!(
@@ -424,8 +437,8 @@ async fn a_backfill_inside_an_open_gap_splits_the_interval() {
 }
 
 /// A backfill that sits on an open gap's own edge narrows the interval instead
-/// of splitting, duplicating, or dropping it - the other two arms of the split
-/// that once lost a gap's upper half.
+/// of splitting, duplicating, or dropping it: the backfill at the lower edge
+/// and the one at the upper edge each keep the rest of the gap open.
 #[tokio::test]
 async fn a_backfill_on_an_open_gap_edge_narrows_the_interval() {
     let history = History::new().await;
@@ -433,7 +446,7 @@ async fn a_backfill_on_an_open_gap_edge_narrows_the_interval() {
     history
         .admit(&blocks(&[(10, 1_000, at(base, 1), 3, Subscription)]))
         .await;
-    history.seed("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ($1, 11, 20, 'open_recoverable_gap', '2026-08-12T09:00:06Z', '2026-08-12T09:00:06Z')").await;
+    history.open_gap(11, 20).await;
 
     let lower = blocks(&[(11, 2_500, at(base, 5), 4, GapBackfill)]);
     assert_eq!(
@@ -636,7 +649,7 @@ async fn a_hole_whose_head_is_outside_any_open_gap_still_backfills() {
     // A settled height is a replay again, even after its raw row expired:
     // it is never counted twice.
     history
-        .seed("DELETE FROM block_summaries WHERE node_id=$1")
+        .execute("DELETE FROM block_summaries WHERE node_id=$1")
         .await;
     let replay = blocks(&[(13, 4_000, at(base, 14), 1, GapBackfill)]);
     assert_eq!(
@@ -660,10 +673,10 @@ async fn a_backfill_is_admitted_only_into_a_hole_the_server_observes() {
             (20, 11_000, at(base, 11), 1, Subscription),
         ]))
         .await;
-    history.seed("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES ($1, 15, 15, 'server_rejected', 'identity mismatch', '2026-08-12T09:00:12Z', 'server')").await;
+    history.execute("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES ($1, 15, 15, 'server_rejected', 'identity mismatch', '2026-08-12T09:00:12Z', 'server')").await;
     // The Agent's own copy of an earlier GapBackfillOutsideOpenGap refusal is
     // not the Server's verdict and never makes a hole unrecoverable.
-    history.seed("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES ($1, 17, 17, 'server_rejected', 'GapBackfill sample is outside an explicit open recoverable gap', '2026-08-12T09:00:12Z', 'agent')").await;
+    history.execute("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES ($1, 17, 17, 'server_rejected', 'GapBackfill sample is outside an explicit open recoverable gap', '2026-08-12T09:00:12Z', 'agent')").await;
 
     let probe = blocks(&[
         (9, 500, at(base, 12), 1, GapBackfill),
@@ -723,7 +736,7 @@ async fn a_height_backfilled_by_an_older_server_is_never_counted_twice() {
         .await;
     // The legacy shape: gap 12..=14 declared and fully backfilled, so no
     // interval is left for it, and the raw rows have expired.
-    history.seed("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES ($1, 12, 14, 'unrecoverable_backfill', 'legacy', '2026-08-12T09:00:12Z', 'agent')").await;
+    history.execute("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES ($1, 12, 14, 'unrecoverable_backfill', 'legacy', '2026-08-12T09:00:12Z', 'agent')").await;
     let count = history.cumulative_block_count().await;
 
     let probe = blocks(&[
@@ -966,8 +979,9 @@ async fn a_lower_subscription_height_after_a_higher_one_in_one_report_is_a_repla
 }
 
 /// A GapBackfill sample whose hash contradicts the identity evidence the
-/// Server retains for its height is a Chain Divergence: it is rejected and
-/// nothing is written, so the hole stays open for the right block.
+/// Server retains for its height is a Chain Divergence: it is rejected, only
+/// the observation is recorded, once however often it is sent again, and the
+/// hole stays open for the right block.
 #[tokio::test]
 async fn a_divergent_backfill_is_rejected_and_never_written() {
     let history = History::new().await;
@@ -975,7 +989,7 @@ async fn a_divergent_backfill_is_rejected_and_never_written() {
     history
         .admit(&blocks(&[(10, 1_000, at(base, 1), 3, Subscription)]))
         .await;
-    history.seed("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ($1, 11, 20, 'open_recoverable_gap', '2026-08-12T09:00:06Z', '2026-08-12T09:00:06Z')").await;
+    history.open_gap(11, 20).await;
     sqlx::query("INSERT INTO block_identity_window (node_id, height, block_hash, retained_until, observed_at) VALUES ($1, 15, $2, NULL, $3)")
         .bind(&history.node_id)
         .bind(format!("0x{:064x}", 0xdead_u64))
@@ -985,9 +999,24 @@ async fn a_divergent_backfill_is_rejected_and_never_written() {
         .unwrap();
 
     let backfill = blocks(&[(15, 5_000, at(base, 5), 4, GapBackfill)]);
+    for _ in 0..2 {
+        assert_eq!(
+            history.admit(&backfill).await.samples,
+            vec![BlockOutcome::ChainDivergence]
+        );
+    }
+    let observations: Vec<(i64, String, String)> = sqlx::query_as("SELECT height, retained_block_hash, observed_block_hash FROM chain_divergence_observations WHERE node_id=$1")
+        .bind(&history.node_id)
+        .fetch_all(history.pool())
+        .await
+        .unwrap();
     assert_eq!(
-        history.admit(&backfill).await.samples,
-        vec![BlockOutcome::ChainDivergence]
+        observations,
+        vec![(
+            15,
+            format!("0x{:064x}", 0xdead_u64),
+            backfill.block_summaries[0].block_hash.to_string()
+        )]
     );
     assert_eq!(history.summary_heights().await, vec![10]);
     assert_eq!(history.cumulative_block_count().await, 1);
