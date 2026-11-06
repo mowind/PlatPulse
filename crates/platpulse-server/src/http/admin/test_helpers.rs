@@ -96,7 +96,7 @@ pub(super) async fn node_inventory_state() -> (tempfile::TempDir, AppState) {
     .unwrap();
     for component in ["rpc", "sync", "consensus", "network_identity"] {
         sqlx::query(
-            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-lifecycle-test', 'node', 'node-healthy', 'node-healthy', $1, 'ok', $2, $3, $4, 1, 1)",
+            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, state_revision, value_revision) VALUES ('agent-lifecycle-test', 'node', 'node-healthy', 'node-healthy', $1, 'ok', $2, $3, $4, $4, 1, 1)",
         )
         .bind(component)
         .bind(&fresh)
@@ -107,7 +107,7 @@ pub(super) async fn node_inventory_state() -> (tempfile::TempDir, AppState) {
         .unwrap();
     }
     sqlx::query(
-        "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES ('agent-lifecycle-test', 'node', 'node-healthy', 'node-healthy', 'peers', 'ok', $1, $2, $3, $4, 1, 1)",
+        "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, value_received_at, state_revision, value_revision) VALUES ('agent-lifecycle-test', 'node', 'node-healthy', 'node-healthy', 'peers', 'ok', $1, $2, $3, $3, $4, 1, 1)",
     )
     .bind(&fresh)
     .bind(&fresh)
@@ -153,7 +153,7 @@ pub(super) async fn node_inventory_state() -> (tempfile::TempDir, AppState) {
             ("ok", "", "")
         };
         sqlx::query(
-            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES ('agent-lifecycle-test', 'node', 'node-mismatched', 'node-mismatched', $1, $2, $3, $4, $5, 2, 1, $6, $7)",
+            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, state_revision, value_revision, error_code, error_message) VALUES ('agent-lifecycle-test', 'node', 'node-mismatched', 'node-mismatched', $1, $2, $3, $4, $5, $5, 2, 1, $6, $7)",
         )
         .bind(component)
         .bind(component_state)

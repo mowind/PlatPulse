@@ -3721,7 +3721,7 @@ mod tests {
 
     async fn set_rpc_error(pool: &sqlx::AnyPool, state: &str, observed_at: OffsetDateTime) {
         let now = format_rfc3339(observed_at);
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES ('agent-a', 'node', 'node-a', 'node-a', 'rpc', $1, $2, $3, $4, 1, 1, 'rpc_unreachable', 'connect refused') ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, received_at=excluded.received_at, error_code=excluded.error_code, error_message=excluded.error_message")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, state_revision, value_revision, error_code, error_message) VALUES ('agent-a', 'node', 'node-a', 'node-a', 'rpc', $1, $2, $3, $4, $4, 1, 1, 'rpc_unreachable', 'connect refused') ON CONFLICT(agent_id, scope, scope_key, component_key) DO UPDATE SET state=excluded.state, received_at=excluded.received_at, observation_at=excluded.observation_at, error_code=excluded.error_code, error_message=excluded.error_message")
             .bind(state)
             .bind(&now)
             .bind(&now)

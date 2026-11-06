@@ -226,8 +226,8 @@ with sqlite3.connect(path) as db:
     )
     for component in ("rpc", "sync", "consensus", "network_identity", "process", "datadirectorysizebytes", "datadirectorycapacitybytes"):
         db.execute(
-            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, ?, 'ok', ?, ?, ?, ?, 1, 1)",
-            (agent_id, node_a, node_a, component, fresh, fresh, fresh, fresh),
+            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, value_received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, ?, 'ok', ?, ?, ?, ?, ?, 1, 1)",
+            (agent_id, node_a, node_a, component, fresh, fresh, fresh, fresh, fresh),
         )
     db.execute(
         "INSERT INTO current_host_observations (agent_id, cpu_percent, memory_total_bytes, memory_used_bytes, network_rx_bytes_per_sec, network_tx_bytes_per_sec, updated_at) VALUES (?, 31.0, 34359738368, 17179869184, 892416, 245760, ?)",
@@ -275,8 +275,8 @@ with sqlite3.connect(path) as db:
     # and capability fields remain in the current table but never cross the
     # Public projection boundary.
     db.execute(
-        "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, 'peers', 'ok', ?, ?, ?, ?, 1, 1)",
-        (agent_id, node_a, node_a, fresh, fresh, fresh, fresh),
+        "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, value_received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, 'peers', 'ok', ?, ?, ?, ?, ?, 1, 1)",
+        (agent_id, node_a, node_a, fresh, fresh, fresh, fresh, fresh),
     )
     # One Peer record carries a globally routable address the bundled MMDB
     # resolves to SE; the other two have no usable public remote IP, which is
@@ -336,13 +336,13 @@ with sqlite3.connect(path) as db:
     for component in ("rpc", "sync", "consensus", "network_identity"):
         if component == "rpc":
             db.execute(
-                "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision, error_code, error_message) VALUES (?, 'node', ?, ?, 'rpc', 'error', ?, ?, ?, 2, 1, 'rpc_unreachable', 'RPC probe failed')",
-                (agent_id, node_b, node_b, stale, stale, stale),
+                "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, state_revision, value_revision, error_code, error_message) VALUES (?, 'node', ?, ?, 'rpc', 'error', ?, ?, ?, ?, 2, 1, 'rpc_unreachable', 'RPC probe failed')",
+                (agent_id, node_b, node_b, stale, stale, stale, stale),
             )
         else:
             db.execute(
-                "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, ?, 'ok', ?, ?, ?, 1, 1)",
-                (agent_id, node_b, node_b, component, stale, stale, stale),
+                "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, ?, 'ok', ?, ?, ?, ?, 1, 1)",
+                (agent_id, node_b, node_b, component, stale, stale, stale, stale),
             )
 
     # Transfer history (issue #46): Node F carries every terminal/conflict
@@ -637,12 +637,12 @@ with sqlite3.connect(path) as db:
         }
         for key, component_received_at in component_receipts.items():
             db.execute(
-                "INSERT OR IGNORE INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, ?, 'ok', ?, ?, ?, ?, 1, 1)",
-                (convergence_agent_id, node_id, node_id, key, component_received_at, component_received_at, component_received_at, value_received_at),
+                "INSERT OR IGNORE INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, value_received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, ?, 'ok', ?, ?, ?, ?, ?, 1, 1)",
+                (convergence_agent_id, node_id, node_id, key, component_received_at, component_received_at, component_received_at, component_received_at, value_received_at),
             )
         db.execute(
-            "INSERT OR IGNORE INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, value_received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, 'peers', 'ok', ?, ?, ?, ?, 1, 1)",
-            (convergence_agent_id, node_id, node_id, received_at, received_at, received_at, value_received_at),
+            "INSERT OR IGNORE INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, value_received_at, state_revision, value_revision) VALUES (?, 'node', ?, ?, 'peers', 'ok', ?, ?, ?, ?, ?, 1, 1)",
+            (convergence_agent_id, node_id, node_id, received_at, received_at, received_at, received_at, value_received_at),
         )
 
     def seed_summary(node_id, height, transaction_count, genesis, observed_at):
@@ -831,8 +831,8 @@ while server_alive():
     try:
         with sqlite3.connect(path, timeout=5) as db:
             db.execute(
-                "UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ?, value_received_at = CASE WHEN component_key IN ('peers', 'consensus') THEN ? ELSE value_received_at END WHERE node_id = ?",
-                (fresh, fresh, fresh, fresh, node_a),
+                "UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ?, observation_at = ?, value_received_at = CASE WHEN component_key IN ('peers', 'consensus') THEN ? ELSE value_received_at END WHERE node_id = ?",
+                (fresh, fresh, fresh, fresh, fresh, node_a),
             )
             # The seeded Agent's liveness is time-based too; refresh it so
             # the inventory stays deterministically Current for the whole
@@ -1042,9 +1042,9 @@ while True:
                 (fresh, node_a),
             )
             db.execute(
-                f"UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ?, value_received_at = CASE WHEN component_key IN ('peers', 'consensus') THEN ? ELSE value_received_at END "
+                f"UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ?, observation_at = ?, value_received_at = CASE WHEN component_key IN ('peers', 'consensus') THEN ? ELSE value_received_at END "
                 f"WHERE node_id IN ({fresh_placeholders}) AND scope = 'node'",
-                (fresh, fresh, fresh, fresh, *fresh_nodes),
+                (fresh, fresh, fresh, fresh, fresh, *fresh_nodes),
             )
             # Keep Node H's three component receipts distinct so the public
             # freshness projection can prove it selected the earliest one.
@@ -1055,8 +1055,8 @@ while True:
             }
             for component_key, receipt in node_h_receipts.items():
                 db.execute(
-                    "UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ? WHERE node_id = ? AND component_key = ?",
-                    (receipt, receipt, receipt, node_h, component_key),
+                    "UPDATE component_status SET attempted_at = ?, observed_at = ?, received_at = ?, observation_at = ? WHERE node_id = ? AND component_key = ?",
+                    (receipt, receipt, receipt, receipt, node_h, component_key),
                 )
             # Keep the fixtures intended to represent current positive AND
             # negative evidence current; failure (Node N) remains stale. A

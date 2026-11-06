@@ -171,7 +171,7 @@ async fn seed(harness: &Harness) {
         .unwrap();
     for component in ["rpc", "sync", "consensus", "network_identity"] {
         let component_state = if component == "rpc" { "error" } else { "ok" };
-        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ($1, 'node', $2, $3, $4, $5, $6, $7, $8, 1, 1)")
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, state_revision, value_revision) VALUES ($1, 'node', $2, $3, $4, $5, $6, $7, $8, $8, 1, 1)")
             .bind(AGENT_ID)
             .bind(NODE_ID)
             .bind(NODE_ID)

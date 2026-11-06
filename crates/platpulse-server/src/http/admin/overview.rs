@@ -406,7 +406,7 @@ mod tests {
                 .unwrap();
             for component in ["rpc", "sync", "consensus", "network_identity"] {
                 let component_state = if component == "rpc" { rpc_state } else { "ok" };
-                sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-ov', 'node', $1, $2, $3, $4, $5, $6, $7, 1, 1)")
+                sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, state_revision, value_revision) VALUES ('agent-ov', 'node', $1, $2, $3, $4, $5, $6, $7, $7, 1, 1)")
                     .bind(node_id)
                     .bind(node_id)
                     .bind(component)
@@ -645,7 +645,7 @@ mod tests {
                 .execute(state.db().pool())
                 .await
                 .unwrap();
-            sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, state_revision, value_revision) VALUES ('agent-overview-networks', 'node', $1, $2, 'network_identity', $3, $4, $5, $6, 1, 1)")
+            sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, state_revision, value_revision) VALUES ('agent-overview-networks', 'node', $1, $2, 'network_identity', $3, $4, $5, $6, $6, 1, 1)")
                 .bind(node_id)
                 .bind(node_id)
                 .bind(identity_state)
