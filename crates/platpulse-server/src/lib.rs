@@ -15,6 +15,7 @@ pub mod attention;
 pub mod auth;
 pub mod backup;
 pub mod block_aggregates;
+pub(crate) mod block_history;
 pub mod capacity;
 pub mod checkpoint;
 pub mod cli;

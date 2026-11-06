@@ -177,7 +177,7 @@ impl MetricsRegistry {
     pub(crate) fn observe_gap_settlement(
         &self,
         path: &str,
-        settlement: crate::http::report_ingestion::GapSettlement,
+        settlement: crate::block_history::GapSettlement,
         elapsed: std::time::Duration,
         slow: bool,
     ) {
