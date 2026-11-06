@@ -161,14 +161,14 @@ Each preview item keeps only:
 ```text
 Node display name (shortened Node ID when unnamed), linked to Admin Node Detail
 Network display name
-Server-owned Health and Freshness as two separate badges
+Server-owned Health and Node Currency (the `Freshness` badge: Current, Stale, Never observed) as two separate badges
 Health reason only when Health is not healthy
 Identity mismatch (with the mismatched fields) and a non-normal resync state, when present
 ```
 
-A healthy, current item repeats no reason and no per-row teaching copy such as "Server-owned freshness"; Freshness is never folded into Health and a stale or unknown value is never shown as current.
+A healthy, current item repeats no reason and no per-row teaching copy such as "Server-owned freshness"; Node Currency is never folded into Health and a Stale or Never Observed Node is never shown as current; the Freshness badge reads the DTO's `currency`, not a browser-side age.
 
-The default priority is unhealthy, unknown health, stale, then healthy/current, with stable Network and Node-name tie-breakers. Timestamp-only invalidations do not reorder the list. At most five Active Nodes are shown, followed by `Showing N of M Active Nodes`, a `Not shown: …` line that counts the left-out unhealthy, unknown-health, stale, identity-mismatch and identity-not-reported Nodes (independent dimensions, so one Node can appear in more than one count) whenever any exist (so a limit never reads as "no other exceptions"), and `View all Nodes`. Retired Nodes remain in their summary card and the filtered Nodes inventory, not this live preview.
+The default priority is unhealthy, unknown health (a Stale Node is never Healthy, so it sorts here), then healthy, with stable Network and Node-name tie-breakers. Timestamp-only invalidations do not reorder the list. At most five Active Nodes are shown, followed by `Showing N of M Active Nodes`, a `Not shown: …` line that counts the left-out unhealthy, unknown-health, stale, identity-mismatch and identity-not-reported Nodes (independent dimensions, so one Node can appear in more than one count) whenever any exist (so a limit never reads as "no other exceptions"), and `View all Nodes`. Retired Nodes remain in their summary card and the filtered Nodes inventory, not this live preview.
 
 The Overview no longer expands per-component RPC/Sync/Consensus/Peers/Process/Node Data diagnostics in place; they moved to the `Component diagnostics` panel of the Node Detail `Diagnostics` section, which the Nodes row details link to (§8.7).
 

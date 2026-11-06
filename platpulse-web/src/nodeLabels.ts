@@ -1,4 +1,4 @@
-import type { NodeIdentityStatus } from './api/generated'
+import type { NodeCurrencyState, NodeIdentityStatus } from './api/generated'
 
 /** Registry-relative identity disposition. Only the Server-owned states are
  * named; anything else is Unknown and is never treated as matched. */
@@ -20,9 +20,9 @@ export function healthTone(health: string): 'ok' | 'error' | 'neutral' {
   return health === 'healthy' ? 'ok' : health === 'unhealthy' ? 'error' : 'neutral'
 }
 
-/** Server freshness dimension -> badge tone (current/stale/unknown). */
-export function freshnessTone(freshness: string): 'ok' | 'warning' | 'neutral' {
-  return freshness === 'current' ? 'ok' : freshness === 'stale' ? 'warning' : 'neutral'
+/** Server Node Currency -> badge tone (current/stale/never_observed). */
+export function currencyTone(currency: NodeCurrencyState): 'ok' | 'warning' | 'neutral' {
+  return currency === 'current' ? 'ok' : currency === 'stale' ? 'warning' : 'neutral'
 }
 
 export function visibilityBadge(visibility: string): { label: string; tone: 'ok' | 'neutral' } {

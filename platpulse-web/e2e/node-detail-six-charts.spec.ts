@@ -240,7 +240,8 @@ async function installScenario(page: Page, scenario: Scenario) {
       Object.assign(body, {
         health: 'unknown',
         healthReason: 'No observation recorded yet',
-        freshness: 'unknown',
+        currency: 'never_observed',
+        currencyAsOf: null,
         processCpuPercent: null,
         processMemoryPercent: null,
         processUptimeMs: null,
@@ -253,7 +254,7 @@ async function installScenario(page: Page, scenario: Scenario) {
         hostNetworkTxBytesPerSec: null,
       })
     } else if (scenario === 'stale') {
-      Object.assign(body, { health: 'unhealthy', healthReason: 'Latest observation is stale', freshness: 'stale' })
+      Object.assign(body, { health: 'unknown', healthReason: 'observations are stale', currency: 'stale' })
     } else if (scenario === 'single-cpu-failure') {
       // The process component fails while the Public Projection retains the
       // last-good value; the card must mark that honestly.
@@ -534,7 +535,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
             await expect(metrics.locator('[data-slot="node-metric-value"]').first()).toHaveText('Unknown')
           }
           if (scenario === 'stale') {
-            await expect(page.getByText('Latest observation is stale')).toBeVisible()
+            await expect(page.getByText('observations are stale')).toBeVisible()
             await expect(metrics.locator('[data-slot="node-metric-chart-empty"]')).toHaveCount(6)
           }
           if (scenario === 'single-cpu-failure') {
@@ -691,7 +692,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
       const response = await route.fetch()
       const body = await response.json()
       await route.fulfill({ response, json: { ...body,
-        freshness: new Date().toISOString(), health: mode === 'unconfirmed' ? 'unknown' : 'healthy',
+        currency: 'current', currencyAsOf: new Date().toISOString(), health: mode === 'unconfirmed' ? 'unknown' : 'healthy',
         rpcState: 'ok', currentHead: 100, networkReferenceHead: 98,
         networkReferenceConfidence: mode === 'low-confidence' ? 'low' : 'high',
         consensus: { ...body.consensus, state: 'ok', freshness: 'current',
@@ -724,7 +725,7 @@ test.describe('Node Detail real latest-60-second six-chart closure (issue #150)'
       const response = await route.fetch()
       const body = await response.json()
       await route.fulfill({ response, json: {
-        ...body, health: 'healthy', healthReason: '', freshness: new Date().toISOString(),
+        ...body, health: 'healthy', healthReason: '', currency: 'current', currencyAsOf: new Date().toISOString(),
         rpcState: 'ok', syncState: 'ok', processState: 'ok', lastReportAt: new Date().toISOString(),
         currentHead: 100, networkReferenceHead: 100, networkReferenceConfidence: 'high',
         validator: {

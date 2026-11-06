@@ -41,7 +41,7 @@ Admin groups:
 7. Incidents (the Alerts group; issue #203);
 8. Sessions and Audit.
 
-Admin covers configuration and diagnostics; it must not duplicate Home's full Node Detail card/chart deck. The Admin Node endpoint returns the full administrative `AdminNodeDetail` DTO (health, freshness, process/data/RPC/Sync/Consensus/Peer diagnostics, identity, high-watermark/resync, and transfer context); the current page renders the approved administrative/diagnostic subset and does not turn it into a second Home view.
+Admin covers configuration and diagnostics; it must not duplicate Home's full Node Detail card/chart deck. The Admin Node endpoint returns the full administrative `AdminNodeDetail` DTO (health, Node Currency, process/data/RPC/Sync/Consensus/Peer diagnostics, identity, high-watermark/resync, and transfer context); the current page renders the approved administrative/diagnostic subset and does not turn it into a second Home view.
 
 Every Admin render begins with `Checking access…` when authorization is unresolved. It never flashes data from a previous session.
 

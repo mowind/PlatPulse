@@ -18,10 +18,10 @@ import {
   summarizeEvidence,
 } from '../agentEvidence'
 import { EVIDENCE_TONE, EvidenceLead } from '../components/AgentEvidenceLead'
-import { freshnessTone, healthTone } from '../nodeLabels'
+import { currencyTone, healthTone } from '../nodeLabels'
 import {
   StatusBadge,
-  freshnessLabel,
+  currencyLabel,
   livenessLabel,
 } from '../components/StatusBadge'
 import { Alert, AlertDescription } from '../components/ui/alert'
@@ -623,7 +623,7 @@ function NodePanel({ nodeQuery }: { nodeQuery: NodesQuery }) {
   const hidden = [
     { count: hiddenNodes.filter((node) => node.health === 'unhealthy').length, noun: 'unhealthy' },
     { count: hiddenNodes.filter((node) => node.health !== 'unhealthy' && node.health !== 'healthy').length, noun: 'unknown health' },
-    { count: hiddenNodes.filter((node) => node.freshness === 'stale').length, noun: 'stale' },
+    { count: hiddenNodes.filter((node) => node.currency === 'stale').length, noun: 'stale' },
     { count: hiddenNodes.filter((node) => node.identity.state === 'mismatched').length, noun: 'identity mismatch' },
     { count: hiddenNodes.filter((node) => node.identity.state !== 'mismatched' && node.identity.state !== 'matched').length, noun: 'identity not reported' },
   ].filter((entry) => entry.count > 0)
@@ -677,7 +677,7 @@ function NodePreviewItem({ node }: { node: AdminNodeListItem }) {
           <span className="sr-only">Health</span>
           <StatusBadge status={node.health} tone={healthTone(node.health)} />
           <span className="sr-only">Freshness</span>
-          <StatusBadge status={freshnessLabel(node.freshness)} tone={freshnessTone(node.freshness)} />
+          <StatusBadge status={currencyLabel(node.currency)} tone={currencyTone(node.currency)} />
         </span>
       </div>
       <p className="min-w-0 text-xs text-muted-foreground [overflow-wrap:anywhere]">
@@ -700,13 +700,10 @@ function NodePreviewItem({ node }: { node: AdminNodeListItem }) {
 }
 
 function prioritizeActiveNodes(nodes: AdminNodeListItem[]): AdminNodeListItem[] {
-  const healthRank: Record<string, number> = { unhealthy: 0, unknown: 1, healthy: 3 }
-  const rank = (node: AdminNodeListItem) => {
-    if (node.health === 'unhealthy') return 0
-    if (node.health === 'unknown') return 1
-    if (node.freshness === 'stale') return 2
-    return healthRank[node.health] ?? 1
-  }
+  // A Node whose currency is not Current is never Healthy, so Health alone
+  // orders Stale Nodes among the unknown ones.
+  const healthRank: Record<string, number> = { unhealthy: 0, unknown: 1, healthy: 2 }
+  const rank = (node: AdminNodeListItem) => healthRank[node.health] ?? 1
   const compareText = (left: string, right: string) => {
     const a = left.toLocaleLowerCase('en-US')
     const b = right.toLocaleLowerCase('en-US')

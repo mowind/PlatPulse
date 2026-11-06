@@ -54,7 +54,7 @@ test('ordinary Validator cards are compact and an exception only grows its own r
     const source = network.nodes.find(node => node.validator?.blockCount != null)!
     const base = {
       ...source, health: 'healthy', healthReason: 'Fresh component observations',
-      rpcState: 'ok', syncState: 'ok', freshness: new Date().toISOString(), resyncState: 'normal', currentHead: 1000, historicalHighWatermark: 2000,
+      rpcState: 'ok', syncState: 'ok', currency: 'current', currencyAsOf: new Date().toISOString(), resyncState: 'normal', currentHead: 1000, historicalHighWatermark: 2000,
       networkReferenceHead: 1000, networkReferenceConfidence: 'high', lastReportAt: new Date().toISOString(),
       processCpuPercent: 12, processMemoryPercent: 24, processUptimeMs: 3_600_000,
       nodeDataDirectorySizeBytes: 25_000, nodeDataDirectoryCapacityBytes: 100_000,

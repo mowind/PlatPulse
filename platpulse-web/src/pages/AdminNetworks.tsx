@@ -8,8 +8,8 @@ import {
   useAdminNetworks,
 } from '../api/admin'
 import { useAuth } from '../auth/AuthContext'
-import { StatusBadge, formatObservedAt, freshnessLabel } from '../components/StatusBadge'
-import { identityBadge, lifecycleLabel, visibilityBadge } from '../nodeLabels'
+import { StatusBadge, currencyLabel, formatObservedAt } from '../components/StatusBadge'
+import { currencyTone, identityBadge, lifecycleLabel, visibilityBadge } from '../nodeLabels'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { CardX } from '../components/ui/card-x'
@@ -1122,8 +1122,6 @@ function NetworkNodesPanel({
 function NetworkNodeRow({ node }: { node: AdminNetworkNode }) {
   const identity = identityBadge(node.identity)
   const health = node.health === 'healthy' ? 'ok' : node.health === 'unhealthy' ? 'error' : 'neutral'
-  const freshness =
-    node.freshness === 'current' ? 'ok' : node.freshness === 'stale' ? 'warning' : 'neutral'
   return (
     <tr className={ADMIN_ROW}>
       <th scope="row" data-label="Node" className={cn(ADMIN_TD, 'min-w-0 text-left font-normal')}>
@@ -1142,7 +1140,7 @@ function NetworkNodeRow({ node }: { node: AdminNetworkNode }) {
         <small className="mt-0.5 block text-xs text-muted-foreground break-words">{node.health_reason}</small>
       </td>
       <td data-label="Freshness" className={cn(ADMIN_TD, 'min-w-0')}>
-        <StatusBadge status={freshnessLabel(node.freshness)} tone={freshness} />
+        <StatusBadge status={currencyLabel(node.currency)} tone={currencyTone(node.currency)} />
       </td>
       <td data-label="Identity" className={cn(ADMIN_TD, 'min-w-0')}>
         <StatusBadge status={identity.label} tone={identity.tone} />

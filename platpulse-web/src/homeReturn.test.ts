@@ -18,7 +18,7 @@ function node(overrides: Partial<PublicNode> = {}): PublicNode {
     consensus: { freshness: 'current', state: 'ok', validator: true },
     consensusState: 'ready',
     currentHead: 120,
-    freshness: 'current',
+    currency: 'current',
     health: 'healthy',
     healthReason: 'RPC reachable',
     latestBlockTransactionCount: 12,

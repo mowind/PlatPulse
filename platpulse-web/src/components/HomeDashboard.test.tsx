@@ -18,7 +18,7 @@ const network = {
       nodeId: 'node-a', displayName: 'Alpha', networkKey: 'mainnet', health: 'healthy', healthReason: 'RPC reachable',
       rpcState: 'connected', syncState: 'synced', consensusState: 'ready', processState: 'running', resyncState: 'idle',
       currentHead: 120, latestBlockTransactionCount: 12345, historicalHighWatermark: 120, networkReferenceHead: 120,
-      networkReferenceConfidence: 'high', freshness: 'current', resyncProgress: null,
+      networkReferenceConfidence: 'high', currency: 'current', resyncProgress: null,
       hostCpuPercent: 91.5, hostMemoryPercent: 82.25, processCpuPercent: 12.5, processMemoryPercent: 45.25, hostStoragePercent: 80, nodeDataDirectorySizeBytes: 12_884_901_888, nodeDataDirectoryCapacityBytes: 51_539_607_552, hostNetworkRxBytesPerSec: 1024, hostNetworkTxBytesPerSec: 2048,
       peers: { state: 'ok', freshness: 'current', peerCount: 0 },
       peerCountries: { scope: 'unavailable', countries: [] },
@@ -32,7 +32,7 @@ const network = {
       nodeId: 'node-b', displayName: 'Beta', networkKey: 'mainnet', health: 'unknown', healthReason: 'Never observed',
       rpcState: 'unknown', syncState: 'unknown', consensusState: 'unknown', processState: 'unknown', resyncState: 'unknown',
       currentHead: null, latestBlockTransactionCount: null, historicalHighWatermark: null, hostCpuPercent: null, networkReferenceHead: null,
-      networkReferenceConfidence: 'unknown', freshness: 'unknown', resyncProgress: null,
+      networkReferenceConfidence: 'unknown', currency: 'never_observed', resyncProgress: null,
       peers: { state: 'unknown', freshness: 'unknown', peerCount: null },
       peerCountries: { scope: 'unavailable', countries: [] },
       consensus: { state: 'unknown', freshness: 'unknown', validator: null, highestQcBlock: null, highestLockBlock: null, highestCommitBlock: null },
@@ -475,7 +475,7 @@ describe('Public Home dashboard', () => {
     displayName: 'Head Node',
     health: 'healthy',
     rpcState: 'ok',
-    freshness: '2026-08-25T00:00:00Z',
+    currency: 'current', currencyAsOf: '2026-08-25T00:00:00Z',
     networkReferenceConfidence: 'high',
     ...overrides,
   })
@@ -519,9 +519,8 @@ describe('Public Home dashboard', () => {
     { name: 'an Unknown Server health', change: { health: 'unknown' }, height: '120', retained: 'Current Node Head not confirmed by Server' },
     { name: 'a failed RPC collection', change: { rpcState: 'error' }, height: '120', retained: 'Node RPC collection error' },
     { name: 'an unknown RPC collection', change: { rpcState: 'unknown' }, height: '120', retained: 'Node RPC collection unknown' },
-    { name: 'a missing observation time', change: { freshness: null }, height: '120', retained: 'Node Head observation time unknown' },
-    { name: 'an invalid observation time', change: { freshness: 'not-a-time' }, height: '120', retained: 'Node Head observation time unknown' },
-    { name: 'a state token where a time belongs', change: { freshness: 'current' }, height: '120', retained: 'Node Head observation time unknown' },
+    { name: 'a never-observed component', change: { currency: 'never_observed', currencyAsOf: null }, height: '120', retained: 'Node Head observation time unknown' },
+    { name: 'stale evidence', change: { currency: 'stale' }, height: '120', retained: 'Node Head observation stale' },
     // Only this Node's own missing evidence makes the height a retained reading:
     // when the gap is the reference's, the height stays a confirmed current one.
     { name: 'a low-confidence reference', change: { networkReferenceConfidence: 'low' }, height: '120', retained: null },

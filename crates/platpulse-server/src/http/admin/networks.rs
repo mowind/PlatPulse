@@ -98,7 +98,11 @@ pub struct AdminNetworkNode {
     pub visibility: String,
     pub health: String,
     pub health_reason: String,
-    pub freshness: String,
+    /// The Node Currency judged from the RPC, sync and consensus observations.
+    pub currency: crate::node_currency::NodeCurrencyState,
+    /// The oldest of the RPC, sync and consensus Server-clock observation
+    /// instants; null while any of them was never observed.
+    pub currency_as_of: Option<String>,
     pub current_head: Option<i64>,
     pub resync_state: String,
     pub identity: NodeIdentityStatus,
@@ -213,7 +217,8 @@ pub(super) async fn admin_network_detail(
             visibility,
             health: diagnostic.health,
             health_reason: diagnostic.health_reason,
-            freshness: diagnostic.freshness,
+            currency: diagnostic.currency,
+            currency_as_of: diagnostic.currency_as_of,
             current_head: diagnostic.current_head,
             resync_state: diagnostic.resync_state,
             identity: assessed.identity,

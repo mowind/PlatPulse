@@ -243,7 +243,7 @@ pub(crate) async fn overview(
         }
         // The Server-clock instant Node Currency was judged on, so the prompt
         // and the Health it explains name the same evidence.
-        let observed_at = assessed.currency_as_of.clone();
+        let observed_at = assessed.diagnostic.currency_as_of.clone();
         // A Node Unknown because of the mismatch already raised its Critical
         // prompt above; one Unknown for another reason still raises its own.
         let explained_by_mismatch =

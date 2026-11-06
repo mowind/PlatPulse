@@ -64,7 +64,7 @@ const PUBLIC_NODE: PublicNode = {
   networkKey: 'mainnet',
   health: 'healthy',
   healthReason: 'rpc reachable',
-  freshness: 'current',
+  currency: 'current',
   rpcState: 'ok',
   syncState: 'synced',
   consensusState: 'current',
@@ -303,7 +303,7 @@ describe('App shell with private Home', () => {
         networkKey: 'mainnet',
         health: 'healthy',
         healthReason: 'Observations current',
-        freshness: '2026-08-20T00:00:05Z',
+        currency: 'current', currencyAsOf: '2026-08-20T00:00:05Z',
         rpcState: 'ok',
         syncState: 'ok',
         consensusState: 'ok',
@@ -467,7 +467,7 @@ describe('App shell with private Home', () => {
       '/api/public/v1/networks': () => jsonResponse([], 200),
       ...Object.fromEntries(cases.map(entry => ['/api/public/v1/nodes/' + entry.id, () => jsonResponse({
         nodeId: entry.id, displayName: 'Shared node', networkKey: 'mainnet',
-        health: 'healthy', healthReason: '', freshness: '2026-08-20T00:00:00Z',
+        health: 'healthy', healthReason: '', currency: 'current', currencyAsOf: '2026-08-20T00:00:00Z',
         rpcState: 'ok', syncState: 'ok', consensusState: 'ok', processState: entry.process,
         currentHead: 100, networkReferenceHead: 100, networkReferenceConfidence: 'high',
         consensus: { state: 'ok', freshness: 'current', highestQcBlock: 102, highestLockBlock: 101, highestCommitBlock: 100 },
@@ -542,7 +542,7 @@ describe('App shell with private Home', () => {
         networkKey: 'mainnet',
         health: 'unhealthy',
         healthReason: 'RPC observation failed',
-        freshness: 'stale',
+        currency: 'stale',
         rpcState: 'error',
         syncState: 'unknown',
         consensusState: 'ok',
@@ -871,7 +871,7 @@ describe('App shell with private Home', () => {
       '/api/public/v1/networks': () => jsonResponse([], 200),
       '/api/public/v1/nodes/node-1': () => jsonResponse({
         nodeId: 'node-1', displayName: 'Validator A', networkKey: 'mainnet',
-        health: 'healthy', healthReason: 'rpc reachable', freshness: 'current',
+        health: 'healthy', healthReason: 'rpc reachable', currency: 'current',
         rpcState: 'ok', syncState: 'synced', consensusState: 'current', processState: 'running',
         currentHead: 123, historicalHighWatermark: 120, networkReferenceHead: 123,
         networkReferenceConfidence: 'high', resyncState: 'idle', resyncProgress: null,
@@ -1216,7 +1216,7 @@ describe('App shell with private Home', () => {
         return nodeCalls === 1
           ? jsonResponse({
               nodeId: 'node-1', displayName: 'Validator A', networkKey: 'mainnet',
-              health: 'healthy', healthReason: 'rpc reachable', freshness: 'current',
+              health: 'healthy', healthReason: 'rpc reachable', currency: 'current',
               rpcState: 'ok', syncState: 'synced', consensusState: 'current', processState: 'running',
               currentHead: 123, historicalHighWatermark: 120, networkReferenceHead: 123,
               networkReferenceConfidence: 'high', resyncState: 'idle', resyncProgress: null,
@@ -1277,7 +1277,7 @@ describe('App shell with private Home', () => {
       '/api/public/v1/networks': () => jsonResponse([], 200),
       '/api/public/v1/nodes/node-1': () => jsonResponse({
         nodeId: 'node-1', displayName: 'Validator A', networkKey: 'mainnet',
-        health: 'healthy', healthReason: 'rpc reachable', freshness: 'current',
+        health: 'healthy', healthReason: 'rpc reachable', currency: 'current',
         rpcState: 'ok', syncState: 'ok', consensusState: 'current', processState: 'running',
         currentHead: 123, historicalHighWatermark: 120, networkReferenceHead: 123,
         networkReferenceConfidence: 'high', resyncState: 'idle', resyncProgress: null,
@@ -1353,7 +1353,7 @@ describe('App shell with private Home', () => {
   it('switches the Metric Window through the URL without ever drawing the previous window (#247)', async () => {
     const NODE_BODY = {
       nodeId: 'node-1', displayName: 'Validator A', networkKey: 'mainnet',
-      health: 'healthy', healthReason: 'rpc reachable', freshness: 'current',
+      health: 'healthy', healthReason: 'rpc reachable', currency: 'current',
       rpcState: 'ok', syncState: 'ok', consensusState: 'current', processState: 'running',
       currentHead: 123, historicalHighWatermark: 120, networkReferenceHead: 123,
       networkReferenceConfidence: 'high', resyncState: 'idle', resyncProgress: null,
@@ -1489,7 +1489,7 @@ describe('App shell with private Home', () => {
       '/api/public/v1/networks': () => jsonResponse([], 200),
       '/api/public/v1/nodes/node-1': () => jsonResponse({
         nodeId: 'node-1', displayName: 'Validator A', networkKey: 'mainnet',
-        health: 'healthy', healthReason: 'rpc reachable', freshness: 'current',
+        health: 'healthy', healthReason: 'rpc reachable', currency: 'current',
         rpcState: 'ok', syncState: 'ok', consensusState: 'current', processState: 'running',
         currentHead: 123, historicalHighWatermark: 120, networkReferenceHead: 123,
         networkReferenceConfidence: 'high', resyncState: 'idle', resyncProgress: null,
@@ -1524,7 +1524,7 @@ describe('App shell with private Home', () => {
       '/api/public/v1/networks': () => jsonResponse([], 200),
       '/api/public/v1/nodes/node-1': () => jsonResponse({
         nodeId: 'node-1', displayName: 'Validator A', networkKey: 'mainnet',
-        health: 'healthy', healthReason: 'rpc reachable', freshness: 'current',
+        health: 'healthy', healthReason: 'rpc reachable', currency: 'current',
         rpcState: 'ok', syncState: 'ok', consensusState: 'current', processState: 'running',
         currentHead: 123, historicalHighWatermark: 120, networkReferenceHead: 123,
         networkReferenceConfidence: 'high', resyncState: 'idle', resyncProgress: null,
@@ -1577,7 +1577,7 @@ describe('App shell with private Home', () => {
       '/api/public/v1/networks': () => jsonResponse([], 200),
       '/api/public/v1/nodes/node-1': () => jsonResponse({
         nodeId: 'node-1', displayName: 'Validator A', networkKey: 'mainnet',
-        health: 'healthy', healthReason: 'rpc reachable', freshness: '2026-08-20T00:00:00Z',
+        health: 'healthy', healthReason: 'rpc reachable', currency: 'current', currencyAsOf: '2026-08-20T00:00:00Z',
         rpcState: 'ok', syncState: 'unknown', consensusState: 'current', processState: 'error',
         currentHead: 123, historicalHighWatermark: 120, networkReferenceHead: 123,
         networkReferenceConfidence: 'low', resyncState: 'idle', resyncProgress: null,

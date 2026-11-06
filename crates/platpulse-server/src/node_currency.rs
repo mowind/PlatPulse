@@ -166,6 +166,24 @@ impl NodeCurrency {
     pub fn blocks_lag_figure(&self) -> bool {
         matches!(self, Self::Stale { .. })
     }
+
+    /// The state a Node DTO carries, without the stale component's detail.
+    pub fn state(&self) -> NodeCurrencyState {
+        match self {
+            Self::Current => NodeCurrencyState::Current,
+            Self::Stale { .. } => NodeCurrencyState::Stale,
+            Self::NeverObserved => NodeCurrencyState::NeverObserved,
+        }
+    }
+}
+
+/// The Node Currency as Public and Admin Node DTOs report it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeCurrencyState {
+    Current,
+    Stale,
+    NeverObserved,
 }
 
 /// Load the gating evidence of every Node in `node_ids`.

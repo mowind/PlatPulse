@@ -34,7 +34,7 @@ const NODE = {
   rpc_endpoint: 'ws://[REDACTED_IP]:****',
   health: 'healthy',
   health_reason: 'RPC, sync, and consensus are current',
-  freshness: 'current',
+  currency: 'current',
   current_head: 128,
   resync_state: 'normal',
   identity: { state: 'matched', observed: null, mismatched_fields: [] },
@@ -82,7 +82,7 @@ const AGENT = {
       network_key: 'platon-mainnet',
       health: 'healthy',
       health_reason: 'RPC, sync, and consensus are current',
-      freshness: 'current',
+      currency: 'current',
       lifecycle: 'active',
       visibility: 'public',
       inventory_revision: 3,
@@ -392,19 +392,19 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
 
   it('prioritizes Active Nodes before limiting the preview and keeps deterministic ties stable', async () => {
     const activeNodes = [
-      { ...NODE, node_id: 'healthy-1', display_name: 'Healthy 1', health: 'healthy', freshness: 'current' },
+      { ...NODE, node_id: 'healthy-1', display_name: 'Healthy 1', health: 'healthy', currency: 'current' },
       { ...NODE, node_id: 'retired', display_name: 'Retired Node', lifecycle: 'retired' },
       { ...NODE, node_id: 'unhealthy-b', display_name: 'Unhealthy B', health: 'unhealthy', network_key: 'zeta' },
-      { ...NODE, node_id: 'healthy-2', display_name: 'Healthy 2', health: 'healthy', freshness: 'current' },
-      { ...NODE, node_id: 'unknown', display_name: 'Unknown Node', health: 'unknown', freshness: 'current' },
-      { ...NODE, node_id: 'stale', display_name: 'Stale Node', health: 'healthy', freshness: 'stale' },
+      { ...NODE, node_id: 'healthy-2', display_name: 'Healthy 2', health: 'healthy', currency: 'current' },
+      { ...NODE, node_id: 'unknown', display_name: 'Unknown Node', health: 'unknown', currency: 'current' },
+      { ...NODE, node_id: 'stale', display_name: 'Stale Node', health: 'unknown', currency: 'stale' },
       { ...NODE, node_id: 'unhealthy-a', display_name: 'Unhealthy A', health: 'unhealthy', network_key: 'alpha' },
-      { ...NODE, node_id: 'healthy-3', display_name: 'Healthy 3', health: 'healthy', freshness: 'current' },
-      { ...NODE, node_id: 'healthy-4', display_name: 'Healthy 4', health: 'healthy', freshness: 'current' },
-      { ...NODE, node_id: 'healthy-5', display_name: 'Healthy 5', health: 'healthy', freshness: 'current' },
-      { ...NODE, node_id: 'healthy-6', display_name: 'Healthy 6', health: 'healthy', freshness: 'current' },
-      { ...NODE, node_id: 'healthy-7', display_name: 'Healthy 7', health: 'healthy', freshness: 'current' },
-      { ...NODE, node_id: 'healthy-8', display_name: 'Healthy 8', health: 'healthy', freshness: 'current' },
+      { ...NODE, node_id: 'healthy-3', display_name: 'Healthy 3', health: 'healthy', currency: 'current' },
+      { ...NODE, node_id: 'healthy-4', display_name: 'Healthy 4', health: 'healthy', currency: 'current' },
+      { ...NODE, node_id: 'healthy-5', display_name: 'Healthy 5', health: 'healthy', currency: 'current' },
+      { ...NODE, node_id: 'healthy-6', display_name: 'Healthy 6', health: 'healthy', currency: 'current' },
+      { ...NODE, node_id: 'healthy-7', display_name: 'Healthy 7', health: 'healthy', currency: 'current' },
+      { ...NODE, node_id: 'healthy-8', display_name: 'Healthy 8', health: 'healthy', currency: 'current' },
     ]
     mockFetch({
       '/api/public/v1/session': () => jsonResponse(OWNER_SESSION, 200),
@@ -420,8 +420,8 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     expect(items.slice(0, 4).map((item) => item.textContent)).toEqual([
       expect.stringContaining('Unhealthy A'),
       expect.stringContaining('Unhealthy B'),
-      expect.stringContaining('Unknown Node'),
       expect.stringContaining('Stale Node'),
+      expect.stringContaining('Unknown Node'),
     ])
     expect(screen.queryByText('Retired Node')).toBeNull()
     expect(within(panel).getByText(/Showing 5 of 12 Active Nodes/)).toBeTruthy()
@@ -434,8 +434,8 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
   it('counts the exceptional Nodes and Agents the five-item previews leave out', async () => {
     const nodes = [
       ...Array.from({ length: 6 }, (_, index) => ({ ...NODE, node_id: 'bad-' + index, display_name: 'Bad ' + index, health: 'unhealthy' })),
-      { ...NODE, node_id: 'unknown-1', display_name: 'Unknown 1', health: 'unknown', freshness: 'unknown' },
-      { ...NODE, node_id: 'stale-1', display_name: 'Stale 1', health: 'healthy', freshness: 'stale' },
+      { ...NODE, node_id: 'unknown-1', display_name: 'Unknown 1', health: 'unknown', currency: 'never_observed' },
+      { ...NODE, node_id: 'stale-1', display_name: 'Stale 1', health: 'unknown', currency: 'stale' },
       { ...NODE, node_id: 'mismatch-1', display_name: 'Mismatch 1', health: 'healthy', identity: { state: 'mismatched', observed: null, mismatched_fields: ['chain_id'] } },
     ]
     const active = [{ credential_id: 'c1', active: true, created_at: '2026-08-12T08:00:00Z', revoked_at: null, revoke_after: null }]
@@ -455,7 +455,7 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
     await within(nodePanel).findAllByRole('listitem')
     expect(within(nodePanel).getByText(/Showing 5 of 9 Active Nodes/)).toBeTruthy()
     expect(nodePanel.querySelector('[data-slot="preview-hidden"]')?.textContent).toBe(
-      'Not shown: 1 unhealthy · 1 unknown health · 1 stale · 1 identity mismatch',
+      'Not shown: 1 unhealthy · 2 unknown health · 1 stale · 1 identity mismatch',
     )
     const agentPanel = screen.getByRole('heading', { name: 'Agent inventory' }).closest('article') as HTMLElement
     expect(within(agentPanel).getByText(/Showing 5 of 7 Agents/)).toBeTruthy()
@@ -631,7 +631,7 @@ describe('PAGE-ADMIN-OVERVIEW', () => {
       '/api/admin/v1/overview': () => jsonResponse(OVERVIEW, 200),
       '/api/admin/v1/nodes': () =>
         jsonResponse(
-          [{ ...NODE, health: 'unknown', health_reason: 'The Server has not observed enough current components', freshness: 'stale', current_head: null }],
+          [{ ...NODE, health: 'unknown', health_reason: 'The Server has not observed enough current components', currency: 'stale', current_head: null }],
           200,
         ),
       '/api/admin/v1/agents': () =>

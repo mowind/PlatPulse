@@ -32,7 +32,7 @@ const mockNode: PublicNode = {
   historicalHighWatermark: 12345,
   networkReferenceHead: 12345,
   networkReferenceConfidence: 'high',
-  freshness: 'current',
+  currency: 'current',
   resyncProgress: null,
   hostCpuPercent: 50,
   hostMemoryPercent: 50,
