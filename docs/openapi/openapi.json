@@ -8631,13 +8631,24 @@
           "visibility",
           "health",
           "health_reason",
-          "freshness",
+          "currency",
           "resync_state",
           "identity"
         ],
         "properties": {
           "agent_id": {
             "type": "string"
+          },
+          "currency": {
+            "$ref": "#/components/schemas/NodeCurrencyState",
+            "description": "The Node Currency judged from the RPC, sync and consensus observations."
+          },
+          "currency_as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The oldest of the RPC, sync and consensus Server-clock observation\ninstants; null while any of them was never observed."
           },
           "current_head": {
             "type": [
@@ -8651,9 +8662,6 @@
               "string",
               "null"
             ]
-          },
-          "freshness": {
-            "type": "string"
           },
           "health": {
             "type": "string"
@@ -8695,7 +8703,7 @@
           "rpc_endpoint",
           "health",
           "health_reason",
-          "freshness",
+          "currency",
           "identity",
           "resync_state",
           "network_reference_confidence"
@@ -8747,6 +8755,17 @@
               }
             ]
           },
+          "currency": {
+            "$ref": "#/components/schemas/NodeCurrencyState",
+            "description": "The Node Currency judged from the RPC, sync and consensus observations."
+          },
+          "currency_as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The oldest of the RPC, sync and consensus Server-clock observation\ninstants; null while any of them was never observed."
+          },
           "current_head": {
             "type": [
               "integer",
@@ -8771,9 +8790,6 @@
             ]
           },
           "first_seen_at": {
-            "type": "string"
-          },
-          "freshness": {
             "type": "string"
           },
           "health": {
@@ -8926,13 +8942,24 @@
           "rpc_endpoint",
           "health",
           "health_reason",
-          "freshness",
+          "currency",
           "resync_state",
           "identity"
         ],
         "properties": {
           "agent_id": {
             "type": "string"
+          },
+          "currency": {
+            "$ref": "#/components/schemas/NodeCurrencyState",
+            "description": "The Node Currency judged from the RPC, sync and consensus observations."
+          },
+          "currency_as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The oldest of the RPC, sync and consensus Server-clock observation\ninstants; null while any of them was never observed."
           },
           "current_head": {
             "type": [
@@ -8949,10 +8976,6 @@
           },
           "first_seen_at": {
             "type": "string"
-          },
-          "freshness": {
-            "type": "string",
-            "description": "Server-owned freshness dimension: `current`, `stale`, or `unknown`."
           },
           "health": {
             "type": "string",
@@ -14931,6 +14954,15 @@
           }
         }
       },
+      "NodeCurrencyState": {
+        "type": "string",
+        "description": "The Node Currency as Public and Admin Node DTOs report it.",
+        "enum": [
+          "current",
+          "stale",
+          "never_observed"
+        ]
+      },
       "NodeDiagnostic": {
         "type": "object",
         "required": [
@@ -14941,7 +14973,7 @@
           "visibility",
           "health",
           "health_reason",
-          "freshness",
+          "currency",
           "resync_state",
           "network_reference_confidence"
         ],
@@ -14955,6 +14987,17 @@
                 "$ref": "#/components/schemas/ConsensusDiagnostic"
               }
             ]
+          },
+          "currency": {
+            "$ref": "#/components/schemas/NodeCurrencyState",
+            "description": "The Node Currency judged from the RPC, sync and consensus observations.\nThe WebUI formats this state; it never derives it from `Date.now()`."
+          },
+          "currency_as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The oldest of the RPC, sync and consensus Server-clock observation\ninstants; null while any of them was never observed."
           },
           "current_head": {
             "type": [
@@ -14978,10 +15021,6 @@
               "string",
               "null"
             ]
-          },
-          "freshness": {
-            "type": "string",
-            "description": "The Node Currency: `current`, `stale`, or `unknown` when a gating\nobservation was never observed. The WebUI formats this state; it never\nderives it from `Date.now()`."
           },
           "health": {
             "type": "string"
@@ -16838,6 +16877,7 @@
           "networkKey",
           "health",
           "healthReason",
+          "currency",
           "rpcState",
           "syncState",
           "consensusState",
@@ -16855,6 +16895,17 @@
           "consensusState": {
             "type": "string"
           },
+          "currency": {
+            "$ref": "#/components/schemas/NodeCurrencyState",
+            "description": "The Node Currency judged from the RPC, sync and consensus observations."
+          },
+          "currencyAsOf": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The oldest Server-clock instant at which the RPC, sync and consensus\nobservations were taken: the Report's own observation time corrected by\nthe Agent's measured clock skew, falling back to the Server receipt time\nwhen that skew is unmeasured or the Agent is Clock Unreliable (ADR 0014).\nNull while any of the three was never observed."
+          },
           "currentHead": {
             "type": [
               "integer",
@@ -16867,13 +16918,6 @@
               "string",
               "null"
             ]
-          },
-          "freshness": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The oldest Server-clock instant at which the RPC, sync and consensus\nobservations behind this projection were taken: the Report's own\nobservation time corrected by the Agent's measured clock skew, falling\nback to the Server receipt time when that skew is unmeasured or the Agent\nis Clock Unreliable (ADR 0014)."
           },
           "health": {
             "type": "string"

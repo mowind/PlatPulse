@@ -254,12 +254,13 @@ mod tests {
         let node = public_home_node(&state, ISSUE_274_NODE).await;
         assert_eq!(node["health"], "unknown", "{node}");
         assert_eq!(node["healthReason"], "observations are stale");
-        let freshness = node["freshness"]
+        assert_eq!(node["currency"], "stale", "{node}");
+        let as_of = node["currencyAsOf"]
             .as_str()
             .expect("every observation instant is known");
         assert!(
-            seconds_from_now(freshness) < -7_000,
-            "freshness is the observation instant: {freshness}"
+            seconds_from_now(as_of) < -7_000,
+            "the currency instant is the observation instant: {as_of}"
         );
         assert!(
             node["networkReferenceHead"].is_null(),
@@ -327,10 +328,11 @@ mod tests {
 
         let node = public_home_node(&state, ISSUE_274_NODE).await;
         assert_eq!(
-            node["freshness"].as_str(),
+            node["currencyAsOf"].as_str(),
             Some(stored.as_str()),
-            "freshness is the corrected observation instant"
+            "the currency instant is the corrected observation instant"
         );
+        assert_eq!(node["currency"], "stale", "{node}");
         assert_eq!(node["health"], "unknown", "{node}");
         assert_eq!(node["healthReason"], "observations are stale");
     }
@@ -361,10 +363,11 @@ mod tests {
         );
         let node = public_home_node(&state, ISSUE_274_NODE).await;
         assert_eq!(
-            node["freshness"].as_str(),
+            node["currencyAsOf"].as_str(),
             Some(old_rpc_at.as_str()),
-            "freshness is the oldest of the three observation instants: {node}"
+            "the currency instant is the oldest of the three observation instants: {node}"
         );
+        assert_eq!(node["currency"], "stale", "{node}");
         assert_eq!(node["health"], "unknown", "{node}");
         assert!(
             node["networkReferenceHead"].is_null(),

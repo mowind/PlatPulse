@@ -655,10 +655,12 @@ pub struct NodeDiagnostic {
     pub visibility: String,
     pub health: String,
     pub health_reason: String,
-    /// The Node Currency: `current`, `stale`, or `unknown` when a gating
-    /// observation was never observed. The WebUI formats this state; it never
-    /// derives it from `Date.now()`.
-    pub freshness: String,
+    /// The Node Currency judged from the RPC, sync and consensus observations.
+    /// The WebUI formats this state; it never derives it from `Date.now()`.
+    pub currency: node_currency::NodeCurrencyState,
+    /// The oldest of the RPC, sync and consensus Server-clock observation
+    /// instants; null while any of them was never observed.
+    pub currency_as_of: Option<String>,
     pub process: Option<ProcessDiagnostic>,
     pub data_directory: Option<DataDirectoryDiagnostic>,
     pub rpc: Option<RpcDiagnostic>,
@@ -1048,8 +1050,6 @@ pub(super) struct AssessedNode {
     pub(super) identity_disposition: node_currency::NodeIdentity,
     pub(super) health_reason: node_currency::HealthReason,
     pub(super) currency: node_currency::NodeCurrency,
-    /// The oldest gating observation instant, `None` while any is missing.
-    pub(super) currency_as_of: Option<String>,
     pub(super) assessed_at: time::OffsetDateTime,
 }
 
@@ -1140,11 +1140,6 @@ pub(super) async fn node_diagnostic(
         &evidence,
         assessed_at,
     );
-    let freshness = match currency {
-        node_currency::NodeCurrency::Current => "current",
-        node_currency::NodeCurrency::Stale { .. } => "stale",
-        node_currency::NodeCurrency::NeverObserved => "unknown",
-    };
     let history = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<String>, Option<i64>, Option<String>)>(
         "SELECT c.current_block, h.historical_high_watermark, h.resync_state, r.block_number, r.confidence FROM current_node_chain_observations c LEFT JOIN block_history_state h ON h.node_id=c.node_id LEFT JOIN nodes n ON n.node_id=c.node_id LEFT JOIN network_reference_heads r ON r.network_key=n.network_key WHERE c.node_id=$1"
     ).bind(&node_id).fetch_optional(state.db().pool()).await?;
@@ -1165,7 +1160,8 @@ pub(super) async fn node_diagnostic(
         visibility,
         health: summary.health.as_str().to_owned(),
         health_reason: summary.reason.text().to_owned(),
-        freshness: freshness.to_owned(),
+        currency: currency.state(),
+        currency_as_of: evidence.as_of(),
         process,
         data_directory,
         rpc,
@@ -1188,7 +1184,6 @@ pub(super) async fn node_diagnostic(
         identity_disposition,
         health_reason: summary.reason,
         currency,
-        currency_as_of: evidence.as_of(),
         assessed_at,
     })
 }
@@ -1791,7 +1786,7 @@ mod tests {
         .await
         .unwrap()
         .diagnostic;
-        assert_eq!(diagnostic.freshness, "stale");
+        assert_eq!(diagnostic.currency, node_currency::NodeCurrencyState::Stale);
         assert_eq!(diagnostic.health, "unknown");
         assert_eq!(diagnostic.health_reason, "observations are stale");
 
@@ -1814,7 +1809,10 @@ mod tests {
         .await
         .unwrap()
         .diagnostic;
-        assert_eq!(diagnostic.freshness, "current");
+        assert_eq!(
+            diagnostic.currency,
+            node_currency::NodeCurrencyState::Current
+        );
         assert_eq!(diagnostic.health, "healthy");
         assert_eq!(
             diagnostic.health_reason,

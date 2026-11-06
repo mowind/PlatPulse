@@ -31,7 +31,7 @@ import {
 import { useAuth } from '../auth/AuthContext'
 import { formatBytes } from '../formatBytes'
 import {
-  freshnessTone,
+  currencyTone,
   healthTone,
   identityBadge,
   lifecycleLabel,
@@ -41,7 +41,7 @@ import {
   StatusBadge,
   componentStateLabel,
   formatObservedAt,
-  freshnessLabel,
+  currencyLabel,
 } from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
 import { CardX } from '../components/ui/card-x'
@@ -186,8 +186,8 @@ export default function AdminNodesList() {
     })
     const rank = (node: AdminNodeListItem): number =>
       node.health === 'healthy' ? 0 : node.health === 'unhealthy' ? 2 : 1
-    const freshnessRank = (node: AdminNodeListItem): number =>
-      node.freshness === 'current' ? 0 : node.freshness === 'stale' ? 1 : 2
+    const currencyRank = (node: AdminNodeListItem): number =>
+      node.currency === 'current' ? 0 : node.currency === 'stale' ? 1 : 2
     const byName = (a: AdminNodeListItem, b: AdminNodeListItem): number =>
       (a.display_name ?? a.node_id).localeCompare(b.display_name ?? b.node_id)
     const byNetwork = (a: AdminNodeListItem, b: AdminNodeListItem): number =>
@@ -201,7 +201,7 @@ export default function AdminNodesList() {
         sorted.sort(byNetwork)
         break
       case 'freshness':
-        sorted.sort((a, b) => freshnessRank(a) - freshnessRank(b) || byName(a, b))
+        sorted.sort((a, b) => currencyRank(a) - currencyRank(b) || byName(a, b))
         break
       default:
         sorted.sort((a, b) => rank(a) - rank(b) || byName(a, b))
@@ -686,8 +686,8 @@ function NodeListRow({
           )}
         </td>
         <td data-label="Freshness" className={cn(ADMIN_TD, 'min-w-0')}>
-          <StatusBadge status={freshnessLabel(node.freshness)} tone={freshnessTone(node.freshness)} />
-          {node.freshness === 'stale' && (
+          <StatusBadge status={currencyLabel(node.currency)} tone={currencyTone(node.currency)} />
+          {node.currency === 'stale' && (
             <small className={cn('mt-1 block', ADMIN_SECONDARY)}>Last good values; age on detail</small>
           )}
         </td>
@@ -1111,7 +1111,12 @@ function NodeDetailHeader({
           </span>
         </DetailDimension>
         <DetailDimension label="Freshness">
-          <StatusBadge status={freshnessLabel(node.freshness)} tone={freshnessTone(node.freshness)} />
+          <span className="flex flex-wrap items-center gap-2">
+            <StatusBadge status={currencyLabel(node.currency)} tone={currencyTone(node.currency)} />
+            {node.currency_as_of && (
+              <span className={ADMIN_SECONDARY}>as of {formatObservedAt(node.currency_as_of)}</span>
+            )}
+          </span>
         </DetailDimension>
         <DetailDimension label="Identity">
           <StatusBadge status={identity.label} tone={identity.tone} />

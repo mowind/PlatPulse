@@ -140,7 +140,7 @@ summary.networks: total, with_identity_mismatch
 
 `AttentionItem.kind`、`severity` 与 `subject_kind` 是 typed Server contract，不是浏览器任意字符串。`subject_kind` 限定为 `agent`、`node`、`network`、`settings`。当前 kind 为 `agent_offline`、`agent_spool_fatal`、`agent_spool_overflow`、`agent_report_gap`、`agent_security_event`、`agent_shutdown_incomplete`、`agent_inventory_rejected`、`node_unhealthy`、`node_health_unknown`、`node_resync`、`node_identity_mismatch`。severity 只有 `critical` 与 `warning`：Spool fatal/overflow、security event、Inventory rejection、unhealthy Node 与 Network Identity Mismatch 为 Critical；Agent offline、report gap、incomplete shutdown、unknown Node health 与 resync 为 Warning。新 Agent 在尚无 accepted report 时是 Unknown 而非 Offline；新 Active Node 在 Server-owned first-observation grace period 内仍计为 Unknown（理由为等待首次 accepted observation），grace 只是 Attention 规则，不提前产生 unknown-health Attention；identity mismatch 造成的 Unknown 只产生 `node_identity_mismatch`。Server 按 Critical 优先、权威观察时间与稳定身份排序；WebUI 可以按 Subject 分组展示，但不能丢弃 Item 或重算 severity。
 
-Public 与 Admin Projection 都由 Server 计算 Health，浏览器不得自行重算；两者共用 `node_currency` module 的唯一 Node Health Summary 推导，同一 Node 在两种 DTO 中的 health 与 health_reason 相同。顺序为：Retired → Node Currency（Never Observed 或 Stale 时为 Unknown；只在 stale 证据里看到的失败写进理由，如 observations are stale; last RPC observation failed，绝不判 Unhealthy）→ process 采集失败 → RPC 失败 → identity mismatch 或 identity 采集失败（Unknown）→ Sync、Consensus 失败 → 三者 ok 才 Healthy，其余 Unknown。Node Currency 只看 RPC、Sync、Consensus 的 Server-clock observation instant，窗口固定为 `FRESHNESS_LIMIT_SECONDS`，不读 Owner 告警阈值（`node.observation_stale`、freshness bound）：Public Projection 对所有读者相同，Owner 调整告警不得改变 Home 的 Health；`node.observation_stale` 衡量证据到达（receipt instant），与 Node Currency 无关。告警 head-lag 只被 Stale 阻断，从未观察的组件不阻断。Admin 诊断读取失败返回 500，不以缺失行拼出诊断。
+Public 与 Admin Projection 都由 Server 计算 Health，浏览器不得自行重算；两者共用 `node_currency` module 的唯一 Node Health Summary 推导，同一 Node 在两种 DTO 中的 health 与 health_reason 相同。顺序为：Retired → Node Currency（Never Observed 或 Stale 时为 Unknown；只在 stale 证据里看到的失败写进理由，如 observations are stale; last RPC observation failed，绝不判 Unhealthy）→ process 采集失败 → RPC 失败 → identity mismatch 或 identity 采集失败（Unknown）→ Sync、Consensus 失败 → 三者 ok 才 Healthy，其余 Unknown。Node Currency 只看 RPC、Sync、Consensus 的 Server-clock observation instant，窗口固定为 `FRESHNESS_LIMIT_SECONDS`，不读 Owner 告警阈值（`node.observation_stale`、freshness bound）：Public Projection 对所有读者相同，Owner 调整告警不得改变 Home 的 Health；`node.observation_stale` 衡量证据到达（receipt instant），与 Node Currency 无关。告警 head-lag 只被 Stale 阻断，从未观察的组件不阻断。Admin 诊断读取失败返回 500，不以缺失行拼出诊断。Node 级 DTO 以 Node Currency 表达当前性：Public 的 `currency`/`currencyAsOf` 与 Admin 的 `currency`/`currency_as_of` 由同一推导给出，`currency` 取 `current|stale|never_observed`，as-of 为三个 observation instant 中最早者、任一从未观察时为 null；同一 Node 在两种 DTO 中的 currency 相同。
 
 当前 SPA 对未注册的扩展页面使用 Admin fallback；Server/API 可以先于页面实现，但不得把 fallback 误写成可用页面。
 
@@ -178,7 +178,7 @@ Server Admin API 另有 People、Restore、Transfer 和 Agent credential operati
 
 Settings 是当前 SPA 全局配置的唯一 canonical route（`/admin/settings`）；旧的 `/admin/history-window` 与 `/admin/site-access` 不重定向，而是进入 Admin 的 Section not found fallback。Server API 仍分别提供 `/api/admin/v1/history-window` 与 `/api/admin/v1/access-mode`。
 
-Admin 的 Node 页面聚焦配置与诊断（显示名、RPC Endpoint 诊断、Node Inventory/生命周期、freshness 摘要），不复刻 Home 的完整 Node Detail。Admin 不执行远程 Node 操作。
+Admin 的 Node 页面聚焦配置与诊断（显示名、RPC Endpoint 诊断、Node Inventory/生命周期、Node Currency 摘要），不复刻 Home 的完整 Node Detail。Admin 不执行远程 Node 操作。
 
 ### 9.3 REST / SSE / 响应式
 

@@ -45,7 +45,7 @@ export function LastReportAge({ timestamp, variant = 'stacked' }: { timestamp?: 
   </span>
 }
 
-type HeadObservation = Pick<PublicNode, 'currentHead' | 'freshness' | 'rpcState' | 'health'>
+type HeadObservation = Pick<PublicNode, 'currentHead' | 'currency' | 'rpcState' | 'health'>
 type NetworkObservation = HeadObservation & Pick<PublicNode, 'networkReferenceHead' | 'networkReferenceConfidence'>
 
 export function validHeight(value: number | null | undefined): value is number {
@@ -55,11 +55,12 @@ export function validHeight(value: number | null | undefined): value is number {
 function headUnavailable(node: HeadObservation): string | undefined {
   if (!validHeight(node.currentHead)) return 'Node Head unknown or invalid'
   if (node.rpcState !== 'ok') return 'Node RPC collection ' + (node.rpcState || 'unknown')
-  // PublicNode.freshness is the oldest observation instant, NOT a state token.
-  // Healthy is the existing Server verdict that RPC/sync/consensus are current.
-  // Without it this DTO cannot establish Head currency independently: omit only
-  // the comparison, retain the absolute value, and never invent a client TTL.
-  if (!node.freshness || !Number.isFinite(Date.parse(node.freshness))) return 'Node Head observation time unknown'
+  // The Server's Node Currency says whether RPC, sync and consensus are
+  // current; Healthy is its verdict that nothing current contradicts them.
+  // Without both, omit only the comparison, retain the absolute value, and
+  // never invent a client TTL.
+  if (node.currency === 'stale') return 'Node Head observation stale'
+  if (node.currency !== 'current') return 'Node Head observation time unknown'
   if (node.health !== 'healthy') return 'Current Node Head not confirmed by Server'
 }
 

@@ -41,7 +41,7 @@ const NODE_A = {
   rpc_endpoint: 'ws://127.0.0.1:****',
   health: 'healthy',
   health_reason: 'RPC, sync, and consensus are current',
-  freshness: 'current',
+  currency: 'current',
   current_head: 12842019,
   resync_state: 'normal',
   identity: {
@@ -72,7 +72,7 @@ const NODE_B = {
   rpc_endpoint: 'ws://127.0.0.1:****',
   health: 'unhealthy',
   health_reason: 'RPC collection failed',
-  freshness: 'stale',
+  currency: 'stale',
   current_head: 12842018,
   resync_state: 'normal',
   identity: {
@@ -90,6 +90,7 @@ const NODE_B = {
 const NODE_A_DETAIL = {
   ...NODE_A,
   node_key_fingerprint: '0xabcd1234',
+  currency_as_of: '2026-08-12T08:00:00Z',
   historical_high_watermark: 12842019,
   resync_progress: null,
   network_reference_head: 12842019,
@@ -195,7 +196,8 @@ const NODE_D_RETIRED_DETAIL = {
     'Retired: absent from the latest valid Agent Inventory. Identity and history remain; live observation alerts no longer apply. Reactivation requires declaring the same Node ID in the Agent Inventory; the Server never changes Node lifecycle remotely.',
   health: 'unknown',
   health_reason: 'No live observation expectations for a Retired Node',
-  freshness: 'unknown',
+  currency: 'never_observed',
+  currency_as_of: null,
   current_head: null,
 }
 
@@ -207,7 +209,7 @@ const NODE_RPC_ERROR_DETAIL = {
   display_name: 'Node B (private)',
   health: 'unhealthy',
   health_reason: 'RPC collection failed',
-  freshness: 'stale',
+  currency: 'stale',
   current_head: 12842018,
   identity: NODE_B.identity,
   rpc: {
@@ -707,6 +709,7 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     const dimensions = screen.getByLabelText('Current Node and Agent dimensions')
     expect(dimensions.textContent).toContain('healthy')
     expect(dimensions.textContent).toContain('Current')
+    expect(dimensions.textContent).toContain('as of 2026-08-12 08:00:00 UTC')
     expect(dimensions.textContent).toContain('Matched')
     expect(dimensions.textContent).toContain('Active')
     // No Spool reading was attested for this Node's Agent, so the dimension
@@ -934,6 +937,10 @@ describe('PAGE-ADMIN-NODES (Node inventory)', () => {
     expect(screen.getAllByText('Unknown').length).toBeGreaterThan(0)
     expect(screen.queryByText('Healthy')).toBeNull()
     expect(screen.queryByText('Active')).toBeNull()
+    // A Node never observed has Node Currency but no instant to name.
+    const dimensions = screen.getByLabelText('Current Node and Agent dimensions')
+    expect(dimensions.textContent).toContain('Never observed')
+    expect(dimensions.textContent).not.toContain('as of')
     expect(screen.queryByRole('button', { name: /Retire|Reactivate/ })).toBeNull()
   })
 

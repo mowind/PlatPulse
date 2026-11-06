@@ -24,7 +24,7 @@ const mockNodeA: PublicNode = {
   historicalHighWatermark: 100,
   networkReferenceHead: 100,
   networkReferenceConfidence: 'high',
-  freshness: 'current',
+  currency: 'current',
   resyncProgress: null,
   hostCpuPercent: 50,
   hostMemoryPercent: 50,

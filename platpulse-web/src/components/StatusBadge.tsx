@@ -1,4 +1,5 @@
 import { Check, X, Clock, CircleHelp, Ban, TriangleAlert, CircleMinus, Ellipsis, Pause, RotateCw, ArrowRight, Circle, type LucideIcon } from 'lucide-react'
+import type { NodeCurrencyState } from '../api/generated'
 import { Badge } from './ui/badge'
 
 // Status display with text plus icon (webui.md §2.1, §10.3): color is
@@ -99,6 +100,18 @@ export function freshnessLabel(freshness: string | null | undefined): string {
       return 'Stale'
     default:
       return 'Unknown'
+  }
+}
+
+/** Server Node Currency maps onto the WebUI vocabulary. */
+export function currencyLabel(currency: NodeCurrencyState): string {
+  switch (currency) {
+    case 'current':
+      return 'Current'
+    case 'stale':
+      return 'Stale'
+    case 'never_observed':
+      return 'Never observed'
   }
 }
 

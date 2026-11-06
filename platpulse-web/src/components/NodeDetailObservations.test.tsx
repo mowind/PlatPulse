@@ -9,7 +9,7 @@ import {
   syncOffsetLabel,
 } from './NodeDetailObservations'
 
-const head = { currentHead: 100, freshness: '2026-01-01T00:00:00Z', health: 'healthy', rpcState: 'ok', networkReferenceHead: 102, networkReferenceConfidence: 'high' }
+const head = { currentHead: 100, currency: 'current' as const, health: 'healthy', rpcState: 'ok', networkReferenceHead: 102, networkReferenceConfidence: 'high' }
 const consensus = { state: 'ok', freshness: 'current', highestQcBlock: 100, highestLockBlock: 99, highestCommitBlock: 98 }
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks() })
 
@@ -20,7 +20,7 @@ describe('Node height comparisons', () => {
     expect(networkHeadComparison({ ...head, currentHead: 104 })).toEqual({ offset: '+2 from Observed Network Head' })
   })
   it.each([
-    { freshness: null }, { freshness: 'not-a-time' }, { freshness: 'current' },
+    { currency: 'stale' as const }, { currency: 'never_observed' as const },
     { health: 'unknown' }, { health: 'unhealthy' }, { rpcState: 'error' },
     { currentHead: null }, { currentHead: NaN }, { currentHead: -1 },
     { networkReferenceHead: null }, { networkReferenceHead: Infinity },
@@ -97,7 +97,7 @@ describe('Evidence-gated Observed Network Head offset', () => {
     expect(networkHeadOffset({ ...head, networkReferenceHead: 111 })).toEqual({ blocks: 11, tone: 'error' })
   })
   it.each([
-    { freshness: null }, { freshness: 'not-a-time' }, { freshness: 'current' },
+    { currency: 'stale' as const }, { currency: 'never_observed' as const },
     { health: 'unknown' }, { health: 'unhealthy' }, { rpcState: 'error' }, { rpcState: 'starting' },
     { currentHead: null }, { currentHead: undefined }, { currentHead: NaN }, { currentHead: Infinity },
     { currentHead: -1 }, { currentHead: 0.5 }, { currentHead: Number.MAX_SAFE_INTEGER + 1 },

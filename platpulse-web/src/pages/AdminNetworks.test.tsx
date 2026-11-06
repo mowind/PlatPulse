@@ -42,7 +42,7 @@ const NETWORK_DETAIL = {
       visibility: 'public',
       health: 'healthy',
       health_reason: 'RPC, sync, and consensus are current',
-      freshness: 'current',
+      currency: 'current',
       current_head: 12842019,
       resync_state: 'normal',
       identity: {
@@ -64,7 +64,7 @@ const NETWORK_DETAIL = {
       visibility: 'private',
       health: 'unhealthy',
       health_reason: 'RPC collection failed',
-      freshness: 'stale',
+      currency: 'stale',
       current_head: 12842018,
       resync_state: 'normal',
       identity: {

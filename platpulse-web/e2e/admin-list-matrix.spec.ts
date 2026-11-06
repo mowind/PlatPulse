@@ -52,7 +52,7 @@ function nodeFixture(agentIndex: number, nodeIndex: number) {
     visibility: 'private',
     health: 'healthy',
     health_reason: 'current',
-    freshness: 'current',
+    currency: 'current',
     current_head: 100 + nodeIndex,
     historical_high_watermark: 100 + nodeIndex,
     resync_state: 'idle',

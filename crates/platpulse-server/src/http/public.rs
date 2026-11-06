@@ -2456,12 +2456,14 @@ pub struct PublicNode {
     pub network_key: String,
     pub health: String,
     pub health_reason: String,
+    /// The Node Currency judged from the RPC, sync and consensus observations.
+    pub currency: node_currency::NodeCurrencyState,
     /// The oldest Server-clock instant at which the RPC, sync and consensus
-    /// observations behind this projection were taken: the Report's own
-    /// observation time corrected by the Agent's measured clock skew, falling
-    /// back to the Server receipt time when that skew is unmeasured or the Agent
-    /// is Clock Unreliable (ADR 0014).
-    pub freshness: Option<String>,
+    /// observations were taken: the Report's own observation time corrected by
+    /// the Agent's measured clock skew, falling back to the Server receipt time
+    /// when that skew is unmeasured or the Agent is Clock Unreliable (ADR 0014).
+    /// Null while any of the three was never observed.
+    pub currency_as_of: Option<String>,
     pub rpc_state: String,
     pub sync_state: String,
     pub consensus_state: String,
@@ -3177,7 +3179,8 @@ fn public_node(
         evidence,
         now,
     );
-    let freshness = evidence.as_of();
+    let currency = evidence.currency(now).state();
+    let currency_as_of = evidence.as_of();
     let peers = public_peer_insight(&row);
     let consensus = public_consensus_insight(&row);
     let node = PublicNode {
@@ -3186,7 +3189,8 @@ fn public_node(
         network_key: row.network_key,
         health: summary.health.as_str().to_owned(),
         health_reason: summary.reason.text().to_owned(),
-        freshness,
+        currency,
+        currency_as_of,
         rpc_state: row.rpc_state.unwrap_or_else(|| "unknown".to_owned()),
         sync_state: row.sync_state.unwrap_or_else(|| "unknown".to_owned()),
         consensus_state: row.consensus_state.unwrap_or_else(|| "unknown".to_owned()),

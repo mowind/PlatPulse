@@ -501,9 +501,17 @@ export type AdminNetworkDetail = {
  */
 export type AdminNetworkNode = {
     agent_id: string;
+    /**
+     * The Node Currency judged from the RPC, sync and consensus observations.
+     */
+    currency: NodeCurrencyState;
+    /**
+     * The oldest of the RPC, sync and consensus Server-clock observation
+     * instants; null while any of them was never observed.
+     */
+    currency_as_of?: string | null;
     current_head?: number | null;
     display_name?: string | null;
-    freshness: string;
     health: string;
     health_reason: string;
     identity: NodeIdentityStatus;
@@ -524,11 +532,19 @@ export type AdminNodeDetail = {
     block_history_holes?: null | BlockHistoryHoles;
     block_history_rejection?: null | BlockHistoryRejection;
     consensus?: null | ConsensusDiagnostic;
+    /**
+     * The Node Currency judged from the RPC, sync and consensus observations.
+     */
+    currency: NodeCurrencyState;
+    /**
+     * The oldest of the RPC, sync and consensus Server-clock observation
+     * instants; null while any of them was never observed.
+     */
+    currency_as_of?: string | null;
     current_head?: number | null;
     data_directory?: null | DataDirectoryDiagnostic;
     display_name?: string | null;
     first_seen_at: string;
-    freshness: string;
     health: string;
     health_reason: string;
     historical_high_watermark?: number | null;
@@ -564,13 +580,18 @@ export type AdminNodeDetail = {
  */
 export type AdminNodeListItem = {
     agent_id: string;
+    /**
+     * The Node Currency judged from the RPC, sync and consensus observations.
+     */
+    currency: NodeCurrencyState;
+    /**
+     * The oldest of the RPC, sync and consensus Server-clock observation
+     * instants; null while any of them was never observed.
+     */
+    currency_as_of?: string | null;
     current_head?: number | null;
     display_name?: string | null;
     first_seen_at: string;
-    /**
-     * Server-owned freshness dimension: `current`, `stale`, or `unknown`.
-     */
-    freshness: string;
     /**
      * Server-owned Node Health Summary severity and primary reason.
      */
@@ -3165,17 +3186,26 @@ export type NetworkUpdateRequest = {
     p2pNetworkId?: number | null;
 };
 
+/**
+ * The Node Currency as Public and Admin Node DTOs report it.
+ */
+export type NodeCurrencyState = 'current' | 'stale' | 'never_observed';
+
 export type NodeDiagnostic = {
     consensus?: null | ConsensusDiagnostic;
+    /**
+     * The Node Currency judged from the RPC, sync and consensus observations.
+     * The WebUI formats this state; it never derives it from `Date.now()`.
+     */
+    currency: NodeCurrencyState;
+    /**
+     * The oldest of the RPC, sync and consensus Server-clock observation
+     * instants; null while any of them was never observed.
+     */
+    currency_as_of?: string | null;
     current_head?: number | null;
     data_directory?: null | DataDirectoryDiagnostic;
     display_name?: string | null;
-    /**
-     * The Node Currency: `current`, `stale`, or `unknown` when a gating
-     * observation was never observed. The WebUI formats this state; it never
-     * derives it from `Date.now()`.
-     */
-    freshness: string;
     health: string;
     health_reason: string;
     historical_high_watermark?: number | null;
@@ -3980,16 +4010,20 @@ export type PublicNetwork = {
 export type PublicNode = {
     consensus: PublicConsensusInsight;
     consensusState: string;
-    currentHead?: number | null;
-    displayName?: string | null;
+    /**
+     * The Node Currency judged from the RPC, sync and consensus observations.
+     */
+    currency: NodeCurrencyState;
     /**
      * The oldest Server-clock instant at which the RPC, sync and consensus
-     * observations behind this projection were taken: the Report's own
-     * observation time corrected by the Agent's measured clock skew, falling
-     * back to the Server receipt time when that skew is unmeasured or the Agent
-     * is Clock Unreliable (ADR 0014).
+     * observations were taken: the Report's own observation time corrected by
+     * the Agent's measured clock skew, falling back to the Server receipt time
+     * when that skew is unmeasured or the Agent is Clock Unreliable (ADR 0014).
+     * Null while any of the three was never observed.
      */
-    freshness?: string | null;
+    currencyAsOf?: string | null;
+    currentHead?: number | null;
+    displayName?: string | null;
     health: string;
     healthReason: string;
     historicalHighWatermark?: number | null;

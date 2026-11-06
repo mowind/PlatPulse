@@ -10,6 +10,7 @@ const node: PublicNode = {
   networkKey: 'mainnet',
   health: 'healthy',
   healthReason: 'RPC reachable',
+  currency: 'current',
   rpcState: 'connected',
   syncState: 'synced',
   consensusState: 'ready',

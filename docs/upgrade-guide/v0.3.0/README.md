@@ -32,6 +32,12 @@ v0.3.0 adds PostgreSQL as an opt-in Server Storage Backend ([ADR 0013](../../adr
 - **Who is affected:** scripts, health probes or log pipelines that parse the stdout of a running Server or Agent. Under systemd the messages still reach the journal.
 - **Action:** read these messages from stderr (or the journal), or use `--log-format json` and match the `listening` event. No action otherwise.
 
+### Node `freshness` replaced by Node Currency in the HTTP API (#345)
+
+- **What changed:** the Node-level `freshness` field is removed from `PublicNode` and from the Admin Node DTOs (`AdminNetworkNode`, `AdminNodeListItem`, `AdminNodeDetail`, `NodeDiagnostic` in the Overview and Agent diagnostics). Each now carries `currency` — `current`, `stale` or `never_observed` (`NodeCurrencyState`) — and its instant, `currencyAsOf` (Public) / `currency_as_of` (Admin): the oldest of the RPC, sync and consensus observation instants, or null while any of them has never been observed. Value-level `freshness` fields (Peers, consensus, Validator) are unchanged.
+- **Who is affected:** API clients that read a Node's `freshness`, as an instant or as a `current`/`stale`/`unknown` word. The bundled WebUI is updated.
+- **Action:** read `currency` for the state (`never_observed` where `freshness` said `unknown`) and the as-of instant for the time.
+
 ## Schema migrations
 
 | | v0.2.0 | v0.3.0 |
@@ -73,16 +79,17 @@ All changes are additions; no command or flag was removed or renamed.
 
 ## API changes
 
-No path, schema or field was removed or renamed in `docs/openapi/openapi.json`. Additions:
+No path was removed or renamed in `docs/openapi/openapi.json`; the only removed field is the Node-level `freshness` (see "Breaking changes"). Additions:
 
 - `GET /api/admin/v1/storage` (Owner-only, read-only): the Storage Backend in use (`StorageOverview`).
 - `AdminNodeDetail`: `agent_spool_backlog_age`, `block_history_holes`. `HostDiagnostic`: `spool_backlog_age`. `CapacityOverview`: `notApplicableReason` (set on PostgreSQL, where SQLite capacity does not apply).
 - `/health/ready` has a new component `storage_ownership`; the storage component is named `sqlite` on SQLite (as before) or `postgres` on PostgreSQL. `platpulse_readiness` gains the same label.
+- `NodeCurrencyState`, and `currency` with `currencyAsOf` / `currency_as_of` on the Node DTOs that lost `freshness` (see "Breaking changes").
 - New metrics: `platpulse_storage_database_bytes` and `platpulse_history_gap_settlement*` counters. No metric was removed.
 
 Behaviour changes visible to API clients (no action unless you depend on the old behaviour):
 
-- **Freshness follows observation time** (fc2d3c7, ADR 0014). `PublicNode.freshness` is now the skew-corrected time the observation was taken, not the Server receipt time. While an Agent replays a Durable Spool backlog its Nodes show as Stale instead of "N blocks behind", and a Stale Node is not evaluated by head-lag alerts.
+- **Freshness follows observation time** (fc2d3c7, ADR 0014). A Node's currency is now judged from the skew-corrected time each observation was taken, not the Server receipt time. While an Agent replays a Durable Spool backlog its Nodes show as Stale instead of "N blocks behind", and a Stale Node is not evaluated by head-lag alerts.
 - **One Node Health Summary for Home and Admin** (#345). Public and Admin derive Health from the same rules, so the same Node reads the same `health` and `health_reason` on both. Stale evidence now makes a Node Unknown before any failure it carries (`observations are stale; last RPC observation failed`); Admin now counts a failed process observation and a Network identity mismatch, and Home shows a mismatched Node as Unknown. `health_reason` wording changed to name observations (`RPC observation failed`, `Node is awaiting its first accepted observation`). Admin diagnostics routes answer 500 instead of empty or partial data when a database read fails.
 - **No Session idle timeout** (809dec2, #259). A human Session no longer ends after 12 hours without activity; it ends only at its 7-day absolute lifetime (`expires_at`), on sign-out or on revocation.
 

@@ -188,8 +188,11 @@ pub struct AdminNodeListItem {
     /// Server-owned Node Health Summary severity and primary reason.
     pub health: String,
     pub health_reason: String,
-    /// Server-owned freshness dimension: `current`, `stale`, or `unknown`.
-    pub freshness: String,
+    /// The Node Currency judged from the RPC, sync and consensus observations.
+    pub currency: crate::node_currency::NodeCurrencyState,
+    /// The oldest of the RPC, sync and consensus Server-clock observation
+    /// instants; null while any of them was never observed.
+    pub currency_as_of: Option<String>,
     pub current_head: Option<i64>,
     pub resync_state: String,
     pub identity: NodeIdentityStatus,
@@ -240,7 +243,8 @@ async fn admin_node_list_item(
         rpc_endpoint: redact_endpoint(&row.rpc_endpoint),
         health: diagnostic.health,
         health_reason: diagnostic.health_reason,
-        freshness: diagnostic.freshness,
+        currency: diagnostic.currency,
+        currency_as_of: diagnostic.currency_as_of,
         current_head: diagnostic.current_head,
         resync_state: diagnostic.resync_state,
         identity: assessed.identity,
@@ -305,7 +309,11 @@ pub struct AdminNodeDetail {
     pub node_key_fingerprint: Option<String>,
     pub health: String,
     pub health_reason: String,
-    pub freshness: String,
+    /// The Node Currency judged from the RPC, sync and consensus observations.
+    pub currency: crate::node_currency::NodeCurrencyState,
+    /// The oldest of the RPC, sync and consensus Server-clock observation
+    /// instants; null while any of them was never observed.
+    pub currency_as_of: Option<String>,
     pub identity: NodeIdentityStatus,
     /// Block history the Server is refusing for this Node right now, with the
     /// Server's own reason; None when the Server stopped refusing, so the
@@ -456,7 +464,8 @@ pub(super) async fn admin_node_detail(
         node_key_fingerprint: fingerprint,
         health: diagnostic.health.clone(),
         health_reason: diagnostic.health_reason.clone(),
-        freshness: diagnostic.freshness.clone(),
+        currency: diagnostic.currency,
+        currency_as_of: diagnostic.currency_as_of.clone(),
         identity,
         block_history_rejection,
         block_history_holes,
@@ -877,10 +886,11 @@ mod tests {
     use axum::body::to_bytes;
     use serde_json::Value;
 
-    /// Home and Admin read one Node Health Summary: whatever the evidence, the
-    /// same Node carries the same Health and reason on both pages.
+    /// Home and Admin read one Node Health Summary and Node Currency: whatever
+    /// the evidence, the same Node carries the same Health, reason, currency
+    /// and currency instant on both pages.
     #[tokio::test]
-    async fn public_and_admin_agree_on_a_nodes_health() {
+    async fn public_and_admin_agree_on_a_nodes_health_and_currency() {
         let (_dir, state) = node_inventory_state().await;
         sqlx::query("UPDATE nodes SET visibility = 'public'")
             .execute(state.db().pool())
@@ -913,12 +923,28 @@ mod tests {
                     &to_bytes(public.into_body(), usize::MAX).await.unwrap(),
                 )
                 .unwrap();
-                let admin = (admin["health"].clone(), admin["health_reason"].clone());
-                let public = (public["health"].clone(), public["healthReason"].clone());
+                let admin = (
+                    admin["health"].clone(),
+                    admin["health_reason"].clone(),
+                    admin["currency"].clone(),
+                    admin["currency_as_of"].clone(),
+                );
+                let public = (
+                    public["health"].clone(),
+                    public["healthReason"].clone(),
+                    public["currency"].clone(),
+                    public["currencyAsOf"].clone(),
+                );
                 assert_eq!(admin, public, "{node_id}: Admin and Public disagree");
+                assert_eq!(
+                    admin.3.is_null(),
+                    admin.2 == "never_observed",
+                    "{node_id}: a currency instant exists exactly when every gating observation does"
+                );
                 (
                     admin.0.as_str().unwrap().to_owned(),
                     admin.1.as_str().unwrap().to_owned(),
+                    admin.2.as_str().unwrap().to_owned(),
                 )
             }
         };
@@ -938,12 +964,17 @@ mod tests {
             health_on_both_pages("node-healthy").await,
             (
                 "healthy".to_owned(),
-                "RPC, sync, and consensus are current".to_owned()
+                "RPC, sync, and consensus are current".to_owned(),
+                "current".to_owned()
             )
         );
         assert_eq!(
             health_on_both_pages("node-mismatched").await,
-            ("unhealthy".to_owned(), "RPC observation failed".to_owned())
+            (
+                "unhealthy".to_owned(),
+                "RPC observation failed".to_owned(),
+                "current".to_owned()
+            )
         );
 
         // A contradicted Registry identity leaves Health Unknown on both pages.
@@ -956,7 +987,8 @@ mod tests {
             health_on_both_pages("node-healthy").await,
             (
                 "unknown".to_owned(),
-                "observed network identity mismatches the registered Network".to_owned()
+                "observed network identity mismatches the registered Network".to_owned(),
+                "current".to_owned()
             )
         );
         execute(
@@ -975,7 +1007,8 @@ mod tests {
             health_on_both_pages("node-healthy").await,
             (
                 "unhealthy".to_owned(),
-                "process observation failed".to_owned()
+                "process observation failed".to_owned(),
+                "current".to_owned()
             )
         );
         execute(
@@ -994,7 +1027,8 @@ mod tests {
             health_on_both_pages("node-mismatched").await,
             (
                 "unknown".to_owned(),
-                "observations are stale; last RPC observation failed".to_owned()
+                "observations are stale; last RPC observation failed".to_owned(),
+                "stale".to_owned()
             )
         );
 
@@ -1008,7 +1042,8 @@ mod tests {
             health_on_both_pages("node-healthy").await,
             (
                 "unknown".to_owned(),
-                "Node is awaiting its first accepted consensus observation".to_owned()
+                "Node is awaiting its first accepted consensus observation".to_owned(),
+                "never_observed".to_owned()
             )
         );
     }
@@ -1069,7 +1104,7 @@ mod tests {
         assert_eq!(healthy["lifecycle"], "active");
         assert_eq!(healthy["visibility"], "private");
         assert_eq!(healthy["health"], "healthy");
-        assert_eq!(healthy["freshness"], "current");
+        assert_eq!(healthy["currency"], "current");
         assert_eq!(healthy["identity"]["state"], "matched");
         assert_eq!(
             healthy["identity"]["observed"]["chain_id"], 210425,
