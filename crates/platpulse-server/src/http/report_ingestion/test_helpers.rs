@@ -163,26 +163,3 @@ pub(super) fn peer_snapshot_body(peers: serde_json::Value) -> serde_json::Value 
 pub(super) fn at(base: time::OffsetDateTime, seconds: i64) -> String {
     format_rfc3339(base + time::Duration::seconds(seconds))
 }
-
-pub(super) async fn cumulative_block_count(state: &AppState, node_id: &str) -> i64 {
-    sqlx::query_scalar("SELECT cumulative_block_count FROM block_history_state WHERE node_id=$1")
-        .bind(node_id)
-        .fetch_one(state.db().pool())
-        .await
-        .unwrap()
-}
-
-/// The rejection code of every Block Summary sample of a receipt, in order.
-pub(super) fn rejections(receipt: &ReportReceipt) -> Vec<Option<platpulse_core::RejectionCode>> {
-    receipt
-        .samples
-        .iter()
-        .filter(|sample| {
-            matches!(
-                sample.sample,
-                platpulse_core::receipt::SampleRef::Block { .. }
-            )
-        })
-        .map(|sample| sample.rejection.as_ref().map(|rejection| rejection.code))
-        .collect()
-}
