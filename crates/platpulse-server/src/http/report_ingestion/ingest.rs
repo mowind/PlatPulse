@@ -16,11 +16,12 @@ use platpulse_core::protocol::SUPPORTED_PROTOCOL_MAJORS;
 use platpulse_core::{
     AgentReport, ComponentRevision, InventoryAcceptance, InventoryDeclaration,
     InventoryDisposition, InventoryReceiptV2, NodeCurrentDisposition, NodeReceipt,
-    ReceiptDisposition, ReportInventory, ReportReceipt, ReportReceiptV2, SampleDisposition,
-    SampleDispositionKind, SampleRef, Sha256Hex,
+    ReceiptDisposition, Rejection, ReportInventory, ReportReceipt, ReportReceiptV2,
+    SampleDisposition, SampleDispositionKind, SampleRef, Sha256Hex,
 };
 
 use super::*;
+use crate::block_history::{NodeAdmission, Refusal, admit, observe_gap_settlement};
 
 #[derive(Debug, FromRow)]
 struct AgentRow {
@@ -31,6 +32,24 @@ struct AgentRow {
     close_report_id: Option<String>,
     last_report_sequence: Option<i64>,
     last_inventory_revision: i64,
+}
+
+/// The Receipt line for one sample: terminal exactly when admission refused it.
+fn disposition(
+    node_id: platpulse_core::NodeId,
+    sample: SampleRef,
+    rejection: Option<Rejection>,
+) -> SampleDisposition {
+    SampleDisposition {
+        node_id,
+        sample,
+        disposition: if rejection.is_some() {
+            SampleDispositionKind::TerminalRejected
+        } else {
+            SampleDispositionKind::Accepted
+        },
+        rejection,
+    }
 }
 
 pub(crate) fn validate_report_body_size(len: usize) -> Result<(), StatusCode> {
@@ -594,8 +613,7 @@ async fn ingest_report<I: ReportInventory>(
     let stamp = ReportStamp::new(&now_text, parsed.host.clock_skew.latest);
     let capabilities =
         serde_json::to_string(&parsed.agent_capabilities).expect("capabilities serialize");
-    let mut ownership_mismatches = std::collections::HashSet::new();
-    let mut purged_nodes = std::collections::HashSet::new();
+    let mut node_admission = NodeAdmission::default();
     let mut ownership_contradiction = false;
     for node in parsed.inventory.nodes() {
         // A purged Node ID is a permanent admission boundary (design §15.3,
@@ -617,7 +635,7 @@ async fn ingest_report<I: ReportInventory>(
             }
         };
         if purged {
-            purged_nodes.insert(node.node_id);
+            node_admission.refuse_purged(node.node_id);
             continue;
         }
         let known = match sqlx::query_scalar::<_, String>(
@@ -684,12 +702,12 @@ async fn ingest_report<I: ReportInventory>(
                     // Legitimate in-flight declaration without an identity
                     // probe yet: the transfer stays pending and the Node
                     // entry stays rejected for this report.
-                    ownership_mismatches.insert(node.node_id);
+                    node_admission.refuse_ownership(node.node_id);
                 }
                 Ok(TransferResolution::NoTransfer)
                 | Ok(TransferResolution::NetworkKeyMismatch)
                 | Ok(TransferResolution::IdentityMismatch) => {
-                    ownership_mismatches.insert(node.node_id);
+                    node_admission.refuse_ownership(node.node_id);
                     ownership_contradiction = true;
                 }
                 Err(_) => {
@@ -715,13 +733,11 @@ async fn ingest_report<I: ReportInventory>(
     // explicitly purged. Both are per-Node outcomes; the ordinary ownership
     // rejection still records its security event below, while a purge is a
     // stable, non-security disposition.
-    let mut rejected_nodes = ownership_mismatches.clone();
-    rejected_nodes.extend(purged_nodes.iter().copied());
     let accepted_inventory_ids = parsed
         .inventory
         .nodes()
         .iter()
-        .filter(|node| !rejected_nodes.contains(&node.node_id))
+        .filter(|node| node_admission.admits(node.node_id))
         .map(|node| node.node_id.to_string())
         .collect::<Vec<_>>();
 
@@ -764,7 +780,7 @@ async fn ingest_report<I: ReportInventory>(
         }
     }
     for node in parsed.inventory.nodes() {
-        if rejected_nodes.contains(&node.node_id) {
+        if !node_admission.admits(node.node_id) {
             continue;
         }
         let result = sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, display_name, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ($1, $2, $3, $4, $5, 'active', 'private', $6, $7, $8) ON CONFLICT(node_id) DO UPDATE SET network_key=excluded.network_key, display_name=COALESCE(nodes.display_name, excluded.display_name), rpc_endpoint=excluded.rpc_endpoint, lifecycle='active', inventory_revision=excluded.inventory_revision, updated_at=excluded.updated_at WHERE nodes.agent_id=excluded.agent_id")
@@ -819,19 +835,37 @@ async fn ingest_report<I: ReportInventory>(
             );
         }
     }
-    let identity_rejections =
-        match block_network_identity_rejections(&mut tx, &parsed, &purged_nodes).await {
-            Ok(value) => value,
-            Err(_) => {
-                return error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
-            }
-        };
-    if !identity_rejections.is_empty() {
+    let mut projection_report = parsed.clone();
+    projection_report
+        .nodes
+        .retain(|node| node_admission.admits(node.node_id));
+    // Block history is admitted on its own below, sample by sample.
+    projection_report.block_summaries.clear();
+    projection_report.history_gaps.clear();
+    let geo_provider = state.geo_config().provider;
+    // The low-space gate is read once from memory for this Report. It is never
+    // read through the pool: ingestion already holds the single write
+    // connection, and a second acquire inside the transaction would deadlock.
+    let history = state.capacity().history_gate();
+    if let Err(save_error) =
+        save_current(&mut tx, &history, &projection_report, stamp, geo_provider).await
+    {
+        return storage_error(&request_id.0, "save current observations", &save_error);
+    }
+    // Every Block Summary is judged once and written as it is admitted; the
+    // Receipt below reads the same outcomes (ADR 0011 decision 4).
+    let block_admission = match admit(&mut tx, &parsed, &node_admission, &now_text, |at| {
+        stamp.history_at(at)
+    })
+    .await
+    {
+        Ok(admission) => admission,
+        Err(failure) => return storage_error(&request_id.0, "admit block history", &failure),
+    };
+    if let Some((settlement, elapsed)) = block_admission.settlement {
+        observe_gap_settlement(&state.metrics(), "report", settlement, elapsed);
+    }
+    if block_admission.identity_contradicted {
         // Identity mismatch is a typed, audited outcome (design §4.5): the
         // samples are never merged and the Agent's security counter records
         // the contradiction so the Admin surface can surface it.
@@ -842,146 +876,13 @@ async fn ingest_report<I: ReportInventory>(
             return storage_error(&request_id.0, "record security event", &failure);
         }
     }
-    let mut outside_open_gap: std::collections::HashSet<(platpulse_core::identity::NodeId, u64)> =
-        std::collections::HashSet::new();
-    for sample in &parsed.block_summaries {
-        if sample.source != platpulse_core::block::BlockSource::GapBackfill {
-            continue;
-        }
-        match backfill_admitted(&mut tx, &sample.node_id.to_string(), sample.block_number).await {
-            Ok(true) => {}
-            Ok(false) => {
-                outside_open_gap.insert((sample.node_id, sample.block_number));
-            }
-            Err(failure) => {
-                return storage_error(&request_id.0, "check open gap coverage", &failure);
-            }
-        }
-    }
-    let mut replay_samples: std::collections::HashSet<(platpulse_core::identity::NodeId, u64)> =
-        std::collections::HashSet::new();
-    let mut divergence_samples: std::collections::HashSet<(platpulse_core::identity::NodeId, u64)> =
-        std::collections::HashSet::new();
-    for sample in &parsed.block_summaries {
-        // History mutation is ownership-scoped: a sample from a Node the
-        // reporting Agent does not own must never touch the identity
-        // window, even when its declared identity happens to match the
-        // Registry (issue #46: mismatch can never merge new history).
-        if rejected_nodes.contains(&sample.node_id) {
-            continue;
-        }
-        let node_id = sample.node_id.to_string();
-        let registered_identity = match sqlx::query_as::<_, (String, i64, i64, String)>("SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks n JOIN nodes nd ON nd.network_key = n.network_key WHERE nd.node_id = $1")
-            .bind(&node_id)
-            .fetch_optional(&mut *tx)
-            .await {
-                Ok(value) => value,
-                Err(_) => return error(&request_id.0, StatusCode::SERVICE_UNAVAILABLE, "unavailable", "Server database is unavailable"),
-            };
-        let identity_matches = registered_identity.is_some_and(|(genesis, chain_id, p2p, hrp)| {
-            sample.network_identity.genesis_hash.to_string() == genesis
-                && sample.network_identity.chain_id == chain_id as u64
-                && sample.network_identity.p2p_network_id == p2p as u64
-                && sample.network_identity.address_hrp.as_deref().unwrap_or("") == hrp
-        });
-        if !identity_matches {
-            continue;
-        }
-        if sample.source == platpulse_core::block::BlockSource::GapBackfill
-            && outside_open_gap.contains(&(sample.node_id, sample.block_number))
-        {
-            continue;
-        }
-        let high: Option<i64> = match sqlx::query_scalar(
-            "SELECT historical_high_watermark FROM block_history_state WHERE node_id=$1",
-        )
-        .bind(&node_id)
-        .fetch_optional(&mut *tx)
-        .await
-        {
-            Ok(v) => v,
-            Err(_) => {
-                return error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
-            }
-        };
-        if sample.source == platpulse_core::block::BlockSource::Subscription
-            && high.is_some_and(|value| sample.block_number as i64 <= value)
-        {
-            replay_samples.insert((sample.node_id, sample.block_number));
-            continue;
-        }
-        let retained: Option<String> = match sqlx::query_scalar(
-            "SELECT block_hash FROM block_identity_window WHERE node_id=$1 AND height=$2",
-        )
-        .bind(&node_id)
-        .bind(sample.block_number as i64)
-        .fetch_optional(&mut *tx)
-        .await
-        {
-            Ok(v) => v,
-            Err(_) => {
-                return error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
-            }
-        };
-        let candidate = sample.source == platpulse_core::block::BlockSource::GapBackfill
-            || high.is_none_or(|value| sample.block_number as i64 > value)
-            || retained.is_some();
-        if !candidate {
-            continue;
-        }
-        let block_observed_at = stamp.history_at(sample.observed_at);
-        match observe_block_identity(&mut tx, sample, block_observed_at, &now_text).await {
-            Ok(true) => {
-                divergence_samples.insert((sample.node_id, sample.block_number));
-            }
-            Ok(false) => {}
-            Err(_) => {
-                return error(
-                    &request_id.0,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "Server database is unavailable",
-                );
-            }
-        }
-    }
-
-    let mut projection_report = parsed.clone();
-    projection_report
-        .nodes
-        .retain(|node| !rejected_nodes.contains(&node.node_id));
-    projection_report
-        .block_summaries
-        .retain(|sample| !rejected_nodes.contains(&sample.node_id));
-    let geo_provider = state.geo_config().provider;
-    // The low-space gate is read once from memory for this Report. It is never
-    // read through the pool: ingestion already holds the single write
-    // connection, and a second acquire inside the transaction would deadlock.
-    let history = state.capacity().history_gate();
-    let mut touched_heights =
-        match save_current(&mut tx, &history, &projection_report, stamp, geo_provider).await {
-            Ok(closed_heights) => closed_heights,
-            Err(save_error) => {
-                return storage_error(&request_id.0, "save current observations", &save_error);
-            }
-        };
     // Only admitted Nodes feed the Network-scoped reference head; a purged
     // Node's unvalidated Network key must not reach shared Network state.
     let network_keys = projection_report
         .inventory
         .nodes()
         .iter()
-        .filter(|node| !rejected_nodes.contains(&node.node_id))
+        .filter(|node| node_admission.admits(node.node_id))
         .map(|node| node.network_key.to_string())
         .collect::<Vec<_>>();
     if update_network_references(&mut tx, &network_keys, &now_text)
@@ -995,131 +896,12 @@ async fn ingest_report<I: ReportInventory>(
             "Server database is unavailable",
         );
     }
-    for sample in &parsed.block_summaries {
-        // The Server records the History Gap for a rejected sample itself, so
-        // the reason operators read is the Server's own diagnosis of what it
-        // rejected and why, not an Agent claim about itself.
-        //
-        // The row is upserted rather than ignored so the Server's text wins
-        // even when the Agent recorded the same (node, from, to, kind) triple
-        // first: the unique gap index folds the Agent's row into this one, and
-        // authored_by is what lets the Admin surface present only the rows the
-        // Server wrote as its own live refusal (AGENTS.md: the Server is the
-        // trust boundary and never presents Agent input as its own evidence).
-        let reason = if ownership_mismatches.contains(&sample.node_id) {
-            "Node ownership mismatch".to_owned()
-        } else if let Some(evidence) = identity_rejections.get(&StampedIdentityKey::new(
-            sample.node_id,
-            &sample.network_identity,
-        )) {
-            crate::redaction::redact_sensitive(&evidence.reason())
-        } else {
-            continue;
-        };
-        let inserted = sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES ($1, $2, $3, 'server_rejected', $4, $5, 'server') ON CONFLICT(node_id, from_height, to_height, kind) DO UPDATE SET reason=excluded.reason, created_at=excluded.created_at, authored_by=excluded.authored_by")
-            .bind(sample.node_id.to_string())
-            .bind(sample.block_number as i64)
-            .bind(sample.block_number as i64)
-            .bind(&reason)
-            .bind(&now_text)
-            .execute(&mut *tx)
-            .await;
-        if inserted.is_err() {
-            return error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
-    }
-    for gap in &parsed.history_gaps {
-        if rejected_nodes.contains(&gap.node_id) {
-            continue;
-        }
-        let kind = match gap.kind {
-            platpulse_core::gap::GapKind::UnrecoverableBackfill => "unrecoverable_backfill",
-            platpulse_core::gap::GapKind::SpoolOverflow => "spool_overflow",
-            platpulse_core::gap::GapKind::ServerRejected => "server_rejected",
-        };
-        // An Agent-declared gap is Agent evidence: it is stored with its
-        // author so the Server never presents it as its own refusal, and it
-        // never overwrites the Server's own text for the same triple.
-        let inserted = sqlx::query("INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, reason, created_at, authored_by) VALUES ($1, $2, $3, $4, $5, $6, 'agent') ON CONFLICT DO NOTHING")
-            .bind(gap.node_id.to_string()).bind(gap.from_height as i64).bind(gap.to_height as i64)
-            .bind(kind)
-            .bind(crate::redaction::redact_sensitive(&gap.reason))
-            .bind(gap.recorded_at.to_string())
-            .execute(&mut *tx)
-            .await;
-        if inserted.is_err() {
-            return error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
-        if matches!(
-            gap.kind,
-            platpulse_core::gap::GapKind::UnrecoverableBackfill
-        ) && open_uncovered_gap(
-            &mut tx,
-            &gap.node_id.to_string(),
-            gap.from_height,
-            gap.to_height,
-            &now_text,
-        )
-        .await
-        .is_err()
-        {
-            return error(
-                &request_id.0,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "Server database is unavailable",
-            );
-        }
-    }
-    // A backfill in this Report, or a gap it declared over heights already
-    // covered, can settle a History Gap: resolve it in the same transaction so
-    // resolved_at always agrees with the coverage it is derived from. Only the
-    // gaps around the heights this Report closed and the ranges it declared
-    // can have settled, so a live tip Report examines no gap at all (#282).
-    touched_heights.extend(
-        parsed
-            .history_gaps
-            .iter()
-            .filter(|gap| !rejected_nodes.contains(&gap.node_id))
-            .filter(|gap| {
-                matches!(
-                    gap.kind,
-                    platpulse_core::gap::GapKind::UnrecoverableBackfill
-                )
-            })
-            .map(|gap| TouchedRange {
-                node_id: gap.node_id.to_string(),
-                from_height: gap.from_height,
-                to_height: gap.to_height,
-            }),
-    );
-    if !touched_heights.is_empty() {
-        let started = std::time::Instant::now();
-        match settle_touched_history_gaps(&mut tx, &touched_heights, &now_text).await {
-            Ok(settlement) => {
-                observe_gap_settlement(&state.metrics(), "report", settlement, started.elapsed());
-            }
-            Err(failure) => {
-                return storage_error(&request_id.0, "resolve settled history gaps", &failure);
-            }
-        }
-    }
     let nodes: Vec<NodeReceipt> = parsed
         .inventory
         .nodes()
         .iter()
         .map(|node| {
-            let rejected = rejected_nodes.contains(&node.node_id);
+            let rejected = !node_admission.admits(node.node_id);
             NodeReceipt {
                 node_id: node.node_id,
                 current: if rejected {
@@ -1191,110 +973,43 @@ async fn ingest_report<I: ReportInventory>(
                 } else {
                     vec![]
                 },
-                rejections: if purged_nodes.contains(&node.node_id) {
-                    vec![purged_rejection()]
-                } else if rejected {
-                    vec![ownership_mismatch_rejection()]
-                } else {
-                    vec![]
-                },
+                rejections: node_admission
+                    .refusal(node.node_id)
+                    .map(Refusal::rejection)
+                    .into_iter()
+                    .collect(),
             }
         })
         .collect();
     let samples = parsed
         .block_summaries
         .iter()
-        .map(|sample| {
-            let identity_rejection = identity_rejections.get(&StampedIdentityKey::new(
+        .zip(&block_admission.samples)
+        .map(|(sample, outcome)| {
+            disposition(
                 sample.node_id,
-                &sample.network_identity,
-            ));
-            let rejected = rejected_nodes.contains(&sample.node_id)
-                || identity_rejection.is_some()
-                || outside_open_gap.contains(&(sample.node_id, sample.block_number))
-                || divergence_samples.contains(&(sample.node_id, sample.block_number))
-                || replay_samples.contains(&(sample.node_id, sample.block_number));
-            SampleDisposition {
-                node_id: sample.node_id,
-                sample: SampleRef::Block {
+                SampleRef::Block {
                     height: sample.block_number,
                 },
-                disposition: if rejected {
-                    SampleDispositionKind::TerminalRejected
-                } else {
-                    SampleDispositionKind::Accepted
-                },
-                rejection: rejected.then(|| {
-                    if purged_nodes.contains(&sample.node_id) {
-                        return purged_rejection();
-                    }
-                    if ownership_mismatches.contains(&sample.node_id) {
-                        return ownership_mismatch_rejection();
-                    }
-                    // A contradicted stamp is the more specific finding about
-                    // this sample, and it is what the Server's own History Gap
-                    // row for the same height already records, so it outranks
-                    // the generic refusals below: the Receipt must state the
-                    // same reason as the gap it leaves behind (ADR 0011
-                    // decision 4). Samples whose stamp matches the Registry
-                    // never carry a diagnosis here, so the other refusals keep
-                    // their priority for every other sample.
-                    if let Some(evidence) = identity_rejection {
-                        return rejection(
-                            platpulse_core::RejectionCode::NetworkIdentityMismatch,
-                            &evidence.reason(),
-                        );
-                    }
-                    if outside_open_gap.contains(&(sample.node_id, sample.block_number)) {
-                        return rejection(
-                            platpulse_core::RejectionCode::GapBackfillOutsideOpenGap,
-                            "GapBackfill sample is not a recoverable hole: the height is already covered, confirmed missing, Server-rejected, or below the Node's first covered height",
-                        );
-                    }
-                    if divergence_samples.contains(&(sample.node_id, sample.block_number)) {
-                        return rejection(
-                            platpulse_core::RejectionCode::ChainDivergence,
-                            "Block hash diverges from retained Node identity evidence",
-                        );
-                    }
-                    if replay_samples.contains(&(sample.node_id, sample.block_number)) {
-                        return rejection(
-                            platpulse_core::RejectionCode::ResyncReplay,
-                            "Normal resync replay at or below the historical high-water mark",
-                        );
-                    }
-                    // Only a rejected sample with no identity diagnosis and no
-                    // other attribution reaches here; the bounded fallback
-                    // keeps every rejection typed.
-                    rejection(
-                        platpulse_core::RejectionCode::NetworkIdentityMismatch,
-                        "Block network identity does not match the registered Network",
+                outcome.rejection(),
+            )
+        })
+        .chain(
+            parsed
+                .history_gaps
+                .iter()
+                .zip(&block_admission.gaps)
+                .map(|(gap, outcome)| {
+                    disposition(
+                        gap.node_id,
+                        SampleRef::Gap {
+                            from_height: gap.from_height,
+                            to_height: gap.to_height,
+                        },
+                        outcome.rejection(),
                     )
                 }),
-            }
-        })
-        .chain(parsed.history_gaps.iter().map(|gap| {
-            let rejected = rejected_nodes.contains(&gap.node_id);
-            SampleDisposition {
-                node_id: gap.node_id,
-                sample: SampleRef::Gap {
-                    from_height: gap.from_height,
-                    to_height: gap.to_height,
-                },
-                disposition: if rejected {
-                    SampleDispositionKind::TerminalRejected
-                } else {
-                    SampleDispositionKind::Accepted
-                },
-                rejection: rejected.then(|| {
-                    if purged_nodes.contains(&gap.node_id) {
-                        purged_rejection()
-                    } else {
-                        ownership_mismatch_rejection()
-                    }
-                }),
-            }
-        }))
+        )
         .collect::<Vec<_>>();
     let inventory_changed = !inventory_unchanged;
     let inventory_disposition = if inventory_unchanged {

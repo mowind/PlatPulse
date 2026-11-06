@@ -135,23 +135,6 @@ pub(super) fn rejection(
     }
 }
 
-/// Stable rejection for a Node ID that carries the durable purge boundary
-/// (issue #170). Terminal: the Agent must not expect a retry to succeed.
-pub(super) fn purged_rejection() -> platpulse_core::Rejection {
-    rejection(
-        platpulse_core::RejectionCode::NodePurged,
-        "Node was permanently purged by the Owner",
-    )
-}
-
-/// Stable rejection for a Node entry the reporting Agent does not own.
-pub(super) fn ownership_mismatch_rejection() -> platpulse_core::Rejection {
-    rejection(
-        platpulse_core::RejectionCode::NodeOwnershipMismatch,
-        "Node belongs to another Agent",
-    )
-}
-
 pub(super) fn disposition_name(disposition: ReceiptDisposition) -> &'static str {
     match disposition {
         ReceiptDisposition::Accepted => "accepted",
