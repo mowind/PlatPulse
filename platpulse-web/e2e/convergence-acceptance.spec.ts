@@ -378,14 +378,15 @@ test.describe('Converged WebUI acceptance (issue #95)', () => {
     })
     await expect(page.getByText('Live updates paused', { exact: true })).toBeVisible()
 
-    // Current/healthy, Stale/unhealthy and never-observed Unknown rows are
+    // Current/healthy, Stale/Unknown and never-observed Unknown rows are
     // each their own server-owned dimension; nothing collapses into zero.
     const nodeARow = page.getByRole('row', { name: /Node A/ })
     await expect(nodeARow).toContainText('healthy', { timeout: 15_000 })
     await expect(nodeARow).toContainText('Current')
 
     const nodeBRow = page.getByRole('row', { name: /Node B \(private\)/ })
-    await expect(nodeBRow).toContainText('unhealthy')
+    await expect(nodeBRow).toContainText('unknown')
+    await expect(nodeBRow).toContainText('observations are stale; last RPC observation failed')
     await expect(nodeBRow).toContainText('Stale')
 
     const nodeCRow = page.getByRole('row', { name: /Node C/ })

@@ -41,9 +41,11 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
     await expect(details).toContainText('ws://[REDACTED_IP]:****')
     await expect(details).not.toContainText('6790')
 
-    // Node B: unhealthy with its own Error/Stale/Mismatched dimensions.
+    // Node B: its RPC failure is only in stale evidence, so it is Unknown with
+    // its own Stale/Mismatched dimensions and that last failure named.
     const nodeBRow = page.getByRole('row', { name: /Node B \(private\)/ })
-    await expect(nodeBRow).toContainText('unhealthy')
+    await expect(nodeBRow).toContainText('unknown')
+    await expect(nodeBRow).toContainText('observations are stale; last RPC observation failed')
     await expect(nodeBRow).toContainText('Stale')
     await expect(nodeBRow).toContainText('Mismatched')
     await expect(nodeBRow).toContainText('chain_id')
@@ -77,15 +79,20 @@ test.describe('Owner Node inventory (PAGE-ADMIN-NODES)', () => {
     await expect(page.getByRole('list', { name: 'Active filters from More filters' })).toHaveCount(0)
     await expect(page.getByRole('row', { name: /Node D \(retired\)/ })).toBeVisible({ timeout: 15_000 })
     // Sorting is real button state, not decoration: the default Health
-    // order keeps Node B (unhealthy) last; the Node-name order moves it
-    // into alphabetical position.
+    // order puts the healthy Node H before Node B (Unknown); the Node-name
+    // order moves Node B into alphabetical position, ahead of Node H.
     const dataRows = page.locator('tbody tr')
+    const nodeBBeforeNodeH = async () => {
+      const rows = await dataRows.allTextContents()
+      return rows.findIndex((row) => row.includes('Node B (private)')) < rows.findIndex((row) => row.includes('Node H'))
+    }
     await expect(dataRows.first()).toContainText('Node A')
-    await expect(dataRows.last()).toContainText('Node B (private)')
+    await expect.poll(nodeBBeforeNodeH).toBe(false)
     await page.getByLabel('Sort by').selectOption('name')
     await expect(dataRows.nth(1)).toContainText('Node B (private)')
+    await expect.poll(nodeBBeforeNodeH).toBe(true)
     await page.getByLabel('Sort by').selectOption('health')
-    await expect(dataRows.last()).toContainText('Node B (private)')
+    await expect.poll(nodeBBeforeNodeH).toBe(false)
     await expectNoHorizontalOverflow(page)
   })
 

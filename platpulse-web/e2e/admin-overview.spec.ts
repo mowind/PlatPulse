@@ -66,7 +66,10 @@ test.describe('Owner Overview (PAGE-ADMIN-OVERVIEW)', () => {
     // exception, with a link into the Node detail (webui.md §8.4.3).
     const nodePanel = page.getByRole('heading', { level: 2, name: 'Node Health Summary' }).locator('xpath=ancestor::article[1]')
     const nodeBItem = nodePanel.getByRole('listitem').filter({ hasText: 'Node B (private)' })
-    await expect(nodeBItem).toContainText('unhealthy')
+    // Node B's RPC failure is only in stale evidence, so it reads Unknown and
+    // names that last failure instead of reading Unhealthy.
+    await expect(nodeBItem).toContainText('unknown')
+    await expect(nodeBItem).toContainText('observations are stale; last RPC observation failed')
     await expect(nodeBItem).toContainText('Stale')
     await expect(nodeBItem).toContainText('Identity mismatched')
     await expect(nodeBItem.getByRole('link', { name: 'Node B (private)' })).toHaveAttribute('href', /\/admin\/nodes\//)
