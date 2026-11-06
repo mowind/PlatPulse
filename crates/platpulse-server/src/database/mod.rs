@@ -1000,24 +1000,13 @@ mod tests {
     }
 
     fn migrations_through(version: i64) -> Migrator {
-        Migrator {
-            migrations: Cow::Owned(
-                SERVER_MIGRATOR
-                    .iter()
-                    .filter(|migration| migration.version <= version)
-                    .cloned()
-                    .collect(),
-            ),
-            ignore_missing: false,
-            locking: true,
-            no_tx: false,
-        }
+        migrator_through(&SERVER_MIGRATOR, version)
     }
 
-    fn postgres_migrations_through(version: i64) -> Migrator {
+    fn migrator_through(source: &Migrator, version: i64) -> Migrator {
         Migrator {
             migrations: Cow::Owned(
-                postgres::POSTGRES_MIGRATOR
+                source
                     .iter()
                     .filter(|migration| migration.version <= version)
                     .cloned()
@@ -1237,8 +1226,7 @@ mod tests {
     }
 
     /// The observation instant migration backfills the rows written before
-    /// ingestion recorded `observation_at`, so the receipt instant is no
-    /// longer a fallback every reader repeats: a row without an observation
+    /// ingestion recorded `observation_at`: a row without an observation
     /// instant takes its receipt instant, a recorded instant is kept, and a
     /// row that was never received stays without one. Runs on the selected
     /// Storage Backend.
@@ -1285,7 +1273,7 @@ mod tests {
                     .connect_with(target.native_options())
                     .await
                     .unwrap();
-                postgres_migrations_through(SCHEMA_BEFORE_BACKFILL)
+                migrator_through(&postgres::POSTGRES_MIGRATOR, SCHEMA_BEFORE_BACKFILL)
                     .run(&pool)
                     .await
                     .unwrap();
