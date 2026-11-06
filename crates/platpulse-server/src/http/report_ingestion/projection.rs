@@ -346,7 +346,7 @@ pub(super) async fn save_current<I: ReportInventory>(
     report: &AgentReport<I>,
     stamp: ReportStamp<'_>,
     geo_provider: crate::geo::GeoProvider,
-) -> Result<Vec<TouchedRange>, sqlx::Error> {
+) -> Result<(), sqlx::Error> {
     let received_at = stamp.received_at();
     // Both retention windows are read once for the whole Report: they depend
     // on the policy in this transaction's snapshot and on the clock, never on
@@ -1049,111 +1049,7 @@ pub(super) async fn save_current<I: ReportInventory>(
             }
         }
     }
-    // The heights this Report took out of an open History Gap: the only places
-    // a gap can have become settled (issue #282).
-    let mut closed_heights = Vec::new();
-    for sample in &report.block_summaries {
-        let node_id = sample.node_id.to_string();
-        let registered_identity = sqlx::query_as::<_, (String, i64, i64, String)>("SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks n JOIN nodes nd ON nd.network_key = n.network_key WHERE nd.node_id = $1")
-            .bind(&node_id)
-            .fetch_optional(&mut **tx)
-            .await?;
-        let identity_matches = registered_identity.is_some_and(|(genesis, chain_id, p2p, hrp)| {
-            sample.network_identity.genesis_hash.to_string() == genesis
-                && sample.network_identity.chain_id == chain_id as u64
-                && sample.network_identity.p2p_network_id == p2p as u64
-                && sample.network_identity.address_hrp.as_deref().unwrap_or("") == hrp
-        });
-        if !identity_matches {
-            continue;
-        }
-
-        let proposer = match &sample.attribution.protocol_proposer {
-            platpulse_core::block::ProtocolProposer::Verified { identity } => {
-                ("verified", Some(identity.as_str()))
-            }
-            platpulse_core::block::ProtocolProposer::Unknown {} => ("unknown", None),
-        };
-        let signer = match sample.attribution.seal_signer_match {
-            platpulse_core::block::SealSignerMatch::SignerSelf => "self",
-            platpulse_core::block::SealSignerMatch::Other => "other",
-            platpulse_core::block::SealSignerMatch::Unknown => "unknown",
-        };
-        if sample.source == platpulse_core::block::BlockSource::GapBackfill
-            && !backfill_admitted(&mut *tx, &node_id, sample.block_number).await?
-        {
-            continue;
-        }
-        if sample.source == platpulse_core::block::BlockSource::Subscription {
-            let historical_high_watermark: Option<i64> = sqlx::query_scalar(
-                "SELECT historical_high_watermark FROM block_history_state WHERE node_id=$1",
-            )
-            .bind(&node_id)
-            .fetch_optional(&mut **tx)
-            .await?;
-            if historical_high_watermark.is_some_and(|height| sample.block_number as i64 <= height)
-            {
-                continue;
-            }
-        }
-        let inserted = sqlx::query("INSERT INTO block_summaries (node_id, block_number, block_hash, parent_hash, network_genesis_hash, network_chain_id, network_p2p_network_id, network_address_hrp, block_timestamp_ms, observed_at, transaction_count, block_interval_ms, source, coinbase, seal_signer_key_fingerprint, seal_signer_match, node_key_fingerprint, node_key_valid_from, node_key_valid_until, node_key_history_complete, seal_recovery_rule, seal_evidence, protocol_proposer_kind, protocol_proposer_identity, attribution_reason, accepted_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26) ON CONFLICT DO NOTHING")
-            .bind(&node_id).bind(sample.block_number as i64).bind(sample.block_hash.to_string()).bind(sample.parent_hash.to_string())
-            .bind(sample.network_identity.genesis_hash.to_string()).bind(sample.network_identity.chain_id as i64).bind(sample.network_identity.p2p_network_id as i64).bind(sample.network_identity.address_hrp.as_deref().unwrap_or(""))
-            .bind(sample.block_timestamp_ms as i64).bind(stamp.history_at(sample.observed_at).to_string()).bind(sample.transaction_count as i64).bind(sample.block_interval_ms.map(|v| v as i64)).bind(match sample.source { platpulse_core::block::BlockSource::Subscription => "subscription", platpulse_core::block::BlockSource::GapBackfill => "gap_backfill" })
-            .bind(sample.attribution.coinbase.to_string()).bind(sample.attribution.seal_signer_key_fingerprint.as_ref().map(ToString::to_string)).bind(signer).bind(sample.attribution.node_key.as_ref().map(|key| key.fingerprint.to_string())).bind(sample.attribution.node_key.as_ref().and_then(|key| key.valid_from.map(|value| value.to_string()))).bind(sample.attribution.node_key.as_ref().and_then(|key| key.valid_until.map(|value| value.to_string()))).bind(sample.attribution.node_key.as_ref().is_some_and(|key| key.history_complete) as i64).bind(sample.attribution.seal_recovery_rule.as_deref()).bind(sample.attribution.seal_evidence.as_deref()).bind(proposer.0).bind(proposer.1).bind(&sample.attribution.attribution_reason).bind(received_at)
-            .execute(&mut **tx).await?;
-        if inserted.rows_affected() == 0 {
-            continue;
-        }
-        // Any accepted height leaves the open gap that contained it (a live
-        // summary can land inside a declared range too) and becomes covered,
-        // so it can never be admitted, rewritten, or counted again.
-        if let Some(coverage_id) =
-            open_gap_containing(&mut *tx, &node_id, sample.block_number).await?
-        {
-            close_coverage_height(&mut *tx, coverage_id, sample.block_number, received_at).await?;
-            closed_heights.push(TouchedRange {
-                node_id: node_id.clone(),
-                from_height: sample.block_number,
-                to_height: sample.block_number,
-            });
-        }
-        mark_covered_height(&mut *tx, &node_id, sample.block_number, received_at).await?;
-
-        // Only the live subscription reports the head; a backfilled hole lies
-        // below it and must never move the observed network head backwards.
-        if sample.source == platpulse_core::block::BlockSource::Subscription {
-            sqlx::query("INSERT INTO observed_network_heads (node_id, block_number, block_hash, observed_at, confidence, eligible_sources) VALUES ($1, $2, $3, $4, 'unknown', '[\\\"subscription\\\"]') ON CONFLICT(node_id) DO UPDATE SET block_number=excluded.block_number, block_hash=excluded.block_hash, observed_at=excluded.observed_at, confidence=excluded.confidence, eligible_sources=excluded.eligible_sources")
-                .bind(&node_id).bind(sample.block_number as i64).bind(sample.block_hash.to_string()).bind(stamp.history_at(sample.observed_at).to_string()).execute(&mut **tx).await?;
-        }
-        // last_accepted_summary_at is the durable proof that this Node's
-        // history was accepted again (ADR 0011 decision 4). The Admin refusal
-        // diagnosis compares its newest Server-authored gap against it, so the
-        // diagnosis clears when history resumes and stays clear after
-        // retention ages the raw Block Summary rows out; updated_at cannot
-        // serve that purpose because the current-head projection writes it on
-        // every Report.
-        sqlx::query("INSERT INTO block_history_state (node_id, historical_high_watermark, cumulative_block_count, cumulative_transaction_count, cumulative_self_seal_count, last_accepted_summary_at, updated_at) VALUES ($1, $2, 1, $3, $4, $5, $6) ON CONFLICT(node_id) DO UPDATE SET historical_high_watermark=CASE WHEN block_history_state.historical_high_watermark >= excluded.historical_high_watermark THEN block_history_state.historical_high_watermark ELSE excluded.historical_high_watermark END, cumulative_block_count=block_history_state.cumulative_block_count + 1, cumulative_transaction_count=block_history_state.cumulative_transaction_count + excluded.cumulative_transaction_count, cumulative_self_seal_count=block_history_state.cumulative_self_seal_count + excluded.cumulative_self_seal_count, last_accepted_summary_at=excluded.last_accepted_summary_at, updated_at=excluded.updated_at")
-            .bind(&node_id).bind(sample.block_number as i64).bind(sample.transaction_count as i64)
-            .bind((sample.attribution.seal_signer_match == platpulse_core::block::SealSignerMatch::SignerSelf) as i64).bind(received_at).bind(received_at).execute(&mut **tx).await?;
-        // The block tiers (issue #248) advance exactly where the cumulative
-        // counters do: only for a Block Summary this transaction has just
-        // inserted, so Block history dedup decides for both.
-        let observed_at = stamp.history_at(sample.observed_at).to_string();
-        crate::block_aggregates::record_accepted_block(
-            tx,
-            crate::block_aggregates::AcceptedBlock {
-                node_id: &node_id,
-                block_number: sample.block_number as i64,
-                block_timestamp_ms: sample.block_timestamp_ms as i64,
-                observed_at: &observed_at,
-                transaction_count: sample.transaction_count as i64,
-            },
-            received_at,
-        )
-        .await?;
-    }
-    Ok(closed_heights)
+    Ok(())
 }
 
 #[cfg(test)]

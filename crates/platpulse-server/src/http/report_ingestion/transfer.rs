@@ -518,6 +518,19 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(summaries, 0);
+        // The History Gap the Server leaves for the refused height states the
+        // reason the Receipt gave the Agent.
+        let gap_reason: String = sqlx::query_scalar(
+            "SELECT reason FROM block_history_gaps WHERE node_id=$1 AND kind='server_rejected' AND authored_by='server'",
+        )
+        .bind(node_id.to_string())
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            gap_reason,
+            receipt.samples[0].rejection.as_ref().unwrap().reason
+        );
         let audits: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM audit_events WHERE event_kind='node_transfer_identity_mismatch'",
         )

@@ -4,8 +4,8 @@
 //! request, [`ingest`] runs the transaction, [`receipt`] builds the receipt or
 //! rejection, [`clock`] places observations on the Server clock, [`projection`],
 //! [`peers`] and [`crate::block_history`] write what the Report observed, [`network`]
-//! checks Network Identity and the Observed Network Head, and [`transfer`]
-//! resolves Node transfers between Agents.
+//! recomputes the Observed Network Head, and [`transfer`] resolves Node
+//! transfers between Agents.
 
 #[cfg(test)]
 mod block_history_tests;
@@ -20,7 +20,6 @@ mod receipt;
 mod test_helpers;
 mod transfer;
 
-use crate::block_history::*;
 use clock::*;
 use ingest::*;
 use network::*;

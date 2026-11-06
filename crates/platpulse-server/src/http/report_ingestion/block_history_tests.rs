@@ -1,7 +1,7 @@
 //! Block history behaviour driven through Report ingestion: replay dedup,
 //! Gap Backfill admission, coverage intervals and History Gap settlement.
 
-use crate::http::report_ingestion::network::observe_block_identity;
+use crate::block_history::observe_block_identity;
 use crate::http::report_ingestion::test_helpers::*;
 
 use axum::http::StatusCode;
@@ -1105,4 +1105,109 @@ pub(super) async fn divergent_hash_is_append_only_idempotent_and_preserves_summa
     assert_eq!(summary_hash, hash_a.to_string());
     assert_eq!(counters, (1, 3));
     assert_eq!(divergence_count, 1);
+}
+
+/// The heights a Node holds a Block Summary for, ascending.
+async fn summary_heights(state: &AppState, node_id: &str) -> Vec<i64> {
+    sqlx::query_scalar(
+        "SELECT block_number FROM block_summaries WHERE node_id=$1 ORDER BY block_number",
+    )
+    .bind(node_id)
+    .fetch_all(state.db().pool())
+    .await
+    .unwrap()
+}
+
+/// A subscription sample below a height the same Report already raised the
+/// high-water mark to is a resync replay, exactly as it would be in the next
+/// Report: the Receipt says so instead of accepting a height it never wrote.
+#[tokio::test]
+pub(super) async fn a_lower_subscription_height_after_a_higher_one_in_one_report_is_a_replay() {
+    use platpulse_core::block::BlockSource::Subscription;
+    let (_dir, state, agent_id) = state_with_agent().await;
+    let base = block_base();
+    let report = report_with_blocks(
+        "0195f2a1-0013-4013-8013-000000000391",
+        1,
+        &[
+            (5, 5_000, at(base, 5), 2, Subscription),
+            (3, 3_000, at(base, 3), 4, Subscription),
+        ],
+    );
+    let node_id = report.inventory.nodes[0].node_id.to_string();
+    let receipt = submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+
+    assert_eq!(
+        receipt
+            .samples
+            .iter()
+            .map(|sample| (
+                sample.disposition,
+                sample.rejection.as_ref().map(|r| r.code)
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (SampleDispositionKind::Accepted, None),
+            (
+                SampleDispositionKind::TerminalRejected,
+                Some(platpulse_core::RejectionCode::ResyncReplay)
+            ),
+        ]
+    );
+    assert_eq!(summary_heights(&state, &node_id).await, vec![5]);
+    assert_eq!(cumulative_block_count(&state, &node_id).await, 1);
+}
+
+/// A GapBackfill sample whose hash contradicts the identity evidence the
+/// Server retains for its height is a Chain Divergence: the Receipt rejects
+/// it and nothing is written, so the hole stays open for the right block.
+#[tokio::test]
+pub(super) async fn a_divergent_backfill_is_rejected_and_never_written() {
+    use platpulse_core::block::BlockSource::{GapBackfill, Subscription};
+    let (_dir, state, agent_id) = state_with_agent().await;
+    let base = block_base();
+    let live = report_with_blocks(
+        "0195f2a1-0013-4013-8013-000000000392",
+        1,
+        &[(10, 1_000, at(base, 1), 3, Subscription)],
+    );
+    let node_id = live.inventory.nodes[0].node_id.to_string();
+    submit(&state, &agent_id, serde_json::to_vec(&live).unwrap()).await;
+    sqlx::query("INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ($1, 11, 20, 'open_recoverable_gap', '2026-08-12T09:00:06Z', '2026-08-12T09:00:06Z')")
+        .bind(&node_id)
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO block_identity_window (node_id, height, block_hash, retained_until, observed_at) VALUES ($1, 15, $2, NULL, $3)")
+        .bind(&node_id)
+        .bind(format!("0x{:064x}", 0xdead_u64))
+        .bind(at(base, 4))
+        .execute(state.db().pool())
+        .await
+        .unwrap();
+
+    let backfill = report_with_blocks(
+        "0195f2a1-0013-4013-8013-000000000393",
+        2,
+        &[(15, 5_000, at(base, 5), 4, GapBackfill)],
+    );
+    let receipt = submit(&state, &agent_id, serde_json::to_vec(&backfill).unwrap()).await;
+
+    assert_eq!(
+        receipt.samples[0].disposition,
+        SampleDispositionKind::TerminalRejected
+    );
+    assert_eq!(
+        receipt.samples[0].rejection.as_ref().unwrap().code,
+        platpulse_core::RejectionCode::ChainDivergence
+    );
+    assert_eq!(summary_heights(&state, &node_id).await, vec![10]);
+    assert_eq!(cumulative_block_count(&state, &node_id).await, 1);
+    assert_eq!(
+        coverage_intervals(&state, &node_id).await,
+        vec![
+            (10, 10, "covered".to_owned()),
+            (11, 20, "open_recoverable_gap".to_owned()),
+        ]
+    );
 }

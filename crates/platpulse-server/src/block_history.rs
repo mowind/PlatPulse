@@ -4,6 +4,13 @@
 
 use sqlx::{Any, AnyConnection, Transaction};
 
+mod admission;
+mod identity;
+
+pub(crate) use admission::{NodeAdmission, Refusal, admit};
+#[cfg(test)]
+pub(crate) use identity::observe_block_identity;
+
 /// Open the part of an Agent-declared `unrecoverable_backfill` range the
 /// Server has not already settled (issue #281).
 ///
