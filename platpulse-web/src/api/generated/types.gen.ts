@@ -3171,8 +3171,9 @@ export type NodeDiagnostic = {
     data_directory?: null | DataDirectoryDiagnostic;
     display_name?: string | null;
     /**
-     * Server-owned freshness dimension: `current`, `stale`, or `unknown`.
-     * The WebUI formats this state; it never derives it from `Date.now()`.
+     * The Node Currency: `current`, `stale`, or `unknown` when a gating
+     * observation was never observed. The WebUI formats this state; it never
+     * derives it from `Date.now()`.
      */
     freshness: string;
     health: string;
@@ -5087,6 +5088,12 @@ export type DiagnosticsData = {
     url: '/api/admin/v1/agents';
 };
 
+export type DiagnosticsErrors = {
+    500: ApiErrorBody;
+};
+
+export type DiagnosticsError = DiagnosticsErrors[keyof DiagnosticsErrors];
+
 export type DiagnosticsResponses = {
     /**
      * Owner-only Agent and Node diagnostics
@@ -5131,6 +5138,7 @@ export type AdminAgentDetailData = {
 export type AdminAgentDetailErrors = {
     403: ApiErrorBody;
     404: ApiErrorBody;
+    500: ApiErrorBody;
 };
 
 export type AdminAgentDetailError = AdminAgentDetailErrors[keyof AdminAgentDetailErrors];
@@ -6270,6 +6278,12 @@ export type AdminNodesData = {
     url: '/api/admin/v1/nodes';
 };
 
+export type AdminNodesErrors = {
+    500: ApiErrorBody;
+};
+
+export type AdminNodesError = AdminNodesErrors[keyof AdminNodesErrors];
+
 export type AdminNodesResponses = {
     /**
      * Owner-only Node inventory with Server-owned metadata and per-Node identity disposition
@@ -6293,6 +6307,7 @@ export type AdminNodeDetailData = {
 
 export type AdminNodeDetailErrors = {
     404: ApiErrorBody;
+    500: ApiErrorBody;
 };
 
 export type AdminNodeDetailError = AdminNodeDetailErrors[keyof AdminNodeDetailErrors];
@@ -7149,6 +7164,12 @@ export type OverviewData = {
     query?: never;
     url: '/api/admin/v1/overview';
 };
+
+export type OverviewErrors = {
+    500: ApiErrorBody;
+};
+
+export type OverviewError = OverviewErrors[keyof OverviewErrors];
 
 export type OverviewResponses = {
     /**

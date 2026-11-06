@@ -283,7 +283,7 @@ for (const longName of [false, true]) {
 }
 
 test('Back to results returns from a filtered list through section switches; Back still leaves the page', async ({ page }) => {
-  const list = '/admin/nodes?health=unhealthy&sort=name'
+  const list = '/admin/nodes?health=unknown&sort=name'
   await page.goto(list)
   await expect(page.locator('[data-slot="node-table"]')).toBeVisible({ timeout: 20_000 })
   await page.locator('[data-slot="node-name-link"]').first().click()
@@ -304,7 +304,7 @@ test('Back to results returns from a filtered list through section switches; Bac
   await back.click()
   await expect(page).toHaveURL(new RegExp(list.replace(/[?]/g, '\\?') + '$'))
   await expect(page.getByLabel('Sort by')).toHaveValue('name')
-  await expect(page.locator('[data-slot="admin-toolbar"] select').nth(1)).toHaveValue('unhealthy')
+  await expect(page.locator('[data-slot="admin-toolbar"] select').nth(1)).toHaveValue('unknown')
 
   // The row's Open Node diagnostics entry carries the same return.
   const firstRow = page.locator('[data-slot="node-table"] tbody tr').first()

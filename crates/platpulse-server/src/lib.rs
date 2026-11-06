@@ -41,6 +41,7 @@ pub mod metric_history;
 pub mod metrics;
 pub mod migration;
 pub mod network;
+pub mod node_currency;
 pub mod node_purge;
 pub mod notifications;
 pub mod observation_time;

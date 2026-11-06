@@ -507,7 +507,9 @@ type NodeDiagnostic = {
 export const DIAGNOSTIC_MAX_CHARS = 40
 
 export const DIAGNOSTIC_SHORT_FORMS: ReadonlyArray<readonly [RegExp, string]> = [
-  [/stale or unknown/i, 'Observations stale / unknown'],
+  [/^observations are stale/i, 'Observations stale'],
+  [/awaiting its first accepted (\w+ )?observation/i, 'Awaiting first observation'],
+  [/identity mismatches the registered Network/i, 'Network identity mismatch'],
   [/unknown or unsupported/i, 'Observations unknown or unsupported'],
 ]
 

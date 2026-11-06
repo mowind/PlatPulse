@@ -34,6 +34,7 @@ use crate::http::admin::mutation_guard;
 use crate::http::{
     AppState, AuthenticatedSession, ClientIp, ROUTE_GROUP_HEADER, RequestId, api_not_found,
 };
+use crate::node_currency;
 use crate::validator;
 
 #[utoipa::path(
@@ -2529,7 +2530,7 @@ struct PublicNodeRow {
     lifecycle: String,
     rpc_state: Option<String>,
     identity_state: Option<String>,
-    rpc_observation_at: Option<String>,
+    identity_contradicts_registry: i64,
     process_cpu_percent: Option<f64>,
     process_memory_percent: Option<f64>,
     process_started_at: Option<String>,
@@ -2545,8 +2546,6 @@ struct PublicNodeRow {
     sync_state: Option<String>,
     consensus_state: Option<String>,
     process_state: Option<String>,
-    sync_observation_at: Option<String>,
-    consensus_observation_at: Option<String>,
     peer_state: Option<String>,
     peer_observed_at: Option<String>,
     peer_value_received_at: Option<String>,
@@ -2584,81 +2583,6 @@ fn fresh(timestamp: Option<&str>, now: time::OffsetDateTime) -> bool {
         now,
         crate::observation_time::FRESHNESS_LIMIT_SECONDS,
     )
-}
-
-/// Judge a Node's current health.
-///
-/// The three observation instants are Server-clock instants: how old an
-/// observation is says when it was *taken*, not when its Report arrived, so a
-/// Node being replayed from a backlog is never presented as current (ADR 0014,
-/// issue #274).
-#[allow(clippy::too_many_arguments)]
-fn health_for(
-    lifecycle: &str,
-    rpc: Option<&str>,
-    identity: Option<&str>,
-    sync: Option<&str>,
-    consensus: Option<&str>,
-    process: Option<&str>,
-    rpc_observation_at: Option<&str>,
-    sync_observation_at: Option<&str>,
-    consensus_observation_at: Option<&str>,
-) -> (&'static str, &'static str) {
-    if lifecycle == "retired" {
-        return ("unknown", "node is retired");
-    }
-    if matches!(process, Some("error")) {
-        return ("unhealthy", "process observation failed");
-    }
-    if matches!(process, Some("stopped")) {
-        return ("unhealthy", "selected process is stopped");
-    }
-    if matches!(process, Some("unknown")) {
-        return ("unknown", "process observation is unknown");
-    }
-    if matches!(process, Some("disabled")) {
-        // Process monitoring is optional and does not by itself make chain
-        // health unknown.
-    }
-    if matches!(rpc, Some("error")) {
-        return ("unhealthy", "RPC observation failed");
-    }
-    if matches!(identity, Some("error")) {
-        return ("unknown", "network identity mismatch");
-    }
-    if matches!(sync, Some("error")) {
-        return ("unhealthy", "sync observation failed");
-    }
-    if matches!(consensus, Some("error")) {
-        return ("unhealthy", "consensus observation failed");
-    }
-    let current = crate::auth::now_utc();
-    if !fresh(rpc_observation_at, current)
-        || !fresh(sync_observation_at, current)
-        || !fresh(consensus_observation_at, current)
-    {
-        return ("unknown", "one or more observations are stale or unknown");
-    }
-    if matches!(rpc, Some("ok")) && matches!(sync, Some("ok")) && matches!(consensus, Some("ok")) {
-        ("healthy", "RPC, sync, and consensus are current")
-    } else {
-        (
-            "unknown",
-            "one or more observations are unknown or unsupported",
-        )
-    }
-}
-fn freshness_for(row: &PublicNodeRow) -> Option<String> {
-    let mut timestamps = [
-        row.rpc_observation_at.as_ref(),
-        row.sync_observation_at.as_ref(),
-        row.consensus_observation_at.as_ref(),
-    ];
-    if timestamps.iter().any(Option::is_none) {
-        return None;
-    }
-    timestamps.sort();
-    timestamps.first().and_then(|value| (*value).cloned())
 }
 
 fn public_peer_insight(row: &PublicNodeRow) -> PublicPeerInsight {
@@ -3235,27 +3159,33 @@ async fn load_node_geo(
     Some(nodes)
 }
 
-fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
-    let (health, health_reason) = health_for(
-        &row.lifecycle,
-        row.rpc_state.as_deref(),
+/// Project one Node row, judging its Health from the gating evidence
+/// [`node_currency::load`] read for it at `now`.
+fn public_node(
+    row: PublicNodeRow,
+    evidence: &node_currency::CurrencyEvidence,
+    now: time::OffsetDateTime,
+) -> (String, PublicNode) {
+    let identity = node_currency::NodeIdentity::from_observation(
         row.identity_state.as_deref(),
-        row.sync_state.as_deref(),
-        row.consensus_state.as_deref(),
-        row.process_state.as_deref(),
-        row.rpc_observation_at.as_deref(),
-        row.sync_observation_at.as_deref(),
-        row.consensus_observation_at.as_deref(),
+        row.identity_contradicts_registry != 0,
     );
-    let freshness = freshness_for(&row);
+    let summary = node_currency::health_summary(
+        &row.lifecycle,
+        row.process_state.as_deref(),
+        identity,
+        evidence,
+        now,
+    );
+    let freshness = evidence.as_of();
     let peers = public_peer_insight(&row);
     let consensus = public_consensus_insight(&row);
     let node = PublicNode {
         node_id: row.node_id.clone(),
         display_name: row.display_name,
         network_key: row.network_key,
-        health: health.to_owned(),
-        health_reason: health_reason.to_owned(),
+        health: summary.health.as_str().to_owned(),
+        health_reason: summary.reason.text().to_owned(),
         freshness,
         rpc_state: row.rpc_state.unwrap_or_else(|| "unknown".to_owned()),
         sync_state: row.sync_state.unwrap_or_else(|| "unknown".to_owned()),
@@ -3305,9 +3235,12 @@ fn public_node(row: PublicNodeRow) -> (String, PublicNode) {
 const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
        n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state,
        p.state AS process_state, i.state AS identity_state,
-       COALESCE(s.observation_at, s.received_at) AS rpc_observation_at,
-       COALESCE(sy.observation_at, sy.received_at) AS sync_observation_at,
-       COALESCE(co.observation_at, co.received_at) AS consensus_observation_at,
+       CASE WHEN i.state = 'ok' AND i.value_revision > 0
+                 AND c.network_genesis_hash IS NOT NULL AND c.network_chain_id IS NOT NULL
+                 AND c.network_p2p_network_id IS NOT NULL AND c.network_address_hrp IS NOT NULL
+                 AND (c.network_genesis_hash != r.genesis_hash OR c.network_chain_id != r.chain_id
+                      OR c.network_p2p_network_id != r.p2p_network_id OR c.network_address_hrp != r.address_hrp)
+            THEN 1 ELSE 0 END AS identity_contradicts_registry,
        CASE WHEN p.state IN ('ok', 'error') THEN proc.cpu_percent ELSE NULL END AS process_cpu_percent,
        CASE WHEN p.state IN ('ok', 'error') AND h.memory_total_bytes > 0 THEN (CAST(proc.memory_bytes AS REAL) * 100.0 / h.memory_total_bytes) ELSE NULL END AS process_memory_percent,
        CASE WHEN p.state IN ('ok', 'error') THEN proc.started_at ELSE NULL END AS process_started_at,
@@ -3384,6 +3317,16 @@ const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.netw
   LEFT JOIN block_history_state hs ON hs.node_id = n.node_id
   LEFT JOIN network_reference_heads nr ON nr.network_key = n.network_key"#;
 
+/// Read the Node Currency evidence of the listed Nodes on one pooled
+/// connection.
+async fn load_currency_evidence(
+    state: &AppState,
+    node_ids: &[&str],
+) -> Result<HashMap<String, node_currency::CurrencyEvidence>, sqlx::Error> {
+    let mut conn = state.db().pool().acquire().await?;
+    node_currency::load(&mut conn, node_ids).await
+}
+
 fn public_node_query(filter: &str, order: &str) -> String {
     format!("{PUBLIC_NODE_QUERY_BASE} WHERE {filter} ORDER BY {order}")
 }
@@ -3412,6 +3355,19 @@ pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
             );
         }
     };
+    let node_ids = rows
+        .iter()
+        .map(|row| row.node_id.as_str())
+        .collect::<Vec<_>>();
+    let Ok(evidence) = load_currency_evidence(&state, &node_ids).await else {
+        return error_response(
+            "unknown",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "server database is unavailable",
+        );
+    };
+    let now = crate::auth::now_utc();
     let mut networks: Vec<PublicNetwork> = Vec::new();
     // One database-status reading and one set of country rows per response
     // keep every Network's and every Node's Geo projection mutually
@@ -3431,7 +3387,8 @@ pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
     geo_readings.restrict_to_listed_nodes(&listed_nodes);
     for row in rows {
         let network_key = row.network_key.clone();
-        let (network_display_name, node) = public_node(row);
+        let node_evidence = evidence.get(&row.node_id).cloned().unwrap_or_default();
+        let (network_display_name, node) = public_node(row, &node_evidence, now);
         if let Some(network) = networks
             .iter_mut()
             .find(|network| network.network_key == network_key)
@@ -3508,7 +3465,17 @@ pub(crate) async fn public_node_detail(
     .await;
     match row {
         Ok(Some(row)) => {
-            let (_, mut node) = public_node(row);
+            let Ok(mut evidence) = load_currency_evidence(&state, &[row.node_id.as_str()]).await
+            else {
+                return error_response(
+                    "unknown",
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "server database is unavailable",
+                );
+            };
+            let node_evidence = evidence.remove(&row.node_id).unwrap_or_default();
+            let (_, mut node) = public_node(row, &node_evidence, crate::auth::now_utc());
             let network_key = node.network_key.clone();
             if let Ok(links) = effective_public_links(&state, Some(&node.node_id), None).await {
                 if let Some(link) = links.first() {
@@ -8083,63 +8050,6 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|component| component["name"] != "validator")
-        );
-    }
-
-    #[test]
-    fn freshness_uses_oldest_complete_component_observation_and_rejects_missing() {
-        let mut row = PublicNodeRow {
-            rpc_observation_at: Some("2026-08-20T00:05:00Z".to_owned()),
-            sync_observation_at: Some("2026-08-20T00:07:00Z".to_owned()),
-            consensus_observation_at: Some("2026-08-20T00:06:00Z".to_owned()),
-            ..Default::default()
-        };
-
-        assert_eq!(freshness_for(&row).as_deref(), Some("2026-08-20T00:05:00Z"));
-
-        row.consensus_observation_at = None;
-        assert_eq!(freshness_for(&row), None);
-    }
-
-    #[test]
-    fn stale_sync_dimension_prevents_healthy_public_health() {
-        let now = crate::auth::now_utc();
-        let recent = crate::auth::format_rfc3339(now);
-        let stale = crate::auth::format_rfc3339(now - time::Duration::hours(1));
-        assert_eq!(
-            health_for(
-                "active",
-                Some("ok"),
-                Some("ok"),
-                Some("ok"),
-                Some("ok"),
-                Some(&recent),
-                Some(&stale),
-                Some(&recent),
-                Some("disabled"),
-            ),
-            ("unknown", "one or more observations are stale or unknown")
-        );
-    }
-
-    #[test]
-    fn stale_consensus_dimension_prevents_healthy_public_health() {
-        let now = crate::auth::now_utc();
-        let recent = crate::auth::format_rfc3339(now);
-        let stale = crate::auth::format_rfc3339(now - time::Duration::hours(1));
-        assert_eq!(
-            health_for(
-                "active",
-                Some("ok"),
-                Some("ok"),
-                Some("ok"),
-                Some("ok"),
-                Some(&recent),
-                Some(&recent),
-                Some(&stale),
-                Some("disabled"),
-            ),
-            ("unknown", "one or more observations are stale or unknown")
         );
     }
 

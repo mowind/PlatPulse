@@ -190,7 +190,7 @@ pub(super) async fn admin_network_detail(
     };
     let mut projected = Vec::with_capacity(nodes.len());
     for (node_id, agent_id, node_display_name, lifecycle, visibility) in nodes {
-        let diagnostic = node_diagnostic(
+        let assessed = match node_diagnostic(
             &state,
             node_id.clone(),
             network_key.clone(),
@@ -199,7 +199,12 @@ pub(super) async fn admin_network_detail(
             0,
             visibility.clone(),
         )
-        .await;
+        .await
+        {
+            Ok(assessed) => assessed,
+            Err(_) => return diagnostics_unavailable(&request_id),
+        };
+        let diagnostic = assessed.diagnostic;
         projected.push(AdminNetworkNode {
             node_id: node_id.clone(),
             agent_id,
@@ -211,7 +216,7 @@ pub(super) async fn admin_network_detail(
             freshness: diagnostic.freshness,
             current_head: diagnostic.current_head,
             resync_state: diagnostic.resync_state,
-            identity: node_identity_status(&state, &node_id, &network_key).await,
+            identity: assessed.identity,
         });
     }
     Json(AdminNetworkDetail {

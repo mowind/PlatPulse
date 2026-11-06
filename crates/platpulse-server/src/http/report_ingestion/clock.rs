@@ -253,10 +253,7 @@ mod tests {
 
         let node = public_home_node(&state, ISSUE_274_NODE).await;
         assert_eq!(node["health"], "unknown", "{node}");
-        assert_eq!(
-            node["healthReason"],
-            "one or more observations are stale or unknown"
-        );
+        assert_eq!(node["healthReason"], "observations are stale");
         let freshness = node["freshness"]
             .as_str()
             .expect("every observation instant is known");
@@ -335,10 +332,7 @@ mod tests {
             "freshness is the corrected observation instant"
         );
         assert_eq!(node["health"], "unknown", "{node}");
-        assert_eq!(
-            node["healthReason"],
-            "one or more observations are stale or unknown"
-        );
+        assert_eq!(node["healthReason"], "observations are stale");
     }
 
     /// Acceptance of issue #274: a Node is a source for the Observed Network Head

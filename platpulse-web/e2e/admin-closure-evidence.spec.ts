@@ -66,7 +66,7 @@ test('matched Admin closure evidence', async ({ page }, info) => {
       await shot('node-header-long-' + width + '-' + theme, '[data-slot="node-detail-header"]')
       await page.unroute(new RegExp('/api/admin/v1/nodes/' + NODE_B + '$'))
       // Opened from a filtered, sorted list.
-      await page.goto('/admin/nodes?health=unhealthy&sort=name')
+      await page.goto('/admin/nodes?health=unknown&sort=name')
       await settle(page)
       await page.locator('[data-slot="node-name-link"]').first().click()
       await settle(page)

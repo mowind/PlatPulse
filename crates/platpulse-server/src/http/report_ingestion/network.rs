@@ -11,7 +11,7 @@ use platpulse_core::{AgentReport, ReportInventory, Rfc3339};
 /// A source must have been *observed* within the window on the Server clock, not
 /// merely delivered: a Node whose Reports are being replayed from a backlog is
 /// Stale, and a Stale Node is never a source of the Observed Network Head
-/// (ADR 0014, issue #274). `now` is the receipt instant of the triggering
+/// (ADR 0014). `now` is the receipt instant of the triggering
 /// Report, which is the only instant the Server can defend when it finds no
 /// eligible source at all.
 pub(super) async fn update_network_references(
@@ -39,49 +39,41 @@ pub(super) async fn update_network_references(
             .execute(&mut **tx)
             .await?;
     }
+    let now_instant = crate::auth::parse_rfc3339(now);
     for network_key in network_keys {
-        // The window is judged here on parsed instants: an unparseable evidence
-        // instant is never fresh.
-        let now_instant = crate::auth::parse_rfc3339(now);
         // A Node whose head was never observed is not a source: its NULL head
         // must not stand in as block 0 (the native SQLite decode once did).
-        let rows = sqlx::query_as::<
-            _,
-            (
-                String,
-                i64,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-            ),
-        >(
-            "SELECT n.node_id, c.current_block, h.resync_state, COALESCE(rpc.observation_at, rpc.received_at), COALESCE(sy.observation_at, sy.received_at), COALESCE(co.observation_at, co.received_at) FROM nodes n JOIN current_node_chain_observations c ON c.node_id=n.node_id LEFT JOIN block_history_state h ON h.node_id=n.node_id LEFT JOIN component_status sy ON sy.agent_id=n.agent_id AND sy.scope='node' AND sy.scope_key=n.node_id AND sy.component_key='sync' LEFT JOIN component_status rpc ON rpc.agent_id=n.agent_id AND rpc.scope='node' AND rpc.scope_key=n.node_id AND rpc.component_key='rpc' LEFT JOIN component_status co ON co.agent_id=n.agent_id AND co.scope='node' AND co.scope_key=n.node_id AND co.component_key='consensus' WHERE n.network_key=$1 AND n.lifecycle='active' AND c.current_block IS NOT NULL ORDER BY c.current_block DESC",
+        let heads = sqlx::query_as::<_, (String, i64, Option<String>)>(
+            "SELECT n.node_id, c.current_block, h.resync_state FROM nodes n JOIN current_node_chain_observations c ON c.node_id=n.node_id LEFT JOIN block_history_state h ON h.node_id=n.node_id WHERE n.network_key=$1 AND n.lifecycle='active' AND c.current_block IS NOT NULL ORDER BY c.current_block DESC",
         )
         .bind(network_key)
         .fetch_all(&mut **tx)
-        .await?
-        .into_iter()
-        .filter(|(_, _, _, rpc_at, sync_at, consensus_at)| {
-            // A source must be a Node the Public projection would also call
-            // fresh: every one of the three component observation instants
-            // inside the window, in either direction. Judging sync alone let a
-            // Node whose RPC and consensus were observed hours ago hold the
-            // reference head (ADR 0014, issue #274).
-            now_instant.is_some_and(|now| {
-                [rpc_at, sync_at, consensus_at].into_iter().all(|at| {
-                    crate::observation_time::is_fresh(
-                        at.as_deref(),
-                        now,
-                        crate::observation_time::FRESHNESS_LIMIT_SECONDS,
-                    )
-                })
+        .await?;
+        let node_ids = heads
+            .iter()
+            .map(|(node_id, _, _)| node_id.as_str())
+            .collect::<Vec<_>>();
+        let evidence = crate::node_currency::load(tx, &node_ids).await?;
+        // A source must be a Node whose Node Currency is Current, the same
+        // judgement the Public projection makes; an unparseable receipt
+        // instant leaves no source at all.
+        let rows = heads
+            .iter()
+            .filter_map(|(node_id, head, resync_state)| {
+                let now = now_instant?;
+                let evidence = evidence.get(node_id)?;
+                if evidence.currency(now) != crate::node_currency::NodeCurrency::Current {
+                    return None;
+                }
+                let sync_at = evidence
+                    .observed_at(crate::node_currency::GatingComponent::Sync)
+                    .map(crate::auth::format_rfc3339);
+                Some((node_id, *head, resync_state, sync_at))
             })
-        })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
         let eligible = rows
             .iter()
-            .filter(|(_, _, state, _, _, _)| state.as_deref() != Some("resyncing"))
+            .filter(|(_, _, state, _)| state.as_deref() != Some("resyncing"))
             .collect::<Vec<_>>();
         let candidates = if eligible.is_empty() {
             rows.iter().collect::<Vec<_>>()
@@ -90,7 +82,7 @@ pub(super) async fn update_network_references(
         };
         // The head is a sync fact, so the instant it was observed is the sync
         // component's observation instant.
-        let Some((node_id, head, _, _, sync_at, _)) = candidates.first() else {
+        let Some((node_id, head, _, sync_at)) = candidates.first() else {
             // No Node was observed recently enough to hold a reference: the row
             // records that the Server looked at its own clock `now` and found
             // none, which is why the reference is Unknown rather than stale.
@@ -102,7 +94,7 @@ pub(super) async fn update_network_references(
         // The reference head is the head of the winning source at the instant it
         // was observed, not the instant this Report arrived.
         sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence, eligible_source_count, contributing_node_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(network_key) DO UPDATE SET block_number=excluded.block_number, observed_at=excluded.observed_at, confidence=excluded.confidence, eligible_source_count=excluded.eligible_source_count, contributing_node_id=excluded.contributing_node_id")
-            .bind(network_key).bind(*head).bind(sync_at.as_deref().unwrap_or(now)).bind(confidence).bind(candidates.len() as i64).bind(node_id)
+            .bind(network_key).bind(*head).bind(sync_at.as_deref().unwrap_or(now)).bind(confidence).bind(candidates.len() as i64).bind(node_id.as_str())
             .execute(&mut **tx).await?;
     }
     Ok(())

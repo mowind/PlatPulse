@@ -1,5 +1,6 @@
 //! Admin overview: Agent, Node and Network summaries plus Attention.
 use super::*;
+use crate::node_currency;
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -93,7 +94,7 @@ fn severity_rank(severity: AttentionSeverity) -> u8 {
     get,
     path = "/api/admin/v1/overview",
     tag = "admin",
-    responses((status = 200, description = "Server-owned attention queue and overview summary", body = AdminOverview))
+    responses((status = 200, description = "Server-owned attention queue and overview summary", body = AdminOverview), (status = 500, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn overview(
     State(state): State<AppState>,
@@ -192,7 +193,7 @@ pub(crate) async fn overview(
         first_seen_at,
     ) in rows
     {
-        let mut diagnostic = node_diagnostic(
+        let assessed = match node_diagnostic(
             &state,
             node_id.clone(),
             network_key.clone(),
@@ -201,27 +202,31 @@ pub(crate) async fn overview(
             inventory_revision,
             visibility.clone(),
         )
-        .await;
+        .await
+        {
+            Ok(assessed) => assessed,
+            Err(_) => return diagnostics_unavailable(&request_id),
+        };
         if lifecycle != "active" {
             node_summary.retired += 1;
             continue;
         }
         node_summary.active += 1;
-        if first_observation_in_grace(&first_seen_at, &diagnostic) {
-            diagnostic.health = "starting".to_owned();
-            diagnostic.health_reason = "Node is awaiting its first accepted observation".to_owned();
-        }
-        let identity = node_identity_status(&state, &node_id, &network_key).await;
-        if identity.state == "mismatched" {
-            let observed_at = sqlx::query_scalar::<_, String>(
+        // First-observation grace is an Attention rule, not a Health state:
+        // the Node still counts as Unknown, it only raises no prompt yet.
+        let in_grace = first_observation_in_grace(&first_seen_at, &assessed);
+        if assessed.identity_disposition == node_currency::NodeIdentity::Mismatched {
+            let observed_at = sqlx::query_scalar::<_, Option<String>>(
                 "SELECT COALESCE((SELECT observed_at FROM component_status WHERE node_id = $1 AND component_key = 'network_identity'), (SELECT updated_at FROM current_node_chain_observations WHERE node_id = $2))",
             )
             .bind(&node_id)
             .bind(&node_id)
             .fetch_optional(state.db().pool())
-            .await
-            .ok()
-            .flatten();
+            .await;
+            let observed_at = match observed_at {
+                Ok(observed_at) => observed_at.flatten(),
+                Err(_) => return diagnostics_unavailable(&request_id),
+            };
             attention.push(AttentionItem {
                 id: format!("node_identity_mismatch:node:{node_id}"),
                 kind: AttentionKind::NodeIdentityMismatch,
@@ -236,26 +241,14 @@ pub(crate) async fn overview(
                 evidence_key: String::new(),
             });
         }
-        let observed_at = diagnostic
-            .rpc
-            .as_ref()
-            .and_then(|c| c.observed_at.as_deref())
-            .into_iter()
-            .chain(
-                diagnostic
-                    .sync
-                    .as_ref()
-                    .and_then(|c| c.observed_at.as_deref()),
-            )
-            .chain(
-                diagnostic
-                    .consensus
-                    .as_ref()
-                    .and_then(|c| c.observed_at.as_deref()),
-            )
-            .filter_map(crate::auth::parse_rfc3339)
-            .max()
-            .map(crate::auth::format_rfc3339);
+        // The Server-clock instant Node Currency was judged on, so the prompt
+        // and the Health it explains name the same evidence.
+        let observed_at = assessed.currency_as_of.clone();
+        // A Node Unknown because of the mismatch already raised its Critical
+        // prompt above; one Unknown for another reason still raises its own.
+        let explained_by_mismatch =
+            assessed.health_reason == node_currency::HealthReason::IdentityMismatch;
+        let diagnostic = assessed.diagnostic;
         match diagnostic.health.as_str() {
             "healthy" => node_summary.healthy += 1,
             "unhealthy" => {
@@ -272,7 +265,7 @@ pub(crate) async fn overview(
                     evidence_key: String::new(),
                 });
             }
-            "starting" => {
+            _ if in_grace || explained_by_mismatch => {
                 node_summary.unknown += 1;
             }
             _ => {
@@ -291,15 +284,16 @@ pub(crate) async fn overview(
             }
         }
         if diagnostic.resync_state != "normal" {
-            let resync_observed_at = sqlx::query_scalar::<_, String>(
+            let resync_observed_at = match sqlx::query_scalar::<_, String>(
                 "SELECT COALESCE(resync_last_progress_at, updated_at) FROM block_history_state WHERE node_id = $1",
             )
             .bind(&node_id)
             .fetch_optional(state.db().pool())
             .await
-            .ok()
-            .flatten()
-            .or(observed_at.clone());
+            {
+                Ok(instant) => instant.or(observed_at.clone()),
+                Err(_) => return diagnostics_unavailable(&request_id),
+            };
             attention.push(AttentionItem {
                 id: format!("node_resync:node:{node_id}"),
                 kind: AttentionKind::NodeResync,
@@ -357,6 +351,76 @@ mod tests {
     use serde_json::Value;
     use tempfile::tempdir;
     use time::OffsetDateTime;
+
+    /// A contradicted identity leaves the Node Unknown and raises only its
+    /// Critical mismatch prompt, never a second Health Unknown prompt.
+    #[tokio::test]
+    async fn an_identity_mismatch_raises_only_the_mismatch_prompt() {
+        let (_dir, state) = node_inventory_state().await;
+        sqlx::query("UPDATE component_status SET state = 'ok', error_code = NULL, error_message = NULL WHERE node_id = 'node-mismatched'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = overview(
+            State(state),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(value["summary"]["nodes"]["active"], 2);
+        assert_eq!(value["summary"]["nodes"]["healthy"], 1);
+        assert_eq!(value["summary"]["nodes"]["unknown"], 1);
+        let node_prompts = value["attention"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["subject_kind"] == "node")
+            .map(|item| item["kind"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(node_prompts, ["node_identity_mismatch"]);
+    }
+
+    /// A mismatched Node that is Unknown because its evidence is stale keeps
+    /// its Health Unknown prompt: the mismatch prompt does not explain it.
+    #[tokio::test]
+    async fn a_stale_mismatched_node_raises_both_prompts() {
+        let (_dir, state) = node_inventory_state().await;
+        sqlx::query("UPDATE component_status SET state = 'ok', error_code = NULL, error_message = NULL WHERE node_id = 'node-mismatched'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE component_status SET observation_at = '2000-01-01T00:00:00Z' WHERE node_id = 'node-mismatched' AND component_key = 'sync'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let response = overview(
+            State(state),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(value["summary"]["nodes"]["unknown"], 1);
+        let mut node_prompts = value["attention"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["subject_kind"] == "node")
+            .map(|item| item["kind"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        node_prompts.sort();
+        assert_eq!(
+            node_prompts,
+            ["node_health_unknown", "node_identity_mismatch"]
+        );
+    }
 
     #[tokio::test]
     async fn overview_reports_server_owned_attention_and_summary() {
@@ -457,7 +521,7 @@ mod tests {
         assert_eq!(attention[0]["subject_kind"], "node");
         assert_eq!(attention[0]["subject_id"], "node-b");
         assert_eq!(attention[0]["subject_label"], "Node B");
-        assert_eq!(attention[0]["message"], "RPC collection failed");
+        assert_eq!(attention[0]["message"], "RPC observation failed");
     }
 
     #[tokio::test]

@@ -121,8 +121,8 @@ test.describe('Converged Public Home (issue #102)', () => {
     // to one readable line whose own title keeps the whole wording.
     const lCard = nodeCard(page, /Node L/)
     const lDiagnostic = lCard.locator('[data-slot="node-diagnostic"]')
-    await expect(lDiagnostic).toHaveText('Observations stale / unknown')
-    await expect(lDiagnostic).toHaveAttribute('title', 'one or more observations are stale or unknown')
+    await expect(lDiagnostic).toHaveText('Observations stale')
+    await expect(lDiagnostic).toHaveAttribute('title', 'observations are stale')
     await expect(lDiagnostic).toHaveAttribute('data-tone', 'warning')
 
     // The three Node counters stay marker, title and number, with
@@ -282,8 +282,8 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(pCard.getByText('0', { exact: true })).toHaveCount(0)
     await expect(pCard.getByText('Non-validator', { exact: true })).toHaveCount(0)
     const pDiagnostic = pCard.locator('[data-slot="node-diagnostic"]')
-    await expect(pDiagnostic).toHaveText('Observations stale / unknown')
-    await expect(pDiagnostic).toHaveAttribute('title', 'one or more observations are stale or unknown')
+    await expect(pDiagnostic).toHaveText('Awaiting first observation')
+    await expect(pDiagnostic).toHaveAttribute('title', 'Node is awaiting its first accepted observation')
 
     // Node A: the observed Current Head Block Summary still proves its Block
     // Height; the transaction count it used to prove is a Node Detail statement.
