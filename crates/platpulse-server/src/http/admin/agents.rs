@@ -8,7 +8,7 @@ use super::*;
     path = "/api/admin/v1/agents/{agent_id}",
     tag = "admin",
     params(("agent_id" = String, Path, description = "Agent ID")),
-    responses((status = 200, body = AgentDiagnostic), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody))
+    responses((status = 200, body = AgentDiagnostic), (status = 403, body = crate::http::ApiErrorBody), (status = 404, body = crate::http::ApiErrorBody), (status = 500, body = crate::http::ApiErrorBody))
 )]
 pub(crate) async fn admin_agent_detail(
     State(state): State<AppState>,
@@ -16,15 +16,16 @@ pub(crate) async fn admin_agent_detail(
     Extension(_session): Extension<crate::http::AuthenticatedSession>,
     Extension(request_id): Extension<crate::http::RequestId>,
 ) -> Response {
-    let Some(row) = sqlx::query_as::<_, AgentAdminRow>(
+    let Ok(row) = sqlx::query_as::<_, AgentAdminRow>(
         "SELECT agent_id, display_name, notes, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count, last_inventory_revision AS accepted_inventory_revision, inventory_sha256 AS accepted_inventory_sha256, inventory_protocol_major AS accepted_inventory_protocol_major FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
     )
     .bind(&agent_id)
     .fetch_optional(state.db().pool())
     .await
-    .ok()
-    .flatten()
     else {
+        return diagnostics_unavailable(&request_id);
+    };
+    let Some(row) = row else {
         return mutation_error(
             &request_id.0,
             StatusCode::NOT_FOUND,
@@ -32,7 +33,10 @@ pub(crate) async fn admin_agent_detail(
             "agent not found",
         );
     };
-    Json(agent_diagnostic(&state, row).await).into_response()
+    match agent_diagnostic(&state, row).await {
+        Ok(diagnostic) => Json(diagnostic).into_response(),
+        Err(_) => diagnostics_unavailable(&request_id),
+    }
 }
 
 /// One Owner acknowledgment request: the exact Agent Attention Items and

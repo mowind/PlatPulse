@@ -41,7 +41,10 @@ pub struct BlockHistoryRejection {
 /// acceptance stamp on its history state, so the diagnosis does not reappear
 /// once retention ages the raw summaries out. A Node with neither keeps
 /// showing its newest refusal: nothing proves that history resumed.
-async fn block_history_rejection(state: &AppState, node_id: &str) -> Option<BlockHistoryRejection> {
+async fn block_history_rejection(
+    state: &AppState,
+    node_id: &str,
+) -> Result<Option<BlockHistoryRejection>, sqlx::Error> {
     // One query keeps the newest refusal and its aggregate on the same
     // predicate, so the panel can never report a height span from evidence
     // other than the refusal it displays. The two recovery proofs are compared
@@ -57,20 +60,19 @@ async fn block_history_rejection(state: &AppState, node_id: &str) -> Option<Bloc
     )
     .bind(node_id)
     .fetch_one(state.db().pool())
-    .await
-    .ok()?;
+    .await?;
     let (Some(from_height), Some(to_height), Some(reason), Some(recorded_at)) =
         (from_height, to_height, reason, recorded_at)
     else {
-        return None;
+        return Ok(None);
     };
-    Some(BlockHistoryRejection {
+    Ok(Some(BlockHistoryRejection {
         reason,
         from_height,
         to_height,
         rejected_heights: count,
         recorded_at,
-    })
+    }))
 }
 
 /// The holes in one Node's Block history the Server tracks itself (issue
@@ -118,17 +120,19 @@ pub enum BlockHistoryHoleState {
 const BLOCK_HISTORY_HOLE_LIMIT: i64 = 20;
 
 /// Read the holes the Server tracks for one Node; None when it has none.
-async fn block_history_holes(state: &AppState, node_id: &str) -> Option<BlockHistoryHoles> {
+async fn block_history_holes(
+    state: &AppState,
+    node_id: &str,
+) -> Result<Option<BlockHistoryHoles>, sqlx::Error> {
     let pool = state.db().pool();
     let (awaiting_backfill_heights, confirmed_missing_heights) = sqlx::query_as::<_, (i64, i64)>(
         "SELECT CAST(COALESCE(SUM(CASE WHEN status = 'open_recoverable_gap' THEN last_height - first_height + 1 ELSE 0 END), 0) AS BIGINT), CAST(COALESCE(SUM(CASE WHEN status = 'permanent_gap' THEN last_height - first_height + 1 ELSE 0 END), 0) AS BIGINT) FROM block_coverage_intervals WHERE node_id = $1",
     )
     .bind(node_id)
     .fetch_one(pool)
-    .await
-    .ok()?;
+    .await?;
     if awaiting_backfill_heights == 0 && confirmed_missing_heights == 0 {
-        return None;
+        return Ok(None);
     }
     let rows = sqlx::query_as::<_, (i64, i64, String, String, String)>(
         "SELECT first_height, last_height, status, created_at, updated_at FROM block_coverage_intervals WHERE node_id = $1 AND status IN ('open_recoverable_gap', 'permanent_gap') ORDER BY last_height DESC LIMIT $2",
@@ -136,9 +140,8 @@ async fn block_history_holes(state: &AppState, node_id: &str) -> Option<BlockHis
     .bind(node_id)
     .bind(BLOCK_HISTORY_HOLE_LIMIT)
     .fetch_all(pool)
-    .await
-    .ok()?;
-    Some(BlockHistoryHoles {
+    .await?;
+    Ok(Some(BlockHistoryHoles {
         awaiting_backfill_heights,
         confirmed_missing_heights,
         intervals: rows
@@ -157,7 +160,7 @@ async fn block_history_holes(state: &AppState, node_id: &str) -> Option<BlockHis
                 },
             )
             .collect(),
-    })
+    }))
 }
 
 /// Owner-only Node inventory row: Server-owned metadata (display name,
@@ -207,8 +210,11 @@ struct AdminNodeRow {
     rpc_endpoint: String,
 }
 
-async fn admin_node_list_item(state: &AppState, row: AdminNodeRow) -> AdminNodeListItem {
-    let diagnostic = node_diagnostic(
+async fn admin_node_list_item(
+    state: &AppState,
+    row: AdminNodeRow,
+) -> Result<AdminNodeListItem, sqlx::Error> {
+    let assessed = node_diagnostic(
         state,
         row.node_id.clone(),
         row.network_key.clone(),
@@ -217,8 +223,9 @@ async fn admin_node_list_item(state: &AppState, row: AdminNodeRow) -> AdminNodeL
         row.inventory_revision,
         row.visibility.clone(),
     )
-    .await;
-    AdminNodeListItem {
+    .await?;
+    let diagnostic = assessed.diagnostic;
+    Ok(AdminNodeListItem {
         node_id: row.node_id.clone(),
         agent_id: row.agent_id,
         display_name: row.display_name,
@@ -236,15 +243,15 @@ async fn admin_node_list_item(state: &AppState, row: AdminNodeRow) -> AdminNodeL
         freshness: diagnostic.freshness,
         current_head: diagnostic.current_head,
         resync_state: diagnostic.resync_state,
-        identity: node_identity_status(state, &row.node_id, &row.network_key).await,
-    }
+        identity: assessed.identity,
+    })
 }
 
 #[utoipa::path(
     get,
     path = "/api/admin/v1/nodes",
     tag = "admin",
-    responses((status = 200, description = "Owner-only Node inventory with Server-owned metadata and per-Node identity disposition", body = [AdminNodeListItem]))
+    responses((status = 200, description = "Owner-only Node inventory with Server-owned metadata and per-Node identity disposition", body = [AdminNodeListItem]), (status = 500, body = crate::http::ApiErrorBody))
 )]
 pub(super) async fn admin_nodes(
     State(state): State<AppState>,
@@ -269,7 +276,10 @@ pub(super) async fn admin_nodes(
     };
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
-        items.push(admin_node_list_item(&state, row).await);
+        match admin_node_list_item(&state, row).await {
+            Ok(item) => items.push(item),
+            Err(_) => return diagnostics_unavailable(&request_id),
+        }
     }
     Json(items).into_response()
 }
@@ -338,7 +348,7 @@ pub struct AdminNodeDetail {
     path = "/api/admin/v1/nodes/{node_id}",
     tag = "admin",
     params(("node_id" = String, Path, description = "Node ID")),
-    responses((status = 200, description = "Owner-only Node detail with Server-owned metadata and per-Node diagnostics", body = AdminNodeDetail), (status = 404, body = crate::http::ApiErrorBody))
+    responses((status = 200, description = "Owner-only Node detail with Server-owned metadata and per-Node diagnostics", body = AdminNodeDetail), (status = 404, body = crate::http::ApiErrorBody), (status = 500, body = crate::http::ApiErrorBody))
 )]
 pub(super) async fn admin_node_detail(
     State(state): State<AppState>,
@@ -370,7 +380,7 @@ pub(super) async fn admin_node_detail(
             "resource not found",
         );
     };
-    let diagnostic = node_diagnostic(
+    let assessed = match node_diagnostic(
         &state,
         row.node_id.clone(),
         row.network_key.clone(),
@@ -379,28 +389,43 @@ pub(super) async fn admin_node_detail(
         row.inventory_revision,
         row.visibility.clone(),
     )
-    .await;
-    let fingerprint = sqlx::query_scalar::<_, String>(
+    .await
+    {
+        Ok(assessed) => assessed,
+        Err(_) => return diagnostics_unavailable(&request_id),
+    };
+    let diagnostic = assessed.diagnostic;
+    let fingerprint = match sqlx::query_scalar::<_, Option<String>>(
         "SELECT node_key_fingerprint FROM current_node_chain_observations WHERE node_id = $1",
     )
     .bind(&row.node_id)
     .fetch_optional(state.db().pool())
     .await
-    .ok()
-    .flatten();
-    let agent_spool_backlog_age = spool_backlog_age_diagnostic(&state, &row.agent_id).await;
-    let identity = node_identity_status(&state, &row.node_id, &row.network_key).await;
-    let block_history_rejection = block_history_rejection(&state, &row.node_id).await;
-    let block_history_holes = block_history_holes(&state, &row.node_id).await;
+    {
+        Ok(fingerprint) => fingerprint.flatten(),
+        Err(_) => return diagnostics_unavailable(&request_id),
+    };
+    let Ok(agent_spool_backlog_age) = spool_backlog_age_diagnostic(&state, &row.agent_id).await
+    else {
+        return diagnostics_unavailable(&request_id);
+    };
+    let identity = assessed.identity;
+    let Ok(block_history_rejection) = block_history_rejection(&state, &row.node_id).await else {
+        return diagnostics_unavailable(&request_id);
+    };
+    let Ok(block_history_holes) = block_history_holes(&state, &row.node_id).await else {
+        return diagnostics_unavailable(&request_id);
+    };
     let transfer = sqlx::query_as::<_, NodeTransferRow>(&format!(
         "SELECT {TRANSFER_COLUMNS} FROM node_transfers WHERE node_id=$1 ORDER BY created_at DESC LIMIT 1"
     ))
     .bind(&row.node_id)
     .fetch_optional(state.db().pool())
-    .await
-    .ok()
-    .flatten()
-    .map(node_transfer_dto);
+    .await;
+    let transfer = match transfer {
+        Ok(transfer) => transfer.map(node_transfer_dto),
+        Err(_) => return diagnostics_unavailable(&request_id),
+    };
     let validator_identity = match crate::validator::list_node_validator_identities(
         &state.database(),
         Some(&row.node_id),
@@ -852,6 +877,168 @@ mod tests {
     use axum::body::to_bytes;
     use serde_json::Value;
 
+    /// Home and Admin read one Node Health Summary: whatever the evidence, the
+    /// same Node carries the same Health and reason on both pages.
+    #[tokio::test]
+    async fn public_and_admin_agree_on_a_nodes_health() {
+        let (_dir, state) = node_inventory_state().await;
+        sqlx::query("UPDATE nodes SET visibility = 'public'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let fresh = crate::auth::format_rfc3339(crate::auth::now_utc());
+        let old = crate::auth::format_rfc3339(crate::auth::now_utc() - time::Duration::hours(2));
+        let health_on_both_pages = |node_id: &'static str| {
+            let state = state.clone();
+            async move {
+                let admin = admin_node_detail(
+                    State(state.clone()),
+                    Path(node_id.to_owned()),
+                    Extension(lifecycle_session()),
+                    Extension(request_id()),
+                )
+                .await;
+                assert_eq!(admin.status(), StatusCode::OK);
+                let admin: Value =
+                    serde_json::from_slice(&to_bytes(admin.into_body(), usize::MAX).await.unwrap())
+                        .unwrap();
+                let public = crate::http::public::public_node_detail(
+                    State(state.clone()),
+                    Path(node_id.to_owned()),
+                    Extension(request_id()),
+                )
+                .await;
+                assert_eq!(public.status(), StatusCode::OK);
+                let public: Value = serde_json::from_slice(
+                    &to_bytes(public.into_body(), usize::MAX).await.unwrap(),
+                )
+                .unwrap();
+                let admin = (admin["health"].clone(), admin["health_reason"].clone());
+                let public = (public["health"].clone(), public["healthReason"].clone());
+                assert_eq!(admin, public, "{node_id}: Admin and Public disagree");
+                (
+                    admin.0.as_str().unwrap().to_owned(),
+                    admin.1.as_str().unwrap().to_owned(),
+                )
+            }
+        };
+        let execute = |sql: &'static str, bind: Option<String>| {
+            let state = state.clone();
+            async move {
+                let query = sqlx::query(sql);
+                let query = match bind {
+                    Some(value) => query.bind(value),
+                    None => query,
+                };
+                query.execute(state.db().pool()).await.unwrap();
+            }
+        };
+
+        assert_eq!(
+            health_on_both_pages("node-healthy").await,
+            (
+                "healthy".to_owned(),
+                "RPC, sync, and consensus are current".to_owned()
+            )
+        );
+        assert_eq!(
+            health_on_both_pages("node-mismatched").await,
+            ("unhealthy".to_owned(), "RPC observation failed".to_owned())
+        );
+
+        // A contradicted Registry identity leaves Health Unknown on both pages.
+        execute(
+            "UPDATE current_node_chain_observations SET network_chain_id = 999999 WHERE node_id = 'node-healthy'",
+            None,
+        )
+        .await;
+        assert_eq!(
+            health_on_both_pages("node-healthy").await,
+            (
+                "unknown".to_owned(),
+                "observed network identity mismatches the registered Network".to_owned()
+            )
+        );
+        execute(
+            "UPDATE current_node_chain_observations SET network_chain_id = 210425 WHERE node_id = 'node-healthy'",
+            None,
+        )
+        .await;
+
+        // A failed process observation is a definite failure on both pages.
+        execute(
+            "INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, received_at, observation_at, state_revision, value_revision) VALUES ('agent-lifecycle-test', 'node', 'node-healthy', 'node-healthy', 'process', 'error', $1, $1, $1, $1, 1, 1)",
+            Some(fresh),
+        )
+        .await;
+        assert_eq!(
+            health_on_both_pages("node-healthy").await,
+            (
+                "unhealthy".to_owned(),
+                "process observation failed".to_owned()
+            )
+        );
+        execute(
+            "DELETE FROM component_status WHERE node_id = 'node-healthy' AND component_key = 'process'",
+            None,
+        )
+        .await;
+
+        // A failure seen only in stale evidence is named, never a verdict.
+        execute(
+            "UPDATE component_status SET observation_at = $1 WHERE node_id = 'node-mismatched' AND component_key IN ('rpc', 'sync', 'consensus')",
+            Some(old),
+        )
+        .await;
+        assert_eq!(
+            health_on_both_pages("node-mismatched").await,
+            (
+                "unknown".to_owned(),
+                "observations are stale; last RPC observation failed".to_owned()
+            )
+        );
+
+        // A gating component never observed leaves Health Unknown.
+        execute(
+            "DELETE FROM component_status WHERE node_id = 'node-healthy' AND component_key = 'consensus'",
+            None,
+        )
+        .await;
+        assert_eq!(
+            health_on_both_pages("node-healthy").await,
+            (
+                "unknown".to_owned(),
+                "Node is awaiting its first accepted consensus observation".to_owned()
+            )
+        );
+    }
+
+    /// A diagnostics read the database refuses fails the request instead of
+    /// rendering the Node from the rows that happened to load.
+    #[tokio::test]
+    async fn a_refused_diagnostics_read_fails_the_admin_node_pages() {
+        let (_dir, state) = node_inventory_state().await;
+        sqlx::query("DROP TABLE current_node_process_observations")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let list = admin_nodes(
+            State(state.clone()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(list.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let detail = admin_node_detail(
+            State(state.clone()),
+            Path("node-healthy".to_owned()),
+            Extension(lifecycle_session()),
+            Extension(request_id()),
+        )
+        .await;
+        assert_eq!(detail.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
     #[tokio::test]
     async fn admin_node_inventory_is_per_node_with_server_owned_dimensions() {
         let (_dir, state) = node_inventory_state().await;
@@ -910,7 +1097,7 @@ mod tests {
             serde_json::json!(["chain_id"])
         );
         assert_eq!(mismatched["health"], "unhealthy");
-        assert_eq!(mismatched["health_reason"], "RPC collection failed");
+        assert_eq!(mismatched["health_reason"], "RPC observation failed");
         // Retired guidance is explicit and never implies remote control.
         let retired = by_id("node-retired");
         assert_eq!(retired["lifecycle"], "retired");

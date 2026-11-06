@@ -309,8 +309,12 @@ The combined process and chain observations belonging to one PlatON Node. Observ
 _Avoid_: Agent observation
 
 **Node Health Summary**:
-A display-oriented severity derived from independent liveness, lifecycle, process, reachability, freshness, synchronization, consensus, and Host pressure dimensions. It never replaces those dimensions, and unknown data is not healthy data. Where a surface marks a Node by name — the Home Dashboard cards and Node Detail — a two-state marker beside that name shows Healthy in green and every other state in grey; the marker renders this summary rather than replacing it, and the reason for an abnormal state stays visible as text.
+A display-oriented severity derived from independent liveness, lifecycle, process, reachability, freshness, synchronization, consensus, and Host pressure dimensions. It never replaces those dimensions, and unknown data is not healthy data. Where a surface marks a Node by name — the Home Dashboard cards and Node Detail — a three-state marker beside that name tells Healthy, Unhealthy, and every other state apart, so insufficient evidence is never shown as a definite failure; the marker renders this summary rather than replacing it, and the reason for an abnormal state stays visible as text.
 _Avoid_: Online flag, Authoritative health state
+
+**Node Currency**:
+Whether a PlatON Node's own chain evidence describes it as it is now, judged from the observation instants of its three gating observations: RPC, sync, and consensus. It is Current when all three were observed inside the freshness window, Stale when any of them was observed only before it, and Never Observed when any of them has never been observed. The instants are Server-clock observation instants, so a Node replayed from a backlog is not Current however recently its Reports arrived. Peers, process, and Host are separate Node Health Summary dimensions and do not affect it. Evidence that is not Current never makes a Node Healthy or Unhealthy: a failure seen only in stale evidence leaves the Node Unknown, with that last failure named in the reason.
+_Avoid_: Fresh node, Online, Live, Eligible node, Arrival freshness
 
 **Clock Unreliable**:
 A diagnostic state indicating that an Agent's wall clock differs enough from Server time that cross-host chronology or age calculations cannot be trusted. It does not invalidate unrelated observations or Agent liveness based on Server receipt time.

@@ -1,5 +1,6 @@
 //! Agent, Host, Node and Peer diagnostic DTOs and the builders that derive them.
 use super::*;
+use crate::node_currency;
 
 /// Redacted Agent credential summary. Only the non-sensitive credential
 /// id and lifecycle instants are exposed; the credential secret itself is
@@ -612,108 +613,21 @@ pub struct ComponentDiagnostic {
 
 const FIRST_OBSERVATION_GRACE_SECONDS: i64 = 120;
 
-pub(super) fn first_observation_in_grace(first_seen_at: &str, diagnostic: &NodeDiagnostic) -> bool {
+/// A Node the Server first saw this recently and that is still Never
+/// Observed is awaiting its first accepted observation: its Unknown Health is
+/// expected and raises no Attention Item yet.
+pub(super) fn first_observation_in_grace(first_seen_at: &str, node: &AssessedNode) -> bool {
     let Some(first_seen) = crate::auth::parse_rfc3339(first_seen_at) else {
         return false;
     };
-    let age = (crate::auth::now_utc() - first_seen).whole_seconds();
+    let age = (node.assessed_at - first_seen).whole_seconds();
     (0..=FIRST_OBSERVATION_GRACE_SECONDS).contains(&age)
-        && diagnostic
-            .rpc
-            .as_ref()
-            .is_none_or(|c| c.value_revision.is_none_or(|value| value <= 0))
-        && diagnostic
-            .sync
-            .as_ref()
-            .is_none_or(|c| c.value_revision <= 0)
-        && diagnostic
-            .consensus
-            .as_ref()
-            .is_none_or(|c| c.value_revision <= 0)
+        && node.currency == node_currency::NodeCurrency::NeverObserved
 }
 
-/// Server-clock observation instants of the four judged components, read from
-/// `component_status` by `node_diagnostic`.
-///
-/// They make the Admin Node view judge freshness on the same clock as the
-/// Public projection: the instant is the Report's own observation time
-/// corrected by the Agent's measured clock skew, falling back to the receipt
-/// instant when that skew is unmeasured or the Agent is Clock Unreliable
-/// (ADR 0014, issue #274).
-#[derive(Debug, Default)]
-struct ComponentObservationInstants {
-    rpc: Option<String>,
-    sync: Option<String>,
-    consensus: Option<String>,
-    peers: Option<String>,
-}
-
-impl ComponentObservationInstants {
-    /// Every retained component instant, oldest or newest — `derive_freshness`
-    /// picks the newest.
-    fn iter(&self) -> impl Iterator<Item = &str> {
-        [&self.rpc, &self.sync, &self.consensus, &self.peers]
-            .into_iter()
-            .filter_map(|instant| instant.as_deref())
-    }
-}
-
-fn derive_health(
-    lifecycle: &str,
-    rpc: Option<&RpcDiagnostic>,
-    sync: Option<&SyncDiagnostic>,
-    consensus: Option<&ConsensusDiagnostic>,
-    instants: &ComponentObservationInstants,
-) -> (&'static str, &'static str) {
-    if lifecycle == "retired" {
-        return ("unknown", "node is retired");
-    }
-    if rpc.is_some_and(|component| component.state.as_deref() == Some("error")) {
-        return ("unhealthy", "RPC collection failed");
-    }
-    if sync.is_some_and(|component| component.state == "error") {
-        return ("unhealthy", "sync collection failed");
-    }
-    if consensus.is_some_and(|component| component.state == "error") {
-        return ("unhealthy", "consensus collection failed");
-    }
-    // A component that was never observed has no observation instant and is not
-    // fresh. A replayed Report stamps an old observation instant, so the Node
-    // stays Unknown during catch-up (ADR 0014, issue #274).
-    let now = crate::auth::now_utc();
-    let fresh = [
-        (rpc.is_some(), instants.rpc.as_deref()),
-        (sync.is_some(), instants.sync.as_deref()),
-        (consensus.is_some(), instants.consensus.as_deref()),
-    ]
-    .into_iter()
-    .all(|(observed, instant)| {
-        observed
-            && crate::observation_time::is_fresh(
-                instant,
-                now,
-                crate::observation_time::FRESHNESS_LIMIT_SECONDS,
-            )
-    });
-    if !fresh {
-        return ("unknown", "one or more observations are stale or unknown");
-    }
-    if rpc.is_some_and(|component| component.state.as_deref() == Some("ok"))
-        && sync.is_some_and(|component| component.state == "ok")
-        && consensus.is_some_and(|component| component.state == "ok")
-    {
-        ("healthy", "RPC, sync, and consensus are current")
-    } else {
-        ("unknown", "one or more observations are unsupported")
-    }
-}
-
-/// Server-owned freshness dimension for the Admin Node view: `current` when
-/// the newest retained observation is fresh, `stale` when an older retained
-/// observation exists, and `unknown` when nothing was ever observed.
-///
-/// The instants handed in are Server-clock observation instants, so a replayed
-/// Report cannot make an old observation look current (ADR 0014, issue #274).
+/// Freshness of one retained value: `current` when the newest instant is
+/// inside the window, `stale` when it is older, and `unknown` when there is
+/// none. The instants are Server-clock observation instants (ADR 0014).
 fn derive_freshness<'a>(observed_at: impl Iterator<Item = &'a str>) -> &'static str {
     let latest = observed_at.filter_map(crate::auth::parse_rfc3339).max();
     match latest {
@@ -741,8 +655,9 @@ pub struct NodeDiagnostic {
     pub visibility: String,
     pub health: String,
     pub health_reason: String,
-    /// Server-owned freshness dimension: `current`, `stale`, or `unknown`.
-    /// The WebUI formats this state; it never derives it from `Date.now()`.
+    /// The Node Currency: `current`, `stale`, or `unknown` when a gating
+    /// observation was never observed. The WebUI formats this state; it never
+    /// derives it from `Date.now()`.
     pub freshness: String,
     pub process: Option<ProcessDiagnostic>,
     pub data_directory: Option<DataDirectoryDiagnostic>,
@@ -758,15 +673,16 @@ pub struct NodeDiagnostic {
     pub resync_progress: Option<String>,
 }
 
-async fn process_diagnostic(state: &AppState, node_id: &str) -> Option<ProcessDiagnostic> {
-    sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64, Option<i64>, Option<String>, Option<f64>, Option<i64>, Option<i64>)>(
+async fn process_diagnostic(
+    state: &AppState,
+    node_id: &str,
+) -> Result<Option<ProcessDiagnostic>, sqlx::Error> {
+    Ok(sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64, Option<i64>, Option<String>, Option<f64>, Option<i64>, Option<i64>)>(
         "SELECT s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision, p.pid, p.started_at, p.cpu_percent, p.memory_bytes, p.uptime_ms FROM component_status s LEFT JOIN current_node_process_observations p ON p.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'process'"
     )
     .bind(node_id)
     .fetch_optional(state.db().pool())
-    .await
-    .ok()
-    .flatten()
+    .await?
     .map(|(state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision, pid, started_at, cpu_percent, memory_bytes, uptime_ms)| ProcessDiagnostic {
         state,
         error_code,
@@ -781,21 +697,19 @@ async fn process_diagnostic(state: &AppState, node_id: &str) -> Option<ProcessDi
         cpu_percent,
         memory_bytes,
         uptime_ms,
-    })
+    }))
 }
 
 async fn data_directory_diagnostic(
     state: &AppState,
     node_id: &str,
-) -> Option<DataDirectoryDiagnostic> {
-    sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64, Option<i64>, Option<i64>)>(
+) -> Result<Option<DataDirectoryDiagnostic>, sqlx::Error> {
+    Ok(sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64, Option<i64>, Option<i64>)>(
         "SELECT s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision, d.size_bytes, CASE WHEN c.state IN ('ok', 'error') THEN d.capacity_bytes ELSE NULL END FROM component_status s LEFT JOIN component_status c ON c.node_id = s.node_id AND c.component_key = 'datadirectorycapacitybytes' LEFT JOIN current_node_data_directory_observations d ON d.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'datadirectorysizebytes'"
     )
     .bind(node_id)
     .fetch_optional(state.db().pool())
-    .await
-    .ok()
-    .flatten()
+    .await?
     .map(|(state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision, size_bytes, capacity_bytes)| {
         let visible_size = matches!(state.as_str(), "ok" | "error").then_some(size_bytes).flatten();
         DataDirectoryDiagnostic {
@@ -810,18 +724,19 @@ async fn data_directory_diagnostic(
             size_bytes: visible_size,
             capacity_bytes: capacity_bytes.filter(|_| visible_size.is_some()),
         }
-    })
+    }))
 }
 
-async fn sync_diagnostic(state: &AppState, node_id: &str) -> Option<SyncDiagnostic> {
-    sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
+async fn sync_diagnostic(
+    state: &AppState,
+    node_id: &str,
+) -> Result<Option<SyncDiagnostic>, sqlx::Error> {
+    Ok(sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
         "SELECT s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision, c.syncing, c.current_block, c.highest_block, c.pulled_states, c.known_states FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'sync'"
     )
     .bind(node_id)
     .fetch_optional(state.db().pool())
-    .await
-    .ok()
-    .flatten()
+    .await?
     .map(|(state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision, syncing, current_block, highest_block, pulled_states, known_states)| SyncDiagnostic {
         state,
         error_code,
@@ -836,18 +751,19 @@ async fn sync_diagnostic(state: &AppState, node_id: &str) -> Option<SyncDiagnost
         highest_block,
         pulled_states,
         known_states,
-    })
+    }))
 }
 
-async fn consensus_diagnostic(state: &AppState, node_id: &str) -> Option<ConsensusDiagnostic> {
-    sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
+async fn consensus_diagnostic(
+    state: &AppState,
+    node_id: &str,
+) -> Result<Option<ConsensusDiagnostic>, sqlx::Error> {
+    Ok(sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
         "SELECT s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision, c.consensus_epoch, c.consensus_view_number, c.consensus_validator, c.consensus_highest_qc_block, c.consensus_highest_lock_block, c.consensus_highest_commit_block FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'consensus'"
     )
     .bind(node_id)
     .fetch_optional(state.db().pool())
-    .await
-    .ok()
-    .flatten()
+    .await?
     .map(|(state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision, epoch, view_number, validator, highest_qc_block, highest_lock_block, highest_commit_block)| ConsensusDiagnostic {
         state,
         error_code,
@@ -863,7 +779,7 @@ async fn consensus_diagnostic(state: &AppState, node_id: &str) -> Option<Consens
         highest_qc_block,
         highest_lock_block,
         highest_commit_block,
-    })
+    }))
 }
 
 type PeerPresenceRow = (
@@ -983,8 +899,11 @@ pub(super) async fn peer_churn_diagnostic(
     })
 }
 
-async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnostic> {
-    let component = sqlx::query_as::<_, (
+async fn peer_diagnostic(
+    state: &AppState,
+    node_id: &str,
+) -> Result<Option<PeerDiagnostic>, sqlx::Error> {
+    let Some(component) = sqlx::query_as::<_, (
         String,
         Option<String>,
         Option<String>,
@@ -999,9 +918,10 @@ async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnost
     )
     .bind(node_id)
     .fetch_optional(state.db().pool())
-    .await
-    .ok()
-    .flatten()?;
+    .await?
+    else {
+        return Ok(None);
+    };
     let (
         component_state,
         error_code,
@@ -1014,7 +934,7 @@ async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnost
         value_revision,
     ) = component;
     // A projection read failure must not masquerade as an authoritative empty
-    // snapshot; return Unknown by omitting the diagnostic instead.
+    // snapshot, so it fails the whole diagnostic.
     let rows = sqlx::query_as::<_, (
         String,
         String,
@@ -1031,8 +951,7 @@ async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnost
     )
     .bind(node_id)
     .fetch_all(state.db().pool())
-    .await
-    .ok()?;
+    .await?;
     let has_value = value_revision > 0;
     let mut inbound_count = 0;
     let mut outbound_count = 0;
@@ -1073,8 +992,7 @@ async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnost
         .bind(node_id)
         .bind(&peer_id)
         .fetch_all(state.db().pool())
-        .await
-        .ok()?;
+        .await?;
         peers.push(PeerDiagnosticEntry {
             peer_id: crate::redaction::redact_sensitive(&peer_id),
             direction,
@@ -1099,7 +1017,7 @@ async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnost
         "unknown".to_owned()
     };
     let peer_error = component_state == "error";
-    Some(PeerDiagnostic {
+    Ok(Some(PeerDiagnostic {
         state: component_state,
         error_code,
         // Peer probe messages are Agent-controlled and may contain raw RPC
@@ -1119,12 +1037,27 @@ async fn peer_diagnostic(state: &AppState, node_id: &str) -> Option<PeerDiagnost
         static_count: has_value.then_some(static_count),
         consensus_count: has_value.then_some(consensus_count),
         peers,
-    })
+    }))
 }
 
-/// Collect the full Server-owned diagnostic view for one Node. Used by both
-/// the Agent diagnostics list and the Owner overview so health, freshness,
-/// and reasons are computed once in the Server.
+/// One Node as the Admin routes present it: its diagnostic view with the
+/// Node Currency, Health and identity disposition it was judged with.
+pub(super) struct AssessedNode {
+    pub(super) diagnostic: NodeDiagnostic,
+    pub(super) identity: NodeIdentityStatus,
+    pub(super) identity_disposition: node_currency::NodeIdentity,
+    pub(super) health_reason: node_currency::HealthReason,
+    pub(super) currency: node_currency::NodeCurrency,
+    /// The oldest gating observation instant, `None` while any is missing.
+    pub(super) currency_as_of: Option<String>,
+    pub(super) assessed_at: time::OffsetDateTime,
+}
+
+/// Collect the full Server-owned diagnostic view for one Node. Every Admin
+/// route that shows a Node's Health reads it here, so the Health, its reason
+/// and the Node Currency come from [`node_currency`] once, exactly as the
+/// Public projection reads them. A failed read fails the request instead of
+/// presenting the Node as never observed.
 pub(super) async fn node_diagnostic(
     state: &AppState,
     node_id: String,
@@ -1133,17 +1066,15 @@ pub(super) async fn node_diagnostic(
     lifecycle: String,
     inventory_revision: i64,
     visibility: String,
-) -> NodeDiagnostic {
-    let process = process_diagnostic(state, &node_id).await;
-    let data_directory = data_directory_diagnostic(state, &node_id).await;
+) -> Result<AssessedNode, sqlx::Error> {
+    let process = process_diagnostic(state, &node_id).await?;
+    let data_directory = data_directory_diagnostic(state, &node_id).await?;
     let rpc = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<i64>)>(
         "SELECT c.rpc_client_version, s.state, s.error_code, s.error_message, s.attempted_at, s.observed_at, s.received_at, s.state_revision, s.value_revision FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'rpc'",
     )
     .bind(&node_id)
     .fetch_optional(state.db().pool())
-    .await
-    .ok()
-    .flatten();
+    .await?;
     let rpc = if let Some((
         client_version,
         component_state,
@@ -1157,14 +1088,13 @@ pub(super) async fn node_diagnostic(
     )) = rpc
     {
         let namespaces = sqlx::query_scalar::<_, String>("SELECT namespace FROM current_node_rpc_namespaces WHERE node_id = $1 ORDER BY namespace")
-            .bind(&node_id).fetch_all(state.db().pool()).await.unwrap_or_default();
+            .bind(&node_id).fetch_all(state.db().pool()).await?;
         let methods = sqlx::query_scalar::<_, String>(
             "SELECT method FROM current_node_rpc_methods WHERE node_id = $1 ORDER BY method",
         )
         .bind(&node_id)
         .fetch_all(state.db().pool())
-        .await
-        .unwrap_or_default();
+        .await?;
         Some(RpcDiagnostic {
             client_version,
             namespaces,
@@ -1181,40 +1111,43 @@ pub(super) async fn node_diagnostic(
     } else {
         None
     };
-    let sync = sync_diagnostic(state, &node_id).await;
-    let consensus = consensus_diagnostic(state, &node_id).await;
-    let peers = peer_diagnostic(state, &node_id).await;
-    // Health and freshness are judged on the same Server-clock observation
-    // instants the Public projection uses, so a replayed Report cannot present
-    // an hours-old observation as current (ADR 0014, issue #274).
-    let mut instants = ComponentObservationInstants::default();
-    let component_instants = sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT component_key, COALESCE(observation_at, received_at) FROM component_status WHERE node_id = $1 AND scope = 'node'",
+    let sync = sync_diagnostic(state, &node_id).await?;
+    let consensus = consensus_diagnostic(state, &node_id).await?;
+    let peers = peer_diagnostic(state, &node_id).await?;
+    let identity = node_identity_status(state, &node_id, &network_key).await?;
+    let identity_component_state = sqlx::query_scalar::<_, String>(
+        "SELECT state FROM component_status WHERE node_id = $1 AND component_key = 'network_identity'",
     )
     .bind(&node_id)
-    .fetch_all(state.db().pool())
-    .await
-    .unwrap_or_default();
-    for (component_key, instant) in component_instants {
-        match component_key.as_str() {
-            "rpc" => instants.rpc = instant,
-            "sync" => instants.sync = instant,
-            "consensus" => instants.consensus = instant,
-            "peers" => instants.peers = instant,
-            _ => {}
-        }
-    }
-    let (health, health_reason) = derive_health(
-        &lifecycle,
-        rpc.as_ref(),
-        sync.as_ref(),
-        consensus.as_ref(),
-        &instants,
+    .fetch_optional(state.db().pool())
+    .await?;
+    let identity_disposition = node_currency::NodeIdentity::from_observation(
+        identity_component_state.as_deref(),
+        identity.state == "mismatched",
     );
-    let freshness = derive_freshness(instants.iter());
+    let mut conn = state.db().pool().acquire().await?;
+    let evidence = node_currency::load(&mut conn, &[node_id.as_str()])
+        .await?
+        .remove(&node_id)
+        .unwrap_or_default();
+    drop(conn);
+    let assessed_at = crate::auth::now_utc();
+    let currency = evidence.currency(assessed_at);
+    let summary = node_currency::health_summary(
+        &lifecycle,
+        process.as_ref().map(|process| process.state.as_str()),
+        identity_disposition,
+        &evidence,
+        assessed_at,
+    );
+    let freshness = match currency {
+        node_currency::NodeCurrency::Current => "current",
+        node_currency::NodeCurrency::Stale { .. } => "stale",
+        node_currency::NodeCurrency::NeverObserved => "unknown",
+    };
     let history = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<String>, Option<i64>, Option<String>)>(
         "SELECT c.current_block, h.historical_high_watermark, h.resync_state, r.block_number, r.confidence FROM current_node_chain_observations c LEFT JOIN block_history_state h ON h.node_id=c.node_id LEFT JOIN nodes n ON n.node_id=c.node_id LEFT JOIN network_reference_heads r ON r.network_key=n.network_key WHERE c.node_id=$1"
-    ).bind(&node_id).fetch_optional(state.db().pool()).await.ok().flatten();
+    ).bind(&node_id).fetch_optional(state.db().pool()).await?;
     let (
         current_head,
         historical_high_watermark,
@@ -1223,15 +1156,15 @@ pub(super) async fn node_diagnostic(
         network_reference_confidence,
     ) = history.unwrap_or((None, None, None, None, None));
     let resync_state = resync_state.unwrap_or_else(|| "normal".to_owned());
-    NodeDiagnostic {
+    let diagnostic = NodeDiagnostic {
         node_id,
         network_key,
         display_name,
         lifecycle,
         inventory_revision,
         visibility,
-        health: health.to_owned(),
-        health_reason: health_reason.to_owned(),
+        health: summary.health.as_str().to_owned(),
+        health_reason: summary.reason.text().to_owned(),
         freshness: freshness.to_owned(),
         process,
         data_directory,
@@ -1248,7 +1181,16 @@ pub(super) async fn node_diagnostic(
         network_reference_confidence: network_reference_confidence
             .unwrap_or_else(|| "unknown".to_owned()),
         resync_state,
-    }
+    };
+    Ok(AssessedNode {
+        diagnostic,
+        identity,
+        identity_disposition,
+        health_reason: summary.reason,
+        currency,
+        currency_as_of: evidence.as_of(),
+        assessed_at,
+    })
 }
 
 /// Agent-observed Network identity tuple (design §4.5). Never overwrites the
@@ -1284,15 +1226,13 @@ pub(super) async fn node_identity_status(
     state: &AppState,
     node_id: &str,
     network_key: &str,
-) -> NodeIdentityStatus {
+) -> Result<NodeIdentityStatus, sqlx::Error> {
     let observed = sqlx::query_as::<_, (Option<String>, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<i64>)>(
         "SELECT c.network_genesis_hash, c.network_chain_id, c.network_p2p_network_id, c.network_address_hrp, s.state, s.value_revision FROM current_node_chain_observations c LEFT JOIN component_status s ON s.node_id = c.node_id AND s.component_key = 'network_identity' WHERE c.node_id = $1",
     )
     .bind(node_id)
     .fetch_optional(state.db().pool())
-    .await
-    .ok()
-    .flatten();
+    .await?;
     let Some((
         genesis_hash,
         chain_id,
@@ -1302,11 +1242,11 @@ pub(super) async fn node_identity_status(
         identity_value_revision,
     )) = observed
     else {
-        return NodeIdentityStatus {
+        return Ok(NodeIdentityStatus {
             state: "unknown".to_owned(),
             observed: None,
             mismatched_fields: Vec::new(),
-        };
+        });
     };
     let observed_identity = ObservedNetworkIdentity {
         genesis_hash: genesis_hash.clone(),
@@ -1318,11 +1258,11 @@ pub(super) async fn node_identity_status(
     // confirms a complete successful observation. Retained values behind an
     // error, disabled component, or missing receipt remain Unknown.
     if identity_state.as_deref() != Some("ok") || identity_value_revision.unwrap_or_default() == 0 {
-        return NodeIdentityStatus {
+        return Ok(NodeIdentityStatus {
             state: "unknown".to_owned(),
             observed: Some(observed_identity),
             mismatched_fields: Vec::new(),
-        };
+        });
     }
     let observed_fields = [
         genesis_hash.as_deref().is_some(),
@@ -1331,26 +1271,24 @@ pub(super) async fn node_identity_status(
         address_hrp.as_deref().is_some(),
     ];
     if !observed_fields.iter().all(|observed| *observed) {
-        return NodeIdentityStatus {
+        return Ok(NodeIdentityStatus {
             state: "unknown".to_owned(),
             observed: Some(observed_identity),
             mismatched_fields: Vec::new(),
-        };
+        });
     }
     let expected = sqlx::query_as::<_, (String, i64, i64, String)>(
         "SELECT genesis_hash, chain_id, p2p_network_id, address_hrp FROM networks WHERE network_key = $1",
     )
     .bind(network_key)
     .fetch_optional(state.db().pool())
-    .await
-    .ok()
-    .flatten();
+    .await?;
     let Some((expected_genesis, expected_chain, expected_p2p, expected_hrp)) = expected else {
-        return NodeIdentityStatus {
+        return Ok(NodeIdentityStatus {
             state: "unknown".to_owned(),
             observed: Some(observed_identity),
             mismatched_fields: Vec::new(),
-        };
+        });
     };
     let mut mismatched_fields = Vec::new();
     if genesis_hash
@@ -1381,7 +1319,7 @@ pub(super) async fn node_identity_status(
     } else {
         "matched"
     };
-    NodeIdentityStatus {
+    Ok(NodeIdentityStatus {
         state: state.to_owned(),
         observed: Some(ObservedNetworkIdentity {
             genesis_hash,
@@ -1390,7 +1328,7 @@ pub(super) async fn node_identity_status(
             address_hrp,
         }),
         mismatched_fields,
-    }
+    })
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -1429,30 +1367,51 @@ pub(super) struct AgentAdminRow {
     get,
     path = "/api/admin/v1/agents",
     tag = "admin",
-    responses((status = 200, description = "Owner-only Agent and Node diagnostics", body = [AgentDiagnostic]))
+    responses((status = 200, description = "Owner-only Agent and Node diagnostics", body = [AgentDiagnostic]), (status = 500, body = crate::http::ApiErrorBody))
 )]
 pub(super) async fn diagnostics(
     State(state): State<AppState>,
     Extension(_session): Extension<crate::http::AuthenticatedSession>,
-) -> impl IntoResponse {
+    Extension(request_id): Extension<crate::http::RequestId>,
+) -> Response {
     let agents = sqlx::query_as::<_, AgentAdminRow>(
 
         "SELECT agent_id, display_name, notes, agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_deadline_at, shutdown_finished_at, shutdown_unresolved_from, shutdown_unresolved_to, shutdown_last_error, shutdown_forced, shutdown_report_id, shutdown_report_sequence, shutdown_updated_at, last_report_sequence, agent_capabilities_json, clock_skew_ms, clock_status, last_received_at, security_event_count, last_inventory_revision AS accepted_inventory_revision, inventory_sha256 AS accepted_inventory_sha256, inventory_protocol_major AS accepted_inventory_protocol_major FROM agents WHERE deleted_at IS NULL ORDER BY agent_id",
     )
     .fetch_all(state.db().pool())
-    .await
-    .unwrap_or_default();
+    .await;
+    let agents = match agents {
+        Ok(agents) => agents,
+        Err(_) => return diagnostics_unavailable(&request_id),
+    };
     let mut result = Vec::with_capacity(agents.len());
     for row in agents {
-        result.push(agent_diagnostic(&state, row).await);
+        match agent_diagnostic(&state, row).await {
+            Ok(diagnostic) => result.push(diagnostic),
+            Err(_) => return diagnostics_unavailable(&request_id),
+        }
     }
-    Json(result)
+    Json(result).into_response()
+}
+
+/// A diagnostics read the database refused: the Owner sees a failed request,
+/// never a diagnostic silently assembled from missing rows.
+pub(super) fn diagnostics_unavailable(request_id: &crate::http::RequestId) -> Response {
+    mutation_error(
+        &request_id.0,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "unavailable",
+        "server database is unavailable",
+    )
 }
 
 /// Build one Server-owned Agent diagnostic with identity, liveness,
 /// boot/report state, credential state, Inventory, and collector
 /// diagnostics kept as separate dimensions (design §5.1, §9.2).
-pub(super) async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> AgentDiagnostic {
+pub(super) async fn agent_diagnostic(
+    state: &AppState,
+    row: AgentAdminRow,
+) -> Result<AgentDiagnostic, sqlx::Error> {
     let AgentAdminRow {
         agent_id,
         display_name,
@@ -1494,16 +1453,14 @@ pub(super) async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> Ag
     )
     .bind(&agent_id)
     .fetch_one(state.db().pool())
-    .await
-    .unwrap_or((0, None));
-    let credentials = credential_summaries(state, &agent_id).await;
+    .await?;
+    let credentials = credential_summaries(state, &agent_id).await?;
     let host_components = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, i64, i64)>(
         "SELECT component_key, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision FROM component_status WHERE agent_id = $1 AND scope = 'host' ORDER BY component_key",
     )
     .bind(&agent_id)
     .fetch_all(state.db().pool())
-    .await
-    .unwrap_or_default()
+    .await?
     .into_iter()
     .map(|(component, state, error_code, error_message, attempted_at, observed_at, received_at, state_revision, value_revision)| HostComponentDiagnostic {
         component,
@@ -1522,9 +1479,7 @@ pub(super) async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> Ag
     )
     .bind(&agent_id)
     .fetch_optional(state.db().pool())
-    .await
-    .ok()
-    .flatten()
+    .await?
     .map(|row| HostDiagnostic {
         cpu_percent: row.cpu_percent, memory_total_bytes: row.memory_total_bytes, memory_used_bytes: row.memory_used_bytes, load1: row.load1, load5: row.load5, load15: row.load15, network_rx_bytes_per_sec: row.network_rx_bytes_per_sec, network_tx_bytes_per_sec: row.network_tx_bytes_per_sec,
         spool_queued_bytes: row.spool_queued_bytes, spool_queued_reports: row.spool_queued_reports, spool_oldest_queued_age_ms: row.spool_oldest_queued_age_ms, spool_in_flight: row.spool_in_flight.map(|v| v != 0), spool_last_delivery_error: redact_optional_message(row.spool_last_delivery_error), spool_last_delivery_at: row.spool_last_delivery_at,
@@ -1537,8 +1492,7 @@ pub(super) async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> Ag
     )
     .bind(&agent_id)
     .fetch_all(state.db().pool())
-    .await
-    .unwrap_or_default();
+    .await?;
     let mut nodes = Vec::with_capacity(rows.len());
     for (node_id, network_key, display_name, lifecycle, inventory_revision, visibility) in rows {
         nodes.push(
@@ -1551,7 +1505,8 @@ pub(super) async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> Ag
                 inventory_revision,
                 visibility,
             )
-            .await,
+            .await?
+            .diagnostic,
         );
     }
     // Server-owned Inventory diagnosis (issue #181): the fact the Server
@@ -1564,7 +1519,7 @@ pub(super) async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> Ag
         accepted_inventory_sha256.clone(),
         accepted_inventory_protocol_major,
     )
-    .await;
+    .await?;
     // Server-owned Attention Items for this Agent, with the occurrence
     // boundary and any acknowledged occurrence already applied (issue #172).
     let attention = {
@@ -1616,11 +1571,9 @@ pub(super) async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> Ag
             accepted_inventory_revision,
             accepted_inventory_sha256,
         };
-        crate::attention::evaluate_agent(state.db().pool(), &evidence)
-            .await
-            .unwrap_or_default()
+        crate::attention::evaluate_agent(state.db().pool(), &evidence).await?
     };
-    AgentDiagnostic {
+    Ok(AgentDiagnostic {
         agent_id,
         display_name,
         notes,
@@ -1652,7 +1605,7 @@ pub(super) async fn agent_diagnostic(state: &AppState, row: AgentAdminRow) -> Ag
         nodes,
         inventory: inventory.diagnostic,
         attention,
-    }
+    })
 }
 
 /// The Agent's Inventory diagnosis (issue #181): the revision/hash the Server
@@ -1670,15 +1623,13 @@ async fn agent_inventory_diagnostic(
     accepted_revision: i64,
     accepted_sha256: Option<String>,
     accepted_protocol_major: Option<i64>,
-) -> InventoryDiagnosis {
+) -> Result<InventoryDiagnosis, sqlx::Error> {
     let latest = sqlx::query_as::<_, (String, Option<String>, Option<i64>, Option<String>, String, Option<i64>)>(
         "SELECT disposition, rejection_code, inventory_revision, inventory_sha256, received_at, inventory_protocol_major FROM agent_report_receipts WHERE agent_id = $1 ORDER BY received_at DESC, report_sequence DESC LIMIT 1",
     )
     .bind(agent_id)
     .fetch_optional(state.db().pool())
-    .await
-    .ok()
-    .flatten();
+    .await?;
     let rejection = latest.filter(|row| {
         row.0.as_str() == "rejected"
             && row
@@ -1703,7 +1654,7 @@ async fn agent_inventory_diagnostic(
             }
         },
     );
-    InventoryDiagnosis {
+    Ok(InventoryDiagnosis {
         diagnostic: AgentInventoryDiagnostic {
             // No accepted hash means the Server never accepted a declaration:
             // uninitialized, not an accepted Inventory at revision 0.
@@ -1714,33 +1665,38 @@ async fn agent_inventory_diagnostic(
             last_rejection,
         },
         rejected_protocol_major,
-    }
+    })
 }
 
 /// Redacted credential state for one Agent, newest first. `active` is
 /// Server-computed so the WebUI never derives security policy locally.
-async fn credential_summaries(state: &AppState, agent_id: &str) -> Vec<AgentCredentialSummary> {
+async fn credential_summaries(
+    state: &AppState,
+    agent_id: &str,
+) -> Result<Vec<AgentCredentialSummary>, sqlx::Error> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-    sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
+    let rows = sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
         "SELECT credential_id, created_at, revoked_at, revoke_after FROM agent_credentials WHERE agent_id = $1 ORDER BY created_at DESC, credential_id",
     )
     .bind(agent_id)
     .fetch_all(state.db().pool())
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .map(|(credential_id, created_at, revoked_at, revoke_after)| {
-        let active = revoked_at.is_none()
-            && revoke_after.as_deref().is_none_or(|after| after > now.as_str());
-        AgentCredentialSummary {
-            credential_id,
-            created_at,
-            revoked_at,
-            revoke_after,
-            active,
-        }
-    })
-    .collect()
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(credential_id, created_at, revoked_at, revoke_after)| {
+            let active = revoked_at.is_none()
+                && revoke_after
+                    .as_deref()
+                    .is_none_or(|after| after > now.as_str());
+            AgentCredentialSummary {
+                credential_id,
+                created_at,
+                revoked_at,
+                revoke_after,
+                active,
+            }
+        })
+        .collect())
 }
 
 /// The Spool Backlog Age the Server derived for one Agent when it received the
@@ -1750,16 +1706,14 @@ async fn credential_summaries(state: &AppState, agent_id: &str) -> Vec<AgentCred
 pub(super) async fn spool_backlog_age_diagnostic(
     state: &AppState,
     agent_id: &str,
-) -> Option<SpoolBacklogAgeDiagnostic> {
+) -> Result<Option<SpoolBacklogAgeDiagnostic>, sqlx::Error> {
     sqlx::query_as::<_, (Option<i64>, Option<String>)>(
         "SELECT spool_backlog_age_ms, spool_backlog_age_basis FROM current_host_observations WHERE agent_id = $1",
     )
     .bind(agent_id)
     .fetch_optional(state.db().pool())
     .await
-    .ok()
-    .flatten()
-    .and_then(|(age_ms, basis)| SpoolBacklogAgeDiagnostic::from_columns(age_ms, basis))
+    .map(|row| row.and_then(|(age_ms, basis)| SpoolBacklogAgeDiagnostic::from_columns(age_ms, basis)))
 }
 
 /// Liveness rule shared by the diagnostics list, the overview, and the
@@ -1777,124 +1731,9 @@ mod tests {
     use tempfile::tempdir;
     use time::OffsetDateTime;
 
-    #[test]
-    fn stale_sync_or_consensus_keeps_admin_health_unknown() {
-        let now = crate::auth::now_utc();
-        let recent = crate::auth::format_rfc3339(now);
-        let stale = crate::auth::format_rfc3339(now - time::Duration::hours(1));
-        let rpc = RpcDiagnostic {
-            client_version: Some("platon/1".to_owned()),
-            namespaces: vec![],
-            methods: vec![],
-            state: Some("ok".to_owned()),
-            error_code: None,
-            error_message: None,
-            attempted_at: Some(recent.clone()),
-            observed_at: Some(recent.clone()),
-            received_at: Some(recent.clone()),
-            state_revision: Some(1),
-            value_revision: Some(1),
-        };
-        let sync = SyncDiagnostic {
-            state: "ok".to_owned(),
-            error_code: None,
-            error_message: None,
-            attempted_at: Some(stale.clone()),
-            observed_at: Some(stale.clone()),
-            received_at: Some(stale.clone()),
-            state_revision: 1,
-            value_revision: 1,
-            syncing: Some(false),
-            current_block: Some(10),
-            highest_block: Some(10),
-            pulled_states: Some(1),
-            known_states: Some(1),
-        };
-        let consensus = ConsensusDiagnostic {
-            state: "ok".to_owned(),
-            error_code: None,
-            error_message: None,
-            attempted_at: Some(recent.clone()),
-            observed_at: Some(recent.clone()),
-            received_at: Some(recent.clone()),
-            state_revision: 1,
-            value_revision: 1,
-            epoch: Some(1),
-            view_number: Some(1),
-            validator: Some(true),
-            highest_qc_block: Some(10),
-            highest_lock_block: Some(10),
-            highest_commit_block: Some(10),
-        };
-        let fresh_instants = ComponentObservationInstants {
-            rpc: Some(recent.clone()),
-            sync: Some(recent.clone()),
-            consensus: Some(recent.clone()),
-            peers: None,
-        };
-        assert_eq!(
-            derive_health(
-                "active",
-                Some(&rpc),
-                Some(&sync),
-                Some(&consensus),
-                &fresh_instants
-            ),
-            ("healthy", "RPC, sync, and consensus are current")
-        );
-        let stale_sync_instants = ComponentObservationInstants {
-            rpc: Some(recent.clone()),
-            sync: Some(stale.clone()),
-            consensus: Some(recent.clone()),
-            peers: None,
-        };
-        assert_eq!(
-            derive_health(
-                "active",
-                Some(&rpc),
-                Some(&sync),
-                Some(&consensus),
-                &stale_sync_instants
-            ),
-            ("unknown", "one or more observations are stale or unknown")
-        );
-        let stale_consensus = consensus;
-        let stale_consensus_instants = ComponentObservationInstants {
-            rpc: Some(recent.clone()),
-            sync: Some(stale.clone()),
-            consensus: Some(stale),
-            peers: None,
-        };
-        assert_eq!(
-            derive_health(
-                "active",
-                Some(&rpc),
-                Some(&sync),
-                Some(&stale_consensus),
-                &stale_consensus_instants
-            ),
-            ("unknown", "one or more observations are stale or unknown")
-        );
-        // The receipt instants stay in the DTOs as Agent-clock display fields;
-        // they no longer decide health.
-        let mut recent_receipts = stale_consensus_instants;
-        recent_receipts.rpc = Some(recent.clone());
-        recent_receipts.sync = Some(recent.clone());
-        recent_receipts.consensus = Some(recent.clone());
-        assert_eq!(
-            derive_health(
-                "active",
-                Some(&rpc),
-                Some(&sync),
-                Some(&stale_consensus),
-                &recent_receipts
-            ),
-            ("healthy", "RPC, sync, and consensus are current")
-        );
-    }
     /// A replayed Report must not make the Admin Node view look current: health
     /// and freshness are judged on the Server-clock observation instants, exactly
-    /// as the Public projection judges them (ADR 0014, issue #274).
+    /// as the Public projection judges them (ADR 0014).
     #[tokio::test]
     async fn node_diagnostic_judges_freshness_on_the_observation_instant() {
         let dir = tempdir().unwrap();
@@ -1949,13 +1788,12 @@ mod tests {
             1,
             "visible".to_owned(),
         )
-        .await;
+        .await
+        .unwrap()
+        .diagnostic;
         assert_eq!(diagnostic.freshness, "stale");
         assert_eq!(diagnostic.health, "unknown");
-        assert_eq!(
-            diagnostic.health_reason,
-            "one or more observations are stale or unknown"
-        );
+        assert_eq!(diagnostic.health_reason, "observations are stale");
 
         // The same rows with a fresh observation instant are current and Healthy.
         sqlx::query("UPDATE component_status SET observation_at = $1 WHERE node_id = $2")
@@ -1973,7 +1811,9 @@ mod tests {
             1,
             "visible".to_owned(),
         )
-        .await;
+        .await
+        .unwrap()
+        .diagnostic;
         assert_eq!(diagnostic.freshness, "current");
         assert_eq!(diagnostic.health, "healthy");
         assert_eq!(
@@ -2026,9 +1866,12 @@ mod tests {
             expires_at: OffsetDateTime::now_utc(),
             csrf_token: "csrf".to_owned(),
         };
-        let response = diagnostics(State(state), Extension(AuthenticatedSession(session)))
-            .await
-            .into_response();
+        let response = diagnostics(
+            State(state),
+            Extension(AuthenticatedSession(session)),
+            Extension(crate::http::RequestId(std::sync::Arc::from("request"))),
+        )
+        .await;
         let value: Value =
             serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
                 .unwrap();

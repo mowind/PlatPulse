@@ -201,6 +201,10 @@ pub static CATALOG: &[RuleDefinition] = &[
         default_condition: RuleCondition::with_threshold(60, 120, 180.0),
         threshold_param: Some(threshold_param("Silent after", "s", 10.0, 86_400.0, 180.0)),
     },
+    // Measures when the Node's evidence last *arrived* (its newest value
+    // receipt instant), so an Owner learns that Reports stopped coming. It is
+    // not Node Currency, which judges when the evidence was taken against the
+    // fixed Server window; tuning this threshold never changes a Node's Health.
     RuleDefinition {
         key: "node.observation_stale",
         subject_kind: SubjectKind::Node,
@@ -932,51 +936,47 @@ pub(crate) async fn freshness_bound(
     Ok(condition.threshold.map(|t| t as i64).unwrap_or(120).max(1))
 }
 
-/// Why the Node's Current Projection is not current, when it is not.
+/// Why the Node's Current Projection cannot carry a lag figure, when it cannot.
 ///
 /// A lag figure is a statement about the Node as it is now, so it is only as
-/// good as the Node's currency. Public judges a Node by all three of its
-/// component observation instants sitting inside one symmetric window
-/// (ADR 0014, issue #274); a head-lag rule that skipped that judgement could
-/// open an Incident against a Node the Owner's own view calls Stale, and could
-/// call a Node "6,000 blocks behind" while its sync evidence alone was fresh.
-///
-/// `None` means the projection is current enough for a lag figure. A component
-/// with no recorded row at all is not a gate: a component the Agent never
-/// reports is a different fact from a stale one, and the rule's own checks
-/// still decide what its evidence supports.
-async fn not_current_input(
+/// good as the Node's Currency: a head-lag rule that skipped that judgement
+/// could open an Incident against a Node the Owner's own view calls Stale, and
+/// could call a Node "6,000 blocks behind" while its sync evidence alone was
+/// fresh. `None` means the lag figure may stand; which Currency withholds it is
+/// [`NodeCurrency::blocks_lag_figure`](crate::node_currency::NodeCurrency::blocks_lag_figure).
+async fn lag_withheld_by_currency(
     executor: &mut sqlx::AnyConnection,
     node_id: &str,
     now: OffsetDateTime,
 ) -> Result<Option<EvalInput>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT component_key, COALESCE(observation_at, received_at) FROM component_status WHERE node_id = $1 AND component_key IN ('rpc', 'sync', 'consensus')",
-    )
-    .bind(node_id)
-    .fetch_all(&mut *executor)
-    .await?;
-    for (component, instant) in rows {
-        if crate::observation_time::is_fresh(
-            instant.as_deref(),
-            now,
-            crate::observation_time::FRESHNESS_LIMIT_SECONDS,
-        ) {
-            continue;
-        }
-        let age = age_secs(instant.as_deref(), now);
-        let detail = match age {
-            Some(age) if age > 0 => format!("{component} observation is {age}s old"),
-            Some(age) => format!("{component} observation is {}s in the future", -age),
-            None => format!("{component} observation has no instant"),
-        };
-        return Ok(Some(EvalInput::Stale {
-            value: 0.0,
-            age_secs: age.unwrap_or(i64::MAX),
-            detail,
-        }));
+    let evidence = crate::node_currency::load(executor, &[node_id]).await?;
+    let currency = evidence
+        .get(node_id)
+        .map_or(crate::node_currency::NodeCurrency::NeverObserved, |node| {
+            node.currency(now)
+        });
+    if !currency.blocks_lag_figure() {
+        return Ok(None);
     }
-    Ok(None)
+    let crate::node_currency::NodeCurrency::Stale {
+        component,
+        observed_at,
+    } = currency
+    else {
+        return Ok(None);
+    };
+    let component = component.key();
+    let age = (now - observed_at).whole_seconds();
+    let detail = if age > 0 {
+        format!("{component} observation is {age}s old")
+    } else {
+        format!("{component} observation is {}s in the future", -age)
+    };
+    Ok(Some(EvalInput::Stale {
+        value: 0.0,
+        age_secs: age,
+        detail,
+    }))
 }
 
 /// Extract the typed evaluation fact for one `(rule, subject)` from the
@@ -1023,7 +1023,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Node, "node.rpc_unreachable") => {
             let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>)>(
-                "SELECT state, error_code, error_message, COALESCE(observation_at, received_at) FROM component_status WHERE node_id = $1 AND component_key = 'rpc'",
+                "SELECT state, error_code, error_message, observation_at FROM component_status WHERE node_id = $1 AND component_key = 'rpc'",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
@@ -1074,7 +1074,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Node, "node.process_not_running") => {
             let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>)>(
-                "SELECT state, error_code, error_message, COALESCE(observation_at, received_at) FROM component_status WHERE node_id = $1 AND component_key = 'process'",
+                "SELECT state, error_code, error_message, observation_at FROM component_status WHERE node_id = $1 AND component_key = 'process'",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
@@ -1087,7 +1087,7 @@ pub async fn extract_input(
             })
         }
         (SubjectKind::Node, "node.block_stalled") => {
-            if let Some(stale) = not_current_input(executor, subject_key, now).await? {
+            if let Some(stale) = lag_withheld_by_currency(executor, subject_key, now).await? {
                 return Ok(stale);
             }
             let row = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>)>(
@@ -1143,11 +1143,11 @@ pub async fn extract_input(
             }
         }
         (SubjectKind::Node, "node.sync_lag") => {
-            if let Some(stale) = not_current_input(executor, subject_key, now).await? {
+            if let Some(stale) = lag_withheld_by_currency(executor, subject_key, now).await? {
                 return Ok(stale);
             }
             let row = sqlx::query_as::<_, SyncRow>(
-                "SELECT s.state, c.syncing, c.current_block, c.highest_block, COALESCE(s.observation_at, s.received_at) FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'sync'",
+                "SELECT s.state, c.syncing, c.current_block, c.highest_block, s.observation_at FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'sync'",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
@@ -1159,7 +1159,7 @@ pub async fn extract_input(
         }
         (SubjectKind::Node, "node.consensus_stalled") => {
             let row = sqlx::query_as::<_, ConsensusRow>(
-                "SELECT s.state, s.error_code, s.error_message, c.consensus_epoch, c.consensus_view_number, c.consensus_highest_commit_block, COALESCE(s.observation_at, s.received_at) FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'consensus'",
+                "SELECT s.state, s.error_code, s.error_message, c.consensus_epoch, c.consensus_view_number, c.consensus_highest_commit_block, s.observation_at FROM component_status s LEFT JOIN current_node_chain_observations c ON c.node_id = s.node_id WHERE s.node_id = $1 AND s.component_key = 'consensus'",
             )
             .bind(subject_key)
             .fetch_optional(&mut *executor)
@@ -3413,6 +3413,73 @@ mod tests {
         assert_eq!(input.value(), Some(400.0));
         let input = extract(&pool, "node.sync_lag", SubjectKind::Node, "node-a", now).await;
         assert_eq!(input.value(), Some(400.0));
+    }
+
+    #[tokio::test]
+    async fn only_stale_node_currency_withholds_a_lag_figure() {
+        let (_dir, pool) = test_pool().await;
+        seed_subject(&pool, "agent-a", "node-a").await;
+        let now = base_time();
+        let now_text = format_rfc3339(now);
+        sqlx::query("INSERT INTO block_history_state (node_id, updated_at, current_head) VALUES ('node-a', $1, 100)")
+            .bind(&now_text)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO network_reference_heads (network_key, block_number, observed_at, confidence) VALUES ('mainnet', 500, $1, 'high')")
+            .bind(&now_text)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO current_node_chain_observations (node_id, syncing, current_block, highest_block, updated_at) VALUES ('node-a', 0, 100, 500, $1)")
+            .bind(&now_text)
+            .execute(&pool)
+            .await
+            .unwrap();
+        for component in ["rpc", "sync"] {
+            sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, attempted_at, observed_at, observation_at, received_at, state_revision, value_revision) VALUES ('agent-a', 'node', 'node-a', 'node-a', $1, 'ok', $2, $2, $2, $2, 1, 1)")
+                .bind(component)
+                .bind(&now_text)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        // Consensus has a row but was never observed: the Node is Never
+        // Observed, which does not withhold the lag figure.
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, state_revision, value_revision) VALUES ('agent-a', 'node', 'node-a', 'node-a', 'consensus', 'starting', 1, 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for rule in ["node.block_stalled", "node.sync_lag"] {
+            let input = extract(&pool, rule, SubjectKind::Node, "node-a", now).await;
+            assert_eq!(
+                input.value(),
+                Some(400.0),
+                "{rule} with Never Observed consensus"
+            );
+        }
+
+        // Consensus observed just outside the window makes the Node Stale.
+        let just_stale = format_rfc3339(
+            now - time::Duration::seconds(crate::observation_time::FRESHNESS_LIMIT_SECONDS + 1),
+        );
+        sqlx::query("UPDATE component_status SET state='ok', received_at=$1, observation_at=$1 WHERE node_id='node-a' AND component_key='consensus'")
+            .bind(&just_stale)
+            .execute(&pool)
+            .await
+            .unwrap();
+        for rule in ["node.block_stalled", "node.sync_lag"] {
+            let input = extract(&pool, rule, SubjectKind::Node, "node-a", now).await;
+            assert_eq!(input.kind_str(), "stale", "{rule} with Stale consensus");
+            let EvalInput::Stale {
+                detail, age_secs, ..
+            } = input
+            else {
+                unreachable!("asserted stale above");
+            };
+            assert_eq!(detail, "consensus observation is 121s old");
+            assert_eq!(age_secs, 121);
+        }
     }
 
     #[tokio::test]

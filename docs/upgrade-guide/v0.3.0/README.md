@@ -83,6 +83,7 @@ No path, schema or field was removed or renamed in `docs/openapi/openapi.json`. 
 Behaviour changes visible to API clients (no action unless you depend on the old behaviour):
 
 - **Freshness follows observation time** (fc2d3c7, ADR 0014). `PublicNode.freshness` is now the skew-corrected time the observation was taken, not the Server receipt time. While an Agent replays a Durable Spool backlog its Nodes show as Stale instead of "N blocks behind", and a Stale Node is not evaluated by head-lag alerts.
+- **One Node Health Summary for Home and Admin** (#345). Public and Admin derive Health from the same rules, so the same Node reads the same `health` and `health_reason` on both. Stale evidence now makes a Node Unknown before any failure it carries (`observations are stale; last RPC observation failed`); Admin now counts a failed process observation and a Network identity mismatch, and Home shows a mismatched Node as Unknown. `health_reason` wording changed to name observations (`RPC observation failed`, `Node is awaiting its first accepted observation`). Admin diagnostics routes answer 500 instead of empty or partial data when a database read fails.
 - **No Session idle timeout** (809dec2, #259). A human Session no longer ends after 12 hours without activity; it ends only at its 7-day absolute lifetime (`expires_at`), on sign-out or on revocation.
 
 ## New optional features

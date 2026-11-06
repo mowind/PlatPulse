@@ -619,7 +619,7 @@ describe('Public Home dashboard', () => {
     /></BrowserRouter>)
 
     // The status is the Node's own Validator Activity projection; the
-    // two-state Node Health marker beside the name stays an independent cue.
+    // three-state Node Health marker beside the name stays an independent cue.
     for (const { name, activity, label } of cases) {
       const card = cardOf(nodeCardLink(name))
       const badge = card.querySelector('[data-slot="validator-activity"]') as HTMLElement
@@ -679,10 +679,10 @@ describe('Public Home dashboard', () => {
   })
 
   it('shortens a long stale-observation reason to one line and keeps the full one reachable', () => {
-    // The Centaur case: the Server's stale/unknown verdict arrives as one long
-    // sentence that used to crowd the card header in red, as if the evidence
-    // that was missing were a confirmed failure.
-    const reason = 'one or more observations are stale or unknown'
+    // The Centaur case: the Server's stale verdict arrives as one long sentence
+    // naming the last failure seen in that stale evidence; it used to crowd the
+    // card header in red, as if the stale evidence were a confirmed failure.
+    const reason = 'observations are stale; last RPC observation failed'
     const centaur = { ...network.nodes[1], nodeId: 'node-centaur', displayName: 'Centaur', health: 'unknown', healthReason: reason }
     render(<BrowserRouter><HomeDashboard
       networks={[{ ...network, nodes: [centaur] }]}
@@ -691,7 +691,7 @@ describe('Public Home dashboard', () => {
 
     const card = cardOf(nodeCardLink('Centaur'))
     const diagnostic = card.querySelector('[data-slot="node-diagnostic"]')!
-    expect(diagnostic.textContent).toBe('Observations stale / unknown')
+    expect(diagnostic.textContent).toBe('Observations stale')
     expect(diagnostic.getAttribute('data-tone')).toBe('warning')
     expect(diagnostic.className).toContain('text-warning-foreground')
     expect(diagnostic.className).not.toContain('text-destructive')
@@ -701,7 +701,7 @@ describe('Public Home dashboard', () => {
     fireEvent.click(within(card).getByRole('button', { name: 'Node identity details' }))
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByText('Current health diagnostic: ' + reason)).toBeTruthy()
-    expect(within(dialog).queryByText('Current health diagnostic: Observations stale / unknown')).toBeNull()
+    expect(within(dialog).queryByText('Current health diagnostic: Observations stale')).toBeNull()
   })
 
   it('keeps summary cards to marker, title, and number with a compact shell', () => {

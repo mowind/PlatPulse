@@ -129,6 +129,16 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -224,6 +234,16 @@
             }
           },
           "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
             "description": "",
             "content": {
               "application/json": {
@@ -2919,6 +2939,16 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -2952,6 +2982,16 @@
             }
           },
           "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
             "description": "",
             "content": {
               "application/json": {
@@ -4995,6 +5035,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AdminOverview"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
                 }
               }
             }
@@ -14931,7 +14981,7 @@
           },
           "freshness": {
             "type": "string",
-            "description": "Server-owned freshness dimension: `current`, `stale`, or `unknown`.\nThe WebUI formats this state; it never derives it from `Date.now()`."
+            "description": "The Node Currency: `current`, `stale`, or `unknown` when a gating\nobservation was never observed. The WebUI formats this state; it never\nderives it from `Date.now()`."
           },
           "health": {
             "type": "string"
