@@ -1,6 +1,7 @@
-//! Block history admission driven through `admit` on a real database:
-//! replay dedup, Gap Backfill admission, coverage intervals, the block tiers,
-//! the Server's own History Gaps and History Gap settlement.
+//! Block history driven through its two entry points on a real database.
+//! `admit`: replay dedup, Gap Backfill admission, coverage intervals, the block
+//! tiers, the Server's own History Gaps and History Gap settlement. `compact`:
+//! confirming stale gaps, merging intervals and bounded settlement.
 
 use platpulse_core::AgentReport;
 use platpulse_core::block::BlockSource::{self, GapBackfill, Subscription};
@@ -10,7 +11,7 @@ use tempfile::TempDir;
 
 use super::admission::{BlockAdmission, BlockOutcome, GapOutcome};
 use super::identity::observe_block_identity;
-use super::{GapSettlement, NodeAdmission, Refusal, admit};
+use super::{GapSettlement, NodeAdmission, Refusal, admit, compact};
 use crate::auth::{format_rfc3339, now_utc};
 use crate::database::ServerDatabase;
 
@@ -752,9 +753,14 @@ async fn a_height_backfilled_by_an_older_server_is_never_counted_twice() {
     assert_eq!(history.backfill_gaps().await, vec![(12, 14, false)]);
     // The retention sweep's catch-up walk settles it: its heights are now
     // covered.
-    crate::retention::compact_block_coverage(history.pool(), now_utc(), &mut 0)
-        .await
-        .unwrap();
+    compact(
+        history.pool(),
+        now_utc(),
+        crate::retention::raw_block_summary_cutoff(now_utc()),
+        &mut 0,
+    )
+    .await
+    .unwrap();
     assert_eq!(history.backfill_gaps().await, vec![(12, 14, true)]);
     assert!(
         history
@@ -1078,4 +1084,209 @@ async fn divergent_hash_is_append_only_idempotent_and_preserves_summary_and_coun
     assert_eq!(summary_hash, first.block_hash.to_string());
     assert_eq!(history.counters().await, (1, 3));
     assert_eq!(divergence_count, 1);
+}
+
+/// Compaction keeps coverage bounded without changing what any
+/// height is. A stale open gap is confirmed missing, a fresh one stays
+/// open, touching same-status intervals merge, and a History Gap nothing
+/// open overlaps is resolved (so its retention family can release it).
+#[tokio::test]
+async fn coverage_compaction_confirms_stale_gaps_merges_and_resolves() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let database = crate::test_support::test_database_in(dir.path()).await;
+    let pool = database.pool();
+    let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+    let window_start = crate::retention::raw_block_summary_cutoff(now);
+    let stale = crate::auth::format_rfc3339(window_start - time::Duration::hours(1));
+    let fresh = crate::auth::format_rfc3339(now - time::Duration::hours(1));
+    sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('compact-agent', 1, $1, $2)")
+        .bind(&fresh).bind(&fresh).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('compact-network', 'Compact', '0xgenesis', 1, 1, 'lat', $1, $2)")
+        .bind(&fresh).bind(&fresh).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('compact-node', 'compact-agent', 'compact-network', 'ws://127.0.0.1:1', 'active', 'private', 1, $1, $2)")
+        .bind(&fresh).bind(&fresh).execute(pool).await.unwrap();
+    let interval = "INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ('compact-node', $1, $2, $3, $4, $5)";
+    for (first, last, status, stamp) in [
+        (1_i64, 9_i64, "covered", &fresh),
+        (10, 19, "covered", &stale),
+        (20, 29, "open_recoverable_gap", &stale),
+        (30, 39, "covered", &fresh),
+        (40, 49, "open_recoverable_gap", &fresh),
+        (50, 59, "covered", &fresh),
+    ] {
+        sqlx::query(interval)
+            .bind(first)
+            .bind(last)
+            .bind(status)
+            .bind(stamp)
+            .bind(stamp)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    let gap = "INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, created_at, authored_by) VALUES ('compact-node', $1, $2, $3, $4, $5)";
+    for (from, to, kind, stamp, author) in [
+        (20_i64, 29_i64, "unrecoverable_backfill", &stale, "agent"),
+        (40, 49, "unrecoverable_backfill", &stale, "agent"),
+        // Legacy: backfilled by a Server that recorded no coverage, so no interval
+        // records 60..=64.
+        (60, 64, "unrecoverable_backfill", &stale, "agent"),
+        (70, 70, "server_rejected", &stale, "agent"),
+        (71, 71, "server_rejected", &fresh, "agent"),
+        (72, 72, "server_rejected", &stale, "server"),
+    ] {
+        sqlx::query(gap)
+            .bind(from)
+            .bind(to)
+            .bind(kind)
+            .bind(stamp)
+            .bind(author)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    compact(pool, now, window_start, &mut 0).await.unwrap();
+
+    let intervals: Vec<(i64, i64, String)> = sqlx::query_as(
+        "SELECT first_height, last_height, status FROM block_coverage_intervals WHERE node_id='compact-node' ORDER BY first_height",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        intervals,
+        vec![
+            (1, 19, "covered".to_owned()),
+            (20, 29, "permanent_gap".to_owned()),
+            (30, 39, "covered".to_owned()),
+            (40, 49, "open_recoverable_gap".to_owned()),
+            (50, 64, "covered".to_owned()),
+        ],
+        "a settled legacy gap records its backfilled heights covered"
+    );
+    let gaps: Vec<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT from_height, resolved_at FROM block_history_gaps WHERE node_id='compact-node' ORDER BY from_height",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    let resolved: Vec<(i64, bool)> = gaps
+        .into_iter()
+        .map(|(from, resolved_at)| (from, resolved_at.is_some()))
+        .collect();
+    assert_eq!(
+        resolved,
+        vec![
+            (20, true),
+            (40, false),
+            (60, true),
+            (70, true),
+            (71, false),
+            (72, false),
+        ],
+        "confirmed and settled gaps and aged Agent refusal copies resolve; open gaps, fresh copies and the Server's own refusals stay"
+    );
+
+    // A second step is a no-op: compaction converges.
+    assert_eq!(
+        compact(pool, now, window_start, &mut 0)
+            .await
+            .unwrap()
+            .changed,
+        0
+    );
+}
+
+/// Compaction settles History Gaps in bounded steps. The gap
+/// around a range it confirms missing is settled directly, and the rest of
+/// the unresolved gaps are examined one batch per step by a keyset walk
+/// that resumes where the previous step stopped and starts over at the end.
+#[tokio::test]
+async fn coverage_compaction_settles_history_gaps_in_bounded_steps() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let database = crate::test_support::test_database_in(dir.path()).await;
+    let pool = database.pool();
+    let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+    let window_start = crate::retention::raw_block_summary_cutoff(now);
+    let stale = crate::auth::format_rfc3339(window_start - time::Duration::hours(1));
+    let fresh = crate::auth::format_rfc3339(now - time::Duration::hours(1));
+    sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('walk-agent', 1, $1, $2)")
+        .bind(&fresh).bind(&fresh).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('walk-network', 'Walk', '0xgenesis', 1, 1, 'lat', $1, $2)")
+        .bind(&fresh).bind(&fresh).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('walk-node', 'walk-agent', 'walk-network', 'ws://127.0.0.1:1', 'active', 'private', 1, $1, $2)")
+        .bind(&fresh).bind(&fresh).execute(pool).await.unwrap();
+    let interval = "INSERT INTO block_coverage_intervals (node_id, first_height, last_height, status, created_at, updated_at) VALUES ('walk-node', $1, $2, $3, $4, $5)";
+    for (first, last, status, stamp) in [
+        (1_i64, 1_000_i64, "covered", &fresh),
+        (2_000, 2_000, "open_recoverable_gap", &stale),
+    ] {
+        sqlx::query(interval)
+            .bind(first)
+            .bind(last)
+            .bind(status)
+            .bind(stamp)
+            .bind(stamp)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    // 300 gaps that are settled but were never resolved, then one gap whose
+    // last open height is confirmed missing by the first step.
+    let gap = "INSERT INTO block_history_gaps (node_id, from_height, to_height, kind, created_at, authored_by) VALUES ('walk-node', $1, $2, 'unrecoverable_backfill', $3, 'agent')";
+    for height in (1..=300_i64).chain([2_000]) {
+        sqlx::query(gap)
+            .bind(height)
+            .bind(height)
+            .bind(&stale)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    let unresolved = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM block_history_gaps WHERE node_id='walk-node' AND resolved_at IS NULL",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    };
+
+    let mut cursor = 0;
+    let first = compact(pool, now, window_start, &mut cursor).await.unwrap();
+    assert_eq!(
+        first.settlement,
+        GapSettlement {
+            examined: 129,
+            resolved: 129
+        },
+        "the confirmed gap plus one batch of the walk"
+    );
+    assert!(cursor > 0, "the walk resumes after the batch it examined");
+    assert_eq!(unresolved().await, 172);
+
+    let second = compact(pool, now, window_start, &mut cursor).await.unwrap();
+    assert_eq!(
+        second.settlement,
+        GapSettlement {
+            examined: 128,
+            resolved: 128
+        }
+    );
+    assert_eq!(unresolved().await, 44);
+
+    let third = compact(pool, now, window_start, &mut cursor).await.unwrap();
+    assert_eq!(
+        third.settlement,
+        GapSettlement {
+            examined: 44,
+            resolved: 44
+        }
+    );
+    assert_eq!(cursor, 0, "a short batch ends the walk, which starts over");
+    assert_eq!(unresolved().await, 0);
+
+    let idle = compact(pool, now, window_start, &mut cursor).await.unwrap();
+    assert_eq!(idle.settlement, GapSettlement::default());
 }
