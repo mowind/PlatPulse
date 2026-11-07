@@ -1276,8 +1276,10 @@ fn gap_seconds(pair: &[MetricSample]) -> Option<i64> {
 /// over instants whose rows were already released. So the cutoff applied is
 /// recorded on the series itself, as the oldest cutoff this series has been
 /// pruned at, and the stamp only ever moves forward (`released_before < ?` never
-/// rewrites a newer stamp). [`record`] reads it as the floor below which an instant
-/// with no row may already have been counted.
+/// rewrites a newer stamp). The stamp is a timeline instant, the axis rows are
+/// expired by, so a reader can take it as "readings placed before this are
+/// gone"; [`record`] carries it over to the identity axis to find the floor
+/// below which an instant with no row may already have been counted.
 ///
 /// The stamp and the delete run on the caller's transaction, so a row is never
 /// gone while its series still claims it was never released. The stamp is one
@@ -1419,8 +1421,16 @@ pub(crate) async fn record(
     // ledger keeps counting.
     let stored = stored_sample(tx, scope, &identity).await?;
     let stored_value = stored.as_ref().map(|s| s.value);
-    let classified =
-        classify_delivery(tx, scope, &identity, stored_value, value, &window.cutoff).await?;
+    let classified = classify_delivery(
+        tx,
+        scope,
+        &identity,
+        &timeline,
+        stored_value,
+        value,
+        &window.cutoff,
+    )
+    .await?;
     if let crate::capacity::HistoryGate::Paused { interval_id } = gate {
         if classified == Delivery::Observed {
             crate::capacity::record_skipped_series(
@@ -1472,12 +1482,13 @@ pub(crate) async fn record(
     }
     record_delivery(tx, scope, &identity, received_at, classified).await?;
     // A first-time observation the window cannot hold is counted while it is
-    // stored nowhere, so the instant it was counted at is recorded as evidence
+    // stored nowhere, so the place it was counted at is recorded as evidence
     // the Server no longer holds: a later carry of the same instant — after the
     // Operator widens the window back over it — is a replay, never a second
-    // observation.
+    // observation. The floor is stamped on the timeline, the axis the release
+    // floor is kept on, and [`classify_delivery`] carries it over to identity.
     if released && classified == Delivery::Observed {
-        if let Some(floor) = counted_evidence_floor(&identity) {
+        if let Some(floor) = counted_evidence_floor(&timeline) {
             stamp_evidence_floor(tx, scope, &floor).await?;
         }
     }
@@ -1516,27 +1527,44 @@ pub enum Delivery {
 ///    time, which is behind the mark, and can never arrive here.
 /// 2. A sample exists at that instant: the delivery repeats a reading the Server
 ///    still holds, and only the value decides between a replay and a correction.
-/// 3. No sample exists but the instant is still inside the raw window: the
-///    Server holds no evidence of that instant, so this is a genuine observation
-///    that arrived out of order or filled a silence. It is stored and counted
-///    like any other, which keeps the retained rows and the ledger equal.
-/// 4. No sample exists and the instant is older than the evidence floor: the
-///    window can no longer answer with it, and an expired replay is
-///    indistinguishable from an observation so old that no history could hold
-///    it. It is treated as a replay and never counted, because counting it would
-///    let a replayed last-good inflate the lifetime count — the one thing the
-///    ledger exists to prevent (design §11.3).
+/// 3. No sample exists, the sample is placed inside the raw window, and its
+///    instant is above the series' evidence floor: the Server holds no evidence
+///    of that instant, so this is a genuine observation that arrived out of
+///    order or filled a silence. It is stored and counted like any other, which
+///    keeps the retained rows and the ledger equal.
+/// 4. Any other delivery with no sample: the window can no longer answer with
+///    it, and an expired replay is indistinguishable from an observation so old
+///    that no history could hold it. It is treated as a replay and never
+///    counted, because counting it would let a replayed last-good inflate the
+///    lifetime count — the one thing the ledger exists to prevent (design
+///    §11.3).
 ///
-/// The evidence floor is the later of the policy cutoff and the series'
-/// `released_before` stamp, the oldest cutoff the cleanup has ever pruned this
-/// series at. Widening the raw retention policy moves the window back in time,
-/// but it cannot restore the identity evidence a cleanup already released: the
-/// floor only ever moves forward, so a carried last-good replayed after a
-/// widening stays a replay instead of being counted a second time.
+/// The two conditions of step 3 sit on the two axes a sample carries (ADR
+/// 0014). Window membership is a question about the timeline, the axis
+/// retention expires rows by, so the placed instant is compared with the
+/// policy cutoff. The evidence floor is a question about identity: the series'
+/// `released_before` stamp is the newest timeline instant below which its rows
+/// may have been released, and a row placed below it was observed less than
+/// [`MAX_HISTORY_CORRECTION_SECONDS`] after it, so the floor on the identity
+/// axis is the stamp moved forward by that bound. Comparing an Agent instant
+/// with a timeline stamp directly would let a carried last-good from an Agent
+/// running ahead of the Server clock pass a floor its own released row sat
+/// below, and be counted a second time. Widening the raw retention policy moves
+/// the window back in time, but the floor only ever moves forward, so a carried
+/// last-good replayed after a widening stays a replay.
+///
+/// The bound costs a series that has released rows its out-of-order first
+/// observations in the few minutes above the floor: they are taken as
+/// replays, because the Server cannot tell them from a carried release. A
+/// series nothing was ever released from has a floor at the epoch, and loses
+/// nothing.
+///
+/// [`MAX_HISTORY_CORRECTION_SECONDS`]: crate::observation_time::MAX_HISTORY_CORRECTION_SECONDS
 async fn classify_delivery(
     tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
-    observed_at: &str,
+    identity: &str,
+    timeline: &str,
     stored_value: Option<f64>,
     value: f64,
     cutoff: &str,
@@ -1555,20 +1583,31 @@ async fn classify_delivery(
         None => (None, None),
     };
     // Canonical instants compare as text in the same order they were written.
-    if high_water.is_none_or(|last| observed_at > last.as_str()) {
+    if high_water.is_none_or(|last| identity > last.as_str()) {
         return Ok(Delivery::Observed);
     }
-    if stored_value.is_some_and(|stored| stored != value) {
-        return Ok(Delivery::Correction);
+    if let Some(stored) = stored_value {
+        return Ok(if stored == value {
+            Delivery::Replay
+        } else {
+            Delivery::Correction
+        });
     }
-    let floor = match released_before {
-        Some(released) if released.as_str() > cutoff => released,
-        _ => cutoff.to_owned(),
-    };
-    if stored_value.is_none() && observed_at >= floor.as_str() {
-        return Ok(Delivery::Observed);
+    if timeline < cutoff {
+        return Ok(Delivery::Replay);
     }
-    Ok(Delivery::Replay)
+    // A stamp the calendar cannot move forward leaves no instant above the
+    // floor, so nothing below the high-water mark is new.
+    let identity_floor = released_before.as_deref().and_then(|released| {
+        crate::observation_time::shift_instant(
+            released,
+            crate::observation_time::MAX_HISTORY_CORRECTION_SECONDS,
+        )
+    });
+    Ok(match identity_floor {
+        Some(floor) if identity >= format_rfc3339(floor).as_str() => Delivery::Observed,
+        _ => Delivery::Replay,
+    })
 }
 
 /// Parse a caller-supplied range bound, but only in the canonical shape the
@@ -1710,9 +1749,9 @@ async fn store_sample(
 /// not "what can this Server still return". Counting it while nothing records
 /// that it was counted would let a later carry of the same instant be counted a
 /// second time once a widened policy moves the cutoff back over it. The stamp is
-/// the next second, because the instant itself is still the instant the series
-/// observed: the smallest stamp above it is what says "the evidence for this
-/// instant is no longer held" (issue #213).
+/// the next second after the instant the series is expired by, because that
+/// instant itself is still one the series observed: the smallest stamp above it
+/// is what says "the evidence for this instant is no longer held" (issue #213).
 pub fn counted_evidence_floor(observed_at: &str) -> Option<String> {
     let parsed = parse_rfc3339(observed_at)?;
     Some(format_rfc3339(parsed + time::Duration::seconds(1)))
@@ -3739,6 +3778,259 @@ mod tests {
             .fetch_one(pool)
             .await
             .unwrap()
+    }
+
+    // ---- The two axes of one delivery: window membership and evidence floor ----
+
+    /// Deliver one tier-series sample through the write protocol, judged
+    /// against a raw window that ends at `cutoff`.
+    async fn deliver(
+        pool: &sqlx::AnyPool,
+        cutoff: &str,
+        identity: &str,
+        timeline: &str,
+        value: f64,
+    ) -> Delivery {
+        let mut tx = crate::database::begin(pool).await.unwrap();
+        let delivered = super::record(
+            &mut tx,
+            &crate::capacity::HistoryGate::Record,
+            &RawWindow::with_cutoff(cutoff),
+            MetricDelivery {
+                scope: tier_scope(),
+                identity: identity.parse().unwrap(),
+                timeline: timeline.parse().unwrap(),
+                received_at: "2026-03-01T00:02:10Z",
+                value,
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        delivered
+    }
+
+    /// Release the tier scope's raw rows placed before `cutoff`.
+    async fn release_tier(pool: &sqlx::AnyPool, cutoff: &str) -> u64 {
+        let mut tx = crate::database::begin(pool).await.unwrap();
+        let removed = release_batch(&mut tx, &NODE_HISTORY, cutoff).await.unwrap();
+        tx.commit().await.unwrap();
+        removed
+    }
+
+    /// observation_count, replayed_count, corrected_count, released_before
+    async fn tier_ledger(pool: &sqlx::AnyPool) -> (i64, i64, i64, String) {
+        sqlx::query_as("SELECT observation_count, replayed_count, corrected_count, released_before FROM node_metric_series_state WHERE node_id = $1 AND metric = $2")
+            .bind(TIER_NODE)
+            .bind(TIER_METRIC)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// An Agent two minutes ahead of the Server clock keeps carrying its last
+    /// good reading while retention releases it. The row is placed on the
+    /// Server clock and released by it, so the identity the Agent keeps carrying
+    /// sits above the cutoff that released it: neither the window nor the
+    /// release may let that carry count the observation again.
+    #[tokio::test]
+    async fn a_skewed_carry_is_not_counted_again_once_retention_releases_it() {
+        let (_dir, pool) = tier_store().await;
+        let identity = "2026-03-01T00:02:00Z";
+        let timeline = "2026-03-01T00:00:00Z";
+        assert_eq!(
+            deliver(&pool, "2026-02-28T00:00:00Z", identity, timeline, 42.0).await,
+            Delivery::Observed
+        );
+        assert_eq!(
+            deliver(&pool, "2026-03-01T00:00:20Z", identity, timeline, 42.0).await,
+            Delivery::Replay
+        );
+        assert_eq!(release_tier(&pool, "2026-03-01T00:00:20Z").await, 1);
+        assert_eq!(
+            deliver(&pool, "2026-03-01T00:00:40Z", identity, timeline, 42.0).await,
+            Delivery::Replay,
+            "the carry is below the window and its released row: a replay"
+        );
+        assert_eq!(
+            tier_ledger(&pool).await,
+            (1, 2, 0, "2026-03-01T00:00:20Z".to_owned()),
+            "one observation, two replays, and the release stamped where it cut"
+        );
+        for (grain, start) in [
+            (ONE_MINUTE_SECONDS, "2026-03-01T00:00:00Z"),
+            (FIVE_MINUTE_SECONDS, "2026-03-01T00:00:00Z"),
+        ] {
+            assert_eq!(
+                bucket(&pool, grain, start).await.map(|bucket| bucket.0),
+                Some(1),
+                "the {grain}s bucket counted the observation once"
+            );
+        }
+    }
+
+    /// The release floor is a timeline instant and a carried identity is not:
+    /// after a release and a widening that puts the instant back inside the
+    /// window, an Agent ahead of the Server clock still carries an identity
+    /// above the cutoff its released row sat below.
+    #[tokio::test]
+    async fn a_widening_cannot_recount_a_skewed_observation_retention_released() {
+        let (_dir, pool) = tier_store().await;
+        let identity = "2026-03-01T00:02:00Z";
+        let timeline = "2026-03-01T00:00:00Z";
+        assert_eq!(
+            deliver(&pool, "2026-02-28T00:00:00Z", identity, timeline, 42.0).await,
+            Delivery::Observed
+        );
+        assert_eq!(release_tier(&pool, "2026-03-01T00:01:00Z").await, 1);
+        assert_eq!(
+            deliver(&pool, "1970-01-01T00:00:00Z", identity, timeline, 42.0).await,
+            Delivery::Replay,
+            "a widened window holds no row for the instant, and the floor still refuses it"
+        );
+        assert_eq!(
+            tier_ledger(&pool).await,
+            (1, 1, 0, "2026-03-01T00:01:00Z".to_owned())
+        );
+    }
+
+    /// A delivery with no row is new only when its placement is inside the
+    /// window and its identity is above the floor carried over to identity,
+    /// and each boundary belongs to the side it is drawn on.
+    #[tokio::test]
+    async fn a_delivery_with_no_row_is_new_only_inside_both_of_its_floors() {
+        let (_dir, pool) = tier_store().await;
+        // A released stretch, and a high-water mark above everything after.
+        deliver(
+            &pool,
+            "1970-01-01T00:00:00Z",
+            "2026-03-01T00:00:00Z",
+            "2026-03-01T00:00:00Z",
+            1.0,
+        )
+        .await;
+        deliver(
+            &pool,
+            "1970-01-01T00:00:00Z",
+            "2026-03-01T01:00:00Z",
+            "2026-03-01T01:00:00Z",
+            2.0,
+        )
+        .await;
+        assert_eq!(release_tier(&pool, "2026-03-01T00:10:00Z").await, 1);
+
+        // The identity floor is the release stamp moved by the largest
+        // correction: one second below it may be a carried release.
+        let wide = "1970-01-01T00:00:00Z";
+        assert_eq!(
+            deliver(
+                &pool,
+                wide,
+                "2026-03-01T00:14:59Z",
+                "2026-03-01T00:14:59Z",
+                3.0
+            )
+            .await,
+            Delivery::Replay
+        );
+        assert_eq!(
+            deliver(
+                &pool,
+                wide,
+                "2026-03-01T00:15:00Z",
+                "2026-03-01T00:15:00Z",
+                4.0
+            )
+            .await,
+            Delivery::Observed
+        );
+
+        // The window floor is the policy cutoff on the timeline: a sample an
+        // Agent running five minutes ahead placed one second before it is
+        // outside the window, whatever its identity says.
+        let window = "2026-03-01T00:20:00Z";
+        assert_eq!(
+            deliver(
+                &pool,
+                window,
+                "2026-03-01T00:24:59Z",
+                "2026-03-01T00:19:59Z",
+                5.0
+            )
+            .await,
+            Delivery::Replay
+        );
+        assert_eq!(
+            deliver(
+                &pool,
+                window,
+                "2026-03-01T00:25:00Z",
+                "2026-03-01T00:20:00Z",
+                6.0
+            )
+            .await,
+            Delivery::Observed
+        );
+
+        assert_eq!(
+            tier_ledger(&pool).await,
+            (4, 2, 0, "2026-03-01T00:10:00Z".to_owned())
+        );
+        let retained: Vec<String> = sqlx::query_scalar(
+            "SELECT source_observed_at FROM node_metric_samples WHERE node_id = $1 ORDER BY source_observed_at",
+        )
+        .bind(TIER_NODE)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            retained,
+            [
+                "2026-03-01T00:15:00Z",
+                "2026-03-01T00:25:00Z",
+                "2026-03-01T01:00:00Z"
+            ],
+            "only the new observations hold a row; a replay writes none"
+        );
+    }
+
+    /// A first observation counted below the window leaves its floor on the
+    /// timeline, where a reader of the release floor looks, and a later carry
+    /// of the same identity stays a replay however its skew is re-measured.
+    #[tokio::test]
+    async fn a_skewed_observation_counted_below_the_window_leaves_a_timeline_floor() {
+        let (_dir, pool) = tier_store().await;
+        let identity = "2026-03-01T00:02:00Z";
+        assert_eq!(
+            deliver(
+                &pool,
+                "2026-03-01T00:01:00Z",
+                identity,
+                "2026-03-01T00:00:00Z",
+                42.0
+            )
+            .await,
+            Delivery::Observed
+        );
+        assert_eq!(
+            tier_ledger(&pool).await,
+            (1, 0, 0, "2026-03-01T00:00:01Z".to_owned())
+        );
+        assert_eq!(
+            deliver(
+                &pool,
+                "1970-01-01T00:00:00Z",
+                identity,
+                "2026-03-01T00:00:01Z",
+                42.0
+            )
+            .await,
+            Delivery::Replay
+        );
+        assert_eq!(
+            tier_ledger(&pool).await,
+            (1, 1, 0, "2026-03-01T00:00:01Z".to_owned())
+        );
     }
 
     /// Issue #214: a bucket boundary is a fixed UTC instant the writer, the

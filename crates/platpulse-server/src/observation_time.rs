@@ -27,6 +27,21 @@ use crate::http::agent::CLOCK_UNRELIABLE_THRESHOLD_MS;
 /// (ADR 0014, issue #274).
 pub const FRESHNESS_LIMIT_SECONDS: i64 = 120;
 
+/// The furthest [`history_instant`] moves an Agent instant, in seconds.
+///
+/// A correction is a measured skew rounded to the whole second, and a skew
+/// beyond [`CLOCK_UNRELIABLE_THRESHOLD_MS`] is not corrected by at all, so an
+/// Agent instant and the Server-clock instant it is placed at are always less
+/// than this many seconds plus one apart. History that keys a fact by the Agent
+/// instant but expires it by the corrected one translates between the two axes
+/// with this bound: a fact placed before `T` was observed before `T` plus this
+/// many seconds.
+pub const MAX_HISTORY_CORRECTION_SECONDS: i64 = CLOCK_UNRELIABLE_THRESHOLD_MS / 1000;
+
+// A threshold that is not a whole number of seconds would let a rounded
+// correction exceed the bound above.
+const _: () = assert!(CLOCK_UNRELIABLE_THRESHOLD_MS % 1000 == 0);
+
 /// The measured skew the Server is willing to correct by, in milliseconds.
 ///
 /// `host.clock_skew` is positive when the Agent clock runs ahead of Server time
@@ -328,6 +343,27 @@ mod tests {
         assert_eq!(history_instant(observed, None), observed);
         let edge = instant("9999-12-31T23:59:59Z");
         assert_eq!(history_instant(edge, Some(-1_000)), edge);
+    }
+
+    #[test]
+    fn no_history_correction_moves_an_instant_past_its_bound() {
+        // The largest skew the Server corrects by moves the instant by exactly
+        // the bound, in either direction; one millisecond more is not corrected
+        // by at all.
+        let observed = instant("2026-08-12T09:05:00Z");
+        let bound = time::Duration::seconds(MAX_HISTORY_CORRECTION_SECONDS);
+        assert_eq!(
+            history_instant(observed, Some(CLOCK_UNRELIABLE_THRESHOLD_MS)).as_datetime(),
+            observed.as_datetime() - bound
+        );
+        assert_eq!(
+            history_instant(observed, Some(-CLOCK_UNRELIABLE_THRESHOLD_MS)).as_datetime(),
+            observed.as_datetime() + bound
+        );
+        assert_eq!(
+            history_instant(observed, Some(CLOCK_UNRELIABLE_THRESHOLD_MS + 1)),
+            observed
+        );
     }
 
     #[test]
