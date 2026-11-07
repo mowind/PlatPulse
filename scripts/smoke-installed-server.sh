@@ -41,7 +41,9 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 [[ "$status" == 200 ]] || { cat "$RUN_ROOT/server.log" >&2; echo 'installed Server did not become live' >&2; exit 1; }
-curl -fsS "http://127.0.0.1:$PORT/" | grep -qi '<!doctype html'
+# grep reads the whole page: grep -q could exit while curl is still writing,
+# and pipefail would turn curl's write error into a failure.
+curl -fsS "http://127.0.0.1:$PORT/" | grep -i '<!doctype html' >/dev/null
 "$SERVER" backup --config "$CONFIG" >/dev/null
 find "$RUN_ROOT/backups" -type f -print -quit | grep -q .
 test -f "$RUN_ROOT/state/platpulse.db"
