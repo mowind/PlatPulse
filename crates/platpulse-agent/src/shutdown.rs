@@ -720,18 +720,7 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
         .validate()
         .map_err(crate::collector::report_validation_error)?;
     let body = serde_json::to_vec(&report)?;
-    let generated = report.generated_at.to_string();
-    crate::reporting::persist_closing_report(
-        &mut store,
-        &report.report_id.to_string(),
-        report.agent_epoch,
-        &report.boot_id.to_string(),
-        report.report_sequence,
-        &generated,
-        &body,
-        &state,
-    )
-    .await?;
+    crate::reporting::persist_closing_report(&mut store, &body, &state).await?;
     let closing_report_id = report.report_id.to_string();
     let mut receipt_applied = false;
     let mut exhausted = false;

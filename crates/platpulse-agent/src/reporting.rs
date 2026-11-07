@@ -18,7 +18,7 @@ use crate::database::{
     AgentDatabaseConfig, AgentDatabaseError, AgentStore, WriteTx, cleanup_expired_receipt_markers,
     now_rfc3339,
 };
-use crate::spool::{SendBudget, Sent};
+use crate::spool::{NewReport, SendBudget, Sent, enqueue};
 
 #[derive(Debug, sqlx::FromRow)]
 struct SpoolReportRow {
@@ -229,241 +229,79 @@ pub(crate) fn into_v1_snapshot(report: AgentReport<InventoryDeclaration>) -> Age
     }
 }
 
-/// Decode a spooled report body under its declared major, returning the fields
-/// the immutable spool needs. Each major keeps its own strict decoding.
-fn parse_spooled_report(
-    body: &[u8],
-) -> Result<
-    (
-        String,
-        Vec<platpulse_core::block::BlockSummary>,
-        Vec<platpulse_core::gap::HistoryGap>,
-    ),
-    ReportStoreError,
-> {
-    if report_protocol_major(body) == platpulse_core::protocol::PROTOCOL_VERSION_V2 {
-        let report: AgentReport<InventoryDeclaration> = serde_json::from_slice(body)
-            .map_err(|error| ReportStoreError::InvalidReport(error.to_string()))?;
-        Ok((
-            report.agent_id.to_string(),
-            report.block_summaries,
-            report.history_gaps,
-        ))
-    } else {
-        let report: AgentReport = serde_json::from_slice(body)
-            .map_err(|error| ReportStoreError::InvalidReport(error.to_string()))?;
-        Ok((
-            report.agent_id.to_string(),
-            report.block_summaries,
-            report.history_gaps,
-        ))
-    }
-}
-
-/// Claim the durable block and gap samples included in a report.
-///
-/// The source row and its unassigned state are checked by the same INSERT
-/// statement that creates the ownership marker. A zero-row insert means the
-/// collection snapshot became stale or the report repeated a sample already
-/// owned by another in-flight report.
-pub(crate) async fn claim_report_samples(
-    tx: &mut WriteTx<'_>,
-    report_id: &str,
-    block_summaries: &[platpulse_core::block::BlockSummary],
-    history_gaps: &[platpulse_core::gap::HistoryGap],
-) -> Result<bool, sqlx::Error> {
-    for sample in block_summaries {
-        let result = sqlx::query(
-            "INSERT INTO report_sample_assignments (report_id, node_id, sample_kind, from_height, to_height) SELECT ?, b.node_id, 'block', b.block_number, b.block_number FROM block_summaries b WHERE b.node_id = ? AND b.block_number = ? AND b.block_hash = ? AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id = b.node_id AND a.sample_kind = 'block' AND a.from_height = b.block_number AND a.to_height = b.block_number)",
-        )
-        .bind(report_id)
-        .bind(sample.node_id.to_string())
-        .bind(sample.block_number as i64)
-        .bind(sample.block_hash.to_string())
-        .execute(&mut **tx)
-        .await?;
-        if result.rows_affected() != 1 {
-            return Ok(false);
-        }
-    }
-    for gap in history_gaps {
-        let result = sqlx::query(
-            "INSERT INTO report_sample_assignments (report_id, node_id, sample_kind, from_height, to_height) SELECT ?, g.node_id, 'gap', g.from_height, g.to_height FROM history_gaps g WHERE g.node_id = ? AND g.from_height = ? AND g.to_height = ? AND g.kind = ? AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id = g.node_id AND a.sample_kind = 'gap' AND a.from_height = g.from_height AND a.to_height = g.to_height)",
-        )
-        .bind(report_id)
-        .bind(gap.node_id.to_string())
-        .bind(gap.from_height as i64)
-        .bind(gap.to_height as i64)
-        .bind(crate::block::gap_kind_name(gap.kind))
-        .execute(&mut **tx)
-        .await?;
-        if result.rows_affected() != 1 {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-/// The body is inserted exactly as supplied and cannot be updated later.
+/// Store one immutable Report exactly as supplied. Its identity is read from
+/// the bytes, so the spool row cannot describe a different Report.
 pub async fn persist_immutable_report(
     store: &mut AgentStore,
-    report_id: &str,
-    agent_epoch: u64,
-    boot_id: &str,
-    report_sequence: u64,
-    generated_at: &str,
     body: &[u8],
 ) -> Result<String, ReportStoreError> {
-    persist_immutable_report_inner(
-        store,
-        report_id,
-        agent_epoch,
-        boot_id,
-        report_sequence,
-        generated_at,
-        body,
-        None,
-    )
-    .await
+    persist_immutable_report_inner(store, body, None).await
 }
 
 /// Persist a Closing report while revalidating and advancing the authoritative
 /// Agent lifecycle state in the same transaction as the immutable report.
-#[allow(clippy::too_many_arguments)]
+/// `expected` is the Boot record the Closing was built from; storing it
+/// advances exactly that record to the Closing's sequence.
 pub(crate) async fn persist_closing_report(
     store: &mut AgentStore,
-    report_id: &str,
-    agent_epoch: u64,
-    boot_id: &str,
-    report_sequence: u64,
-    generated_at: &str,
     body: &[u8],
     expected: &crate::boot::BootState,
 ) -> Result<String, ReportStoreError> {
-    let report = serde_json::from_slice::<AgentReport>(body)
-        .map_err(|error| ReportStoreError::InvalidReport(error.to_string()))?;
-    if report.boot_transition != BootTransition::Closing {
-        return Err(ReportStoreError::InvalidReport(
-            "closing report has the wrong boot transition".to_owned(),
-        ));
-    }
-    persist_immutable_report_inner(
-        store,
-        report_id,
-        agent_epoch,
-        boot_id,
-        report_sequence,
-        generated_at,
-        body,
-        Some(ClosingStateExpectation {
-            expected,
-            boot_id: report.boot_id,
-        }),
-    )
-    .await
+    persist_immutable_report_inner(store, body, Some(expected)).await
 }
 
-/// The Boot record a Closing report was built from; storing the Closing
-/// advances exactly that record to the Closing's sequence.
-struct ClosingStateExpectation<'a> {
-    expected: &'a crate::boot::BootState,
-    boot_id: platpulse_core::BootId,
-}
-
-#[allow(clippy::too_many_arguments)]
 async fn persist_immutable_report_inner(
     store: &mut AgentStore,
-    report_id: &str,
-    agent_epoch: u64,
-    boot_id: &str,
-    report_sequence: u64,
-    generated_at: &str,
     body: &[u8],
-    closing: Option<ClosingStateExpectation<'_>>,
+    closing: Option<&crate::boot::BootState>,
 ) -> Result<String, ReportStoreError> {
     if body.is_empty() {
         return Err(ReportStoreError::Empty);
     }
     ensure_spool_not_fatal(store).await?;
     if body.len() > platpulse_core::protocol::MAX_REPORT_BODY_BYTES {
-        let _ = mark_report_too_large(store, generated_at).await;
+        let _ = mark_report_too_large(store, &now_rfc3339()).await;
         return Err(ReportStoreError::ReportTooLarge);
     }
-    let digest = format!("0x{}", hex::encode(Sha256::digest(body)));
-    let candidate = SpoolReportRow {
-        report_id: report_id.to_owned(),
-        agent_epoch: agent_epoch as i64,
-        boot_id: boot_id.to_owned(),
-        report_sequence: report_sequence as i64,
-        generated_at: generated_at.to_owned(),
-        body: body.to_vec(),
-        body_sha256: digest.clone(),
-        body_bytes: body.len() as i64,
-    };
-    if let Some(reason) = validate_spool_report(&candidate) {
-        return Err(ReportStoreError::InvalidReport(reason));
+    let report = NewReport::from_body(body.to_vec())?;
+    if closing.is_some() && report.boot_transition() != BootTransition::Closing {
+        return Err(ReportStoreError::InvalidReport(
+            "closing report has the wrong boot transition".to_owned(),
+        ));
     }
-    let (agent_id, block_summaries, history_gaps) = parse_spooled_report(body)?;
+    let generated_at = report.generated_at().to_owned();
     let mut tx = store.write().await?;
     let transaction_result: Result<(), sqlx::Error> = async {
-        if let Some(closing) = closing.as_ref() {
-            let current = crate::boot::read(&mut tx).await.map_err(|error| match error {
-                crate::boot::BootStateError::Database(error) => error,
-                invalid => sqlx::Error::Protocol(invalid.to_string()),
-            })?;
+        if let Some(expected) = closing {
+            let current = crate::boot::read(&mut tx)
+                .await
+                .map_err(|error| match error {
+                    crate::boot::BootStateError::Database(error) => error,
+                    invalid => sqlx::Error::Protocol(invalid.to_string()),
+                })?;
             let Some(current) = current else {
                 return Err(sqlx::Error::Protocol(
                     "Agent state is missing while storing Closing report".to_owned(),
                 ));
             };
-            if &current != closing.expected {
+            if &current != expected {
                 return Err(sqlx::Error::Protocol(
                     "Agent state changed while storing Closing report".to_owned(),
                 ));
             }
         }
-        sqlx::query(
-            "INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, in_flight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
-        )
-        .bind(report_id)
-        .bind(agent_epoch as i64)
-        .bind(boot_id)
-        .bind(report_sequence as i64)
-        .bind(generated_at)
-        .bind(body)
-        .bind(&digest)
-        .bind(body.len() as i64)
-        .bind(generated_at)
-        .execute(&mut *tx)
-        .await?;
-        persist_last_report_snapshot(
-            &mut tx,
-            &agent_id,
-            agent_epoch,
-            boot_id,
-            report_sequence,
-            body,
-        )
-        .await?;
-        if !claim_report_samples(
-            &mut tx,
-            report_id,
-            &block_summaries,
-            &history_gaps,
-        )
-        .await?
-        {
+        if !enqueue(&mut tx, &report).await? {
             return Err(sqlx::Error::Protocol(
                 "report samples changed while storing report".to_owned(),
             ));
         }
-        if let Some(closing) = closing.as_ref() {
+        if let Some(expected) = closing {
             if !crate::boot::record_report(
                 &mut tx,
-                closing.expected,
-                closing.boot_id,
-                report_sequence,
-                generated_at,
+                expected,
+                report.boot_id(),
+                report.report_sequence(),
+                &generated_at,
             )
             .await?
             {
@@ -471,8 +309,13 @@ async fn persist_immutable_report_inner(
                     "Agent state changed while storing Closing report".to_owned(),
                 ));
             }
-            crate::shutdown_record::closing_stored(&mut tx, report_id, report_sequence, generated_at)
-                .await?;
+            crate::shutdown_record::closing_stored(
+                &mut tx,
+                report.report_id(),
+                report.report_sequence(),
+                &generated_at,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -484,38 +327,8 @@ async fn persist_immutable_report_inner(
             return Err(error.into());
         }
     }
-    enforce_stored_spool_policy(store, generated_at).await?;
-    Ok(digest)
-}
-
-/// Persist the latest complete observation view independently of the
-/// delivery queue. The snapshot survives receipt application and is used as
-/// the last-good baseline for the next collection cycle.
-pub(crate) async fn persist_last_report_snapshot(
-    tx: &mut WriteTx<'_>,
-    agent_id: &str,
-    agent_epoch: u64,
-    boot_id: &str,
-    report_sequence: u64,
-    body: &[u8],
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE agent_state
-         SET last_report_body=?
-         WHERE singleton=1
-           AND agent_id=?
-           AND agent_epoch=?
-           AND (boot_id IS NULL OR boot_id=?)
-           AND report_sequence <= ?",
-    )
-    .bind(body)
-    .bind(agent_id)
-    .bind(agent_epoch as i64)
-    .bind(boot_id)
-    .bind(report_sequence as i64)
-    .execute(&mut **tx)
-    .await
-    .map(|_| ())
+    enforce_stored_spool_policy(store, &generated_at).await?;
+    Ok(report.body_sha256().to_owned())
 }
 
 /// What one delivery pass did (issue #181).
@@ -1189,10 +1002,10 @@ async fn plan_spool_cleanup(
 /// What one dropped Report contributes to the bounded loss diagnostics: how many
 /// samples it carried and the height range those samples covered.
 fn spool_report_loss_shape(body: &[u8]) -> Result<(u64, Option<(u64, u64)>), ReportStoreError> {
-    let (_, block_summaries, history_gaps) = parse_spooled_report(body)?;
+    let report = NewReport::from_body(body.to_vec())?;
     let mut sample_count = 0u64;
     let mut height_range: Option<(u64, u64)> = None;
-    for sample in &block_summaries {
+    for sample in report.block_summaries() {
         sample_count += 1;
         height_range = Some(
             height_range.map_or((sample.block_number, sample.block_number), |(from, to)| {
@@ -1200,7 +1013,7 @@ fn spool_report_loss_shape(body: &[u8]) -> Result<(u64, Option<(u64, u64)>), Rep
             }),
         );
     }
-    for gap in &history_gaps {
+    for gap in report.history_gaps() {
         sample_count += 1;
         height_range = Some(
             height_range.map_or((gap.from_height, gap.to_height), |(from, to)| {
@@ -1359,16 +1172,7 @@ pub(crate) async fn persist_report_from_config_with_permit(
             &crate::database::now_rfc3339(),
         )
         .await?;
-        let digest = persist_immutable_report(
-            &mut store,
-            &report.report_id.to_string(),
-            report.agent_epoch,
-            &report.boot_id.to_string(),
-            report.report_sequence,
-            &report.generated_at.to_string(),
-            &body,
-        )
-        .await?;
+        let digest = persist_immutable_report(&mut store, &body).await?;
         store.close().await?;
         return Ok(digest);
     }
@@ -1396,16 +1200,7 @@ pub(crate) async fn persist_report_from_config_with_permit(
     // (issue #181): the report is immutable, so a conflict cannot be fixed
     // after the fact. This frozen v1 guard applies only to a v1 configuration.
     crate::collector::guard_inventory_declaration(&mut store, &validated.inventory).await?;
-    let digest = persist_immutable_report(
-        &mut store,
-        &report.report_id.to_string(),
-        report.agent_epoch,
-        &report.boot_id.to_string(),
-        report.report_sequence,
-        &report.generated_at.to_string(),
-        &body,
-    )
-    .await?;
+    let digest = persist_immutable_report(&mut store, &body).await?;
     store.close().await?;
     Ok(digest)
 }
@@ -2254,15 +2049,7 @@ mod catch_up_tests {
         let body = collection_report_body(&generated_at, 2);
         tokio::time::timeout(
             Duration::from_secs(5),
-            persist_immutable_report(
-                &mut collection_store,
-                &spool_backlog_fixture::report_id(2),
-                1,
-                BOOT_ID,
-                2,
-                &generated_at,
-                &body,
-            ),
+            persist_immutable_report(&mut collection_store, &body),
         )
         .await
         .expect("a send in flight must not hold the shared write permit")
@@ -2417,17 +2204,7 @@ mod delivery_tests {
         crate::block::persist_block_summary(store, &block, &generated_at)
             .await
             .unwrap();
-        persist_immutable_report(
-            store,
-            &report_id,
-            report["agent_epoch"].as_u64().unwrap(),
-            report["boot_id"].as_str().unwrap(),
-            report["report_sequence"].as_u64().unwrap(),
-            &generated_at,
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(store, &body).await.unwrap();
         assert_eq!(
             count(store, "SELECT COUNT(*) FROM report_sample_assignments").await,
             1,
@@ -2685,17 +2462,7 @@ mod delivery_tests {
         for sequence in 1..=5u64 {
             let id = report_id(sequence);
             let body = report_body(sequence);
-            persist_immutable_report(
-                &mut store,
-                &id,
-                1,
-                "0195f2a1-0012-4012-8012-000000000012",
-                sequence,
-                "2026-08-12T09:00:00Z",
-                &body,
-            )
-            .await
-            .unwrap();
+            persist_immutable_report(&mut store, &body).await.unwrap();
             responses.push(Ok(receipt_body(&id, &body)));
         }
         let transport = FakeTransport {
@@ -2776,17 +2543,7 @@ mod delivery_tests {
         }
         let body = report_body(1);
         let id = report_id(1);
-        persist_immutable_report(
-            &mut store,
-            &id,
-            1,
-            "0195f2a1-0012-4012-8012-000000000012",
-            1,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &body).await.unwrap();
         let transport = FakeTransport {
             bodies: Arc::new(Mutex::new(Vec::new())),
             responses: Arc::new(Mutex::new(vec![Ok(receipt_body(&id, &body))])),
@@ -2835,17 +2592,9 @@ mod delivery_tests {
             .await
             .unwrap();
 
-        persist_immutable_report(
-            &mut store,
-            &report_id(1),
-            1,
-            boot_id,
-            1,
-            "2026-08-12T09:00:00Z",
-            &report_body(1),
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &report_body(1))
+            .await
+            .unwrap();
 
         let snapshot: Option<Vec<u8>> =
             sqlx::query_scalar("SELECT last_report_body FROM agent_state WHERE singleton=1")
@@ -2860,28 +2609,8 @@ mod delivery_tests {
         let mut store = test_store().await;
         let first = report_body(1);
         let second = report_body(2);
-        persist_immutable_report(
-            &mut store,
-            &report_id(1),
-            1,
-            "0195f2a1-0012-4012-8012-000000000012",
-            1,
-            "2026-08-12T09:00:00Z",
-            &first,
-        )
-        .await
-        .unwrap();
-        persist_immutable_report(
-            &mut store,
-            &report_id(2),
-            1,
-            "0195f2a1-0012-4012-8012-000000000012",
-            2,
-            "2026-08-12T09:00:00Z",
-            &second,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &first).await.unwrap();
+        persist_immutable_report(&mut store, &second).await.unwrap();
         let fake = FakeTransport {
             bodies: Arc::new(Mutex::new(Vec::new())),
             responses: Arc::new(Mutex::new(vec![Err(ReportStoreError::Delivery(
@@ -2911,17 +2640,7 @@ mod delivery_tests {
         let mut store = test_store().await;
         let body = report_body(3);
         let id = report_id(3);
-        persist_immutable_report(
-            &mut store,
-            &id,
-            1,
-            "0195f2a1-0012-4012-8012-000000000012",
-            3,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &body).await.unwrap();
         let invalid = FakeTransport {
             bodies: Arc::new(Mutex::new(Vec::new())),
             responses: Arc::new(Mutex::new(vec![Ok(
@@ -2964,17 +2683,7 @@ mod delivery_tests {
         let mut store = test_store().await;
         let id = report_id(4);
         let body = report_body(4);
-        persist_immutable_report(
-            &mut store,
-            &id,
-            1,
-            "0195f2a1-0012-4012-8012-000000000012",
-            4,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &body).await.unwrap();
         let fake = FakeTransport {
             bodies: Arc::new(Mutex::new(Vec::new())),
             responses: Arc::new(Mutex::new(vec![
@@ -3017,17 +2726,7 @@ mod delivery_tests {
         let mut store = test_store().await;
         for sequence in 1..=2 {
             let body = report_body(sequence);
-            persist_immutable_report(
-                &mut store,
-                &report_id(sequence),
-                1,
-                "0195f2a1-0012-4012-8012-000000000012",
-                sequence,
-                "2026-08-12T09:00:00Z",
-                &body,
-            )
-            .await
-            .unwrap();
+            persist_immutable_report(&mut store, &body).await.unwrap();
         }
         let body_size = report_body(1).len() as u64;
         let mut truncated = report_body(1);
@@ -3077,17 +2776,7 @@ mod delivery_tests {
         let mut store = test_store().await;
         for sequence in 1..=3 {
             let body = report_body(sequence);
-            persist_immutable_report(
-                &mut store,
-                &report_id(sequence),
-                1,
-                "0195f2a1-0012-4012-8012-000000000012",
-                sequence,
-                "2026-08-12T09:00:00Z",
-                &body,
-            )
-            .await
-            .unwrap();
+            persist_immutable_report(&mut store, &body).await.unwrap();
         }
         let body_size = report_body(1).len() as u64;
         let summary = enforce_spool_policy(
@@ -3146,17 +2835,7 @@ mod delivery_tests {
             (3, "2026-08-12T09:00:00Z"),
         ] {
             let body = report_body_at(sequence, generated_at);
-            persist_immutable_report(
-                &mut store,
-                &report_id(sequence),
-                1,
-                "0195f2a1-0012-4012-8012-000000000012",
-                sequence,
-                generated_at,
-                &body,
-            )
-            .await
-            .unwrap();
+            persist_immutable_report(&mut store, &body).await.unwrap();
         }
         sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, updated_at) VALUES (1, ?, 1, ?, 3, 1, ?)")
             .bind("0195f2a1-0011-4011-8011-000000000011")
@@ -3216,17 +2895,7 @@ mod delivery_tests {
 
         for sequence in 1..=3 {
             let body = report_body(sequence);
-            persist_immutable_report(
-                &mut store,
-                &report_id(sequence),
-                1,
-                "0195f2a1-0012-4012-8012-000000000012",
-                sequence,
-                "2026-08-12T09:00:00Z",
-                &body,
-            )
-            .await
-            .unwrap();
+            persist_immutable_report(&mut store, &body).await.unwrap();
         }
 
         // Persisting enforces the recorded capacity, not the shipped default.
@@ -3251,19 +2920,10 @@ mod delivery_tests {
     #[tokio::test]
     async fn hot_receipt_validation_only_reads_queued_receipts() {
         let mut store = test_store().await;
-        let pending_id = report_id(7);
         let pending_body = report_body(7);
-        persist_immutable_report(
-            &mut store,
-            &pending_id,
-            1,
-            "0195f2a1-0012-4012-8012-000000000012",
-            7,
-            "2026-08-12T09:00:00Z",
-            &pending_body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &pending_body)
+            .await
+            .unwrap();
 
         for _ in 0..2_000 {
             let historical_id = uuid::Uuid::new_v4().to_string();
@@ -3294,17 +2954,7 @@ mod delivery_tests {
         let mut store = test_store().await;
         let id = report_id(7);
         let body = report_body(7);
-        persist_immutable_report(
-            &mut store,
-            &id,
-            1,
-            "0195f2a1-0012-4012-8012-000000000012",
-            7,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &body).await.unwrap();
         sqlx::query(
             "INSERT INTO report_receipts (report_id, report_body_sha256, disposition, applied_at) VALUES (?, ?, 'accepted', '2026-08-12T10:00:00Z')",
         )
@@ -3362,17 +3012,7 @@ mod delivery_tests {
     async fn queue_one_report(store: &mut AgentStore, sequence: u64) -> (String, Vec<u8>) {
         let id = report_id(sequence);
         let body = report_body(sequence);
-        persist_immutable_report(
-            store,
-            &id,
-            1,
-            "0195f2a1-0012-4012-8012-000000000012",
-            sequence,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(store, &body).await.unwrap();
         (id, body)
     }
 
@@ -3570,17 +3210,7 @@ mod delivery_tests {
         let mut store = test_store().await;
         let body = report_body(1);
         let id = report_id(1);
-        persist_immutable_report(
-            &mut store,
-            &id,
-            1,
-            "0195f2a1-0012-4012-8012-000000000012",
-            1,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &body).await.unwrap();
         let transport = FakeTransport {
             bodies: Arc::new(Mutex::new(Vec::new())),
             responses: Arc::new(Mutex::new(vec![Ok(receipt_body(&id, &body))])),
@@ -3639,17 +3269,7 @@ mod delivery_tests {
         let mut store = test_store().await;
         let body = report_body(1);
         let id = report_id(1);
-        persist_immutable_report(
-            &mut store,
-            &id,
-            1,
-            "0195f2a1-0012-4012-8012-000000000012",
-            1,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &body).await.unwrap();
         let transport = FakeTransport {
             bodies: Arc::new(Mutex::new(Vec::new())),
             responses: Arc::new(Mutex::new(vec![Ok(rejected_receipt_body(&id, &body))])),
@@ -3728,7 +3348,6 @@ mod backlog_recovery_tests {
     use crate::inventory_declaration::{InventoryDeclarationConflict, read_inventory_declaration};
 
     const REPORT_COUNT: u64 = 6;
-    const BOOT_ID: &str = "0195f2a1-0012-4012-8012-000000000012";
 
     fn report_id(sequence: u64) -> String {
         format!("0195f2a1-0100-4000-8000-0000000000{sequence:02}")
@@ -3877,17 +3496,7 @@ mod backlog_recovery_tests {
         let transport = HttpReportTransport::from_config(&config).unwrap();
         for sequence in 1..=REPORT_COUNT {
             let body = report_body(sequence, &agent_id);
-            persist_immutable_report(
-                &mut store,
-                &report_id(sequence),
-                1,
-                BOOT_ID,
-                sequence,
-                "2026-08-12T09:00:00Z",
-                &body,
-            )
-            .await
-            .unwrap();
+            persist_immutable_report(&mut store, &body).await.unwrap();
         }
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
@@ -3971,17 +3580,9 @@ mod backlog_recovery_tests {
         // Revision 1 is accepted by the real Server, and the Agent records what
         // the receipt made effective.
         let declared: AgentReport = serde_json::from_slice(&report_body(1, &agent_id)).unwrap();
-        persist_immutable_report(
-            &mut store,
-            &report_id(1),
-            1,
-            BOOT_ID,
-            1,
-            "2026-08-12T09:00:00Z",
-            &report_body(1, &agent_id),
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &report_body(1, &agent_id))
+            .await
+            .unwrap();
         let outcome = deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(outcome.applied, 1);
         assert!(outcome.rejections.is_empty(), "{:?}", outcome.rejections);
@@ -4041,17 +3642,9 @@ mod backlog_recovery_tests {
         )
         .await
         .expect("a bumped revision declares the new Node set");
-        persist_immutable_report(
-            &mut store,
-            &report_id(2),
-            1,
-            BOOT_ID,
-            2,
-            "2026-08-12T09:00:00Z",
-            &bumped_body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &bumped_body)
+            .await
+            .unwrap();
         let outcome = deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(
             outcome.applied, 1,
@@ -4149,17 +3742,7 @@ mod backlog_recovery_tests {
 
         // First acceptance: the Server assigns revision 1.
         let body = v2_report_body(1, &agent_id, 1, &[validator_a]);
-        persist_immutable_report(
-            &mut store,
-            &report_id(1),
-            1,
-            BOOT_ID,
-            1,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &body).await.unwrap();
         let outcome = deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(outcome.applied, 1, "{:?}", outcome.rejections);
         assert!(outcome.rejections.is_empty(), "{:?}", outcome.rejections);
@@ -4183,99 +3766,39 @@ mod backlog_recovery_tests {
 
         // Identical content keeps the accepted revision.
         let body = v2_report_body(2, &agent_id, 1, &[validator_a]);
-        persist_immutable_report(
-            &mut store,
-            &report_id(2),
-            1,
-            BOOT_ID,
-            2,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &body).await.unwrap();
         let outcome = deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(outcome.applied, 1, "{:?}", outcome.rejections);
         assert_eq!(server_inventory_revision(&server, &agent_id).await, 1);
 
         // A new member is a content change: revision 2.
         let body = v2_report_body(3, &agent_id, 1, &[validator_a, validator_b]);
-        persist_immutable_report(
-            &mut store,
-            &report_id(3),
-            1,
-            BOOT_ID,
-            3,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &body).await.unwrap();
         deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(server_inventory_revision(&server, &agent_id).await, 2);
 
         // Node order alone is not a declaration change: unchanged, revision 2.
         let body = v2_report_body(4, &agent_id, 1, &[validator_b, validator_a]);
-        persist_immutable_report(
-            &mut store,
-            &report_id(4),
-            1,
-            BOOT_ID,
-            4,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &body).await.unwrap();
         deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(server_inventory_revision(&server, &agent_id).await, 2);
 
         // A declared field change advances the revision.
         let changed_a = (V2_NODE_A, "ws://127.0.0.1:6799", Some("Validator A"));
         let body = v2_report_body(5, &agent_id, 1, &[changed_a, validator_b]);
-        persist_immutable_report(
-            &mut store,
-            &report_id(5),
-            1,
-            BOOT_ID,
-            5,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &body).await.unwrap();
         deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(server_inventory_revision(&server, &agent_id).await, 3);
 
         // A -> B -> A allocates a fresh revision; it never reuses the old number.
         let body = v2_report_body(6, &agent_id, 1, &[validator_a, validator_b]);
-        persist_immutable_report(
-            &mut store,
-            &report_id(6),
-            1,
-            BOOT_ID,
-            6,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &body).await.unwrap();
         deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(server_inventory_revision(&server, &agent_id).await, 4);
 
         // An accepted empty Inventory is distinct from an uninitialized Agent.
         let body = v2_report_body(7, &agent_id, 1, &[]);
-        persist_immutable_report(
-            &mut store,
-            &report_id(7),
-            1,
-            BOOT_ID,
-            7,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &body).await.unwrap();
         deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(server_inventory_revision(&server, &agent_id).await, 5);
         let record = read_inventory_declaration(store.connection())
@@ -4286,17 +3809,7 @@ mod backlog_recovery_tests {
 
         // A rejected report allocates nothing and never advances the record.
         let body = v2_report_body(8, &agent_id, 0, &[validator_a]);
-        persist_immutable_report(
-            &mut store,
-            &report_id(8),
-            0,
-            BOOT_ID,
-            8,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &body).await.unwrap();
         let outcome = deliver_periodic(&mut store, &transport).await.unwrap();
         assert_eq!(outcome.applied, 1);
         assert_eq!(outcome.rejections.len(), 1, "{:?}", outcome.rejections);
@@ -4463,17 +3976,7 @@ mod backlog_recovery_tests {
             .await
             .unwrap();
         let body = v2_report_body(1, &agent_id, 1, &[(V2_NODE_A, "ws://127.0.0.1:6790", None)]);
-        persist_immutable_report(
-            &mut store,
-            &report_id(1),
-            1,
-            BOOT_ID,
-            1,
-            "2026-08-12T09:00:00Z",
-            &body,
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &body).await.unwrap();
         let transport = LostResponseTransport {
             inner: HttpReportTransport::from_config(&config).unwrap(),
             drop_next: AtomicBool::new(true),

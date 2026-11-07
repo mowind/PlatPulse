@@ -8,6 +8,8 @@
 //! the Report is removed, and the Boot transition the Report carried is
 //! settled, or the transaction leaves everything as it was.
 
+use platpulse_core::block::BlockSummary;
+use platpulse_core::gap::HistoryGap;
 use platpulse_core::identity::BootId;
 use platpulse_core::inventory::NodeInventory;
 use platpulse_core::{
@@ -578,6 +580,215 @@ pub(crate) async fn apply_receipt_typed<I: ReportInventory>(
     }
 }
 
+// ---- Enqueue ----
+
+/// A Report ready to join the spool: its exact bytes, and the identity and
+/// samples read from those bytes, so the stored metadata can never disagree
+/// with the body it describes.
+pub(crate) struct NewReport {
+    report_id: String,
+    agent_id: String,
+    agent_epoch: u64,
+    boot_id: BootId,
+    report_sequence: u64,
+    boot_transition: BootTransition,
+    generated_at: String,
+    body: Vec<u8>,
+    body_sha256: String,
+    block_summaries: Vec<BlockSummary>,
+    history_gaps: Vec<HistoryGap>,
+}
+
+impl NewReport {
+    /// Read a Report from its exact bytes under the protocol major they
+    /// declare. A body that is not a valid Agent Report never reaches the
+    /// spool.
+    pub(crate) fn from_body(body: Vec<u8>) -> Result<Self, ReportStoreError> {
+        if body.is_empty() {
+            return Err(ReportStoreError::Empty);
+        }
+        if report_protocol_major(&body) == platpulse_core::protocol::PROTOCOL_VERSION_V2 {
+            Self::read::<InventoryDeclaration>(body)
+        } else {
+            Self::read::<NodeInventory>(body)
+        }
+    }
+
+    fn read<I: ReportInventory + serde::de::DeserializeOwned>(
+        body: Vec<u8>,
+    ) -> Result<Self, ReportStoreError> {
+        let report: AgentReport<I> = serde_json::from_slice(&body)
+            .map_err(|error| ReportStoreError::InvalidReport(error.to_string()))?;
+        report
+            .validate()
+            .map_err(|error| ReportStoreError::InvalidReport(error.to_string()))?;
+        Ok(Self {
+            report_id: report.report_id.to_string(),
+            agent_id: report.agent_id.to_string(),
+            agent_epoch: report.agent_epoch,
+            boot_id: report.boot_id,
+            report_sequence: report.report_sequence,
+            boot_transition: report.boot_transition,
+            generated_at: report.generated_at.to_string(),
+            body_sha256: format!("0x{}", hex::encode(Sha256::digest(&body))),
+            body,
+            block_summaries: report.block_summaries,
+            history_gaps: report.history_gaps,
+        })
+    }
+
+    pub(crate) fn report_id(&self) -> &str {
+        &self.report_id
+    }
+
+    pub(crate) fn boot_id(&self) -> BootId {
+        self.boot_id
+    }
+
+    pub(crate) fn report_sequence(&self) -> u64 {
+        self.report_sequence
+    }
+
+    pub(crate) fn boot_transition(&self) -> BootTransition {
+        self.boot_transition
+    }
+
+    pub(crate) fn generated_at(&self) -> &str {
+        &self.generated_at
+    }
+
+    pub(crate) fn body_sha256(&self) -> &str {
+        &self.body_sha256
+    }
+
+    pub(crate) fn block_summaries(&self) -> &[BlockSummary] {
+        &self.block_summaries
+    }
+
+    pub(crate) fn history_gaps(&self) -> &[HistoryGap] {
+        &self.history_gaps
+    }
+}
+
+/// Add a Report to the spool inside the caller's write, so whatever the caller
+/// advances alongside it (the Boot's sequence, the Inventory revision) commits
+/// or rolls back with the Report.
+///
+/// The Report claims the block and gap samples it carries and becomes the
+/// last-good baseline for the next collection. Returns `false` when a sample
+/// is no longer claimable — the collection snapshot went stale or another
+/// queued Report already owns it — and the caller must roll back.
+pub(crate) async fn enqueue(tx: &mut WriteTx<'_>, report: &NewReport) -> Result<bool, sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, in_flight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
+    )
+    .bind(&report.report_id)
+    .bind(report.agent_epoch as i64)
+    .bind(report.boot_id.to_string())
+    .bind(report.report_sequence as i64)
+    .bind(&report.generated_at)
+    .bind(&report.body)
+    .bind(&report.body_sha256)
+    .bind(report.body.len() as i64)
+    .bind(&report.generated_at)
+    .execute(&mut **tx)
+    .await?;
+    if !claim_report_samples(
+        tx,
+        &report.report_id,
+        &report.block_summaries,
+        &report.history_gaps,
+    )
+    .await?
+    {
+        return Ok(false);
+    }
+    persist_last_report_snapshot(
+        tx,
+        &report.agent_id,
+        report.agent_epoch,
+        &report.boot_id.to_string(),
+        report.report_sequence,
+        &report.body,
+    )
+    .await?;
+    Ok(true)
+}
+
+/// Claim the durable block and gap samples included in a report.
+///
+/// The source row and its unassigned state are checked by the same INSERT
+/// statement that creates the ownership marker. A zero-row insert means the
+/// collection snapshot became stale or the report repeated a sample already
+/// owned by another in-flight report.
+async fn claim_report_samples(
+    tx: &mut WriteTx<'_>,
+    report_id: &str,
+    block_summaries: &[platpulse_core::block::BlockSummary],
+    history_gaps: &[platpulse_core::gap::HistoryGap],
+) -> Result<bool, sqlx::Error> {
+    for sample in block_summaries {
+        let result = sqlx::query(
+            "INSERT INTO report_sample_assignments (report_id, node_id, sample_kind, from_height, to_height) SELECT ?, b.node_id, 'block', b.block_number, b.block_number FROM block_summaries b WHERE b.node_id = ? AND b.block_number = ? AND b.block_hash = ? AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id = b.node_id AND a.sample_kind = 'block' AND a.from_height = b.block_number AND a.to_height = b.block_number)",
+        )
+        .bind(report_id)
+        .bind(sample.node_id.to_string())
+        .bind(sample.block_number as i64)
+        .bind(sample.block_hash.to_string())
+        .execute(&mut **tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Ok(false);
+        }
+    }
+    for gap in history_gaps {
+        let result = sqlx::query(
+            "INSERT INTO report_sample_assignments (report_id, node_id, sample_kind, from_height, to_height) SELECT ?, g.node_id, 'gap', g.from_height, g.to_height FROM history_gaps g WHERE g.node_id = ? AND g.from_height = ? AND g.to_height = ? AND g.kind = ? AND NOT EXISTS (SELECT 1 FROM report_sample_assignments a WHERE a.node_id = g.node_id AND a.sample_kind = 'gap' AND a.from_height = g.from_height AND a.to_height = g.to_height)",
+        )
+        .bind(report_id)
+        .bind(gap.node_id.to_string())
+        .bind(gap.from_height as i64)
+        .bind(gap.to_height as i64)
+        .bind(crate::block::gap_kind_name(gap.kind))
+        .execute(&mut **tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Persist the latest complete observation view independently of the
+/// delivery queue. The snapshot survives receipt application and is used as
+/// the last-good baseline for the next collection cycle.
+async fn persist_last_report_snapshot(
+    tx: &mut WriteTx<'_>,
+    agent_id: &str,
+    agent_epoch: u64,
+    boot_id: &str,
+    report_sequence: u64,
+    body: &[u8],
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE agent_state
+         SET last_report_body=?
+         WHERE singleton=1
+           AND agent_id=?
+           AND agent_epoch=?
+           AND (boot_id IS NULL OR boot_id=?)
+           AND report_sequence <= ?",
+    )
+    .bind(body)
+    .bind(agent_id)
+    .bind(agent_epoch as i64)
+    .bind(boot_id)
+    .bind(report_sequence as i64)
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
+}
+
 // ---- Delivery ----
 
 /// One queued Report as claimed for delivery: its identity and exact bytes.
@@ -1017,5 +1228,72 @@ mod tests {
         assert!(
             !delivered(BootTransition::Continuing, ReceiptDisposition::Accepted).closes_boot(boot)
         );
+    }
+
+    fn fixture_body(edit: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
+        let mut report: serde_json::Value = serde_json::from_str(include_str!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        edit(&mut report);
+        serde_json::to_vec(&report).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_enqueued_report_is_described_by_its_own_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::database::AgentStore::open(
+            crate::database::AgentDatabaseConfig::new(dir.path().join("agent.db")),
+        )
+        .await
+        .unwrap();
+        let body = fixture_body(|report| {
+            report["report_id"] = serde_json::json!("0195f2a1-0052-4052-8052-000000000052");
+            report["boot_id"] = serde_json::json!("0195f2a1-0053-4053-8053-000000000053");
+            report["report_sequence"] = serde_json::json!(9);
+            report["generated_at"] = serde_json::json!("2026-08-12T09:30:00Z");
+        });
+        let report = NewReport::from_body(body.clone()).unwrap();
+
+        let mut tx = store.write().await.unwrap();
+        assert!(enqueue(&mut tx, &report).await.unwrap());
+        tx.commit().await.unwrap();
+
+        let row: (String, String, i64, String, String, i64, Vec<u8>) = sqlx::query_as(
+            "SELECT report_id, boot_id, report_sequence, generated_at, body_sha256, body_bytes, body FROM reports",
+        )
+        .fetch_one(store.connection())
+        .await
+        .unwrap();
+        assert_eq!(
+            row,
+            (
+                "0195f2a1-0052-4052-8052-000000000052".to_owned(),
+                "0195f2a1-0053-4053-8053-000000000053".to_owned(),
+                9,
+                "2026-08-12T09:30:00Z".to_owned(),
+                format!("0x{}", hex::encode(Sha256::digest(&body))),
+                body.len() as i64,
+                body,
+            ),
+            "the spool row must describe exactly the bytes it stores"
+        );
+    }
+
+    #[test]
+    fn a_body_that_is_not_a_valid_report_never_reaches_the_spool() {
+        assert!(matches!(
+            NewReport::from_body(Vec::new()),
+            Err(ReportStoreError::Empty)
+        ));
+        assert!(matches!(
+            NewReport::from_body(b"{\"report_id\":1}".to_vec()),
+            Err(ReportStoreError::InvalidReport(_))
+        ));
+        let invalid = fixture_body(|report| report["report_sequence"] = serde_json::json!(0));
+        assert!(matches!(
+            NewReport::from_body(invalid),
+            Err(ReportStoreError::InvalidReport(_))
+        ));
     }
 }

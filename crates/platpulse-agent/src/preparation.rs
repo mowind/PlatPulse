@@ -545,19 +545,8 @@ async fn persist_final_closing(
         .validate()
         .map_err(|error| PreparationError::InvalidReport(error.to_string()))?;
     let body = serde_json::to_vec(&report)?;
-    let generated = report.generated_at.to_string();
     let report_id = report.report_id.to_string();
-    crate::reporting::persist_closing_report(
-        store,
-        &report_id,
-        report.agent_epoch,
-        &report.boot_id.to_string(),
-        report.report_sequence,
-        &generated,
-        &body,
-        &state.boot,
-    )
-    .await?;
+    crate::reporting::persist_closing_report(store, &body, &state.boot).await?;
     Ok(report_id)
 }
 
@@ -1050,17 +1039,9 @@ mod tests {
 
         let mut store = open_store(&config).await;
         for sequence in 1..=3 {
-            persist_immutable_report(
-                &mut store,
-                &report_id(sequence),
-                AGENT_EPOCH as u64,
-                BOOT_ID,
-                sequence,
-                GENERATED_AT,
-                &report_body(sequence, &agent_id),
-            )
-            .await
-            .unwrap();
+            persist_immutable_report(&mut store, &report_body(sequence, &agent_id))
+                .await
+                .unwrap();
         }
         store.close().await.unwrap();
         seed_report_sequence(&config, 3).await;
@@ -1212,17 +1193,9 @@ mod tests {
 
         // Establish an accepted revision 1 with content A.
         let mut store = open_store(&config).await;
-        persist_immutable_report(
-            &mut store,
-            &report_id(1),
-            AGENT_EPOCH as u64,
-            BOOT_ID,
-            1,
-            GENERATED_AT,
-            &report_body(1, &agent_id),
-        )
-        .await
-        .unwrap();
+        persist_immutable_report(&mut store, &report_body(1, &agent_id))
+            .await
+            .unwrap();
         let transport = HttpReportTransport::from_config(&config).unwrap();
         crate::spool::send_oldest_unbounded(&mut store, &transport)
             .await

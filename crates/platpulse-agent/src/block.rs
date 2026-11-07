@@ -1856,16 +1856,8 @@ mod tests {
         let collection_barrier = barrier.clone();
         let collection_task = tokio::spawn(async move {
             collection_barrier.wait().await;
-            let result = crate::reporting::persist_immutable_report(
-                &mut collection_store,
-                "0195f2a1-0013-4013-8013-000000000013",
-                1,
-                "0195f2a1-0012-4012-8012-000000000012",
-                1,
-                "2026-08-12T09:00:00Z",
-                body,
-            )
-            .await;
+            let result =
+                crate::reporting::persist_immutable_report(&mut collection_store, body).await;
             (result, collection_store)
         });
         let delivery_barrier = barrier.clone();
