@@ -747,8 +747,7 @@ pub(crate) async fn persist_closing_report(
     report_sequence: u64,
     generated_at: &str,
     body: &[u8],
-    expected_report_sequence: u64,
-    expected_boot_state: &str,
+    expected: &crate::boot::BootState,
 ) -> Result<String, ReportStoreError> {
     let report = serde_json::from_slice::<AgentReport>(body)
         .map_err(|error| ReportStoreError::InvalidReport(error.to_string()))?;
@@ -766,20 +765,18 @@ pub(crate) async fn persist_closing_report(
         generated_at,
         body,
         Some(ClosingStateExpectation {
-            agent_epoch,
-            boot_id: boot_id.to_owned(),
-            report_sequence: expected_report_sequence,
-            boot_state: expected_boot_state.to_owned(),
+            expected,
+            boot_id: report.boot_id,
         }),
     )
     .await
 }
 
-struct ClosingStateExpectation {
-    agent_epoch: u64,
-    boot_id: String,
-    report_sequence: u64,
-    boot_state: String,
+/// The Boot record a Closing report was built from; storing the Closing
+/// advances exactly that record to the Closing's sequence.
+struct ClosingStateExpectation<'a> {
+    expected: &'a crate::boot::BootState,
+    boot_id: platpulse_core::BootId,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -791,7 +788,7 @@ async fn persist_immutable_report_inner(
     report_sequence: u64,
     generated_at: &str,
     body: &[u8],
-    closing: Option<ClosingStateExpectation>,
+    closing: Option<ClosingStateExpectation<'_>>,
 ) -> Result<String, ReportStoreError> {
     if body.is_empty() {
         return Err(ReportStoreError::Empty);
@@ -819,22 +816,16 @@ async fn persist_immutable_report_inner(
     let mut tx = store.write().await?;
     let transaction_result: Result<(), sqlx::Error> = async {
         if let Some(closing) = closing.as_ref() {
-            let state: Option<(i64, Option<String>, i64, String)> = sqlx::query_as(
-                "SELECT agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
-            )
-            .fetch_optional(&mut *tx)
-            .await?;
-            let Some((current_epoch, current_boot_id, current_sequence, current_boot_state)) = state
-            else {
+            let current = crate::boot::read(&mut tx).await.map_err(|error| match error {
+                crate::boot::BootStateError::Database(error) => error,
+                invalid => sqlx::Error::Protocol(invalid.to_string()),
+            })?;
+            let Some(current) = current else {
                 return Err(sqlx::Error::Protocol(
                     "Agent state is missing while storing Closing report".to_owned(),
                 ));
             };
-            if current_epoch != closing.agent_epoch as i64
-                || current_boot_id.as_deref() != Some(closing.boot_id.as_str())
-                || current_sequence != closing.report_sequence as i64
-                || current_boot_state != closing.boot_state
-            {
+            if &current != closing.expected {
                 return Err(sqlx::Error::Protocol(
                     "Agent state changed while storing Closing report".to_owned(),
                 ));
@@ -876,26 +867,28 @@ async fn persist_immutable_report_inner(
             ));
         }
         if let Some(closing) = closing.as_ref() {
-            let result = sqlx::query(
-                "UPDATE agent_state SET report_sequence=?, shutdown_state='final_stored', shutdown_report_id=?, shutdown_report_sequence=?, shutdown_finished_at=?, shutdown_updated_at=?, updated_at=? WHERE singleton=1 AND agent_epoch=? AND boot_id=? AND report_sequence=? AND boot_state=?",
+            if !crate::boot::record_report(
+                &mut tx,
+                closing.expected,
+                closing.boot_id,
+                report_sequence,
+                generated_at,
             )
-            .bind(report_sequence as i64)
-            .bind(report_id)
-            .bind(report_sequence as i64)
-            .bind(generated_at)
-            .bind(generated_at)
-            .bind(generated_at)
-            .bind(closing.agent_epoch as i64)
-            .bind(&closing.boot_id)
-            .bind(closing.report_sequence as i64)
-            .bind(&closing.boot_state)
-            .execute(&mut *tx)
-            .await?;
-            if result.rows_affected() != 1 {
+            .await?
+            {
                 return Err(sqlx::Error::Protocol(
                     "Agent state changed while storing Closing report".to_owned(),
                 ));
             }
+            sqlx::query(
+                "UPDATE agent_state SET shutdown_state='final_stored', shutdown_report_id=?, shutdown_report_sequence=?, shutdown_finished_at=?, shutdown_updated_at=? WHERE singleton=1",
+            )
+            .bind(report_id)
+            .bind(report_sequence as i64)
+            .bind(generated_at)
+            .bind(generated_at)
+            .execute(&mut *tx)
+            .await?;
         }
         Ok(())
     }

@@ -253,6 +253,15 @@ pub enum CollectionError {
     InventoryDeclaration(#[from] crate::inventory_declaration::InventoryDeclarationConflict),
 }
 
+impl From<crate::boot::BootStateError> for CollectionError {
+    fn from(error: crate::boot::BootStateError) -> Self {
+        match error {
+            crate::boot::BootStateError::Database(error) => Self::Database(error),
+            crate::boot::BootStateError::Invalid(detail) => Self::Identity(detail),
+        }
+    }
+}
+
 impl From<crate::inventory_declaration::InventoryGuardError> for CollectionError {
     fn from(error: crate::inventory_declaration::InventoryGuardError) -> Self {
         use crate::inventory_declaration::InventoryGuardError;
@@ -330,27 +339,6 @@ pub enum ApplyReceiptError {
     Database(#[from] sqlx::Error),
     #[error("Closing report {report_id} does not belong to the current Agent state")]
     StaleClosing { report_id: String },
-}
-
-type CollectionState = (
-    String,
-    i64,
-    Option<String>,
-    i64,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
-
-async fn load_collection_state(
-    store: &mut AgentStore,
-) -> Result<Option<CollectionState>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state, previous_boot_id, pending_transition, pending_previous_boot_id FROM agent_state WHERE singleton=1",
-    )
-    .fetch_optional(store.connection())
-    .await
 }
 
 pub(crate) fn is_transient_database_lock(error: &CollectionError) -> bool {
@@ -1226,125 +1214,25 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
         &crate::database::now_rfc3339(),
     )
     .await?;
-    let state: Option<(String, i64, Option<String>, i64, String)> = sqlx::query_as(
-        "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
-    )
-    .fetch_optional(store.connection())
-    .await?;
-    let Some((agent_text, epoch, boot_text, sequence, boot_state)) = state else {
-        return Err(CollectionError::NotEnrolled);
-    };
-    let Some(boot_text) = boot_text else {
+    let state = crate::boot::read(store.connection())
+        .await?
+        .ok_or(CollectionError::NotEnrolled)?;
+    // Nothing to recover: no Boot was ever stored, or an accepted Closing
+    // already closed the previous Boot and the current one has not reported.
+    let Some(boot_id) = state.boot_id else {
         return Ok(());
     };
-    if boot_state == "drained_pending" {
+    if matches!(state.phase, crate::boot::BootPhase::DrainedPending { .. }) {
         return Ok(());
-    }
-    if let Some(last_report) = load_last_report(&mut store).await? {
-        let last_report_id = last_report.report_id.to_string();
-        // Only an accepted (or partially accepted) Closing receipt proves the
-        // Server closed the Boot. A rejected marker still exists locally, but
-        // the Server kept the Boot active and the Closing must be rebuilt and
-        // re-sent (issue #178).
-        let closing_receipt_exists: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM report_receipts WHERE report_id = ? AND disposition != 'rejected'",
-        )
-        .bind(&last_report_id)
-        .fetch_optional(store.connection())
-        .await?;
-        if last_report.boot_id.to_string() == boot_text
-            && last_report.boot_transition == BootTransition::Closing
-            && closing_receipt_exists.is_some()
-        {
-            let new_boot_id = BootId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid");
-            let at = timestamp().to_string();
-            let mut tx = store.write().await?;
-            let transaction_result: Result<(), CollectionError> = async {
-                let current: Option<(String, i64, Option<String>, i64, String)> =
-                    sqlx::query_as(
-                        "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
-                    )
-                    .fetch_optional(&mut *tx)
-                    .await?;
-                let state_matches = current.as_ref().is_some_and(
-                    |(current_agent, current_epoch, current_boot, current_sequence, current_state)| {
-                        current_agent == &agent_text
-                            && *current_epoch == epoch
-                            && current_boot.as_deref() == Some(boot_text.as_str())
-                            && *current_sequence == sequence
-                            && current_state == &boot_state
-                    },
-                );
-                let receipt_exists: Option<i64> = sqlx::query_scalar(
-                    "SELECT 1 FROM report_receipts WHERE report_id = ? AND disposition != 'rejected'",
-                )
-                .bind(&last_report_id)
-                .fetch_optional(&mut *tx)
-                .await?;
-                if !state_matches || receipt_exists.is_none() {
-                    return Err(CollectionError::ConcurrentStateChange);
-                }
-                let result = sqlx::query("UPDATE agent_state SET boot_id=?, report_sequence=0, boot_state='drained_pending', pending_transition='drained_previous', pending_previous_boot_id=?, previous_boot_id=?, close_report_id=?, close_applied_at=?, shutdown_state='final_stored', shutdown_finished_at=?, shutdown_last_error=NULL, shutdown_updated_at=?, updated_at=? WHERE singleton=1")
-                    .bind(new_boot_id.to_string())
-                    .bind(&boot_text)
-                    .bind(&boot_text)
-                    .bind(&last_report_id)
-                    .bind(&at)
-                    .bind(&at)
-                    .bind(&at)
-                    .bind(&at)
-                    .execute(&mut *tx)
-                    .await?;
-                if result.rows_affected() != 1 {
-                    return Err(CollectionError::ConcurrentStateChange);
-                }
-                Ok(())
-            }
-            .await;
-            match transaction_result {
-                Ok(()) => tx.commit().await?,
-                Err(error) => {
-                    tx.rollback().await?;
-                    return Err(error);
-                }
-            }
-            store.close().await?;
-            return Ok(());
-        }
     }
     let mut tx = store.write().await?;
-    let transaction_result: Result<(), CollectionError> = async {
-        let current: Option<(String, i64, Option<String>, i64, String)> = sqlx::query_as(
-            "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
-        )
-        .fetch_optional(&mut *tx)
-        .await?;
-        let state_matches = current.as_ref().is_some_and(
-            |(current_agent, current_epoch, current_boot, current_sequence, current_state)| {
-                current_agent == &agent_text
-                    && *current_epoch == epoch
-                    && current_boot.as_deref() == Some(boot_text.as_str())
-                    && *current_sequence == sequence
-                    && current_state == &boot_state
-            },
-        );
-        if !state_matches {
-            return Err(CollectionError::ConcurrentStateChange);
-        }
-        sqlx::query("UPDATE agent_state SET boot_state='draining', updated_at=? WHERE singleton=1")
-            .bind(timestamp().to_string())
-            .execute(&mut *tx)
-            .await?;
-        Ok(())
-    }
-    .await;
-    match transaction_result {
-        Ok(()) => tx.commit().await?,
-        Err(error) => {
-            tx.rollback().await?;
-            return Err(error);
-        }
-    }
+    let Some(draining) =
+        crate::boot::begin_recovery_drain(&mut tx, &state, &timestamp().to_string()).await?
+    else {
+        tx.rollback().await?;
+        return Err(CollectionError::ConcurrentStateChange);
+    };
+    tx.commit().await?;
     // Drain oldest-first. A Closing report whose Boot was already superseded
     // cannot be applied to the current agent_state; the Server has received its
     // exact bytes, so the local orphan is quarantined and the drain continues
@@ -1352,7 +1240,7 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
     loop {
         match crate::reporting::deliver_one_with_disposition(&mut store, transport).await {
             Ok(Some((delivered, disposition))) => {
-                if delivered_report_closes_boot(&delivered, disposition, &boot_text)? {
+                if delivered_report_closes_boot(&delivered, disposition, boot_id)? {
                     store.close().await?;
                     return Ok(());
                 }
@@ -1365,10 +1253,6 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
         }
     }
 
-    let agent_id = AgentId::from_str(&agent_text)
-        .map_err(|error| CollectionError::Identity(error.to_string()))?;
-    let boot_id = BootId::from_str(&boot_text)
-        .map_err(|error| CollectionError::Identity(error.to_string()))?;
     let validated = config
         .validated_inventory()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
@@ -1382,10 +1266,10 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
     );
     let mut closing = collect_report_with_data_directories(
         config,
-        agent_id,
-        epoch as u64,
+        draining.agent_id,
+        draining.agent_epoch,
         boot_id,
-        sequence as u64 + 1,
+        draining.report_sequence + 1,
         validated.inventory,
         adapter,
         clock_skew_error(at, "Server time exchange was unavailable during recovery"),
@@ -1410,15 +1294,14 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
         closing.report_sequence,
         &closing.generated_at.to_string(),
         &body,
-        sequence as u64,
-        "draining",
+        &draining,
     )
     .await?;
     let (delivered, disposition) =
         crate::reporting::deliver_one_with_disposition(&mut store, transport)
             .await?
             .ok_or(CollectionError::RecoveryRequired)?;
-    if !delivered_report_closes_boot(&delivered, disposition, &boot_text)? {
+    if !delivered_report_closes_boot(&delivered, disposition, boot_id)? {
         return Err(CollectionError::RecoveryRequired);
     }
     store.close().await?;
@@ -1431,11 +1314,11 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
 fn delivered_report_closes_boot(
     delivered: &crate::reporting::StoredReport,
     disposition: ReceiptDisposition,
-    boot_id: &str,
+    boot_id: BootId,
 ) -> Result<bool, CollectionError> {
     let (report_boot_id, boot_transition) =
         crate::reporting::report_boot_identity(&delivered.body)?;
-    Ok(report_boot_id.to_string() == boot_id
+    Ok(report_boot_id == boot_id
         && boot_transition == BootTransition::Closing
         && disposition != ReceiptDisposition::Rejected)
 }
@@ -1498,27 +1381,12 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
     store: &mut AgentStore,
 ) -> Result<String, CollectionError> {
     crate::reporting::ensure_spool_not_fatal(store).await?;
-    let state: Option<CollectionState> = load_collection_state(store).await?;
-    let (
-        agent_text,
-        epoch,
-        boot_text,
-        previous_sequence,
-        boot_state,
-        _previous_boot_id,
-        pending_transition,
-        pending_previous_boot_id,
-    ) = state.ok_or(CollectionError::NotEnrolled)?;
-    if boot_state == "draining" {
-        return Err(CollectionError::RecoveryRequired);
-    }
-    let agent_id = AgentId::from_str(&agent_text)
-        .map_err(|error| CollectionError::Identity(error.to_string()))?;
-    let boot_id = match boot_text {
-        Some(value) => BootId::from_str(&value)
-            .map_err(|error| CollectionError::Identity(error.to_string()))?,
-        None => BootId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid"),
-    };
+    let state = crate::boot::read(store.connection())
+        .await?
+        .ok_or(CollectionError::NotEnrolled)?;
+    let next = state
+        .next_report()
+        .ok_or(CollectionError::RecoveryRequired)?;
     let validated = config
         .validated_inventory()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
@@ -1546,10 +1414,10 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
     };
     let mut report = collect_report_with_data_directories(
         config,
-        agent_id,
-        epoch as u64,
-        boot_id,
-        previous_sequence as u64 + 1,
+        state.agent_id,
+        state.agent_epoch,
+        next.boot_id,
+        next.report_sequence,
         validated.inventory,
         adapter,
         clock_skew,
@@ -1558,14 +1426,8 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
     if let Some(previous) = previous.as_ref() {
         preserve_last_good_values(&mut report, previous);
     }
-    if pending_transition.as_deref() == Some("drained_previous") {
-        report.boot_transition = BootTransition::DrainedPrevious;
-        report.previous_boot_id = pending_previous_boot_id
-            .as_deref()
-            .map(BootId::from_str)
-            .transpose()
-            .map_err(|error| CollectionError::Identity(error.to_string()))?;
-    }
+    report.boot_transition = next.boot_transition;
+    report.previous_boot_id = next.previous_boot_id;
     report.block_summaries = load_block_summaries(store).await?;
     let monitored_nodes = report
         .inventory
@@ -1588,24 +1450,6 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
     let now = report.generated_at.to_string();
     let mut tx = store.write().await?;
     let transaction_result: Result<(), CollectionError> = async {
-        let committed_state: Option<(i64, Option<String>, i64, String)> = sqlx::query_as(
-            "SELECT agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
-        )
-    .fetch_optional(&mut *tx)
-    .await?;
-    let report_boot_id = report.boot_id.to_string();
-    let state_matches =
-        committed_state
-            .as_ref()
-            .is_some_and(|(epoch, boot_id, sequence, current_boot_state)| {
-                *epoch == report.agent_epoch as i64
-                    && *sequence == report.report_sequence as i64 - 1
-                    && current_boot_state == &boot_state
-                    && (boot_id.as_deref() == Some(report_boot_id.as_str()) || boot_id.is_none())
-            });
-        if !state_matches {
-            return Err(CollectionError::ConcurrentStateChange);
-        }
     sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, in_flight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)")
         .bind(report.report_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.generated_at.to_string()).bind(&body).bind(&digest).bind(body.len() as i64).bind(&now).execute(&mut *tx).await?;
     if !crate::reporting::claim_report_samples(
@@ -1627,20 +1471,12 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
         &body,
     )
     .await?;
-    let transition = match report.boot_transition {
-        BootTransition::Continuing => "continuing",
-        BootTransition::Closing => "closing",
-        BootTransition::DrainedPrevious => "drained_previous",
-        BootTransition::RecoveredAfterStale => "recovered_after_stale",
-    };
-    update_agent_state_for_persisted_report(
-        &mut tx,
-        &report,
-        validated.server_managed_inventory,
-        transition,
-        &now,
-    )
-    .await?;
+    if !crate::boot::record_report(&mut tx, &state, report.boot_id, report.report_sequence, &now)
+        .await?
+    {
+        return Err(CollectionError::ConcurrentStateChange);
+    }
+    record_inventory_revision(&mut tx, &report, validated.server_managed_inventory, &now).await?;
         Ok(())
     }
     .await;
@@ -2198,27 +2034,12 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
     )
     .await?;
     crate::reporting::ensure_spool_not_fatal(&mut store).await?;
-    let state: Option<CollectionState> = load_collection_state(&mut store).await?;
-    let (
-        agent_text,
-        epoch,
-        boot_text,
-        previous_sequence,
-        boot_state,
-        _previous_boot_id,
-        pending_transition,
-        pending_previous_boot_id,
-    ) = state.ok_or(CollectionError::NotEnrolled)?;
-    if boot_state == "draining" {
-        return Err(CollectionError::RecoveryRequired);
-    }
-    let agent_id = AgentId::from_str(&agent_text)
-        .map_err(|error| CollectionError::Identity(error.to_string()))?;
-    let boot_id = match boot_text {
-        Some(value) => BootId::from_str(&value)
-            .map_err(|error| CollectionError::Identity(error.to_string()))?,
-        None => BootId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid"),
-    };
+    let state = crate::boot::read(store.connection())
+        .await?
+        .ok_or(CollectionError::NotEnrolled)?;
+    let next = state
+        .next_report()
+        .ok_or(CollectionError::RecoveryRequired)?;
     let validated = config
         .validated_inventory()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
@@ -2240,10 +2061,10 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
     let inventory = validated.inventory;
     let mut report = collect_report_with_data_directories(
         config,
-        agent_id,
-        epoch as u64,
-        boot_id,
-        previous_sequence as u64 + 1,
+        state.agent_id,
+        state.agent_epoch,
+        next.boot_id,
+        next.report_sequence,
         inventory.clone(),
         adapter,
         clock_skew,
@@ -2324,14 +2145,8 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
             }
         }
     }
-    if pending_transition.as_deref() == Some("drained_previous") {
-        report.boot_transition = BootTransition::DrainedPrevious;
-        report.previous_boot_id = pending_previous_boot_id
-            .as_deref()
-            .map(BootId::from_str)
-            .transpose()
-            .map_err(|error| CollectionError::Identity(error.to_string()))?;
-    }
+    report.boot_transition = next.boot_transition;
+    report.previous_boot_id = next.previous_boot_id;
     report.block_summaries = load_block_summaries(&mut store).await?;
     let monitored_nodes = report
         .inventory
@@ -2354,24 +2169,6 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
     let now = report.generated_at.to_string();
     let mut tx = store.write().await?;
     let transaction_result: Result<(), CollectionError> = async {
-        let committed_state: Option<(i64, Option<String>, i64, String)> = sqlx::query_as(
-            "SELECT agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
-        )
-    .fetch_optional(&mut *tx)
-    .await?;
-    let report_boot_id = report.boot_id.to_string();
-    let state_matches =
-        committed_state
-            .as_ref()
-            .is_some_and(|(epoch, boot_id, sequence, current_boot_state)| {
-                *epoch == report.agent_epoch as i64
-                    && *sequence == report.report_sequence as i64 - 1
-                    && current_boot_state == &boot_state
-                    && (boot_id.as_deref() == Some(report_boot_id.as_str()) || boot_id.is_none())
-            });
-        if !state_matches {
-            return Err(CollectionError::ConcurrentStateChange);
-        }
     sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, in_flight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)")
         .bind(report.report_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.generated_at.to_string()).bind(&body).bind(&digest).bind(body.len() as i64).bind(&now).execute(&mut *tx).await?;
     if !crate::reporting::claim_report_samples(
@@ -2393,20 +2190,12 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
         &body,
     )
     .await?;
-    let transition = match report.boot_transition {
-        BootTransition::Continuing => "continuing",
-        BootTransition::Closing => "closing",
-        BootTransition::DrainedPrevious => "drained_previous",
-        BootTransition::RecoveredAfterStale => "recovered_after_stale",
-    };
-    update_agent_state_for_persisted_report(
-        &mut tx,
-        &report,
-        validated.server_managed_inventory,
-        transition,
-        &now,
-    )
-    .await?;
+    if !crate::boot::record_report(&mut tx, &state, report.boot_id, report.report_sequence, &now)
+        .await?
+    {
+        return Err(CollectionError::ConcurrentStateChange);
+    }
+    record_inventory_revision(&mut tx, &report, validated.server_managed_inventory, &now).await?;
         Ok(())
     }
     .await;
@@ -2441,29 +2230,24 @@ fn spool_diagnostics_for_transition(
     diagnostics
 }
 
-async fn update_agent_state_for_persisted_report(
+/// Record the Inventory revision a stored report declared. A Server-managed
+/// (v2) Agent never declares a revision, so the legacy local column records 0
+/// rather than an invented value.
+async fn record_inventory_revision(
     tx: &mut crate::database::WriteTx<'_>,
     report: &AgentReport,
     server_managed_inventory: bool,
-    transition: &str,
     now: &str,
 ) -> Result<(), sqlx::Error> {
-    // Persisting the report advances the local sequence, but the Boot
-    // transition it carries is not consumed here. A drained_previous
-    // transition stays in agent_state until an accepted receipt proves the
-    // Server applied it (apply_receipt); otherwise a rejected first report
-    // would silently degrade every later report to a continuing transition
-    // while the Server still waits for a matching drained_previous (issue #164).
-    sqlx::query("UPDATE agent_state SET agent_id=?, agent_epoch=?, boot_id=?, report_sequence=?, inventory_revision=?, updated_at=? WHERE singleton=1")
-        // A Server-managed (v2) Agent never declares a revision, so the legacy
-        // local column records 0 rather than an invented value.
-        .bind(report.agent_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(if server_managed_inventory { 0 } else { report.inventory.revision as i64 }).bind(now).execute(&mut **tx).await?;
-    if transition == "drained_previous" {
-        sqlx::query("UPDATE agent_state SET shutdown_state='running', shutdown_started_at=NULL, shutdown_deadline_at=NULL, shutdown_finished_at=NULL, shutdown_unresolved_from=NULL, shutdown_unresolved_to=NULL, shutdown_last_error=NULL, shutdown_forced=0, shutdown_report_id=NULL, shutdown_report_sequence=NULL, shutdown_updated_at=? WHERE singleton=1")
-            .bind(now)
-            .execute(&mut **tx)
-            .await?;
-    }
+    sqlx::query("UPDATE agent_state SET inventory_revision=?, updated_at=? WHERE singleton=1")
+        .bind(if server_managed_inventory {
+            0
+        } else {
+            report.inventory.revision as i64
+        })
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }
 
@@ -3014,17 +2798,27 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
     if parsed_report.boot_transition == BootTransition::DrainedPrevious
         && receipt.disposition != ReceiptDisposition::Rejected
     {
-        // The Server applied the transition, so the pending drained_previous
-        // marker has served its purpose. Both accepted and partially_accepted
-        // prove the Boot was applied; a rejected receipt leaves it in
-        // agent_state so the next report re-carries the transition and the
-        // Agent can heal once the Server accepts again.
-        sqlx::query("UPDATE agent_state SET boot_state='active', pending_transition=NULL, pending_previous_boot_id=NULL, updated_at=? WHERE singleton=1 AND agent_epoch=? AND boot_id=?")
-            .bind(applied_at)
-            .bind(parsed_report.agent_epoch as i64)
-            .bind(parsed_report.boot_id.to_string())
-            .execute(&mut *tx)
-            .await?;
+        // The Server applied the transition, so the Boot it announced is
+        // settled. Both accepted and partially_accepted prove the Boot was
+        // applied; a rejected receipt leaves the Boot DrainedPending so the
+        // next report re-carries the transition.
+        if crate::boot::settle(
+            &mut tx,
+            parsed_report.agent_epoch,
+            parsed_report.boot_id,
+            applied_at,
+        )
+        .await?
+        {
+            // The shutdown that closed the previous Boot is now fully
+            // resolved, so its diagnostics return to running. Closing the Boot
+            // left them final_stored for that Closing; anything else is a
+            // shutdown the current Boot has already begun and keeps its record.
+            sqlx::query("UPDATE agent_state SET shutdown_state='running', shutdown_started_at=NULL, shutdown_deadline_at=NULL, shutdown_finished_at=NULL, shutdown_unresolved_from=NULL, shutdown_unresolved_to=NULL, shutdown_last_error=NULL, shutdown_forced=0, shutdown_report_id=NULL, shutdown_report_sequence=NULL, shutdown_updated_at=? WHERE singleton=1 AND shutdown_state='final_stored' AND shutdown_report_id IS close_report_id")
+                .bind(applied_at)
+                .execute(&mut *tx)
+                .await?;
+        }
     }
     if parsed_report.boot_transition == BootTransition::Closing
         && receipt.disposition != ReceiptDisposition::Rejected
@@ -3034,49 +2828,31 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
         // rotation would make every later drained_previous report a permanent
         // conflicting_boot. A rejected Closing stays on the current Boot and is
         // rebuilt and re-sent by the next recovery drain.
-        let new_boot_id =
-            BootId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid");
-        let closed_boot_id = parsed_report.boot_id.to_string();
-        let result = sqlx::query(
-            "UPDATE agent_state SET boot_id=?, report_sequence=0, boot_state='drained_pending', pending_transition='drained_previous', pending_previous_boot_id=COALESCE(pending_previous_boot_id, ?), previous_boot_id=?, close_report_id=?, close_applied_at=?, shutdown_state='final_stored', shutdown_finished_at=?, shutdown_last_error=NULL, shutdown_updated_at=?, updated_at=? WHERE singleton=1 AND agent_epoch=? AND boot_id=? AND report_sequence=? AND boot_state IN ('active', 'draining', 'drained_pending')",
+        match crate::boot::close(
+            &mut tx,
+            parsed_report.agent_epoch,
+            parsed_report.boot_id,
+            parsed_report.report_sequence,
+            report_id,
+            applied_at,
         )
-        .bind(new_boot_id.to_string())
-        .bind(&closed_boot_id)
-        .bind(&closed_boot_id)
-        .bind(report_id)
-        .bind(applied_at)
-        .bind(applied_at)
-        .bind(applied_at)
-        .bind(applied_at)
-        .bind(parsed_report.agent_epoch as i64)
-        .bind(&closed_boot_id)
-        .bind(parsed_report.report_sequence as i64)
-        .execute(&mut *tx)
-        .await?;
-        if result.rows_affected() != 1 {
-            // Distinguish a Closing report whose state was genuinely
-            // superseded from a race with another writer: only a mismatch on
-            // the CAS key (epoch, boot, sequence) is an orphan the recovery
-            // drain may discard.
-            let current: Option<(i64, Option<String>, i64)> = sqlx::query_as(
-                "SELECT agent_epoch, boot_id, report_sequence FROM agent_state WHERE singleton=1",
-            )
-            .fetch_optional(&mut *tx)
-            .await?;
-            let belongs_to_current_state = match current.as_ref() {
-                Some((current_epoch, current_boot, current_sequence)) => {
-                    *current_epoch == parsed_report.agent_epoch as i64
-                        && current_boot.as_deref() == Some(closed_boot_id.as_str())
-                        && *current_sequence == parsed_report.report_sequence as i64
-                }
-                None => true,
-            };
-            if !belongs_to_current_state {
-                stale_closing = true;
+        .await?
+        {
+            crate::boot::CloseOutcome::Closed { .. } => {
+                sqlx::query("UPDATE agent_state SET shutdown_state='final_stored', shutdown_finished_at=?, shutdown_last_error=NULL, shutdown_updated_at=? WHERE singleton=1")
+                    .bind(applied_at)
+                    .bind(applied_at)
+                    .execute(&mut *tx)
+                    .await?;
             }
-            return Err(sqlx::Error::Protocol(
-                "Agent state changed while applying Closing receipt".to_owned(),
-            ));
+            // Only a Closing the record has moved past is an orphan the
+            // recovery drain may discard; a race with another writer is not.
+            outcome => {
+                stale_closing = outcome == crate::boot::CloseOutcome::Superseded;
+                return Err(sqlx::Error::Protocol(
+                    "Agent state changed while applying Closing receipt".to_owned(),
+                ));
+            }
         }
     }
         Ok(())
@@ -3186,35 +2962,27 @@ mod tests {
         };
 
         assert!(
-            delivered_report_closes_boot(
-                &stored,
-                ReceiptDisposition::Accepted,
-                &report.boot_id.to_string(),
-            )
-            .unwrap()
+            delivered_report_closes_boot(&stored, ReceiptDisposition::Accepted, report.boot_id,)
+                .unwrap()
         );
         assert!(
             delivered_report_closes_boot(
                 &stored,
                 ReceiptDisposition::PartiallyAccepted,
-                &report.boot_id.to_string(),
+                report.boot_id,
             )
             .unwrap()
         );
         assert!(
-            !delivered_report_closes_boot(
-                &stored,
-                ReceiptDisposition::Rejected,
-                &report.boot_id.to_string(),
-            )
-            .unwrap(),
+            !delivered_report_closes_boot(&stored, ReceiptDisposition::Rejected, report.boot_id,)
+                .unwrap(),
             "a rejected Closing receipt must not close the Boot"
         );
         assert!(
             !delivered_report_closes_boot(
                 &stored,
                 ReceiptDisposition::Accepted,
-                "0195f2a1-0099-4099-8099-000000000099",
+                BootId::from_str("0195f2a1-0099-4099-8099-000000000099").unwrap(),
             )
             .unwrap()
         );
@@ -4050,6 +3818,10 @@ mod tests {
         reopened.close().await.unwrap();
     }
 
+    /// The shutdown that closed the previous Boot stays on record until the
+    /// Server applies the successor's drained_previous report: a local persist
+    /// or a rejected receipt leaves it, only the accepted receipt that settles
+    /// the Boot returns it to running.
     #[tokio::test]
     async fn drained_previous_transition_survives_persist_until_an_accepted_receipt() {
         let dir = tempdir().unwrap();
@@ -4067,56 +3839,262 @@ mod tests {
         let config = AgentConfig::resolve(&config_path).unwrap();
         let old_boot = "0195f2a1-0040-4040-8040-000000000040";
         let new_boot = "0195f2a1-0041-4041-8041-000000000041";
+        let closing_id = "0195f2a1-0042-4042-8042-000000000042";
         let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
             .await
             .unwrap();
-        sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, boot_state, pending_transition, pending_previous_boot_id, shutdown_state, shutdown_started_at, updated_at) VALUES (1, ?, 1, ?, 0, 1, 'drained_pending', 'drained_previous', ?, 'draining', ?, ?)")
+        sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, boot_state, pending_transition, pending_previous_boot_id, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_report_id, updated_at) VALUES (1, ?, 1, ?, 0, 1, 'drained_pending', 'drained_previous', ?, ?, ?, 'final_stored', ?, ?, ?)")
             .bind("0195f2a1-0011-4011-8011-000000000011")
             .bind(new_boot)
             .bind(old_boot)
+            .bind(old_boot)
+            .bind(closing_id)
             .bind("2026-08-12T07:59:00Z")
+            .bind(closing_id)
             .bind("2026-08-12T08:00:00Z")
             .execute(store.connection())
             .await
             .unwrap();
         store.close().await.unwrap();
 
+        async fn boot_and_shutdown(
+            store: &mut AgentStore,
+        ) -> (String, Option<String>, String, Option<String>) {
+            sqlx::query_as(
+                "SELECT boot_state, pending_previous_boot_id, shutdown_state, shutdown_started_at FROM agent_state WHERE singleton=1",
+            )
+            .fetch_one(store.connection())
+            .await
+            .unwrap()
+        }
+        let pending = (
+            "drained_pending".to_owned(),
+            Some(old_boot.to_owned()),
+            "final_stored".to_owned(),
+            Some("2026-08-12T07:59:00Z".to_owned()),
+        );
+
         let digest = collect_and_persist(&config, &ScriptedRpcAdapter::new(snapshot()))
             .await
             .unwrap();
-        let mut reopened = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
             .await
             .unwrap();
-        let body: Vec<u8> = sqlx::query_scalar("SELECT body FROM reports WHERE body_sha256=?")
-            .bind(&digest)
-            .fetch_one(reopened.connection())
-            .await
-            .unwrap();
-        let report: AgentReport = serde_json::from_slice(&body).unwrap();
+        let report: AgentReport =
+            serde_json::from_slice(&read_spool_body(&mut store, &digest).await).unwrap();
         assert_eq!(report.boot_transition, BootTransition::DrainedPrevious);
         assert_eq!(report.previous_boot_id.unwrap().to_string(), old_boot);
         let spool = report.host.spool.latest.unwrap();
         assert_eq!(spool.shutdown_state.as_deref(), Some("running"));
         assert_eq!(spool.shutdown_started_at, None);
-        let state: (String, Option<String>, Option<String>, String, String, Option<String>) =
-            sqlx::query_as(
-                "SELECT boot_id, pending_transition, pending_previous_boot_id, boot_state, shutdown_state, shutdown_started_at FROM agent_state WHERE singleton=1",
-            )
-            .fetch_one(reopened.connection())
+        assert_eq!(
+            boot_and_shutdown(&mut store).await,
+            pending,
+            "storing the report must not settle the Boot or clear the shutdown record"
+        );
+
+        assert!(
+            crate::reporting::deliver_one(&mut store, &RejectAllTransport)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            boot_and_shutdown(&mut store).await,
+            pending,
+            "a rejected receipt must not settle the Boot or clear the shutdown record"
+        );
+        store.close().await.unwrap();
+
+        collect_and_persist(&config, &ScriptedRpcAdapter::new(snapshot()))
             .await
             .unwrap();
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        assert!(
+            crate::reporting::deliver_one(&mut store, &AcceptAllTransport)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            boot_and_shutdown(&mut store).await,
+            ("active".to_owned(), None, "running".to_owned(), None)
+        );
+        let shutdown_report_id: Option<String> =
+            sqlx::query_scalar("SELECT shutdown_report_id FROM agent_state WHERE singleton=1")
+                .fetch_one(store.connection())
+                .await
+                .unwrap();
+        assert_eq!(shutdown_report_id, None);
+        store.close().await.unwrap();
+    }
+
+    /// Store a report body in the Durable Spool exactly as the Agent would.
+    async fn insert_spooled_report(
+        store: &mut AgentStore,
+        report: &AgentReport,
+    ) -> (Vec<u8>, String) {
+        let body = serde_json::to_vec(report).unwrap();
+        let hash = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
+        sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(report.report_id.to_string())
+            .bind(report.agent_epoch as i64)
+            .bind(report.boot_id.to_string())
+            .bind(report.report_sequence as i64)
+            .bind(report.generated_at.to_string())
+            .bind(&body)
+            .bind(&hash)
+            .bind(body.len() as i64)
+            .bind("2026-08-12T08:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        (body, hash)
+    }
+
+    fn drained_previous_report(boot: &str, sequence: u64, previous: &str, id: &str) -> AgentReport {
+        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        report.agent_epoch = 1;
+        report.boot_id = boot.parse().unwrap();
+        report.report_sequence = sequence;
+        report.report_id = id.parse().unwrap();
+        report.boot_transition = BootTransition::DrainedPrevious;
+        report.previous_boot_id = Some(previous.parse().unwrap());
+        report.validate().unwrap();
+        report
+    }
+
+    /// A drained_previous report built before the Boot settled can still be
+    /// queued when the process dies. Delivering it during the next Recovery
+    /// Drain must not put the draining Boot back to active, or the drain could
+    /// never store its Closing report.
+    #[tokio::test]
+    async fn recovery_drain_delivering_a_queued_drained_previous_report_still_closes_the_boot() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("agent.toml");
+        let db_path = dir.path().join("agent.db");
+        std::fs::write(
+            &config_path,
+            format!(
+                "server_url=\"https://example.com\"\ncredential_file=\"{}/credential\"\nstate_db=\"{}\"\ninventory_revision=1\nnodes=[{{node_id=\"0195f2a1-0014-4014-8014-000000000014\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:6790\"}}]\n",
+                dir.path().display(),
+                db_path.display()
+            ),
+        )
+        .unwrap();
+        let config = AgentConfig::resolve(&config_path).unwrap();
+        let old_boot = "0195f2a1-0040-4040-8040-000000000040";
+        let boot = "0195f2a1-0041-4041-8041-000000000041";
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        // The first drained_previous report was accepted and settled the Boot;
+        // the second one is still queued.
+        sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, boot_state, previous_boot_id, updated_at) VALUES (1, ?, 1, ?, 2, 1, 'active', ?, ?)")
+            .bind("0195f2a1-0011-4011-8011-000000000011")
+            .bind(boot)
+            .bind(old_boot)
+            .bind("2026-08-12T08:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        let queued =
+            drained_previous_report(boot, 2, old_boot, "0195f2a1-0052-4052-8052-000000000052");
+        insert_spooled_report(&mut store, &queued).await;
+        store.close().await.unwrap();
+
+        recover_previous_boot_with_transport(
+            &config,
+            &ScriptedRpcAdapter::new(snapshot()),
+            AgentStoreWritePermit::new(),
+            &AcceptAllTransport,
+        )
+        .await
+        .unwrap();
+
+        let mut reopened = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        let state: (String, String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT boot_state, boot_id, pending_previous_boot_id, previous_boot_id FROM agent_state WHERE singleton=1",
+        )
+        .fetch_one(reopened.connection())
+        .await
+        .unwrap();
+        assert_eq!(state.0, "drained_pending");
+        assert_ne!(state.1, boot);
+        assert_eq!(state.2.as_deref(), Some(boot));
+        assert_eq!(state.3.as_deref(), Some(boot));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(reopened.connection())
+                .await
+                .unwrap(),
+            0
+        );
+        reopened.close().await.unwrap();
+    }
+
+    /// Settling the Boot clears only the record of the shutdown that closed the
+    /// previous Boot. A graceful shutdown of the current Boot that delivers a
+    /// queued drained_previous report keeps its own in-progress record.
+    #[tokio::test]
+    async fn settling_the_boot_keeps_a_shutdown_the_current_boot_began() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("agent.db");
+        let old_boot = "0195f2a1-0040-4040-8040-000000000040";
+        let boot = "0195f2a1-0041-4041-8041-000000000041";
+        let closing_id = "0195f2a1-0042-4042-8042-000000000042";
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, boot_state, pending_transition, pending_previous_boot_id, previous_boot_id, close_report_id, shutdown_state, shutdown_started_at, shutdown_report_id, updated_at) VALUES (1, ?, 1, ?, 1, 1, 'drained_pending', 'drained_previous', ?, ?, ?, 'draining', ?, ?, ?)")
+            .bind("0195f2a1-0011-4011-8011-000000000011")
+            .bind(boot)
+            .bind(old_boot)
+            .bind(old_boot)
+            .bind(closing_id)
+            .bind("2026-08-12T08:30:00Z")
+            .bind(closing_id)
+            .bind("2026-08-12T08:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        let report =
+            drained_previous_report(boot, 1, old_boot, "0195f2a1-0053-4053-8053-000000000053");
+        let (body, hash) = insert_spooled_report(&mut store, &report).await;
+
+        apply_receipt(
+            &mut store,
+            &report.report_id.to_string(),
+            &hash,
+            "accepted",
+            &accepted_receipt(&body),
+            "2026-08-12T08:30:01Z",
+        )
+        .await
+        .unwrap();
+
+        let state: (String, String, Option<String>) = sqlx::query_as(
+            "SELECT boot_state, shutdown_state, shutdown_started_at FROM agent_state WHERE singleton=1",
+        )
+        .fetch_one(store.connection())
+        .await
+        .unwrap();
         assert_eq!(
             state,
             (
-                new_boot.to_owned(),
-                Some("drained_previous".to_owned()),
-                Some(old_boot.to_owned()),
-                "drained_pending".to_owned(),
-                "running".to_owned(),
-                None,
+                "active".to_owned(),
+                "draining".to_owned(),
+                Some("2026-08-12T08:30:00Z".to_owned()),
             )
         );
-        reopened.close().await.unwrap();
+        store.close().await.unwrap();
     }
 
     /// Build a rejected receipt for the exact report bytes, mirroring the

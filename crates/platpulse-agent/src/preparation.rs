@@ -20,7 +20,6 @@
 //! resumed with its original bytes rather than replaced, so a transport outage
 //! does not accumulate duplicate Closing reports.
 
-use std::str::FromStr;
 use std::time::Duration;
 
 use platpulse_core::identity::{AgentId, BootId};
@@ -29,6 +28,7 @@ use platpulse_core::{AgentReport, BootTransition, InventoryDisposition, ReceiptD
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::boot::{BootPhase, BootState};
 use crate::config::AgentConfig;
 use crate::credential::load_credential_file;
 use crate::database::{
@@ -127,17 +127,10 @@ pub struct ServerPreparationBaseline {
     pub last_report_sequence: Option<i64>,
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug)]
 struct PreparationState {
-    agent_id: Option<String>,
-    agent_epoch: i64,
-    boot_id: Option<String>,
-    report_sequence: i64,
-    boot_state: String,
-    previous_boot_id: Option<String>,
-    pending_transition: Option<String>,
-    pending_previous_boot_id: Option<String>,
-    close_report_id: Option<String>,
+    boot: BootState,
+    /// The newest Closing stored by a shutdown or a previous preparation.
     shutdown_report_id: Option<String>,
 }
 
@@ -207,25 +200,25 @@ pub(crate) async fn prepare_v1_upgrade_with_transport<T: crate::reporting::Repor
     .await?;
 
     let state = load_state(&mut store).await?;
-    if state.boot_state == "draining" {
-        return Err(PreparationError::RecoveryRequired(state.boot_state));
+    if state.boot.phase == BootPhase::RecoveryDraining {
+        return Err(PreparationError::RecoveryRequired(
+            state.boot.phase.to_string(),
+        ));
     }
-    let agent_id = state
-        .agent_id
-        .clone()
-        .ok_or(PreparationError::NotEnrolled)?;
-    let agent_epoch = state.agent_epoch.max(0) as u64;
-    let current_boot_id = state.boot_id.clone().ok_or(PreparationError::NotEnrolled)?;
-    let agent_id_parsed = AgentId::from_str(&agent_id)
-        .map_err(|error| PreparationError::StateChanged(error.to_string()))?;
+    let agent_id_parsed = state.boot.agent_id;
+    let agent_id = agent_id_parsed.to_string();
+    let agent_epoch = state.boot.agent_epoch;
+    let current_boot_id = state
+        .boot
+        .boot_id
+        .ok_or(PreparationError::NotEnrolled)?
+        .to_string();
 
     // 1. Determine the final Closing. A finished preparation (or a prior
     //    graceful shutdown) already left the Boot drained_pending; otherwise
     //    resume an un-applied Closing or generate one for the current Boot.
-    let closing = if state.boot_state == "drained_pending"
-        && state.pending_transition.as_deref() == Some("drained_previous")
-    {
-        existing_closing(&state)?
+    let closing = if let BootPhase::DrainedPending { previous_boot_id } = state.boot.phase {
+        existing_closing(&state.boot, previous_boot_id)?
     } else {
         complete_final_closing(
             &mut store,
@@ -334,36 +327,43 @@ fn baseline_disposition(
 }
 
 async fn load_state(store: &mut AgentStore) -> Result<PreparationState, PreparationError> {
-    sqlx::query_as(
-        "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state, previous_boot_id, pending_transition, pending_previous_boot_id, close_report_id, shutdown_report_id FROM agent_state WHERE singleton=1",
-    )
-    .fetch_optional(store.connection())
-    .await?
-    .ok_or(PreparationError::NotEnrolled)
+    let boot = crate::boot::read(store.connection())
+        .await
+        .map_err(|error| match error {
+            crate::boot::BootStateError::Database(error) => PreparationError::Database(error),
+            invalid => PreparationError::StateChanged(invalid.to_string()),
+        })?
+        .ok_or(PreparationError::NotEnrolled)?;
+    let shutdown_report_id: Option<String> =
+        sqlx::query_scalar("SELECT shutdown_report_id FROM agent_state WHERE singleton=1")
+            .fetch_one(store.connection())
+            .await?;
+    Ok(PreparationState {
+        boot,
+        shutdown_report_id,
+    })
 }
 
 /// Reuse a Closing whose accepted receipt already advanced the Boot. The
 /// `drained_pending` transition only exists for a non-rejected Closing, and
 /// the Server baseline supplies the authoritative disposition afterwards.
-fn existing_closing(state: &PreparationState) -> Result<ClosingResult, PreparationError> {
-    let report_id = state
-        .close_report_id
-        .clone()
+fn existing_closing(
+    boot: &BootState,
+    previous_boot_id: BootId,
+) -> Result<ClosingResult, PreparationError> {
+    let report_id = boot
+        .last_closed
+        .as_ref()
+        .map(|closed| closed.close_report_id.clone())
         .ok_or(PreparationError::InvalidClosingEvidence)?;
-    let closed_boot_id = state
-        .pending_previous_boot_id
-        .clone()
-        .or_else(|| state.previous_boot_id.clone())
-        .ok_or(PreparationError::InvalidClosingEvidence)?;
-    let next_boot_id = state
+    let next_boot_id = boot
         .boot_id
-        .clone()
         .ok_or(PreparationError::InvalidClosingEvidence)?;
     Ok(ClosingResult {
         report_id,
         disposition: None,
-        closed_boot_id,
-        next_boot_id,
+        closed_boot_id: previous_boot_id.to_string(),
+        next_boot_id: next_boot_id.to_string(),
     })
 }
 
@@ -459,12 +459,13 @@ async fn complete_final_closing<T: crate::reporting::ReportTransport>(
     }
     // An accepted Closing must have advanced the local Boot in the same receipt
     // transaction; anything else means the receipt did not apply to this Boot.
-    let after = load_state(store).await?;
-    let rotated = after.boot_state == "drained_pending"
-        && after.pending_transition.as_deref() == Some("drained_previous")
-        && after.close_report_id.as_deref() == Some(closing_report_id.as_str())
-        && after.pending_previous_boot_id.as_deref() == Some(current_boot_id)
-        && after.previous_boot_id.as_deref() == Some(current_boot_id);
+    let after = load_state(store).await?.boot;
+    let rotated = matches!(
+        after.phase,
+        BootPhase::DrainedPending { previous_boot_id } if previous_boot_id.to_string() == current_boot_id
+    ) && after.last_closed.as_ref().is_some_and(|closed| {
+        closed.close_report_id == closing_report_id && closed.boot_id.to_string() == current_boot_id
+    });
     if !rotated {
         return Err(PreparationError::StateChanged(
             "the Server acknowledged the Closing but the local Boot did not advance".to_owned(),
@@ -477,7 +478,7 @@ async fn complete_final_closing<T: crate::reporting::ReportTransport>(
         report_id: closing_report_id,
         disposition: Some(disposition),
         closed_boot_id: current_boot_id.to_owned(),
-        next_boot_id,
+        next_boot_id: next_boot_id.to_string(),
     })
 }
 
@@ -506,28 +507,16 @@ async fn persist_final_closing(
     state: &PreparationState,
     sender_deadline: Duration,
 ) -> Result<String, PreparationError> {
-    let agent_id = AgentId::from_str(
-        state
-            .agent_id
-            .as_deref()
-            .ok_or(PreparationError::NotEnrolled)?,
-    )
-    .map_err(|error| PreparationError::StateChanged(error.to_string()))?;
-    let boot_id = BootId::from_str(
-        state
-            .boot_id
-            .as_deref()
-            .ok_or(PreparationError::NotEnrolled)?,
-    )
-    .map_err(|error| PreparationError::StateChanged(error.to_string()))?;
+    let agent_id = state.boot.agent_id;
+    let boot_id = state.boot.boot_id.ok_or(PreparationError::NotEnrolled)?;
     let inventory = config.validated_inventory()?.inventory;
     let last_good = crate::collector::load_last_report(store).await?;
     let mut report = crate::shutdown::build_shutdown_report(
         config,
         agent_id,
-        state.agent_epoch.max(0) as u64,
+        state.boot.agent_epoch,
         boot_id,
-        state.report_sequence.max(0) as u64 + 1,
+        state.boot.report_sequence + 1,
         inventory,
         last_good.as_ref(),
     )
@@ -567,8 +556,7 @@ async fn persist_final_closing(
         report.report_sequence,
         &generated,
         &body,
-        state.report_sequence.max(0) as u64,
-        &state.boot_state,
+        &state.boot,
     )
     .await?;
     Ok(report_id)
