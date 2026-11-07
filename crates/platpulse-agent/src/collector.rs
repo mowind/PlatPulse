@@ -25,7 +25,6 @@ use platpulse_core::{
     AgentCapability, AgentReport, BootTransition, FingerprintHex, InventoryDeclaration, Rfc3339,
 };
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
 use sysinfo::{Disks, Networks, System};
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -1265,17 +1264,7 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
         .validate()
         .map_err(|error| CollectionError::Identity(error.to_string()))?;
     let body = report_body_bytes(&closing, validated.server_managed_inventory)?;
-    crate::reporting::persist_closing_report(
-        &mut store,
-        &closing.report_id.to_string(),
-        closing.agent_epoch,
-        &closing.boot_id.to_string(),
-        closing.report_sequence,
-        &closing.generated_at.to_string(),
-        &body,
-        &draining,
-    )
-    .await?;
+    crate::reporting::persist_closing_report(&mut store, &body, &draining).await?;
     match send_oldest(&mut store, transport, SendBudget::Unbounded).await? {
         Sent::Applied(delivered) if delivered.closes_boot(boot_id) => {
             store.close().await?;
@@ -1410,37 +1399,26 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
     );
     report.validate().map_err(report_validation_error)?;
     let body = report_body_bytes(&report, validated.server_managed_inventory)?;
-    let digest = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
+    let queued = crate::spool::NewReport::from_body(body).map_err(CollectionError::Report)?;
     let now = report.generated_at.to_string();
     let mut tx = store.write().await?;
     let transaction_result: Result<(), CollectionError> = async {
-    sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, in_flight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)")
-        .bind(report.report_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.generated_at.to_string()).bind(&body).bind(&digest).bind(body.len() as i64).bind(&now).execute(&mut *tx).await?;
-    if !crate::reporting::claim_report_samples(
-        &mut tx,
-        &report.report_id.to_string(),
-        &report.block_summaries,
-        &report.history_gaps,
-    )
-    .await?
-    {
-        return Err(CollectionError::ConcurrentStateChange);
-    }
-    crate::reporting::persist_last_report_snapshot(
-        &mut tx,
-        &report.agent_id.to_string(),
-        report.agent_epoch,
-        &report.boot_id.to_string(),
-        report.report_sequence,
-        &body,
-    )
-    .await?;
-    if !crate::boot::record_report(&mut tx, &state, report.boot_id, report.report_sequence, &now)
+        if !crate::spool::enqueue(&mut tx, &queued).await? {
+            return Err(CollectionError::ConcurrentStateChange);
+        }
+        if !crate::boot::record_report(
+            &mut tx,
+            &state,
+            report.boot_id,
+            report.report_sequence,
+            &now,
+        )
         .await?
-    {
-        return Err(CollectionError::ConcurrentStateChange);
-    }
-    record_inventory_revision(&mut tx, &report, validated.server_managed_inventory, &now).await?;
+        {
+            return Err(CollectionError::ConcurrentStateChange);
+        }
+        record_inventory_revision(&mut tx, &report, validated.server_managed_inventory, &now)
+            .await?;
         Ok(())
     }
     .await;
@@ -1454,7 +1432,7 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
     crate::reporting::enforce_stored_spool_policy(store, &now)
         .await
         .map_err(CollectionError::Report)?;
-    Ok(digest)
+    Ok(queued.body_sha256().to_owned())
 }
 
 pub struct BlockWorkerExit {
@@ -2129,37 +2107,26 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
     );
     report.validate().map_err(report_validation_error)?;
     let body = report_body_bytes(&report, validated.server_managed_inventory)?;
-    let digest = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
+    let queued = crate::spool::NewReport::from_body(body).map_err(CollectionError::Report)?;
     let now = report.generated_at.to_string();
     let mut tx = store.write().await?;
     let transaction_result: Result<(), CollectionError> = async {
-    sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, in_flight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)")
-        .bind(report.report_id.to_string()).bind(report.agent_epoch as i64).bind(report.boot_id.to_string()).bind(report.report_sequence as i64).bind(report.generated_at.to_string()).bind(&body).bind(&digest).bind(body.len() as i64).bind(&now).execute(&mut *tx).await?;
-    if !crate::reporting::claim_report_samples(
-        &mut tx,
-        &report.report_id.to_string(),
-        &report.block_summaries,
-        &report.history_gaps,
-    )
-    .await?
-    {
-        return Err(CollectionError::ConcurrentStateChange);
-    }
-    crate::reporting::persist_last_report_snapshot(
-        &mut tx,
-        &report.agent_id.to_string(),
-        report.agent_epoch,
-        &report.boot_id.to_string(),
-        report.report_sequence,
-        &body,
-    )
-    .await?;
-    if !crate::boot::record_report(&mut tx, &state, report.boot_id, report.report_sequence, &now)
+        if !crate::spool::enqueue(&mut tx, &queued).await? {
+            return Err(CollectionError::ConcurrentStateChange);
+        }
+        if !crate::boot::record_report(
+            &mut tx,
+            &state,
+            report.boot_id,
+            report.report_sequence,
+            &now,
+        )
         .await?
-    {
-        return Err(CollectionError::ConcurrentStateChange);
-    }
-    record_inventory_revision(&mut tx, &report, validated.server_managed_inventory, &now).await?;
+        {
+            return Err(CollectionError::ConcurrentStateChange);
+        }
+        record_inventory_revision(&mut tx, &report, validated.server_managed_inventory, &now)
+            .await?;
         Ok(())
     }
     .await;
@@ -2174,7 +2141,7 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
         .await
         .map_err(CollectionError::Report)?;
     store.close().await?;
-    Ok(digest)
+    Ok(queued.body_sha256().to_owned())
 }
 
 fn spool_diagnostics_for_transition(
@@ -2337,6 +2304,7 @@ mod tests {
         InventoryAcceptance, InventoryDisposition, NodeCurrentDisposition, ReceiptDisposition,
         ReportReceipt,
     };
+    use sha2::Digest;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -4412,17 +4380,9 @@ mod tests {
         crate::block::persist_block_summary(&mut store, &fork, &created_at)
             .await
             .unwrap();
-        crate::reporting::persist_immutable_report(
-            &mut store,
-            report_id,
-            report.agent_epoch,
-            &report.boot_id.to_string(),
-            report.report_sequence,
-            &created_at,
-            &body,
-        )
-        .await
-        .unwrap();
+        crate::reporting::persist_immutable_report(&mut store, &body)
+            .await
+            .unwrap();
         let receipt_body = serde_json::json!({
             "receipt": {
                 "report_id": report_id,
@@ -4881,17 +4841,9 @@ mod tests {
     ) -> (AgentReport<InventoryDeclaration>, String) {
         let (body, report) = v2_test_report();
         let hash = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
-        crate::reporting::persist_immutable_report(
-            store,
-            &report.report_id.to_string(),
-            report.agent_epoch,
-            &report.boot_id.to_string(),
-            report.report_sequence,
-            &report.generated_at.to_string(),
-            &body,
-        )
-        .await
-        .unwrap();
+        crate::reporting::persist_immutable_report(store, &body)
+            .await
+            .unwrap();
         (report, hash)
     }
 
