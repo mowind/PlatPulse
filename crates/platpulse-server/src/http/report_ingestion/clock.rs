@@ -67,6 +67,27 @@ impl<'a> ReportStamp<'a> {
     pub(super) fn history_at(&self, observed: Rfc3339) -> Rfc3339 {
         crate::observation_time::history_instant(observed, self.skew_ms)
     }
+
+    /// One metric sample this Report delivers to `scope`: identified by the
+    /// Agent's own instant and placed on the Server timeline by
+    /// [`Self::history_at`].
+    pub(super) fn metric_delivery<'s>(
+        &self,
+        scope: crate::metric_history::SeriesScope<'s>,
+        observed: Rfc3339,
+        value: f64,
+    ) -> crate::metric_history::MetricDelivery<'s>
+    where
+        'a: 's,
+    {
+        crate::metric_history::MetricDelivery {
+            scope,
+            identity: observed,
+            timeline: self.history_at(observed),
+            received_at: self.received,
+            value,
+        }
+    }
 }
 
 #[cfg(test)]
