@@ -28,7 +28,6 @@ use platpulse_core::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
-use sqlx::Connection;
 use sysinfo::{Disks, Networks, System};
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -1259,8 +1258,7 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
         {
             let new_boot_id = BootId::from_str(&Uuid::new_v4().to_string()).expect("UUID is valid");
             let at = timestamp().to_string();
-            let _write_permit = store.acquire_write().await;
-            let mut tx = store.connection().begin().await?;
+            let mut tx = store.write().await?;
             let transaction_result: Result<(), CollectionError> = async {
                 let current: Option<(String, i64, Option<String>, i64, String)> =
                     sqlx::query_as(
@@ -1314,8 +1312,7 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
             return Ok(());
         }
     }
-    let _write_permit = store.acquire_write().await;
-    let mut tx = store.connection().begin().await?;
+    let mut tx = store.write().await?;
     let transaction_result: Result<(), CollectionError> = async {
         let current: Option<(String, i64, Option<String>, i64, String)> = sqlx::query_as(
             "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
@@ -1348,7 +1345,6 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
             return Err(error);
         }
     }
-    drop(_write_permit);
     // Drain oldest-first. A Closing report whose Boot was already superseded
     // cannot be applied to the current agent_state; the Server has received its
     // exact bytes, so the local orphan is quarantined and the drain continues
@@ -1590,8 +1586,7 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
     let body = report_body_bytes(&report, validated.server_managed_inventory)?;
     let digest = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
     let now = report.generated_at.to_string();
-    let _write_permit = store.acquire_write().await;
-    let mut tx = store.connection().begin().await?;
+    let mut tx = store.write().await?;
     let transaction_result: Result<(), CollectionError> = async {
         let committed_state: Option<(i64, Option<String>, i64, String)> = sqlx::query_as(
             "SELECT agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
@@ -1656,7 +1651,6 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
             return Err(error);
         }
     }
-    drop(_write_permit);
     crate::reporting::enforce_stored_spool_policy(store, &now)
         .await
         .map_err(CollectionError::Report)?;
@@ -1715,8 +1709,7 @@ async fn persist_recovery_state(
         observed_at,
         backlog,
     } = update;
-    let _write_permit = store.acquire_write().await;
-    let mut tx = store.connection().begin().await?;
+    let mut tx = store.write().await?;
     let transaction_result: Result<(), CollectionError> = async {
         let current = sqlx::query_as::<_, (
             Option<String>,
@@ -1904,8 +1897,7 @@ async fn advance_backfill_backlog(
         .await;
     let next = range.after_step(&outcome);
     let created_at = observed_at.to_string();
-    let _write_permit = store.acquire_write().await;
-    let mut tx = store.connection().begin().await?;
+    let mut tx = store.write().await?;
     for summary in &outcome.summaries {
         store_block_summary_result(
             crate::block::insert_block_summary(&mut tx, summary, &created_at).await,
@@ -2063,20 +2055,25 @@ pub(crate) async fn run_node_block_worker(
                         error: Some(error),
                     };
                 }
-                let _write_permit = tokio::select! {
+                let write = tokio::select! {
                     _ = cancel.cancelled() => {
                         transport.drain_live_heads(&mut live, &mut subscription);
                         return BlockWorkerExit { subscription, error: None };
                     }
-                    permit = store.acquire_write() => permit,
+                    write = store.write() => write,
                 };
-                let state_result = sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, pending_from, pending_to, pending_trigger, pending_reason, updated_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id,last_head=excluded.last_head,pending_from=NULL,pending_to=NULL,pending_trigger=NULL,pending_reason=NULL,updated_at=excluded.updated_at")
-                    .bind(node.node_id.to_string())
-                    .bind(boot_id.to_string())
-                    .bind(summary.block_number as i64)
-                    .bind(observed_at.to_string())
-                    .execute(store.connection())
-                    .await;
+                let state_result = async {
+                    let mut tx = write?;
+                    sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, pending_from, pending_to, pending_trigger, pending_reason, updated_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id,last_head=excluded.last_head,pending_from=NULL,pending_to=NULL,pending_trigger=NULL,pending_reason=NULL,updated_at=excluded.updated_at")
+                        .bind(node.node_id.to_string())
+                        .bind(boot_id.to_string())
+                        .bind(summary.block_number as i64)
+                        .bind(observed_at.to_string())
+                        .execute(&mut *tx)
+                        .await?;
+                    tx.commit().await
+                }
+                .await;
                 if let Err(error) = state_result {
                     return BlockWorkerExit {
                         subscription,
@@ -2131,21 +2128,26 @@ pub(crate) async fn run_node_block_worker(
             if subscription.push(header).is_err() {
                 break 'connected;
             }
-            let _write_permit = tokio::select! {
+            let write = tokio::select! {
                 _ = cancel.cancelled() => {
                     transport.drain_live_heads(&mut live, &mut subscription);
                     return BlockWorkerExit { subscription, error: None };
                 }
-                permit = store.acquire_write() => permit,
+                write = store.write() => write,
             };
-            let pending_result = sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, pending_from, pending_to, pending_trigger, pending_reason, updated_at) VALUES (?, ?, NULL, ?, ?, 'live_head', 'live head awaiting resolution', ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id, pending_from=excluded.pending_from, pending_to=excluded.pending_to, pending_trigger=excluded.pending_trigger, pending_reason=excluded.pending_reason, updated_at=excluded.updated_at")
-                .bind(node.node_id.to_string())
-                .bind(boot_id.to_string())
-                .bind(header_height as i64)
-                .bind(header_height as i64)
-                .bind(timestamp().to_string())
-                .execute(store.connection())
-                .await;
+            let pending_result = async {
+                let mut tx = write?;
+                sqlx::query("INSERT INTO node_recovery_state (node_id, boot_id, last_head, pending_from, pending_to, pending_trigger, pending_reason, updated_at) VALUES (?, ?, NULL, ?, ?, 'live_head', 'live head awaiting resolution', ?) ON CONFLICT(node_id) DO UPDATE SET boot_id=excluded.boot_id, pending_from=excluded.pending_from, pending_to=excluded.pending_to, pending_trigger=excluded.pending_trigger, pending_reason=excluded.pending_reason, updated_at=excluded.updated_at")
+                    .bind(node.node_id.to_string())
+                    .bind(boot_id.to_string())
+                    .bind(header_height as i64)
+                    .bind(header_height as i64)
+                    .bind(timestamp().to_string())
+                    .execute(&mut *tx)
+                    .await?;
+                tx.commit().await
+            }
+            .await;
             if pending_result.is_err() {
                 break 'connected;
             }
@@ -2350,8 +2352,7 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
     let body = report_body_bytes(&report, validated.server_managed_inventory)?;
     let digest = format!("0x{}", hex::encode(sha2::Sha256::digest(&body)));
     let now = report.generated_at.to_string();
-    let _write_permit = store.acquire_write().await;
-    let mut tx = store.connection().begin().await?;
+    let mut tx = store.write().await?;
     let transaction_result: Result<(), CollectionError> = async {
         let committed_state: Option<(i64, Option<String>, i64, String)> = sqlx::query_as(
             "SELECT agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
@@ -2416,7 +2417,6 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
             return Err(error);
         }
     }
-    drop(_write_permit);
     crate::reporting::enforce_spool_policy(&mut store, &SpoolPolicy::default(), &now)
         .await
         .map_err(CollectionError::Report)?;
@@ -2442,7 +2442,7 @@ fn spool_diagnostics_for_transition(
 }
 
 async fn update_agent_state_for_persisted_report(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &mut crate::database::WriteTx<'_>,
     report: &AgentReport,
     server_managed_inventory: bool,
     transition: &str,
@@ -2651,8 +2651,7 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
     let expiry_cutoff = applied_receipt_expiry_cutoff(applied_at)?;
     #[cfg(test)]
     let body_reads = store.spool_body_read_probe();
-    let _write_permit = store.acquire_write().await;
-    let mut tx = store.connection().begin().await?;
+    let mut tx = store.write().await?;
     if let Some((marker_hash, marker_disposition)) = sqlx::query_as::<_, (String, String)>(
         "SELECT report_body_sha256, disposition FROM report_receipts WHERE report_id = ?",
     )
@@ -3097,8 +3096,8 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
             }
             Ok(())
         }
-        Err(error) => match tx.rollback().await {
-            Ok(()) => {
+        Err(error) => match tx.rollback_retaining_permit().await {
+            Ok(permit) => {
                 if stale_closing {
                     Err(ApplyReceiptError::StaleClosing {
                         report_id: report_id.to_owned(),
@@ -3123,12 +3122,14 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
                     match reason {
                         None => Err(ApplyReceiptError::Database(error)),
                         Some(reason) => {
-                            if let Err(mark_error) =
-                                crate::reporting::mark_spool_fatal_under_permit(
-                                    store, applied_at, &reason,
-                                )
-                                .await
-                            {
+                            let marked = match store.write_under(permit).await {
+                                Ok(tx) => {
+                                    crate::reporting::commit_store_fatal(tx, applied_at, &reason)
+                                        .await
+                                }
+                                Err(error) => Err(error.into()),
+                            };
+                            if let Err(mark_error) = marked {
                                 return Err(ApplyReceiptError::Database(sqlx::Error::Protocol(
                                     format!(
                                         "{reason}; additionally failed to mark the store fatal: {mark_error}"

@@ -19,7 +19,7 @@ use platpulse_core::{ReceiptDisposition, ReportReceipt, Rfc3339};
 use serde::Deserialize;
 use sqlx::migrate::{MigrateError, Migrator};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
-use sqlx::{Connection, Executor, Sqlite, SqliteConnection};
+use sqlx::{Connection, Executor, Sqlite, SqliteConnection, Transaction};
 use thiserror::Error;
 #[cfg(test)]
 use tokio::sync::Notify;
@@ -538,6 +538,8 @@ async fn convert_legacy_receipt_archive(
         .iter()
         .find(|migration| migration.version == 13)
         .expect("embedded Agent migration 13 must exist");
+    // Startup holds the write permit across the whole migration.
+    #[allow(clippy::disallowed_methods)]
     let mut transaction = connection
         .begin()
         .await
@@ -676,9 +678,52 @@ impl AgentStore {
         Ok(store)
     }
 
-    /// Acquire the injected permit before any Agent Store write.
-    pub(crate) async fn acquire_write(&self) -> OwnedSemaphorePermit {
-        self.write_permit.acquire().await
+    /// Begin one Agent Store write: take the shared write permit, then open a
+    /// `BEGIN IMMEDIATE` transaction under it (ADR 0001). Every read a write
+    /// decision depends on runs inside the returned [`WriteTx`], so the permit
+    /// covers it until commit or rollback.
+    pub(crate) async fn write(&mut self) -> Result<WriteTx<'_>, sqlx::Error> {
+        let permit = self.write_permit.acquire().await;
+        self.begin_write(permit).await
+    }
+
+    /// Begin a write under a permit a rolled-back write kept, so the follow-up
+    /// write (latching the Store fatal after a failed one) runs before any
+    /// other writer.
+    pub(crate) async fn write_under(
+        &mut self,
+        permit: RetainedWritePermit,
+    ) -> Result<WriteTx<'_>, sqlx::Error> {
+        self.begin_write(permit.0).await
+    }
+
+    /// Run `VACUUM INTO` the destination under the write permit. SQLite
+    /// refuses VACUUM inside a transaction, so this is the one statement that
+    /// holds the permit without a [`WriteTx`].
+    pub(crate) async fn vacuum_into(&mut self, destination: &str) -> Result<(), sqlx::Error> {
+        let literal = format!("'{}'", destination.replace('\'', "''"));
+        let _permit = self.write_permit.acquire().await;
+        sqlx::query(&format!("VACUUM INTO {literal}"))
+            .execute(&mut self.connection)
+            .await?;
+        Ok(())
+    }
+
+    async fn begin_write(
+        &mut self,
+        permit: OwnedSemaphorePermit,
+    ) -> Result<WriteTx<'_>, sqlx::Error> {
+        // A deferred BEGIN takes the write lock only at its first write and
+        // then fails at once with SQLITE_BUSY when another connection wrote
+        // first; IMMEDIATE waits for the lock under the busy timeout instead.
+        #[allow(clippy::disallowed_methods)]
+        let transaction = self.connection.begin_with("BEGIN IMMEDIATE").await?;
+        Ok(WriteTx {
+            transaction,
+            _permit: permit,
+            #[cfg(test)]
+            spool_body_reads: self.spool_body_reads.clone(),
+        })
     }
 
     /// Access the sole Agent write connection for typed SQL operations.
@@ -717,6 +762,65 @@ impl AgentStore {
     /// Close the single writer connection.
     pub async fn close(self) -> Result<(), sqlx::Error> {
         self.connection.close().await
+    }
+}
+
+/// One Agent Store write: the shared write permit and a `BEGIN IMMEDIATE`
+/// transaction on the store's connection, created by [`AgentStore::write`].
+///
+/// The permit is released only after the transaction ends: [`WriteTx::commit`]
+/// and [`WriteTx::rollback`] finish the transaction first, and dropping an
+/// unfinished write rolls it back before the permit field is dropped.
+pub(crate) struct WriteTx<'a> {
+    // Declared before the permit: fields drop in order, so the rollback of a
+    // dropped write is issued before another writer can take the permit.
+    transaction: Transaction<'a, Sqlite>,
+    _permit: OwnedSemaphorePermit,
+    #[cfg(test)]
+    spool_body_reads: SpoolBodyReadProbe,
+}
+
+/// The write permit of a rolled-back [`WriteTx`], kept for the follow-up
+/// write [`AgentStore::write_under`] begins.
+pub(crate) struct RetainedWritePermit(OwnedSemaphorePermit);
+
+impl WriteTx<'_> {
+    /// Commit the write, then release the permit.
+    pub(crate) async fn commit(self) -> Result<(), sqlx::Error> {
+        self.transaction.commit().await
+    }
+
+    /// Roll the write back, then release the permit.
+    pub(crate) async fn rollback(self) -> Result<(), sqlx::Error> {
+        self.transaction.rollback().await
+    }
+
+    /// Roll the write back but keep the permit for a follow-up write.
+    pub(crate) async fn rollback_retaining_permit(
+        self,
+    ) -> Result<RetainedWritePermit, sqlx::Error> {
+        self.transaction.rollback().await?;
+        Ok(RetainedWritePermit(self._permit))
+    }
+
+    /// Record that this write read the bodies of `rows` spool Reports.
+    #[cfg(test)]
+    pub(crate) fn record_spool_body_read(&self, rows: usize) {
+        self.spool_body_reads.record(rows);
+    }
+}
+
+impl std::ops::Deref for WriteTx<'_> {
+    type Target = SqliteConnection;
+
+    fn deref(&self) -> &SqliteConnection {
+        &self.transaction
+    }
+}
+
+impl std::ops::DerefMut for WriteTx<'_> {
+    fn deref_mut(&mut self) -> &mut SqliteConnection {
+        &mut self.transaction
     }
 }
 
@@ -780,8 +884,10 @@ pub(crate) async fn cleanup_expired_receipt_markers(
     applied_at: &str,
 ) -> Result<u64, sqlx::Error> {
     let cutoff = applied_receipt_expiry_cutoff(applied_at)?;
-    let _write_permit = store.acquire_write().await;
-    delete_expired_receipt_markers(store.connection(), &cutoff).await
+    let mut tx = store.write().await?;
+    let deleted = delete_expired_receipt_markers(&mut *tx, &cutoff).await?;
+    tx.commit().await?;
+    Ok(deleted)
 }
 
 /// Delete at most one indexed batch of expired Applied Receipt Records.
@@ -989,24 +1095,54 @@ mod tests {
         let directory = tempdir().unwrap();
         let database = directory.path().join("agent.db");
         let permit = AgentStoreWritePermit::new();
-        let first = AgentStore::open_with_write_permit(config(&database), permit.clone())
+        let mut first = AgentStore::open_with_write_permit(config(&database), permit.clone())
             .await
             .unwrap();
-        let second = AgentStore::open_with_write_permit(config(&database), permit)
+        let mut second = AgentStore::open_with_write_permit(config(&database), permit)
             .await
             .unwrap();
-        let held = first.acquire_write().await;
+        let held = first.write().await.unwrap();
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), second.acquire_write())
+            tokio::time::timeout(Duration::from_millis(50), second.write())
                 .await
                 .is_err()
         );
-        drop(held);
-        assert!(
-            tokio::time::timeout(Duration::from_secs(1), second.acquire_write())
-                .await
-                .is_ok()
-        );
+        held.commit().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), second.write())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_dropped_write_rolls_back_and_releases_the_permit() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("agent.db");
+        let permit = AgentStoreWritePermit::new();
+        let mut first = AgentStore::open_with_write_permit(config(&database), permit.clone())
+            .await
+            .unwrap();
+        let mut second = AgentStore::open_with_write_permit(config(&database), permit)
+            .await
+            .unwrap();
+
+        let mut abandoned = first.write().await.unwrap();
+        sqlx::query("INSERT INTO agent_state (singleton, updated_at) VALUES (1, 'now')")
+            .execute(&mut *abandoned)
+            .await
+            .unwrap();
+        drop(abandoned);
+
+        let mut next = tokio::time::timeout(Duration::from_secs(1), second.write())
+            .await
+            .expect("dropping the write releases the permit")
+            .unwrap();
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_state")
+            .fetch_one(&mut *next)
+            .await
+            .unwrap();
+        assert_eq!(rows, 0, "dropping the write rolls it back");
+        next.commit().await.unwrap();
     }
 
     #[tokio::test]
@@ -1015,9 +1151,9 @@ mod tests {
         let database = directory.path().join("agent.db");
         let first = AgentStore::open(config(&database)).await.unwrap();
         let second = AgentStore::open(config(&database)).await.unwrap();
-        let held = first.acquire_write().await;
+        let held = first.write_permit.acquire().await;
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), second.acquire_write())
+            tokio::time::timeout(Duration::from_millis(50), second.write_permit.acquire())
                 .await
                 .is_ok()
         );

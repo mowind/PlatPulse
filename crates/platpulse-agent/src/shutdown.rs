@@ -612,11 +612,11 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
         write_permit,
     )
     .await?;
-    let _write_permit = store.acquire_write().await;
+    let mut tx = store.write().await?;
     let state: Option<(String, i64, Option<String>, i64, String)> = sqlx::query_as(
         "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
     )
-    .fetch_optional(store.connection())
+    .fetch_optional(&mut *tx)
     .await?;
     let Some((agent_text, epoch, boot_text, sequence, boot_state)) = state else {
         return Err(crate::collector::CollectionError::NotEnrolled);
@@ -641,12 +641,12 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
         .bind(&boot_text)
         .bind(sequence)
         .bind(&boot_state)
-        .execute(store.connection())
+        .execute(&mut *tx)
         .await?;
     if result.rows_affected() != 1 {
         return Err(crate::collector::CollectionError::ConcurrentStateChange);
     }
-    drop(_write_permit);
+    tx.commit().await?;
 
     let inventory = config
         .validated_inventory()
@@ -702,9 +702,10 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
                 },
             );
             crate::block::persist_history_gap(&mut store, &gap).await?;
-            let _write_permit = store.acquire_write().await;
+            let mut tx = store.write().await?;
             sqlx::query("UPDATE agent_state SET shutdown_unresolved_from=?, shutdown_unresolved_to=?, shutdown_last_error=? WHERE singleton=1")
-                .bind(range.0 as i64).bind(range.1 as i64).bind(&gap.reason).execute(store.connection()).await?;
+                .bind(range.0 as i64).bind(range.1 as i64).bind(&gap.reason).execute(&mut *tx).await?;
+            tx.commit().await?;
         }
     }
 
@@ -779,8 +780,9 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
             }
             Err(error) => {
                 let at = shutdown_timestamp();
-                let _write_permit = store.acquire_write().await;
-                sqlx::query("UPDATE agent_state SET shutdown_state='send_failed', shutdown_last_error=?, shutdown_updated_at=? WHERE singleton=1").bind(error.to_string().chars().take(256).collect::<String>()).bind(at.to_string()).execute(store.connection()).await?;
+                let mut tx = store.write().await?;
+                sqlx::query("UPDATE agent_state SET shutdown_state='send_failed', shutdown_last_error=?, shutdown_updated_at=? WHERE singleton=1").bind(error.to_string().chars().take(256).collect::<String>()).bind(at.to_string()).execute(&mut *tx).await?;
+                tx.commit().await?;
                 store.close().await?;
                 return Ok(ShutdownOutcome {
                     report_id: report.report_id,
@@ -795,8 +797,9 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
     }
     if exhausted && !receipt_applied {
         let at = shutdown_timestamp();
-        let _write_permit = store.acquire_write().await;
-        sqlx::query("UPDATE agent_state SET shutdown_state='forced_kill_recovery', shutdown_forced=1, shutdown_finished_at=?, shutdown_updated_at=? WHERE singleton=1").bind(at.to_string()).bind(at.to_string()).execute(store.connection()).await?;
+        let mut tx = store.write().await?;
+        sqlx::query("UPDATE agent_state SET shutdown_state='forced_kill_recovery', shutdown_forced=1, shutdown_finished_at=?, shutdown_updated_at=? WHERE singleton=1").bind(at.to_string()).bind(at.to_string()).execute(&mut *tx).await?;
+        tx.commit().await?;
     }
     store.close().await?;
     Ok(ShutdownOutcome {

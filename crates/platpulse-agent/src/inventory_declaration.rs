@@ -18,7 +18,9 @@ use std::path::Path;
 
 use platpulse_core::inventory::NodeInventory;
 use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::{Connection, Sqlite, SqliteConnection, Transaction};
+use sqlx::{Connection, SqliteConnection};
+
+use crate::database::WriteTx;
 
 /// The last Node Inventory the Server effectively accepted from this Agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,7 +121,7 @@ pub(crate) async fn read_inventory_declaration(
 /// already rejected an equal revision with a different fingerprint), so an
 /// idempotent replay cannot rewrite the confirmation's provenance.
 pub(crate) async fn record_inventory_acceptance(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut WriteTx<'_>,
     revision: u64,
     fingerprint: &str,
     report_id: &str,
@@ -325,7 +327,7 @@ mod tests {
         report_id: &str,
         adopted_at: &str,
     ) -> Option<InventoryDeclaration> {
-        let mut tx = store.connection().begin().await.unwrap();
+        let mut tx = store.write().await.unwrap();
         record_inventory_acceptance(
             &mut tx,
             inventory.revision,

@@ -27,7 +27,6 @@ use platpulse_core::identity::{AgentId, BootId};
 use platpulse_core::inventory::NodeInventory;
 use platpulse_core::{AgentReport, BootTransition, InventoryDisposition, ReceiptDisposition};
 use serde::Deserialize;
-use sqlx::Connection;
 use thiserror::Error;
 
 use crate::config::AgentConfig;
@@ -729,10 +728,11 @@ fn verify_baseline(
 /// so clearing it prevents a stale result from being consumed while leaving
 /// every pending Report, receipt, and Boot linkage untouched.
 async fn clear_preparation(store: &mut AgentStore) -> Result<(), PreparationError> {
-    let _write_permit = store.acquire_write().await;
+    let mut tx = store.write().await?;
     sqlx::query("DELETE FROM upgrade_preparation WHERE singleton=1")
-        .execute(store.connection())
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -752,8 +752,7 @@ async fn write_preparation(
     store: &mut AgentStore,
     row: PreparedRow<'_>,
 ) -> Result<(), PreparationError> {
-    let _write_permit = store.acquire_write().await;
-    let mut tx = store.connection().begin().await?;
+    let mut tx = store.write().await?;
     sqlx::query(
         "INSERT INTO upgrade_preparation (singleton, agent_id, agent_epoch, closing_report_id, closing_report_sequence, closing_receipt_disposition, inventory_revision, inventory_sha256, declaration_json, closed_boot_id, next_boot_id, pending_transition, accepted_inventory_revision, accepted_inventory_sha256, accepted_inventory_protocol_major, server_active_boot_id, server_active_boot_status, server_close_report_id, verified_at) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'drained_previous', ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET agent_id=excluded.agent_id, agent_epoch=excluded.agent_epoch, closing_report_id=excluded.closing_report_id, closing_report_sequence=excluded.closing_report_sequence, closing_receipt_disposition=excluded.closing_receipt_disposition, inventory_revision=excluded.inventory_revision, inventory_sha256=excluded.inventory_sha256, declaration_json=excluded.declaration_json, closed_boot_id=excluded.closed_boot_id, next_boot_id=excluded.next_boot_id, pending_transition=excluded.pending_transition, accepted_inventory_revision=excluded.accepted_inventory_revision, accepted_inventory_sha256=excluded.accepted_inventory_sha256, accepted_inventory_protocol_major=excluded.accepted_inventory_protocol_major, server_active_boot_id=excluded.server_active_boot_id, server_active_boot_status=excluded.server_active_boot_status, server_close_report_id=excluded.server_close_report_id, verified_at=excluded.verified_at",
     )

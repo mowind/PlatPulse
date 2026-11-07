@@ -1,0 +1,6 @@
+disallowed-methods = [
+    { path = "sqlx_core::connection::Connection::begin", reason = "use AgentStore::write: it holds the write permit until commit or rollback and opens the transaction with BEGIN IMMEDIATE (ADR 0001)" },
+    { path = "sqlx_core::connection::Connection::begin_with", reason = "use AgentStore::write: it holds the write permit until commit or rollback and opens the transaction with BEGIN IMMEDIATE (ADR 0001)" },
+]
+
+allow-unwrap-in-tests = true

@@ -12,7 +12,6 @@ use std::path::PathBuf;
 
 use reqwest::StatusCode;
 use serde::Deserialize;
-use sqlx::Connection;
 use thiserror::Error;
 
 use crate::config::{AgentConfig, AgentConfigError};
@@ -113,8 +112,7 @@ async fn persist_identity(
     agent_epoch: i64,
 ) -> Result<(), sqlx::Error> {
     let now = time_now_rfc3339();
-    let _write_permit = store.acquire_write().await;
-    let mut transaction = store.connection().begin().await?;
+    let mut transaction = store.write().await?;
     let result = sqlx::query(
         "INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, updated_at)
          VALUES (1, ?, ?, NULL, 0, 0, ?)
