@@ -390,6 +390,15 @@ impl RejectionCode {
 }
 
 impl ReportReceipt {
+    /// Whether this is the compact receipt a Server replays once it has slimmed
+    /// the stored receipt body (ADR 0009): every field survives except the
+    /// per-Node and per-sample/range arrays, which are both empty. A receipt the
+    /// Server issues fresh for an appliable Report always lists every Node, so
+    /// both arrays are never empty together outside a replay.
+    pub fn is_compact(&self) -> bool {
+        self.nodes.is_empty() && self.samples.is_empty()
+    }
+
     /// Validates the receipt's internal consistency so AgentStore can apply
     /// it deterministically: the retryable flag must match the code contract,
     /// accepted samples never carry rejections, rejected samples always do,
@@ -474,7 +483,9 @@ impl ReportReceipt {
                     && self.nodes.iter().all(|n| {
                         n.current == NodeCurrentDisposition::Accepted && n.rejections.is_empty()
                     });
-                if nothing_rejected {
+                // A compact replay no longer carries the entries that made it
+                // partial, so it cannot show the rejection it was issued for.
+                if nothing_rejected && !self.is_compact() {
                     return Err(WireError::ReceiptPartialWithoutRejection);
                 }
             }
@@ -500,6 +511,12 @@ impl ReportReceipt {
 }
 
 impl ReportReceiptV2 {
+    /// Whether this is the compact receipt of a slimmed replay (ADR 0009); see
+    /// [`ReportReceipt::is_compact`].
+    pub fn is_compact(&self) -> bool {
+        self.nodes.is_empty() && self.samples.is_empty()
+    }
+
     /// Validates the v2 receipt's internal consistency so the Agent can apply it
     /// deterministically. Entry rules mirror v1; the Inventory outcome must bind
     /// the Server-assigned revision and canonical fingerprint.
@@ -583,7 +600,9 @@ impl ReportReceiptV2 {
                     && self.nodes.iter().all(|n| {
                         n.current == NodeCurrentDisposition::Accepted && n.rejections.is_empty()
                     });
-                if nothing_rejected {
+                // A compact replay no longer carries the entries that made it
+                // partial, so it cannot show the rejection it was issued for.
+                if nothing_rejected && !self.is_compact() {
                     return Err(WireError::ReceiptPartialWithoutRejection);
                 }
             }
@@ -902,6 +921,21 @@ mod tests {
             receipt.validate(),
             Err(WireError::ReceiptPartialWithoutRejection)
         );
+    }
+
+    /// ADR 0009: a replay of a slimmed receipt keeps every field but the
+    /// per-Node and per-sample arrays. Such a compact `partially_accepted`
+    /// receipt no longer shows the rejection it was issued for, and must still
+    /// validate so the Agent can apply it.
+    #[test]
+    fn a_compact_partially_accepted_receipt_validates() {
+        let mut receipt = accepted_receipt();
+        assert!(!receipt.is_compact());
+        receipt.disposition = ReceiptDisposition::PartiallyAccepted;
+        receipt.nodes.clear();
+        receipt.samples.clear();
+        assert!(receipt.is_compact());
+        assert_eq!(receipt.validate(), Ok(()));
     }
 
     #[test]

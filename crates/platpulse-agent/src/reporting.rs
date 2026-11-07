@@ -2784,6 +2784,211 @@ mod delivery_tests {
         serde_json::to_vec(&serde_json::json!({"receipt": receipt})).unwrap()
     }
 
+    const REPORT_V1_MINIMAL: &str =
+        include_str!("../../platpulse-core/tests/fixtures/report_v1_minimal.json");
+    const REPORT_V2_MINIMAL: &str =
+        include_str!("../../platpulse-core/tests/fixtures/report_v2_minimal.json");
+
+    async fn count(store: &mut AgentStore, sql: &str) -> i64 {
+        sqlx::query_scalar::<_, i64>(sql)
+            .fetch_one(store.connection())
+            .await
+            .unwrap()
+    }
+
+    /// Spool the fixture Report carrying one Block Summary that the Report owns,
+    /// which is the state a Report is in while its receipt is outstanding.
+    /// Returns the Report id and its exact body.
+    async fn spool_report_with_claimed_block(
+        store: &mut AgentStore,
+        fixture: &str,
+    ) -> (String, Vec<u8>) {
+        let mut report: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        let canonical: serde_json::Value = serde_json::from_str(include_str!(
+            "../../platpulse-core/tests/fixtures/report_v1_canonical.json"
+        ))
+        .unwrap();
+        let mut block: platpulse_core::block::BlockSummary =
+            serde_json::from_value(canonical["block_summaries"][0].clone()).unwrap();
+        block.node_id = report["inventory"]["nodes"][0]["node_id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        block.block_number = 9;
+        block.block_hash = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa9"
+            .parse()
+            .unwrap();
+        block.parent_hash = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa8"
+            .parse()
+            .unwrap();
+        block.observed_at = serde_json::from_value(report["generated_at"].clone()).unwrap();
+        report["block_summaries"] = serde_json::json!([block]);
+        let body = serde_json::to_vec(&report).unwrap();
+        let report_id = report["report_id"].as_str().unwrap().to_owned();
+        let generated_at = report["generated_at"].as_str().unwrap().to_owned();
+        crate::block::persist_block_summary(store, &block, &generated_at)
+            .await
+            .unwrap();
+        persist_immutable_report(
+            store,
+            &report_id,
+            report["agent_epoch"].as_u64().unwrap(),
+            report["boot_id"].as_str().unwrap(),
+            report["report_sequence"].as_u64().unwrap(),
+            &generated_at,
+            &body,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            count(store, "SELECT COUNT(*) FROM report_sample_assignments").await,
+            1,
+            "spooling the Report claims its Block Summary"
+        );
+        (report_id, body)
+    }
+
+    /// The receipt a Server replays for a `report_id` whose stored receipt body
+    /// it slimmed after the ADR 0009 window: every field survives except the
+    /// per-Node and per-sample arrays, which are empty.
+    fn compact_receipt_body(report_id: &str, body: &[u8], disposition: &str) -> Vec<u8> {
+        let sha256 = format!("0x{}", hex::encode(Sha256::digest(body)));
+        let receipt = if report_protocol_major(body)
+            == platpulse_core::protocol::PROTOCOL_VERSION_V2
+        {
+            let report: AgentReport<InventoryDeclaration> = serde_json::from_slice(body).unwrap();
+            serde_json::json!({"report_id": report_id, "disposition": disposition, "report_body_sha256": sha256, "server_version": "0.1.0", "supported_protocol_majors": [1, 2], "server_time": "2026-08-12T09:00:01Z", "inventory": {"disposition": "accepted", "acceptance": {"revision": 1, "fingerprint": report.inventory.fingerprint().as_str()}}, "rejections": [], "nodes": [], "samples": []})
+        } else {
+            serde_json::json!({"report_id": report_id, "disposition": disposition, "report_body_sha256": sha256, "server_version": "0.1.0", "supported_protocol_majors": [1], "server_time": "2026-08-12T09:00:01Z", "inventory": "accepted", "rejections": [], "nodes": [], "samples": []})
+        };
+        serde_json::to_vec(&serde_json::json!({"receipt": receipt})).unwrap()
+    }
+
+    fn transport_answering(response: Vec<u8>) -> FakeTransport {
+        FakeTransport {
+            bodies: Arc::new(Mutex::new(Vec::new())),
+            responses: Arc::new(Mutex::new(vec![Ok(response)])),
+        }
+    }
+
+    /// ADR 0009: a Report whose receipt was lost and that is retried after the
+    /// Server slimmed the stored receipt gets the compact receipt back. An
+    /// accepted compact receipt dequeues the Report and settles its samples as
+    /// accepted, exactly as the full receipt would have.
+    #[tokio::test]
+    async fn a_compact_accepted_replay_receipt_dequeues_the_report() {
+        for fixture in [REPORT_V1_MINIMAL, REPORT_V2_MINIMAL] {
+            let mut store = test_store().await;
+            let (report_id, body) = spool_report_with_claimed_block(&mut store, fixture).await;
+            let transport =
+                transport_answering(compact_receipt_body(&report_id, &body, "accepted"));
+
+            let (_, disposition) = deliver_one_with_disposition(&mut store, &transport)
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(disposition, ReceiptDisposition::Accepted);
+            assert_eq!(count(&mut store, "SELECT COUNT(*) FROM reports").await, 0);
+            assert_eq!(
+                count(&mut store, "SELECT COUNT(*) FROM block_summaries").await,
+                0,
+                "an accepted sample leaves the durable queue"
+            );
+            assert_eq!(
+                count(&mut store, "SELECT COUNT(*) FROM report_sample_assignments").await,
+                0
+            );
+            assert_eq!(
+                count(&mut store, "SELECT COUNT(*) FROM rejection_ledger").await,
+                0
+            );
+            assert_eq!(
+                count(
+                    &mut store,
+                    "SELECT COUNT(*) FROM report_receipts WHERE disposition = 'accepted'"
+                )
+                .await,
+                1
+            );
+            store.close().await.unwrap();
+        }
+    }
+
+    /// A compact `partially_accepted` receipt no longer says which samples were
+    /// refused. The Report still leaves the spool, and its samples go back to
+    /// the durable queue unowned: the Server answers a replay of a block it
+    /// already holds as `resync_replay`, so re-sending is safe, whereas
+    /// guessing a terminal rejection would invent a rejection that never
+    /// happened.
+    #[tokio::test]
+    async fn a_compact_partially_accepted_replay_receipt_requeues_the_samples() {
+        for fixture in [REPORT_V1_MINIMAL, REPORT_V2_MINIMAL] {
+            let mut store = test_store().await;
+            let (report_id, body) = spool_report_with_claimed_block(&mut store, fixture).await;
+            let transport = transport_answering(compact_receipt_body(
+                &report_id,
+                &body,
+                "partially_accepted",
+            ));
+
+            let (_, disposition) = deliver_one_with_disposition(&mut store, &transport)
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(disposition, ReceiptDisposition::PartiallyAccepted);
+            assert_eq!(count(&mut store, "SELECT COUNT(*) FROM reports").await, 0);
+            assert_eq!(
+                count(&mut store, "SELECT COUNT(*) FROM block_summaries").await,
+                1,
+                "the sample stays queued for the next Report"
+            );
+            assert_eq!(
+                count(&mut store, "SELECT COUNT(*) FROM report_sample_assignments").await,
+                0,
+                "the sample is no longer owned by the dequeued Report"
+            );
+            assert_eq!(
+                count(&mut store, "SELECT COUNT(*) FROM rejection_ledger").await,
+                0
+            );
+            assert_eq!(
+                count(&mut store, "SELECT COUNT(*) FROM history_gaps").await,
+                0,
+                "no rejection gap is invented"
+            );
+            store.close().await.unwrap();
+        }
+    }
+
+    /// Only a receipt whose per-Node and per-sample arrays are both empty is a
+    /// compact replay. A receipt that lists some entries but not all is still
+    /// refused and the Report stays queued.
+    #[tokio::test]
+    async fn a_receipt_that_covers_only_some_entries_still_fails_closed() {
+        let mut store = test_store().await;
+        let (report_id, body) =
+            spool_report_with_claimed_block(&mut store, REPORT_V1_MINIMAL).await;
+        let mut receipt: serde_json::Value =
+            serde_json::from_slice(&compact_receipt_body(&report_id, &body, "accepted")).unwrap();
+        receipt["receipt"]["samples"] = serde_json::json!([{
+            "node_id": "0195f2a1-0014-4014-8014-000000000014",
+            "sample": {"kind": "block", "height": 9},
+            "disposition": "accepted"
+        }]);
+        let transport = transport_answering(serde_json::to_vec(&receipt).unwrap());
+
+        assert!(deliver_one(&mut store, &transport).await.is_err());
+        assert_eq!(count(&mut store, "SELECT COUNT(*) FROM reports").await, 1);
+        assert_eq!(
+            count(&mut store, "SELECT COUNT(*) FROM report_receipts").await,
+            0
+        );
+        store.close().await.unwrap();
+    }
+
     #[tokio::test]
     async fn large_receipt_history_keeps_empty_spool_hot_paths_bounded() {
         const SEEDED_RECEIPT_COUNT: i64 = 100_000;

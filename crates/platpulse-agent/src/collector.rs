@@ -24,7 +24,7 @@ use platpulse_core::observation::{
 use platpulse_core::{
     AgentCapability, AgentReport, BootTransition, FingerprintHex, InventoryAcceptance,
     InventoryDeclaration, InventoryDisposition, NodeCurrentDisposition, ReceiptDisposition,
-    ReportInventory, ReportReceipt, Rfc3339, SampleDispositionKind, SampleRef,
+    ReportInventory, ReportReceipt, Rfc3339, SampleDisposition, SampleDispositionKind, SampleRef,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -2678,6 +2678,7 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
         )));
     }
     let mut stale_closing = false;
+    let mut compact_replay = false;
     let mut inventory_acceptance_conflict: Option<String> = None;
     // A stored body that no longer matches what was delivered is not a retryable
     // condition: the Report stays queued, so rolling back alone would recompute
@@ -2728,6 +2729,16 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
     for node in parsed_report.inventory.nodes() {
         expected_nodes.insert(node.node_id);
     }
+    // A replay older than the Server's receipt-body window answers with the
+    // compact receipt (ADR 0009): the dispositions survive but the per-Node and
+    // per-sample arrays are empty. Only an appliable receipt for a Report that
+    // names Nodes can be told apart from a fresh one this way, because a fresh
+    // receipt lists every Node; a receipt that lists some entries but not all
+    // is still refused below.
+    let compact = receipt.disposition != ReceiptDisposition::Rejected
+        && receipt.is_compact()
+        && !expected_nodes.is_empty();
+    compact_replay = compact;
     let mut seen_nodes = std::collections::HashSet::new();
     for node in &receipt.nodes {
         if !expected_nodes.contains(&node.node_id) || !seen_nodes.insert(node.node_id) {
@@ -2744,6 +2755,7 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
         }
     }
     if receipt.disposition != ReceiptDisposition::Rejected
+        && !compact
         && seen_nodes.len() != expected_nodes.len()
     {
         return Err(sqlx::Error::Protocol(
@@ -2774,6 +2786,7 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
         }
     }
     if receipt.disposition != ReceiptDisposition::Rejected
+        && !compact
         && seen_samples.len() != expected_samples.len()
     {
         return Err(sqlx::Error::Protocol(
@@ -2784,7 +2797,46 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
     // The immutable report has already been parsed and all receipt references
     // validated above. Current observations are not copied into retry state.
 
-    for sample in &receipt.samples {
+    // A compact receipt no longer says how each sample was disposed. An
+    // accepted one accepted every sample, so it settles them exactly as the full
+    // receipt would. A partially accepted one cannot say which samples were
+    // refused, so none is settled: deleting the Report releases their
+    // assignments and they return to the durable queue for the next Report.
+    // The Server answers a re-sent block it already holds as `resync_replay`,
+    // whereas guessing a terminal rejection here would record one that never
+    // happened.
+    let compact_accepted_samples: Vec<SampleDisposition> =
+        if compact && receipt.disposition == ReceiptDisposition::Accepted {
+            parsed_report
+                .block_summaries
+                .iter()
+                .map(|summary| SampleDisposition {
+                    node_id: summary.node_id,
+                    sample: SampleRef::Block {
+                        height: summary.block_number,
+                    },
+                    disposition: SampleDispositionKind::Accepted,
+                    rejection: None,
+                })
+                .chain(parsed_report.history_gaps.iter().map(|gap| SampleDisposition {
+                    node_id: gap.node_id,
+                    sample: SampleRef::Gap {
+                        from_height: gap.from_height,
+                        to_height: gap.to_height,
+                    },
+                    disposition: SampleDispositionKind::Accepted,
+                    rejection: None,
+                }))
+                .collect()
+        } else {
+            Vec::new()
+        };
+    let settled_samples = if compact {
+        &compact_accepted_samples
+    } else {
+        &receipt.samples
+    };
+    for sample in settled_samples {
         let (kind, from_height, to_height) = sample_reference(sample.sample);
         sqlx::query("DELETE FROM report_sample_assignments WHERE report_id = ? AND node_id = ? AND sample_kind = ? AND from_height = ? AND to_height = ?")
             .bind(report_id).bind(sample.node_id.to_string()).bind(kind)
@@ -3034,7 +3086,17 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
     #[cfg(test)]
     body_reads.record(1);
     match transaction_result {
-        Ok(()) => tx.commit().await.map_err(ApplyReceiptError::from),
+        Ok(()) => {
+            tx.commit().await?;
+            if compact_replay {
+                tracing::warn!(
+                    report_id,
+                    outcome = disposition,
+                    "applied the compact receipt of a replayed Report whose receipt body the Server had slimmed; per-Node and per-sample outcomes are no longer available, so a partially accepted Report returns its samples to the queue"
+                );
+            }
+            Ok(())
+        }
         Err(error) => match tx.rollback().await {
             Ok(()) => {
                 if stale_closing {

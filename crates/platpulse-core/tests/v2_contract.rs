@@ -181,6 +181,17 @@ fn v2_accepted_receipt_requires_a_positive_acceptance_pair() {
     assert!(receipt.validate().is_err());
 }
 
+/// ADR 0009: the compact replay of a slimmed `partially_accepted` receipt has
+/// empty per-Node and per-sample arrays and must still validate.
+#[test]
+fn v2_compact_partially_accepted_receipt_validates() {
+    let mut value: serde_json::Value = serde_json::from_str(RECEIPT_V2_ACCEPTED).unwrap();
+    value["disposition"] = serde_json::json!("partially_accepted");
+    let receipt: ReportReceiptV2 = serde_json::from_value(value).unwrap();
+    assert!(receipt.is_compact());
+    assert_eq!(receipt.validate(), Ok(()));
+}
+
 #[test]
 fn v2_rejected_receipt_cannot_carry_an_accepted_pair() {
     let mut value: serde_json::Value = serde_json::from_str(RECEIPT_V2_REJECTED).unwrap();
