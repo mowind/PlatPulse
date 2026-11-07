@@ -534,13 +534,11 @@ async fn persist_final_closing(
         .map(|value| crate::collector::ok(value, report.generated_at))
         .map_err(PreparationError::Database)?;
     if let Some(spool) = report.host.spool.latest.as_mut() {
-        spool.shutdown_state = Some("final_stored".to_owned());
-        spool.shutdown_started_at = Some(report.generated_at);
-        spool.shutdown_deadline_at = Some(crate::shutdown::started_at_plus(
-            report.generated_at,
-            sender_deadline,
-        ));
-        spool.shutdown_forced = Some(false);
+        crate::shutdown_record::ShutdownRecord::ClosingStored {
+            started_at: report.generated_at,
+            deadline_at: crate::shutdown::started_at_plus(report.generated_at, sender_deadline),
+        }
+        .describe(spool);
     }
     report
         .validate()

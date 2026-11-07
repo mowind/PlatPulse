@@ -2218,14 +2218,7 @@ fn spool_diagnostics_for_transition(
     transition: BootTransition,
 ) -> SpoolDiagnostics {
     if transition == BootTransition::DrainedPrevious {
-        diagnostics.shutdown_state = Some("running".to_owned());
-        diagnostics.shutdown_started_at = None;
-        diagnostics.shutdown_deadline_at = None;
-        diagnostics.shutdown_finished_at = None;
-        diagnostics.shutdown_unresolved_range = None;
-        diagnostics.shutdown_last_error = None;
-        diagnostics.shutdown_forced = Some(false);
-        diagnostics.shutdown_report_id = None;
+        crate::shutdown_record::ShutdownRecord::Running.describe(&mut diagnostics);
     }
     diagnostics
 }
@@ -2810,14 +2803,7 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
         )
         .await?
         {
-            // The shutdown that closed the previous Boot is now fully
-            // resolved, so its diagnostics return to running. Closing the Boot
-            // left them final_stored for that Closing; anything else is a
-            // shutdown the current Boot has already begun and keeps its record.
-            sqlx::query("UPDATE agent_state SET shutdown_state='running', shutdown_started_at=NULL, shutdown_deadline_at=NULL, shutdown_finished_at=NULL, shutdown_unresolved_from=NULL, shutdown_unresolved_to=NULL, shutdown_last_error=NULL, shutdown_forced=0, shutdown_report_id=NULL, shutdown_report_sequence=NULL, shutdown_updated_at=? WHERE singleton=1 AND shutdown_state='final_stored' AND shutdown_report_id IS close_report_id")
-                .bind(applied_at)
-                .execute(&mut *tx)
-                .await?;
+            crate::shutdown_record::settle(&mut tx, applied_at).await?;
         }
     }
     if parsed_report.boot_transition == BootTransition::Closing
@@ -2839,11 +2825,7 @@ pub async fn apply_receipt_typed<I: ReportInventory>(
         .await?
         {
             crate::boot::CloseOutcome::Closed { .. } => {
-                sqlx::query("UPDATE agent_state SET shutdown_state='final_stored', shutdown_finished_at=?, shutdown_last_error=NULL, shutdown_updated_at=? WHERE singleton=1")
-                    .bind(applied_at)
-                    .bind(applied_at)
-                    .execute(&mut *tx)
-                    .await?;
+                crate::shutdown_record::closing_applied(&mut tx, applied_at).await?;
             }
             // Only a Closing the record has moved past is an orphan the
             // recovery drain may discard; a race with another writer is not.

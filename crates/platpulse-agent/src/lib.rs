@@ -29,6 +29,7 @@ pub mod redaction;
 pub mod reporting;
 pub mod rpc;
 pub mod shutdown;
+mod shutdown_record;
 pub mod time_exchange;
 
 #[cfg(test)]

@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::block::{HeadSubscription, ResolveError, ResolvedBlock, WebSocketBlockTransport};
 use crate::collector::{FailClosedRpcAdapter, RpcAdapter};
+use crate::shutdown_record::ShutdownState;
 
 /// Runtime coordinator owning collection intake and the cancellation signal.
 /// A shutdown request first cancels intake, then drains each Node queue, so no
@@ -623,13 +624,7 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
         .ok_or(crate::collector::CollectionError::RecoveryRequired)?;
     let started = shutdown_timestamp();
     let deadline = started_at_plus(started, drain_deadline);
-    sqlx::query("UPDATE agent_state SET shutdown_state='draining', shutdown_started_at=?, shutdown_deadline_at=?, shutdown_updated_at=?, updated_at=? WHERE singleton=1")
-        .bind(started.to_string())
-        .bind(deadline.to_string())
-        .bind(started.to_string())
-        .bind(started.to_string())
-        .execute(&mut *tx)
-        .await?;
+    crate::shutdown_record::begin(&mut tx, started, deadline).await?;
     tx.commit().await?;
 
     let inventory = config
@@ -687,8 +682,7 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
             );
             crate::block::persist_history_gap(&mut store, &gap).await?;
             let mut tx = store.write().await?;
-            sqlx::query("UPDATE agent_state SET shutdown_unresolved_from=?, shutdown_unresolved_to=?, shutdown_last_error=? WHERE singleton=1")
-                .bind(range.0 as i64).bind(range.1 as i64).bind(&gap.reason).execute(&mut *tx).await?;
+            crate::shutdown_record::record_unresolved(&mut tx, range, &gap.reason).await?;
             tx.commit().await?;
         }
     }
@@ -716,10 +710,11 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
         .map(|value| crate::collector::ok(value, report.generated_at))
         .map_err(crate::collector::CollectionError::Database)?;
     if let Some(spool) = report.host.spool.latest.as_mut() {
-        spool.shutdown_state = Some("final_stored".to_owned());
-        spool.shutdown_started_at = Some(started);
-        spool.shutdown_deadline_at = Some(send_deadline);
-        spool.shutdown_forced = Some(false);
+        crate::shutdown_record::ShutdownRecord::ClosingStored {
+            started_at: started,
+            deadline_at: send_deadline,
+        }
+        .describe(spool);
     }
     report
         .validate()
@@ -764,7 +759,8 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
             Err(error) => {
                 let at = shutdown_timestamp();
                 let mut tx = store.write().await?;
-                sqlx::query("UPDATE agent_state SET shutdown_state='send_failed', shutdown_last_error=?, shutdown_updated_at=? WHERE singleton=1").bind(error.to_string().chars().take(256).collect::<String>()).bind(at.to_string()).execute(&mut *tx).await?;
+                crate::shutdown_record::send_failed(&mut tx, &error.to_string(), &at.to_string())
+                    .await?;
                 tx.commit().await?;
                 store.close().await?;
                 return Ok(ShutdownOutcome {
@@ -773,7 +769,7 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
                     stored: true,
                     receipt_applied,
                     sender_deadline_exhausted: false,
-                    shutdown_state: "send_failed",
+                    shutdown_state: ShutdownState::SendFailed.as_str(),
                 });
             }
         }
@@ -781,7 +777,7 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
     if exhausted && !receipt_applied {
         let at = shutdown_timestamp();
         let mut tx = store.write().await?;
-        sqlx::query("UPDATE agent_state SET shutdown_state='forced_kill_recovery', shutdown_forced=1, shutdown_finished_at=?, shutdown_updated_at=? WHERE singleton=1").bind(at.to_string()).bind(at.to_string()).execute(&mut *tx).await?;
+        crate::shutdown_record::forced_kill(&mut tx, &at.to_string()).await?;
         tx.commit().await?;
     }
     store.close().await?;
@@ -792,10 +788,11 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
         receipt_applied,
         sender_deadline_exhausted: exhausted,
         shutdown_state: if exhausted {
-            "forced_kill_recovery"
+            ShutdownState::ForcedKillRecovery
         } else {
-            "final_stored"
-        },
+            ShutdownState::FinalStored
+        }
+        .as_str(),
     })
 }
 
