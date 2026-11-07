@@ -31,6 +31,8 @@ pub enum RecoverError {
     Backup(String),
     #[error("stored report is invalid: {0}")]
     InvalidReport(String),
+    #[error("persisted Boot state is invalid: {0}")]
+    InvalidBootState(String),
     #[error("Agent Store operation failed: {0}")]
     Reporting(#[from] crate::reporting::ReportStoreError),
 }
@@ -114,27 +116,24 @@ async fn write_consistency_backup(
 async fn scan_stale_closing_reports(
     store: &mut AgentStore,
 ) -> Result<Vec<StaleClosingReport>, RecoverError> {
-    let current: Option<(i64, Option<String>, i64)> = sqlx::query_as(
-        "SELECT agent_epoch, boot_id, report_sequence FROM agent_state WHERE singleton=1",
-    )
-    .fetch_optional(store.connection())
-    .await?;
-    let Some((current_epoch, current_boot, current_sequence)) = current else {
-        return Err(RecoverError::NotEnrolled);
-    };
-    let rows: Vec<(String, i64, String, i64, Vec<u8>)> = sqlx::query_as(
-        "SELECT report_id, agent_epoch, boot_id, report_sequence, body FROM reports ORDER BY created_at, report_id",
+    let current = crate::boot::read(store.connection())
+        .await
+        .map_err(|error| match error {
+            crate::boot::BootStateError::Database(error) => RecoverError::Database(error),
+            invalid => RecoverError::InvalidBootState(invalid.to_string()),
+        })?
+        .ok_or(RecoverError::NotEnrolled)?;
+    let rows: Vec<(String, i64, String, Vec<u8>)> = sqlx::query_as(
+        "SELECT report_id, agent_epoch, boot_id, body FROM reports ORDER BY created_at, report_id",
     )
     .fetch_all(store.connection())
     .await?;
     let mut stale = Vec::new();
-    for (report_id, agent_epoch, boot_id, report_sequence, body) in rows {
+    for (report_id, agent_epoch, boot_id, body) in rows {
         let report: AgentReport = serde_json::from_slice(&body)
             .map_err(|error| RecoverError::InvalidReport(format!("{report_id}: {error}")))?;
         if report.boot_transition == BootTransition::Closing
-            && (agent_epoch != current_epoch
-                || current_boot.as_deref() != Some(boot_id.as_str())
-                || report_sequence != current_sequence)
+            && !current.owns_closing(report.agent_epoch, report.boot_id, report.report_sequence)
         {
             stale.push(StaleClosingReport {
                 report_id,

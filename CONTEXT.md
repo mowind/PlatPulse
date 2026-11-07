@@ -132,6 +132,22 @@ _Avoid_: Admin token, Enrollment token
 The Server-controlled generation of an Agent identity. Enrollment, Recovery, or an explicit reset advances the epoch so older state cannot replace newer accepted reports.
 _Avoid_: Boot count, Report sequence
 
+**Boot**:
+One run of an Agent within an Agent Epoch, whose Reports carry consecutive sequence numbers. A Boot ends only when the Server applies its Closing Report; a process that stops before that leaves the Boot open, and the next start closes it with a Recovery Drain before collecting again.
+_Avoid_: Process restart, Agent Epoch, Session
+
+**Closing Report**:
+The last Report of a Boot, announcing to the Server that the Boot has ended. It closes the Boot only once the Server applies it; a rejected Closing Report leaves the Boot open and is rebuilt by the next Recovery Drain.
+_Avoid_: Shutdown report, Final heartbeat
+
+**Boot Transition**:
+What a Report announces about its Boot: continuing it, closing it with a Closing Report, or opening the successor Boot of a previous Boot that was closed. The successor keeps announcing the previous Boot until the Server applies one such Report, which settles the successor.
+_Avoid_: Boot state, Shutdown state
+
+**Recovery Drain**:
+The startup step that, when the previous Boot is still open, delivers its remaining stored Reports and then its Closing Report so that Boot ends before a new one collects. It is not the Owner-authorized Agent Recovery and not a graceful shutdown.
+_Avoid_: Agent Recovery, Graceful shutdown, Crash recovery
+
 **Agent Recovery**:
 The Owner-authorized process that restores an existing Agent identity after credential or state loss without creating a duplicate Agent or silently replacing accepted state.
 _Avoid_: New enrollment, Automatic reset

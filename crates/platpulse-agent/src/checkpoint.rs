@@ -423,14 +423,17 @@ fn require_prepared_state(
     evidence: &StoredEvidence,
     inventory: &NodeInventory,
 ) -> Result<(), AgentCheckpointError> {
-    if state.boot_state != "drained_pending"
-        || state.pending_transition.as_deref() != Some("drained_previous")
-    {
+    let phase = crate::boot::BootPhase::from_columns(
+        &state.boot_state,
+        state.pending_transition.as_deref(),
+        state.pending_previous_boot_id.as_deref(),
+    );
+    let Ok(crate::boot::BootPhase::DrainedPending { previous_boot_id }) = phase else {
         return Err(AgentCheckpointError::NotPrepared(format!(
             "the Agent Boot is {} rather than the post-Closing drained_pending checkpoint; run platpulse-agent prepare-upgrade first",
             state.boot_state
         )));
-    }
+    };
     let agent_id = state.agent_id.as_deref().ok_or_else(|| {
         AgentCheckpointError::NotPrepared("the Agent Store is not enrolled".to_owned())
     })?;
@@ -445,7 +448,7 @@ fn require_prepared_state(
         ));
     }
     if state.previous_boot_id.as_deref() != Some(evidence.closed_boot_id.as_str())
-        || state.pending_previous_boot_id.as_deref() != Some(evidence.closed_boot_id.as_str())
+        || previous_boot_id.to_string() != evidence.closed_boot_id
     {
         return Err(AgentCheckpointError::StateChanged(
             "the closed Boot linkage no longer matches the preparation evidence".to_owned(),

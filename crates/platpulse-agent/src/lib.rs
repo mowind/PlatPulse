@@ -10,6 +10,7 @@
 //! entry point.
 
 pub mod block;
+mod boot;
 pub mod checkpoint;
 pub mod cli;
 pub mod collector;

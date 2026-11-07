@@ -606,46 +606,30 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
     sender_deadline: Duration,
     write_permit: crate::database::AgentStoreWritePermit,
 ) -> Result<ShutdownOutcome, crate::collector::CollectionError> {
-    use std::str::FromStr;
     let mut store = crate::database::AgentStore::open_with_write_permit(
         crate::database::AgentDatabaseConfig::new(&config.state_db),
         write_permit,
     )
     .await?;
     let mut tx = store.write().await?;
-    let state: Option<(String, i64, Option<String>, i64, String)> = sqlx::query_as(
-        "SELECT agent_id, agent_epoch, boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some((agent_text, epoch, boot_text, sequence, boot_state)) = state else {
-        return Err(crate::collector::CollectionError::NotEnrolled);
-    };
-    if boot_state == "draining" {
+    let state = crate::boot::read(&mut tx)
+        .await?
+        .ok_or(crate::collector::CollectionError::NotEnrolled)?;
+    if state.phase == crate::boot::BootPhase::RecoveryDraining {
         return Err(crate::collector::CollectionError::RecoveryRequired);
     }
-    let agent_id = platpulse_core::identity::AgentId::from_str(&agent_text)
-        .map_err(|error| crate::collector::CollectionError::Identity(error.to_string()))?;
-    let boot_text = boot_text.ok_or(crate::collector::CollectionError::RecoveryRequired)?;
-    let boot_id = platpulse_core::identity::BootId::from_str(&boot_text)
-        .map_err(|error| crate::collector::CollectionError::Identity(error.to_string()))?;
+    let boot_id = state
+        .boot_id
+        .ok_or(crate::collector::CollectionError::RecoveryRequired)?;
     let started = shutdown_timestamp();
     let deadline = started_at_plus(started, drain_deadline);
-    let result = sqlx::query("UPDATE agent_state SET shutdown_state='draining', shutdown_started_at=?, shutdown_deadline_at=?, shutdown_updated_at=?, updated_at=? WHERE singleton=1 AND agent_id=? AND agent_epoch=? AND boot_id=? AND report_sequence=? AND boot_state=?")
+    sqlx::query("UPDATE agent_state SET shutdown_state='draining', shutdown_started_at=?, shutdown_deadline_at=?, shutdown_updated_at=?, updated_at=? WHERE singleton=1")
         .bind(started.to_string())
         .bind(deadline.to_string())
         .bind(started.to_string())
         .bind(started.to_string())
-        .bind(&agent_text)
-        .bind(epoch)
-        .bind(&boot_text)
-        .bind(sequence)
-        .bind(&boot_state)
         .execute(&mut *tx)
         .await?;
-    if result.rows_affected() != 1 {
-        return Err(crate::collector::CollectionError::ConcurrentStateChange);
-    }
     tx.commit().await?;
 
     let inventory = config
@@ -712,10 +696,10 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
     let send_deadline = started_at_plus(started, sender_deadline);
     let mut report = build_shutdown_report(
         config,
-        agent_id,
-        epoch as u64,
+        state.agent_id,
+        state.agent_epoch,
         boot_id,
-        sequence as u64 + 1,
+        state.report_sequence + 1,
         inventory,
         last_good.as_ref(),
     )?;
@@ -750,8 +734,7 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
         report.report_sequence,
         &generated,
         &body,
-        sequence as u64,
-        &boot_state,
+        &state,
     )
     .await?;
     let closing_report_id = report.report_id.to_string();
