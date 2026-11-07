@@ -34,6 +34,7 @@ use crate::credential::load_credential_file;
 use crate::database::{
     AgentDatabaseConfig, AgentRuntimeLock, AgentStore, AgentStoreWritePermit, now_rfc3339,
 };
+use crate::spool::{SendBudget, Sent, send_oldest};
 
 /// Agent API path of the Server-owned preparation baseline.
 pub const AGENT_PREPARATION_PATH: &str = "/api/agent/v1/preparation";
@@ -380,13 +381,9 @@ async fn drain_backlog<T: crate::reporting::ReportTransport>(
         if tokio::time::Instant::now() >= send_until {
             return Err(PreparationError::ClosingDeadline);
         }
-        match crate::reporting::deliver_one_with_disposition_and_send_deadline(
-            store, transport, send_until,
-        )
-        .await
-        {
-            Ok(Some(_)) => continue,
-            Ok(None) => return Ok(()),
+        match send_oldest(store, transport, SendBudget::At(send_until)).await {
+            Ok(Sent::Applied(_) | Sent::Quarantined { .. }) => continue,
+            Ok(Sent::Empty) => return Ok(()),
             Err(crate::reporting::ReportStoreError::DeliveryDeadline) => {
                 return Err(PreparationError::ClosingDeadline);
             }
@@ -423,27 +420,31 @@ async fn complete_final_closing<T: crate::reporting::ReportTransport>(
         if tokio::time::Instant::now() >= send_until {
             return Err(PreparationError::ClosingDeadline);
         }
-        let delivered = match crate::reporting::deliver_one_with_disposition_and_send_deadline(
-            store, transport, send_until,
-        )
-        .await
-        {
-            Ok(value) => value,
+        let sent = match send_oldest(store, transport, SendBudget::At(send_until)).await {
+            Ok(sent) => sent,
             Err(crate::reporting::ReportStoreError::DeliveryDeadline) => {
                 return Err(PreparationError::ClosingDeadline);
             }
             Err(error) => return Err(PreparationError::Delivery(error)),
         };
-        match delivered {
-            Some((report, disposition, inventory)) if report.report_id == closing_report_id => {
-                break (disposition, inventory);
+        match sent {
+            Sent::Applied(delivered) if delivered.report_id == closing_report_id => {
+                break (delivered.disposition, delivered.inventory);
+            }
+            // The Server applied this Closing, but the Boot it closes is no
+            // longer the local one: the receipt did not close this Boot.
+            Sent::Quarantined { report_id } if report_id == closing_report_id => {
+                return Err(PreparationError::StateChanged(
+                    "the Server acknowledged the Closing after the local Boot had moved on"
+                        .to_owned(),
+                ));
             }
             // A backlog Report reached the Server; keep draining. No
             // unacknowledged Report is ever discarded.
-            Some(_) => continue,
+            Sent::Applied(_) | Sent::Quarantined { .. } => continue,
             // The spool emptied without seeing the Closing: the evidence this
             // command must capture is gone, so refuse rather than guess.
-            None => return Err(PreparationError::InvalidClosingEvidence),
+            Sent::Empty => return Err(PreparationError::InvalidClosingEvidence),
         }
     };
     if disposition == ReceiptDisposition::Rejected {
@@ -789,8 +790,7 @@ mod tests {
     use crate::database::{AgentDatabaseConfig, AgentStore};
     use crate::http_test_support::ReservedAddress;
     use crate::reporting::{
-        HttpReportTransport, ReportStoreError, ReportTransport, deliver_one,
-        persist_immutable_report,
+        HttpReportTransport, ReportStoreError, ReportTransport, persist_immutable_report,
     };
 
     const BOOT_ID: &str = "0195f2a1-0012-4012-8012-000000000012";
@@ -1224,7 +1224,9 @@ mod tests {
         .await
         .unwrap();
         let transport = HttpReportTransport::from_config(&config).unwrap();
-        deliver_one(&mut store, &transport).await.unwrap();
+        crate::spool::send_oldest_unbounded(&mut store, &transport)
+            .await
+            .unwrap();
         store.close().await.unwrap();
         seed_report_sequence(&config, 1).await;
 

@@ -742,16 +742,21 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
             exhausted = true;
             break;
         }
-        match crate::reporting::deliver_one_with_send_deadline(&mut store, &sender, send_until)
-            .await
+        match crate::spool::send_oldest(
+            &mut store,
+            &sender,
+            crate::spool::SendBudget::At(send_until),
+        )
+        .await
         {
-            Ok(Some(delivered)) => {
+            Ok(crate::spool::Sent::Applied(delivered)) => {
                 if delivered.report_id == closing_report_id {
                     receipt_applied = true;
                     break;
                 }
             }
-            Ok(None) => break,
+            Ok(crate::spool::Sent::Quarantined { .. }) => {}
+            Ok(crate::spool::Sent::Empty) => break,
             Err(crate::reporting::ReportStoreError::DeliveryDeadline) => {
                 exhausted = true;
                 break;

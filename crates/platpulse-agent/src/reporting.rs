@@ -7,10 +7,7 @@ use thiserror::Error;
 
 use platpulse_core::hex::Sha256Hex;
 use platpulse_core::identity::ReportId;
-use platpulse_core::{
-    AgentReport, BootTransition, InventoryDeclaration, InventoryDisposition, ReceiptDisposition,
-    ReportReceipt, ReportReceiptV2, Rfc3339,
-};
+use platpulse_core::{AgentReport, BootTransition, InventoryDeclaration, Rfc3339};
 
 use serde::Deserialize;
 
@@ -21,7 +18,7 @@ use crate::database::{
     AgentDatabaseConfig, AgentDatabaseError, AgentStore, WriteTx, cleanup_expired_receipt_markers,
     now_rfc3339,
 };
-use crate::spool::{ApplyReceiptError, apply_receipt_typed};
+use crate::spool::{SendBudget, Sent};
 
 #[derive(Debug, sqlx::FromRow)]
 struct SpoolReportRow {
@@ -79,8 +76,6 @@ pub enum ReportStoreError {
     Credential(#[from] CredentialError),
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
-    #[error("stale Closing report {report_id} does not belong to the current Agent state")]
-    StaleClosing { report_id: String },
 }
 
 impl From<crate::inventory_declaration::InventoryGuardError> for ReportStoreError {
@@ -91,14 +86,6 @@ impl From<crate::inventory_declaration::InventoryGuardError> for ReportStoreErro
             InventoryGuardError::Database(error) => Self::Database(error),
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredReport {
-    pub report_id: String,
-    pub report_sequence: u64,
-    pub body: Vec<u8>,
-    pub body_sha256: String,
 }
 
 /// HTTP delivery transport. It posts the exact immutable body and returns
@@ -179,144 +166,6 @@ pub trait ReportTransport {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, ReportStoreError>> + Send + 'a>>;
 }
 
-/// Claim exactly one report. An existing in-flight report is resumed first;
-/// otherwise the oldest unclaimed report is atomically marked in-flight.
-pub async fn claim_oldest_report(
-    store: &mut AgentStore,
-) -> Result<Option<StoredReport>, ReportStoreError> {
-    #[cfg(test)]
-    let body_reads = store.spool_body_read_probe();
-    let mut tx = store.write().await?;
-    let transaction_result: Result<Option<StoredReport>, ReportStoreError> = async {
-        let in_flight: Option<String> = sqlx::query_scalar(
-            "SELECT report_id FROM reports WHERE in_flight = 1 ORDER BY created_at, report_id LIMIT 1",
-        )
-        .fetch_optional(&mut *tx)
-        .await?;
-        let report_id = if let Some(id) = in_flight {
-            id
-        } else {
-            let Some(id) = sqlx::query_scalar::<_, String>("SELECT report_id FROM reports WHERE in_flight = 0 ORDER BY created_at, report_id LIMIT 1")
-                .fetch_optional(&mut *tx).await? else {
-                return Ok(None);
-            };
-            sqlx::query("UPDATE reports SET in_flight = 1 WHERE report_id = ? AND in_flight = 0")
-                .bind(&id)
-                .execute(&mut *tx)
-                .await?;
-            id
-        };
-        let report = sqlx::query_as::<_, (String, i64, Vec<u8>, String)>("SELECT report_id, report_sequence, body, body_sha256 FROM reports WHERE report_id = ? AND in_flight = 1")
-            .bind(&report_id).fetch_optional(&mut *tx).await?;
-        report
-            .map(
-                |(report_id, report_sequence, body, body_sha256)| StoredReport {
-                    report_id,
-                    report_sequence: report_sequence as u64,
-                    body,
-                    body_sha256,
-                },
-            )
-            .ok_or(ReportStoreError::DeliveryInFlight)
-            .map(Some)
-    }
-    .await;
-    match transaction_result {
-        Ok(report) => {
-            tx.commit().await?;
-            #[cfg(test)]
-            if report.is_some() {
-                body_reads.record(1);
-            }
-            Ok(report)
-        }
-        Err(error) => match tx.rollback().await {
-            Ok(()) => Err(error),
-            Err(rollback_error) => Err(ReportStoreError::Database(rollback_error)),
-        },
-    }
-}
-
-/// The operator-facing summary of a whole-report rejection: every rejection the
-/// Server returned, in one bounded line. Shared by the durable Agent diagnostic
-/// (which the Agent Store keeps) and the delivery loop's console print, so both
-/// surfaces always show the same codes and reasons (issue #181).
-pub(crate) fn rejection_summary(receipt: &ReportReceipt) -> String {
-    receipt
-        .rejections
-        .iter()
-        .map(|rejection| format!("{} ({})", rejection.code.as_str(), rejection.reason))
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-/// Record a bounded delivery failure inside an existing transaction, so a
-/// receipt rejection can share the same diagnostic write as a transport
-/// failure without leaving the caller's transaction.
-pub(crate) async fn record_delivery_failure_in_transaction(
-    tx: &mut WriteTx<'_>,
-    message: &str,
-    at: &str,
-) -> Result<(), sqlx::Error> {
-    let message: String = message.chars().take(256).collect();
-    sqlx::query("INSERT INTO delivery_diagnostics (singleton, last_error, last_error_at) VALUES (1, ?, ?) ON CONFLICT(singleton) DO UPDATE SET last_error=excluded.last_error, last_error_at=excluded.last_error_at")
-        .bind(message).bind(at).execute(&mut **tx).await?;
-    Ok(())
-}
-
-/// Record a bounded delivery failure while preserving the immutable report.
-pub async fn record_delivery_failure(
-    store: &mut AgentStore,
-    message: &str,
-    at: &str,
-) -> Result<(), ReportStoreError> {
-    let mut tx = store.write().await?;
-    match record_delivery_failure_in_transaction(&mut tx, message, at).await {
-        Ok(()) => tx.commit().await.map_err(ReportStoreError::from),
-        Err(error) => match tx.rollback().await {
-            Ok(()) => Err(ReportStoreError::from(error)),
-            Err(rollback_error) => Err(ReportStoreError::from(rollback_error)),
-        },
-    }
-}
-
-/// Remove an orphan report that can never apply to the current Agent state.
-/// The Server has already acknowledged its exact bytes, so the local row is
-/// dropped; `report_sample_assignments` cascades and its samples become
-/// re-assignable.
-pub(crate) async fn quarantine_report(
-    store: &mut AgentStore,
-    report_id: &str,
-) -> Result<bool, ReportStoreError> {
-    let mut tx = store.write().await?;
-    let result = sqlx::query("DELETE FROM reports WHERE report_id = ?")
-        .bind(report_id)
-        .execute(&mut *tx)
-        .await;
-    match result {
-        Ok(result) => {
-            tx.commit().await?;
-            Ok(result.rows_affected() == 1)
-        }
-        Err(error) => {
-            tx.rollback().await?;
-            Err(ReportStoreError::Database(error))
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireReportResponse {
-    receipt: ReportReceipt,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireReportResponseV2 {
-    receipt: ReportReceiptV2,
-}
-
 /// The protocol major declared in a report body, read without fully decoding it.
 pub(crate) fn report_protocol_major(body: &[u8]) -> u64 {
     #[derive(Deserialize)]
@@ -326,25 +175,6 @@ pub(crate) fn report_protocol_major(body: &[u8]) -> u64 {
     serde_json::from_slice::<ProtocolMajor>(body)
         .map(|major| major.protocol_version)
         .unwrap_or(0)
-}
-
-/// The common v2 receipt fields in the frozen v1 shape. The v2 Inventory
-/// acceptance is carried separately so the confirmation record can bind the
-/// Server-assigned revision and canonical fingerprint.
-fn normalize_v2_receipt(receipt: ReportReceiptV2) -> ReportReceipt {
-    ReportReceipt {
-        report_id: receipt.report_id,
-        disposition: receipt.disposition,
-        report_body_sha256: receipt.report_body_sha256,
-        server_version: receipt.server_version,
-        supported_protocol_majors: receipt.supported_protocol_majors,
-        server_time: receipt.server_time,
-        rotation_hint: receipt.rotation_hint,
-        inventory: receipt.inventory.map(|inventory| inventory.disposition),
-        rejections: receipt.rejections,
-        nodes: receipt.nodes,
-        samples: receipt.samples,
-    }
 }
 
 /// Convert a fully built v1 report into its v2 declaration form. Used only for
@@ -399,19 +229,6 @@ pub(crate) fn into_v1_snapshot(report: AgentReport<InventoryDeclaration>) -> Age
     }
 }
 
-/// The boot identity a delivered report proves, under either protocol major.
-pub(crate) fn report_boot_identity(
-    body: &[u8],
-) -> Result<(platpulse_core::BootId, BootTransition), serde_json::Error> {
-    if report_protocol_major(body) == platpulse_core::protocol::PROTOCOL_VERSION_V2 {
-        let report: AgentReport<InventoryDeclaration> = serde_json::from_slice(body)?;
-        Ok((report.boot_id, report.boot_transition))
-    } else {
-        let report: AgentReport = serde_json::from_slice(body)?;
-        Ok((report.boot_id, report.boot_transition))
-    }
-}
-
 /// Decode a spooled report body under its declared major, returning the fields
 /// the immutable spool needs. Each major keeps its own strict decoding.
 fn parse_spooled_report(
@@ -440,229 +257,6 @@ fn parse_spooled_report(
             report.block_summaries,
             report.history_gaps,
         ))
-    }
-}
-
-/// What bounds one HTTP send (issue #270).
-///
-/// The Durable Spool work that precedes a send — taking the shared write permit,
-/// claiming the oldest Report, re-validating its bytes — is deliberately outside
-/// the budget. `sender_deadline_ms` is defined as the time the Agent waits for
-/// the Server's response (design §7.2), so local bookkeeping must never be able
-/// to consume it and expire it before the request leaves the Agent.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum SendBudget {
-    /// Abandon the send once this much time has passed since the request
-    /// started. The Durable Spool delivery pass renews it for every Report.
-    PerSend(std::time::Duration),
-    /// Abandon the send at a moment the caller already chose: shutdown and
-    /// upgrade preparation bound a whole step, which starts before the request.
-    At(tokio::time::Instant),
-}
-
-/// Send one claimed report. No transport error is an acknowledgement; the
-/// in-flight row and exact bytes remain available for the next attempt.
-pub async fn deliver_one<T: ReportTransport>(
-    store: &mut AgentStore,
-    transport: &T,
-) -> Result<Option<StoredReport>, ReportStoreError> {
-    Ok(deliver_one_typed(store, transport, None)
-        .await?
-        .map(|step| step.report))
-}
-
-/// Send one claimed report and report the Server's top-level disposition, so
-/// callers that distinguish acceptance from refusal (Boot recovery, issue
-/// #178) never have to infer it from stored Agent state.
-pub(crate) async fn deliver_one_with_disposition<T: ReportTransport>(
-    store: &mut AgentStore,
-    transport: &T,
-) -> Result<Option<(StoredReport, ReceiptDisposition)>, ReportStoreError> {
-    Ok(deliver_one_typed(store, transport, None)
-        .await?
-        .map(|step| (step.report, step.disposition)))
-}
-
-/// Deliver one report while applying a deadline only to the HTTP send. Once
-/// the response arrives, receipt validation and its SQLite transaction are
-/// allowed to finish without cancellation.
-pub async fn deliver_one_with_send_deadline<T: ReportTransport>(
-    store: &mut AgentStore,
-    transport: &T,
-    send_deadline: tokio::time::Instant,
-) -> Result<Option<StoredReport>, ReportStoreError> {
-    Ok(
-        deliver_one_typed(store, transport, Some(SendBudget::At(send_deadline)))
-            .await?
-            .map(|step| step.report),
-    )
-}
-
-/// Send one claimed report under a deadline and report both the immutable
-/// report and the Server's top-level disposition. The upgrade-preparation
-/// bridge (issue #189) must distinguish an accepted/partially accepted Closing
-/// from a rejected one without inferring it from later Agent state.
-pub(crate) async fn deliver_one_with_disposition_and_send_deadline<T: ReportTransport>(
-    store: &mut AgentStore,
-    transport: &T,
-    send_deadline: tokio::time::Instant,
-) -> Result<
-    Option<(
-        StoredReport,
-        ReceiptDisposition,
-        Option<InventoryDisposition>,
-    )>,
-    ReportStoreError,
-> {
-    Ok(
-        deliver_one_typed(store, transport, Some(SendBudget::At(send_deadline)))
-            .await?
-            .map(|step| (step.report, step.disposition, step.inventory)),
-    )
-}
-
-/// One applied report, with the operator-facing rejection summary when the
-/// Server refused it whole.
-struct DeliveryStep {
-    report: StoredReport,
-    rejection: Option<String>,
-    disposition: ReceiptDisposition,
-    /// The Server's Inventory outcome for this report, kept so a caller that
-    /// must prove the declaration was accepted (the upgrade-preparation
-    /// bridge, issue #189) does not have to infer it from later state.
-    inventory: Option<InventoryDisposition>,
-}
-
-async fn deliver_one_typed<T: ReportTransport>(
-    store: &mut AgentStore,
-    transport: &T,
-    send_budget: Option<SendBudget>,
-) -> Result<Option<DeliveryStep>, ReportStoreError> {
-    ensure_spool_not_fatal(store).await?;
-    let Some(report) = claim_oldest_report(store).await? else {
-        return Ok(None);
-    };
-    ensure_claimed_report_intact(store, &report).await?;
-    // The per-send budget starts here, with the request, not with the Durable
-    // Spool bookkeeping above (issue #270).
-    let send_deadline = match send_budget {
-        Some(SendBudget::PerSend(timeout)) => Some(tokio::time::Instant::now() + timeout),
-        Some(SendBudget::At(deadline)) => Some(deadline),
-        None => None,
-    };
-    let response = match send_deadline {
-        Some(deadline) => match tokio::time::timeout_at(deadline, transport.send(&report.body))
-            .await
-        {
-            Ok(Ok(response)) => response,
-            Ok(Err(error)) => {
-                let _ = record_delivery_failure(store, &error.to_string(), &now_rfc3339()).await;
-                return Err(error);
-            }
-            Err(_) => {
-                let _ = record_delivery_failure(
-                    store,
-                    "delivery sender deadline exhausted",
-                    &now_rfc3339(),
-                )
-                .await;
-                return Err(ReportStoreError::DeliveryDeadline);
-            }
-        },
-        None => match transport.send(&report.body).await {
-            Ok(response) => response,
-            Err(error) => {
-                let _ = record_delivery_failure(store, &error.to_string(), &now_rfc3339()).await;
-                return Err(error);
-            }
-        },
-    };
-    let major = report_protocol_major(&report.body);
-    let (envelope_receipt, acceptance) = if major == platpulse_core::protocol::PROTOCOL_VERSION_V2 {
-        let envelope: WireReportResponseV2 = serde_json::from_slice(&response)
-            .map_err(|error| ReportStoreError::InvalidReceipt(error.to_string()))?;
-        envelope
-            .receipt
-            .validate()
-            .map_err(|error| ReportStoreError::InvalidReceipt(error.to_string()))?;
-        let acceptance = envelope
-            .receipt
-            .inventory
-            .as_ref()
-            .and_then(|inventory| inventory.acceptance.clone());
-        (normalize_v2_receipt(envelope.receipt), acceptance)
-    } else {
-        let envelope: WireReportResponse = serde_json::from_slice(&response)
-            .map_err(|error| ReportStoreError::InvalidReceipt(error.to_string()))?;
-        envelope
-            .receipt
-            .validate()
-            .map_err(|error| ReportStoreError::InvalidReceipt(error.to_string()))?;
-        (envelope.receipt, None)
-    };
-    let actual_hash = format!("0x{}", hex::encode(Sha256::digest(&report.body)));
-    if actual_hash != report.body_sha256 {
-        return Err(ReportStoreError::ReceiptMismatch);
-    }
-    if envelope_receipt.report_id.to_string() != report.report_id
-        || envelope_receipt.report_body_sha256.to_string() != actual_hash
-    {
-        return Err(ReportStoreError::ReceiptMismatch);
-    }
-    let receipt_disposition = envelope_receipt.disposition;
-    // Copy the Inventory outcome before the receipt is consumed by the
-    // receipt-application transaction below.
-    let inventory_disposition = envelope_receipt.inventory;
-    let disposition = crate::spool::receipt_disposition_name(receipt_disposition);
-    // A whole-report rejection is an applied receipt, not a transport failure:
-    // it must reach the caller as data so the delivery loop can tell the
-    // operator why every report is being refused (issue #181).
-    // The summary names the condition, not the Report: the delivery loop
-    // aggregates repeated refusals on it (design logging.md), and a catch-up
-    // that refuses thousands of Reports must produce one line per minute rather
-    // than one per Report. The Report's identity travels beside it.
-    let rejection = (receipt_disposition == ReceiptDisposition::Rejected)
-        .then(|| rejection_summary(&envelope_receipt));
-    if major == platpulse_core::protocol::PROTOCOL_VERSION_V2 {
-        apply_receipt_typed::<InventoryDeclaration>(
-            store,
-            &report.report_id,
-            &report.body_sha256,
-            disposition,
-            envelope_receipt,
-            acceptance,
-            &now_rfc3339(),
-        )
-        .await
-        .map_err(map_apply_receipt_error)?;
-    } else {
-        apply_receipt_typed::<platpulse_core::inventory::NodeInventory>(
-            store,
-            &report.report_id,
-            &report.body_sha256,
-            disposition,
-            envelope_receipt,
-            acceptance,
-            &now_rfc3339(),
-        )
-        .await
-        .map_err(map_apply_receipt_error)?;
-    }
-    Ok(Some(DeliveryStep {
-        report,
-        rejection,
-        disposition: receipt_disposition,
-        inventory: inventory_disposition,
-    }))
-}
-
-/// Map a receipt-application failure onto the delivery error type.
-fn map_apply_receipt_error(error: ApplyReceiptError) -> ReportStoreError {
-    match error {
-        ApplyReceiptError::Database(error) => ReportStoreError::Database(error),
-        ApplyReceiptError::StaleClosing { report_id } => {
-            ReportStoreError::StaleClosing { report_id }
-        }
     }
 }
 
@@ -1020,8 +614,9 @@ pub(crate) async fn deliver_backlog_with_send_timeout<T: ReportTransport>(
     deliver_backlog(store, transport, Some(send_timeout), cancel, on_rejection).await
 }
 
-/// Deliver until the Agent Store holds no queued Report (issue #270).
-pub async fn deliver_periodic<T: ReportTransport>(
+/// Deliver until the Agent Store holds no queued Report.
+#[cfg(test)]
+pub(crate) async fn deliver_periodic<T: ReportTransport>(
     store: &mut AgentStore,
     transport: &T,
 ) -> Result<DeliveryOutcome, ReportStoreError> {
@@ -1057,18 +652,22 @@ async fn deliver_backlog<T: ReportTransport>(
                 stop: DeliveryStop::Cancelled,
             };
         }
-        match deliver_one_typed(store, transport, send_timeout.map(SendBudget::PerSend)).await {
-            Ok(Some(step)) => {
+        let budget = send_timeout.map_or(SendBudget::Unbounded, SendBudget::PerSend);
+        match crate::spool::send_oldest(store, transport, budget).await {
+            Ok(Sent::Applied(delivered)) => {
                 outcome.applied += 1;
-                if let Some(rejection) = step.rejection {
-                    on_rejection(&step.report.report_id, &rejection);
+                if let Some(rejection) = delivered.rejection {
+                    on_rejection(&delivered.report_id, &rejection);
                     outcome.rejections.push(format!(
                         "report {} rejected by Server: {rejection}",
-                        step.report.report_id
+                        delivered.report_id
                     ));
                 }
             }
-            Ok(None) => {
+            // A superseded Closing left the spool with its receipt applied, so
+            // the pass moves on to the next Report instead of retrying it.
+            Ok(Sent::Quarantined { .. }) => outcome.applied += 1,
+            Ok(Sent::Empty) => {
                 return DeliveryPass {
                     outcome,
                     stop: DeliveryStop::SpoolEmpty,
@@ -1145,7 +744,7 @@ pub async fn ensure_spool_healthy(store: &mut AgentStore) -> Result<(), ReportSt
 /// therefore stays at startup (validate_receipt_history and the collector open
 /// paths) and in the per-Report gate ensure_claimed_report_intact, while the
 /// runtime paths only read the flag those checks latch.
-pub async fn ensure_spool_not_fatal(store: &mut AgentStore) -> Result<(), ReportStoreError> {
+pub(crate) async fn ensure_spool_not_fatal(store: &mut AgentStore) -> Result<(), ReportStoreError> {
     let state: Option<(i64, Option<String>)> =
         sqlx::query_as("SELECT store_fatal, store_error FROM spool_state WHERE singleton=1")
             .fetch_optional(store.connection())
@@ -1167,9 +766,9 @@ pub async fn ensure_spool_not_fatal(store: &mut AgentStore) -> Result<(), Report
 /// body still hashes to its stored digest, still parses as the Report it claims
 /// to be, and no Applied Receipt Record already covers it -- at O(1) instead of
 /// O(queued Reports).
-async fn ensure_claimed_report_intact(
+pub(crate) async fn ensure_claimed_report_intact(
     store: &mut AgentStore,
-    report: &StoredReport,
+    report: &crate::spool::StoredReport,
 ) -> Result<(), ReportStoreError> {
     // The claim already copied this body under the permit, so hashing and
     // parsing it again here stays outside the permit (ADR 0001 keeps parsing
@@ -2696,6 +2295,7 @@ mod catch_up_tests {
 #[cfg(test)]
 mod delivery_tests {
     use super::*;
+    use platpulse_core::ReceiptDisposition;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
@@ -2871,10 +2471,11 @@ mod delivery_tests {
             let transport =
                 transport_answering(compact_receipt_body(&report_id, &body, "accepted"));
 
-            let (_, disposition) = deliver_one_with_disposition(&mut store, &transport)
+            let disposition = crate::spool::send_oldest_unbounded(&mut store, &transport)
                 .await
                 .unwrap()
-                .unwrap();
+                .unwrap()
+                .disposition;
 
             assert_eq!(disposition, ReceiptDisposition::Accepted);
             assert_eq!(count(&mut store, "SELECT COUNT(*) FROM reports").await, 0);
@@ -2920,10 +2521,11 @@ mod delivery_tests {
                 "partially_accepted",
             ));
 
-            let (_, disposition) = deliver_one_with_disposition(&mut store, &transport)
+            let disposition = crate::spool::send_oldest_unbounded(&mut store, &transport)
                 .await
                 .unwrap()
-                .unwrap();
+                .unwrap()
+                .disposition;
 
             assert_eq!(disposition, ReceiptDisposition::PartiallyAccepted);
             assert_eq!(count(&mut store, "SELECT COUNT(*) FROM reports").await, 0);
@@ -2967,7 +2569,11 @@ mod delivery_tests {
         }]);
         let transport = transport_answering(serde_json::to_vec(&receipt).unwrap());
 
-        assert!(deliver_one(&mut store, &transport).await.is_err());
+        assert!(
+            crate::spool::send_oldest_unbounded(&mut store, &transport)
+                .await
+                .is_err()
+        );
         assert_eq!(count(&mut store, "SELECT COUNT(*) FROM reports").await, 1);
         assert_eq!(
             count(&mut store, "SELECT COUNT(*) FROM report_receipts").await,
@@ -3027,7 +2633,12 @@ mod delivery_tests {
             bodies: Arc::new(Mutex::new(Vec::new())),
             responses: Arc::new(Mutex::new(Vec::new())),
         };
-        assert!(deliver_one(&mut store, &transport).await.unwrap().is_none());
+        assert!(
+            crate::spool::send_oldest_unbounded(&mut store, &transport)
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             enforce_spool_policy(&mut store, &SpoolPolicy::default(), &applied_at)
                 .await
@@ -3181,7 +2792,12 @@ mod delivery_tests {
             responses: Arc::new(Mutex::new(vec![Ok(receipt_body(&id, &body))])),
         };
 
-        assert!(deliver_one(&mut store, &transport).await.unwrap().is_some());
+        assert!(
+            crate::spool::send_oldest_unbounded(&mut store, &transport)
+                .await
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM report_receipts")
                 .fetch_one(store.connection())
@@ -3272,7 +2888,11 @@ mod delivery_tests {
                 "offline".into(),
             ))])),
         };
-        assert!(deliver_one(&mut store, &fake).await.is_err());
+        assert!(
+            crate::spool::send_oldest_unbounded(&mut store, &fake)
+                .await
+                .is_err()
+        );
         assert_eq!(
             fake.bodies.lock().unwrap().as_slice(),
             std::slice::from_ref(&first)
@@ -3309,7 +2929,7 @@ mod delivery_tests {
             )])),
         };
         assert!(matches!(
-            deliver_one(&mut store, &invalid).await,
+            crate::spool::send_oldest_unbounded(&mut store, &invalid).await,
             Err(ReportStoreError::InvalidReceipt(_))
         ));
         assert_eq!(
@@ -3324,7 +2944,11 @@ mod delivery_tests {
             bodies: Arc::new(Mutex::new(Vec::new())),
             responses: Arc::new(Mutex::new(vec![Ok(receipt_body(&id, &body))])),
         };
-        assert!(deliver_one(&mut store, &valid).await.is_ok());
+        assert!(
+            crate::spool::send_oldest_unbounded(&mut store, &valid)
+                .await
+                .is_ok()
+        );
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports WHERE report_id = ?")
                 .bind(&id)
@@ -3359,8 +2983,16 @@ mod delivery_tests {
             ])),
         };
 
-        assert!(deliver_one(&mut store, &fake).await.is_err());
-        assert!(deliver_one(&mut store, &fake).await.is_ok());
+        assert!(
+            crate::spool::send_oldest_unbounded(&mut store, &fake)
+                .await
+                .is_err()
+        );
+        assert!(
+            crate::spool::send_oldest_unbounded(&mut store, &fake)
+                .await
+                .is_ok()
+        );
         {
             let bodies = fake.bodies.lock().unwrap();
             assert_eq!(bodies.len(), 2);
@@ -3785,7 +3417,7 @@ mod delivery_tests {
         };
 
         assert!(matches!(
-            deliver_one(&mut store, &transport).await,
+            crate::spool::send_oldest_unbounded(&mut store, &transport).await,
             Err(ReportStoreError::StoreFatal(_))
         ));
         assert!(
@@ -3798,7 +3430,7 @@ mod delivery_tests {
         let reads = store.spool_body_read_probe();
         reads.reset();
         assert!(matches!(
-            deliver_one(&mut store, &transport).await,
+            crate::spool::send_oldest_unbounded(&mut store, &transport).await,
             Err(ReportStoreError::StoreFatal(_))
         ));
         assert_eq!(reads.reads(), 0);
@@ -3824,7 +3456,7 @@ mod delivery_tests {
         };
 
         assert!(matches!(
-            deliver_one(&mut store, &transport).await,
+            crate::spool::send_oldest_unbounded(&mut store, &transport).await,
             Err(ReportStoreError::StoreFatal(_))
         ));
         assert!(transport.bodies.lock().unwrap().is_empty());
@@ -3875,7 +3507,7 @@ mod delivery_tests {
             responses: Arc::new(Mutex::new(Vec::new())),
         };
         assert!(matches!(
-            deliver_one(&mut store, &transport).await,
+            crate::spool::send_oldest_unbounded(&mut store, &transport).await,
             Err(ReportStoreError::StoreFatal(_))
         ));
         assert!(transport.bodies.lock().unwrap().is_empty());
@@ -3911,7 +3543,9 @@ mod delivery_tests {
         };
         let probe = store.spool_body_read_probe();
         probe.reset();
-        let delivered = deliver_one(&mut store, &transport).await.unwrap();
+        let delivered = crate::spool::send_oldest_unbounded(&mut store, &transport)
+            .await
+            .unwrap();
         assert_eq!(delivered.map(|report| report.report_id), Some(id));
         assert!(
             probe.reads() <= 3,
@@ -3951,7 +3585,12 @@ mod delivery_tests {
             bodies: Arc::new(Mutex::new(Vec::new())),
             responses: Arc::new(Mutex::new(vec![Ok(receipt_body(&id, &body))])),
         };
-        assert!(deliver_one(&mut store, &transport).await.unwrap().is_some());
+        assert!(
+            crate::spool::send_oldest_unbounded(&mut store, &transport)
+                .await
+                .unwrap()
+                .is_some()
+        );
 
         let declared: AgentReport = serde_json::from_slice(&body).unwrap();
         let declared = declared.inventory;

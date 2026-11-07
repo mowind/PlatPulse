@@ -78,7 +78,7 @@ pub(crate) async fn recover_store_with_permit(
     let mut dropped = 0;
     if drop_stale_closing {
         for report in &stale {
-            if crate::reporting::quarantine_report(&mut store, &report.report_id).await? {
+            if crate::spool::quarantine_report(&mut store, &report.report_id).await? {
                 dropped += 1;
             }
         }

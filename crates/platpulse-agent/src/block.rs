@@ -1871,7 +1871,7 @@ mod tests {
         let delivery_barrier = barrier.clone();
         let delivery_task = tokio::spawn(async move {
             delivery_barrier.wait().await;
-            let result = crate::reporting::record_delivery_failure(
+            let result = crate::spool::record_delivery_failure(
                 &mut delivery_store,
                 "test delivery failure",
                 "2026-01-01T00:00:00Z",
