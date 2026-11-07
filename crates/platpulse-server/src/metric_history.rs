@@ -3728,30 +3728,93 @@ mod tests {
         (dir, pool)
     }
 
-    async fn record(pool: &sqlx::AnyPool, observed_at: &str, received_at: &str, value: f64) {
+    /// A raw window that opened before every instant these tests use.
+    const OPEN_WINDOW: &str = "1970-01-01T00:00:00Z";
+
+    /// Deliver one tier-series reading through the write protocol, its Agent
+    /// clock trusted, judged against a raw window that ends at `cutoff`.
+    async fn deliver_tier(
+        pool: &sqlx::AnyPool,
+        cutoff: &str,
+        observed_at: &str,
+        received_at: &str,
+        value: f64,
+    ) -> Delivery {
         let mut tx = crate::database::begin(pool).await.unwrap();
-        record_aggregates(&mut tx, &tier_scope(), observed_at, received_at, value)
-            .await
-            .unwrap();
+        let delivered = deliver_in(
+            &mut tx,
+            cutoff,
+            tier_scope(),
+            observed_at,
+            received_at,
+            value,
+        )
+        .await;
         tx.commit().await.unwrap();
+        delivered
     }
 
-    async fn correct(pool: &sqlx::AnyPool, observed_at: &str, received_at: &str, value: f64) {
-        let mut tx = crate::database::begin(pool).await.unwrap();
-        recompute_aggregates(&mut tx, &tier_scope(), observed_at, received_at, value)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
+    /// Deliver one reading of any series through the write protocol on the
+    /// caller's transaction, its Agent clock trusted.
+    async fn deliver_in(
+        tx: &mut Transaction<'_, Any>,
+        cutoff: &str,
+        scope: SeriesScope<'_>,
+        observed_at: &str,
+        received_at: &str,
+        value: f64,
+    ) -> Delivery {
+        super::record(
+            tx,
+            &crate::capacity::HistoryGate::Record,
+            &RawWindow::with_cutoff(cutoff),
+            MetricDelivery {
+                scope,
+                identity: observed_at.parse().unwrap(),
+                timeline: observed_at.parse().unwrap(),
+                received_at,
+                value,
+            },
+        )
+        .await
+        .unwrap()
     }
 
-    async fn keep_raw(pool: &sqlx::AnyPool, observed_at: &str, value: f64) {
-        sqlx::query("INSERT INTO node_metric_samples (node_id, metric, source_observed_at, observed_at, received_at, value) VALUES ($1, $2, $3, $4, $5, $6)")
+    /// [`deliver_in`] while the raw window still holds the instant.
+    async fn deliver_open(
+        tx: &mut Transaction<'_, Any>,
+        scope: SeriesScope<'_>,
+        observed_at: &str,
+        received_at: &str,
+        value: f64,
+    ) -> Delivery {
+        deliver_in(tx, OPEN_WINDOW, scope, observed_at, received_at, value).await
+    }
+
+    /// One new observation the raw window still holds: counted, row kept.
+    async fn observe(pool: &sqlx::AnyPool, observed_at: &str, received_at: &str, value: f64) {
+        assert_eq!(
+            deliver_tier(pool, OPEN_WINDOW, observed_at, received_at, value).await,
+            Delivery::Observed,
+            "{observed_at} is a new observation"
+        );
+    }
+
+    /// A new reading for an instant the series already holds a row for.
+    async fn restate(pool: &sqlx::AnyPool, observed_at: &str, received_at: &str, value: f64) {
+        assert_eq!(
+            deliver_tier(pool, OPEN_WINDOW, observed_at, received_at, value).await,
+            Delivery::Correction,
+            "{observed_at} restates a stored observation"
+        );
+    }
+
+    /// The aggregate tiers were introduced empty: a series the Server counted
+    /// before them keeps its raw rows and its ledger, and holds no bucket.
+    async fn introduce_empty_tiers(pool: &sqlx::AnyPool) {
+        sqlx::query("DELETE FROM node_metric_aggregates WHERE node_id = $1 AND metric = $2")
             .bind(TIER_NODE)
             .bind(TIER_METRIC)
-            .bind(observed_at)
-            .bind(observed_at)
-            .bind(observed_at)
-            .bind(value)
             .execute(pool)
             .await
             .unwrap();
@@ -4075,8 +4138,8 @@ mod tests {
     #[tokio::test]
     async fn a_counted_observation_advances_both_of_its_buckets() {
         let (_dir, pool) = tier_store().await;
-        record(&pool, "2026-03-04T05:06:10Z", "2026-03-04T05:06:11Z", 1.0).await;
-        record(&pool, "2026-03-04T05:06:50Z", "2026-03-04T05:06:51Z", 3.0).await;
+        observe(&pool, "2026-03-04T05:06:10Z", "2026-03-04T05:06:11Z", 1.0).await;
+        observe(&pool, "2026-03-04T05:06:50Z", "2026-03-04T05:06:51Z", 3.0).await;
         let minute = bucket(&pool, ONE_MINUTE_SECONDS, "2026-03-04T05:06:00Z")
             .await
             .expect("the minute bucket exists");
@@ -4094,7 +4157,7 @@ mod tests {
 
         // A third observation in the next minute of the same five-minute bucket
         // opens a second minute bucket and folds into the coarser one.
-        record(&pool, "2026-03-04T05:07:10Z", "2026-03-04T05:07:11Z", 2.0).await;
+        observe(&pool, "2026-03-04T05:07:10Z", "2026-03-04T05:07:11Z", 2.0).await;
         assert_eq!(bucket_count(&pool).await, 3);
         let five = bucket(&pool, FIVE_MINUTE_SECONDS, "2026-03-04T05:05:00Z")
             .await
@@ -4106,7 +4169,7 @@ mod tests {
         // An older observation delivered later is a real observation, so it joins
         // the count and can move an extreme, while the newest reading stays the
         // newest observation.
-        record(&pool, "2026-03-04T05:06:05Z", "2026-03-04T05:30:00Z", 9.0).await;
+        observe(&pool, "2026-03-04T05:06:05Z", "2026-03-04T05:30:00Z", 9.0).await;
         let minute = bucket(&pool, ONE_MINUTE_SECONDS, "2026-03-04T05:06:00Z")
             .await
             .unwrap();
@@ -4126,11 +4189,13 @@ mod tests {
     #[tokio::test]
     async fn a_correction_restates_a_bucket_only_from_rows_that_account_for_it() {
         let (_dir, pool) = tier_store().await;
-        record(&pool, "2026-03-04T05:06:10Z", "2026-03-04T05:06:11Z", 1.0).await;
-        record(&pool, "2026-03-04T05:06:40Z", "2026-03-04T05:06:41Z", 5.0).await;
-        keep_raw(&pool, "2026-03-04T05:06:10Z", 1.0).await;
-        keep_raw(&pool, "2026-03-04T05:06:40Z", 2.0).await;
-        correct(&pool, "2026-03-04T05:06:40Z", "2026-03-04T05:40:00Z", 2.0).await;
+        // A row stored before the tiers existed, so no bucket ever counted it.
+        observe(&pool, "2026-03-04T05:21:00Z", "2026-03-04T05:21:01Z", 7.0).await;
+        introduce_empty_tiers(&pool).await;
+
+        observe(&pool, "2026-03-04T05:06:10Z", "2026-03-04T05:06:11Z", 1.0).await;
+        observe(&pool, "2026-03-04T05:06:40Z", "2026-03-04T05:06:41Z", 5.0).await;
+        restate(&pool, "2026-03-04T05:06:40Z", "2026-03-04T05:40:00Z", 2.0).await;
         let minute = bucket(&pool, ONE_MINUTE_SECONDS, "2026-03-04T05:06:00Z")
             .await
             .unwrap();
@@ -4145,10 +4210,10 @@ mod tests {
 
         // One release later and the bucket can no longer be restated: the rows
         // that held the other extreme are gone.
-        record(&pool, "2026-03-04T05:11:10Z", "2026-03-04T05:11:11Z", 4.0).await;
-        record(&pool, "2026-03-04T05:11:40Z", "2026-03-04T05:11:41Z", 8.0).await;
-        keep_raw(&pool, "2026-03-04T05:11:40Z", 0.5).await;
-        correct(&pool, "2026-03-04T05:11:40Z", "2026-03-04T05:45:00Z", 0.5).await;
+        observe(&pool, "2026-03-04T05:11:10Z", "2026-03-04T05:11:11Z", 4.0).await;
+        observe(&pool, "2026-03-04T05:11:40Z", "2026-03-04T05:11:41Z", 8.0).await;
+        release_tier(&pool, "2026-03-04T05:11:40Z").await;
+        restate(&pool, "2026-03-04T05:11:40Z", "2026-03-04T05:45:00Z", 0.5).await;
         let minute = bucket(&pool, ONE_MINUTE_SECONDS, "2026-03-04T05:11:00Z")
             .await
             .unwrap();
@@ -4161,21 +4226,10 @@ mod tests {
         assert_eq!(minute.3, 0.5, "the newest reading is carried forward");
         assert_eq!(minute.5, "2026-03-04T05:11:40Z");
 
-        // The corrected instant is not the bucket's newest, so nothing is
-        // carried: the stored newest reading is still the newest observation.
-        record(&pool, "2026-03-04T05:16:10Z", "2026-03-04T05:16:11Z", 6.0).await;
-        correct(&pool, "2026-03-04T05:16:10Z", "2026-03-04T05:50:00Z", 0.25).await;
-        let minute = bucket(&pool, ONE_MINUTE_SECONDS, "2026-03-04T05:16:00Z")
-            .await
-            .unwrap();
-        assert_eq!(minute.3, 6.0);
-        assert_eq!(minute.2, 6.0);
-
         // A bucket the Server never counted is never invented from whatever rows
         // happen to be retained.
         let before = bucket_count(&pool).await;
-        keep_raw(&pool, "2026-03-04T05:21:00Z", 7.0).await;
-        correct(&pool, "2026-03-04T05:21:00Z", "2026-03-04T05:55:00Z", 7.0).await;
+        restate(&pool, "2026-03-04T05:21:00Z", "2026-03-04T05:55:00Z", 8.0).await;
         assert_eq!(bucket_count(&pool).await, before);
         assert!(
             bucket(&pool, ONE_MINUTE_SECONDS, "2026-03-04T05:21:00Z")
@@ -4189,10 +4243,21 @@ mod tests {
         // omits it is wrong. Only the newest reading is carried forward, so a
         // correction to an older instant leaves "what did the series last say"
         // answering the newest observation.
-        record(&pool, "2026-03-04T05:26:10Z", "2026-03-04T05:26:11Z", 3.0).await;
-        record(&pool, "2026-03-04T05:26:40Z", "2026-03-04T05:26:41Z", 7.0).await;
-        keep_raw(&pool, "2026-03-04T05:26:10Z", 3.0).await;
-        correct(&pool, "2026-03-04T05:26:10Z", "2026-03-04T05:59:00Z", 0.25).await;
+        // The newer observation arrives once the window has already closed
+        // over it: counted, and stored nowhere.
+        observe(&pool, "2026-03-04T05:26:10Z", "2026-03-04T05:26:11Z", 3.0).await;
+        assert_eq!(
+            deliver_tier(
+                &pool,
+                "2026-03-04T05:30:00Z",
+                "2026-03-04T05:26:40Z",
+                "2026-03-04T05:26:41Z",
+                7.0
+            )
+            .await,
+            Delivery::Observed
+        );
+        restate(&pool, "2026-03-04T05:26:10Z", "2026-03-04T05:59:00Z", 0.25).await;
         let minute = bucket(&pool, ONE_MINUTE_SECONDS, "2026-03-04T05:26:00Z")
             .await
             .unwrap();
@@ -4206,7 +4271,7 @@ mod tests {
             minute.3, 7.0,
             "an older corrected instant is not the newest reading"
         );
-        correct(&pool, "2026-03-04T05:26:10Z", "2026-03-04T06:00:00Z", 12.5).await;
+        restate(&pool, "2026-03-04T05:26:10Z", "2026-03-04T06:00:00Z", 12.5).await;
         let minute = bucket(&pool, ONE_MINUTE_SECONDS, "2026-03-04T05:26:00Z")
             .await
             .unwrap();
@@ -4305,17 +4370,15 @@ mod tests {
     async fn a_range_read_serves_each_stretch_at_its_own_grain() {
         let (_dir, pool) = tier_store().await;
         // Inside the raw window: still stored as samples.
-        keep_raw(&pool, "2026-03-30T13:00:00Z", 10.0).await;
-        keep_raw(&pool, "2026-03-30T13:01:00Z", 12.0).await;
-        record(&pool, "2026-03-30T13:00:00Z", "2026-03-30T13:00:05Z", 10.0).await;
-        record(&pool, "2026-03-30T13:01:00Z", "2026-03-30T13:01:05Z", 12.0).await;
+        observe(&pool, "2026-03-30T13:00:00Z", "2026-03-30T13:00:05Z", 10.0).await;
+        observe(&pool, "2026-03-30T13:01:00Z", "2026-03-30T13:01:05Z", 12.0).await;
         // Between the raw window and day 7: answered by the minute tier.
-        record(&pool, "2026-03-27T09:00:00Z", "2026-03-27T09:00:05Z", 5.0).await;
-        record(&pool, "2026-03-28T10:00:00Z", "2026-03-28T10:00:05Z", 1.0).await;
-        record(&pool, "2026-03-28T10:01:00Z", "2026-03-28T10:01:05Z", 2.0).await;
+        observe(&pool, "2026-03-27T09:00:00Z", "2026-03-27T09:00:05Z", 5.0).await;
+        observe(&pool, "2026-03-28T10:00:00Z", "2026-03-28T10:00:05Z", 1.0).await;
+        observe(&pool, "2026-03-28T10:01:00Z", "2026-03-28T10:01:05Z", 2.0).await;
         // Day 7 up to the horizon: only the coarse tier answers.
-        record(&pool, "2026-03-10T08:00:00Z", "2026-03-10T08:00:05Z", 3.0).await;
-        record(&pool, "2026-03-10T08:05:00Z", "2026-03-10T08:05:05Z", 4.0).await;
+        observe(&pool, "2026-03-10T08:00:00Z", "2026-03-10T08:00:05Z", 3.0).await;
+        observe(&pool, "2026-03-10T08:05:00Z", "2026-03-10T08:05:05Z", 4.0).await;
 
         let range = read_tiers(&pool, TIER_FROM, TIER_NOW, None, 5_000).await;
         assert_eq!(
@@ -4376,7 +4439,13 @@ mod tests {
         assert_eq!(range.gaps[0].from, "2026-03-10T08:05:00Z");
         assert_eq!(range.gaps[0].to, "2026-03-27T09:00:00Z");
         assert_eq!(range.coverage_seconds, 300 + 60 + 60);
-        assert_eq!(range.ledger, None);
+        // The ledger counted every delivery, whichever tier answers it now.
+        let ledger = range
+            .ledger
+            .expect("every delivery went through the ledger");
+        assert_eq!(ledger.observation_count, 7);
+        assert_eq!(ledger.first_observed_at, "2026-03-10T08:00:00Z");
+        assert_eq!(ledger.last_observed_at, "2026-03-30T13:01:00Z");
     }
 
     /// Issue #214 review F2: the thirty-day floor is a moving instant, so the
@@ -4390,10 +4459,10 @@ mod tests {
         let (_dir, pool) = tier_store().await;
         // Thirteen seconds inside the thirty-day horizon, in the bucket that
         // starts before it.
-        record(&pool, "2026-03-01T12:00:50Z", "2026-03-01T12:00:55Z", 7.0).await;
+        observe(&pool, "2026-03-01T12:00:50Z", "2026-03-01T12:00:55Z", 7.0).await;
         // Outside the horizon: the bucket that ends before the floor is not
         // pulled in by aligning the floor down.
-        record(&pool, "2026-03-01T11:30:00Z", "2026-03-01T11:30:05Z", 9.0).await;
+        observe(&pool, "2026-03-01T11:30:00Z", "2026-03-01T11:30:05Z", 9.0).await;
 
         let range = read_at(
             &pool,
@@ -4427,17 +4496,16 @@ mod tests {
         let (_dir, pool) = tier_store().await;
         // Inside the raw window but before the minute edge: the minute bucket
         // that holds it is answered whole instead.
-        record(&pool, "2026-03-30T12:03:50Z", "2026-03-30T12:03:55Z", 5.0).await;
+        observe(&pool, "2026-03-30T12:03:50Z", "2026-03-30T12:03:55Z", 5.0).await;
         // Plainly inside the raw window.
-        keep_raw(&pool, "2026-03-30T13:00:00Z", 6.0).await;
-        record(&pool, "2026-03-30T13:00:00Z", "2026-03-30T13:00:05Z", 6.0).await;
+        observe(&pool, "2026-03-30T13:00:00Z", "2026-03-30T13:00:05Z", 6.0).await;
         // Inside the seven-day horizon but inside the coarse bucket that
         // straddles the floor: answered by that bucket, together with the
         // observation that is older than the horizon.
-        record(&pool, "2026-03-24T12:01:00Z", "2026-03-24T12:01:05Z", 2.0).await;
-        record(&pool, "2026-03-24T12:04:00Z", "2026-03-24T12:04:05Z", 3.0).await;
+        observe(&pool, "2026-03-24T12:01:00Z", "2026-03-24T12:01:05Z", 2.0).await;
+        observe(&pool, "2026-03-24T12:04:00Z", "2026-03-24T12:04:05Z", 3.0).await;
         // Past the coarse bucket's end: the minute tier answers it.
-        record(&pool, "2026-03-24T12:06:00Z", "2026-03-24T12:06:05Z", 4.0).await;
+        observe(&pool, "2026-03-24T12:06:00Z", "2026-03-24T12:06:05Z", 4.0).await;
 
         let range = read_at(
             &pool,
@@ -4493,11 +4561,11 @@ mod tests {
             ("2026-03-10T08:04:58Z", 3.0),
             ("2026-03-10T08:04:59Z", 4.0),
         ] {
-            record(&pool, observed_at, observed_at, value).await;
+            observe(&pool, observed_at, observed_at, value).await;
         }
         for offset in 0..4 {
             let observed_at = format!("2026-03-10T09:00:{:02}Z", offset);
-            record(&pool, &observed_at, &observed_at, offset as f64).await;
+            observe(&pool, &observed_at, &observed_at, offset as f64).await;
         }
 
         let range = read_at(&pool, TIER_FROM, TIER_NOW, TIER_NOW, TIER_RAW_CUTOFF, 5_000).await;
@@ -4544,11 +4612,11 @@ mod tests {
         // between them is five minutes nobody observed.
         for offset in 55..60 {
             let observed_at = format!("2026-03-10T08:04:{offset:02}Z");
-            record(&pool, &observed_at, &observed_at, offset as f64).await;
+            observe(&pool, &observed_at, &observed_at, offset as f64).await;
         }
         for offset in 0..5 {
             let observed_at = format!("2026-03-10T08:10:{offset:02}Z");
-            record(&pool, &observed_at, &observed_at, offset as f64).await;
+            observe(&pool, &observed_at, &observed_at, offset as f64).await;
         }
 
         let range = read_at(&pool, TIER_FROM, TIER_NOW, TIER_NOW, TIER_RAW_CUTOFF, 5_000).await;
@@ -4592,8 +4660,9 @@ mod tests {
         // the stored sample sits between the cutoff and the minute's end - the
         // one stretch the unconditional handover moved out of the raw region.
         const CUTOFF: &str = "2026-03-30T12:03:37Z";
-        keep_raw(&pool, "2026-03-30T12:03:50Z", 5.0).await;
-        keep_raw(&pool, "2026-03-30T13:00:00Z", 6.0).await;
+        observe(&pool, "2026-03-30T12:03:50Z", "2026-03-30T12:03:50Z", 5.0).await;
+        observe(&pool, "2026-03-30T13:00:00Z", "2026-03-30T13:00:00Z", 6.0).await;
+        introduce_empty_tiers(&pool).await;
 
         let wide = read_at(&pool, TIER_FROM, TIER_NOW, TIER_NOW, CUTOFF, 5_000).await;
         assert_eq!(
@@ -4624,11 +4693,11 @@ mod tests {
         let (_dir, pool) = tier_store().await;
         // The bucket counted the older observation; the newer row was stored
         // before the aggregate tiers existed, so no tier ever counted it.
-        keep_raw(&pool, "2026-03-04T05:06:40Z", 1.0).await;
-        record(&pool, "2026-03-04T05:06:40Z", "2026-03-04T05:06:41Z", 1.0).await;
-        keep_raw(&pool, "2026-03-04T05:06:58Z", 99.0).await;
+        observe(&pool, "2026-03-04T05:06:58Z", "2026-03-04T05:06:58Z", 99.0).await;
+        introduce_empty_tiers(&pool).await;
+        observe(&pool, "2026-03-04T05:06:40Z", "2026-03-04T05:06:41Z", 1.0).await;
 
-        correct(&pool, "2026-03-04T05:06:58Z", "2026-03-04T05:07:00Z", 100.0).await;
+        restate(&pool, "2026-03-04T05:06:58Z", "2026-03-04T05:07:00Z", 100.0).await;
         let minute = bucket(&pool, ONE_MINUTE_SECONDS, "2026-03-04T05:06:00Z")
             .await
             .expect("the minute bucket exists");
@@ -4649,7 +4718,7 @@ mod tests {
 
         // A correction older than everything the bucket counted moves nothing:
         // the pair still describes the newest observation of the window.
-        correct(&pool, "2026-03-04T05:06:40Z", "2026-03-04T05:08:00Z", 0.5).await;
+        restate(&pool, "2026-03-04T05:06:40Z", "2026-03-04T05:08:00Z", 0.5).await;
         let minute = bucket(&pool, ONE_MINUTE_SECONDS, "2026-03-04T05:06:00Z")
             .await
             .unwrap();
@@ -4686,9 +4755,9 @@ mod tests {
         // The cutoff falls inside the 12:03 minute. The first row was stored
         // before the tiers existed and no tier ever counted it; the second
         // arrived after them and is the one observation its bucket counted.
-        keep_raw(&pool, "2026-03-30T12:03:50Z", 99.0).await;
-        keep_raw(&pool, "2026-03-30T12:03:55Z", 1.0).await;
-        record(&pool, "2026-03-30T12:03:55Z", "2026-03-30T12:03:56Z", 1.0).await;
+        observe(&pool, "2026-03-30T12:03:50Z", "2026-03-30T12:03:50Z", 99.0).await;
+        introduce_empty_tiers(&pool).await;
+        observe(&pool, "2026-03-30T12:03:55Z", "2026-03-30T12:03:56Z", 1.0).await;
         let minute = bucket(&pool, ONE_MINUTE_SECONDS, "2026-03-30T12:03:00Z")
             .await
             .expect("the later observation created its minute bucket");
@@ -4745,7 +4814,7 @@ mod tests {
         const TO: &str = "2026-03-01T12:00:20Z";
         // The horizon's own bucket holds an observation forty seconds after the
         // ceiling: real evidence, and none of it inside the requested stretch.
-        record(&pool, "2026-03-01T12:00:40Z", "2026-03-01T12:00:41Z", 100.0).await;
+        observe(&pool, "2026-03-01T12:00:40Z", "2026-03-01T12:00:41Z", 100.0).await;
         let straddling = bucket(&pool, FIVE_MINUTE_SECONDS, "2026-03-01T12:00:00Z")
             .await
             .expect("the observation created the bucket that straddles the horizon");
@@ -4783,8 +4852,7 @@ mod tests {
     #[tokio::test]
     async fn an_old_bucket_is_never_widened_back_into_raw_samples() {
         let (_dir, pool) = tier_store().await;
-        keep_raw(&pool, "2026-03-26T09:00:00Z", 9.0).await;
-        record(&pool, "2026-03-26T09:00:00Z", "2026-03-26T09:00:05Z", 9.0).await;
+        observe(&pool, "2026-03-26T09:00:00Z", "2026-03-26T09:00:05Z", 9.0).await;
 
         let range = read_tiers(&pool, "2026-03-25T00:00:00Z", TIER_NOW, None, 5_000).await;
         assert_eq!(instants(&range), vec!["2026-03-26T09:00:00Z"]);
@@ -4821,9 +4889,9 @@ mod tests {
         let (_dir, pool) = tier_store().await;
         for offset in 0..3 {
             let observed_at = format!("2026-03-28T10:{:02}:00Z", offset);
-            record(&pool, &observed_at, &observed_at, offset as f64 + 1.0).await;
+            observe(&pool, &observed_at, &observed_at, offset as f64 + 1.0).await;
         }
-        record(&pool, "2026-03-10T05:00:00Z", "2026-03-10T05:00:00Z", 4.0).await;
+        observe(&pool, "2026-03-10T05:00:00Z", "2026-03-10T05:00:00Z", 4.0).await;
 
         let first = read_tiers(&pool, TIER_FROM, TIER_NOW, None, 3).await;
         assert_eq!(
@@ -4867,12 +4935,11 @@ mod tests {
         let (_dir, pool) = tier_store().await;
         for index in 0..5 {
             let observed_at = format!("2026-03-30T13:{:02}:00Z", index);
-            keep_raw(&pool, &observed_at, index as f64 + 1.0).await;
-            record(&pool, &observed_at, &observed_at, index as f64 + 1.0).await;
+            observe(&pool, &observed_at, &observed_at, index as f64 + 1.0).await;
         }
         for offset in 0..3 {
             let observed_at = format!("2026-03-28T10:{:02}:00Z", offset);
-            record(&pool, &observed_at, &observed_at, offset as f64 + 1.0).await;
+            observe(&pool, &observed_at, &observed_at, offset as f64 + 1.0).await;
         }
 
         let first = read_tiers(&pool, TIER_FROM, TIER_NOW, None, 3).await;
@@ -4956,11 +5023,9 @@ mod tests {
     #[tokio::test]
     async fn a_silence_across_a_tier_boundary_is_still_one_gap() {
         let (_dir, pool) = tier_store().await;
-        record(&pool, "2026-03-30T11:30:00Z", "2026-03-30T11:30:05Z", 1.0).await;
-        keep_raw(&pool, "2026-03-30T13:00:00Z", 2.0).await;
-        keep_raw(&pool, "2026-03-30T13:01:00Z", 3.0).await;
-        record(&pool, "2026-03-30T13:00:00Z", "2026-03-30T13:00:05Z", 2.0).await;
-        record(&pool, "2026-03-30T13:01:00Z", "2026-03-30T13:01:05Z", 3.0).await;
+        observe(&pool, "2026-03-30T11:30:00Z", "2026-03-30T11:30:05Z", 1.0).await;
+        observe(&pool, "2026-03-30T13:00:00Z", "2026-03-30T13:00:05Z", 2.0).await;
+        observe(&pool, "2026-03-30T13:01:00Z", "2026-03-30T13:01:05Z", 3.0).await;
 
         let range = read_tiers(&pool, TIER_FROM, TIER_NOW, None, 5_000).await;
         assert_eq!(grains(&range), vec!["1m", "raw", "raw"]);
@@ -5004,6 +5069,28 @@ mod tests {
         SeriesScope::host(HOST_AGENT, HOST_STORAGE_METRIC, mount_path)
     }
 
+    /// Deliver one reading of one mount through the write protocol while the
+    /// raw window still holds its instant.
+    async fn deliver_host(
+        pool: &sqlx::AnyPool,
+        mount_path: &'static str,
+        observed_at: &str,
+        received_at: &str,
+        value: f64,
+    ) -> Delivery {
+        let mut tx = crate::database::begin(pool).await.unwrap();
+        let delivered = deliver_open(
+            &mut tx,
+            host_scope(mount_path),
+            observed_at,
+            received_at,
+            value,
+        )
+        .await;
+        tx.commit().await.unwrap();
+        delivered
+    }
+
     async fn record_host(
         pool: &sqlx::AnyPool,
         mount_path: &'static str,
@@ -5011,26 +5098,11 @@ mod tests {
         received_at: &str,
         value: f64,
     ) {
-        let mut tx = crate::database::begin(pool).await.unwrap();
-        record_delivery(
-            &mut tx,
-            &host_scope(mount_path),
-            observed_at,
-            received_at,
+        assert_eq!(
+            deliver_host(pool, mount_path, observed_at, received_at, value).await,
             Delivery::Observed,
-        )
-        .await
-        .unwrap();
-        record_aggregates(
-            &mut tx,
-            &host_scope(mount_path),
-            observed_at,
-            received_at,
-            value,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
+            "{mount_path} at {observed_at} is a new observation"
+        );
     }
 
     async fn correct_host(
@@ -5040,36 +5112,11 @@ mod tests {
         received_at: &str,
         value: f64,
     ) {
-        let mut tx = crate::database::begin(pool).await.unwrap();
-        recompute_aggregates(
-            &mut tx,
-            &host_scope(mount_path),
-            observed_at,
-            received_at,
-            value,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-    }
-
-    async fn keep_raw_host(
-        pool: &sqlx::AnyPool,
-        mount_path: &'static str,
-        observed_at: &str,
-        value: f64,
-    ) {
-        sqlx::query("INSERT INTO host_metric_samples (agent_id, metric, dimension, source_observed_at, observed_at, received_at, value) VALUES ($1, $2, $3, $4, $5, $6, $7)")
-            .bind(HOST_AGENT)
-            .bind(HOST_STORAGE_METRIC)
-            .bind(mount_path)
-            .bind(observed_at)
-            .bind(observed_at)
-            .bind(observed_at)
-            .bind(value)
-            .execute(pool)
-            .await
-            .unwrap();
+        assert_eq!(
+            deliver_host(pool, mount_path, observed_at, received_at, value).await,
+            Delivery::Correction,
+            "{mount_path} at {observed_at} restates a stored observation"
+        );
     }
 
     /// sample_count, min, max, last, first_observed_at, last_observed_at
@@ -5255,8 +5302,6 @@ mod tests {
             900.0,
         )
         .await;
-        keep_raw_host(&pool, "/data", "2026-03-04T05:06:10Z", 1.0).await;
-        keep_raw_host(&pool, "/data", "2026-03-04T05:06:40Z", 2.0).await;
         correct_host(
             &pool,
             "/data",
@@ -5310,8 +5355,9 @@ mod tests {
         (dir, pool)
     }
 
-    /// One stored reading of one series, with the ledger entry that keeps it
-    /// reachable after the reading itself is released.
+    /// One reading of one series, delivered through the write protocol while
+    /// the raw window still holds it: stored, and counted by the ledger that
+    /// keeps the series reachable after the reading itself is released.
     async fn store_mount_reading(
         pool: &sqlx::AnyPool,
         metric: &str,
@@ -5320,27 +5366,20 @@ mod tests {
         received_at: &str,
         value: f64,
     ) {
-        let scope = SeriesScope::host(COVERAGE_AGENT, metric, mount_path);
         let mut tx = crate::database::begin(pool).await.unwrap();
-        record_delivery(
+        let delivered = deliver_open(
             &mut tx,
-            &scope,
-            observed_at,
-            received_at,
-            Delivery::Observed,
-        )
-        .await
-        .unwrap();
-        store_sample(
-            &mut tx,
-            &scope,
-            observed_at,
+            SeriesScope::host(COVERAGE_AGENT, metric, mount_path),
             observed_at,
             received_at,
             value,
         )
-        .await
-        .unwrap();
+        .await;
+        assert_eq!(
+            delivered,
+            Delivery::Observed,
+            "{mount_path} at {observed_at}"
+        );
         tx.commit().await.unwrap();
     }
 
@@ -5506,7 +5545,7 @@ mod tests {
         };
         // A Host that collected every minute, then every five: the newest
         // observations are the ones that say what it does now.
-        for step in 0..20 {
+        for step in 1..20 {
             let observed_at = minute(step * ONE_MINUTE_SECONDS);
             store_mount_reading(
                 &pool,
@@ -5703,15 +5742,14 @@ mod tests {
             for index in 0..=MOUNT_COVERAGE_LIMIT {
                 let mount_path = format!("/bulk-{index:03}");
                 let scope = SeriesScope::host(COVERAGE_AGENT, metric, &mount_path);
-                record_delivery(
+                deliver_open(
                     &mut snapshot,
-                    &scope,
+                    scope,
                     "2026-04-01T00:10:00Z",
                     "2026-04-01T00:10:00Z",
-                    Delivery::Observed,
+                    1.0,
                 )
-                .await
-                .unwrap();
+                .await;
             }
         }
         let coverage = load_mount_coverage(&mut snapshot, COVERAGE_AGENT)
