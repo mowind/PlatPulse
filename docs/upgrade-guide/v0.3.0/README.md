@@ -43,7 +43,7 @@ v0.3.0 adds PostgreSQL as an opt-in Server Storage Backend ([ADR 0013](../../adr
 | | v0.2.0 | v0.3.0 |
 |---|---|---|
 | Server (`SERVER_SCHEMA_VERSION`) | 75 | 81 |
-| Agent (`AGENT_SCHEMA_VERSION`) | 17 | 19 |
+| Agent (`AGENT_SCHEMA_VERSION`) | 17 | 20 |
 
 Server (SQLite, `crates/platpulse-server/migrations/`), applied automatically at startup:
 
@@ -58,8 +58,9 @@ Agent (`crates/platpulse-agent/migrations/`), applied automatically at startup:
 
 - `0018_spool_default_capacity` — new default Durable Spool capacity (above).
 - `0019_backfill_backlog` — table for the bounded block history hole backfill.
+- `0020_drop_dead_boot_schema` — drops the unused `agent_boots` table and two Boot state values no release wrote. No data an Agent uses changes.
 
-A v0.2.0 Agent refuses an Agent Store at schema 19.
+A v0.2.0 Agent refuses an Agent Store at schema 20.
 
 The PostgreSQL migrations (`crates/platpulse-server/migrations-postgres/`, baseline 0075 through 0081) are used only by the new PostgreSQL Storage Backend.
 
