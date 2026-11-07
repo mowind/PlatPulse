@@ -5213,9 +5213,12 @@ mod tests {
         (status, serde_json::from_slice(&body).unwrap())
     }
 
-    /// One observation counted the way ingestion counts it: into both aggregate
-    /// tiers, in a receipt transaction. No raw row is written, so a window that
-    /// still answered from raw samples would find nothing here.
+    /// One observation delivered the way ingestion delivers it, in a receipt
+    /// transaction, against a raw window that has already moved past it: it is
+    /// counted into both aggregate tiers and the ledger, but no raw row is
+    /// written, so a window that still answered from raw samples would find
+    /// nothing here. Deliveries to one series go in ascending order, as an
+    /// Agent's new observations do.
     async fn count_observation(
         state: &AppState,
         node_scoped: bool,
@@ -5223,16 +5226,62 @@ mod tests {
         observed_at: &str,
         value: f64,
     ) {
+        deliver_observation(
+            state,
+            node_scoped,
+            metric,
+            observed_at,
+            value,
+            "9999-12-31T23:59:59Z",
+        )
+        .await;
+    }
+
+    /// One observation delivered while the raw window still holds it: its raw
+    /// row is kept and it is counted into both aggregate tiers and the ledger.
+    async fn keep_observation(state: &AppState, metric: &str, observed_at: &str, value: f64) {
+        deliver_observation(
+            state,
+            true,
+            metric,
+            observed_at,
+            value,
+            "1970-01-01T00:00:00Z",
+        )
+        .await;
+    }
+
+    async fn deliver_observation(
+        state: &AppState,
+        node_scoped: bool,
+        metric: &str,
+        observed_at: &str,
+        value: f64,
+        raw_cutoff: &str,
+    ) {
         let scope = if node_scoped {
             crate::metric_history::SeriesScope::node("node-public", metric)
         } else {
             crate::metric_history::SeriesScope::host("agent-public-test", metric, "")
         };
+        let instant: platpulse_core::Rfc3339 = observed_at.parse().unwrap();
         let mut tx = crate::database::begin(state.db().pool()).await.unwrap();
-        crate::metric_history::record_aggregates(&mut tx, &scope, observed_at, observed_at, value)
-            .await
-            .unwrap();
+        let delivery = crate::metric_history::record(
+            &mut tx,
+            &crate::capacity::HistoryGate::Record,
+            &crate::metric_history::RawWindow::with_cutoff(raw_cutoff),
+            crate::metric_history::MetricDelivery {
+                scope,
+                identity: instant,
+                timeline: instant,
+                received_at: observed_at,
+                value,
+            },
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
+        assert_eq!(delivery, crate::metric_history::Delivery::Observed);
     }
 
     async fn keep_raw_sample(state: &AppState, metric: &str, observed_at: &str, value: f64) {
@@ -5380,8 +5429,7 @@ mod tests {
         seed_public_data(&state).await;
         let now = settled_now(60).await;
         let recent = format_rfc3339(now - time::Duration::seconds(10));
-        keep_raw_sample(&state, "process_cpu_percent", &recent, 20.0).await;
-        count_observation(&state, true, "process_cpu_percent", &recent, 20.0).await;
+        keep_observation(&state, "process_cpu_percent", &recent, 20.0).await;
         seed_block_summary(&state, "node-public", 100, 7).await;
         for window in [None, Some("live")] {
             let (status, body) = metric_window_answer(&state, window).await;
@@ -5541,11 +5589,10 @@ mod tests {
         let recent = format_rfc3339(now - time::Duration::seconds(2));
         let older = format_rfc3339(now - time::Duration::seconds(30 * 60));
         let two_days = format_rfc3339(now - time::Duration::days(2));
-        for (instant, value) in [(&older, 3.0), (&recent, 4.0)] {
-            keep_raw_sample(&state, "peer_inbound_count", instant, value).await;
-            count_observation(&state, true, "peer_inbound_count", instant, value).await;
-        }
         count_observation(&state, true, "peer_inbound_count", &two_days, 9.0).await;
+        for (instant, value) in [(&older, 3.0), (&recent, 4.0)] {
+            keep_observation(&state, "peer_inbound_count", instant, value).await;
+        }
 
         let (_, hour) = metric_window_answer(&state, Some("1h")).await;
         assert_eq!(hour["metricWindow"]["grain"], "raw");

@@ -1258,6 +1258,158 @@ fn gap_seconds(pair: &[MetricSample]) -> Option<i64> {
     (seconds > 0).then_some(seconds)
 }
 
+/// The raw metric window one Report's deliveries are judged against.
+///
+/// The cutoff comes from the persisted `raw_metric_sample` policy, the same
+/// family the post-ingestion cleanup reads, and it is read through the open
+/// ingestion transaction: ingestion holds the Server's single write connection,
+/// so a pool read here would wait on the caller's own transaction. Reading it
+/// once per Report also means no policy edit can land between the read and the
+/// deliveries it classifies.
+#[derive(Debug, Clone)]
+pub(crate) struct RawWindow {
+    cutoff: String,
+}
+
+impl RawWindow {
+    /// The window the persisted raw policy defines right now.
+    pub(crate) async fn current(tx: &mut Transaction<'_, Any>) -> Result<Self, sqlx::Error> {
+        let days = crate::retention::metric_sample_retention_days_tx(tx).await?;
+        Ok(Self {
+            cutoff: format_rfc3339(crate::retention::family_cutoff(
+                crate::auth::now_utc(),
+                days,
+            )),
+        })
+    }
+
+    /// A window with a fixed cutoff, for tests that place deliveries on either
+    /// side of it.
+    #[cfg(test)]
+    pub(crate) fn with_cutoff(cutoff: &str) -> Self {
+        Self {
+            cutoff: cutoff.to_owned(),
+        }
+    }
+}
+
+/// One metric sample as a Report delivers it to a series.
+///
+/// A sample carries two instants (ADR 0014). `identity` is the Agent's own
+/// observation instant: it keys the raw row and the series ledger, so a carried
+/// last-good sample is recognised as the same observation however the Report
+/// that carries it measured its skew. `timeline` is that instant corrected onto
+/// the Server clock: it places the sample for range queries, aggregate buckets
+/// and retention expiry. A per-Report skew reading jitters, and a correction
+/// that crosses a second boundary moves the corrected instant into a
+/// neighbouring second, so the corrected instant cannot serve as identity.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MetricDelivery<'a> {
+    pub scope: SeriesScope<'a>,
+    pub identity: platpulse_core::time::Rfc3339,
+    pub timeline: platpulse_core::time::Rfc3339,
+    pub received_at: &'a str,
+    pub value: f64,
+}
+
+/// Record one metric delivery for its series, unless optional history is
+/// paused, and say what it turned out to be.
+///
+/// This is the whole write protocol of a metric sample, for a Node series and a
+/// Host series alike: the delivery classification, the raw window, the
+/// aggregate tiers, the ledger, the evidence floor and the skipped-series
+/// record all move here, in the caller's ingestion transaction, so a committed
+/// Report never leaves one of them describing a sample the others do not.
+///
+/// Nothing here expires history: raw samples are bounded by the retention
+/// policy family `raw_metric_sample`, never by a per-series row cap tied to the
+/// report cadence.
+///
+/// Under low-space protection the sample is not written: the Server records the
+/// gap instead of deleting history it already holds (design §11.5). Only a
+/// first-time observation counts as a gap; a repeated last-good sample is not a
+/// second lost sample. The classification is returned either way.
+pub(crate) async fn record(
+    tx: &mut Transaction<'_, Any>,
+    gate: &crate::capacity::HistoryGate,
+    window: &RawWindow,
+    delivery: MetricDelivery<'_>,
+) -> Result<Delivery, sqlx::Error> {
+    let scope = &delivery.scope;
+    let identity = delivery.identity.to_string();
+    let timeline = delivery.timeline.to_string();
+    let received_at = delivery.received_at;
+    let value = delivery.value;
+    // The ledger and the raw window's own cutoff decide novelty, not the sample
+    // row alone: retention releases the row once it leaves the window while the
+    // ledger keeps counting.
+    let stored = stored_sample(tx, scope, &identity).await?;
+    let stored_value = stored.as_ref().map(|s| s.value);
+    let classified =
+        classify_delivery(tx, scope, &identity, stored_value, value, &window.cutoff).await?;
+    if let crate::capacity::HistoryGate::Paused { interval_id } = gate {
+        if classified == Delivery::Observed {
+            crate::capacity::record_skipped_series(
+                tx,
+                interval_id,
+                scope.schema.skipped_scope,
+                scope.scope_key,
+                scope.series.metric,
+                scope.series.dimension,
+                &timeline,
+            )
+            .await?;
+        }
+        return Ok(classified);
+    }
+    // A delivery the raw window can no longer answer with, and that the Server
+    // holds nothing for, is not written back: the ledger still counts what it
+    // knows about the series, but the cleanup that runs on this same Report
+    // would release the row again. A replay writes no row either, even when a
+    // widened window covers its instant again: the row was released on purpose,
+    // and recreating it would invent coverage and a fresh receipt for a stretch
+    // the Server deliberately stopped holding.
+    let released = outside_retained_window(stored_value, &timeline, &window.cutoff);
+    if !released && classified != Delivery::Replay {
+        store_sample(tx, scope, &identity, &timeline, received_at, value).await?;
+    }
+    // The tiers beyond the raw window accumulate in this same transaction: an
+    // observation the Server counted advances its minute and five-minute
+    // buckets even while its raw row is released, and a correction recomputes
+    // the buckets it can still restate from retained rows. A replay moves
+    // nothing — it is the same observation, not another one. Deriving the tiers
+    // at read time instead would state a count the Server never counted, and
+    // would count one stretch twice the moment it is read at two grains (design
+    // §11.6).
+    match classified {
+        Delivery::Observed => {
+            record_aggregates(tx, scope, &timeline, received_at, value).await?;
+        }
+        Delivery::Correction => {
+            // A correction restates the row where it was first placed: the row
+            // never moves buckets, whatever skew the restating Report measured.
+            let placed_at = stored
+                .as_ref()
+                .map(|s| s.observed_at.as_str())
+                .unwrap_or(timeline.as_str());
+            recompute_aggregates(tx, scope, placed_at, received_at, value).await?;
+        }
+        Delivery::Replay => {}
+    }
+    record_delivery(tx, scope, &identity, received_at, classified).await?;
+    // A first-time observation the window cannot hold is counted while it is
+    // stored nowhere, so the instant it was counted at is recorded as evidence
+    // the Server no longer holds: a later carry of the same instant — after the
+    // Operator widens the window back over it — is a replay, never a second
+    // observation.
+    if released && classified == Delivery::Observed {
+        if let Some(floor) = counted_evidence_floor(&identity) {
+            stamp_evidence_floor(tx, scope, &floor).await?;
+        }
+    }
+    Ok(classified)
+}
+
 /// What one delivery turned out to be, judged against the series ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Delivery {
@@ -1307,7 +1459,7 @@ pub enum Delivery {
 /// but it cannot restore the identity evidence a cleanup already released: the
 /// floor only ever moves forward, so a carried last-good replayed after a
 /// widening stays a replay instead of being counted a second time.
-pub async fn classify_delivery(
+async fn classify_delivery(
     tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
     observed_at: &str,
@@ -1380,7 +1532,7 @@ pub fn canonical_instant(value: &str) -> Option<OffsetDateTime> {
 /// (`retention::family_cutoff`), never the oldest surviving row: a series whose
 /// oldest row is newer than the cutoff, because its history arrived out of
 /// order, still owns the stretch between them.
-pub fn outside_retained_window(stored_value: Option<f64>, observed_at: &str, cutoff: &str) -> bool {
+fn outside_retained_window(stored_value: Option<f64>, observed_at: &str, cutoff: &str) -> bool {
     stored_value.is_none() && observed_at < cutoff
 }
 
@@ -1390,7 +1542,7 @@ pub fn outside_retained_window(stored_value: Option<f64>, observed_at: &str, cut
 /// the count, so an accepted Report replay cannot inflate the history (design
 /// §11.3, issue #213) and a correction is counted as a restatement rather than
 /// as fresh coverage.
-pub async fn record_delivery(
+async fn record_delivery(
     tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
     observed_at: &str,
@@ -1419,13 +1571,13 @@ pub async fn record_delivery(
 
 /// A stored sample's current value and its placement on the Server timeline.
 #[derive(Debug, Clone, PartialEq)]
-pub struct StoredSample {
-    pub value: f64,
-    pub observed_at: String,
+struct StoredSample {
+    value: f64,
+    observed_at: String,
 }
 
 /// Look up a stored sample by its stable source identity.
-pub async fn stored_sample(
+async fn stored_sample(
     tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
     source_observed_at: &str,
@@ -1439,17 +1591,6 @@ pub async fn stored_sample(
         .fetch_optional(&mut **tx)
         .await?;
     Ok(row.map(|(value, observed_at)| StoredSample { value, observed_at }))
-}
-
-/// The value the Server already holds for one observation time, if any.
-pub async fn stored_value(
-    tx: &mut Transaction<'_, Any>,
-    scope: &SeriesScope<'_>,
-    source_observed_at: &str,
-) -> Result<Option<f64>, sqlx::Error> {
-    Ok(stored_sample(tx, scope, source_observed_at)
-        .await?
-        .map(|s| s.value))
 }
 
 /// Store one raw observation, or restate the value of a stored one.
@@ -1466,7 +1607,7 @@ pub async fn stored_value(
 /// On conflict (a restatement / correction with the same source identity),
 /// only `value` is updated; `observed_at` and `received_at` remain pinned
 /// to their initial placement so the row never moves buckets.
-pub async fn store_sample(
+async fn store_sample(
     tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
     source_observed_at: &str,
@@ -1504,7 +1645,7 @@ pub fn counted_evidence_floor(observed_at: &str) -> Option<String> {
 }
 
 /// Move one series' evidence floor forward, never back.
-pub async fn stamp_evidence_floor(
+async fn stamp_evidence_floor(
     tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
     floor: &str,
@@ -1584,7 +1725,7 @@ pub(crate) fn candidate_gap_seconds(
 /// bucket alignment and contributes no bucket. Stored observations are
 /// canonical by construction (the tables constrain their length), so this is a
 /// guard rather than a policy.
-pub async fn record_aggregates(
+async fn record_aggregates(
     tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
     observed_at: &str,
@@ -1690,7 +1831,7 @@ const BUCKET_CARRY_SQL: &str = "UPDATE {agg} SET min_value = CASE WHEN {agg}.min
 ///
 /// The count never changes here: a correction is not a new observation, and the
 /// ledger already counted the instant.
-pub async fn recompute_aggregates(
+async fn recompute_aggregates(
     tx: &mut Transaction<'_, Any>,
     scope: &SeriesScope<'_>,
     observed_at: &str,
