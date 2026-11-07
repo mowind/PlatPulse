@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 
 use clap::{Args, Parser, Subcommand};
 use platpulse_core::identity::NodeId;
-use sqlx::Connection;
 use thiserror::Error;
 use tracing::Instrument as _;
 
@@ -1122,10 +1121,8 @@ async fn persist_abandoned_block_worker_gaps(
     .await
     .map_err(|error| AgentCliError::Collection(error.to_string()))?;
     for node_id in node_ids {
-        let _write_permit = store.acquire_write().await;
         let mut tx = store
-            .connection()
-            .begin()
+            .write()
             .await
             .map_err(|error| AgentCliError::Collection(error.to_string()))?;
         let transaction_result: Result<(), AgentCliError> = async {

@@ -103,10 +103,8 @@ async fn write_consistency_backup(
     let text = path
         .to_str()
         .ok_or_else(|| RecoverError::Backup("backup path is not valid UTF-8".to_owned()))?;
-    let literal = format!("'{}'", text.replace('\'', "''"));
-    let _write_permit = store.acquire_write().await;
-    sqlx::query(&format!("VACUUM INTO {literal}"))
-        .execute(store.connection())
+    store
+        .vacuum_into(text)
         .await
         .map_err(|error| RecoverError::Backup(error.to_string()))?;
     crate::database::secure_store_file(&path)?;

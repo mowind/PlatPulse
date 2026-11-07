@@ -25,7 +25,7 @@ use platpulse_core::network::{NetworkIdentity, RpcEndpoint, RpcScheme};
 use platpulse_core::protocol::{MAX_BLOCK_SUMMARIES, MAX_HISTORY_GAPS};
 use platpulse_core::time::Rfc3339;
 use serde::Deserialize;
-use sqlx::{Connection, FromRow, SqliteConnection};
+use sqlx::{FromRow, SqliteConnection};
 use thiserror::Error;
 use tokio::sync::broadcast::error::{
     RecvError as BroadcastRecvError, TryRecvError as BroadcastTryRecvError,
@@ -1048,8 +1048,9 @@ pub async fn persist_history_gap(
     store: &mut AgentStore,
     gap: &platpulse_core::gap::HistoryGap,
 ) -> Result<(), sqlx::Error> {
-    let _write_permit = store.acquire_write().await;
-    insert_history_gap(store.connection(), gap).await
+    let mut tx = store.write().await?;
+    insert_history_gap(&mut tx, gap).await?;
+    tx.commit().await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1161,8 +1162,7 @@ pub async fn persist_block_summary(
     // The contract check runs before the write permit: a refused sample must
     // not even open a write transaction.
     check_block_summary_chain_time(summary)?;
-    let _write_permit = store.acquire_write().await;
-    let mut tx = store.connection().begin().await?;
+    let mut tx = store.write().await?;
     let result = insert_block_summary(&mut tx, summary, created_at).await;
     match result {
         Ok(()) => tx.commit().await.map_err(BlockSummaryStoreError::from),
@@ -1240,8 +1240,7 @@ pub async fn purge_out_of_contract_block_summaries(
     let deletion = format!(
         "DELETE FROM block_summaries WHERE block_timestamp_ms NOT BETWEEN 0 AND ? AND node_id IN ({in_scope})"
     );
-    let _write_permit = store.acquire_write().await;
-    let mut tx = store.connection().begin().await?;
+    let mut tx = store.write().await?;
     let mut select =
         sqlx::query_as::<_, (String, i64)>(&selection).bind(MAX_BLOCK_TIMESTAMP_MS as i64);
     for node_id in &monitored {
@@ -1842,8 +1841,7 @@ mod tests {
         let body = include_bytes!("../../platpulse-core/tests/fixtures/report_v1_minimal.json");
         let observed_at_text = observed_at.to_string();
 
-        let held = blocking_store.acquire_write().await;
-        let mut blocking_transaction = blocking_store.connection().begin().await.unwrap();
+        let mut blocking_transaction = blocking_store.write().await.unwrap();
         sqlx::query("UPDATE agent_state SET report_sequence = report_sequence WHERE singleton = 1")
             .execute(&mut *blocking_transaction)
             .await
@@ -1893,7 +1891,6 @@ mod tests {
         assert!(!collection_task.is_finished());
         assert!(!delivery_task.is_finished());
         blocking_transaction.commit().await.unwrap();
-        drop(held);
         blocking_store.close().await.unwrap();
 
         let (block_result, block_store) = block_task.await.unwrap();

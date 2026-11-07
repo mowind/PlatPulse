@@ -525,11 +525,7 @@ async fn vacuum_into(
     let text = destination
         .to_str()
         .ok_or_else(|| AgentCheckpointError::UnsafeDirectory("path is not UTF-8".to_owned()))?;
-    let literal = format!("'{}'", text.replace('\'', "''"));
-    let _write_permit = store.acquire_write().await;
-    sqlx::query(&format!("VACUUM INTO {literal}"))
-        .execute(store.connection())
-        .await?;
+    store.vacuum_into(text).await?;
     crate::database::secure_store_file(destination)?;
     Ok(())
 }

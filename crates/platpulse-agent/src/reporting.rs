@@ -1,6 +1,5 @@
 use futures_util::TryStreamExt;
 use sha2::{Digest, Sha256};
-use sqlx::{Connection, Sqlite, Transaction};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -19,7 +18,7 @@ use crate::collector::{ApplyReceiptError, SpoolCleanupSummary, SpoolPolicy, appl
 use crate::config::{AgentConfig, AgentConfigError};
 use crate::credential::{CredentialError, load_credential_file};
 use crate::database::{
-    AgentDatabaseConfig, AgentDatabaseError, AgentStore, cleanup_expired_receipt_markers,
+    AgentDatabaseConfig, AgentDatabaseError, AgentStore, WriteTx, cleanup_expired_receipt_markers,
     now_rfc3339,
 };
 
@@ -186,8 +185,7 @@ pub async fn claim_oldest_report(
 ) -> Result<Option<StoredReport>, ReportStoreError> {
     #[cfg(test)]
     let body_reads = store.spool_body_read_probe();
-    let _write_permit = store.acquire_write().await;
-    let mut tx = store.connection().begin().await?;
+    let mut tx = store.write().await?;
     let transaction_result: Result<Option<StoredReport>, ReportStoreError> = async {
         let in_flight: Option<String> = sqlx::query_scalar(
             "SELECT report_id FROM reports WHERE in_flight = 1 ORDER BY created_at, report_id LIMIT 1",
@@ -255,7 +253,7 @@ pub(crate) fn rejection_summary(receipt: &ReportReceipt) -> String {
 /// receipt rejection can share the same diagnostic write as a transport
 /// failure without leaving the caller's transaction.
 pub(crate) async fn record_delivery_failure_in_transaction(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut WriteTx<'_>,
     message: &str,
     at: &str,
 ) -> Result<(), sqlx::Error> {
@@ -271,8 +269,7 @@ pub async fn record_delivery_failure(
     message: &str,
     at: &str,
 ) -> Result<(), ReportStoreError> {
-    let _write_permit = store.acquire_write().await;
-    let mut tx = store.connection().begin().await?;
+    let mut tx = store.write().await?;
     match record_delivery_failure_in_transaction(&mut tx, message, at).await {
         Ok(()) => tx.commit().await.map_err(ReportStoreError::from),
         Err(error) => match tx.rollback().await {
@@ -290,8 +287,7 @@ pub(crate) async fn quarantine_report(
     store: &mut AgentStore,
     report_id: &str,
 ) -> Result<bool, ReportStoreError> {
-    let _write_permit = store.acquire_write().await;
-    let mut tx = store.connection().begin().await?;
+    let mut tx = store.write().await?;
     let result = sqlx::query("DELETE FROM reports WHERE report_id = ?")
         .bind(report_id)
         .execute(&mut *tx)
@@ -680,7 +676,7 @@ fn map_apply_receipt_error(error: ApplyReceiptError) -> ReportStoreError {
 /// collection snapshot became stale or the report repeated a sample already
 /// owned by another in-flight report.
 pub(crate) async fn claim_report_samples(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut WriteTx<'_>,
     report_id: &str,
     block_summaries: &[platpulse_core::block::BlockSummary],
     history_gaps: &[platpulse_core::gap::HistoryGap],
@@ -820,8 +816,7 @@ async fn persist_immutable_report_inner(
         return Err(ReportStoreError::InvalidReport(reason));
     }
     let (agent_id, block_summaries, history_gaps) = parse_spooled_report(body)?;
-    let _write_permit = store.acquire_write().await;
-    let mut tx = store.connection().begin().await?;
+    let mut tx = store.write().await?;
     let transaction_result: Result<(), sqlx::Error> = async {
         if let Some(closing) = closing.as_ref() {
             let state: Option<(i64, Option<String>, i64, String)> = sqlx::query_as(
@@ -912,7 +907,6 @@ async fn persist_immutable_report_inner(
             return Err(error.into());
         }
     }
-    drop(_write_permit);
     enforce_stored_spool_policy(store, generated_at).await?;
     Ok(digest)
 }
@@ -921,7 +915,7 @@ async fn persist_immutable_report_inner(
 /// delivery queue. The snapshot survives receipt application and is used as
 /// the last-good baseline for the next collection cycle.
 pub(crate) async fn persist_last_report_snapshot(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut WriteTx<'_>,
     agent_id: &str,
     agent_epoch: u64,
     boot_id: &str,
@@ -1130,14 +1124,14 @@ pub async fn ensure_spool_healthy(store: &mut AgentStore) -> Result<(), ReportSt
         body_reads.record(1);
         if let Some(reason) = validate_spool_report(&row) {
             drop(rows);
-            let _write_permit = store.acquire_write().await;
-            return latch_spool_defect_under_permit(store, &row, &reason).await;
+            let tx = store.write().await?;
+            return latch_spool_defect(tx, &row, &reason).await;
         }
     }
     drop(rows);
     // The collision scan is a read that decides a fatal write, so it keeps the
     // write permit through the mark (ADR 0001).
-    let _write_permit = store.acquire_write().await;
+    let mut tx = store.write().await?;
     let collision: Option<String> = sqlx::query_scalar(
         "SELECT receipt.report_id
          FROM reports
@@ -1146,14 +1140,15 @@ pub async fn ensure_spool_healthy(store: &mut AgentStore) -> Result<(), ReportSt
          ORDER BY receipt.applied_at, receipt.report_id
          LIMIT 1",
     )
-    .fetch_optional(store.connection())
+    .fetch_optional(&mut *tx)
     .await?;
     if let Some(report_id) = collision {
         let reason =
             format!("queued Agent Report {report_id} conflicts with an Applied Receipt Record");
-        mark_spool_fatal_under_permit(store, &now_rfc3339(), &reason).await?;
+        commit_store_fatal(tx, &now_rfc3339(), &reason).await?;
         return Err(ReportStoreError::StoreFatal(reason));
     }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -1218,24 +1213,25 @@ async fn ensure_claimed_report_intact(
         })?;
         Some((row, reason))
     });
-    let _write_permit = store.acquire_write().await;
+    let mut tx = store.write().await?;
     if let Some((suspect, reason)) = suspect {
-        return latch_spool_defect_under_permit(store, &suspect, &reason).await;
+        return latch_spool_defect(tx, &suspect, &reason).await;
     }
     let collision: Option<String> = sqlx::query_scalar(
         "SELECT receipt.report_id FROM report_receipts AS receipt WHERE receipt.report_id = ? LIMIT 1",
     )
     .bind(&report.report_id)
-    .fetch_optional(store.connection())
+    .fetch_optional(&mut *tx)
     .await?;
     if collision.is_some() {
         let reason = format!(
             "queued Agent Report {} conflicts with an Applied Receipt Record",
             report.report_id
         );
-        mark_spool_fatal_under_permit(store, &now_rfc3339(), &reason).await?;
+        commit_store_fatal(tx, &now_rfc3339(), &reason).await?;
         return Err(ReportStoreError::StoreFatal(reason));
     }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -1251,8 +1247,8 @@ async fn ensure_claimed_report_intact(
 /// has no queued body left to condemn, so nothing is latched. A Report whose bytes
 /// changed is the impossible state ADR 0001 fails closed on: nothing rewrites a
 /// queued body.
-async fn latch_spool_defect_under_permit(
-    store: &mut AgentStore,
+async fn latch_spool_defect(
+    mut tx: WriteTx<'_>,
     suspect: &SpoolReportRow,
     reason: &str,
 ) -> Result<(), ReportStoreError> {
@@ -1260,21 +1256,24 @@ async fn latch_spool_defect_under_permit(
         "{SPOOL_REPORT_PROJECTION} WHERE report_id = ?"
     ))
     .bind(&suspect.report_id)
-    .fetch_optional(store.connection())
+    .fetch_optional(&mut *tx)
     .await?;
     #[cfg(test)]
     if row.is_some() {
-        store.record_spool_body_read(1);
+        tx.record_spool_body_read(1);
     }
     let reason = match row {
-        None => return Ok(()),
+        None => {
+            tx.commit().await?;
+            return Ok(());
+        }
         Some(row) if same_spool_row(&row, suspect) => reason.to_owned(),
         Some(_) => format!(
             "queued Agent Report {} changed while its integrity was being confirmed",
             suspect.report_id
         ),
     };
-    mark_spool_fatal_under_permit(store, &now_rfc3339(), &reason).await?;
+    commit_store_fatal(tx, &now_rfc3339(), &reason).await?;
     Err(ReportStoreError::StoreFatal(reason))
 }
 
@@ -1293,12 +1292,12 @@ fn same_spool_row(left: &SpoolReportRow, right: &SpoolReportRow) -> bool {
 async fn validate_historical_receipt_markers(
     store: &mut AgentStore,
 ) -> Result<(), ReportStoreError> {
-    let _write_permit = store.acquire_write().await;
+    let mut tx = store.write().await?;
     let mut markers = sqlx::query_as::<_, (String, String, String, String)>(
         "SELECT report_id, report_body_sha256, disposition, applied_at
          FROM report_receipts ORDER BY applied_at, report_id",
     )
-    .fetch(store.connection());
+    .fetch(&mut *tx);
     while let Some((report_id, body_sha256, disposition, applied_at)) = markers.try_next().await? {
         let canonical_time = applied_at
             .parse::<Rfc3339>()
@@ -1314,10 +1313,12 @@ async fn validate_historical_receipt_markers(
         if !valid {
             let reason = format!("Applied Receipt Record {report_id} is invalid");
             drop(markers);
-            mark_spool_fatal_under_permit(store, &now_rfc3339(), &reason).await?;
+            commit_store_fatal(tx, &now_rfc3339(), &reason).await?;
             return Err(ReportStoreError::StoreFatal(reason));
         }
     }
+    drop(markers);
+    tx.commit().await?;
     Ok(())
 }
 
@@ -1345,7 +1346,7 @@ pub async fn apply_spool_policy(
     policy: &SpoolPolicy,
     now: &str,
 ) -> Result<(), ReportStoreError> {
-    let _write_permit = store.acquire_write().await;
+    let mut tx = store.write().await?;
     sqlx::query(
         "UPDATE spool_state SET max_bytes=?, max_age_seconds=?, preflush_bytes=?, updated_at=? WHERE singleton=1",
     )
@@ -1353,8 +1354,9 @@ pub async fn apply_spool_policy(
     .bind(policy.max_age_seconds.min(i64::MAX as u64) as i64)
     .bind(policy.preflush_bytes.min(i64::MAX as u64) as i64)
     .bind(now)
-    .execute(store.connection())
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -1411,8 +1413,8 @@ pub async fn enforce_spool_policy(
         .map(|value| value - time::Duration::seconds(policy.max_age_seconds as i64));
     let plan = plan_spool_cleanup(store, policy, cutoff).await?;
     if let Some((suspect, reason)) = plan.defect {
-        let _write_permit = store.acquire_write().await;
-        return match latch_spool_defect_under_permit(store, &suspect, &reason).await {
+        let tx = store.write().await?;
+        return match latch_spool_defect(tx, &suspect, &reason).await {
             // An applied receipt removed the Report between the two reads, so the
             // pass that would have dropped it has nothing left to drop.
             Ok(()) => Ok(SpoolCleanupSummary::default()),
@@ -1425,8 +1427,7 @@ pub async fn enforce_spool_policy(
 
     #[cfg(test)]
     let body_reads = store.spool_body_read_probe();
-    let _write_permit = store.acquire_write().await;
-    let mut tx = store.connection().begin().await?;
+    let mut tx = store.write().await?;
     let mut defect: Option<String> = None;
     let transaction_result: Result<SpoolCleanupSummary, ReportStoreError> = async {
         let mut summary = SpoolCleanupSummary::default();
@@ -1506,10 +1507,11 @@ pub async fn enforce_spool_policy(
             Ok(summary)
         }
         Err(error) => {
-            tx.rollback().await?;
+            let permit = tx.rollback_retaining_permit().await?;
             match defect {
                 Some(reason) => {
-                    mark_spool_fatal_under_permit(store, now, &reason).await?;
+                    let tx = store.write_under(permit).await?;
+                    commit_store_fatal(tx, now, &reason).await?;
                     Err(ReportStoreError::StoreFatal(reason))
                 }
                 None => Err(error),
@@ -1697,8 +1699,9 @@ fn validate_spool_report(row: &SpoolReportRow) -> Option<String> {
     None
 }
 
-pub(crate) async fn mark_spool_fatal_under_permit(
-    store: &mut AgentStore,
+/// Latch the Store fatal in the write the decision was made in, and commit it.
+pub(crate) async fn commit_store_fatal(
+    mut tx: WriteTx<'_>,
     now: &str,
     message: &str,
 ) -> Result<(), ReportStoreError> {
@@ -1707,15 +1710,17 @@ pub(crate) async fn mark_spool_fatal_under_permit(
     )
     .bind(message.chars().take(256).collect::<String>())
     .bind(now)
-    .execute(store.connection())
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 
 async fn mark_report_too_large(store: &mut AgentStore, now: &str) -> Result<(), ReportStoreError> {
-    let _write_permit = store.acquire_write().await;
+    let mut tx = store.write().await?;
     sqlx::query("UPDATE spool_state SET report_too_large=1, store_error='minimum complete current report exceeds protocol limit', updated_at=? WHERE singleton=1")
-        .bind(now).execute(store.connection()).await?;
+        .bind(now).execute(&mut *tx).await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -2040,8 +2045,7 @@ pub(crate) mod spool_backlog_fixture {
         first_sequence: u64,
         reports: u64,
     ) -> u64 {
-        let _write_permit = store.acquire_write().await;
-        let mut tx = store.connection().begin().await.unwrap();
+        let mut tx = store.write().await.unwrap();
         let mut queued_bytes = 0_u64;
         for sequence in first_sequence..first_sequence + reports {
             let body = report_body(boot_id, generated_at, sequence);
