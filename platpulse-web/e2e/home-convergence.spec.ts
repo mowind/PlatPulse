@@ -395,11 +395,18 @@ test.describe('Converged Public Home (issue #102)', () => {
     await expect(lCard.getByText('Stale', { exact: true })).toHaveCount(0)
 
     // Filtering stays operable on the dark surface and bounds the tab order.
-    await page.getByRole('tab', { name: CONVERGENCE_NETWORK_NAME, exact: true }).click()
+    // The scope change commits through navigation and remounts the card grid,
+    // so wait for the narrowed scope itself before focusing: a commit landing
+    // after the Tab walk would remount the focused card link and drop focus to
+    // the body.
+    const convergenceTab = page.getByRole('tab', { name: CONVERGENCE_NETWORK_NAME, exact: true })
+    await convergenceTab.click()
+    await expect(convergenceTab).toHaveAttribute('aria-selected', 'true')
+    await expect(nodeCard(page, /Node A/)).toHaveCount(0)
     await expect(nodeCard(page, /Node H/)).toBeVisible()
 
     // The whole-card link keeps an independent visible focus ring in Dark.
-    await page.getByRole('tab', { name: CONVERGENCE_NETWORK_NAME, exact: true }).focus()
+    await convergenceTab.focus()
     let activeHref = ''
     for (let index = 0; index < 30; index++) {
       await page.keyboard.press('Tab')
