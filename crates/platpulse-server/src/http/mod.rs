@@ -425,15 +425,20 @@ impl ServerRuntime {
     }
 
     async fn wait_for_ingestion(&self, deadline: tokio::time::Instant) -> bool {
-        while self.in_flight_ingestion.load(Ordering::Acquire) != 0 {
-            if tokio::time::timeout_at(deadline, self.drained.notified())
-                .await
-                .is_err()
-            {
+        loop {
+            // Register for the wakeup before reading the count. `notify_waiters`
+            // reaches only a `Notified` that already exists (created, not
+            // necessarily polled), so the last ingestion finishing between the
+            // read and the registration would be missed and the drain would sit
+            // out its whole deadline.
+            let finished = self.drained.notified();
+            if self.in_flight_ingestion.load(Ordering::Acquire) == 0 {
+                return true;
+            }
+            if tokio::time::timeout_at(deadline, finished).await.is_err() {
                 return false;
             }
         }
-        true
     }
 }
 
@@ -1748,6 +1753,34 @@ mod tests {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(component(&value, "shutdown")["reason"], "shutting_down");
         assert!(state.ingestion_guard().is_none());
+    }
+
+    /// The drain returns as soon as the last in-flight ingestion finishes,
+    /// rather than sitting out its deadline and reporting `drained=false` for
+    /// a Server that had nothing left in flight.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_drain_returns_when_the_last_ingestion_finishes() {
+        let runtime = std::sync::Arc::new(ServerRuntime::new());
+        assert!(runtime.begin_ingestion());
+        let finisher = runtime.clone();
+        let finished = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            finisher.finish_ingestion();
+        });
+        let started = tokio::time::Instant::now();
+        assert!(
+            runtime
+                .wait_for_ingestion(started + std::time::Duration::from_secs(10))
+                .await
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        finished.await.unwrap();
+        assert!(
+            runtime
+                .wait_for_ingestion(tokio::time::Instant::now())
+                .await,
+            "nothing in flight is drained at once, even past the deadline"
+        );
     }
     #[tokio::test]
     async fn ready_reports_setup_required_without_owner() {
