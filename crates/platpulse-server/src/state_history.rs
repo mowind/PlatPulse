@@ -44,7 +44,7 @@
 
 use platpulse_core::Rfc3339;
 use platpulse_core::component::{ComponentObservation, ComponentStatus};
-use sqlx::{Any, AnyPool, Transaction};
+use sqlx::{Any, AnyConnection, AnyPool, Transaction};
 
 use crate::auth;
 use crate::capacity::{HistoryGate, SkippedScope};
@@ -393,6 +393,53 @@ pub async fn record_state(
     }
 
     Ok(())
+}
+
+/// Entries one recorded-state release batch may remove.
+///
+/// A Report can state at most one sync and one consensus state per Node, so the
+/// bound that keeps this family's expiry rate equal to its arrival rate is the
+/// protocol Node maximum times the number of recorded components (issue #217).
+/// 2048 leaves the same headroom the raw sample bound does. The two statements
+/// below carry it as a literal; a retention test keeps them in step.
+pub(crate) const RELEASE_BATCH: i64 = 2048;
+
+const _: () = assert!(
+    RELEASE_BATCH
+        >= platpulse_core::protocol::MAX_NODE_OBSERVATIONS as i64 * STATE_COMPONENTS.len() as i64,
+    "the per-Report state batch must cover one maximal Report"
+);
+
+/// Removes one bounded batch of entries older than the bound cutoff.
+pub(crate) const RELEASE_SQL: &str = "DELETE FROM node_state_observations WHERE (node_id, component, observed_at) IN (SELECT node_id, component, observed_at FROM node_state_observations WHERE observed_at < $1 ORDER BY observed_at, node_id, component LIMIT 2048)";
+
+/// Stamps the series [`RELEASE_SQL`] is about to release from: the same range
+/// read with the same ordering and bound, and a stamp that only moves forward.
+pub(crate) const RELEASE_STAMP_SQL: &str = "WITH expired AS MATERIALIZED (SELECT node_id, component FROM node_state_observations WHERE observed_at < $1 ORDER BY observed_at, node_id, component LIMIT 2048) UPDATE node_state_series_state SET released_before = $2 FROM expired WHERE node_state_series_state.node_id = expired.node_id AND node_state_series_state.component = expired.component AND node_state_series_state.released_before < $3";
+
+/// Release one bounded batch of recorded states older than `cutoff`.
+///
+/// Deleting an entry destroys the Server's ability to answer whether that
+/// instant was already recorded, and a widened window moves the cutoff back over
+/// it, so the cutoff applied is written on the series first (issue #217). Both
+/// statements run on the caller's transaction: an entry is never gone while its
+/// series still claims nothing was released. The retention sweep and an
+/// Operator-confirmed retention run both release through here.
+pub(crate) async fn release_batch(
+    conn: &mut AnyConnection,
+    cutoff: &str,
+) -> Result<u64, sqlx::Error> {
+    sqlx::query(RELEASE_STAMP_SQL)
+        .bind(cutoff)
+        .bind(cutoff)
+        .bind(cutoff)
+        .execute(&mut *conn)
+        .await?;
+    Ok(sqlx::query(RELEASE_SQL)
+        .bind(cutoff)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected())
 }
 
 /// The ledger counters one delivery contributes to.
