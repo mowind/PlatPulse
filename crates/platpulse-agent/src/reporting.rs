@@ -880,15 +880,8 @@ async fn persist_immutable_report_inner(
                     "Agent state changed while storing Closing report".to_owned(),
                 ));
             }
-            sqlx::query(
-                "UPDATE agent_state SET shutdown_state='final_stored', shutdown_report_id=?, shutdown_report_sequence=?, shutdown_finished_at=?, shutdown_updated_at=? WHERE singleton=1",
-            )
-            .bind(report_id)
-            .bind(report_sequence as i64)
-            .bind(generated_at)
-            .bind(generated_at)
-            .execute(&mut *tx)
-            .await?;
+            crate::shutdown_record::closing_stored(&mut tx, report_id, report_sequence, generated_at)
+                .await?;
         }
         Ok(())
     }
