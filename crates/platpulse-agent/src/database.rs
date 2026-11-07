@@ -32,7 +32,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 pub static AGENT_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// The latest migration version compiled into the Agent binary.
-pub const AGENT_SCHEMA_VERSION: i64 = 19;
+pub const AGENT_SCHEMA_VERSION: i64 = 20;
 
 /// Applied Receipt Records are retained for a recent duplicate/conflict window.
 pub(crate) const APPLIED_RECEIPT_RETENTION: time::Duration = time::Duration::hours(24);
@@ -67,7 +67,6 @@ const REQUIRED_TABLES: &[&str] = &[
     "spool_state",
     "node_recovery_state",
     "backfill_backlog",
-    "agent_boots",
     "inventory_declaration",
 ];
 /// Connection settings for the Agent Store.
@@ -1278,6 +1277,55 @@ mod tests {
             (536870912, 86400, 402653184)
         );
         assert_eq!(store.schema_version().await.unwrap(), AGENT_SCHEMA_VERSION);
+    }
+
+    #[tokio::test]
+    async fn boot_schema_migration_keeps_written_values_and_refuses_dead_ones() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("agent.db");
+        let mut connection = connection_at_schema(&path, 19).await;
+        sqlx::query(
+            "INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, boot_state, pending_transition, pending_previous_boot_id, shutdown_state, shutdown_updated_at, updated_at)
+             VALUES (1, 'agent', 1, 'boot', 0, 1, 'drained_pending', 'drained_previous', 'previous', 'stopping', 'at', 'at')",
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        connection.close().await.unwrap();
+
+        let mut store = AgentStore::open(config(&path)).await.unwrap();
+        assert_eq!(store.schema_version().await.unwrap(), AGENT_SCHEMA_VERSION);
+        let state: (String, Option<String>, Option<String>, String) = sqlx::query_as(
+            "SELECT boot_state, pending_transition, pending_previous_boot_id, shutdown_state FROM agent_state WHERE singleton = 1",
+        )
+        .fetch_one(store.connection())
+        .await
+        .unwrap();
+        assert_eq!(
+            state,
+            (
+                "drained_pending".to_owned(),
+                Some("drained_previous".to_owned()),
+                Some("previous".to_owned()),
+                "running".to_owned(),
+            )
+        );
+        for dead in [
+            "UPDATE agent_state SET pending_transition = 'closing'",
+            "UPDATE agent_state SET shutdown_state = 'stopping'",
+        ] {
+            assert!(
+                sqlx::query(dead).execute(store.connection()).await.is_err(),
+                "{dead} must be refused"
+            );
+        }
+        let remaining: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE name IN ('agent_boots', 'agent_state_shutdown_idx') ORDER BY name",
+        )
+        .fetch_all(store.connection())
+        .await
+        .unwrap();
+        assert_eq!(remaining, vec!["agent_state_shutdown_idx".to_owned()]);
     }
 
     #[tokio::test]
