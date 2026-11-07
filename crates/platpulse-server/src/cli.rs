@@ -1101,11 +1101,8 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
         {
             tracing::warn!(error = %error, "raw block retention cleanup deferred");
         }
-        if let Err(error) = crate::retention::cleanup_expired_metric_samples(
-            database.pool(),
-            crate::auth::now_utc(),
-        )
-        .await
+        if let Err(error) =
+            crate::metric_history::release_expired(database.pool(), crate::auth::now_utc()).await
         {
             tracing::warn!(error = %error, "raw metric retention cleanup deferred");
         }

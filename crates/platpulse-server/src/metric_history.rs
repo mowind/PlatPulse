@@ -158,9 +158,16 @@ pub fn is_host_metric(metric: &str) -> bool {
 /// series do: their dimension is the mount path, so a path that moves to another
 /// filesystem starts a new series instead of claiming the old one, and the skip
 /// counts of two mounts are never merged into one number.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HistorySchema {
     pub raw_table: &'static str,
+    /// One bounded batch deleting this scope's raw rows older than a cutoff:
+    /// the retention catalog declares it as the family's cleanup statement,
+    /// and [`release_batch`] is the only path that runs it.
+    pub release_sql: &'static str,
+    /// Stamps the series [`Self::release_sql`] is about to release from (see
+    /// [`release_batch`]).
+    release_stamp_sql: &'static str,
     pub aggregate_table: &'static str,
     pub ledger_table: &'static str,
     /// The column naming the owner of the series: `node_id` or `agent_id`.
@@ -176,6 +183,8 @@ pub struct HistorySchema {
 /// #214).
 pub const NODE_HISTORY: HistorySchema = HistorySchema {
     raw_table: "node_metric_samples",
+    release_sql: "DELETE FROM node_metric_samples WHERE (node_id, metric, source_observed_at) IN (SELECT node_id, metric, source_observed_at FROM node_metric_samples WHERE observed_at < $1 ORDER BY observed_at, node_id, metric LIMIT 4096)",
+    release_stamp_sql: "WITH expired AS MATERIALIZED (SELECT node_id, metric FROM node_metric_samples WHERE observed_at < $1 ORDER BY observed_at, node_id, metric LIMIT 4096) UPDATE node_metric_series_state SET released_before = $2 FROM expired WHERE node_metric_series_state.node_id = expired.node_id AND node_metric_series_state.metric = expired.metric AND node_metric_series_state.released_before < $3",
     aggregate_table: "node_metric_aggregates",
     ledger_table: "node_metric_series_state",
     scope_column: "node_id",
@@ -187,6 +196,8 @@ pub const NODE_HISTORY: HistorySchema = HistorySchema {
 /// Agent, dimensioned by mount path for the storage series (issue #215).
 pub const HOST_HISTORY: HistorySchema = HistorySchema {
     raw_table: "host_metric_samples",
+    release_sql: "DELETE FROM host_metric_samples WHERE (agent_id, metric, dimension, source_observed_at) IN (SELECT agent_id, metric, dimension, source_observed_at FROM host_metric_samples WHERE observed_at < $1 ORDER BY observed_at, agent_id, metric LIMIT 512)",
+    release_stamp_sql: "WITH expired AS MATERIALIZED (SELECT agent_id, metric, dimension FROM host_metric_samples WHERE observed_at < $1 ORDER BY observed_at, agent_id, metric LIMIT 512) UPDATE host_metric_series_state SET released_before = $2 FROM expired WHERE host_metric_series_state.agent_id = expired.agent_id AND host_metric_series_state.metric = expired.metric AND host_metric_series_state.dimension = expired.dimension AND host_metric_series_state.released_before < $3",
     aggregate_table: "host_metric_aggregates",
     ledger_table: "host_metric_series_state",
     scope_column: "agent_id",
@@ -1256,6 +1267,69 @@ fn gap_seconds(pair: &[MetricSample]) -> Option<i64> {
     let next = parse_rfc3339(&pair[1].observed_at)?;
     let seconds = (next - previous).whole_seconds();
     (seconds > 0).then_some(seconds)
+}
+/// Release one bounded batch of one scope's raw samples older than `cutoff`.
+///
+/// Deleting a row destroys the Server's ability to answer "did this series
+/// already hold an observation at this instant?", and the policy cutoff cannot
+/// say afterwards whether it ever did: widening the window moves the cutoff back
+/// over instants whose rows were already released. So the cutoff applied is
+/// recorded on the series itself, as the oldest cutoff this series has been
+/// pruned at, and the stamp only ever moves forward (`released_before < ?` never
+/// rewrites a newer stamp). [`record`] reads it as the floor below which an instant
+/// with no row may already have been counted.
+///
+/// The stamp and the delete run on the caller's transaction, so a row is never
+/// gone while its series still claims it was never released. The stamp is one
+/// pass over the keys of the rows the delete is about to remove: the same range
+/// read of the `observed_at` index with the same ordering and the same bound, so a
+/// series is stamped exactly when the rows that could answer for it go, and the
+/// ledger is probed by primary key instead of scanned. A series whose expired
+/// rows sit beyond this batch's bound keeps them for now — the window can still
+/// answer for those instants, and the batch that finally deletes them is the
+/// batch that stamps the series.
+pub(crate) async fn release_batch(
+    conn: &mut AnyConnection,
+    schema: &HistorySchema,
+    cutoff: &str,
+) -> Result<u64, sqlx::Error> {
+    sqlx::query(schema.release_stamp_sql)
+        .bind(cutoff)
+        .bind(cutoff)
+        .bind(cutoff)
+        .execute(&mut *conn)
+        .await?;
+    Ok(sqlx::query(schema.release_sql)
+        .bind(cutoff)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected())
+}
+
+/// Release at most one bounded batch per scope of the raw samples the current
+/// policy has expired; returns the rows removed.
+///
+/// The retention sweep and the startup cleanup call this, so each statement is
+/// a range read of the `observed_at` index rather than a scan of a large
+/// history. Each scope's bound is set from the rows one Report can add to it,
+/// which keeps expiry and arrival equal at steady state. The series ledgers are
+/// never released: what a series observed stays knowable after its samples
+/// expire, which is how the Admin surface tells "expired" apart from "never
+/// observed".
+pub async fn release_expired(pool: &AnyPool, now: OffsetDateTime) -> Result<u64, sqlx::Error> {
+    let retention_days = crate::retention::metric_sample_retention_days(pool).await?;
+    if retention_days <= 0 {
+        // A keep-forever window has no cutoff, so it can never expire a row.
+        return Ok(0);
+    }
+    let cutoff = format_rfc3339(crate::retention::family_cutoff(now, retention_days));
+    let mut removed = 0;
+    for schema in [&NODE_HISTORY, &HOST_HISTORY] {
+        let mut tx = crate::database::begin(pool).await?;
+        removed += release_batch(&mut tx, schema, &cutoff).await?;
+        tx.commit().await?;
+    }
+    Ok(removed)
 }
 
 /// The raw metric window one Report's deliveries are judged against.
@@ -3115,6 +3189,29 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A release stamps exactly the series whose rows the same batch deletes:
+    /// a stamp bounded wider than the delete would mark a series released whose
+    /// rows are all still held, and a narrower one would delete rows from a
+    /// series that still claims it never lost any.
+    #[test]
+    fn each_release_stamp_shares_its_delete_bound() {
+        let bound = |sql: &str| {
+            sql.split("LIMIT ")
+                .nth(1)
+                .and_then(|rest| rest.split(')').next())
+                .map(str::to_owned)
+        };
+        for schema in [NODE_HISTORY, HOST_HISTORY] {
+            assert!(bound(schema.release_sql).is_some(), "{}", schema.raw_table);
+            assert_eq!(
+                bound(schema.release_sql),
+                bound(schema.release_stamp_sql),
+                "{}",
+                schema.raw_table
+            );
+        }
+    }
 
     fn sample(observed_at: &str, received_at: &str, value: f64) -> MetricSample {
         MetricSample {

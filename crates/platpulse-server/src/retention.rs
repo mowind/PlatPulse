@@ -131,6 +131,11 @@ pub enum CleanupKind {
     /// ADR 0009 in-place Report Receipt body slimming: identity survives, only
     /// the per-Node and per-sample detail is cleared.
     SlimReceiptBody,
+    /// Raw metric samples are evidence a series ledger answers for, so their
+    /// release is the history engine's: it stamps the series with the cutoff
+    /// it applies in the same transaction that deletes the rows
+    /// ([`crate::metric_history::release_batch`]).
+    ReleaseMetricSamples(&'static crate::metric_history::HistorySchema),
 }
 
 /// One physical storage target inside a family. count_sql is the read-only
@@ -217,16 +222,16 @@ const _: () = assert!(
 /// that 8 + 2 x mounts, so the ordinary batch would lag a fully mounted Host.
 const TARGET_RAW_METRIC_SAMPLES: &[CleanupTarget] = &[
     CleanupTarget {
-        table: "node_metric_samples",
-        kind: CleanupKind::Delete,
+        table: crate::metric_history::NODE_HISTORY.raw_table,
+        kind: CleanupKind::ReleaseMetricSamples(&crate::metric_history::NODE_HISTORY),
         count_sql: "SELECT COUNT(*) FROM node_metric_samples WHERE observed_at < $1",
-        delete_sql: "DELETE FROM node_metric_samples WHERE (node_id, metric, source_observed_at) IN (SELECT node_id, metric, source_observed_at FROM node_metric_samples WHERE observed_at < $1 ORDER BY observed_at, node_id, metric LIMIT 4096)",
+        delete_sql: crate::metric_history::NODE_HISTORY.release_sql,
     },
     CleanupTarget {
-        table: "host_metric_samples",
-        kind: CleanupKind::Delete,
+        table: crate::metric_history::HOST_HISTORY.raw_table,
+        kind: CleanupKind::ReleaseMetricSamples(&crate::metric_history::HOST_HISTORY),
         count_sql: "SELECT COUNT(*) FROM host_metric_samples WHERE observed_at < $1",
-        delete_sql: "DELETE FROM host_metric_samples WHERE (agent_id, metric, dimension, source_observed_at) IN (SELECT agent_id, metric, dimension, source_observed_at FROM host_metric_samples WHERE observed_at < $1 ORDER BY observed_at, agent_id, metric LIMIT 512)",
+        delete_sql: crate::metric_history::HOST_HISTORY.release_sql,
     },
 ];
 
@@ -336,34 +341,6 @@ const TARGET_FIVE_MINUTE_AGGREGATES: &[CleanupTarget] = &[
         delete_sql: "DELETE FROM node_block_aggregates WHERE (node_id, grain_seconds, bucket_start) IN (SELECT node_id, grain_seconds, bucket_start FROM node_block_aggregates WHERE grain_seconds = 300 AND bucket_start < $1 ORDER BY bucket_start LIMIT 4096)",
     },
 ];
-
-/// Stamp the series the incoming cutoff may release evidence for.
-///
-/// Deleting a row destroys the Server's ability to answer "did this series
-/// already hold an observation at this instant?", and the policy cutoff cannot
-/// say afterwards whether it ever did: widening the window moves the cutoff back
-/// over instants whose rows the cleanup already released. So the cutoff the
-/// cleanup applies is recorded on the series itself, as the oldest cutoff this
-/// series has been pruned at, and the stamp only ever moves forward
-/// (`released_before < ?` never rewrites a newer stamp).
-///
-/// The stamp is applied before the deletes rather than from the rows one pass
-/// happens to remove: each table's delete is bounded, so a series can still hold
-/// rows below the cutoff after its cleanup, and "the cutoff was applied" is the
-/// honest boundary — an instant below it may have been released, exactly what
-/// `metric_history::classify_delivery` must not count as new again (issue #213).
-///
-/// One pass over the keys of the rows this cleanup is about to delete: the
-/// candidate set is the same range read of the `observed_at` index with the same
-/// ordering and the same bound as the delete below, so a series is stamped
-/// exactly when the rows that could answer for it are removed, and the ledger is
-/// probed by primary key instead of scanned on every accepted Report. A series
-/// whose expired rows sit beyond this pass's bound keeps them for now — the
-/// window can still answer for those instants, and the pass that finally deletes
-/// them is the pass that stamps the series.
-const RAW_METRIC_RELEASED_BEFORE_SQL: &str = "WITH expired AS MATERIALIZED (SELECT node_id, metric FROM node_metric_samples WHERE observed_at < $1 ORDER BY observed_at, node_id, metric LIMIT 4096) UPDATE node_metric_series_state SET released_before = $2 FROM expired WHERE node_metric_series_state.node_id = expired.node_id AND node_metric_series_state.metric = expired.metric AND node_metric_series_state.released_before < $3";
-
-const HOST_RAW_METRIC_RELEASED_BEFORE_SQL: &str = "WITH expired AS MATERIALIZED (SELECT agent_id, metric, dimension FROM host_metric_samples WHERE observed_at < $1 ORDER BY observed_at, agent_id, metric LIMIT 512) UPDATE host_metric_series_state SET released_before = $2 FROM expired WHERE host_metric_series_state.agent_id = expired.agent_id AND host_metric_series_state.metric = expired.metric AND host_metric_series_state.dimension = expired.dimension AND host_metric_series_state.released_before < $3";
 
 /// Rows one recorded-state cleanup batch may release.
 ///
@@ -866,50 +843,6 @@ pub async fn metric_sample_retention_days_tx(
     .unwrap_or(fallback))
 }
 
-/// Delete at most one bounded batch of expired raw metric samples per table.
-///
-/// This runs after every accepted AgentReport, next to the raw Block Summary
-/// cleanup, so each statement is a range read of the `observed_at` index rather
-/// than a scan of a large history (issue #137). Each table's bound is set from
-/// the rows one Report can add to it (see `TARGET_RAW_METRIC_SAMPLES`), which is
-/// what keeps the two rates equal at steady state: a per-Report bound below the
-/// arrival rate would let the backlog grow even though every Report expires its
-/// own share. The series ledgers (`node_metric_series_state` and, since issue
-/// #215, `host_metric_series_state`) are deliberately not targets: what a series
-/// observed stays knowable after the samples themselves expire, which is how the
-/// Admin surface tells "expired" apart from "never observed".
-pub async fn cleanup_expired_metric_samples(
-    pool: &AnyPool,
-    now: time::OffsetDateTime,
-) -> Result<u64, sqlx::Error> {
-    let retention_days = metric_sample_retention_days(pool).await?;
-    if retention_days <= 0 {
-        // A keep-forever window has no cutoff, so it can never expire a row.
-        return Ok(0);
-    }
-    let cutoff = crate::auth::format_rfc3339(family_cutoff(now, retention_days));
-    for stamp in [
-        RAW_METRIC_RELEASED_BEFORE_SQL,
-        HOST_RAW_METRIC_RELEASED_BEFORE_SQL,
-    ] {
-        sqlx::query(stamp)
-            .bind(&cutoff)
-            .bind(&cutoff)
-            .bind(&cutoff)
-            .execute(pool)
-            .await?;
-    }
-    let mut removed = 0;
-    for target in catalog_targets(FAMILY_RAW_METRIC_SAMPLE) {
-        removed += sqlx::query(target.delete_sql)
-            .bind(&cutoff)
-            .execute(pool)
-            .await?
-            .rows_affected();
-    }
-    Ok(removed)
-}
-
 /// Read the persisted window of the recorded-state family.
 ///
 /// The catalog default is the fallback for a database that has not been seeded
@@ -1115,7 +1048,7 @@ pub async fn sweep(state: &AppState, gap_cursor: &mut i64) -> u64 {
     }
     // Issue #213: raw metric samples expire by policy instead of by a fixed
     // per-series cap, so the sweep is what keeps the raw window bounded.
-    match cleanup_expired_metric_samples(pool, now).await {
+    match crate::metric_history::release_expired(pool, now).await {
         Ok(count) => removed += count,
         Err(error) => tracing::warn!(error = %error, "raw metric retention sweep deferred"),
     }
@@ -2052,6 +1985,9 @@ pub async fn execute_step(
             .execute(&mut *tx)
             .await
             .map(|result| result.rows_affected()),
+        CleanupKind::ReleaseMetricSamples(schema) => {
+            crate::metric_history::release_batch(&mut tx, schema, &entry.cutoff).await
+        }
     };
     match result {
         Ok(rows) => apply_batch(&mut plan[index], rows),
@@ -2434,7 +2370,10 @@ pub fn audit_catalog() -> Result<(), String> {
                     entry.family, target.table
                 ));
             }
-            if target.kind == CleanupKind::Delete {
+            if matches!(
+                target.kind,
+                CleanupKind::Delete | CleanupKind::ReleaseMetricSamples(_)
+            ) {
                 if !binds_exactly_one_cutoff(target.delete_sql) {
                     return Err(format!(
                         "{}: the {} cleanup must bind exactly one cutoff",
@@ -3586,11 +3525,23 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            cleanup_expired_metric_samples(pool, now).await.unwrap(),
+            crate::metric_history::release_expired(pool, now)
+                .await
+                .unwrap(),
             NODE_METRIC_CLEANUP_BATCH as u64
         );
-        assert_eq!(cleanup_expired_metric_samples(pool, now).await.unwrap(), 3);
-        assert_eq!(cleanup_expired_metric_samples(pool, now).await.unwrap(), 0);
+        assert_eq!(
+            crate::metric_history::release_expired(pool, now)
+                .await
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            crate::metric_history::release_expired(pool, now)
+                .await
+                .unwrap(),
+            0
+        );
         let remaining: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM node_metric_samples WHERE node_id = 'metric-node'",
         )
@@ -3609,6 +3560,154 @@ mod tests {
         .unwrap();
         assert_eq!(ledger.0, expired);
         assert_eq!((ledger.1, ledger.2, ledger.3), (132, 7, 1));
+    }
+
+    /// Deliver one value for each series at one instant, the way an accepted
+    /// Report does, and return how the series ledger judged each delivery.
+    async fn deliver_run_series(
+        pool: &AnyPool,
+        window: &crate::metric_history::RawWindow,
+        at: platpulse_core::time::Rfc3339,
+        received_at: &str,
+    ) -> Vec<crate::metric_history::Delivery> {
+        let mut outcomes = Vec::new();
+        let mut tx = crate::database::begin(pool).await.unwrap();
+        for scope in [
+            crate::metric_history::SeriesScope::node("run-node", "process_cpu_percent"),
+            crate::metric_history::SeriesScope::host("run-agent", "cpu_percent", ""),
+        ] {
+            let delivery = crate::metric_history::MetricDelivery {
+                scope,
+                identity: at,
+                timeline: at,
+                received_at,
+                value: 1.0,
+            };
+            outcomes.push(
+                crate::metric_history::record(
+                    &mut tx,
+                    &crate::capacity::HistoryGate::Record,
+                    window,
+                    delivery,
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        tx.commit().await.unwrap();
+        outcomes
+    }
+
+    /// An Operator-confirmed retention run releases raw metric samples through
+    /// the same protocol the sweep does: the series is stamped with the cutoff
+    /// the run applied, in the transaction that deletes its rows, so widening
+    /// the window afterwards cannot turn the carried value of a released
+    /// instant into a new observation.
+    #[tokio::test]
+    async fn an_operator_run_stamps_the_metric_series_it_releases() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
+        let now = crate::auth::now_utc();
+        let now_text = crate::auth::format_rfc3339(now);
+        let expired: platpulse_core::time::Rfc3339 =
+            crate::auth::format_rfc3339(now - time::Duration::hours(25))
+                .parse()
+                .unwrap();
+        let cutoff = crate::auth::format_rfc3339(family_cutoff(now, 1));
+        let wide = crate::metric_history::RawWindow::with_cutoff("1970-01-01T00:00:00Z");
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let state = AppState::new(
+            database,
+            None,
+            crate::auth::AuthConfig::development(
+                crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+                "http://127.0.0.1:8080".to_owned(),
+            ),
+        );
+        let pool = state.db().pool();
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('run-agent', 1, $1, $2)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('run-network', 'Run', '0xgenesis', 1, 1, 'lat', $1, $2)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('run-node', 'run-agent', 'run-network', 'ws://127.0.0.1:1', 'active', 'private', 1, $1, $2)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        // Delivered while a wide window still kept it: both series hold the
+        // instant as a raw row.
+        assert_eq!(
+            deliver_run_series(pool, &wide, expired, &now_text).await,
+            [crate::metric_history::Delivery::Observed; 2]
+        );
+
+        ensure_seeded(pool).await.unwrap();
+        let preview = create_preview(
+            pool,
+            "owner-1",
+            Some(vec![FAMILY_RAW_METRIC_SAMPLE.to_owned()]),
+            now,
+        )
+        .await
+        .unwrap();
+        let operation_id = "metric-retention-operation";
+        queue_retention_run(
+            pool,
+            operation_id,
+            "metric-retention-request",
+            &preview,
+            &now_text,
+        )
+        .await;
+        let status = || async {
+            sqlx::query_scalar::<_, String>("SELECT status FROM operations WHERE operation_id=$1")
+                .bind(operation_id)
+                .fetch_one(pool)
+                .await
+                .unwrap()
+        };
+        for _ in 0..4 {
+            if status().await == crate::operations::STATUS_SUCCEEDED {
+                break;
+            }
+            execute_step(&state, operation_id).await.unwrap();
+        }
+        assert_eq!(status().await, crate::operations::STATUS_SUCCEEDED);
+        for table in ["node_metric_samples", "host_metric_samples"] {
+            let rows: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(pool)
+                .await
+                .unwrap();
+            assert_eq!(rows, 0, "the run released the expired {table} row");
+        }
+        for ledger in ["node_metric_series_state", "host_metric_series_state"] {
+            let released_before: String =
+                sqlx::query_scalar(&format!("SELECT released_before FROM {ledger}"))
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                released_before, cutoff,
+                "{ledger} records the cutoff the run applied"
+            );
+        }
+
+        // The Operator widens the window again; the Agent still carries the
+        // released instant. It was counted once and stays counted once.
+        assert_eq!(
+            deliver_run_series(pool, &wide, expired, &now_text).await,
+            [crate::metric_history::Delivery::Replay; 2]
+        );
     }
 
     /// Issue #213: one accepted Report can store up to
@@ -3669,7 +3768,9 @@ mod tests {
         assert_eq!(inserted as usize, maximum_report_rows);
 
         assert_eq!(
-            cleanup_expired_metric_samples(pool, now).await.unwrap(),
+            crate::metric_history::release_expired(pool, now)
+                .await
+                .unwrap(),
             maximum_report_rows as u64,
             "one accepted Report may store this many Node samples"
         );
