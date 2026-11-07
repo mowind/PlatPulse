@@ -29,10 +29,11 @@
 
 ## Consequences
 
-- A replay older than the window returns a `ReportReceipt` with empty per-Node and per-sample/range arrays but the correct dispositions; the Agent's receipt-application path must tolerate that for such a replay.
+- A replay older than the window returns a `ReportReceipt` with empty per-Node and per-sample/range arrays but the correct dispositions; the Agent's receipt-application path must tolerate that for such a replay. It recognizes the compact receipt by both arrays being empty for a Report that names Nodes: an accepted one settles every sample as accepted, and a partially accepted one dequeues the Report and returns its samples to the Agent queue, because which samples were refused is no longer known and a re-sent sample the Server already holds is answered as `resync_replay`.
 - The identity row needed for conflict detection, close-report disposition, Attention evidence and Purge barriers is unaffected.
 - design §15.9 item 5 and the Report Receipt glossary entry keep their meaning; the design document records the body-slimming amendment.
 
 ## Amendment history
 
 - 2026-09-23: implemented as the `report_receipt_body` retention family (fixed 30 days, no row deletion) with a `receipt_slimmed_at` marker and a partial index; added the Closing Receipt exclusion after finding the byte-for-byte comparison in the checkpoint and conversion verification.
+- 2026-11-07: the Agent applies the compact receipt instead of refusing it as one that does not cover every Node, which had left the replayed Report stuck at the head of the Durable Spool (issue #361).
