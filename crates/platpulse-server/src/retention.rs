@@ -136,6 +136,11 @@ pub enum CleanupKind {
     /// it applies in the same transaction that deletes the rows
     /// ([`crate::metric_history::release_batch`]).
     ReleaseMetricSamples(&'static crate::metric_history::HistorySchema),
+    /// Recorded states are evidence the same way, so their release is the
+    /// state history's: [`crate::state_history::release_batch`] stamps each
+    /// series it releases from with the cutoff, in the transaction that deletes
+    /// the entries.
+    ReleaseStateEntries,
 }
 
 /// One physical storage target inside a family. count_sql is the read-only
@@ -342,29 +347,6 @@ const TARGET_FIVE_MINUTE_AGGREGATES: &[CleanupTarget] = &[
     },
 ];
 
-/// Rows one recorded-state cleanup batch may release.
-///
-/// A Report can state at most one sync and one consensus state per Node, so the
-/// bound that keeps this family expiry rate equal to its arrival rate is the
-/// protocol Node maximum times the number of recorded components (issue #217).
-/// 2048 leaves the same headroom the raw sample bound does.
-const STATE_CLEANUP_BATCH: i64 = 2048;
-
-const _: () = assert!(
-    STATE_CLEANUP_BATCH
-        >= platpulse_core::protocol::MAX_NODE_OBSERVATIONS as i64
-            * crate::state_history::STATE_COMPONENTS.len() as i64,
-    "the per-Report state batch must cover one maximal Report"
-);
-
-/// Stamp the state series the incoming cutoff may release evidence for.
-///
-/// The same rule as the raw metric families: deleting an entry destroys the
-/// Server ability to answer whether that instant was already recorded, so the
-/// cutoff the cleanup applies is written on the series itself and the stamp only
-/// ever moves forward (issue #217).
-const STATE_RELEASED_BEFORE_SQL: &str = "WITH expired AS MATERIALIZED (SELECT node_id, component FROM node_state_observations WHERE observed_at < $1 ORDER BY observed_at, node_id, component LIMIT 2048) UPDATE node_state_series_state SET released_before = $2 FROM expired WHERE node_state_series_state.node_id = expired.node_id AND node_state_series_state.component = expired.component AND node_state_series_state.released_before < $3";
-
 /// Recorded synchronization and consensus states (issue #217).
 ///
 /// The entries are the evidence, and the series ledger
@@ -374,9 +356,9 @@ const STATE_RELEASED_BEFORE_SQL: &str = "WITH expired AS MATERIALIZED (SELECT no
 /// "never recorded".
 const TARGET_OBSERVATION_STATE: &[CleanupTarget] = &[CleanupTarget {
     table: "node_state_observations",
-    kind: CleanupKind::Delete,
+    kind: CleanupKind::ReleaseStateEntries,
     count_sql: "SELECT COUNT(*) FROM node_state_observations WHERE observed_at < $1",
-    delete_sql: "DELETE FROM node_state_observations WHERE (node_id, component, observed_at) IN (SELECT node_id, component, observed_at FROM node_state_observations WHERE observed_at < $1 ORDER BY observed_at, node_id, component LIMIT 2048)",
+    delete_sql: crate::state_history::RELEASE_SQL,
 }];
 
 const TARGET_HISTORY_GAPS: &[CleanupTarget] = &[CleanupTarget {
@@ -882,13 +864,13 @@ pub async fn state_retention_days_tx(tx: &mut Transaction<'_, Any>) -> Result<i6
     .unwrap_or(fallback))
 }
 
-/// Delete at most one bounded batch of expired recorded states.
+/// Release at most one bounded batch of expired recorded states.
 ///
 /// A state entry is evidence about one instant, so it expires by the same rule
-/// the raw samples do: the series is stamped with the cutoff this pass applies
-/// before the rows leave, and the entries below the cutoff are then released one
-/// bounded batch at a time (issue #217). Nothing here touches the series ledger,
-/// and nothing infers a state from the entry that survives an expiry.
+/// the raw samples do, through the same release an Operator run uses
+/// ([`crate::state_history::release_batch`]): the series is stamped with the
+/// cutoff this pass applies in the transaction that removes the entries (issue
+/// #217). Nothing infers a state from the entry that survives an expiry.
 pub async fn cleanup_expired_observation_state(
     pool: &AnyPool,
     now: time::OffsetDateTime,
@@ -899,20 +881,9 @@ pub async fn cleanup_expired_observation_state(
         return Ok(0);
     }
     let cutoff = crate::auth::format_rfc3339(family_cutoff(now, retention_days));
-    sqlx::query(STATE_RELEASED_BEFORE_SQL)
-        .bind(&cutoff)
-        .bind(&cutoff)
-        .bind(&cutoff)
-        .execute(pool)
-        .await?;
-    let mut removed = 0;
-    for target in catalog_targets(FAMILY_OBSERVATION_STATE) {
-        removed += sqlx::query(target.delete_sql)
-            .bind(&cutoff)
-            .execute(pool)
-            .await?
-            .rows_affected();
-    }
+    let mut tx = crate::database::begin(pool).await?;
+    let removed = crate::state_history::release_batch(&mut tx, &cutoff).await?;
+    tx.commit().await?;
     Ok(removed)
 }
 
@@ -1988,6 +1959,9 @@ pub async fn execute_step(
         CleanupKind::ReleaseMetricSamples(schema) => {
             crate::metric_history::release_batch(&mut tx, schema, &entry.cutoff).await
         }
+        CleanupKind::ReleaseStateEntries => {
+            crate::state_history::release_batch(&mut tx, &entry.cutoff).await
+        }
     };
     match result {
         Ok(rows) => apply_batch(&mut plan[index], rows),
@@ -2372,7 +2346,9 @@ pub fn audit_catalog() -> Result<(), String> {
             }
             if matches!(
                 target.kind,
-                CleanupKind::Delete | CleanupKind::ReleaseMetricSamples(_)
+                CleanupKind::Delete
+                    | CleanupKind::ReleaseMetricSamples(_)
+                    | CleanupKind::ReleaseStateEntries
             ) {
                 if !binds_exactly_one_cutoff(target.delete_sql) {
                     return Err(format!(
@@ -3710,6 +3686,115 @@ mod tests {
         );
     }
 
+    /// The recorded-state family is released by an Operator run through the
+    /// same protocol the sweep uses: the series is stamped with the cutoff the
+    /// run applied, in the transaction that deletes its entries, so widening
+    /// the window afterwards cannot turn a replayed instant whose entry was
+    /// released into a new state entry.
+    #[tokio::test]
+    async fn an_operator_run_stamps_the_state_series_it_releases() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let database = crate::test_support::test_database_in(dir.path()).await;
+        let now = crate::auth::now_utc();
+        let now_text = crate::auth::format_rfc3339(now);
+        let expired = crate::auth::format_rfc3339(now - time::Duration::days(31));
+        let pepper_path = dir.path().join("pepper");
+        crate::secrets::create_pepper_file(&pepper_path).unwrap();
+        let state = AppState::new(
+            database,
+            None,
+            crate::auth::AuthConfig::development(
+                crate::secrets::load_pepper_file(&pepper_path).unwrap(),
+                "http://127.0.0.1:8080".to_owned(),
+            ),
+        );
+        let pool = state.db().pool();
+        sqlx::query("INSERT INTO agents (agent_id, agent_epoch, created_at, updated_at) VALUES ('run-agent', 1, $1, $2)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO networks (network_key, display_name, genesis_hash, chain_id, p2p_network_id, address_hrp, created_at, updated_at) VALUES ('run-network', 'Run', '0xgenesis', 1, 1, 'lat', $1, $2)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, rpc_endpoint, lifecycle, visibility, inventory_revision, first_seen_at, updated_at) VALUES ('run-node', 'run-agent', 'run-network', 'ws://127.0.0.1:1', 'active', 'private', 1, $1, $2)")
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO node_state_observations (node_id, component, observed_at, received_at, entry_kind, collection_state, value_source) VALUES ('run-node', 'sync', $1, $2, 'change', 'ok', 'current')")
+            .bind(&expired)
+            .bind(&expired)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO node_state_series_state (node_id, component, first_observed_at, last_observed_at, last_received_at, last_collection_state, last_value_source, last_delivery_at, entry_count, change_count, anchor_count, replayed_count, corrected_count, released_before, updated_at) VALUES ('run-node', 'sync', $1, $2, $3, 'ok', 'current', $4, 1, 1, 0, 0, 0, '1970-01-01T00:00:00Z', $5)")
+            .bind(&expired)
+            .bind(&expired)
+            .bind(&expired)
+            .bind(&expired)
+            .bind(&expired)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        ensure_seeded(pool).await.unwrap();
+        let cutoff = crate::auth::format_rfc3339(family_cutoff(
+            now,
+            observation_state_retention_days(pool).await.unwrap(),
+        ));
+        let preview = create_preview(
+            pool,
+            "owner-1",
+            Some(vec![FAMILY_OBSERVATION_STATE.to_owned()]),
+            now,
+        )
+        .await
+        .unwrap();
+        let operation_id = "state-retention-operation";
+        queue_retention_run(
+            pool,
+            operation_id,
+            "state-retention-request",
+            &preview,
+            &now_text,
+        )
+        .await;
+        let status = || async {
+            sqlx::query_scalar::<_, String>("SELECT status FROM operations WHERE operation_id=$1")
+                .bind(operation_id)
+                .fetch_one(pool)
+                .await
+                .unwrap()
+        };
+        for _ in 0..4 {
+            if status().await == crate::operations::STATUS_SUCCEEDED {
+                break;
+            }
+            execute_step(&state, operation_id).await.unwrap();
+        }
+        assert_eq!(status().await, crate::operations::STATUS_SUCCEEDED);
+        let entries: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM node_state_observations")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(entries, 0, "the run released the expired state entry");
+        let released_before: String =
+            sqlx::query_scalar("SELECT released_before FROM node_state_series_state")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            released_before, cutoff,
+            "the state series records the cutoff the run applied"
+        );
+    }
+
     /// Issue #213: one accepted Report can store up to
     /// `MAX_NODE_OBSERVATIONS` x 5 Node metric rows, so the per-Report expiry
     /// bound has to cover that. A smaller bound than the arrival rate would let a
@@ -3806,13 +3891,15 @@ mod tests {
         assert!(
             TARGET_OBSERVATION_STATE[0]
                 .delete_sql
-                .contains(&format!("LIMIT {STATE_CLEANUP_BATCH})")),
-            "the recorded-state batch SQL must use STATE_CLEANUP_BATCH: {}",
+                .contains(&format!("LIMIT {})", crate::state_history::RELEASE_BATCH)),
+            "the recorded-state batch SQL must use state_history::RELEASE_BATCH: {}",
             TARGET_OBSERVATION_STATE[0].delete_sql
         );
         assert!(
-            STATE_RELEASED_BEFORE_SQL.contains(&format!("LIMIT {STATE_CLEANUP_BATCH})")),
-            "the released-floor stamp must use the same bound: {STATE_RELEASED_BEFORE_SQL}"
+            crate::state_history::RELEASE_STAMP_SQL
+                .contains(&format!("LIMIT {})", crate::state_history::RELEASE_BATCH)),
+            "the released-floor stamp must use the same bound: {}",
+            crate::state_history::RELEASE_STAMP_SQL
         );
     }
 
