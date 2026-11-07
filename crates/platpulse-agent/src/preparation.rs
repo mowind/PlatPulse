@@ -299,7 +299,7 @@ pub(crate) async fn prepare_v1_upgrade_with_transport<T: crate::reporting::Repor
         closing_report_id: evidence.report_id,
         inventory_revision: evidence.inventory.revision,
         inventory_sha256: evidence.content_sha256,
-        closing_receipt_disposition: crate::collector::receipt_disposition_name(disposition),
+        closing_receipt_disposition: crate::spool::receipt_disposition_name(disposition),
         closed_boot_id: evidence.closed_boot_id,
         next_boot_id: closing.next_boot_id,
         pending_transition: "drained_previous",
@@ -746,7 +746,7 @@ async fn write_preparation(
     .bind(row.agent_epoch as i64)
     .bind(&row.evidence.report_id)
     .bind(row.evidence.report_sequence as i64)
-    .bind(crate::collector::receipt_disposition_name(row.disposition))
+    .bind(crate::spool::receipt_disposition_name(row.disposition))
     .bind(row.evidence.inventory.revision as i64)
     .bind(&row.evidence.content_sha256)
     .bind(row.declaration_json)

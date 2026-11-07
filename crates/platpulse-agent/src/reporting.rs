@@ -14,13 +14,14 @@ use platpulse_core::{
 
 use serde::Deserialize;
 
-use crate::collector::{ApplyReceiptError, SpoolCleanupSummary, SpoolPolicy, apply_receipt_typed};
+use crate::collector::{SpoolCleanupSummary, SpoolPolicy};
 use crate::config::{AgentConfig, AgentConfigError};
 use crate::credential::{CredentialError, load_credential_file};
 use crate::database::{
     AgentDatabaseConfig, AgentDatabaseError, AgentStore, WriteTx, cleanup_expired_receipt_markers,
     now_rfc3339,
 };
+use crate::spool::{ApplyReceiptError, apply_receipt_typed};
 
 #[derive(Debug, sqlx::FromRow)]
 struct SpoolReportRow {
@@ -612,11 +613,7 @@ async fn deliver_one_typed<T: ReportTransport>(
     // Copy the Inventory outcome before the receipt is consumed by the
     // receipt-application transaction below.
     let inventory_disposition = envelope_receipt.inventory;
-    let disposition = match receipt_disposition {
-        ReceiptDisposition::Accepted => "accepted",
-        ReceiptDisposition::PartiallyAccepted => "partially_accepted",
-        ReceiptDisposition::Rejected => "rejected",
-    };
+    let disposition = crate::spool::receipt_disposition_name(receipt_disposition);
     // A whole-report rejection is an applied receipt, not a transport failure:
     // it must reach the caller as data so the delivery loop can tell the
     // operator why every report is being refused (issue #181).
@@ -3861,7 +3858,7 @@ mod delivery_tests {
             .unwrap();
 
         assert!(
-            crate::collector::apply_receipt(
+            crate::spool::apply_receipt(
                 &mut store,
                 &id,
                 &digest,

@@ -15,7 +15,7 @@ use std::{
 };
 
 use futures_util::TryStreamExt;
-use platpulse_core::{ReceiptDisposition, ReportReceipt, Rfc3339};
+use platpulse_core::{ReportReceipt, Rfc3339};
 use serde::Deserialize;
 use sqlx::migrate::{MigrateError, Migrator};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
@@ -456,14 +456,6 @@ async fn has_legacy_receipt_archive(
     .map_err(AgentDatabaseError::LegacyReceiptQuery)
 }
 
-fn receipt_disposition_name(disposition: ReceiptDisposition) -> &'static str {
-    match disposition {
-        ReceiptDisposition::Accepted => "accepted",
-        ReceiptDisposition::PartiallyAccepted => "partially_accepted",
-        ReceiptDisposition::Rejected => "rejected",
-    }
-}
-
 async fn validate_legacy_receipts(
     connection: &mut SqliteConnection,
 ) -> Result<(), AgentDatabaseError> {
@@ -511,7 +503,7 @@ async fn validate_legacy_receipts(
             .map_err(|error| invalid(format!("invalid receipt protocol data: {error}")))?;
         if receipt.report_id.to_string() != row.report_id
             || receipt.report_body_sha256.to_string() != row.report_body_sha256
-            || receipt_disposition_name(receipt.disposition) != row.disposition
+            || crate::spool::receipt_disposition_name(receipt.disposition) != row.disposition
         {
             return Err(invalid(
                 "receipt metadata does not match its stored row".to_owned(),
