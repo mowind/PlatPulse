@@ -163,8 +163,10 @@ test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/deployme
 # The packaged guide is the index plus every topic file of docs/deployment/.
 diff <(cd "$ROOT/docs/deployment" && ls) <(cd "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/deployment" && ls)
 diff <(cd "$ROOT/docs/deployment" && ls) <(cd "$OUTPUT_DIR/staging/agent/root/usr/share/doc/platpulse-agent/deployment" && ls)
-tar -tzf "$OUTPUT_DIR/platpulse-server-9.8.7-linux-x86_64.tar.gz" | grep -qx 'usr/share/doc/platpulse-server/deployment/upgrade-and-rollback.md'
-tar -tzf "$OUTPUT_DIR/platpulse-agent-9.8.7-linux-x86_64.tar.gz" | grep -qx 'usr/share/doc/platpulse-agent/deployment/upgrade-and-rollback.md'
+# grep reads the whole listing: an early-exiting grep -q would leave tar writing
+# into a closed pipe, and pipefail turns that EPIPE into a failure.
+tar -tzf "$OUTPUT_DIR/platpulse-server-9.8.7-linux-x86_64.tar.gz" | grep -x 'usr/share/doc/platpulse-server/deployment/upgrade-and-rollback.md' >/dev/null
+tar -tzf "$OUTPUT_DIR/platpulse-agent-9.8.7-linux-x86_64.tar.gz" | grep -x 'usr/share/doc/platpulse-agent/deployment/upgrade-and-rollback.md' >/dev/null
 test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/LICENSE"
 test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/examples/Caddyfile"
 test -f "$OUTPUT_DIR/staging/server/root/usr/share/doc/platpulse-server/examples/compose.yml"

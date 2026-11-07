@@ -193,16 +193,17 @@ async function confirmRun(page: Page, previewId: string) {
 async function composePreview(page: Page, server: AdminServer, previousId: string | null): Promise<PreviewView> {
   await slot(page, 'retention-preview-compose').click()
   // Composing is a Server write, so wait for the Server to report the preview
-  // the page then binds to rather than trusting the button click.
+  // the page then binds to rather than trusting the button click. A refused run
+  // leaves no preview at all, so "no preview" is not yet the new one.
   await expect
     .poll(
       async () => {
         const preview = (await readOverview(server)).preview
-        return preview ? preview.previewId : null
+        return preview && preview.previewId !== previousId ? preview.previewId : null
       },
       { timeout: 60_000 },
     )
-    .not.toBe(previousId)
+    .not.toBeNull()
   const preview = (await readOverview(server)).preview
   if (!preview) throw new Error('the Server reported no bound preview after composing one')
   return preview
