@@ -22,8 +22,7 @@ use platpulse_core::observation::{
     SpoolDiagnostics, SyncCurrent,
 };
 use platpulse_core::{
-    AgentCapability, AgentReport, BootTransition, FingerprintHex, InventoryDeclaration,
-    ReceiptDisposition, Rfc3339,
+    AgentCapability, AgentReport, BootTransition, FingerprintHex, InventoryDeclaration, Rfc3339,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -41,6 +40,7 @@ use crate::block::{
 use crate::config::AgentConfig;
 use crate::database::{AgentDatabaseConfig, AgentStore, AgentStoreWritePermit};
 use crate::reporting::{ReportStoreError, ReportTransport};
+use crate::spool::{SendBudget, Sent, send_oldest};
 /// Shipped Durable Spool capacity (design §7.2, issue #273). The byte bound is
 /// what actually binds during a Server outage: at roughly 33.7 KB per report
 /// and 0.83 reports/s (a Host with about 60 peers at a one-second collection
@@ -1218,23 +1218,17 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
         return Err(CollectionError::ConcurrentStateChange);
     };
     tx.commit().await?;
-    // Drain oldest-first. A Closing report whose Boot was already superseded
-    // cannot be applied to the current agent_state; the Server has received its
-    // exact bytes, so the local orphan is quarantined and the drain continues
-    // instead of turning a self-healing condition into a fatal startup error.
+    // Drain oldest-first. A Closing of a Boot the Agent already moved past
+    // leaves the spool with its receipt and the drain continues; only the
+    // Closing of the Boot being recovered ends it.
     loop {
-        match crate::reporting::deliver_one_with_disposition(&mut store, transport).await {
-            Ok(Some((delivered, disposition))) => {
-                if delivered_report_closes_boot(&delivered, disposition, boot_id)? {
-                    store.close().await?;
-                    return Ok(());
-                }
+        match send_oldest(&mut store, transport, SendBudget::Unbounded).await? {
+            Sent::Applied(delivered) if delivered.closes_boot(boot_id) => {
+                store.close().await?;
+                return Ok(());
             }
-            Ok(None) => break,
-            Err(ReportStoreError::StaleClosing { report_id }) => {
-                crate::reporting::quarantine_report(&mut store, &report_id).await?;
-            }
-            Err(error) => return Err(error.into()),
+            Sent::Applied(_) | Sent::Quarantined { .. } => {}
+            Sent::Empty => break,
         }
     }
 
@@ -1282,30 +1276,15 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
         &draining,
     )
     .await?;
-    let (delivered, disposition) =
-        crate::reporting::deliver_one_with_disposition(&mut store, transport)
-            .await?
-            .ok_or(CollectionError::RecoveryRequired)?;
-    if !delivered_report_closes_boot(&delivered, disposition, boot_id)? {
-        return Err(CollectionError::RecoveryRequired);
+    match send_oldest(&mut store, transport, SendBudget::Unbounded).await? {
+        Sent::Applied(delivered) if delivered.closes_boot(boot_id) => {
+            store.close().await?;
+            Ok(())
+        }
+        Sent::Applied(_) | Sent::Quarantined { .. } | Sent::Empty => {
+            Err(CollectionError::RecoveryRequired)
+        }
     }
-    store.close().await?;
-    Ok(())
-}
-
-/// Whether a delivered report proves the Server applied the Closing for
-/// `boot_id`. A rejected Closing is an applied receipt, not a closed Boot
-/// (issue #178), so only a non-rejected disposition may end the recovery drain.
-fn delivered_report_closes_boot(
-    delivered: &crate::reporting::StoredReport,
-    disposition: ReceiptDisposition,
-    boot_id: BootId,
-) -> Result<bool, CollectionError> {
-    let (report_boot_id, boot_transition) =
-        crate::reporting::report_boot_identity(&delivered.body)?;
-    Ok(report_boot_id == boot_id
-        && boot_transition == BootTransition::Closing
-        && disposition != ReceiptDisposition::Rejected)
 }
 
 /// Collect and persist one complete immutable report. Agent state (identity,
@@ -2352,53 +2331,13 @@ pub(crate) async fn current_spool_diagnostics(
 mod tests {
     use super::*;
     use crate::database::AgentDatabaseConfig;
-    use crate::spool::{ApplyReceiptError, apply_receipt, apply_receipt_typed};
+    use crate::spool::{apply_receipt, apply_receipt_typed};
     use platpulse_core::observation::{PeerCurrent, PeerDirection};
     use platpulse_core::{
-        InventoryAcceptance, InventoryDisposition, NodeCurrentDisposition, ReportReceipt,
+        InventoryAcceptance, InventoryDisposition, NodeCurrentDisposition, ReceiptDisposition,
+        ReportReceipt,
     };
     use tempfile::tempdir;
-
-    #[test]
-    fn recognizes_a_delivered_closing_report_for_the_recovered_boot() {
-        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
-            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
-        ))
-        .unwrap();
-        report.boot_transition = BootTransition::Closing;
-        let stored = crate::reporting::StoredReport {
-            report_id: report.report_id.to_string(),
-            report_sequence: report.report_sequence,
-            body: serde_json::to_vec(&report).unwrap(),
-            body_sha256: "unused-in-this-check".to_owned(),
-        };
-
-        assert!(
-            delivered_report_closes_boot(&stored, ReceiptDisposition::Accepted, report.boot_id,)
-                .unwrap()
-        );
-        assert!(
-            delivered_report_closes_boot(
-                &stored,
-                ReceiptDisposition::PartiallyAccepted,
-                report.boot_id,
-            )
-            .unwrap()
-        );
-        assert!(
-            !delivered_report_closes_boot(&stored, ReceiptDisposition::Rejected, report.boot_id,)
-                .unwrap(),
-            "a rejected Closing receipt must not close the Boot"
-        );
-        assert!(
-            !delivered_report_closes_boot(
-                &stored,
-                ReceiptDisposition::Accepted,
-                BootId::from_str("0195f2a1-0099-4099-8099-000000000099").unwrap(),
-            )
-            .unwrap()
-        );
-    }
 
     #[tokio::test]
     async fn stale_recovery_outcome_rolls_back_before_writing_gaps() {
@@ -3306,7 +3245,7 @@ mod tests {
         );
 
         assert!(
-            crate::reporting::deliver_one(&mut store, &RejectAllTransport)
+            crate::spool::send_oldest_unbounded(&mut store, &RejectAllTransport)
                 .await
                 .unwrap()
                 .is_some()
@@ -3325,7 +3264,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            crate::reporting::deliver_one(&mut store, &AcceptAllTransport)
+            crate::spool::send_oldest_unbounded(&mut store, &AcceptAllTransport)
                 .await
                 .unwrap()
                 .is_some()
@@ -3647,7 +3586,7 @@ mod tests {
 
         // The Server rejects the first drained_previous report.
         assert!(
-            crate::reporting::deliver_one(&mut store, &RejectAllTransport)
+            crate::spool::send_oldest_unbounded(&mut store, &RejectAllTransport)
                 .await
                 .unwrap()
                 .is_some()
@@ -3700,7 +3639,7 @@ mod tests {
         // The Server is fixed and accepts; only now is the transition cleared
         // and the following report resumes as continuing.
         assert!(
-            crate::reporting::deliver_one(&mut store, &AcceptAllTransport)
+            crate::spool::send_oldest_unbounded(&mut store, &AcceptAllTransport)
                 .await
                 .unwrap()
                 .is_some()
@@ -4672,6 +4611,113 @@ mod tests {
         reopened.close().await.unwrap();
     }
 
+    /// The delivery loop meets the same superseded Closing the recovery drain
+    /// does. Its receipt is applied, so the Report leaves the spool and the pass
+    /// carries on to the next Report instead of retrying it forever, while the
+    /// Boot the Agent already moved to stays as it is.
+    #[tokio::test]
+    async fn delivery_loop_dequeues_a_superseded_closing_and_keeps_going() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("agent.db");
+        let stale_boot = "0195f2a1-0050-4050-8050-000000000050";
+        let current_boot = "0195f2a1-0060-4060-8060-000000000060";
+        let queued = |report_id: &str, sequence: u64, transition: BootTransition| {
+            let mut report: AgentReport = serde_json::from_slice(include_bytes!(
+                "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+            ))
+            .unwrap();
+            report.agent_epoch = 1;
+            report.boot_id = stale_boot.parse().unwrap();
+            report.report_sequence = sequence;
+            report.report_id = report_id.parse().unwrap();
+            report.boot_transition = transition;
+            report.previous_boot_id = None;
+            report.validate().unwrap();
+            report
+        };
+        let closing = queued(
+            "0195f2a1-0051-4051-8051-000000000051",
+            3,
+            BootTransition::Closing,
+        );
+        let after = queued(
+            "0195f2a1-0052-4052-8052-000000000052",
+            4,
+            BootTransition::Continuing,
+        );
+
+        let mut store = AgentStore::open(AgentDatabaseConfig::new(&db_path))
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agent_state (singleton, agent_id, agent_epoch, boot_id, report_sequence, inventory_revision, boot_state, updated_at) VALUES (1, ?, 1, ?, 5, 1, 'active', ?)")
+            .bind("0195f2a1-0011-4011-8011-000000000011")
+            .bind(current_boot)
+            .bind("2026-08-12T08:00:00Z")
+            .execute(store.connection())
+            .await
+            .unwrap();
+        for (report, created_at) in [
+            (&closing, "2026-08-12T07:00:00Z"),
+            (&after, "2026-08-12T07:00:01Z"),
+        ] {
+            let body = serde_json::to_vec(report).unwrap();
+            sqlx::query("INSERT INTO reports (report_id, agent_epoch, boot_id, report_sequence, generated_at, body, body_sha256, body_bytes, created_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)")
+                .bind(report.report_id.to_string())
+                .bind(stale_boot)
+                .bind(report.report_sequence as i64)
+                .bind(report.generated_at.to_string())
+                .bind(&body)
+                .bind(format!("0x{}", hex::encode(sha2::Sha256::digest(&body))))
+                .bind(body.len() as i64)
+                .bind(created_at)
+                .execute(store.connection())
+                .await
+                .unwrap();
+        }
+
+        let pass = crate::reporting::deliver_backlog_with_send_timeout(
+            &mut store,
+            &AcceptAllTransport,
+            std::time::Duration::from_secs(5),
+            &tokio_util::sync::CancellationToken::new(),
+            |_, _| {},
+        )
+        .await;
+
+        assert!(
+            matches!(pass.stop, crate::reporting::DeliveryStop::SpoolEmpty),
+            "the pass must drain past the superseded Closing, stopped with {:?}",
+            pass.stop
+        );
+        assert_eq!(pass.outcome.applied, 2);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reports")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM report_receipts")
+                .fetch_one(store.connection())
+                .await
+                .unwrap(),
+            2,
+            "both receipts are applied, so a replay of either is recognised"
+        );
+        let (boot_id, sequence, boot_state): (String, i64, String) = sqlx::query_as(
+            "SELECT boot_id, report_sequence, boot_state FROM agent_state WHERE singleton=1",
+        )
+        .fetch_one(store.connection())
+        .await
+        .unwrap();
+        assert_eq!(
+            (boot_id.as_str(), sequence, boot_state.as_str()),
+            (current_boot, 5, "active")
+        );
+        store.close().await.unwrap();
+    }
+
     #[tokio::test]
     async fn recovery_drain_drops_a_superseded_closing_report_for_the_same_boot() {
         let dir = tempdir().unwrap();
@@ -4856,7 +4902,7 @@ mod tests {
         acceptance: InventoryAcceptance,
         receipt: ReportReceipt,
         applied_at: &str,
-    ) -> Result<(), ApplyReceiptError> {
+    ) -> Result<crate::spool::AppliedReport, sqlx::Error> {
         apply_receipt_typed::<InventoryDeclaration>(
             store,
             &report.report_id.to_string(),
