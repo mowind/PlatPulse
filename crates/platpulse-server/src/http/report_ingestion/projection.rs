@@ -1202,10 +1202,9 @@ mod tests {
         // real one-day cutoff reaches the stored observation: it releases the
         // row and stamps the series with the cutoff it applied.
         let released_at = now_utc() + time::Duration::days(2);
-        let removed =
-            crate::retention::cleanup_expired_metric_samples(state.db().pool(), released_at)
-                .await
-                .unwrap();
+        let removed = crate::metric_history::release_expired(state.db().pool(), released_at)
+            .await
+            .unwrap();
         assert!(removed >= 1, "the cleanup released the stored observation");
         let released_before: String = sqlx::query_scalar(
             "SELECT released_before FROM node_metric_series_state WHERE node_id = $1 AND metric = 'data_directory_percent'",
