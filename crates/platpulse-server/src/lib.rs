@@ -50,6 +50,7 @@ pub mod openapi;
 pub mod operations;
 pub mod ownership;
 pub mod peer_history;
+pub(crate) mod public_projection;
 pub mod redaction;
 /// Server-recorded Node relationship intervals (issue #221).
 pub mod relationships;
