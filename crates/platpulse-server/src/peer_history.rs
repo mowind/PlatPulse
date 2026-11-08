@@ -748,12 +748,10 @@ async fn retention_horizon(pool: &AnyPool, family: &str) -> Result<Option<String
 }
 
 /// How current the newest receipt this grain holds is.
-fn freshness_of(latest: Option<&str>) -> String {
+fn freshness_of(latest: Option<&str>, at: OffsetDateTime) -> String {
     match latest.and_then(crate::auth::parse_rfc3339) {
         None => "unknown".to_owned(),
-        Some(value) if (crate::auth::now_utc() - value).whole_seconds().abs() <= 120 => {
-            "current".to_owned()
-        }
+        Some(value) if (at - value).whole_seconds().abs() <= 120 => "current".to_owned(),
         Some(_) => "stale".to_owned(),
     }
 }
@@ -936,7 +934,7 @@ pub(crate) async fn load_range(
 
     Ok(PeerRangeAnswer {
         state: collection_state(component_state.as_deref(), current_peer_count, &[]),
-        freshness: freshness_of(latest.as_deref()),
+        freshness: freshness_of(latest.as_deref(), crate::auth::now_utc()),
         grain: request.grain.as_str(),
         grain_seconds,
         from: request.from.clone(),
@@ -959,10 +957,12 @@ fn row_is_empty(row: &PeerAggregateRow) -> bool {
 /// Read bounded aggregate history and preserve the component's explicit
 /// state/freshness dimensions. A retained empty snapshot is `empty`; missing
 /// history is `unknown`; a current collection error remains `error` while the
-/// last-good aggregate rows stay available to the caller.
+/// last-good aggregate rows stay available to the caller. Freshness is judged
+/// at `at`.
 pub(crate) async fn load_history(
     pool: &AnyPool,
     node_id: &str,
+    at: OffsetDateTime,
 ) -> Result<PeerHistory, sqlx::Error> {
     let (component_state, current_peer_count) = component_status(pool, node_id).await?;
     let five_minute = load_family(
@@ -979,7 +979,7 @@ pub(crate) async fn load_history(
         .chain(hourly.iter())
         .map(|row| row.last_observed_at.as_str())
         .max();
-    let freshness = freshness_of(latest);
+    let freshness = freshness_of(latest, at);
 
     let rows: Vec<&PeerAggregateRow> = five_minute.iter().chain(hourly.iter()).collect();
     let state = collection_state(component_state.as_deref(), current_peer_count, &rows);
