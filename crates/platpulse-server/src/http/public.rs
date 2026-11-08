@@ -1564,6 +1564,70 @@ mod tests {
         (dir, AppState::new(database, None, auth))
     }
 
+    /// Every Network of the Public Projection, read at the current instant
+    /// through the module the Public routes answer from.
+    async fn networks_value(state: &AppState) -> serde_json::Value {
+        let networks = public_projection(state)
+            .networks(crate::auth::now_utc())
+            .await
+            .unwrap();
+        serde_json::to_value(networks).unwrap()
+    }
+
+    /// One Node of the Public Projection at the current instant; `None` when
+    /// it is not an Active Node.
+    async fn node_value(state: &AppState, node_id: &str) -> Option<serde_json::Value> {
+        public_projection(state)
+            .node(node_id, crate::auth::now_utc())
+            .await
+            .unwrap()
+            .map(|node| serde_json::to_value(node).unwrap())
+    }
+
+    /// One Node's metrics for `window` ending at the current instant.
+    async fn metrics_value(
+        state: &AppState,
+        node_id: &str,
+        window: PublicMetricWindow,
+    ) -> Option<serde_json::Value> {
+        public_projection(state)
+            .metrics(node_id, window, crate::auth::now_utc())
+            .await
+            .unwrap()
+            .map(|history| serde_json::to_value(history).unwrap())
+    }
+
+    /// `node-public`'s metrics for the preset a request would name.
+    async fn metric_window_value(state: &AppState, window: Option<&str>) -> serde_json::Value {
+        let window = PublicMetricWindow::parse(window).expect("a valid preset");
+        metrics_value(state, "node-public", window)
+            .await
+            .expect("node-public is an Active Node")
+    }
+
+    /// One Node's Peer history at the current instant.
+    async fn peer_history_value(state: &AppState, node_id: &str) -> Option<serde_json::Value> {
+        public_projection(state)
+            .peer_history(node_id, crate::auth::now_utc())
+            .await
+            .unwrap()
+            .map(|history| serde_json::to_value(history).unwrap())
+    }
+
+    /// One Node's whole Block History at the current instant.
+    async fn block_history_value(state: &AppState, node_id: &str) -> Option<serde_json::Value> {
+        let range = BlockHistoryRange {
+            from: None,
+            to: None,
+            limit: 50,
+        };
+        public_projection(state)
+            .block_history(node_id, range, crate::auth::now_utc())
+            .await
+            .unwrap()
+            .map(|history| serde_json::to_value(history).unwrap())
+    }
+
     #[test]
     fn history_bounds_reject_invalid_ranges() {
         let request_id = "test";
@@ -2070,15 +2134,7 @@ mod tests {
     }
 
     async fn public_node_detail_value(state: &AppState, node_id: &str) -> serde_json::Value {
-        let response = public_node_detail(
-            State(state.clone()),
-            Path(node_id.to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        serde_json::from_slice(&body).unwrap()
+        node_value(state, node_id).await.expect("an Active Node")
     }
 
     #[tokio::test]
@@ -2260,13 +2316,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response = public_node_detail(
-            State(state.clone()),
-            Path("geo-retired-node".to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(node_value(&state, "geo-retired-node").await.is_none());
 
         let insight = node_insight_for(&state, "geo-retired-node").await;
         assert_eq!(insight.scope, "unobserved");
@@ -2356,10 +2406,7 @@ mod tests {
         insert_geo_peer(&state, "geo-list-b", "list-b-2", None).await;
         insert_geo_cache(&state, "8.8.8.8", "US", 60, 3600).await;
 
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let by_key = |key: &str| {
             value
                 .as_array()
@@ -2883,10 +2930,7 @@ mod tests {
 
     /// One Network's Public Geo Insight from the real Public list route.
     async fn public_network_list(state: &AppState) -> serde_json::Value {
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(state).await;
         value
             .as_array()
             .unwrap()
@@ -3003,16 +3047,9 @@ mod tests {
             .await
             .unwrap();
 
-        let response = public_node_metrics(
-            State(state.clone()),
-            Path("node-public".to_owned()),
-            Ok(Query(PublicNodeMetricsQuery::default())),
-            Extension(RequestId(std::sync::Arc::from("metric-history-test"))),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let history = metrics_value(&state, "node-public", PublicMetricWindow::Live)
+            .await
+            .unwrap();
         assert_eq!(history["windowSeconds"], 60);
         assert_eq!(history["processCpuPercent"].as_array().unwrap().len(), 2);
         assert_eq!(history["processCpuPercent"][0]["value"], 10.0);
@@ -3022,14 +3059,11 @@ mod tests {
         assert_eq!(history["blockIntervalMs"][0]["value"], 2000.0);
         assert_eq!(history["transactionCount"][1]["value"], 7.0);
 
-        let legacy_private = public_node_metrics(
-            State(state),
-            Path("node-private".to_owned()),
-            Ok(Query(PublicNodeMetricsQuery::default())),
-            Extension(RequestId(std::sync::Arc::from("metric-history-active"))),
-        )
-        .await;
-        assert_eq!(legacy_private.status(), StatusCode::OK);
+        assert!(
+            metrics_value(&state, "node-private", PublicMetricWindow::Live)
+                .await
+                .is_some()
+        );
     }
 
     // ---- Issue #247 / ADR 0012: the Node Detail Metric Window ----
@@ -3272,8 +3306,7 @@ mod tests {
         keep_observation(&state, "process_cpu_percent", &recent, 20.0).await;
         seed_block_summary(&state, "node-public", 100, 7).await;
         for window in [None, Some("live")] {
-            let (status, body) = metric_window_answer(&state, window).await;
-            assert_eq!(status, StatusCode::OK);
+            let body = metric_window_value(&state, window).await;
             let mut keys: Vec<&str> = body
                 .as_object()
                 .unwrap()
@@ -3360,8 +3393,7 @@ mod tests {
         )
         .await;
 
-        let (status, body) = metric_window_answer(&state, Some("6h")).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
+        let body = metric_window_value(&state, Some("6h")).await;
         assert_eq!(body["windowSeconds"], 21_600);
         assert_eq!(body["metricWindow"]["window"], "6h");
         assert_eq!(body["metricWindow"]["grain"], "1m");
@@ -3434,7 +3466,7 @@ mod tests {
             keep_observation(&state, "peer_inbound_count", instant, value).await;
         }
 
-        let (_, hour) = metric_window_answer(&state, Some("1h")).await;
+        let hour = metric_window_value(&state, Some("1h")).await;
         assert_eq!(hour["metricWindow"]["grain"], "raw");
         assert_eq!(hour["metricWindow"]["grainSeconds"], 0);
         let points = hour["peerInboundCount"].as_array().unwrap();
@@ -3454,7 +3486,7 @@ mod tests {
         assert_eq!(hour_coverage["gaps"].as_array().unwrap().len(), 1);
         assert_eq!(hour_coverage["gaps"][0]["kind"], "collection_gap");
 
-        let (_, day) = metric_window_answer(&state, Some("24h")).await;
+        let day = metric_window_value(&state, Some("24h")).await;
         assert_eq!(day["metricWindow"]["grain"], "5m");
         let points = day["peerInboundCount"].as_array().unwrap();
         assert_eq!(points.len(), 2, "two days ago is outside 24h: {points:?}");
@@ -3468,7 +3500,7 @@ mod tests {
             "the newest bucket is open: {points:?}"
         );
 
-        let (_, week) = metric_window_answer(&state, Some("7d")).await;
+        let week = metric_window_value(&state, Some("7d")).await;
         assert_eq!(week["metricWindow"]["grain"], "5m");
         assert_eq!(week["windowSeconds"], 604_800);
         let points = week["peerInboundCount"].as_array().unwrap();
@@ -3524,8 +3556,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (status, body) = metric_window_answer(&state, Some("24h")).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
+        let body = metric_window_value(&state, Some("24h")).await;
         let tx = body["networkTxBytesPerSec"].as_array().unwrap();
         assert_eq!(tx.len(), 3);
         assert!(tx.iter().all(|point| point["value"] == 340.0));
@@ -3635,8 +3666,7 @@ mod tests {
         seed_block_tiers(&state, current).await;
 
         for window in ["24h", "7d"] {
-            let (status, body) = metric_window_answer(&state, Some(window)).await;
-            assert_eq!(status, StatusCode::OK, "{body}");
+            let body = metric_window_value(&state, Some(window)).await;
             assert_eq!(
                 body["metricWindow"]["unavailableSeries"],
                 serde_json::json!([])
@@ -3716,7 +3746,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (_, six) = metric_window_answer(&state, Some("6h")).await;
+        let six = metric_window_value(&state, Some("6h")).await;
         assert_eq!(six["metricWindow"]["grain"], "1m");
         let transactions = six["transactionCount"].as_array().unwrap();
         assert_eq!(transactions.len(), 3, "{transactions:?}");
@@ -3733,7 +3763,7 @@ mod tests {
         assert_eq!(intervals.len(), 2);
         assert_eq!(intervals[0]["value"], 3_000.0);
 
-        let (_, hour) = metric_window_answer(&state, Some("1h")).await;
+        let hour = metric_window_value(&state, Some("1h")).await;
         assert_eq!(hour["metricWindow"]["grain"], "raw");
         let transactions = hour["transactionCount"].as_array().unwrap();
         let counts: Vec<f64> = transactions
@@ -3768,7 +3798,7 @@ mod tests {
             11,
         )
         .await;
-        let (_, hour) = metric_window_answer(&state, Some("1h")).await;
+        let hour = metric_window_value(&state, Some("1h")).await;
         let counts: Vec<f64> = hour["transactionCount"]
             .as_array()
             .unwrap()
@@ -3807,16 +3837,9 @@ mod tests {
                 .unwrap();
         }
 
-        let response = public_node_metrics(
-            State(state.clone()),
-            Path("node-public".to_owned()),
-            Ok(Query(PublicNodeMetricsQuery::default())),
-            Extension(RequestId(std::sync::Arc::from("metric-block-order-test"))),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let history = metrics_value(&state, "node-public", PublicMetricWindow::Live)
+            .await
+            .unwrap();
         let sampled: Vec<String> = history["blockIntervalMs"]
             .as_array()
             .unwrap()
@@ -3875,16 +3898,9 @@ mod tests {
             .await
             .unwrap();
 
-        let response = public_node_metrics(
-            State(state.clone()),
-            Path("node-public".to_owned()),
-            Ok(Query(PublicNodeMetricsQuery::default())),
-            Extension(RequestId(std::sync::Arc::from("metric-ledger-test"))),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let history = metrics_value(&state, "node-public", PublicMetricWindow::Live)
+            .await
+            .unwrap();
         let series = |metric: &str| {
             history["series"]
                 .as_array()
@@ -4027,16 +4043,9 @@ mod tests {
             .await
             .unwrap();
 
-        let response = public_node_metrics(
-            State(state.clone()),
-            Path("node-public".to_owned()),
-            Ok(Query(PublicNodeMetricsQuery::default())),
-            Extension(RequestId(std::sync::Arc::from("metric-coverage-test"))),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let history = metrics_value(&state, "node-public", PublicMetricWindow::Live)
+            .await
+            .unwrap();
         let series = |metric: &str| {
             history["series"]
                 .as_array()
@@ -4153,10 +4162,7 @@ mod tests {
         seed_public_data(&state).await;
         seed_exact_head_transaction_fixtures(&state).await;
 
-        let response = public_networks(State(state), Extension(RequestId::for_test())).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let nodes = value[0]["nodes"].as_array().unwrap();
         let node = |node_id: &str| {
             nodes
@@ -4206,11 +4212,7 @@ mod tests {
         // chain row but value_revision=0 means they are not projected.
         seed_consensus_fixture(&state, "node-cons-error-none", "error", &now, 0, 0, 0, 0, 0).await;
 
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let nodes = value[0]["nodes"].as_array().unwrap();
         let node = |node_id: &str| {
             nodes
@@ -4287,14 +4289,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_node_detail(
-            State(state),
-            Path("node-cons-current-true".to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = node_value(&state, "node-cons-current-true").await.unwrap();
         assert_eq!(value["consensus"]["state"], "error");
         assert_eq!(value["consensus"]["validator"], true);
         assert_eq!(value["consensus"]["highestQcBlock"], 10);
@@ -4405,10 +4400,7 @@ mod tests {
                 .unwrap();
         }
 
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let node = value[0]["nodes"]
             .as_array()
             .unwrap()
@@ -4434,7 +4426,7 @@ mod tests {
         assert!(value[0]["peers"]["peerCount"].is_null());
         assert_eq!(value[0]["geo"]["state"], "disabled");
         assert!(value[0]["geo"]["countries"].is_null());
-        assert!(String::from_utf8_lossy(&body).find("203.0.113.7").is_none());
+        assert!(!value.to_string().contains("203.0.113.7"));
 
         let stale_received =
             crate::auth::format_rfc3339(crate::auth::now_utc() - time::Duration::minutes(5));
@@ -4445,14 +4437,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_node_detail(
-            State(state.clone()),
-            Path("node-public".to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = node_value(&state, "node-public").await.unwrap();
         assert_eq!(value["peers"]["freshness"], "stale");
         assert!(value["peers"]["staleSince"].is_string());
         assert_eq!(value["peers"]["receivedAt"], stale_received);
@@ -4462,14 +4447,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_node_detail(
-            State(state.clone()),
-            Path("node-public".to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = node_value(&state, "node-public").await.unwrap();
         assert_eq!(value["peers"]["state"], "error");
         assert_eq!(value["peers"]["receivedAt"], stale_received);
         assert_eq!(value["peers"]["peerCount"], 2);
@@ -4485,14 +4463,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_node_detail(
-            State(state),
-            Path("node-public".to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = node_value(&state, "node-public").await.unwrap();
         assert_eq!(value["peers"]["state"], "ok");
         assert_eq!(value["peers"]["peerCount"], 0);
         assert_eq!(value["peers"]["inboundCount"], 0);
@@ -4510,72 +4481,24 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         assert_eq!(value[0]["nodes"].as_array().unwrap().len(), 2);
-        let legacy_private = public_node_detail(
-            State(state.clone()),
-            Path("node-private".to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        assert_eq!(legacy_private.status(), StatusCode::OK);
+        assert!(node_value(&state, "node-private").await.is_some());
 
         let network = public_network_list(&state).await;
         assert_eq!(network["nodes"].as_array().unwrap().len(), 2);
         assert!(network.to_string().find("private-peer").is_none());
 
         for node_id in ["node-private", "node-retired", "node-unknown"] {
-            let expected = if node_id == "node-private" {
-                StatusCode::OK
-            } else {
-                StatusCode::NOT_FOUND
-            };
-            let history = public_node_history(
-                State(state.clone()),
-                Path(node_id.to_owned()),
-                Query(PublicBlockHistoryQuery {
-                    limit: None,
-                    from: None,
-                    to: None,
-                }),
-                Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-            )
-            .await;
+            let listed = node_id == "node-private";
             assert_eq!(
-                history.status(),
-                expected,
+                block_history_value(&state, node_id).await.is_some(),
+                listed,
                 "unexpected history visibility for {node_id}"
             );
-
-            let export = public_node_history_export(
-                State(state.clone()),
-                Path(node_id.to_owned()),
-                Query(PublicBlockHistoryQuery {
-                    limit: None,
-                    from: None,
-                    to: None,
-                }),
-                Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-            )
-            .await;
             assert_eq!(
-                export.status(),
-                expected,
-                "unexpected export visibility for {node_id}"
-            );
-
-            let peer_history = public_node_peer_history(
-                State(state.clone()),
-                Path(node_id.to_owned()),
-                Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-            )
-            .await;
-            assert_eq!(
-                peer_history.status(),
-                expected,
+                peer_history_value(&state, node_id).await.is_some(),
+                listed,
                 "unexpected peer history visibility for {node_id}"
             );
         }
@@ -4590,14 +4513,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_node_detail(
-            State(state.clone()),
-            Path("node-public".to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let node: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let node = node_value(&state, "node-public").await.unwrap();
         assert_eq!(node["processCpuPercent"], 12.5);
         assert_eq!(node["processMemoryPercent"], 25.0);
         assert_eq!(node["processStartedAt"], "2026-01-01T00:00:00Z");
@@ -4608,14 +4524,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_node_detail(
-            State(state),
-            Path("node-public".to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let node: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let node = node_value(&state, "node-public").await.unwrap();
         assert!(node["processCpuPercent"].is_null());
         assert!(node["processMemoryPercent"].is_null());
         assert!(node["processStartedAt"].is_null());
@@ -4627,17 +4536,7 @@ mod tests {
     async fn public_projection_includes_every_active_node_and_is_allowlisted() {
         let (_dir, state) = test_state().await;
         seed_public_data(&state).await;
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let status = response.status();
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "{}",
-            String::from_utf8_lossy(&bytes)
-        );
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let value = networks_value(&state).await;
         let nodes = value[0]["nodes"].as_array().unwrap();
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0]["nodeId"], "node-private");
@@ -4674,18 +4573,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let peer_history = public_node_peer_history(
-            State(state.clone()),
-            Path("node-public".to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        assert_eq!(peer_history.status(), StatusCode::OK);
-        let peer_history_body = to_bytes(peer_history.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let peer_history_value: serde_json::Value =
-            serde_json::from_slice(&peer_history_body).unwrap();
+        let peer_history_value = peer_history_value(&state, "node-public").await.unwrap();
         assert_eq!(peer_history_value["state"], "ok");
         assert_eq!(peer_history_value["freshness"], "stale");
         assert_eq!(
@@ -4694,7 +4582,7 @@ mod tests {
         );
         assert!(peer_history_value["hourly"].is_array());
         assert!(peer_history_value["fiveMinute"][0].get("peerId").is_none());
-        let peer_history_text = String::from_utf8_lossy(&peer_history_body);
+        let peer_history_text = peer_history_value.to_string();
         for forbidden in ["peer-a", "8.8.8.8", "provider-response"] {
             assert!(
                 !peer_history_text.contains(forbidden),
@@ -4723,20 +4611,8 @@ mod tests {
             );
         }
 
-        let legacy_private = public_node_detail(
-            State(state.clone()),
-            Path("node-private".to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        assert_eq!(legacy_private.status(), StatusCode::OK);
-        let retired = public_node_detail(
-            State(state),
-            Path("node-retired".to_owned()),
-            Extension(crate::http::RequestId(std::sync::Arc::from("test"))),
-        )
-        .await;
-        assert_eq!(retired.status(), StatusCode::NOT_FOUND);
+        assert!(node_value(&state, "node-private").await.is_some());
+        assert!(node_value(&state, "node-retired").await.is_none());
     }
 
     #[tokio::test]
@@ -4765,11 +4641,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response = public_networks(State(state), Extension(RequestId::for_test())).await;
-        let status = response.status();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let validator = &value[0]["validators"][0];
         assert_eq!(validator["nodeId"], "node-public");
         // A pre-activity success row is never fabricated into a canonical label
@@ -4808,10 +4680,7 @@ mod tests {
         .await;
 
         async fn first_validator(state: &AppState) -> serde_json::Value {
-            let response =
-                public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-            serde_json::from_slice::<serde_json::Value>(&body).unwrap()[0]["validators"][0].clone()
+            networks_value(state).await[0]["validators"][0].clone()
         }
 
         // A complete list that contains the Validator is ranked, with its own
@@ -4906,12 +4775,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let status = response.status();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let validator = &value[0]["validators"][0];
         assert_eq!(validator["rewardAmount"], "1234567.890123456789");
         assert_eq!(validator["state"], "fresh");
@@ -4922,10 +4786,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let validator = &value[0]["validators"][0];
         assert_eq!(validator["state"], "error");
         assert_eq!(validator["rewardAmount"], "1234567.890123456789");
@@ -4939,9 +4800,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_networks(State(state), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let validator = &value[0]["validators"][0];
         assert_eq!(validator["state"], "stale");
         assert_eq!(validator["rewardAmount"], "1234567.890123456789");
@@ -4983,10 +4842,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         assert_eq!(
             value[0]["validators"][0]["validatorNodeId"],
             "0xvalidator-a"
@@ -5009,9 +4865,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response = public_networks(State(state), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let validators = value[0]["validators"].as_array().unwrap();
         assert_eq!(
             validators.len(),
@@ -5043,10 +4897,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let validator = &value[0]["validators"][0];
         assert_eq!(validator["expectedBlockCount"], 110);
         assert_eq!(validator["blockRate"], "90.909091");
@@ -5059,10 +4910,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let validator = &value[0]["validators"][0];
         assert!(validator["blockRate"].is_null());
         assert_eq!(validator["blockRateState"], "not_applicable");
@@ -5074,10 +4922,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let validator = &value[0]["validators"][0];
         assert!(validator["blockRate"].is_null());
         assert_eq!(validator["blockRateState"], "unknown");
@@ -5106,10 +4951,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         assert_eq!(value[0]["validators"][0]["genBlocksRate"], "0");
 
         // A local failure retains the last-good source value and marks the
@@ -5118,10 +4960,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let validator = &value[0]["validators"][0];
         assert_eq!(validator["state"], "error");
         assert_eq!(validator["genBlocksRate"], "0");
@@ -5132,10 +4971,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         assert!(value[0]["validators"][0]["genBlocksRate"].is_null());
     }
 
@@ -5162,10 +4998,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         assert_eq!(
             value[0]["validators"][0]["delegationRewardPercentage"],
             "20"
@@ -5178,10 +5011,7 @@ mod tests {
                 .execute(state.db().pool())
                 .await
                 .unwrap();
-            let response =
-                public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let value = networks_value(&state).await;
             assert_eq!(
                 value[0]["validators"][0]["delegationRewardPercentage"],
                 boundary
@@ -5194,10 +5024,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let validator = &value[0]["validators"][0];
         assert_eq!(validator["state"], "error");
         assert_eq!(validator["delegationRewardPercentage"], "100");
@@ -5208,9 +5035,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_networks(State(state), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         assert!(value[0]["validators"][0]["delegationRewardPercentage"].is_null());
     }
 
@@ -5231,9 +5056,7 @@ mod tests {
         )
         .await;
 
-        let response = public_networks(State(state), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let validator = &value[0]["validators"][0];
         // Migration 0045 adds the columns without values: historical rows stay
         // Unknown rather than acquiring a fabricated rate.
@@ -5265,11 +5088,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response = public_networks(State(state), Extension(RequestId::for_test())).await;
-        let status = response.status();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let validator = &value[0]["validators"][0];
         assert_eq!(validator["state"], "not_configured");
         // A retained last-good block count survives the unconfigured source;
@@ -5302,17 +5121,12 @@ mod tests {
         // The default window (two 60s intervals) marks this last-good value
         // stale...
         let default_state = state.clone();
-        let response =
-            public_networks(State(default_state), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&default_state).await;
         assert_eq!(value[0]["validators"][0]["state"], "stale");
 
         // ... while a slower configured refresh keeps the same age fresh.
         let slow = state.with_validator_freshness_seconds(600);
-        let response = public_networks(State(slow), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&slow).await;
         assert_eq!(value[0]["validators"][0]["freshness"], "fresh");
         assert_eq!(value[0]["validators"][0]["state"], "fresh");
     }
@@ -5553,12 +5367,7 @@ mod tests {
                 .unwrap();
         }
 
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let status = response.status();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(&state).await;
         let find_node = |node_id: &str| {
             value[0]["nodes"]
                 .as_array()
@@ -5726,10 +5535,7 @@ mod tests {
     }
 
     async fn public_summary(state: &AppState, network_key: &str) -> serde_json::Value {
-        let response =
-            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let value = networks_value(state).await;
         value
             .as_array()
             .unwrap()
@@ -6090,49 +5896,222 @@ mod tests {
         assert_eq!(detail["validator"]["nodeId"], "node-public");
     }
 
-    /// A Validator read failure is a database failure: the detail no longer
-    /// drops the Validator and answers 200, and both routes echo the request's
-    /// own id.
+    /// A Validator or Link read failure is a database failure: the Node is
+    /// not answered without its Validator, and the list is not answered at
+    /// all.
     #[tokio::test]
-    async fn public_list_and_detail_answer_503_with_the_request_id_when_validators_are_unreadable()
-    {
+    async fn the_projection_is_unavailable_when_validators_or_links_are_unreadable() {
+        for table in ["current_validator_insights", "node_validator_links"] {
+            let (_dir, state) = test_state().await;
+            seed_public_data(&state).await;
+            let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+            seed_summary_validator(
+                &state,
+                "mainnet",
+                "node-public",
+                "validator-a",
+                "primary",
+                Some(100),
+                Some("10"),
+                Some(&now),
+            )
+            .await;
+            let detail = public_node_detail_value(&state, "node-public").await;
+            assert_eq!(detail["validator"]["validatorId"], "validator-a");
+
+            sqlx::query(&format!("ALTER TABLE {table} RENAME TO {table}_unreadable"))
+                .execute(state.db().pool())
+                .await
+                .unwrap();
+            let projection = public_projection(&state);
+            let at = crate::auth::now_utc();
+            assert!(projection.node("node-public", at).await.is_err(), "{table}");
+            assert!(projection.networks(at).await.is_err(), "{table}");
+        }
+    }
+
+    fn instant(timestamp: &str) -> time::OffsetDateTime {
+        time::OffsetDateTime::parse(timestamp, &time::format_description::well_known::Rfc3339)
+            .unwrap()
+    }
+
+    /// Every entry reads one Network's Active Node at a fixed instant and
+    /// answers nothing for its retired Node, so a guessed retired Node ID is
+    /// indistinguishable from an unknown one.
+    #[tokio::test]
+    async fn every_projection_entry_answers_the_active_node_and_not_the_retired_one() {
         let (_dir, state) = test_state().await;
         seed_public_data(&state).await;
-        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-        seed_summary_validator(
-            &state,
-            "mainnet",
-            "node-public",
-            "validator-a",
-            "primary",
-            Some(100),
-            Some("10"),
-            Some(&now),
-        )
-        .await;
-        let detail = public_node_detail_value(&state, "node-public").await;
-        assert_eq!(detail["validator"]["validatorId"], "validator-a");
+        let projection = public_projection(&state);
+        let at = instant("2026-01-01T00:00:30Z");
+        let range = || BlockHistoryRange {
+            from: None,
+            to: None,
+            limit: 50,
+        };
 
-        sqlx::query("DROP TABLE current_validator_insights")
+        let networks = projection.networks(at).await.unwrap();
+        let listed: Vec<&str> = networks[0]
+            .nodes
+            .iter()
+            .map(|node| node.node_id.as_str())
+            .collect();
+        assert_eq!(listed, ["node-private", "node-public"]);
+
+        for node_id in ["node-public", "node-retired"] {
+            let active = node_id == "node-public";
+            assert_eq!(
+                projection.node(node_id, at).await.unwrap().is_some(),
+                active,
+                "{node_id}"
+            );
+            assert_eq!(
+                projection
+                    .block_history(node_id, range(), at)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                active,
+                "{node_id}"
+            );
+            for window in [PublicMetricWindow::Live, PublicMetricWindow::OneHour] {
+                assert_eq!(
+                    projection
+                        .metrics(node_id, window, at)
+                        .await
+                        .unwrap()
+                        .is_some(),
+                    active,
+                    "{node_id} {window:?}"
+                );
+            }
+            assert_eq!(
+                projection
+                    .peer_history(node_id, at)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                active,
+                "{node_id}"
+            );
+        }
+    }
+
+    /// Freshness is judged at the instant the caller names, not at the
+    /// moment the query happens to run: the same stored Peer observation is
+    /// current shortly after it and stale a day later.
+    #[tokio::test]
+    async fn the_projection_judges_freshness_at_the_instant_it_is_given() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        sqlx::query("INSERT INTO component_status (agent_id, scope, scope_key, node_id, component_key, state, observed_at, received_at, observation_at, value_received_at, state_revision, value_revision) VALUES ('agent-public-test', 'node', 'node-public', 'node-public', 'peers', 'ok', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1)")
             .execute(state.db().pool())
             .await
             .unwrap();
-        let detail = public_node_detail(
-            State(state.clone()),
-            Path("node-public".to_owned()),
-            Extension(RequestId::for_test()),
-        )
-        .await;
-        assert_eq!(detail.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let body: serde_json::Value =
-            serde_json::from_slice(&to_bytes(detail.into_body(), usize::MAX).await.unwrap())
-                .unwrap();
-        assert_eq!(body["error"]["requestId"], "test");
-        let list = public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
-        assert_eq!(list.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let body: serde_json::Value =
-            serde_json::from_slice(&to_bytes(list.into_body(), usize::MAX).await.unwrap()).unwrap();
-        assert_eq!(body["error"]["requestId"], "test");
+        let projection = public_projection(&state);
+        let peers_at = |at: time::OffsetDateTime| {
+            let projection = &projection;
+            async move {
+                let node = projection.node("node-public", at).await.unwrap().unwrap();
+                let listed = projection.networks(at).await.unwrap()[0]
+                    .nodes
+                    .iter()
+                    .find(|node| node.node_id == "node-public")
+                    .unwrap()
+                    .peers
+                    .freshness
+                    .clone();
+                assert_eq!(
+                    serde_json::to_value(&node).unwrap()["peers"]["freshness"],
+                    listed
+                );
+                listed
+            }
+        };
+        assert_eq!(peers_at(instant("2026-01-01T00:00:05Z")).await, "current");
+        assert_eq!(peers_at(instant("2026-01-02T00:00:00Z")).await, "stale");
+    }
+
+    /// The route for one Public read: what every Node route shares is how it
+    /// turns the projection's answer into a status.
+    async fn node_route(state: &AppState, route: &str, node_id: &str) -> Response {
+        let request_id = || Extension(RequestId(std::sync::Arc::from("route-status")));
+        let state = State(state.clone());
+        let path = Path(node_id.to_owned());
+        let range = || {
+            Query(PublicBlockHistoryQuery {
+                limit: None,
+                from: None,
+                to: None,
+            })
+        };
+        match route {
+            "detail" => public_node_detail(state, path, request_id()).await,
+            "history" => public_node_history(state, path, range(), request_id()).await,
+            "export" => public_node_history_export(state, path, range(), request_id()).await,
+            "metrics" => {
+                let window = Ok(Query(PublicNodeMetricsQuery::default()));
+                public_node_metrics(state, path, window, request_id()).await
+            }
+            "peer-history" => public_node_peer_history(state, path, request_id()).await,
+            other => unreachable!("no Public Node route {other}"),
+        }
+    }
+
+    async fn error_request_id(response: Response) -> serde_json::Value {
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["error"]["requestId"].clone()
+    }
+
+    /// Each Public route answers the projection's three outcomes the same
+    /// way: 200 with the body, 404 for a Node outside the projection and 503
+    /// when the database cannot be read, both errors echoing the request's
+    /// own id. Only a 200 export is offered as a download.
+    #[tokio::test]
+    async fn public_routes_map_the_projection_answer_to_a_status_with_the_request_id() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let routes = ["detail", "history", "export", "metrics", "peer-history"];
+        let list = || {
+            public_networks(
+                State(state.clone()),
+                Extension(RequestId(std::sync::Arc::from("route-status"))),
+            )
+        };
+
+        assert_eq!(list().await.status(), StatusCode::OK);
+        for route in routes {
+            let found = node_route(&state, route, "node-public").await;
+            assert_eq!(found.status(), StatusCode::OK, "{route}");
+            assert_eq!(
+                found.headers().get(header::CONTENT_DISPOSITION).is_some(),
+                route == "export",
+                "{route}"
+            );
+            for node_id in ["node-retired", "node-unknown"] {
+                let missing = node_route(&state, route, node_id).await;
+                assert_eq!(missing.status(), StatusCode::NOT_FOUND, "{route} {node_id}");
+                assert!(missing.headers().get(header::CONTENT_DISPOSITION).is_none());
+                assert_eq!(error_request_id(missing).await, "route-status");
+            }
+        }
+
+        sqlx::query("ALTER TABLE nodes RENAME TO nodes_unreadable")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let unavailable = list().await;
+        assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error_request_id(unavailable).await, "route-status");
+        for route in routes {
+            let unavailable = node_route(&state, route, "node-public").await;
+            assert_eq!(
+                unavailable.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{route}"
+            );
+            assert_eq!(error_request_id(unavailable).await, "route-status");
+        }
     }
 
     #[tokio::test]
