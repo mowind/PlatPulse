@@ -892,7 +892,6 @@ struct PublicValidatorRow {
     validator_id: String,
     validator_node_id: String,
     display_name: Option<String>,
-    node_id: Option<String>,
     source: Option<String>,
     outcome: Option<String>,
     provider_timestamp: Option<String>,
@@ -941,24 +940,49 @@ fn public_validator_rank(
     }
 }
 
+/// The insights of the Validators that `links` reference in one Network, each
+/// carrying the Node of its most recent Link (the lowest Link ID among equally
+/// recent ones). `links` are the effective automatic Links of the Active Nodes
+/// being projected, so a Validator linked only to a retired Node is not
+/// eligible.
 async fn public_validator_insights(
     state: &AppState,
     network_key: &str,
+    links: &[validator::EffectiveAutomaticLink],
 ) -> Result<Vec<PublicValidatorInsight>, sqlx::Error> {
-    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+    let mut linked_nodes: std::collections::BTreeMap<&str, &validator::EffectiveAutomaticLink> =
+        std::collections::BTreeMap::new();
+    for link in links {
+        let newer = linked_nodes
+            .get(link.validator_id.as_str())
+            .is_none_or(|current| {
+                (
+                    link.valid_from.as_str(),
+                    std::cmp::Reverse(link.link_id.as_str()),
+                ) > (
+                    current.valid_from.as_str(),
+                    std::cmp::Reverse(current.link_id.as_str()),
+                )
+            });
+        if newer {
+            linked_nodes.insert(link.validator_id.as_str(), link);
+        }
+    }
     let rows = sqlx::query_as::<_, PublicValidatorRow>(
-        "SELECT v.validator_id, v.validator_node_id, v.display_name, (SELECT n2.node_id FROM node_validator_links l2 JOIN nodes n2 ON n2.node_id = l2.node_id WHERE l2.validator_id = v.validator_id AND l2.origin = 'automatic' AND l2.valid_from <= $1 AND (l2.valid_until IS NULL OR l2.valid_until > $2) AND n2.lifecycle = 'active' ORDER BY l2.valid_from DESC, l2.link_id LIMIT 1) AS node_id, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.last_good_verdict_outcome, i.last_good_verdict_received_at, i.rank, i.rank_outcome, i.rank_last_good_received_at, i.rank_cohort_size, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = $3 AND EXISTS (SELECT 1 FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.validator_id = v.validator_id AND l.origin = 'automatic' AND l.valid_from <= $4 AND (l.valid_until IS NULL OR l.valid_until > $5) AND n.lifecycle = 'active') ORDER BY v.validator_node_id, v.validator_id",
+        "SELECT v.validator_id, v.validator_node_id, v.display_name, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.last_good_verdict_outcome, i.last_good_verdict_received_at, i.rank, i.rank_outcome, i.rank_last_good_received_at, i.rank_cohort_size, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = $1 ORDER BY v.validator_node_id, v.validator_id",
     )
-    .bind(&now)
-    .bind(&now)
     .bind(network_key)
-    .bind(&now)
-    .bind(&now)
     .fetch_all(state.db().pool())
     .await?;
     Ok(rows
         .into_iter()
-        .map(|row| {
+        .filter_map(|row| {
+            let node_id = linked_nodes
+                .get(row.validator_id.as_str())
+                .map(|link| link.node_id.clone())?;
+            Some((row, node_id))
+        })
+        .map(|(row, node_id)| {
             let freshness = validator::freshness(
                 row.last_good_received_at.as_deref(),
                 crate::auth::now_utc(),
@@ -999,7 +1023,7 @@ async fn public_validator_insights(
                 validator_id: row.validator_id,
                 validator_node_id: row.validator_node_id,
                 display_name: row.display_name,
-                node_id: row.node_id,
+                node_id: Some(node_id),
                 state: state.to_owned(),
                 freshness: freshness.to_owned(),
                 source: row.source.or_else(|| Some("disabled".to_owned())),
@@ -1033,42 +1057,20 @@ async fn public_validator_insights(
         .collect())
 }
 
-/// One effective explicit Node Validator Link for a public, active Node.
-/// Activity is associated per Node, so a Validator linked concurrently to
-/// several Nodes is visible on every one of them (#100).
-#[derive(Debug, Clone, sqlx::FromRow)]
-struct EffectiveLinkRow {
-    node_id: String,
-    validator_id: String,
-}
-
-async fn effective_public_links(
+/// The effective automatic Links of the listed Active Nodes. Activity is
+/// associated per Node, so a Validator linked concurrently to several Nodes is
+/// visible on every one of them.
+async fn listed_node_links(
     state: &AppState,
-    node_id: Option<&str>,
-    network_key: Option<&str>,
-) -> Result<Vec<EffectiveLinkRow>, sqlx::Error> {
-    let now = crate::auth::format_rfc3339(crate::auth::now_utc());
-    let mut sql = String::from(
-        "SELECT l.node_id, l.validator_id FROM node_validator_links l JOIN nodes n ON n.node_id = l.node_id WHERE l.origin = 'automatic' AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?) AND n.lifecycle = 'active'",
-    );
-    if node_id.is_some() {
-        sql.push_str(" AND l.node_id = ?");
-    }
-    if network_key.is_some() {
-        sql.push_str(" AND n.network_key = ?");
-    }
-    sql.push_str(" ORDER BY l.node_id, l.link_id");
-    let sql = crate::database::number_placeholders(&sql);
-    let mut query = sqlx::query_as::<_, EffectiveLinkRow>(&sql)
-        .bind(&now)
-        .bind(&now);
-    if let Some(node_id) = node_id {
-        query = query.bind(node_id);
-    }
-    if let Some(network_key) = network_key {
-        query = query.bind(network_key);
-    }
-    query.fetch_all(state.db().pool()).await
+    at: time::OffsetDateTime,
+    scope: validator::LinkScope<'_>,
+    nodes: &[PublicNode],
+) -> Result<Vec<validator::EffectiveAutomaticLink>, sqlx::Error> {
+    let links = validator::effective_automatic_links(state.db().pool(), at, scope).await?;
+    Ok(links
+        .into_iter()
+        .filter(|link| nodes.iter().any(|node| node.node_id == link.node_id))
+        .collect())
 }
 
 /// Attach each Node's automatically identified Validator insight. Only an
@@ -1078,7 +1080,7 @@ async fn effective_public_links(
 /// (#173).
 fn associate_node_validators(
     validators: &[PublicValidatorInsight],
-    links: &[EffectiveLinkRow],
+    links: &[validator::EffectiveAutomaticLink],
     nodes: &mut [PublicNode],
 ) {
     for node in nodes.iter_mut() {
@@ -3416,24 +3418,25 @@ pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
         for node in &mut network.nodes {
             node.peer_countries = geo_readings.node_peer_countries(&node.node_id);
         }
-        match public_validator_insights(&state, &network.network_key).await {
-            Ok(validators) => {
-                match effective_public_links(&state, None, Some(&network.network_key)).await {
-                    Ok(links) => {
-                        network.validators = validators;
-                        associate_node_validators(&network.validators, &links, &mut network.nodes);
-                        network.validator_summary =
-                            public_validator_summary(&network.validators, &network.nodes);
-                    }
-                    Err(_) => {
-                        return error_response(
-                            "unknown",
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "unavailable",
-                            "server database is unavailable",
-                        );
-                    }
-                }
+        let links = listed_node_links(
+            &state,
+            now,
+            validator::LinkScope::Network(&network.network_key),
+            &network.nodes,
+        )
+        .await;
+        let validators = match links {
+            Ok(links) => public_validator_insights(&state, &network.network_key, &links)
+                .await
+                .map(|validators| (validators, links)),
+            Err(error) => Err(error),
+        };
+        match validators {
+            Ok((validators, links)) => {
+                network.validators = validators;
+                associate_node_validators(&network.validators, &links, &mut network.nodes);
+                network.validator_summary =
+                    public_validator_summary(&network.validators, &network.nodes);
             }
             Err(_) => {
                 return error_response(
@@ -3479,22 +3482,19 @@ pub(crate) async fn public_node_detail(
                 );
             };
             let node_evidence = evidence.remove(&row.node_id).unwrap_or_default();
-            let (_, mut node) = public_node(row, &node_evidence, crate::auth::now_utc());
+            let now = crate::auth::now_utc();
+            let (_, node) = public_node(row, &node_evidence, now);
             let network_key = node.network_key.clone();
-            if let Ok(links) = effective_public_links(&state, Some(&node.node_id), None).await {
-                if let Some(link) = links.first() {
-                    if let Ok(validators) = public_validator_insights(&state, &network_key).await {
-                        if let Some(validator) = validators
-                            .into_iter()
-                            .find(|validator| validator.validator_id == link.validator_id)
-                        {
-                            let mut associated = validator;
-                            associated.node_id = Some(link.node_id.clone());
-                            node.validator = Some(associated);
-                        }
-                    }
+            let mut nodes = [node];
+            let scope = validator::LinkScope::Node(&nodes[0].node_id);
+            if let Ok(links) = listed_node_links(&state, now, scope, &nodes).await {
+                if let Ok(validators) =
+                    public_validator_insights(&state, &network_key, &links).await
+                {
+                    associate_node_validators(&validators, &links, &mut nodes);
                 }
             }
+            let [mut node] = nodes;
             // The Node Peer Country View and this Node's compact buckets come
             // from one read of the same retained cache rows the Network
             // projection uses, so the Node reading is exactly what Home shows
@@ -8466,6 +8466,56 @@ mod tests {
         assert_eq!(after["validatorSummary"]["blocks"]["knownSum"], "5");
         assert_eq!(after["validatorSummary"]["blocks"]["state"], "complete");
         assert_eq!(after["validatorSummary"]["rewards"]["knownSum"], "2");
+    }
+
+    #[tokio::test]
+    async fn admin_identity_and_public_detail_read_the_same_effective_link() {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        seed_summary_validator(
+            &state,
+            "mainnet",
+            "node-public",
+            "validator-a",
+            "primary",
+            Some(100),
+            Some("10"),
+            Some(&now),
+        )
+        .await;
+        // A's interval ends exactly where B's begins: on the half-open
+        // interval only B is effective now.
+        sqlx::query("UPDATE node_validator_links SET valid_until = '2026-02-01T00:00:00Z' WHERE validator_id = 'validator-a'")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) VALUES ('validator-b', 'mainnet', '0xvalidator-b', 'validator-b', $1, $2)")
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) VALUES ('link-validator-b', 'node-public', 'validator-b', 'primary', 'automatic', '2026-02-01T00:00:00Z', NULL, $1, $2)")
+            .bind(&now)
+            .bind(&now)
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        let admin =
+            crate::validator::list_node_validator_identities(state.db(), Some("node-public"))
+                .await
+                .unwrap();
+        assert_eq!(admin.len(), 1);
+        assert_eq!(admin[0].validator_id.as_deref(), Some("validator-b"));
+        assert_eq!(
+            admin[0].validator_node_key.as_deref(),
+            Some("0xvalidator-b")
+        );
+        let detail = public_node_detail_value(&state, "node-public").await;
+        assert_eq!(detail["validator"]["validatorId"], "validator-b");
+        assert_eq!(detail["validator"]["nodeId"], "node-public");
     }
 
     #[tokio::test]
