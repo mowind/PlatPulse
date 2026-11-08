@@ -1,8 +1,11 @@
 //! Automatic Validator identity discovery from observed P2P public keys.
 
+use std::collections::BTreeMap;
+
 use crate::auth::{format_rfc3339, now_utc};
 use crate::database::ServerDatabase;
 use sqlx::{Any, FromRow, Transaction};
+use time::OffsetDateTime;
 
 use super::error::ValidatorError;
 use super::registry::parse_timestamp;
@@ -62,7 +65,7 @@ pub fn automatic_identity_reason(state: Option<&str>) -> Option<String> {
 /// evidence state (#173) plus the currently open automatic Link interval.
 /// Nothing here is a manual role, an ownership claim, or a consensus-membership
 /// statement.
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone)]
 pub struct NodeValidatorIdentityRecord {
     pub node_id: String,
     pub node_display_name: Option<String>,
@@ -90,32 +93,120 @@ impl NodeValidatorIdentityRecord {
     }
 }
 
+/// Which Nodes a read of effective automatic Links covers.
+#[derive(Debug, Clone, Copy)]
+pub enum LinkScope<'a> {
+    AllNodes,
+    Node(&'a str),
+    /// The Nodes registered in one Network.
+    Network(&'a str),
+}
+
+/// One Node's automatic Node Validator Link effective at an instant.
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct EffectiveAutomaticLink {
+    pub link_id: String,
+    pub node_id: String,
+    pub validator_id: String,
+    /// The linked Validator's own chain identity key.
+    pub validator_node_key: String,
+    pub valid_from: String,
+}
+
+/// The automatic Node Validator Links effective at `at`, ordered by Node. This
+/// is the one definition Public and Admin both read, so they never disagree
+/// about which Validator a Node corresponds to.
+///
+/// An interval is effective on `[valid_from, valid_until)` and a manual Link is
+/// never selected. The overlap triggers of both Storage Backends allow at most
+/// one automatic interval per Node at any instant, so each Node appears at most
+/// once. Lifecycle is not filtered: a retired Node keeps its interval, and the
+/// Public Projection decides which Nodes it shows.
+pub async fn effective_automatic_links<'c, E>(
+    executor: E,
+    at: OffsetDateTime,
+    scope: LinkScope<'_>,
+) -> Result<Vec<EffectiveAutomaticLink>, sqlx::Error>
+where
+    E: sqlx::Executor<'c, Database = Any>,
+{
+    let at = format_rfc3339(at);
+    let mut sql = String::from(
+        "SELECT l.link_id, l.node_id, l.validator_id, v.validator_node_id AS validator_node_key, l.valid_from FROM node_validator_links l JOIN validators v ON v.validator_id = l.validator_id WHERE l.origin = 'automatic' AND l.valid_from <= ? AND (l.valid_until IS NULL OR l.valid_until > ?)",
+    );
+    match scope {
+        LinkScope::AllNodes => {}
+        LinkScope::Node(_) => sql.push_str(" AND l.node_id = ?"),
+        LinkScope::Network(_) => sql
+            .push_str(" AND l.node_id IN (SELECT n.node_id FROM nodes n WHERE n.network_key = ?)"),
+    }
+    sql.push_str(" ORDER BY l.node_id");
+    let sql = crate::database::number_placeholders(&sql);
+    let query = sqlx::query_as::<_, EffectiveAutomaticLink>(&sql)
+        .bind(&at)
+        .bind(&at);
+    match scope {
+        LinkScope::AllNodes => query.fetch_all(executor).await,
+        LinkScope::Node(key) | LinkScope::Network(key) => query.bind(key).fetch_all(executor).await,
+    }
+}
+
+#[derive(Debug, FromRow)]
+struct IdentityStatusRow {
+    node_id: String,
+    node_display_name: Option<String>,
+    network_key: String,
+    lifecycle: String,
+    state: Option<String>,
+    observed_node_key: Option<String>,
+    evaluated_at: Option<String>,
+}
+
 /// List each Node's automatic Validator identity coverage, optionally narrowed
-/// to one Node. The open automatic interval is selected with the same temporal
-/// predicate the Public projection uses, so Admin never reports a
-/// correspondence that Public would not, or the reverse.
+/// to one Node. The open automatic interval comes from
+/// [`effective_automatic_links`], the read the Public Projection uses, so Admin
+/// never reports a correspondence that Public would not, or the reverse.
 pub async fn list_node_validator_identities(
     db: &ServerDatabase,
     node_id: Option<&str>,
 ) -> Result<Vec<NodeValidatorIdentityRecord>, ValidatorError> {
-    let now = format_rfc3339(now_utc());
     let mut sql = String::from(
-        "SELECT n.node_id, n.display_name AS node_display_name, n.network_key, n.lifecycle, s.state, s.observed_node_key, s.updated_at AS evaluated_at, l.validator_id, v.validator_node_id AS validator_node_key FROM nodes n LEFT JOIN node_validator_identity_status s ON s.node_id = n.node_id LEFT JOIN node_validator_links l ON l.link_id = (SELECT l2.link_id FROM node_validator_links l2 WHERE l2.node_id = n.node_id AND l2.origin = 'automatic' AND l2.valid_from <= ? AND (l2.valid_until IS NULL OR l2.valid_until > ?) ORDER BY l2.valid_from DESC, l2.link_id DESC LIMIT 1) LEFT JOIN validators v ON v.validator_id = l.validator_id",
+        "SELECT n.node_id, n.display_name AS node_display_name, n.network_key, n.lifecycle, s.state, s.observed_node_key, s.updated_at AS evaluated_at FROM nodes n LEFT JOIN node_validator_identity_status s ON s.node_id = n.node_id",
     );
     if node_id.is_some() {
-        sql.push_str(" WHERE n.node_id = ?");
+        sql.push_str(" WHERE n.node_id = $1");
     }
     sql.push_str(" ORDER BY n.network_key, n.node_id");
-    let sql = crate::database::number_placeholders(&sql);
-    let query = sqlx::query_as::<_, NodeValidatorIdentityRecord>(&sql)
-        .bind(&now)
-        .bind(&now);
+    let query = sqlx::query_as::<_, IdentityStatusRow>(&sql);
     let rows = if let Some(node_id) = node_id {
         query.bind(node_id).fetch_all(db.pool()).await?
     } else {
         query.fetch_all(db.pool()).await?
     };
-    Ok(rows)
+    let scope = node_id.map_or(LinkScope::AllNodes, LinkScope::Node);
+    let mut links: BTreeMap<String, EffectiveAutomaticLink> =
+        effective_automatic_links(db.pool(), now_utc(), scope)
+            .await?
+            .into_iter()
+            .map(|link| (link.node_id.clone(), link))
+            .collect();
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let link = links.remove(&row.node_id);
+            NodeValidatorIdentityRecord {
+                node_id: row.node_id,
+                node_display_name: row.node_display_name,
+                network_key: row.network_key,
+                lifecycle: row.lifecycle,
+                state: row.state,
+                observed_node_key: row.observed_node_key,
+                evaluated_at: row.evaluated_at,
+                validator_id: link.as_ref().map(|link| link.validator_id.clone()),
+                validator_node_key: link.map(|link| link.validator_node_key),
+            }
+        })
+        .collect())
 }
 
 /// One Active Node's automatic-identity inputs: the observed Network Identity
@@ -348,6 +439,7 @@ mod tests {
 
     use crate::database::ServerDatabase;
 
+    use crate::network::create_network;
     use crate::validator::registry::{create_link, create_validator};
     use crate::validator::test_helpers::test_db;
 
@@ -653,6 +745,178 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(validators, 2, "the two chain identities stay independent");
+    }
+
+    async fn insert_link(
+        db: &ServerDatabase,
+        link_id: &str,
+        node_id: &str,
+        validator_id: &str,
+        origin: &str,
+        valid_from: &str,
+        valid_until: Option<&str>,
+    ) {
+        // The Validator lives in its Node's Network, as the write path requires.
+        sqlx::query("INSERT INTO validators (validator_id, network_key, validator_node_id, display_name, created_at, updated_at) SELECT $1, n.network_key, $2, NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z' FROM nodes n WHERE n.node_id = $3 ON CONFLICT DO NOTHING")
+            .bind(validator_id)
+            .bind(format!("0x{validator_id}"))
+            .bind(node_id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO node_validator_links (link_id, node_id, validator_id, role, origin, valid_from, valid_until, created_at, updated_at) VALUES ($1, $2, $3, NULL, $4, $5, $6, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .bind(link_id)
+            .bind(node_id)
+            .bind(validator_id)
+            .bind(origin)
+            .bind(valid_from)
+            .bind(valid_until)
+            .execute(db.pool())
+            .await
+            .unwrap();
+    }
+
+    async fn insert_node(db: &ServerDatabase, node_id: &str, network_key: &str, lifecycle: &str) {
+        sqlx::query("INSERT INTO nodes (node_id, agent_id, network_key, lifecycle, visibility, inventory_revision, first_seen_at, updated_at, rpc_endpoint) VALUES ($1, 'agent-1', $2, $3, 'private', 1, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', 'http://127.0.0.1:1')")
+            .bind(node_id)
+            .bind(network_key)
+            .bind(lifecycle)
+            .execute(db.pool())
+            .await
+            .unwrap();
+    }
+
+    fn instant(value: &str) -> OffsetDateTime {
+        parse_timestamp(value).unwrap()
+    }
+
+    fn linked(links: &[EffectiveAutomaticLink]) -> Vec<(&str, &str)> {
+        links
+            .iter()
+            .map(|link| (link.node_id.as_str(), link.validator_id.as_str()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn effective_automatic_links_use_the_half_open_interval_and_skip_manual_links() {
+        let (_dir, db) = test_db().await;
+        // validator-a holds [Jan, Feb) and validator-b holds [Feb, open) on
+        // node-1; a manual Link for validator-m covers the whole period.
+        insert_link(
+            &db,
+            "link-a",
+            "node-1",
+            "validator-a",
+            "automatic",
+            "2026-01-01T00:00:00Z",
+            Some("2026-02-01T00:00:00Z"),
+        )
+        .await;
+        insert_link(
+            &db,
+            "link-b",
+            "node-1",
+            "validator-b",
+            "automatic",
+            "2026-02-01T00:00:00Z",
+            None,
+        )
+        .await;
+        insert_link(
+            &db,
+            "link-m",
+            "node-1",
+            "validator-m",
+            "manual",
+            "2025-12-01T00:00:00Z",
+            None,
+        )
+        .await;
+        let pool = db.pool();
+        let at = |value: &str| {
+            let at = instant(value);
+            async move {
+                effective_automatic_links(pool, at, LinkScope::AllNodes)
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // Before the first automatic interval only the manual Link exists.
+        assert!(at("2025-12-31T23:59:59Z").await.is_empty());
+        // valid_from is inclusive.
+        assert_eq!(
+            linked(&at("2026-01-01T00:00:00Z").await),
+            vec![("node-1", "validator-a")]
+        );
+        assert_eq!(
+            linked(&at("2026-01-31T23:59:59Z").await),
+            vec![("node-1", "validator-a")]
+        );
+        // valid_until is exclusive: at the boundary only the next interval holds.
+        let boundary = at("2026-02-01T00:00:00Z").await;
+        assert_eq!(linked(&boundary), vec![("node-1", "validator-b")]);
+        assert_eq!(boundary[0].link_id, "link-b");
+        assert_eq!(boundary[0].validator_node_key, "0xvalidator-b");
+        assert_eq!(boundary[0].valid_from, "2026-02-01T00:00:00Z");
+    }
+
+    #[tokio::test]
+    async fn effective_automatic_links_keep_retired_nodes_and_honour_the_scope() {
+        let (_dir, db) = test_db().await;
+        create_network(
+            &db,
+            "platon-testnet",
+            "Testnet",
+            "0x0000000000000000000000000000000000000000000000000000000000000002",
+            2,
+            2,
+            "lat",
+        )
+        .await
+        .unwrap();
+        insert_node(&db, "node-2", "platon-mainnet", "retired").await;
+        insert_node(&db, "node-3", "platon-testnet", "active").await;
+        for (node, validator) in [
+            ("node-1", "validator-1"),
+            ("node-2", "validator-2"),
+            ("node-3", "validator-3"),
+        ] {
+            insert_link(
+                &db,
+                &format!("link-{node}"),
+                node,
+                validator,
+                "automatic",
+                "2026-01-01T00:00:00Z",
+                None,
+            )
+            .await;
+        }
+        let at = instant("2026-03-01T00:00:00Z");
+        let pool = db.pool();
+        let read = |scope: LinkScope<'static>| async move {
+            effective_automatic_links(pool, at, scope).await.unwrap()
+        };
+
+        // Lifecycle is the Public Projection's decision, not this read's.
+        assert_eq!(
+            linked(&read(LinkScope::AllNodes).await),
+            vec![
+                ("node-1", "validator-1"),
+                ("node-2", "validator-2"),
+                ("node-3", "validator-3"),
+            ]
+        );
+        assert_eq!(
+            linked(&read(LinkScope::Network("platon-mainnet")).await),
+            vec![("node-1", "validator-1"), ("node-2", "validator-2")]
+        );
+        assert_eq!(
+            linked(&read(LinkScope::Node("node-3")).await),
+            vec![("node-3", "validator-3")]
+        );
+        assert!(read(LinkScope::Node("node-unknown")).await.is_empty());
     }
 
     #[tokio::test]

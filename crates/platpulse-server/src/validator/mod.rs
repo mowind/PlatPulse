@@ -31,8 +31,9 @@ pub use analytics::{
 pub use decimal::{accumulate_decimal, cumulative_block_rate};
 pub use error::ValidatorError;
 pub use identity::{
-    IdentityDiscoverySummary, NodeValidatorIdentityRecord, automatic_identity_reason,
-    discover_automatic_links, list_node_validator_identities, observed_p2p_public_key,
+    EffectiveAutomaticLink, IdentityDiscoverySummary, LinkScope, NodeValidatorIdentityRecord,
+    automatic_identity_reason, discover_automatic_links, effective_automatic_links,
+    list_node_validator_identities, observed_p2p_public_key,
 };
 pub use insight::{
     ValidatorCounterHistoryRecord, ValidatorInsightRecord, ValidatorLinkContextRecord,
