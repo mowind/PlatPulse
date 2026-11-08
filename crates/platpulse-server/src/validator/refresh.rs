@@ -740,8 +740,11 @@ mod tests {
     }
 
     async fn negative_verdict_public_insight(state: &crate::http::AppState) -> Value {
-        let response =
-            crate::http::public::public_networks(axum::extract::State(state.clone())).await;
+        let response = crate::http::public::public_networks(
+            axum::extract::State(state.clone()),
+            axum::Extension(crate::http::RequestId::for_test()),
+        )
+        .await;
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await

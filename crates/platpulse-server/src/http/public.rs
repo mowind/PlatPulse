@@ -35,7 +35,7 @@ use crate::http::{
     AppState, AuthenticatedSession, ClientIp, ROUTE_GROUP_HEADER, RequestId, api_not_found,
 };
 use crate::node_currency;
-use crate::validator;
+use crate::public_projection::{PublicProjection, Unavailable};
 
 #[utoipa::path(
     get,
@@ -570,26 +570,6 @@ pub struct PublicGeoInsight {
     pub attribution: Option<String>,
 }
 
-const PUBLIC_GEO_ERROR: &str = "Country data is currently unavailable";
-
-fn unknown_public_geo_insight() -> PublicGeoInsight {
-    PublicGeoInsight {
-        state: "disabled".to_owned(),
-        last_good_at: None,
-        database_age_seconds: None,
-        stale_since: None,
-        error_reason: None,
-        scope: "unavailable".to_owned(),
-        known_country_count: None,
-        unknown_country_count: None,
-        available_peer_count: None,
-        unknown_without_remote_ip_count: None,
-        unknown_with_public_ip_count: None,
-        countries: None,
-        attribution: None,
-    }
-}
-
 /// The compact per-Node country buckets a Network response carries on every
 /// listed Node. They are the source of the Node Selection Geo Aggregate: the
 /// browser sums the buckets of the Nodes that match the current filters, so a
@@ -610,18 +590,6 @@ pub struct PublicNodePeerCountries {
     pub unknown_without_remote_ip_count: Option<i64>,
     pub unknown_with_public_ip_count: Option<i64>,
     pub countries: Vec<PublicCountryCount>,
-}
-
-fn unknown_public_node_peer_countries() -> PublicNodePeerCountries {
-    PublicNodePeerCountries {
-        scope: "unavailable".to_owned(),
-        known_country_count: None,
-        unknown_country_count: None,
-        available_peer_count: None,
-        unknown_without_remote_ip_count: None,
-        unknown_with_public_ip_count: None,
-        countries: Vec::new(),
-    }
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
@@ -649,22 +617,6 @@ pub struct PublicPeerInsight {
     pub trusted_count: Option<i64>,
     pub static_count: Option<i64>,
     pub consensus_count: Option<i64>,
-}
-
-fn unknown_public_peer_insight() -> PublicPeerInsight {
-    PublicPeerInsight {
-        state: "unknown".to_owned(),
-        freshness: "unknown".to_owned(),
-        observed_at: None,
-        received_at: None,
-        stale_since: None,
-        peer_count: None,
-        inbound_count: None,
-        outbound_count: None,
-        trusted_count: None,
-        static_count: None,
-        consensus_count: None,
-    }
 }
 
 /// Node-scoped last-good consensus state projected from Agent reports.
@@ -885,293 +837,6 @@ pub struct PublicValidatorSummary {
     /// Active Nodes without any effective Link, reported separately so an
     /// unlinked Node is never mistaken for a zero-valued Validator.
     pub unlinked_node_count: i64,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct PublicValidatorRow {
-    validator_id: String,
-    validator_node_id: String,
-    display_name: Option<String>,
-    source: Option<String>,
-    outcome: Option<String>,
-    provider_timestamp: Option<String>,
-    activity: Option<String>,
-    last_good_received_at: Option<String>,
-    last_good_verdict_outcome: Option<String>,
-    last_good_verdict_received_at: Option<String>,
-    rank: Option<i64>,
-    rank_outcome: Option<String>,
-    rank_last_good_received_at: Option<String>,
-    rank_cohort_size: Option<i64>,
-    stake_amount: Option<String>,
-    reward_amount: Option<String>,
-    reward_rate: Option<String>,
-    delegation_reward_percentage: Option<String>,
-    delegator_count: Option<i64>,
-    epoch: Option<i64>,
-    block_count: Option<i64>,
-    expected_block_count: Option<i64>,
-    gen_blocks_rate: Option<String>,
-    counter_state: Option<String>,
-}
-
-/// Map the linked Validator's independent Network ranking state. Only a
-/// complete successful list establishes `ranked` or `unranked`; a failed or
-/// incomplete fetch retains a last-good rank and reports stale freshness,
-/// while a failure without one is `unknown` and never `unranked` (#158).
-fn public_validator_rank(
-    rank_outcome: Option<&str>,
-    rank: Option<i64>,
-    last_good_received_at: Option<&str>,
-    now: time::OffsetDateTime,
-    stale_after_seconds: i64,
-) -> (String, String) {
-    // A failed fetch with a retained value is stale; without one it is unknown.
-    let retained_freshness = if rank.is_some() { "stale" } else { "unknown" };
-    match rank_outcome {
-        Some("success") => (
-            if rank.is_some() { "ranked" } else { "unranked" }.to_owned(),
-            validator::freshness(last_good_received_at, now, stale_after_seconds).to_owned(),
-        ),
-        Some("error") => ("error".to_owned(), retained_freshness.to_owned()),
-        Some("not_configured") => ("not_configured".to_owned(), retained_freshness.to_owned()),
-        Some("unsupported") => ("unsupported".to_owned(), retained_freshness.to_owned()),
-        _ => ("unknown".to_owned(), "unknown".to_owned()),
-    }
-}
-
-/// The insights of the Validators that `links` reference in one Network, each
-/// carrying the Node of its most recent Link (the lowest Link ID among equally
-/// recent ones). `links` are the effective automatic Links of the Active Nodes
-/// being projected, so a Validator linked only to a retired Node is not
-/// eligible.
-async fn public_validator_insights(
-    state: &AppState,
-    network_key: &str,
-    links: &[validator::EffectiveAutomaticLink],
-) -> Result<Vec<PublicValidatorInsight>, sqlx::Error> {
-    let mut linked_nodes: std::collections::BTreeMap<&str, &validator::EffectiveAutomaticLink> =
-        std::collections::BTreeMap::new();
-    for link in links {
-        let newer = linked_nodes
-            .get(link.validator_id.as_str())
-            .is_none_or(|current| {
-                (
-                    link.valid_from.as_str(),
-                    std::cmp::Reverse(link.link_id.as_str()),
-                ) > (
-                    current.valid_from.as_str(),
-                    std::cmp::Reverse(current.link_id.as_str()),
-                )
-            });
-        if newer {
-            linked_nodes.insert(link.validator_id.as_str(), link);
-        }
-    }
-    let rows = sqlx::query_as::<_, PublicValidatorRow>(
-        "SELECT v.validator_id, v.validator_node_id, v.display_name, i.source, i.outcome, i.provider_timestamp, i.activity, i.last_good_received_at, i.last_good_verdict_outcome, i.last_good_verdict_received_at, i.rank, i.rank_outcome, i.rank_last_good_received_at, i.rank_cohort_size, i.stake_amount, i.reward_amount, i.reward_rate, i.delegation_reward_percentage, i.delegator_count, i.epoch, i.block_count, i.expected_block_count, i.gen_blocks_rate, i.counter_state FROM validators v LEFT JOIN current_validator_insights i ON i.validator_id = v.validator_id WHERE v.network_key = $1 ORDER BY v.validator_node_id, v.validator_id",
-    )
-    .bind(network_key)
-    .fetch_all(state.db().pool())
-    .await?;
-    Ok(rows
-        .into_iter()
-        .filter_map(|row| {
-            let node_id = linked_nodes
-                .get(row.validator_id.as_str())
-                .map(|link| link.node_id.clone())?;
-            Some((row, node_id))
-        })
-        .map(|(row, node_id)| {
-            let freshness = validator::freshness(
-                row.last_good_received_at.as_deref(),
-                crate::auth::now_utc(),
-                state.validator_freshness_seconds(),
-            );
-            let outcome = row.outcome.unwrap_or_else(|| "not_configured".to_owned());
-            let stale_after_seconds = state.validator_freshness_seconds();
-            let state = if outcome == "success" {
-                freshness
-            } else {
-                outcome.as_str()
-            };
-            let verdict_freshness = validator::freshness(
-                row.last_good_verdict_received_at.as_deref(),
-                crate::auth::now_utc(),
-                stale_after_seconds,
-            );
-            let (activity, activity_state, status) = validator::project_verdict(
-                &outcome,
-                row.last_good_verdict_outcome.as_deref(),
-                row.activity.as_deref(),
-                verdict_freshness,
-            );
-            let (rank_state, rank_freshness) = public_validator_rank(
-                row.rank_outcome.as_deref(),
-                row.rank,
-                row.rank_last_good_received_at.as_deref(),
-                crate::auth::now_utc(),
-                stale_after_seconds,
-            );
-            let (block_rate, block_rate_state) =
-                validator::cumulative_block_rate(row.block_count, row.expected_block_count);
-            let current_validator_status = status.status.as_str().to_owned();
-            let current_validator_status_state = status.state.to_owned();
-            let current_validator_status_qualifier =
-                status.qualifier.map(|value| value.as_str().to_owned());
-            PublicValidatorInsight {
-                validator_id: row.validator_id,
-                validator_node_id: row.validator_node_id,
-                display_name: row.display_name,
-                node_id: Some(node_id),
-                state: state.to_owned(),
-                freshness: freshness.to_owned(),
-                source: row.source.or_else(|| Some("disabled".to_owned())),
-                provider_timestamp: row.provider_timestamp,
-                received_at: row.last_good_received_at,
-                rank: row.rank,
-                rank_state,
-                rank_freshness,
-                rank_received_at: row.rank_last_good_received_at,
-                rank_cohort_size: row.rank_cohort_size,
-                stake_amount: row.stake_amount,
-                reward_amount: row.reward_amount,
-                reward_rate: row.reward_rate,
-                delegation_reward_percentage: row.delegation_reward_percentage,
-                delegator_count: row.delegator_count,
-                epoch: row.epoch,
-                block_count: row.block_count,
-                expected_block_count: row.expected_block_count,
-                block_rate,
-                block_rate_state: block_rate_state.to_owned(),
-                gen_blocks_rate: row.gen_blocks_rate,
-                counter_state: row.counter_state.unwrap_or_else(|| "normal".to_owned()),
-                activity,
-                activity_state,
-                activity_received_at: row.last_good_verdict_received_at,
-                current_validator_status,
-                current_validator_status_state,
-                current_validator_status_qualifier,
-            }
-        })
-        .collect())
-}
-
-/// The effective automatic Links of the listed Active Nodes. Activity is
-/// associated per Node, so a Validator linked concurrently to several Nodes is
-/// visible on every one of them.
-async fn listed_node_links(
-    state: &AppState,
-    at: time::OffsetDateTime,
-    scope: validator::LinkScope<'_>,
-    nodes: &[PublicNode],
-) -> Result<Vec<validator::EffectiveAutomaticLink>, sqlx::Error> {
-    let links = validator::effective_automatic_links(state.db().pool(), at, scope).await?;
-    Ok(links
-        .into_iter()
-        .filter(|link| nodes.iter().any(|node| node.node_id == link.node_id))
-        .collect())
-}
-
-/// Attach each Node's automatically identified Validator insight. Only an
-/// effective automatic Link is used; a legacy manual Link is never a fallback.
-/// A Node without an effective automatic Link keeps a `None` Validator and
-/// renders the explicit identity reason instead of a guessed association
-/// (#173).
-fn associate_node_validators(
-    validators: &[PublicValidatorInsight],
-    links: &[validator::EffectiveAutomaticLink],
-    nodes: &mut [PublicNode],
-) {
-    for node in nodes.iter_mut() {
-        let Some(link) = links.iter().find(|link| link.node_id == node.node_id) else {
-            continue;
-        };
-        let Some(validator) = validators
-            .iter()
-            .find(|validator| validator.validator_id == link.validator_id)
-        else {
-            continue;
-        };
-        let mut associated = validator.clone();
-        associated.node_id = Some(link.node_id.clone());
-        node.validator = Some(associated);
-    }
-}
-
-/// Coverage label for one metric: a total is never presented as complete while
-/// an eligible Validator is missing a value, and a total with no values at all
-/// is unknown rather than zero.
-fn validation_coverage_state(valued_count: i64, expected_count: i64) -> &'static str {
-    if valued_count == 0 {
-        "unknown"
-    } else if valued_count < expected_count {
-        "partial"
-    } else {
-        "complete"
-    }
-}
-
-/// Reduce the effective-link Validator set to one Network's deduplicated
-/// cumulative totals. `validators` is already the distinct eligible set (one
-/// row per Validator referenced by an effective Link on an Active Node), so a
-/// primary/standby/observer pair sharing one Validator contributes once. Each
-/// metric keeps its own coverage counts: a Validator can have a block count and
-/// no reward, or vice versa.
-pub(crate) fn public_validator_summary(
-    validators: &[PublicValidatorInsight],
-    nodes: &[PublicNode],
-) -> PublicValidatorSummary {
-    let expected_count = validators.len() as i64;
-    let mut block_sum: Option<String> = None;
-    let mut block_valued = 0_i64;
-    let mut block_stale = 0_i64;
-    let mut reward_sum: Option<String> = None;
-    let mut reward_valued = 0_i64;
-    let mut reward_stale = 0_i64;
-    for validator in validators {
-        // A retained last-good value is stale unless the latest successful
-        // observation is still current; Provider detail state is unaffected by
-        // the independent ranking collection.
-        let stale = validator.state != "fresh";
-        if let Some(value) = validator.block_count.filter(|value| *value >= 0) {
-            // Every accepted i64 count is a valid bounded decimal; keep the
-            // aggregate as digits instead of saturating or sending a JSON number.
-            validator::accumulate_decimal(&mut block_sum, &value.to_string());
-            block_valued += 1;
-            if stale {
-                block_stale += 1;
-            }
-        }
-        if let Some(value) = validator.reward_amount.as_deref() {
-            if validator::accumulate_decimal(&mut reward_sum, value) {
-                reward_valued += 1;
-                if stale {
-                    reward_stale += 1;
-                }
-            }
-        }
-    }
-    let linked_node_count = nodes.iter().filter(|node| node.validator.is_some()).count() as i64;
-    PublicValidatorSummary {
-        blocks: PublicValidatorBlockTotal {
-            known_sum: block_sum,
-            expected_count,
-            valued_count: block_valued,
-            stale_count: block_stale,
-            state: validation_coverage_state(block_valued, expected_count).to_owned(),
-        },
-        rewards: PublicValidatorRewardTotal {
-            known_sum: reward_sum,
-            expected_count,
-            valued_count: reward_valued,
-            stale_count: reward_stale,
-            state: validation_coverage_state(reward_valued, expected_count).to_owned(),
-        },
-        eligible_validator_count: expected_count,
-        linked_node_count,
-        unlinked_node_count: nodes.len() as i64 - linked_node_count,
-    }
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -2525,930 +2190,43 @@ pub struct PublicNodeDetail {
     pub geo: PublicGeoInsight,
 }
 
-#[derive(Debug, Default, sqlx::FromRow)]
-struct PublicNodeRow {
-    node_id: String,
-    display_name: Option<String>,
-    network_key: String,
-    network_display_name: String,
-    lifecycle: String,
-    rpc_state: Option<String>,
-    identity_state: Option<String>,
-    identity_contradicts_registry: i64,
-    process_cpu_percent: Option<f64>,
-    process_memory_percent: Option<f64>,
-    process_started_at: Option<String>,
-    process_uptime_ms: Option<i64>,
-    last_report_at: Option<String>,
-    host_cpu_percent: Option<f64>,
-    host_memory_percent: Option<f64>,
-    host_storage_percent: Option<f64>,
-    node_data_directory_size_bytes: Option<i64>,
-    node_data_directory_capacity_bytes: Option<i64>,
-    host_network_rx_bytes_per_sec: Option<i64>,
-    host_network_tx_bytes_per_sec: Option<i64>,
-    sync_state: Option<String>,
-    consensus_state: Option<String>,
-    process_state: Option<String>,
-    peer_state: Option<String>,
-    peer_observed_at: Option<String>,
-    peer_value_received_at: Option<String>,
-    peer_value_observation_at: Option<String>,
-    peer_value_revision: Option<i64>,
-    peer_count: Option<i64>,
-    peer_inbound_count: Option<i64>,
-    peer_outbound_count: Option<i64>,
-    peer_trusted_count: Option<i64>,
-    peer_static_count: Option<i64>,
-    peer_consensus_count: Option<i64>,
-    auto_validator_identity_state: Option<String>,
-    consensus_observed_at: Option<String>,
-    consensus_value_received_at: Option<String>,
-    consensus_value_observation_at: Option<String>,
-    consensus_value_revision: Option<i64>,
-    consensus_epoch: Option<i64>,
-    consensus_view_number: Option<i64>,
-    consensus_validator: Option<i64>,
-    consensus_highest_qc_block: Option<i64>,
-    consensus_highest_lock_block: Option<i64>,
-    consensus_highest_commit_block: Option<i64>,
-    current_head: Option<i64>,
-    latest_block_transaction_count: Option<i64>,
-    historical_high_watermark: Option<i64>,
-    resync_state: Option<String>,
-    resync_last_progress_at: Option<String>,
-    network_reference_head: Option<i64>,
-    network_reference_confidence: Option<String>,
-}
-
-fn fresh(timestamp: Option<&str>, now: time::OffsetDateTime) -> bool {
-    crate::observation_time::is_fresh(
-        timestamp,
-        now,
-        crate::observation_time::FRESHNESS_LIMIT_SECONDS,
-    )
-}
-
-fn public_peer_insight(row: &PublicNodeRow) -> PublicPeerInsight {
-    let has_value = row.peer_value_revision.unwrap_or_default() > 0;
-    let freshness = if has_value {
-        match row.peer_value_observation_at.as_deref() {
-            Some(timestamp) if fresh(Some(timestamp), crate::auth::now_utc()) => "current",
-            Some(_) => "stale",
-            None => "unknown",
-        }
-    } else {
-        "unknown"
-    };
-    let stale_since = if freshness == "stale" {
-        crate::observation_time::stale_since(
-            row.peer_value_observation_at.as_deref(),
-            crate::observation_time::FRESHNESS_LIMIT_SECONDS,
-        )
-    } else {
-        None
-    };
-    PublicPeerInsight {
-        state: row
-            .peer_state
-            .clone()
-            .unwrap_or_else(|| "unknown".to_owned()),
-        freshness: freshness.to_owned(),
-        observed_at: row.peer_observed_at.clone(),
-        received_at: row.peer_value_received_at.clone(),
-        stale_since,
-        peer_count: has_value.then_some(row.peer_count).flatten(),
-        inbound_count: has_value.then_some(row.peer_inbound_count).flatten(),
-        outbound_count: has_value.then_some(row.peer_outbound_count).flatten(),
-        trusted_count: has_value.then_some(row.peer_trusted_count).flatten(),
-        static_count: has_value.then_some(row.peer_static_count).flatten(),
-        consensus_count: has_value.then_some(row.peer_consensus_count).flatten(),
-    }
-}
-
-fn public_consensus_insight(row: &PublicNodeRow) -> PublicConsensusInsight {
-    let has_value = row.consensus_value_revision.unwrap_or_default() > 0;
-    let freshness = if has_value {
-        match row.consensus_value_observation_at.as_deref() {
-            Some(timestamp) if fresh(Some(timestamp), crate::auth::now_utc()) => "current",
-            Some(_) => "stale",
-            None => "unknown",
-        }
-    } else {
-        "unknown"
-    };
-    let stale_since = if freshness == "stale" {
-        crate::observation_time::stale_since(
-            row.consensus_value_observation_at.as_deref(),
-            crate::observation_time::FRESHNESS_LIMIT_SECONDS,
-        )
-    } else {
-        None
-    };
-    PublicConsensusInsight {
-        state: row
-            .consensus_state
-            .clone()
-            .unwrap_or_else(|| "unknown".to_owned()),
-        freshness: freshness.to_owned(),
-        observed_at: row.consensus_observed_at.clone(),
-        received_at: row.consensus_value_received_at.clone(),
-        stale_since,
-        epoch: has_value.then_some(row.consensus_epoch).flatten(),
-        view_number: has_value.then_some(row.consensus_view_number).flatten(),
-        validator: has_value
-            .then_some(row.consensus_validator.map(|value| value != 0))
-            .flatten(),
-        highest_qc_block: has_value
-            .then_some(row.consensus_highest_qc_block)
-            .flatten(),
-        highest_lock_block: has_value
-            .then_some(row.consensus_highest_lock_block)
-            .flatten(),
-        highest_commit_block: has_value
-            .then_some(row.consensus_highest_commit_block)
-            .flatten(),
-    }
-}
-
-fn aggregate_peer_insight(nodes: &[PublicNode]) -> PublicPeerInsight {
-    let insights = nodes.iter().map(|node| &node.peers).collect::<Vec<_>>();
-    let state = if insights.iter().any(|peer| peer.state == "error") {
-        "error"
-    } else if insights.iter().any(|peer| peer.state == "unsupported") {
-        "unsupported"
-    } else if insights.iter().any(|peer| peer.state == "disabled") {
-        "disabled"
-    } else if insights.iter().any(|peer| peer.state == "starting") {
-        "starting"
-    } else if insights.iter().all(|peer| peer.state == "ok")
-        && insights.iter().all(|peer| peer.peer_count.is_some())
-    {
-        "ok"
-    } else {
-        "unknown"
-    };
-    let all_values = insights.iter().all(|peer| peer.peer_count.is_some());
-    let freshness = if !all_values || insights.is_empty() {
-        "unknown"
-    } else if insights.iter().all(|peer| peer.freshness == "current") {
-        "current"
-    } else if insights.iter().any(|peer| peer.freshness == "stale") {
-        "stale"
-    } else {
-        "unknown"
-    };
-    let sum = |value: fn(&PublicPeerInsight) -> Option<i64>| {
-        all_values.then(|| insights.iter().filter_map(|peer| value(peer)).sum())
-    };
-    PublicPeerInsight {
-        state: state.to_owned(),
-        freshness: freshness.to_owned(),
-        // A Network has multiple observation times; exposing one would imply
-        // a precision the aggregate does not have.
-        observed_at: None,
-        received_at: None,
-        stale_since: None,
-        peer_count: sum(|peer| peer.peer_count),
-        inbound_count: sum(|peer| peer.inbound_count),
-        outbound_count: sum(|peer| peer.outbound_count),
-        trusted_count: sum(|peer| peer.trusted_count),
-        static_count: sum(|peer| peer.static_count),
-        consensus_count: sum(|peer| peer.consensus_count),
-    }
-}
-
-fn geo_timing(
-    status: &crate::geo::GeoStatus,
-    now: time::OffsetDateTime,
-) -> (Option<u64>, Option<String>) {
-    let Some(build_epoch) = status.build_epoch else {
-        return (None, None);
-    };
-    let Some(build_epoch_seconds) = i64::try_from(build_epoch).ok() else {
-        return (None, None);
-    };
-    let age_seconds = now
-        .unix_timestamp()
-        .saturating_sub(build_epoch_seconds)
-        .max(0) as u64;
-    let stale_since = build_epoch
-        .checked_add(crate::geo::DATABASE_MAX_AGE.as_secs())
-        .and_then(|epoch| i64::try_from(epoch).ok())
-        .filter(|epoch| now.unix_timestamp() >= *epoch)
-        .and_then(|epoch| time::OffsetDateTime::from_unix_timestamp(epoch).ok())
-        .map(crate::auth::format_rfc3339);
-    (Some(age_seconds), stale_since)
-}
-
-/// One Network's country projection over the current Peer records of its
-/// Active Nodes. Every bucket is derived from the same record set, so
-/// Known + Unknown always equals `available_peer_count`.
-#[derive(Debug, Default, Clone, Copy)]
-struct CountryBucket {
-    count: i64,
-    stale_count: i64,
-}
-
-#[derive(Debug, Default)]
-struct GeoDistribution {
-    countries: std::collections::BTreeMap<String, CountryBucket>,
-    known_country_count: i64,
-    unknown_country_count: i64,
-    unknown_without_remote_ip_count: i64,
-    active_node_count: i64,
-    observed_node_count: i64,
-}
-
-impl GeoDistribution {
-    fn available_peer_count(&self) -> i64 {
-        self.known_country_count + self.unknown_country_count
-    }
-
-    fn scope(&self) -> &'static str {
-        if self.observed_node_count == 0 {
-            "unobserved"
-        } else if self.observed_node_count < self.active_node_count {
-            "partial"
-        } else {
-            "complete"
-        }
-    }
-}
-
-/// The scope whose current Peer records a Public Geo Insight projects. The
-/// Network scope covers every Active Node of one Network; the Node scope is
-/// the Node Peer Country View over exactly one Node.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum GeoScope<'a> {
-    Network(&'a str),
-    Node(&'a str),
-}
-
-impl<'a> GeoScope<'a> {
-    /// The `nodes` column this scope filters on and its bound key. Both are
-    /// fixed fragments, never request input, so the two scopes share one SQL
-    /// shape and differ only in the column they filter.
-    fn filter(self) -> (&'static str, &'a str) {
-        match self {
-            GeoScope::Network(network_key) => ("n.network_key", network_key),
-            GeoScope::Node(node_id) => ("n.node_id", node_id),
-        }
-    }
-}
-
-/// One Active Node's country buckets inside a [`PublicGeoReadings`] map.
-#[derive(Debug)]
-struct PublicNodeGeo {
-    network_key: String,
-    distribution: GeoDistribution,
-}
-
-/// Every in-scope country bucket plus the shared Geo database status, read
-/// once per response. One set of rows feeds all three readings: each Node's
-/// compact `PublicNodePeerCountries`, the Network-level Geo Insight and the
-/// Node Peer Country View, so the Network reading is by construction the sum
-/// of its Active Node buckets and a Node reading is that Node's own bucket.
-pub(crate) struct PublicGeoReadings {
-    status: crate::geo::GeoStatus,
-    database_age_seconds: Option<u64>,
-    stale_since: Option<String>,
-    /// `None` when Geo is Disabled or the read failed: no scope has a basis.
-    nodes: Option<std::collections::BTreeMap<String, PublicNodeGeo>>,
-}
-
-impl PublicGeoReadings {
-    /// `scope` is `None` for every Active Node, which the Network list needs
-    /// so each listed Node can carry its own buckets; a scoped caller (the Node
-    /// Detail handler, or a test projecting one scope) passes `Some`.
-    pub(crate) async fn load(
-        state: &AppState,
-        status: crate::geo::GeoStatus,
-        scope: Option<GeoScope<'_>>,
-    ) -> Self {
-        let now_utc = crate::auth::now_utc();
-        let (database_age_seconds, stale_since) = geo_timing(&status, now_utc);
-        let readings = Self {
-            status,
-            database_age_seconds,
-            stale_since,
-            nodes: None,
-        };
-        if readings.status.state == "disabled" {
-            return readings;
-        }
-        let now = crate::auth::format_rfc3339(now_utc);
-        match load_node_geo(state, scope, &now).await {
-            Some(nodes) => Self {
-                nodes: Some(nodes),
-                ..readings
-            },
-            // A failed read keeps the database status and timing, and leaves
-            // every scope without a basis.
-            None => readings,
-        }
-    }
-
-    /// Restrict the reading to exactly the Nodes a response lists, keyed by the
-    /// Network each one was listed under. The listed rows and this Geo batch
-    /// are two separate reads, so a Node that changed lifecycle in between must
-    /// neither enter a Network Geo Insight whose response carries no bucket for
-    /// it (an extra batch Node) nor vanish from one whose response does list it
-    /// (a Node this batch lost). A listed Node the batch no longer knows keeps
-    /// its place in the Active Node count with no observed reading of its own,
-    /// so that Network can only read `partial` and never `complete`, and its
-    /// own compact bucket carries no basis — which is what the browser computes
-    /// from the buckets it was handed, so summing them still reproduces the
-    /// reading exactly.
-    pub(crate) fn restrict_to_listed_nodes(
-        &mut self,
-        listed: &std::collections::BTreeMap<String, String>,
-    ) {
-        let Some(nodes) = self.nodes.as_mut() else {
-            return;
-        };
-        nodes.retain(|node_id, _| listed.contains_key(node_id));
-        for (node_id, network_key) in listed {
-            nodes
-                .entry(node_id.clone())
-                .or_insert_with(|| PublicNodeGeo {
-                    network_key: network_key.clone(),
-                    distribution: GeoDistribution {
-                        active_node_count: 1,
-                        ..GeoDistribution::default()
-                    },
-                });
-        }
-    }
-
-    /// Sum the in-scope Node buckets. A scope with no Active Node at all sums
-    /// to an empty distribution, which is `unobserved` rather than a zero.
-    ///
-    /// A Node whose own scope is `unobserved` has no reliable denominator, so
-    /// its rows are not a country count at that Node either; it keeps its
-    /// place in the Active Node count (a Network with one such Node is still
-    /// `partial`, never `complete`) but contributes no Known, Unknown or
-    /// country bucket. The Network reading is therefore exactly the sum of the
-    /// compact Node buckets the same response hands to the browser, which is
-    /// what makes the unfiltered reading and a selection that matches every
-    /// Node one reading. Ingestion writes `current_node_peers` rows only
-    /// inside the transaction that records a successful Peer Snapshot, so a
-    /// Node with rows and no accepted value is not a state the write path
-    /// produces; the gate still keeps both readings equal there instead of
-    /// reporting a country the Node's own reading denies.
-    fn distribution(&self, scope: GeoScope<'_>) -> GeoDistribution {
-        let mut total = GeoDistribution::default();
-        let Some(nodes) = self.nodes.as_ref() else {
-            return total;
-        };
-        for (node_id, node_geo) in nodes {
-            let in_scope = match scope {
-                GeoScope::Network(network_key) => node_geo.network_key == network_key,
-                GeoScope::Node(id) => node_id == id,
-            };
-            if !in_scope {
-                continue;
-            }
-            let distribution = &node_geo.distribution;
-            total.active_node_count += distribution.active_node_count;
-            if distribution.scope() == "unobserved" {
-                continue;
-            }
-            total.observed_node_count += distribution.observed_node_count;
-            total.known_country_count += distribution.known_country_count;
-            total.unknown_country_count += distribution.unknown_country_count;
-            total.unknown_without_remote_ip_count += distribution.unknown_without_remote_ip_count;
-            for (country_code, bucket) in &distribution.countries {
-                let entry = total.countries.entry(country_code.clone()).or_default();
-                entry.count += bucket.count;
-                entry.stale_count += bucket.stale_count;
-            }
-        }
-        total
-    }
-
-    pub(crate) fn insight(&self, state: &AppState, scope: GeoScope<'_>) -> PublicGeoInsight {
-        if self.status.state == "disabled" {
-            return unknown_public_geo_insight();
-        }
-        if self.nodes.is_none() {
-            return public_geo_error_insight(
-                &self.status,
-                self.database_age_seconds,
-                self.stale_since.clone(),
-            );
-        }
-        public_geo_insight(
-            state,
-            &self.status,
-            self.database_age_seconds,
-            self.stale_since.clone(),
-            &self.distribution(scope),
-        )
-    }
-
-    /// One Node's compact buckets. A Node outside the scope, or one whose
-    /// scope has no reliable denominator, projects nothing at all.
-    pub(crate) fn node_peer_countries(&self, node_id: &str) -> PublicNodePeerCountries {
-        let Some(node_geo) = self.nodes.as_ref().and_then(|nodes| nodes.get(node_id)) else {
-            return unknown_public_node_peer_countries();
-        };
-        node_peer_countries(&node_geo.distribution)
-    }
-}
-
-fn public_geo_error_insight(
-    status: &crate::geo::GeoStatus,
-    database_age_seconds: Option<u64>,
-    stale_since: Option<String>,
-) -> PublicGeoInsight {
-    PublicGeoInsight {
-        state: "error".to_owned(),
-        last_good_at: status.loaded_at.clone(),
-        database_age_seconds,
-        stale_since,
-        // Loader errors can contain filesystem/parser details. Public
-        // responses expose only a stable, non-sensitive explanation.
-        error_reason: Some(PUBLIC_GEO_ERROR.to_owned()),
-        scope: "unavailable".to_owned(),
-        known_country_count: None,
-        unknown_country_count: None,
-        available_peer_count: None,
-        unknown_without_remote_ip_count: None,
-        unknown_with_public_ip_count: None,
-        countries: None,
-        attribution: None,
-    }
-}
-
-fn public_geo_insight(
-    state: &AppState,
-    status: &crate::geo::GeoStatus,
-    database_age_seconds: Option<u64>,
-    stale_since: Option<String>,
-    distribution: &GeoDistribution,
-) -> PublicGeoInsight {
-    let scope = distribution.scope();
-    // Without a single successful Peer Snapshot there is no reliable
-    // denominator: never-observed is not a country count of zero.
-    let has_basis = scope != "unobserved";
-    let geo_error = status.state == "error";
-    PublicGeoInsight {
-        state: status.state.clone(),
-        last_good_at: status.loaded_at.clone(),
-        database_age_seconds,
-        stale_since,
-        error_reason: geo_error.then(|| PUBLIC_GEO_ERROR.to_owned()),
-        scope: scope.to_owned(),
-        known_country_count: has_basis.then_some(distribution.known_country_count),
-        unknown_country_count: has_basis.then_some(distribution.unknown_country_count),
-        available_peer_count: has_basis.then(|| distribution.available_peer_count()),
-        unknown_without_remote_ip_count: has_basis
-            .then_some(distribution.unknown_without_remote_ip_count),
-        unknown_with_public_ip_count: has_basis.then(|| {
-            distribution.unknown_country_count - distribution.unknown_without_remote_ip_count
-        }),
-        countries: has_basis.then(|| public_countries(distribution)),
-        // The selected provider owns the attribution its terms require; a
-        // provider that resolves locally must never be credited to an
-        // external service and vice versa.
-        attribution: state.geo_config().provider.attribution().map(str::to_owned),
-    }
-}
-
-fn public_countries(distribution: &GeoDistribution) -> Vec<PublicCountryCount> {
-    distribution
-        .countries
-        .iter()
-        .map(|(country_code, bucket)| {
-            let (centroid_lat, centroid_lon) = crate::geo::country_centroid(country_code);
-            PublicCountryCount {
-                country_code: country_code.clone(),
-                count: bucket.count,
-                stale_count: bucket.stale_count,
-                centroid_lat,
-                centroid_lon,
-            }
-        })
-        .collect()
-}
-
-fn node_peer_countries(distribution: &GeoDistribution) -> PublicNodePeerCountries {
-    let scope = distribution.scope();
-    let has_basis = scope != "unobserved";
-    PublicNodePeerCountries {
-        scope: scope.to_owned(),
-        known_country_count: has_basis.then_some(distribution.known_country_count),
-        unknown_country_count: has_basis.then_some(distribution.unknown_country_count),
-        available_peer_count: has_basis.then(|| distribution.available_peer_count()),
-        unknown_without_remote_ip_count: has_basis
-            .then_some(distribution.unknown_without_remote_ip_count),
-        unknown_with_public_ip_count: has_basis.then(|| {
-            distribution.unknown_country_count - distribution.unknown_without_remote_ip_count
-        }),
-        // A Node without a reliable denominator carries no countries at all.
-        // The browser gates on the counts, so an empty list is never a zero.
-        countries: if has_basis {
-            public_countries(distribution)
-        } else {
-            Vec::new()
-        },
-    }
-}
-
-/// Load the current Peer records in scope grouped by Active Node and country
-/// onto the retained country cache. A Peer record is one row of
-/// current_node_peers: the same IP seen on two Peers or two Nodes is two
-/// records. A row is only retainable inside the hard cache-retention
-/// boundary; inside that boundary an expired country stays as explicit
-/// last-good Stale data instead of becoming Unknown.
-///
-/// Only the fixed scope column varies between the Network and Node scopes;
-/// everything after the filter — the selected provider, the Peer-record
-/// denominator, retention and the Unknown split — is shared. The per-Node
-/// denominator is loaded separately, so a Node that never reported a Peer
-/// Snapshot stays distinguishable from one whose snapshot was authoritatively
-/// empty.
-async fn load_node_geo(
-    state: &AppState,
-    scope: Option<GeoScope<'_>>,
-    now: &str,
-) -> Option<std::collections::BTreeMap<String, PublicNodeGeo>> {
-    let rebuild_before = crate::geo::cache_rebuild_cutoff(now);
-    let filter = match scope {
-        Some(scope) => format!(" AND {} = ?", scope.filter().0),
-        None => String::new(),
-    };
-    // Timestamps are canonical RFC 3339 UTC, so the ordering comparisons the
-    // cache itself relies on are valid here too. A row outside the hard
-    // retention boundary is not retainable at all, and only the selected
-    // provider's retained rows are usable: a result left over from another
-    // provider is not a country for the current projection.
-    let sql = format!(
-        "SELECT p.node_id, n.network_key, g.country_code, COUNT(*) AS record_count, CAST(COALESCE(SUM(CASE WHEN g.country_code IS NOT NULL AND g.created_at > ? THEN 1 ELSE 0 END), 0) AS BIGINT) AS known_count, CAST(COALESCE(SUM(CASE WHEN g.country_code IS NOT NULL AND g.created_at > ? AND (g.expires_at IS NULL OR g.expires_at <= ?) THEN 1 ELSE 0 END), 0) AS BIGINT) AS stale_count, CAST(COALESCE(SUM(CASE WHEN g.country_code IS NULL AND p.remote_ip IS NULL THEN 1 ELSE 0 END), 0) AS BIGINT) AS unknown_without_remote_ip_count FROM current_node_peers p JOIN nodes n ON n.node_id = p.node_id LEFT JOIN geo_location_cache g ON g.provider = ? AND g.canonical_ip = p.remote_ip WHERE n.lifecycle = 'active'{filter} GROUP BY p.node_id, n.network_key, g.country_code"
-    );
-    let sql = crate::database::number_placeholders(&sql);
-    let mut rows = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, i64, i64)>(&sql)
-        .bind(rebuild_before.as_str())
-        .bind(rebuild_before.as_str())
-        .bind(now)
-        .bind(state.geo_config().provider.as_str());
-    if let Some(scope) = scope {
-        rows = rows.bind(scope.filter().1);
-    }
-    let rows = rows.fetch_all(state.db().pool()).await.ok()?;
-    // The denominator is one row per Active Node in scope, whether or not it
-    // currently has any Peer record.
-    let sql = format!(
-        "SELECT n.node_id, n.network_key, CAST(COALESCE(SUM(CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN 1 ELSE 0 END), 0) AS BIGINT) FROM nodes n LEFT JOIN component_status ps ON ps.node_id = n.node_id AND ps.component_key = 'peers' WHERE n.lifecycle = 'active'{filter} GROUP BY n.node_id, n.network_key"
-    );
-    let sql = crate::database::number_placeholders(&sql);
-    let mut denominator = sqlx::query_as::<_, (String, String, i64)>(&sql);
-    if let Some(scope) = scope {
-        denominator = denominator.bind(scope.filter().1);
-    }
-    let denominator = denominator.fetch_all(state.db().pool()).await.ok()?;
-
-    let mut nodes = std::collections::BTreeMap::new();
-    for (node_id, network_key, observed) in denominator {
-        nodes.insert(
-            node_id,
-            PublicNodeGeo {
-                network_key,
-                distribution: GeoDistribution {
-                    active_node_count: 1,
-                    observed_node_count: i64::from(observed > 0),
-                    ..GeoDistribution::default()
-                },
-            },
-        );
-    }
-    for (
-        node_id,
-        network_key,
-        country_code,
-        record_count,
-        known_count,
-        stale_count,
-        unknown_without_remote_ip_count,
-    ) in rows
-    {
-        // A Peer record only exists for an Active Node, so its denominator row
-        // is already present; this entry is defensive only.
-        let node_geo = nodes.entry(node_id).or_insert_with(|| PublicNodeGeo {
-            network_key,
-            distribution: GeoDistribution {
-                active_node_count: 1,
-                ..GeoDistribution::default()
-            },
-        });
-        let distribution = &mut node_geo.distribution;
-        distribution.known_country_count += known_count;
-        // Every row of a country group that is not retained is one more
-        // Unknown record; a group without a country is Unknown entirely.
-        distribution.unknown_country_count += record_count - known_count;
-        distribution.unknown_without_remote_ip_count += unknown_without_remote_ip_count;
-        if known_count > 0 {
-            if let Some(country_code) = country_code {
-                distribution.countries.insert(
-                    country_code,
-                    CountryBucket {
-                        count: known_count,
-                        stale_count,
-                    },
-                );
-            }
-        }
-    }
-    Some(nodes)
-}
-
-/// Project one Node row, judging its Health from the gating evidence
-/// [`node_currency::load`] read for it at `now`.
-fn public_node(
-    row: PublicNodeRow,
-    evidence: &node_currency::CurrencyEvidence,
-    now: time::OffsetDateTime,
-) -> (String, PublicNode) {
-    let identity = node_currency::NodeIdentity::from_observation(
-        row.identity_state.as_deref(),
-        row.identity_contradicts_registry != 0,
-    );
-    let summary = node_currency::health_summary(
-        &row.lifecycle,
-        row.process_state.as_deref(),
-        identity,
-        evidence,
-        now,
-    );
-    let currency = evidence.currency(now).state();
-    let currency_as_of = evidence.as_of();
-    let peers = public_peer_insight(&row);
-    let consensus = public_consensus_insight(&row);
-    let node = PublicNode {
-        node_id: row.node_id.clone(),
-        display_name: row.display_name,
-        network_key: row.network_key,
-        health: summary.health.as_str().to_owned(),
-        health_reason: summary.reason.text().to_owned(),
-        currency,
-        currency_as_of,
-        rpc_state: row.rpc_state.unwrap_or_else(|| "unknown".to_owned()),
-        sync_state: row.sync_state.unwrap_or_else(|| "unknown".to_owned()),
-        consensus_state: row.consensus_state.unwrap_or_else(|| "unknown".to_owned()),
-        process_state: row.process_state.unwrap_or_else(|| "unknown".to_owned()),
-        peers,
-        consensus,
-        process_cpu_percent: row.process_cpu_percent,
-        process_memory_percent: row.process_memory_percent,
-        process_started_at: row.process_started_at,
-        process_uptime_ms: row.process_uptime_ms,
-        last_report_at: row.last_report_at,
-        host_cpu_percent: row.host_cpu_percent,
-        host_memory_percent: row.host_memory_percent,
-        host_storage_percent: row.host_storage_percent,
-        node_data_directory_size_bytes: row.node_data_directory_size_bytes,
-        node_data_directory_capacity_bytes: row.node_data_directory_capacity_bytes,
-        host_network_rx_bytes_per_sec: row.host_network_rx_bytes_per_sec,
-        host_network_tx_bytes_per_sec: row.host_network_tx_bytes_per_sec,
-        current_head: row.current_head,
-        latest_block_transaction_count: row.latest_block_transaction_count,
-        historical_high_watermark: row.historical_high_watermark,
-        resync_state: row.resync_state.unwrap_or_else(|| "normal".to_owned()),
-        network_reference_head: row.network_reference_head,
-        network_reference_confidence: row
-            .network_reference_confidence
-            .unwrap_or_else(|| "unknown".to_owned()),
-        resync_progress: row.historical_high_watermark.zip(row.current_head).map(
-            |(high, current)| match row.resync_last_progress_at.as_deref() {
-                Some(at) => format!("{current}/{high} (last progress {at})"),
-                None => format!("{current}/{high}"),
-            },
-        ),
-        resync_last_progress_at: row.resync_last_progress_at,
-        validator: None,
-        validator_identity_reason: validator::automatic_identity_reason(
-            row.auto_validator_identity_state.as_deref(),
-        ),
-        validator_identity_state: row.auto_validator_identity_state,
-        // Filled in by the caller from the response's single Geo read, so
-        // every projection of this Node shares one set of buckets.
-        peer_countries: unknown_public_node_peer_countries(),
-    };
-    (row.network_display_name, node)
-}
-
-const PUBLIC_NODE_QUERY_BASE: &str = r#"SELECT n.node_id, n.display_name, n.network_key, r.display_name AS network_display_name,
-       n.lifecycle, s.state AS rpc_state, sy.state AS sync_state, co.state AS consensus_state,
-       p.state AS process_state, i.state AS identity_state,
-       CASE WHEN i.state = 'ok' AND i.value_revision > 0
-                 AND c.network_genesis_hash IS NOT NULL AND c.network_chain_id IS NOT NULL
-                 AND c.network_p2p_network_id IS NOT NULL AND c.network_address_hrp IS NOT NULL
-                 AND (c.network_genesis_hash != r.genesis_hash OR c.network_chain_id != r.chain_id
-                      OR c.network_p2p_network_id != r.p2p_network_id OR c.network_address_hrp != r.address_hrp)
-            THEN 1 ELSE 0 END AS identity_contradicts_registry,
-       CASE WHEN p.state IN ('ok', 'error') THEN proc.cpu_percent ELSE NULL END AS process_cpu_percent,
-       CASE WHEN p.state IN ('ok', 'error') AND h.memory_total_bytes > 0 THEN (CAST(proc.memory_bytes AS REAL) * 100.0 / h.memory_total_bytes) ELSE NULL END AS process_memory_percent,
-       CASE WHEN p.state IN ('ok', 'error') THEN proc.started_at ELSE NULL END AS process_started_at,
-       CASE WHEN p.state IN ('ok', 'error') THEN proc.uptime_ms ELSE NULL END AS process_uptime_ms,
-       a.last_received_at AS last_report_at,
-       h.cpu_percent AS host_cpu_percent,
-       CASE WHEN h.memory_total_bytes > 0 THEN (CAST(h.memory_used_bytes AS REAL) * 100.0 / h.memory_total_bytes) ELSE NULL END AS host_memory_percent,
-       hd.storage_percent AS host_storage_percent,
-       CASE WHEN ds.state IN ('ok', 'error') THEN dd.size_bytes ELSE NULL END AS node_data_directory_size_bytes,
-       CASE WHEN ds.state IN ('ok', 'error') AND dc.state IN ('ok', 'error') THEN dd.capacity_bytes ELSE NULL END AS node_data_directory_capacity_bytes,
-       h.network_rx_bytes_per_sec AS host_network_rx_bytes_per_sec,
-       h.network_tx_bytes_per_sec AS host_network_tx_bytes_per_sec,
-       ps.state AS peer_state, ps.observed_at AS peer_observed_at,
-       ps.value_received_at AS peer_value_received_at,
-       COALESCE(ps.value_observation_at, ps.value_received_at) AS peer_value_observation_at,
-       ps.value_revision AS peer_value_revision,
-       vis.state AS auto_validator_identity_state,
-       CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.peer_count, 0) ELSE NULL END AS peer_count,
-       CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.inbound_count, 0) ELSE NULL END AS peer_inbound_count,
-       CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.outbound_count, 0) ELSE NULL END AS peer_outbound_count,
-       CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.trusted_count, 0) ELSE NULL END AS peer_trusted_count,
-       CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.static_count, 0) ELSE NULL END AS peer_static_count,
-       CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN COALESCE(pc.consensus_count, 0) ELSE NULL END AS peer_consensus_count,
-       co.observed_at AS consensus_observed_at,
-       co.value_received_at AS consensus_value_received_at,
-       COALESCE(co.value_observation_at, co.value_received_at) AS consensus_value_observation_at,
-       co.value_revision AS consensus_value_revision,
-       c.consensus_epoch,
-       c.consensus_view_number,
-       c.consensus_validator,
-       c.consensus_highest_qc_block,
-       c.consensus_highest_lock_block,
-       c.consensus_highest_commit_block,
-       c.current_block AS current_head,
-       bs.transaction_count AS latest_block_transaction_count,
-       hs.historical_high_watermark,
-       hs.resync_state, hs.resync_last_progress_at,
-       nr.block_number AS network_reference_head, nr.confidence AS network_reference_confidence
-  FROM nodes n
-  JOIN agents a ON a.agent_id = n.agent_id
-  JOIN networks r ON r.network_key = n.network_key
-  LEFT JOIN component_status s ON s.node_id = n.node_id AND s.component_key = 'rpc'
-  LEFT JOIN component_status sy ON sy.node_id = n.node_id AND sy.component_key = 'sync'
-  LEFT JOIN component_status co ON co.node_id = n.node_id AND co.component_key = 'consensus'
-  LEFT JOIN component_status p ON p.node_id = n.node_id AND p.component_key = 'process'
-  LEFT JOIN component_status ds ON ds.node_id = n.node_id AND ds.component_key = 'datadirectorysizebytes'
-  LEFT JOIN component_status dc ON dc.node_id = n.node_id AND dc.component_key = 'datadirectorycapacitybytes'
-  LEFT JOIN component_status i ON i.node_id = n.node_id AND i.component_key = 'network_identity'
-  LEFT JOIN node_validator_identity_status vis ON vis.node_id = n.node_id
-  LEFT JOIN component_status ps ON ps.node_id = n.node_id AND ps.component_key = 'peers'
-  LEFT JOIN (
-       SELECT node_id,
-              COUNT(*) AS peer_count,
-              CAST(SUM(CASE WHEN direction = 'inbound' THEN 1 ELSE 0 END) AS BIGINT) AS inbound_count,
-              CAST(SUM(CASE WHEN direction = 'outbound' THEN 1 ELSE 0 END) AS BIGINT) AS outbound_count,
-              CAST(SUM(CASE WHEN trusted = 1 THEN 1 ELSE 0 END) AS BIGINT) AS trusted_count,
-              CAST(SUM(CASE WHEN static_peer = 1 THEN 1 ELSE 0 END) AS BIGINT) AS static_count,
-              CAST(SUM(CASE WHEN consensus_peer = 1 THEN 1 ELSE 0 END) AS BIGINT) AS consensus_count
-         FROM current_node_peers
-        GROUP BY node_id
-  ) pc ON pc.node_id = n.node_id
-  LEFT JOIN current_host_observations h ON h.agent_id = n.agent_id
-  LEFT JOIN current_node_process_observations proc ON proc.node_id = n.node_id
-  LEFT JOIN (
-       SELECT agent_id,
-              MAX(CASE WHEN total_bytes > 0 THEN (CAST(used_bytes AS REAL) * 100.0 / total_bytes) ELSE NULL END) AS storage_percent
-         FROM current_host_disk_mounts
-        GROUP BY agent_id
-  ) hd ON hd.agent_id = n.agent_id
-  LEFT JOIN current_node_data_directory_observations dd ON dd.node_id = n.node_id
-  LEFT JOIN current_node_chain_observations c ON c.node_id = n.node_id
-  LEFT JOIN block_summaries bs ON bs.node_id = n.node_id
-       AND bs.block_number = (SELECT MAX(latest.block_number) FROM block_summaries latest WHERE latest.node_id = n.node_id)
-  LEFT JOIN block_history_state hs ON hs.node_id = n.node_id
-  LEFT JOIN network_reference_heads nr ON nr.network_key = n.network_key"#;
-
-/// Read the Node Currency evidence of the listed Nodes on one pooled
-/// connection.
-async fn load_currency_evidence(
-    state: &AppState,
-    node_ids: &[&str],
-) -> Result<HashMap<String, node_currency::CurrencyEvidence>, sqlx::Error> {
-    let mut conn = state.db().pool().acquire().await?;
-    node_currency::load(&mut conn, node_ids).await
-}
-
-fn public_node_query(filter: &str, order: &str) -> String {
-    format!("{PUBLIC_NODE_QUERY_BASE} WHERE {filter} ORDER BY {order}")
-}
-
 #[utoipa::path(
     get,
     path = "/api/public/v1/networks",
     tag = "public",
     responses((status = 200, description = "Published Network and Node projection", body = [PublicNetwork]))
 )]
-pub(crate) async fn public_networks(State(state): State<AppState>) -> Response {
-    let rows = sqlx::query_as::<_, PublicNodeRow>(&public_node_query(
-        "n.lifecycle = 'active'",
-        "r.network_key, n.node_id",
-    ))
-    .fetch_all(state.db().pool())
-    .await;
-    let rows = match rows {
-        Ok(rows) => rows,
-        Err(_) => {
-            return error_response(
-                "unknown",
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "server database is unavailable",
-            );
-        }
-    };
-    let node_ids = rows
-        .iter()
-        .map(|row| row.node_id.as_str())
-        .collect::<Vec<_>>();
-    let Ok(evidence) = load_currency_evidence(&state, &node_ids).await else {
-        return error_response(
-            "unknown",
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        );
-    };
-    let now = crate::auth::now_utc();
-    let mut networks: Vec<PublicNetwork> = Vec::new();
-    // One database-status reading and one set of country rows per response
-    // keep every Network's and every Node's Geo projection mutually
-    // consistent: a Network Geo Insight is the sum of its Active Node buckets,
-    // so the two can never drift apart. The batch is then restricted to
-    // exactly the Nodes this response lists, each with its Network: the rows
-    // above and the Geo rows below are separate reads, so a Node that changed
-    // lifecycle between them would otherwise be counted in a Network reading
-    // without being listed, and no browser could reproduce that reading from
-    // the buckets it was handed. A listed Node the Geo batch lost keeps its
-    // place in its Network's denominator without a reading of its own.
-    let listed_nodes: std::collections::BTreeMap<String, String> = rows
-        .iter()
-        .map(|row| (row.node_id.clone(), row.network_key.clone()))
-        .collect();
-    let mut geo_readings = PublicGeoReadings::load(&state, state.geo_status(), None).await;
-    geo_readings.restrict_to_listed_nodes(&listed_nodes);
-    for row in rows {
-        let network_key = row.network_key.clone();
-        let node_evidence = evidence.get(&row.node_id).cloned().unwrap_or_default();
-        let (network_display_name, node) = public_node(row, &node_evidence, now);
-        if let Some(network) = networks
-            .iter_mut()
-            .find(|network| network.network_key == network_key)
-        {
-            network.nodes.push(node);
-        } else {
-            networks.push(PublicNetwork {
-                network_key,
-                display_name: network_display_name,
-                peers: unknown_public_peer_insight(),
-                geo: unknown_public_geo_insight(),
-                validators: Vec::new(),
-                nodes: vec![node],
-                validator_summary: public_validator_summary(&[], &[]),
-            });
-        }
+pub(crate) async fn public_networks(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Response {
+    match public_projection(&state)
+        .networks(crate::auth::now_utc())
+        .await
+    {
+        Ok(networks) => Json(networks).into_response(),
+        Err(Unavailable) => database_unavailable(&request_id),
     }
-    for network in &mut networks {
-        network.peers = aggregate_peer_insight(&network.nodes);
-        network.geo = geo_readings.insight(&state, GeoScope::Network(&network.network_key));
-        for node in &mut network.nodes {
-            node.peer_countries = geo_readings.node_peer_countries(&node.node_id);
-        }
-        let links = listed_node_links(
-            &state,
-            now,
-            validator::LinkScope::Network(&network.network_key),
-            &network.nodes,
-        )
-        .await;
-        let validators = match links {
-            Ok(links) => public_validator_insights(&state, &network.network_key, &links)
-                .await
-                .map(|validators| (validators, links)),
-            Err(error) => Err(error),
-        };
-        match validators {
-            Ok((validators, links)) => {
-                network.validators = validators;
-                associate_node_validators(&network.validators, &links, &mut network.nodes);
-                network.validator_summary =
-                    public_validator_summary(&network.validators, &network.nodes);
-            }
-            Err(_) => {
-                return error_response(
-                    "unknown",
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "server database is unavailable",
-                );
-            }
-        }
-    }
-    Json(networks).into_response()
+}
+
+/// The Public Projection over this Server's database and current Geo and
+/// Validator settings.
+fn public_projection(state: &AppState) -> PublicProjection<'_> {
+    PublicProjection::new(
+        state.db(),
+        state.geo_config().provider,
+        state.geo_status(),
+        state.validator_freshness_seconds(),
+    )
+}
+
+fn database_unavailable(request_id: &RequestId) -> Response {
+    error_response(
+        &request_id.0,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "unavailable",
+        "server database is unavailable",
+    )
 }
 
 #[utoipa::path(
@@ -3463,66 +2241,21 @@ pub(crate) async fn public_node_detail(
     Path(node_id): Path<String>,
     Extension(request_id): Extension<RequestId>,
 ) -> Response {
-    let row = sqlx::query_as::<_, PublicNodeRow>(&public_node_query(
-        "n.node_id = $1 AND n.lifecycle = 'active'",
-        "n.node_id",
-    ))
-    .bind(&node_id)
-    .fetch_optional(state.db().pool())
-    .await;
-    match row {
-        Ok(Some(row)) => {
-            let Ok(mut evidence) = load_currency_evidence(&state, &[row.node_id.as_str()]).await
-            else {
-                return error_response(
-                    "unknown",
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "server database is unavailable",
-                );
-            };
-            let node_evidence = evidence.remove(&row.node_id).unwrap_or_default();
-            let now = crate::auth::now_utc();
-            let (_, node) = public_node(row, &node_evidence, now);
-            let network_key = node.network_key.clone();
-            let mut nodes = [node];
-            let scope = validator::LinkScope::Node(&nodes[0].node_id);
-            if let Ok(links) = listed_node_links(&state, now, scope, &nodes).await {
-                if let Ok(validators) =
-                    public_validator_insights(&state, &network_key, &links).await
-                {
-                    associate_node_validators(&validators, &links, &mut nodes);
-                }
-            }
-            let [mut node] = nodes;
-            // The Node Peer Country View and this Node's compact buckets come
-            // from one read of the same retained cache rows the Network
-            // projection uses, so the Node reading is exactly what Home shows
-            // with only this Node selected.
-            let geo_readings = PublicGeoReadings::load(
-                &state,
-                state.geo_status(),
-                Some(GeoScope::Node(&node.node_id)),
-            )
-            .await;
-            node.peer_countries = geo_readings.node_peer_countries(&node.node_id);
-            let geo = geo_readings.insight(&state, GeoScope::Node(&node.node_id));
-            Json(PublicNodeDetail { node, geo }).into_response()
-        }
+    match public_projection(&state)
+        .node(&node_id, crate::auth::now_utc())
+        .await
+    {
+        Ok(Some(detail)) => Json(detail).into_response(),
         Ok(None) => error_response(
             &request_id.0,
             StatusCode::NOT_FOUND,
             "not_found",
             "resource not found",
         ),
-        Err(_) => error_response(
-            &request_id.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "server database is unavailable",
-        ),
+        Err(Unavailable) => database_unavailable(&request_id),
     }
 }
+
 /// Non-sensitive Public access projection: the Site Access Mode and durable
 /// authorization generation. This is the only public
 /// route reachable without a Session in both modes: the WebUI needs it to
@@ -3685,6 +2418,8 @@ pub fn router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geo_test_support::geo_readings;
+    use crate::public_projection::{GeoScope, PUBLIC_GEO_ERROR};
     use axum::body::to_bytes;
     use tempfile::tempdir;
 
@@ -3698,30 +2433,6 @@ mod tests {
             "http://127.0.0.1:8080".to_owned(),
         );
         (dir, AppState::new(database, None, auth))
-    }
-
-    #[test]
-    fn geo_timing_reports_age_and_stale_boundary() {
-        let build_epoch = 1_700_000_000;
-        let now =
-            time::OffsetDateTime::from_unix_timestamp(build_epoch + 31 * 24 * 60 * 60).unwrap();
-        let status = crate::geo::GeoStatus {
-            state: "stale".to_owned(),
-            configured: true,
-            build_epoch: Some(build_epoch as u64),
-            digest: Some("digest".to_owned()),
-            loaded_at: Some("2026-01-01T00:00:00Z".to_owned()),
-            last_error: None,
-        };
-        let (age_seconds, stale_since) = geo_timing(&status, now);
-        assert_eq!(age_seconds, Some(31 * 24 * 60 * 60));
-        assert_eq!(
-            stale_since,
-            Some(crate::auth::format_rfc3339(
-                time::OffsetDateTime::from_unix_timestamp(build_epoch + 30 * 24 * 60 * 60,)
-                    .unwrap(),
-            )),
-        );
     }
 
     #[test]
@@ -3927,9 +2638,7 @@ mod tests {
     /// The same scoped Geo read the public handlers perform, so a test projects
     /// one Network or one Node exactly as a request would.
     async fn scoped_geo_insight(state: &AppState, scope: GeoScope<'_>) -> PublicGeoInsight {
-        PublicGeoReadings::load(state, state.geo_status(), Some(scope))
-            .await
-            .insight(state, scope)
+        geo_readings(state, Some(scope)).await.insight(scope)
     }
 
     async fn geo_insight_for(state: &AppState, network_key: &str) -> PublicGeoInsight {
@@ -4518,7 +3227,8 @@ mod tests {
         insert_geo_peer(&state, "geo-list-b", "list-b-2", None).await;
         insert_geo_cache(&state, "8.8.8.8", "US", 60, 3600).await;
 
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let by_key = |key: &str| {
@@ -4658,11 +3368,11 @@ mod tests {
         insert_geo_cache(&state, "7.7.7.7", "US", 60, 3600).await;
         insert_geo_cache(&state, "4.4.4.4", "DE", 60, 3600).await;
 
-        let mut readings = PublicGeoReadings::load(&state, state.geo_status(), None).await;
+        let mut readings = geo_readings(&state, None).await;
         // The response lists only Node A, so only Node A's bucket is read.
         readings.restrict_to_listed_nodes(&listed_nodes("mainnet", &["geo-scan-a"]));
 
-        let network = readings.insight(&state, GeoScope::Network("mainnet"));
+        let network = readings.insight(GeoScope::Network("mainnet"));
         assert_eq!(network.scope, "complete");
         assert_eq!(network.known_country_count, Some(1));
         assert_eq!(network.available_peer_count, Some(1));
@@ -4697,12 +3407,12 @@ mod tests {
         insert_geo_cache(&state, "7.7.7.7", "US", 60, 3600).await;
         insert_geo_cache(&state, "4.4.4.4", "DE", 60, 3600).await;
 
-        let mut readings = PublicGeoReadings::load(&state, state.geo_status(), None).await;
+        let mut readings = geo_readings(&state, None).await;
         // Node C was listed by the response the later Geo read never saw, and
         // Node B is no longer listed at all.
         readings.restrict_to_listed_nodes(&listed_nodes("mainnet", &["geo-scan-a", "geo-scan-c"]));
 
-        let network = readings.insight(&state, GeoScope::Network("mainnet"));
+        let network = readings.insight(GeoScope::Network("mainnet"));
         assert_eq!(network.scope, "partial");
         assert_eq!(network.known_country_count, Some(1));
         assert_eq!(network.available_peer_count, Some(1));
@@ -5044,7 +3754,8 @@ mod tests {
 
     /// One Network's Public Geo Insight from the real Public list route.
     async fn public_network_list(state: &AppState) -> serde_json::Value {
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         value
@@ -6601,7 +5312,7 @@ mod tests {
         seed_public_data(&state).await;
         seed_exact_head_transaction_fixtures(&state).await;
 
-        let response = public_networks(State(state)).await;
+        let response = public_networks(State(state), Extension(RequestId::for_test())).await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -6654,7 +5365,8 @@ mod tests {
         // chain row but value_revision=0 means they are not projected.
         seed_consensus_fixture(&state, "node-cons-error-none", "error", &now, 0, 0, 0, 0, 0).await;
 
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -6852,7 +5564,8 @@ mod tests {
                 .unwrap();
         }
 
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let node = value[0]["nodes"]
@@ -6956,7 +5669,8 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value[0]["nodes"].as_array().unwrap().len(), 2);
@@ -7072,7 +5786,8 @@ mod tests {
     async fn public_projection_includes_every_active_node_and_is_allowlisted() {
         let (_dir, state) = test_state().await;
         seed_public_data(&state).await;
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let status = response.status();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(
@@ -7209,7 +5924,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response = public_networks(State(state)).await;
+        let response = public_networks(State(state), Extension(RequestId::for_test())).await;
         let status = response.status();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
@@ -7252,7 +5967,8 @@ mod tests {
         .await;
 
         async fn first_validator(state: &AppState) -> serde_json::Value {
-            let response = public_networks(State(state.clone())).await;
+            let response =
+                public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
             let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
             serde_json::from_slice::<serde_json::Value>(&body).unwrap()[0]["validators"][0].clone()
         }
@@ -7349,7 +6065,8 @@ mod tests {
             .await
             .unwrap();
 
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let status = response.status();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
@@ -7364,7 +6081,8 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let validator = &value[0]["validators"][0];
@@ -7380,7 +6098,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_networks(State(state)).await;
+        let response = public_networks(State(state), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let validator = &value[0]["validators"][0];
@@ -7424,7 +6142,8 @@ mod tests {
             .await
             .unwrap();
 
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(
@@ -7449,7 +6168,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response = public_networks(State(state)).await;
+        let response = public_networks(State(state), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let validators = value[0]["validators"].as_array().unwrap();
@@ -7483,7 +6202,8 @@ mod tests {
             .await
             .unwrap();
 
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let validator = &value[0]["validators"][0];
@@ -7498,7 +6218,8 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let validator = &value[0]["validators"][0];
@@ -7512,7 +6233,8 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let validator = &value[0]["validators"][0];
@@ -7543,7 +6265,8 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value[0]["validators"][0]["genBlocksRate"], "0");
@@ -7554,7 +6277,8 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let validator = &value[0]["validators"][0];
@@ -7567,7 +6291,8 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(value[0]["validators"][0]["genBlocksRate"].is_null());
@@ -7596,7 +6321,8 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(
@@ -7611,7 +6337,8 @@ mod tests {
                 .execute(state.db().pool())
                 .await
                 .unwrap();
-            let response = public_networks(State(state.clone())).await;
+            let response =
+                public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
             let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
             let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(
@@ -7626,7 +6353,8 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let validator = &value[0]["validators"][0];
@@ -7639,7 +6367,7 @@ mod tests {
             .execute(state.db().pool())
             .await
             .unwrap();
-        let response = public_networks(State(state)).await;
+        let response = public_networks(State(state), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(value[0]["validators"][0]["delegationRewardPercentage"].is_null());
@@ -7662,7 +6390,7 @@ mod tests {
         )
         .await;
 
-        let response = public_networks(State(state)).await;
+        let response = public_networks(State(state), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let validator = &value[0]["validators"][0];
@@ -7696,7 +6424,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response = public_networks(State(state)).await;
+        let response = public_networks(State(state), Extension(RequestId::for_test())).await;
         let status = response.status();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
@@ -7733,14 +6461,15 @@ mod tests {
         // The default window (two 60s intervals) marks this last-good value
         // stale...
         let default_state = state.clone();
-        let response = public_networks(State(default_state)).await;
+        let response =
+            public_networks(State(default_state), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value[0]["validators"][0]["state"], "stale");
 
         // ... while a slower configured refresh keeps the same age fresh.
         let slow = state.with_validator_freshness_seconds(600);
-        let response = public_networks(State(slow)).await;
+        let response = public_networks(State(slow), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value[0]["validators"][0]["freshness"], "fresh");
@@ -7983,7 +6712,8 @@ mod tests {
                 .unwrap();
         }
 
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let status = response.status();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
@@ -8155,7 +6885,8 @@ mod tests {
     }
 
     async fn public_summary(state: &AppState, network_key: &str) -> serde_json::Value {
-        let response = public_networks(State(state.clone())).await;
+        let response =
+            public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         value
@@ -8516,6 +7247,51 @@ mod tests {
         let detail = public_node_detail_value(&state, "node-public").await;
         assert_eq!(detail["validator"]["validatorId"], "validator-b");
         assert_eq!(detail["validator"]["nodeId"], "node-public");
+    }
+
+    /// A Validator read failure is a database failure: the detail no longer
+    /// drops the Validator and answers 200, and both routes echo the request's
+    /// own id.
+    #[tokio::test]
+    async fn public_list_and_detail_answer_503_with_the_request_id_when_validators_are_unreadable()
+    {
+        let (_dir, state) = test_state().await;
+        seed_public_data(&state).await;
+        let now = crate::auth::format_rfc3339(crate::auth::now_utc());
+        seed_summary_validator(
+            &state,
+            "mainnet",
+            "node-public",
+            "validator-a",
+            "primary",
+            Some(100),
+            Some("10"),
+            Some(&now),
+        )
+        .await;
+        let detail = public_node_detail_value(&state, "node-public").await;
+        assert_eq!(detail["validator"]["validatorId"], "validator-a");
+
+        sqlx::query("DROP TABLE current_validator_insights")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+        let detail = public_node_detail(
+            State(state.clone()),
+            Path("node-public".to_owned()),
+            Extension(RequestId::for_test()),
+        )
+        .await;
+        assert_eq!(detail.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(detail.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body["error"]["requestId"], "test");
+        let list = public_networks(State(state.clone()), Extension(RequestId::for_test())).await;
+        assert_eq!(list.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(list.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(body["error"]["requestId"], "test");
     }
 
     #[tokio::test]

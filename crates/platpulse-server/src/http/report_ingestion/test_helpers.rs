@@ -133,7 +133,11 @@ pub(super) async fn body_json(response: axum::response::Response) -> serde_json:
 /// One Node exactly as the Home list route renders it, so the assertion
 /// proves the Public Projection the Home cards read.
 pub(super) async fn public_home_node(state: &AppState, node_id: &str) -> serde_json::Value {
-    let response = crate::http::public::public_networks(State(state.clone())).await;
+    let response = crate::http::public::public_networks(
+        State(state.clone()),
+        axum::Extension(crate::http::RequestId::for_test()),
+    )
+    .await;
     let body = body_json(response).await;
     body.as_array()
         .unwrap()

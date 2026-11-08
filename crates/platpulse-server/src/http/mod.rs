@@ -166,6 +166,14 @@ impl ApiErrorBody {
 #[derive(Clone)]
 pub(crate) struct RequestId(Arc<str>);
 
+#[cfg(test)]
+impl RequestId {
+    /// The fixed id a test hands a handler it calls directly.
+    pub(crate) fn for_test() -> Self {
+        Self(Arc::from("test"))
+    }
+}
+
 async fn request_metrics_middleware(
     State(state): State<AppState>,
     request: Request,
