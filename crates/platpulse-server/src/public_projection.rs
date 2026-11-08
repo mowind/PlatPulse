@@ -1,11 +1,15 @@
 //! The Public Projection: what Home reads about the Active Nodes, their
-//! Networks and their linked Validators. Every entry takes the instant `at`
+//! Networks and their linked Validators, and each Active Node's Block
+//! History, metrics and Peer history. Every entry takes the instant `at`
 //! its response is judged at, so one response never mixes two clocks; a
 //! database failure is [`Unavailable`] and a Node outside the projection
 //! is `None`, never a degraded body. The HTTP DTOs it fills stay in
 //! `http::public`.
 
+mod block_history;
 mod geo;
+mod metrics;
+mod peer_history;
 mod validators;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -15,14 +19,18 @@ use time::OffsetDateTime;
 use crate::database::ServerDatabase;
 use crate::geo::{GeoProvider, GeoStatus};
 use crate::http::public::{
-    PublicConsensusInsight, PublicNetwork, PublicNode, PublicNodeDetail, PublicPeerInsight,
+    PublicBlockHistoryItem, PublicConsensusInsight, PublicMetricWindow, PublicNetwork, PublicNode,
+    PublicNodeDetail, PublicNodeMetricHistory, PublicPeerHistory, PublicPeerInsight,
 };
 use crate::node_currency;
 use crate::validator;
 
+pub(crate) use block_history::BlockHistoryRange;
 #[cfg(test)]
 pub(crate) use geo::PUBLIC_GEO_ERROR;
 pub(crate) use geo::{GeoScope, PublicGeoReadings};
+#[cfg(test)]
+pub(crate) use metrics::PUBLIC_METRIC_SERIES;
 pub(crate) use validators::public_validator_summary;
 
 use geo::{unknown_public_geo_insight, unknown_public_node_peer_countries};
@@ -40,8 +48,25 @@ impl From<sqlx::Error> for Unavailable {
     }
 }
 
-/// The Node lifecycle the Public Projection lists.
+/// The Node lifecycle the Public Projection lists: the one definition of an
+/// Active Node every Public read filters on, written against the alias `n`
+/// for `nodes`.
 const ACTIVE_NODE: &str = "n.lifecycle = 'active'";
+
+/// The Agent of `node_id` when it is an Active Node. `None` keeps a retired or
+/// unknown Node out of every per-Node read before anything else is read, so
+/// a guessed retired Node ID is indistinguishable from a missing one.
+async fn active_node_agent(
+    db: &ServerDatabase,
+    node_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar::<_, String>(&format!(
+        "SELECT n.agent_id FROM nodes n WHERE n.node_id = $1 AND {ACTIVE_NODE}"
+    ))
+    .bind(node_id)
+    .fetch_optional(db.pool())
+    .await
+}
 
 /// Reads the Public Projection from one database with the Server's current
 /// Geo provider, Geo database status and Validator freshness limit.
@@ -220,6 +245,56 @@ impl<'a> PublicProjection<'a> {
         node.peer_countries = geo_readings.node_peer_countries(&node.node_id);
         let geo = geo_readings.insight(GeoScope::Node(&node.node_id));
         Ok(Some(PublicNodeDetail { node, geo }))
+    }
+
+    /// One Active Node's Block History within `range`, with raw Block
+    /// Summaries kept by the retention cutoff at `at`; `None` when the Node is
+    /// not in the projection.
+    pub async fn block_history(
+        &self,
+        node_id: &str,
+        range: BlockHistoryRange,
+        at: OffsetDateTime,
+    ) -> Result<Option<Vec<PublicBlockHistoryItem>>, Unavailable> {
+        if active_node_agent(self.db, node_id).await?.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(
+            block_history::block_history(self.db, node_id, range, at).await?,
+        ))
+    }
+
+    /// One Active Node's metrics for `window` ending at `at`, the Host series
+    /// read from the Node's Agent; `None` when the Node is not in the projection.
+    pub async fn metrics(
+        &self,
+        node_id: &str,
+        window: PublicMetricWindow,
+        at: OffsetDateTime,
+    ) -> Result<Option<PublicNodeMetricHistory>, Unavailable> {
+        let Some(agent_id) = active_node_agent(self.db, node_id).await? else {
+            return Ok(None);
+        };
+        let history = if window == PublicMetricWindow::Live {
+            metrics::live_metrics(self.db, node_id, &agent_id, at).await?
+        } else {
+            metrics::window_metrics(self.db, node_id, &agent_id, window, at).await?
+        };
+        Ok(Some(history))
+    }
+
+    /// One Active Node's Peer history with its freshness judged at `at`;
+    /// `None` when the Node is not in the projection.
+    pub async fn peer_history(
+        &self,
+        node_id: &str,
+        at: OffsetDateTime,
+    ) -> Result<Option<PublicPeerHistory>, Unavailable> {
+        if active_node_agent(self.db, node_id).await?.is_none() {
+            return Ok(None);
+        }
+        let history = crate::peer_history::load_history(self.db.pool(), node_id, at).await?;
+        Ok(Some(peer_history::public_peer_history(history)))
     }
 }
 

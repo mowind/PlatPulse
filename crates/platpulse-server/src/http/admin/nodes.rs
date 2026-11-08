@@ -740,7 +740,9 @@ pub(super) async fn admin_node_peer_history(
             ),
         };
     }
-    match crate::peer_history::load_history(state.db().pool(), &node_id).await {
+    match crate::peer_history::load_history(state.db().pool(), &node_id, crate::auth::now_utc())
+        .await
+    {
         Ok(history) => Json(admin_peer_history(history)).into_response(),
         Err(_) => mutation_error(
             &request_id.0,

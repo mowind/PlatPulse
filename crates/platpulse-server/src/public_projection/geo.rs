@@ -8,6 +8,8 @@ use crate::database::ServerDatabase;
 use crate::geo::GeoProvider;
 use crate::http::public::{PublicCountryCount, PublicGeoInsight, PublicNodePeerCountries};
 
+use super::ACTIVE_NODE;
+
 pub(crate) const PUBLIC_GEO_ERROR: &str = "Country data is currently unavailable";
 
 pub(super) fn unknown_public_geo_insight() -> PublicGeoInsight {
@@ -412,7 +414,7 @@ async fn load_node_geo(
     // provider's retained rows are usable: a result left over from another
     // provider is not a country for the current projection.
     let sql = format!(
-        "SELECT p.node_id, n.network_key, g.country_code, COUNT(*) AS record_count, CAST(COALESCE(SUM(CASE WHEN g.country_code IS NOT NULL AND g.created_at > ? THEN 1 ELSE 0 END), 0) AS BIGINT) AS known_count, CAST(COALESCE(SUM(CASE WHEN g.country_code IS NOT NULL AND g.created_at > ? AND (g.expires_at IS NULL OR g.expires_at <= ?) THEN 1 ELSE 0 END), 0) AS BIGINT) AS stale_count, CAST(COALESCE(SUM(CASE WHEN g.country_code IS NULL AND p.remote_ip IS NULL THEN 1 ELSE 0 END), 0) AS BIGINT) AS unknown_without_remote_ip_count FROM current_node_peers p JOIN nodes n ON n.node_id = p.node_id LEFT JOIN geo_location_cache g ON g.provider = ? AND g.canonical_ip = p.remote_ip WHERE n.lifecycle = 'active'{filter} GROUP BY p.node_id, n.network_key, g.country_code"
+        "SELECT p.node_id, n.network_key, g.country_code, COUNT(*) AS record_count, CAST(COALESCE(SUM(CASE WHEN g.country_code IS NOT NULL AND g.created_at > ? THEN 1 ELSE 0 END), 0) AS BIGINT) AS known_count, CAST(COALESCE(SUM(CASE WHEN g.country_code IS NOT NULL AND g.created_at > ? AND (g.expires_at IS NULL OR g.expires_at <= ?) THEN 1 ELSE 0 END), 0) AS BIGINT) AS stale_count, CAST(COALESCE(SUM(CASE WHEN g.country_code IS NULL AND p.remote_ip IS NULL THEN 1 ELSE 0 END), 0) AS BIGINT) AS unknown_without_remote_ip_count FROM current_node_peers p JOIN nodes n ON n.node_id = p.node_id LEFT JOIN geo_location_cache g ON g.provider = ? AND g.canonical_ip = p.remote_ip WHERE {ACTIVE_NODE}{filter} GROUP BY p.node_id, n.network_key, g.country_code"
     );
     let sql = crate::database::number_placeholders(&sql);
     let mut rows = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, i64, i64)>(&sql)
@@ -427,7 +429,7 @@ async fn load_node_geo(
     // The denominator is one row per Active Node in scope, whether or not it
     // currently has any Peer record.
     let sql = format!(
-        "SELECT n.node_id, n.network_key, CAST(COALESCE(SUM(CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN 1 ELSE 0 END), 0) AS BIGINT) FROM nodes n LEFT JOIN component_status ps ON ps.node_id = n.node_id AND ps.component_key = 'peers' WHERE n.lifecycle = 'active'{filter} GROUP BY n.node_id, n.network_key"
+        "SELECT n.node_id, n.network_key, CAST(COALESCE(SUM(CASE WHEN COALESCE(ps.value_revision, 0) > 0 THEN 1 ELSE 0 END), 0) AS BIGINT) FROM nodes n LEFT JOIN component_status ps ON ps.node_id = n.node_id AND ps.component_key = 'peers' WHERE {ACTIVE_NODE}{filter} GROUP BY n.node_id, n.network_key"
     );
     let sql = crate::database::number_placeholders(&sql);
     let mut denominator = sqlx::query_as::<_, (String, String, i64)>(&sql);

@@ -292,7 +292,7 @@ fn judged_range(
         points,
         segments,
         // The block series have no value-less ledger: block_summaries is
-        // their only record (see `public::metric_series_has_ledger`).
+        // their only record (see `public_projection::metrics::metric_series_has_ledger`).
         ledger: None,
         gaps: continuity.gaps,
         coverage_seconds: continuity.coverage_seconds,

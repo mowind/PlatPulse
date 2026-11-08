@@ -1515,9 +1515,10 @@ mod tests {
                 .unwrap(),
             0
         );
-        let history = crate::peer_history::load_history(state.db().pool(), node_id)
-            .await
-            .unwrap();
+        let history =
+            crate::peer_history::load_history(state.db().pool(), node_id, crate::auth::now_utc())
+                .await
+                .unwrap();
         assert_eq!(history.state, "empty");
         assert_eq!(history.five_minute[0].total_peers, 4);
         sqlx::query("UPDATE component_status SET state='starting' WHERE node_id=$1 AND component_key='peers'")
@@ -1526,7 +1527,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            crate::peer_history::load_history(state.db().pool(), node_id)
+            crate::peer_history::load_history(state.db().pool(), node_id, crate::auth::now_utc())
                 .await
                 .unwrap()
                 .state,
