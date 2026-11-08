@@ -74,13 +74,11 @@ pub(crate) async fn set_visibility(
             );
         }
     };
-    let before = sqlx::query_as::<_, (String, String)>(
-        "SELECT visibility, network_key FROM nodes WHERE node_id = $1",
-    )
-    .bind(&node_id)
-    .fetch_optional(&mut *tx)
-    .await;
-    let Some((previous, network_key)) = (match before {
+    let before = sqlx::query_scalar::<_, String>("SELECT visibility FROM nodes WHERE node_id = $1")
+        .bind(&node_id)
+        .fetch_optional(&mut *tx)
+        .await;
+    let Some(previous) = (match before {
         Ok(value) => value,
         Err(_) => {
             return mutation_error(
@@ -139,18 +137,8 @@ pub(crate) async fn set_visibility(
     let revision = changed_at.bytes().fold(0_u64, |acc, byte| {
         acc.wrapping_mul(31).wrapping_add(byte as u64)
     });
-    if body.visibility == "public" {
-        state
-            .public_realtime()
-            .publish("node", Some(node_id.clone()), revision);
-        state
-            .public_realtime()
-            .publish("network", Some(network_key), revision);
-    } else {
-        state
-            .public_realtime()
-            .publish_reset("collection", revision);
-    }
+    // Visibility is Admin-only metadata: the Public Projection filters on
+    // lifecycle alone, so no Home reader has anything to refetch.
     state
         .admin_realtime()
         .publish("node", Some(node_id.clone()), revision);
@@ -370,16 +358,21 @@ mod tests {
         );
         headers.insert(header::ORIGIN, "http://127.0.0.1:8080".parse().unwrap());
         headers.insert("x-csrf-token", "csrf".parse().unwrap());
+        let public_before = state.public_realtime().current_id();
+        let admin_before = state.admin_realtime().current_id();
         let response = set_visibility(
             State(state.clone()),
             Path("node-visibility-test".to_owned()),
-            headers,
-            Extension(AuthenticatedSession(session)),
+            headers.clone(),
+            Extension(AuthenticatedSession(session.clone())),
             Extension(crate::http::RequestId(std::sync::Arc::from("request"))),
             axum::body::Bytes::from_static(br#"{"visibility":"public"}"#),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
+        // Home never reads visibility, so only the Admin view is invalidated.
+        assert_eq!(state.public_realtime().current_id(), public_before);
+        assert!(state.admin_realtime().current_id() > admin_before);
         let visibility: String = sqlx::query_scalar(
             "SELECT visibility FROM nodes WHERE node_id = 'node-visibility-test'",
         )
@@ -396,6 +389,20 @@ mod tests {
         assert!(before.contains("private"));
         assert!(after.contains("public"));
         assert_eq!(actor, "owner");
+
+        let admin_before = state.admin_realtime().current_id();
+        let response = set_visibility(
+            State(state.clone()),
+            Path("node-visibility-test".to_owned()),
+            headers,
+            Extension(AuthenticatedSession(session)),
+            Extension(crate::http::RequestId(std::sync::Arc::from("request"))),
+            axum::body::Bytes::from_static(br#"{"visibility":"private"}"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(state.public_realtime().current_id(), public_before);
+        assert!(state.admin_realtime().current_id() > admin_before);
     }
 
     #[tokio::test]
