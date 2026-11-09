@@ -499,55 +499,44 @@ async fn unapplied_closing(
     )
 }
 
-/// Build and persist the canonical immutable Closing for the current Boot,
-/// reusing the shutdown report builder so the wire shape is identical to a
-/// graceful shutdown.
+/// Build and persist the canonical immutable Closing for the current Boot
+/// through the same Closing module a graceful shutdown uses, so the wire shape
+/// is identical. Preparation refuses a Server-managed configuration, so the
+/// stored body is the frozen v1 representation the evidence capture rereads.
 async fn persist_final_closing(
     store: &mut AgentStore,
     config: &AgentConfig,
     state: &PreparationState,
     sender_deadline: Duration,
 ) -> Result<String, PreparationError> {
-    let agent_id = state.boot.agent_id;
-    let boot_id = state.boot.boot_id.ok_or(PreparationError::NotEnrolled)?;
-    let inventory = config.validated_inventory()?.inventory;
-    let last_good = crate::collector::load_last_report(store).await?;
-    let mut report = crate::shutdown::build_shutdown_report(
-        config,
-        agent_id,
-        state.boot.agent_epoch,
-        boot_id,
-        state.boot.report_sequence + 1,
-        inventory,
-        last_good.as_ref(),
-    )
-    .map_err(|error| PreparationError::InvalidReport(error.to_string()))?;
-    report.block_summaries = crate::block::load_block_summaries(store).await?;
-    let monitored_nodes = report
-        .inventory
-        .nodes
-        .iter()
-        .map(|node| node.node_id)
-        .collect::<Vec<_>>();
-    report.history_gaps = crate::block::load_history_gaps(store, &monitored_nodes).await?;
-    report.host.spool = crate::collector::current_spool_diagnostics(store)
-        .await
-        .map(|value| crate::collector::ok(value, report.generated_at))
-        .map_err(PreparationError::Database)?;
-    if let Some(spool) = report.host.spool.latest.as_mut() {
-        crate::shutdown_record::ShutdownRecord::ClosingStored {
-            started_at: report.generated_at,
-            deadline_at: crate::shutdown::started_at_plus(report.generated_at, sender_deadline),
-        }
-        .describe(spool);
+    if state.boot.boot_id.is_none() {
+        return Err(PreparationError::NotEnrolled);
     }
-    report
-        .validate()
-        .map_err(|error| PreparationError::InvalidReport(error.to_string()))?;
-    let body = serde_json::to_vec(&report)?;
-    let report_id = report.report_id.to_string();
-    crate::reporting::persist_closing_report(store, &body, &state.boot).await?;
-    Ok(report_id)
+    let started_at = crate::collector::timestamp();
+    let closing = crate::closing::store_restated_closing(
+        store,
+        config,
+        &state.boot,
+        crate::shutdown_record::ShutdownRecord::ClosingStored {
+            started_at,
+            deadline_at: crate::shutdown::started_at_plus(started_at, sender_deadline),
+        },
+    )
+    .await
+    .map_err(closing_error)?;
+    Ok(closing.report_id.to_string())
+}
+
+/// Keep a storage or delivery failure distinguishable from an invalid Closing.
+fn closing_error(error: crate::collector::CollectionError) -> PreparationError {
+    use crate::collector::CollectionError;
+    match error {
+        CollectionError::Database(error) => PreparationError::Database(error),
+        CollectionError::Store(error) => PreparationError::Store(error),
+        CollectionError::Report(error) => PreparationError::Delivery(error),
+        CollectionError::Serialization(error) => PreparationError::Serialization(error),
+        other => PreparationError::InvalidReport(other.to_string()),
+    }
 }
 
 /// Capture the complete declaration from the persisted Closing body. The body

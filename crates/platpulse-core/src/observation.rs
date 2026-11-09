@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::component::ComponentObservation;
+use crate::component::{ComponentObservation, keep_optional_last_good};
 use crate::hex::FingerprintHex;
 use crate::identity::{NodeId, ReportId};
 use crate::network::NetworkIdentity;
@@ -42,6 +42,32 @@ pub struct HostObservation {
     pub clock_skew: ComponentObservation<i64>,
     /// AgentStore/spool state.
     pub spool: ComponentObservation<SpoolDiagnostics>,
+}
+
+impl HostObservation {
+    /// Carry every Host component's last-good value from `previous` through a
+    /// failed attempt (see [`ComponentObservation::keep_last_good`]).
+    pub fn keep_last_good(&mut self, previous: &Self) {
+        // Destructured so a new Host component cannot be added without
+        // deciding whether its value survives a failed attempt.
+        let Self {
+            cpu_percent,
+            memory,
+            load,
+            disk,
+            network_throughput,
+            monotonic_elapsed_ms: _,
+            clock_skew,
+            spool,
+        } = self;
+        cpu_percent.keep_last_good(&previous.cpu_percent);
+        memory.keep_last_good(&previous.memory);
+        load.keep_last_good(&previous.load);
+        disk.keep_last_good(&previous.disk);
+        network_throughput.keep_last_good(&previous.network_throughput);
+        clock_skew.keep_last_good(&previous.clock_skew);
+        spool.keep_last_good(&previous.spool);
+    }
 }
 
 /// Host memory snapshot.
@@ -289,6 +315,33 @@ pub struct NodeObservation {
     pub chain: NodeChainObservation,
 }
 
+impl NodeObservation {
+    /// Carry every component's last-good value from `previous`, the same
+    /// Node's earlier observation, through a failed attempt (see
+    /// [`ComponentObservation::keep_last_good`]). The caller pairs the two
+    /// observations by `node_id`; values never cross Nodes.
+    pub fn keep_last_good(&mut self, previous: &Self) {
+        let Self {
+            node_id: _,
+            process,
+            data_directory_size_bytes,
+            data_directory_capacity_bytes,
+            monotonic_elapsed_ms: _,
+            chain,
+        } = self;
+        process.keep_last_good(&previous.process);
+        keep_optional_last_good(
+            data_directory_size_bytes,
+            &previous.data_directory_size_bytes,
+        );
+        keep_optional_last_good(
+            data_directory_capacity_bytes,
+            &previous.data_directory_capacity_bytes,
+        );
+        chain.keep_last_good(&previous.chain);
+    }
+}
+
 /// Node process snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -328,6 +381,27 @@ pub struct NodeChainObservation {
         deserialize_with = "crate::component::strict_optional"
     )]
     pub peers: Option<ComponentObservation<PeerSnapshot>>,
+}
+
+impl NodeChainObservation {
+    /// Carry every chain component's last-good value from `previous` through
+    /// a failed attempt (see [`ComponentObservation::keep_last_good`]).
+    pub fn keep_last_good(&mut self, previous: &Self) {
+        let Self {
+            rpc,
+            sync,
+            consensus,
+            network_identity,
+            static_metadata,
+            peers,
+        } = self;
+        rpc.keep_last_good(&previous.rpc);
+        sync.keep_last_good(&previous.sync);
+        consensus.keep_last_good(&previous.consensus);
+        network_identity.keep_last_good(&previous.network_identity);
+        static_metadata.keep_last_good(&previous.static_metadata);
+        keep_optional_last_good(peers, &previous.peers);
+    }
 }
 
 /// RPC reachability + capability probe results.

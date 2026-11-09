@@ -571,77 +571,7 @@ pub fn collect_host(
     }
 }
 
-/// Carry a component's last successful value through a failed attempt while
-/// retaining the current attempt state and error. This is the Agent-side
-/// half of the Observation Envelope last-good contract; the Server applies
-/// the same rule again at its Current Projection boundary.
-pub(crate) fn preserve_last_good<T: Clone>(
-    current: &mut ComponentObservation<T>,
-    previous: &ComponentObservation<T>,
-) {
-    if current.status == ComponentStatus::Error
-        && current.latest.is_none()
-        && previous.latest.is_some()
-    {
-        current.latest = previous.latest.clone();
-        current.latest_observed_at = previous.latest_observed_at;
-        current.value_revision = previous.value_revision;
-    }
-}
-
-fn preserve_last_good_values(current: &mut AgentReport, previous: &AgentReport) {
-    preserve_last_good(&mut current.host.cpu_percent, &previous.host.cpu_percent);
-    preserve_last_good(&mut current.host.memory, &previous.host.memory);
-    preserve_last_good(&mut current.host.load, &previous.host.load);
-    preserve_last_good(&mut current.host.disk, &previous.host.disk);
-    preserve_last_good(
-        &mut current.host.network_throughput,
-        &previous.host.network_throughput,
-    );
-    preserve_last_good(&mut current.host.clock_skew, &previous.host.clock_skew);
-    preserve_last_good(&mut current.host.spool, &previous.host.spool);
-
-    for node in &mut current.nodes {
-        let Some(previous_node) = previous
-            .nodes
-            .iter()
-            .find(|candidate| candidate.node_id == node.node_id)
-        else {
-            continue;
-        };
-        preserve_last_good(&mut node.process, &previous_node.process);
-        if let (Some(current_data_directory), Some(previous_data_directory)) = (
-            &mut node.data_directory_size_bytes,
-            &previous_node.data_directory_size_bytes,
-        ) {
-            preserve_last_good(current_data_directory, previous_data_directory);
-        }
-        if let (Some(current_data_directory), Some(previous_data_directory)) = (
-            &mut node.data_directory_capacity_bytes,
-            &previous_node.data_directory_capacity_bytes,
-        ) {
-            preserve_last_good(current_data_directory, previous_data_directory);
-        }
-        preserve_last_good(&mut node.chain.rpc, &previous_node.chain.rpc);
-        preserve_last_good(&mut node.chain.sync, &previous_node.chain.sync);
-        preserve_last_good(&mut node.chain.consensus, &previous_node.chain.consensus);
-        preserve_last_good(
-            &mut node.chain.network_identity,
-            &previous_node.chain.network_identity,
-        );
-        preserve_last_good(
-            &mut node.chain.static_metadata,
-            &previous_node.chain.static_metadata,
-        );
-        if let (Some(current_peers), Some(previous_peers)) =
-            (&mut node.chain.peers, &previous_node.chain.peers)
-        {
-            preserve_last_good(current_peers, previous_peers);
-        }
-    }
-}
-
-fn add_sample_capabilities(report: &mut AgentReport) {
+pub(crate) fn add_sample_capabilities(report: &mut AgentReport) {
     if !report.block_summaries.is_empty()
         && !report
             .agent_capabilities
@@ -656,7 +586,7 @@ fn add_sample_capabilities(report: &mut AgentReport) {
 /// Serialize a built report under the Agent's configured protocol. A
 /// Server-managed (v2) Agent persists the revision-excluded declaration form;
 /// the transient v1 shape never reaches the wire.
-fn report_body_bytes(
+pub(crate) fn report_body_bytes(
     report: &AgentReport,
     server_managed_inventory: bool,
 ) -> Result<Vec<u8>, CollectionError> {
@@ -982,7 +912,7 @@ fn reconcile_precollected_directory_observations(
         .collect()
 }
 
-fn closing_directory_observations(
+pub(crate) fn closing_directory_observations(
     paths: &HashMap<NodeId, std::path::PathBuf>,
     inventory: &NodeInventory,
     previous: Option<&AgentReport>,
@@ -1016,7 +946,7 @@ fn closing_directory_observations(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn collect_report_with_data_directories<A: RpcAdapter>(
+pub(crate) fn collect_report_with_data_directories<A: RpcAdapter>(
     config: &AgentConfig,
     agent_id: AgentId,
     agent_epoch: u64,
@@ -1231,40 +1161,7 @@ pub(crate) async fn recover_previous_boot_with_transport<A: RpcAdapter, T: Repor
         }
     }
 
-    let validated = config
-        .validated_inventory()
-        .map_err(|error| CollectionError::Identity(error.to_string()))?;
-    let previous = load_last_report(&mut store).await?;
-    let at = timestamp();
-    let data_directories = closing_directory_observations(
-        &validated.data_directories,
-        &validated.inventory,
-        previous.as_ref(),
-        at,
-    );
-    let mut closing = collect_report_with_data_directories(
-        config,
-        draining.agent_id,
-        draining.agent_epoch,
-        boot_id,
-        draining.report_sequence + 1,
-        validated.inventory,
-        adapter,
-        clock_skew_error(at, "Server time exchange was unavailable during recovery"),
-        &data_directories,
-    )?;
-    if let Some(previous) = previous.as_ref() {
-        preserve_last_good_values(&mut closing, previous);
-    }
-    closing.boot_transition = BootTransition::Closing;
-    closing.previous_boot_id = None;
-    closing.block_summaries.clear();
-    closing.history_gaps.clear();
-    closing
-        .validate()
-        .map_err(|error| CollectionError::Identity(error.to_string()))?;
-    let body = report_body_bytes(&closing, validated.server_managed_inventory)?;
-    crate::reporting::persist_closing_report(&mut store, &body, &draining).await?;
+    crate::closing::store_probed_closing(&mut store, config, &draining, adapter).await?;
     match send_oldest(&mut store, transport, SendBudget::Unbounded).await? {
         Sent::Applied(delivered) if delivered.closes_boot(boot_id) => {
             store.close().await?;
@@ -1377,7 +1274,7 @@ async fn collect_and_persist_in_store_with_data_directories<A: RpcAdapter>(
         &data_directories,
     )?;
     if let Some(previous) = previous.as_ref() {
-        preserve_last_good_values(&mut report, previous);
+        report.keep_last_good(previous);
     }
     report.boot_transition = next.boot_transition;
     report.previous_boot_id = next.previous_boot_id;
@@ -2013,7 +1910,7 @@ pub(crate) async fn collect_and_persist_with_blocks_with_permit<A: RpcAdapter>(
         &data_directories,
     )?;
     if let Some(previous) = previous.as_ref() {
-        preserve_last_good_values(&mut report, previous);
+        report.keep_last_good(previous);
     }
     for node in &inventory.nodes {
         let Some(identity) = report
@@ -2999,32 +2896,6 @@ mod tests {
             Some(3)
         );
         assert_eq!(observations[&second_id].size_bytes.latest, Some(7));
-    }
-
-    #[test]
-    fn failed_component_keeps_last_good_value_and_current_error() {
-        let at = "2026-08-20T00:00:00Z".parse().unwrap();
-        let previous = ok(42_u64, at);
-        let mut current = error(at, "rpc_unreachable", "RPC probe failed");
-
-        preserve_last_good(&mut current, &previous);
-
-        assert_eq!(current.status, ComponentStatus::Error);
-        assert_eq!(current.error.as_ref().unwrap().code, "rpc_unreachable");
-        assert_eq!(current.latest, Some(42));
-        assert_eq!(current.latest_observed_at, Some(at));
-        assert_eq!(current.value_revision, 1);
-    }
-
-    #[test]
-    fn authoritative_empty_success_is_not_replaced_by_last_good() {
-        let at = "2026-08-20T00:00:00Z".parse().unwrap();
-        let previous = ok(vec![1_u64], at);
-        let mut current = ok(Vec::<u64>::new(), at);
-
-        preserve_last_good(&mut current, &previous);
-
-        assert_eq!(current.latest, Some(Vec::<u64>::new()));
     }
 
     #[test]

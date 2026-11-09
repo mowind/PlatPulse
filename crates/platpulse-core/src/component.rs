@@ -103,6 +103,37 @@ pub struct ComponentObservation<T> {
     pub error: Option<BoundedError>,
 }
 
+impl<T: Clone> ComponentObservation<T> {
+    /// Carry the last successful value of `previous` through this failed
+    /// attempt. The attempt state and error of `self` stay; only a failed
+    /// attempt that has no value of its own takes `previous`'s value, its
+    /// observation time and its value revision. A success (including an
+    /// authoritative empty value) and a `disabled`/`unsupported`/`starting`
+    /// component are left untouched, so a value never outlives the
+    /// configuration that produced it.
+    pub fn keep_last_good(&mut self, previous: &Self) {
+        if self.status == ComponentStatus::Error
+            && self.latest.is_none()
+            && previous.latest.is_some()
+        {
+            self.latest = previous.latest.clone();
+            self.latest_observed_at = previous.latest_observed_at;
+            self.value_revision = previous.value_revision;
+        }
+    }
+}
+
+/// [`ComponentObservation::keep_last_good`] for a component older Agents
+/// omit: only a component present in both observations carries a value.
+pub(crate) fn keep_optional_last_good<T: Clone>(
+    current: &mut Option<ComponentObservation<T>>,
+    previous: &Option<ComponentObservation<T>>,
+) {
+    if let (Some(current), Some(previous)) = (current, previous) {
+        current.keep_last_good(previous);
+    }
+}
+
 /// Stable lowercase keys identifying each component in receipts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -365,6 +396,56 @@ mod tests {
             error: None,
         };
         assert_eq!(validate_component("x", &disabled), Ok(()));
+    }
+
+    fn failed() -> ComponentObservation<u64> {
+        ComponentObservation {
+            status: ComponentStatus::Error,
+            attempted_at: Some("2026-08-12T10:05:00Z".parse().unwrap()),
+            latest_observed_at: None,
+            received_at: None,
+            state_revision: 2,
+            value_revision: 0,
+            latest: None,
+            error: Some(BoundedError {
+                code: "rpc_unreachable".into(),
+                message: "RPC probe failed".into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_failed_attempt_keeps_the_last_good_value_and_its_own_error() {
+        let mut current = failed();
+        current.keep_last_good(&component());
+
+        assert_eq!(current.status, ComponentStatus::Error);
+        assert_eq!(current.error.as_ref().unwrap().code, "rpc_unreachable");
+        assert_eq!(current.attempted_at, failed().attempted_at);
+        assert_eq!(current.state_revision, 2);
+        assert_eq!(current.latest, Some(42));
+        assert_eq!(current.latest_observed_at, component().latest_observed_at);
+        assert_eq!(current.value_revision, 1);
+        assert_eq!(validate_component("x", &current), Ok(()));
+    }
+
+    #[test]
+    fn only_a_failed_attempt_without_a_value_takes_the_last_good_value() {
+        let mut empty_success = component();
+        empty_success.latest = Some(0);
+        empty_success.keep_last_good(&component());
+        assert_eq!(empty_success.latest, Some(0));
+
+        let mut disabled = failed();
+        disabled.status = ComponentStatus::Disabled;
+        disabled.error = None;
+        disabled.keep_last_good(&component());
+        assert_eq!(disabled.latest, None);
+
+        let mut never_observed = failed();
+        never_observed.keep_last_good(&failed());
+        assert_eq!(never_observed.latest, None);
+        assert_eq!(never_observed.latest_observed_at, None);
     }
 
     #[test]

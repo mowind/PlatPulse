@@ -747,8 +747,8 @@ mod tests {
     ///
     /// This test submits a report observed two hours ago with a known skew, then
     /// submits a Closing report that re-carries those Node observations (as
-    /// build_shutdown_report does) but whose Host carries the last-good clock_skew
-    /// (the fixed behaviour). The Server must still treat the Node as Stale after
+    /// the Agent's restated Closing does) but whose Host carries the last-good
+    /// clock_skew (the fixed behaviour). The Server must still treat the Node as Stale after
     /// the Closing.
     #[tokio::test]
     pub(super) async fn closing_report_with_last_good_skew_keeps_the_node_stale() {
@@ -772,8 +772,8 @@ mod tests {
         assert_eq!(node["health"], "unknown", "pre-condition: {node}");
         assert_eq!(node["currency"], "stale", "pre-condition: {node}");
 
-        // Build a Closing report that mirrors what a fixed build_shutdown_report
-        // produces: Nodes are copied verbatim from the last-good report, and the
+        // Build a Closing report that mirrors the Agent's restated Closing:
+        // Nodes are copied verbatim from the last-good report, and the
         // Host carries the last-good clock_skew (zero here).  The Closing itself
         // is stamped now (generated_at = now, sync observation = two hours ago).
         let mut closing = stale_report.clone();
@@ -782,7 +782,7 @@ mod tests {
         closing["report_sequence"] = serde_json::json!(2);
         closing["boot_transition"] = serde_json::json!("closing");
         // Restamp generated_at to now so the envelope is fresh; observation
-        // instants inside nodes stay two hours old, matching build_shutdown_report.
+        // instants inside nodes stay two hours old, as in a restated Closing.
         let now_text = crate::auth::format_rfc3339(crate::auth::now_utc());
         closing["generated_at"] = serde_json::json!(now_text);
         // Host clock_skew carries the last-good value (zero skew, status ok) —
