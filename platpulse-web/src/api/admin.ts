@@ -8,7 +8,7 @@
 // the matching Admin REST resource through the cache.
 
 import { QueryClient, useQuery } from '@tanstack/react-query'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect } from 'react'
 import { hostMetricNeedsMount, METRIC_HISTORY_SAMPLE_LIMIT } from '../metricHistory'
 import {
   PEER_RANGE_LIMIT,
@@ -17,11 +17,12 @@ import {
   type InvestigationRequest,
 } from '../nodeInvestigation'
 import {
-  requestGenerated,
-  setActiveAccessGeneration,
-  TransportError,
-  useRealtimeCursor,
-} from './transport'
+  createInvalidationChannel,
+  useInvalidationStream,
+  type InvalidationTarget,
+  type RealtimeState,
+} from './realtime'
+import { requestGenerated, setActiveAccessGeneration, TransportError } from './transport'
 import {
   applySiteAccessSettings,
   resetPublicCache,
@@ -109,6 +110,7 @@ import {
   type GeoStatusDiagnostic,
   type HistoryWindowResponse,
   type AdminNetwork,
+  type AdminResource,
   type AlertRuleDetail,
   type AlertRuleSummary,
   type AlertRuleUpdateRequest,
@@ -361,6 +363,92 @@ const adminKeys = {
   storage: ['admin', 'storage'] as const,
 }
 
+const prefixes = (...keys: ReadonlyArray<readonly unknown[]>): InvalidationTarget[] =>
+  keys.map((prefix) => ({ prefix }))
+
+/** Admin's realtime channel. A reset on the `invalidation` stream (a purge, an
+ *  Agent removal, a stale cursor, a Server restart) refetches the namespace;
+ *  only `event: reset` re-checks access. */
+export const adminRealtime = createInvalidationChannel<AdminResource>({
+  surface: 'admin',
+  queryClient: adminQueryClient,
+  root: adminKeys.all,
+  inStreamReset: 'refetch',
+  targets: {
+    node: (nodeId) => nodeId
+      ? prefixes(
+          adminKeys.overview,
+          adminKeys.diagnostics,
+          adminKeys.nodes,
+          adminKeys.networks,
+          adminKeys.nodeDetail(nodeId),
+          adminKeys.nodePeerChurn(nodeId),
+          adminKeys.nodePeerHistory(nodeId),
+          adminKeys.nodeTransfers(nodeId),
+          adminKeys.nodeMetricHistoryRoot(nodeId),
+          // The recorded sync/consensus states are the Node's own evidence, so
+          // a signal that changes what it reports changes them as well.
+          adminKeys.nodeStateHistoryRoot(nodeId),
+          // The Host series a Node page reads are the Agent's, so a Node
+          // signal refreshes that page's view of them too.
+          adminKeys.nodeHostMetricHistoryRoot(nodeId),
+        )
+      : prefixes(adminKeys.all),
+    peer: () => prefixes(adminKeys.overview, adminKeys.nodes, adminKeys.networks),
+    // Agent lifecycle and report changes affect the overview, the
+    // diagnostics-backed Agent inventory, and any open Agent detail, audit or
+    // stored-evidence view, but not the independent Node registry query
+    // unless the Server emits a Node invalidation too.
+    agent: (agentId) => agentId
+      ? prefixes(
+          adminKeys.overview,
+          adminKeys.diagnostics,
+          adminKeys.agentDetail(agentId),
+          adminKeys.agentAudit(agentId),
+          adminKeys.agentHostMetricHistoryRoot(agentId),
+          adminKeys.agentStorageMounts(agentId),
+        )
+      : prefixes(adminKeys.overview, adminKeys.diagnostics),
+    // Geo invalidations come from report ingestion, the background resolution
+    // path, and the provider selection itself; the Settings card and the
+    // retained Node/Network panels all refetch.
+    geo: () => prefixes(adminKeys.geo, adminKeys.nodes, adminKeys.networks),
+    network: (networkKey) => prefixes(
+      adminKeys.overview,
+      adminKeys.networks,
+      adminKeys.validators,
+      adminKeys.validatorLinks,
+      adminKeys.validatorIdentities,
+      adminKeys.nodes,
+      ...(networkKey ? [adminKeys.networkDetail(networkKey)] : []),
+    ),
+    validator: (validatorId) => prefixes(
+      adminKeys.validators,
+      adminKeys.validatorLinks,
+      adminKeys.validatorIdentities,
+      adminKeys.nodes,
+      ...(validatorId ? [adminKeys.validatorDetail(validatorId)] : []),
+    ),
+    access: () => prefixes(adminKeys.access, adminKeys.people, adminKeys.sessions),
+    alerts: () => prefixes(
+      adminKeys.overview,
+      adminKeys.alertRules,
+      adminKeys.alertIncidents,
+      adminKeys.alertSilences,
+      adminKeys.alertMaintenance,
+    ),
+    notifications: () => prefixes(adminKeys.notificationRoot),
+    operations: () => prefixes(adminKeys.overview, adminKeys.operationsRoot),
+    // A completed cleanup releases stored samples, and the pages that read
+    // them as evidence must refetch: the History Window, and the Agent and
+    // Node pages, whose stored-series keys carry their id in the middle of the
+    // key and are therefore only reachable by their namespace prefix.
+    retention: () => prefixes(adminKeys.retention, adminKeys.historyWindow, adminKeys.agents, adminKeys.nodes),
+    backups: () => prefixes(adminKeys.backups),
+    doctor: () => prefixes(adminKeys.doctor),
+  },
+})
+
 /** Immutable Audit listing filters (issue #47). */
 export type AuditFilters = {
   eventKind?: string
@@ -374,7 +462,6 @@ export type AuditFilters = {
  * whether cached values may come from an older session.
  */
 let adminCacheGeneration: number | null = null
-const adminRevisions = new Map<string, number>()
 const adminCacheResetListeners = new Set<() => void>()
 
 /** A failed Admin call, keyed by the Server's stable error `code`, with the
@@ -402,7 +489,6 @@ export class AdminApiError extends TransportError {
  */
 type AccessResetListener = () => void
 const accessResetListeners = new Set<AccessResetListener>()
-const adminRealtimeClosers = new Set<() => void>()
 
 export function subscribeAdminAccessReset(listener: AccessResetListener): () => void {
   accessResetListeners.add(listener)
@@ -410,7 +496,7 @@ export function subscribeAdminAccessReset(listener: AccessResetListener): () => 
 }
 
 function notifyAdminAccessReset(): void {
-  for (const close of adminRealtimeClosers) close()
+  adminRealtime.closeStreams()
   for (const listener of accessResetListeners) listener()
 }
 
@@ -1566,14 +1652,9 @@ export function resetAdminCache(generation: number): void {
   setActiveAccessGeneration(generation)
   // A reset retires the whole namespace, so a queued invalidation for the
   // previous generation must never refetch a query the reset just cleared.
-  if (adminInvalidationTimer !== null) {
-    clearTimeout(adminInvalidationTimer)
-    adminInvalidationTimer = null
-  }
-  pendingAdminInvalidations.clear()
+  adminRealtime.clear()
   void adminQueryClient.cancelQueries({ queryKey: adminKeys.all })
   adminQueryClient.clear()
-  adminRevisions.clear()
   for (const listener of adminCacheResetListeners) listener()
 }
 
@@ -1939,9 +2020,6 @@ export async function triggerGeoRefreshEntry(
   }
 }
 
-export type RealtimeStatus = 'connecting' | 'connected' | 'disconnected'
-export type RealtimeState = { status: RealtimeStatus; online: boolean }
-
 function samePrefix(queryKey: readonly unknown[], prefix: readonly unknown[]): boolean {
   return prefix.every((part, index) => queryKey[index] === part)
 }
@@ -1950,188 +2028,12 @@ function isHistoryWindowCurrentQuery(queryKey: readonly unknown[]): boolean {
   return samePrefix(queryKey, adminKeys.historyWindow) && queryKey.length === 3
 }
 
-function applyAdminInvalidation(resource: string, resourceId: string | undefined, generation: number): void {
-  const keys: Array<readonly unknown[]> = (() => {
-    switch (resource) {
-      case 'node':
-        if (!resourceId) return [adminKeys.all]
-        return [adminKeys.overview, adminKeys.diagnostics, adminKeys.nodes, adminKeys.networks]
-      case 'peer':
-        return [adminKeys.overview, adminKeys.nodes, adminKeys.networks]
-      case 'agent':
-        // Agent lifecycle and report changes affect the overview, the
-        // diagnostics-backed Agent inventory, and any open Agent detail or
-        // audit view, but not the independent Node registry query unless the
-        // Server emits a Node invalidation too.
-        return [adminKeys.overview, adminKeys.diagnostics, ...(resourceId ? [adminKeys.agentDetail(resourceId), adminKeys.agentAudit(resourceId)] : [])]
-      case 'geo':
-        // Geo invalidations come from report ingestion, the background
-        // resolution path, and the provider selection itself; the Settings
-        // card and the retained Node/Network panels all refetch.
-        return [adminKeys.geo, adminKeys.nodes, adminKeys.networks]
-      case 'network':
-        return [adminKeys.overview, adminKeys.networks, adminKeys.validators, adminKeys.validatorLinks, adminKeys.validatorIdentities, adminKeys.nodes]
-      case 'validator':
-      case 'validator-link':
-        return [adminKeys.validators, adminKeys.validatorLinks, adminKeys.validatorIdentities, adminKeys.nodes]
-      case 'access':
-        return [adminKeys.access, adminKeys.people, adminKeys.sessions]
-      case 'alerts':
-        return [
-          adminKeys.overview,
-          adminKeys.alertRules,
-          adminKeys.alertIncidents,
-          adminKeys.alertSilences,
-          adminKeys.alertMaintenance,
-        ]
-      case 'notifications':
-        return [adminKeys.notificationRoot]
-      case 'operations':
-        return [adminKeys.overview, adminKeys.operationsRoot]
-      case 'retention':
-        // A completed cleanup releases stored samples, and the pages that read
-        // them as evidence must refetch: the history window, and the Agent and
-        // Node pages, whose stored-series keys carry their id in the middle of
-        // the key and are therefore only reachable by their namespace prefix.
-        return [
-          adminKeys.retention,
-          adminKeys.historyWindow,
-          adminKeys.agents,
-          adminKeys.nodes,
-        ]
-      case 'history-window':
-        return [adminKeys.historyWindow, adminKeys.retention]
-      case 'backups':
-        return [adminKeys.backups]
-      case 'doctor':
-        return [adminKeys.doctor]
-      default:
-        return [adminKeys.all]
-    }
-  })()
-  if (resourceId && resource === 'node') {
-    keys.push(
-      adminKeys.nodeDetail(resourceId),
-      adminKeys.nodePeerChurn(resourceId),
-      adminKeys.nodePeerHistory(resourceId),
-      adminKeys.nodeTransfers(resourceId),
-      adminKeys.nodeMetricHistoryRoot(resourceId),
-      // The Host series a Node page reads are the Agent's, so a Node signal
-      // refreshes that page's view of them too (issue #215).
-      // The recorded sync/consensus states are the Node's own evidence, so a
-      // signal that changes what it reports changes them as well (issue #217).
-      adminKeys.nodeStateHistoryRoot(resourceId),
-      adminKeys.nodeHostMetricHistoryRoot(resourceId),
-    )
-  }
-  if (resourceId && resource === 'agent') {
-    keys.push(
-      adminKeys.agentHostMetricHistoryRoot(resourceId),
-      // The mount list is the Agent's own stored evidence, so a signal that
-      // changes what the Agent reports changes it as well (issue #216).
-      adminKeys.agentStorageMounts(resourceId),
-    )
-  }
-  if (resourceId && resource === 'network') keys.push(adminKeys.networkDetail(resourceId))
-  if (resourceId && resource === 'validator') keys.push(adminKeys.validatorDetail(resourceId))
-  const matchingKeys = adminQueryClient
-    .getQueryCache()
-    .findAll({
-      predicate: ({ queryKey }) =>
-        keys.some((prefix) => samePrefix(queryKey, prefix)) && queryKey.at(-1) === generation,
-    })
-    .map(({ queryKey }) => queryKey)
-  for (const queryKey of matchingKeys) invalidateAdminQuery(queryKey)
-}
-
-function invalidateAdminQuery(queryKey: readonly unknown[]): void {
-  // A read already in flight began before this event, so it may answer from
-  // before the change. Invalidating joins that read instead of starting
-  // another, and its success clears the invalidation, so the query is asked
-  // again in the next window, after the read has settled.
-  const inFlight = adminQueryClient.getQueryCache().find({ queryKey, exact: true })?.state.fetchStatus === 'fetching'
-  void adminQueryClient.invalidateQueries({ queryKey, exact: true, refetchType: 'active' }, { cancelRefetch: false })
-  if (inFlight) scheduleAdminInvalidation(`query:${JSON.stringify(queryKey)}`, { kind: 'query', queryKey })
-}
-
 /**
- * High-frequency invalidations are coalesced (webui.md §6.3): report
- * ingestion publishes a Node/Peer/Geo signal for every accepted report, and one
- * refetch per event cancels the previous in-flight REST read before it can
- * complete. Pending resources are flushed at most once per window, and the
- * flush never cancels a request that is already in flight; a query whose read
- * was in flight is asked again once that read settles.
- */
-export const ADMIN_INVALIDATION_COALESCE_MS = 250
-
-type PendingAdminInvalidation =
-  | { kind: 'resource'; resource: string; resourceId?: string; generation: number }
-  | { kind: 'query'; queryKey: readonly unknown[] }
-
-const pendingAdminInvalidations = new Map<string, PendingAdminInvalidation>()
-let adminInvalidationTimer: ReturnType<typeof setTimeout> | null = null
-
-function invalidateAdminResource(resource: string, resourceId: string | undefined, generation: number): void {
-  scheduleAdminInvalidation(`resource:${resource}:${resourceId ?? ''}:${generation}`, { kind: 'resource', resource, resourceId, generation })
-}
-
-function scheduleAdminInvalidation(token: string, entry: PendingAdminInvalidation): void {
-  pendingAdminInvalidations.set(token, entry)
-  if (adminInvalidationTimer !== null) return
-  adminInvalidationTimer = setTimeout(flushAdminInvalidations, ADMIN_INVALIDATION_COALESCE_MS)
-}
-
-function flushAdminInvalidations(): void {
-  adminInvalidationTimer = null
-  const entries = [...pendingAdminInvalidations.values()]
-  pendingAdminInvalidations.clear()
-  for (const entry of entries) {
-    if (entry.kind === 'query') invalidateAdminQuery(entry.queryKey)
-    else applyAdminInvalidation(entry.resource, entry.resourceId, entry.generation)
-  }
-}
-
-function acceptAdminEvent(resource: string, resourceId: string | undefined, eventId: number | undefined): boolean {
-  if (eventId === undefined) return true
-  const key = `${resource}:${resourceId ?? ''}`
-  const previous = adminRevisions.get(key) ?? -1
-  if (eventId <= previous) return false
-  adminRevisions.set(key, eventId)
-  return true
-}
-
-export function handleAdminInvalidation(data: string, generation: number): boolean {
-  try {
-    const event = JSON.parse(data) as { eventId?: unknown; resource?: unknown; resourceId?: unknown; revision?: unknown; reset?: unknown }
-    if (event.reset === true) {
-      return true
-    }
-    const resource = typeof event.resource === 'string' ? event.resource : 'collection'
-    const resourceId = typeof event.resourceId === 'string' ? event.resourceId : undefined
-    const eventId = typeof event.eventId === 'number'
-      ? event.eventId
-      : typeof event.revision === 'number'
-        ? event.revision
-        : undefined
-    if (!acceptAdminEvent(resource, resourceId, eventId)) return false
-    invalidateAdminResource(resource, resourceId, generation)
-    return false
-  } catch {
-    // A malformed signal is never trusted as data; refetch the bounded Admin
-    // namespace instead of allowing a stale sensitive panel to persist.
-      invalidateAdminResource('collection', undefined, generation)
-    return false
-  }
-}
-
-
-
-/**
- * One Admin SSE stream per shell per tab. Invalidations refetch the exact
- * Admin REST namespace (coalesced by the query cache); the Server's
- * access `reset` event (session expired/revoked/role-changed) or an
- * `auth_required` REST response triggers the access-generation sequence
- * instead. Reconnects re-open the stream under the current generation.
+ * One Admin SSE stream per shell per tab. Invalidations refetch the matching
+ * Admin REST namespace; a reset on the `invalidation` stream only refetches
+ * the whole namespace. The Server's `event: reset` (session expired, revoked
+ * or role-changed) or an `auth_required` REST response triggers the
+ * access-generation sequence instead.
  */
 export function useAdminRealtime(
   accessGeneration: number,
@@ -2139,19 +2041,6 @@ export function useAdminRealtime(
   onAccessReset: () => void,
   enabled = true,
 ): RealtimeState {
-  const [status, setStatus] = useState<RealtimeStatus>('connecting')
-  const [online, setOnline] = useState(() =>
-    typeof navigator === 'undefined' ? true : navigator.onLine,
-  )
-  const realtimeCursor = useRealtimeCursor('admin')
-  const realtimeCursorRef = useRef(realtimeCursor)
-  realtimeCursorRef.current = realtimeCursor
-  const hasRealtimeCursor = realtimeCursor !== null
-  const accessReset = useRef(onAccessReset)
-  accessReset.current = onAccessReset
-  const hasConnected = useRef(false)
-  const reconnectAttempt = useRef(0)
-
   // Keep transport mutation out of render. During a reset this hook can
   // still receive the retired AuthContext generation while the shell has
   // already installed the provisional generation and closed the stream.
@@ -2159,74 +2048,12 @@ export function useAdminRealtime(
     setActiveAccessGeneration(accessGeneration)
   }, [accessGeneration])
 
-  useEffect(() => {
-    const handleOnline = () => setOnline(true)
-    const handleOffline = () => setOnline(false)
-    window.addEventListener('online', handleOnline)
-    window.addEventListener('offline', handleOffline)
-    return () => {
-      window.removeEventListener('online', handleOnline)
-      window.removeEventListener('offline', handleOffline)
-    }
-  }, [])
-
-  useEffect(() => {
-    // Establish the initial REST/SSE handoff from a route-group cursor. This
-    // avoids replaying stale buffered events on a fresh Admin shell while
-    // preserving every event published after the REST snapshot.
-    if (!enabled || !hasRealtimeCursor || typeof EventSource === 'undefined') return
-    const events = new EventSource(`/api/admin/v1/events?after=${realtimeCursorRef.current ?? 0}`)
-    const closeStream = () => events.close()
-    adminRealtimeClosers.add(closeStream)
-    // The Server sends `event: reset` only when the session is no longer
-    // current (expired, revoked, role-changed); that is an access-generation
-    // transition. Every `invalidation` (including buffered replay resets)
-    // only refetches the authoritative Admin REST namespace.
-    const onReset = () => {
-      reconnectAttempt.current += 1
-      events.close()
-      setStatus('connecting')
-      accessReset.current()
-    }
-    const onInvalidation = (event: Event) => {
-      const message = event as MessageEvent<string>
-      if (handleAdminInvalidation(message.data, accessGeneration)) onReset()
-    }
-    events.onopen = () => {
-      if (!hasConnected.current) {
-        hasConnected.current = true
-        setStatus('connected')
-        return
-      }
-      // EventSource reconnects after a transport interruption. Keep the
-      // stream in Starting until authoritative REST recovery completes, so
-      // Current never claims fresher data than the page has received.
-      const attempt = ++reconnectAttempt.current
-      setStatus('connecting')
-      void adminQueryClient
-        .invalidateQueries({ queryKey: adminKeys.all, refetchType: 'active' })
-        .then(() => {
-          if (reconnectAttempt.current === attempt) setStatus('connected')
-        })
-    }
-    events.onerror = () => {
-      reconnectAttempt.current += 1
-      setStatus('disconnected')
-    }
-    events.addEventListener('invalidation', onInvalidation)
-    events.addEventListener('reset', onReset)
-    return () => {
-      // Invalidate any reconnect recovery promise from this retired stream so
-      // it cannot mark a later generation or stream Current.
-      reconnectAttempt.current += 1
-      adminRealtimeClosers.delete(closeStream)
-      events.removeEventListener('invalidation', onInvalidation)
-      events.removeEventListener('reset', onReset)
-      events.close()
-    }
-  }, [accessGeneration, enabled, hasRealtimeCursor, streamKey])
-
-  return { status, online }
+  return useInvalidationStream(adminRealtime, {
+    enabled,
+    restartKey: `${accessGeneration}:${streamKey}`,
+    generation: () => accessGeneration,
+    onReset: onAccessReset,
+  })
 }
 
 // ---------------------------------------------------------------------------

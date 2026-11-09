@@ -13,8 +13,8 @@ import {
   resetAdminCache,
   subscribeAdminAccessReset,
   useAdminRealtime,
-  type RealtimeState,
 } from '../api/admin'
+import type { RealtimeState } from '../api/realtime'
 import { useAuth } from '../auth/AuthContext'
 import { Button } from '../components/ui/button'
 import { useIsScrolled } from '../hooks/use-is-scrolled'

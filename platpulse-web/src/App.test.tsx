@@ -1798,16 +1798,56 @@ describe('App shell with private Home', () => {
 
     sessionActive = false
     await act(async () => {
-      FakeEventSource.latest?.emit(
-        'invalidation',
-        JSON.stringify({ version: 1, eventId: 0, resource: 'collection', reset: true }),
-      )
+      FakeEventSource.latest?.emit('reset', JSON.stringify({ reset: true }))
       await Promise.resolve()
     })
 
     await screen.findByRole('heading', { level: 1, name: 'Sign in to PlatPulse' }, { timeout: 3000 })
     expect(screen.getByText(/expired or was revoked/)).toBeTruthy()
     expect(screen.queryByRole('heading', { level: 1, name: 'Overview' })).toBeNull()
+  })
+
+  it('refetches Admin REST for a reset on the invalidation stream without re-checking access', async () => {
+    let overviewCalls = 0
+    let sessionCalls = 0
+    mockFetch({
+      '/api/public/v1/session': () => {
+        sessionCalls += 1
+        return jsonResponse(OWNER_SESSION, 200)
+      },
+      '/api/admin/v1/overview': () => {
+        overviewCalls += 1
+        return jsonResponse({
+          generated_at: '2026-08-12T00:00:00Z',
+          summary: {
+            agents: { total: 0, online: 0, offline: 0, unknown: 0 },
+            nodes: { total: 0, active: 0, healthy: 0, unhealthy: 0, unknown: 0, retired: 0, published: 0 },
+            networks: { total: 0, with_identity_mismatch: 0 },
+          },
+          attention: [],
+        }, 200)
+      },
+      '/api/admin/v1/nodes': () => jsonResponse([], 200),
+      '/api/admin/v1/agents': () => jsonResponse([], 200),
+    })
+    vi.stubGlobal('EventSource', FakeEventSource)
+    render(<App />)
+    await goToAdmin()
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+    await waitFor(() => expect(overviewCalls).toBe(1))
+    const sessionsBefore = sessionCalls
+
+    await act(async () => {
+      FakeEventSource.latest?.emit(
+        'invalidation',
+        JSON.stringify({ version: 1, eventId: 3, resource: 'collection', reset: true }),
+      )
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(overviewCalls).toBe(2))
+    expect(sessionCalls).toBe(sessionsBefore)
+    expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy()
   })
 
   it('keeps Home reading through an unanswered access reset and resumes when the Server answers', async () => {

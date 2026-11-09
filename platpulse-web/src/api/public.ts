@@ -1,5 +1,5 @@
-import { QueryClient, useQuery, type QueryFilters } from '@tanstack/react-query'
-import { useEffect, useRef, useState } from 'react'
+import { QueryClient, useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 import {
   publicAccessSettings,
   publicNetworks,
@@ -12,15 +12,18 @@ import {
   type PublicNodeDetail,
   type PublicMetricWindow,
   type PublicNodeMetricHistory,
+  type PublicResource,
   type PublicRewardWallet,
 } from './generated'
 import { METRIC_WINDOW_REFRESH_MS } from '../metricWindow'
 import {
-  requestGenerated,
-  requestHeaders,
-  setActiveAccessGeneration,
-  useRealtimeCursor,
-} from './transport'
+  createInvalidationChannel,
+  REALTIME_EXEMPT_META,
+  useInvalidationStream,
+  type InvalidationTarget,
+  type RealtimeState,
+} from './realtime'
+import { requestGenerated, requestHeaders, setActiveAccessGeneration } from './transport'
 
 export type SiteAccessMode = 'public' | 'private'
 export type SiteAccessSettings = {
@@ -220,9 +223,6 @@ export function usePublicNode(nodeId: string, generation: number) {
   })
 }
 
-/** Marks a query refreshed by the clock rather than by Invalidation Events. */
-const CLOCK_REFRESHED = 'clock'
-
 /**
  * The metric history of one Metric Window.
  *
@@ -245,12 +245,8 @@ export function usePublicNodeMetrics(nodeId: string, generation: number, window:
     enabled: nodeId.length > 0,
     gcTime: 0,
     refetchInterval: METRIC_WINDOW_REFRESH_MS[window],
-    meta: window === 'live' ? undefined : { refresh: CLOCK_REFRESHED },
+    meta: window === 'live' ? undefined : REALTIME_EXEMPT_META,
   })
-}
-
-function clockRefreshed(meta: Record<string, unknown> | undefined): boolean {
-  return meta?.refresh === CLOCK_REFRESHED
 }
 
 export function usePublicNodeHistory(nodeId: string, generation: number) {
@@ -261,29 +257,13 @@ export function usePublicNodeHistory(nodeId: string, generation: number) {
   })
 }
 
-const publicRevisions = new Map<string, number>()
-
 export function resetPublicCache(generation: number): void {
   setActiveAccessGeneration(generation)
   // A reset retires the whole namespace, so a queued invalidation for the
   // previous generation must never refetch a query the reset just cleared.
-  if (publicInvalidationTimer !== null) {
-    clearTimeout(publicInvalidationTimer)
-    publicInvalidationTimer = null
-  }
-  pendingPublicInvalidations.clear()
+  publicRealtime.clear()
   void publicQueryClient.cancelQueries({ queryKey: publicKeys.all })
   publicQueryClient.clear()
-  publicRevisions.clear()
-}
-
-function acceptEvent(resource: string, resourceId: string | undefined, eventId: number | undefined): boolean {
-  if (eventId === undefined) return true
-  const key = `${resource}:${resourceId ?? ''}`
-  const previous = publicRevisions.get(key) ?? -1
-  if (eventId <= previous) return false
-  publicRevisions.set(key, eventId)
-  return true
 }
 
 function activePublicGeneration(): number {
@@ -293,181 +273,43 @@ function activePublicGeneration(): number {
   return getSiteAccessGeneration() ?? DEFAULT_GENERATION
 }
 
-function samePrefix(queryKey: readonly unknown[], prefix: readonly unknown[]): boolean {
-  return prefix.every((part, index) => queryKey[index] === part)
-}
+const exact = (prefix: readonly unknown[]): InvalidationTarget => ({ prefix, exact: true })
 
-/**
- * High-frequency invalidations are coalesced (webui.md §6.3): the Public
- * stream can publish a Network change on every Agent report, and one refetch
- * per event cancels the previous in-flight REST read before it can complete.
- * Pending keys are flushed at most once per window, and the flush never cancels
- * a request that is already in flight; a query whose read was in flight is
- * asked again once that read settles, so the projection still converges on
- * the last event while the request rate stays bounded.
- */
-export const PUBLIC_INVALIDATION_COALESCE_MS = 250
-
-type PendingPublicInvalidation =
-  | { kind: 'exact'; queryKey: readonly unknown[]; generation: number }
-  | { kind: 'namespace'; namespace: readonly unknown[]; generation: number }
-
-const pendingPublicInvalidations = new Map<string, PendingPublicInvalidation>()
-let publicInvalidationTimer: ReturnType<typeof setTimeout> | null = null
-
-function pendingToken(entry: PendingPublicInvalidation): string {
-  const parts = entry.kind === 'exact' ? entry.queryKey : entry.namespace
-  return entry.kind + ':' + entry.generation + ':' + JSON.stringify(parts)
-}
-
-function schedulePublicInvalidation(entry: PendingPublicInvalidation): void {
-  pendingPublicInvalidations.set(pendingToken(entry), entry)
-  if (publicInvalidationTimer !== null) return
-  publicInvalidationTimer = setTimeout(flushPublicInvalidations, PUBLIC_INVALIDATION_COALESCE_MS)
-}
-
-function flushPublicInvalidations(): void {
-  publicInvalidationTimer = null
-  const entries = [...pendingPublicInvalidations.values()]
-  pendingPublicInvalidations.clear()
-  for (const entry of entries) {
-    const filters: QueryFilters = entry.kind === 'exact'
-      ? { queryKey: [...entry.queryKey, entry.generation], exact: true }
-      : {
-          // A clock-refreshed Metric Window answers to its own interval only.
-          predicate: ({ queryKey, meta }) =>
-            samePrefix(queryKey, entry.namespace) && queryKey.at(-1) === entry.generation && !clockRefreshed(meta),
-        }
-    // A read already in flight began before this event, so it may answer from
-    // before the change. Invalidating joins that read instead of starting
-    // another, and its success clears the invalidation, so each such query is
-    // asked again in the next window, after the read has settled.
-    const inFlight = publicQueryClient
-      .getQueryCache()
-      .findAll(filters)
-      .filter(({ state }) => state.fetchStatus === 'fetching')
-    void publicQueryClient.invalidateQueries({ ...filters, refetchType: 'active' }, { cancelRefetch: false })
-    for (const { queryKey } of inFlight) {
-      schedulePublicInvalidation({ kind: 'exact', queryKey: queryKey.slice(0, -1), generation: entry.generation })
-    }
-  }
-}
-
-function invalidatePublicNamespace(namespace: readonly unknown[], generation: number): void {
-  schedulePublicInvalidation({ kind: 'namespace', namespace, generation })
-}
-
-function invalidatePublicExact(queryKey: readonly unknown[], generation: number): void {
-  schedulePublicInvalidation({ kind: 'exact', queryKey, generation })
-}
-
-export function invalidatePublicResource(resource: string, resourceId?: string, eventId?: number): void {
-  if (!acceptEvent(resource, resourceId, eventId)) return
-  const generation = activePublicGeneration()
-  if (resource === 'geo') {
+/** Home's realtime channel. A reset on the `invalidation` stream (a purge, a
+ *  Site Access Mode change, a Server restart) retires the Public cache. */
+export const publicRealtime = createInvalidationChannel<PublicResource>({
+  surface: 'public',
+  queryClient: publicQueryClient,
+  root: publicKeys.all,
+  inStreamReset: 'reset',
+  targets: {
+    node: (nodeId) => nodeId
+      ? [exact(publicKeys.node(nodeId)), exact(publicKeys.history(nodeId)), exact(publicKeys.metrics(nodeId))]
+      : [{ prefix: publicKeys.nodes }, exact(publicKeys.networks)],
+    network: () => [exact(publicKeys.networks)],
+    validator: (validatorId) => validatorId
+      ? [exact(publicKeys.validators), exact(publicKeys.networks)]
+      : [{ prefix: publicKeys.validators }, exact(publicKeys.networks)],
     // A completed background resolution or a provider change updates the
     // country counts inside the Network list.
-    invalidatePublicNamespace(publicKeys.networks, generation)
-    return
-  }
-  const keys: Array<readonly unknown[]> = (() => {
-    switch (resource) {
-      case 'node':
-        return resourceId
-          ? [publicKeys.node(resourceId), publicKeys.history(resourceId), publicKeys.metrics(resourceId)]
-          : [publicKeys.nodes, publicKeys.networks]
-      case 'network':
-        return [publicKeys.networks]
-      case 'validator':
-        return [publicKeys.validators, publicKeys.networks]
-      case 'reward_wallet':
-        return [publicKeys.rewardWallet]
-      case 'collection':
-        return [publicKeys.all]
-      default:
-        return [publicKeys.all]
-    }
-  })()
-  for (const queryKey of keys) {
-    if (resourceId !== undefined || queryKey === publicKeys.networks || queryKey === publicKeys.rewardWallet) {
-      invalidatePublicExact(queryKey, generation)
-    } else {
-      invalidatePublicNamespace(queryKey, generation)
-    }
-  }
-}
+    geo: () => [{ prefix: publicKeys.networks }],
+    reward_wallet: () => [exact(publicKeys.rewardWallet)],
+    collection: () => [{ prefix: publicKeys.all }],
+  },
+})
 
-export type RealtimeStatus = 'connecting' | 'connected' | 'disconnected'
-export type RealtimeState = { status: RealtimeStatus; online: boolean }
-
-type PublicInvalidation = { eventId?: unknown; resource?: unknown; resourceId?: unknown; revision?: unknown; reset?: unknown }
-
+/** Home's stream. A reset clears the Public cache under the next Site Access
+ *  generation, reopens the stream and hands over to `onReset`. */
 export function usePublicRealtime(onReset?: () => void, enabled = true, accessGeneration?: number): RealtimeState {
-  const [status, setStatus] = useState<RealtimeStatus>('connecting')
-  const [online, setOnline] = useState(() => typeof navigator === 'undefined' ? true : navigator.onLine)
   const [streamKey, setStreamKey] = useState(0)
-  const realtimeCursor = useRealtimeCursor('public')
-  const realtimeCursorRef = useRef(realtimeCursor)
-  realtimeCursorRef.current = realtimeCursor
-  const hasRealtimeCursor = realtimeCursor !== null
-  const resetCallback = useRef(onReset)
-  resetCallback.current = onReset
-
-  useEffect(() => {
-    const handleOnline = () => setOnline(true)
-    const handleOffline = () => setOnline(false)
-    window.addEventListener('online', handleOnline)
-    window.addEventListener('offline', handleOffline)
-    return () => {
-      window.removeEventListener('online', handleOnline)
-      window.removeEventListener('offline', handleOffline)
-    }
-  }, [])
-
-  useEffect(() => {
-    // The first REST response captures the hub cursor before reading its
-    // projection. Wait for that snapshot before opening the first stream so
-    // a fresh shell does not replay stale buffered reset events. Events
-    // published after the REST snapshot remain replayable through `after`.
-    if (!enabled || !hasRealtimeCursor || typeof EventSource === 'undefined') return
-    const events = new EventSource(`/api/public/v1/events?after=${realtimeCursorRef.current ?? 0}`)
-    const reset = () => {
-      events.close()
-      setStatus('connecting')
-      resetPublicCache((getSiteAccessGeneration() ?? DEFAULT_GENERATION) + 1)
+  return useInvalidationStream(publicRealtime, {
+    enabled,
+    restartKey: `${accessGeneration ?? ''}:${streamKey}`,
+    generation: activePublicGeneration,
+    onReset: () => {
+      resetPublicCache(activePublicGeneration() + 1)
       setStreamKey((value) => value + 1)
-      resetCallback.current?.()
-    }
-    const invalidate = (event: Event) => {
-      try {
-        const data = JSON.parse((event as MessageEvent<string>).data) as PublicInvalidation
-        if (data.reset === true) {
-          reset()
-          return
-        }
-        invalidatePublicResource(
-          typeof data.resource === 'string' ? data.resource : 'collection',
-          typeof data.resourceId === 'string' ? data.resourceId : undefined,
-          typeof data.eventId === 'number'
-            ? data.eventId
-            : typeof data.revision === 'number'
-              ? data.revision
-              : undefined,
-        )
-      } catch {
-        reset()
-      }
-    }
-    events.onopen = () => setStatus('connected')
-    events.onerror = () => setStatus('disconnected')
-    events.addEventListener('invalidation', invalidate)
-    events.addEventListener('reset', reset)
-    return () => {
-      events.removeEventListener('invalidation', invalidate)
-      events.removeEventListener('reset', reset)
-      events.close()
-    }
-  }, [accessGeneration, enabled, hasRealtimeCursor, streamKey])
-
-  return { status, online }
+      onReset?.()
+    },
+  })
 }
