@@ -12,16 +12,15 @@ use std::time::{Duration, Instant};
 
 use platpulse_core::block::BlockSummary;
 use platpulse_core::hex::Hash32;
-use platpulse_core::identity::{AgentId, BootId, NodeId};
+use platpulse_core::identity::NodeId;
 use platpulse_core::network::NetworkIdentity;
 use platpulse_core::time::Rfc3339;
-use platpulse_core::{AgentReport, BootTransition};
 
 use tokio::time::timeout_at;
 use tokio_util::sync::CancellationToken;
 
 use crate::block::{HeadSubscription, ResolveError, ResolvedBlock, WebSocketBlockTransport};
-use crate::collector::{FailClosedRpcAdapter, RpcAdapter};
+use crate::collector::RpcAdapter;
 use crate::shutdown_record::ShutdownState;
 
 /// Runtime coordinator owning collection intake and the cancellation signal.
@@ -194,9 +193,11 @@ pub fn shutdown_gap(
 mod tests {
     use super::*;
     use crate::block::HeadHeader;
+    use crate::collector::FailClosedRpcAdapter;
     use crate::config::AgentConfig;
     use crate::credential::write_credential_file;
     use crate::database::{AgentDatabaseConfig, AgentStore};
+    use platpulse_core::AgentReport;
     use serde_json::json;
     use sha2::{Digest, Sha256};
     use std::sync::Arc;
@@ -462,84 +463,6 @@ mod tests {
         );
     }
 
-    /// Issue #397: the last-good clock_skew from the most recent durable Report
-    /// must appear in a Closing report so the Server can correct its observation
-    /// instants instead of falling back to the receipt instant.
-    #[test]
-    fn build_shutdown_report_carries_clock_skew_from_last_good() {
-        use platpulse_core::component::{ComponentObservation, ComponentStatus};
-        use platpulse_core::{AgentReport, BootTransition};
-
-        // Build a minimal last-good report that carries a known clock_skew value.
-        let mut last_good: AgentReport = serde_json::from_slice(include_bytes!(
-            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
-        ))
-        .unwrap();
-        let at: platpulse_core::Rfc3339 = "2026-08-12T09:00:00Z".parse().unwrap();
-        last_good.host.clock_skew = ComponentObservation {
-            status: ComponentStatus::Ok,
-            attempted_at: Some(at),
-            latest_observed_at: Some(at),
-            received_at: None,
-            state_revision: 1,
-            value_revision: 1,
-            latest: Some(3_600_000_i64), // +1 h in ms
-            error: None,
-        };
-
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("agent.db");
-        let credential_path = dir.path().join("credential");
-        crate::credential::write_credential_file(
-            &credential_path,
-            &format!(
-                "pp_agent_{}_{}",
-                "0195f2a1-0011-4011-8011-000000000011",
-                "a".repeat(64)
-            ),
-        )
-        .unwrap();
-        let config_path = dir.path().join("agent.toml");
-        std::fs::write(
-            &config_path,
-            format!(
-                "server_url=\"https://example.com\"\ncredential_file=\"{}\"\nstate_db=\"{}\"\ninventory_revision=1\nnodes=[{{node_id=\"0195f2a1-0014-4014-8014-000000000014\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:6790\"}}]\n",
-                credential_path.display(),
-                db_path.display()
-            ),
-        )
-        .unwrap();
-        let config = crate::config::AgentConfig::resolve(&config_path).unwrap();
-        let inventory = config.validated_inventory().unwrap().inventory;
-
-        let report = build_shutdown_report(
-            &config,
-            last_good.agent_id,
-            last_good.agent_epoch,
-            last_good.boot_id,
-            last_good.report_sequence + 1,
-            inventory,
-            Some(&last_good),
-        )
-        .unwrap();
-
-        assert_eq!(
-            report.boot_transition,
-            BootTransition::Closing,
-            "transition must be set"
-        );
-        assert_eq!(
-            report.host.clock_skew.latest,
-            Some(3_600_000_i64),
-            "clock_skew.latest must be carried from last_good (issue #397)"
-        );
-        assert_eq!(
-            report.host.clock_skew.status,
-            ComponentStatus::Error,
-            "the error status stays; only the last-good value is preserved"
-        );
-    }
-
     #[tokio::test]
     async fn resolver_failure_preserves_queued_range_without_discarding_it() {
         struct Failure;
@@ -592,72 +515,6 @@ struct TransportResolver<'a> {
     transport: &'a WebSocketBlockTransport,
     endpoint: &'a platpulse_core::network::RpcEndpoint,
     identity: NetworkIdentity,
-}
-
-/// Build shutdown's final report without probing the Node. A shutdown must be
-/// able to complete when the RPC adapter is unavailable; the most recent
-/// durable report supplies the last-good Node observations, while the
-/// fail-closed skeleton supplies complete entries for newly configured Nodes.
-pub(crate) fn build_shutdown_report(
-    config: &crate::config::AgentConfig,
-    agent_id: AgentId,
-    agent_epoch: u64,
-    boot_id: BootId,
-    sequence: u64,
-    inventory: platpulse_core::inventory::NodeInventory,
-    last_good: Option<&AgentReport>,
-) -> Result<AgentReport, crate::collector::CollectionError> {
-    let at = crate::collector::timestamp();
-    let mut report = crate::collector::collect_report_with_clock_skew(
-        config,
-        agent_id,
-        agent_epoch,
-        boot_id,
-        sequence,
-        inventory,
-        &FailClosedRpcAdapter,
-        crate::collector::clock_skew_error(
-            at,
-            "RPC collection is disabled during shutdown; persisted last-good values retained",
-        ),
-    )?;
-    if let Some(last_good) = last_good {
-        // Issue #397: carry the last-good Host observations through a Closing
-        // report so the Server can use the last measured clock skew to correct
-        // observation instants. Without this, clock_skew.latest is always None
-        // for a graceful-shutdown or prepare-upgrade Closing, causing the Server
-        // to fall back to the receipt instant and stamp a stale Node as current.
-        crate::collector::preserve_last_good(
-            &mut report.host.clock_skew,
-            &last_good.host.clock_skew,
-        );
-        crate::collector::preserve_last_good(
-            &mut report.host.cpu_percent,
-            &last_good.host.cpu_percent,
-        );
-        crate::collector::preserve_last_good(&mut report.host.memory, &last_good.host.memory);
-        crate::collector::preserve_last_good(&mut report.host.load, &last_good.host.load);
-        crate::collector::preserve_last_good(&mut report.host.disk, &last_good.host.disk);
-        crate::collector::preserve_last_good(
-            &mut report.host.network_throughput,
-            &last_good.host.network_throughput,
-        );
-        crate::collector::preserve_last_good(&mut report.host.spool, &last_good.host.spool);
-        for node in &mut report.nodes {
-            if let Some(previous) = last_good
-                .nodes
-                .iter()
-                .find(|previous| previous.node_id == node.node_id)
-            {
-                *node = previous.clone();
-            }
-        }
-    }
-    report.boot_transition = BootTransition::Closing;
-    report
-        .validate()
-        .map_err(crate::collector::report_validation_error)?;
-    Ok(report)
 }
 
 impl AsyncBlockResolver for TransportResolver<'_> {
@@ -718,9 +575,9 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
     if state.phase == crate::boot::BootPhase::RecoveryDraining {
         return Err(crate::collector::CollectionError::RecoveryRequired);
     }
-    let boot_id = state
-        .boot_id
-        .ok_or(crate::collector::CollectionError::RecoveryRequired)?;
+    if state.boot_id.is_none() {
+        return Err(crate::collector::CollectionError::RecoveryRequired);
+    }
     let started = shutdown_timestamp();
     let deadline = started_at_plus(started, drain_deadline);
     crate::shutdown_record::begin(&mut tx, started, deadline).await?;
@@ -787,40 +644,17 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
     }
 
     let send_deadline = started_at_plus(started, sender_deadline);
-    let mut report = build_shutdown_report(
+    let closing = crate::closing::store_restated_closing(
+        &mut store,
         config,
-        state.agent_id,
-        state.agent_epoch,
-        boot_id,
-        state.report_sequence + 1,
-        inventory,
-        last_good.as_ref(),
-    )?;
-    report.block_summaries = crate::block::load_block_summaries(&mut store).await?;
-    let monitored_nodes = report
-        .inventory
-        .nodes
-        .iter()
-        .map(|node| node.node_id)
-        .collect::<Vec<_>>();
-    report.history_gaps = crate::block::load_history_gaps(&mut store, &monitored_nodes).await?;
-    report.host.spool = crate::collector::current_spool_diagnostics(&mut store)
-        .await
-        .map(|value| crate::collector::ok(value, report.generated_at))
-        .map_err(crate::collector::CollectionError::Database)?;
-    if let Some(spool) = report.host.spool.latest.as_mut() {
+        &state,
         crate::shutdown_record::ShutdownRecord::ClosingStored {
             started_at: started,
             deadline_at: send_deadline,
-        }
-        .describe(spool);
-    }
-    report
-        .validate()
-        .map_err(crate::collector::report_validation_error)?;
-    let body = serde_json::to_vec(&report)?;
-    crate::reporting::persist_closing_report(&mut store, &body, &state).await?;
-    let closing_report_id = report.report_id.to_string();
+        },
+    )
+    .await?;
+    let closing_report_id = closing.report_id.to_string();
     let mut receipt_applied = false;
     let mut exhausted = false;
     let send_until = tokio::time::Instant::now() + sender_deadline;
@@ -857,8 +691,8 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
                 tx.commit().await?;
                 store.close().await?;
                 return Ok(ShutdownOutcome {
-                    report_id: report.report_id,
-                    report_sequence: report.report_sequence,
+                    report_id: closing.report_id,
+                    report_sequence: closing.report_sequence,
                     stored: true,
                     receipt_applied,
                     sender_deadline_exhausted: false,
@@ -875,8 +709,8 @@ pub(crate) async fn graceful_shutdown_with_subscriptions_with_permit<
     }
     store.close().await?;
     Ok(ShutdownOutcome {
-        report_id: report.report_id,
-        report_sequence: report.report_sequence,
+        report_id: closing.report_id,
+        report_sequence: closing.report_sequence,
         stored: true,
         receipt_applied,
         sender_deadline_exhausted: exhausted,

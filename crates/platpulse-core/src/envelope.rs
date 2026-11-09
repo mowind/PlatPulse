@@ -137,6 +137,25 @@ pub struct AgentReport<I = NodeInventory> {
     pub history_gaps: Vec<HistoryGap>,
 }
 
+impl<I> AgentReport<I> {
+    /// Carry the last-good values of `previous`, an earlier Report of the same
+    /// Agent, through every failed attempt in this Report: the Host once, and
+    /// each Node only from the earlier observation of the same `node_id`. A
+    /// Node new to this Report has no earlier value and keeps its own state.
+    pub fn keep_last_good<J>(&mut self, previous: &AgentReport<J>) {
+        self.host.keep_last_good(&previous.host);
+        for node in &mut self.nodes {
+            if let Some(earlier) = previous
+                .nodes
+                .iter()
+                .find(|earlier| earlier.node_id == node.node_id)
+            {
+                node.keep_last_good(earlier);
+            }
+        }
+    }
+}
+
 impl<I: ReportInventory> AgentReport<I> {
     /// Validates the structural wire invariants of this report.
     ///
@@ -679,6 +698,50 @@ mod tests {
     fn minimal_report_is_valid() {
         let report = minimal_report();
         assert_eq!(report.validate(), Ok(()));
+    }
+
+    fn fail<T>(component: &mut crate::component::ComponentObservation<T>) {
+        component.status = ComponentStatus::Error;
+        component.latest = None;
+        component.latest_observed_at = None;
+        component.error = Some(crate::component::BoundedError {
+            code: "unavailable".into(),
+            message: "attempt failed".into(),
+        });
+    }
+
+    #[test]
+    fn a_report_keeps_host_and_same_node_last_good_values() {
+        let previous = minimal_report();
+        let mut current = minimal_report();
+        fail(&mut current.host.clock_skew);
+        fail(&mut current.nodes[0].chain.rpc);
+
+        current.keep_last_good(&previous);
+
+        assert_eq!(current.host.clock_skew.status, ComponentStatus::Error);
+        assert_eq!(
+            current.host.clock_skew.latest,
+            previous.host.clock_skew.latest
+        );
+        assert_eq!(current.nodes[0].chain.rpc.status, ComponentStatus::Error);
+        assert_eq!(
+            current.nodes[0].chain.rpc.latest,
+            previous.nodes[0].chain.rpc.latest
+        );
+        assert_eq!(current.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_node_never_takes_another_nodes_last_good_values() {
+        let mut previous = minimal_report();
+        previous.nodes[0].node_id = "0195f2a1-0099-4099-8099-000000000099".parse().unwrap();
+        let mut current = minimal_report();
+        fail(&mut current.nodes[0].chain.rpc);
+
+        current.keep_last_good(&previous);
+
+        assert_eq!(current.nodes[0].chain.rpc.latest, None);
     }
 
     /// Issue #243: the Agent write guard, the Store loader and the wire

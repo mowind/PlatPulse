@@ -13,6 +13,7 @@ pub mod block;
 mod boot;
 pub mod checkpoint;
 pub mod cli;
+mod closing;
 pub mod collector;
 pub mod config;
 pub mod credential;
