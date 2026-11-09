@@ -1,5 +1,6 @@
 //! Network Registry views and mutations.
 use super::*;
+use crate::http::realtime::{AdminResource, PublicResource};
 
 /// Owner-only Network Registry projection (design §4.5). The complete
 /// validated identity tuple is presented as Server-owned expected identity;
@@ -384,15 +385,12 @@ pub(crate) async fn create_network(
             "server database is unavailable",
         );
     }
-    let revision = now.bytes().fold(0_u64, |acc, byte| {
-        acc.wrapping_mul(31).wrapping_add(byte as u64)
-    });
     state
         .admin_realtime()
-        .publish("network", Some(key.clone()), revision);
+        .publish(AdminResource::Network, Some(key.clone()));
     state
         .public_realtime()
-        .publish("network", Some(key.clone()), revision);
+        .publish(PublicResource::Network, Some(key.clone()));
     Json(NetworkResponse {
         network_key: key,
         display_name: body.display_name,
@@ -590,15 +588,12 @@ pub(crate) async fn update_network(
             "server database is unavailable",
         );
     }
-    let revision = changed_at.bytes().fold(0_u64, |acc, byte| {
-        acc.wrapping_mul(31).wrapping_add(byte as u64)
-    });
     state
         .admin_realtime()
-        .publish("network", Some(network_key.clone()), revision);
+        .publish(AdminResource::Network, Some(network_key.clone()));
     state
         .public_realtime()
-        .publish("network", Some(network_key.clone()), revision);
+        .publish(PublicResource::Network, Some(network_key.clone()));
     Json(NetworkResponse {
         network_key,
         display_name: next_name,

@@ -1636,7 +1636,7 @@ mod tests {
                 .public_realtime()
                 .pending_events()
                 .iter()
-                .find(|event| event.resource == "node" && event.resource_id.is_none())
+                .find(|event| event.wire_resource() == "node" && event.resource_id.is_none())
                 .is_some_and(|event| event.revision == event.event_id && event.revision > 0)
         );
 

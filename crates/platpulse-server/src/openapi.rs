@@ -186,6 +186,8 @@ impl Modify for AgentBearerScheme {
     components(schemas(
         crate::http::ApiErrorBody,
         crate::http::ApiError,
+        // The events responses name it through `RealtimeResource::event_resource_schema`.
+        crate::http::realtime::ResetReason,
         crate::http::public::LoginRequest,
         crate::http::public::SessionResponse,
         crate::http::public::SessionProjection,

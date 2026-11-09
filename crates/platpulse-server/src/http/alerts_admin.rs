@@ -12,6 +12,7 @@
 //! inside a transaction use the transaction handle: the Server pool has
 //! one connection, so pool queries inside a transaction would deadlock.
 
+use crate::http::realtime::AdminResource;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -1184,7 +1185,9 @@ pub(crate) async fn update_alert_rule(
                     "Server database is unavailable",
                 );
             }
-            state.admin_realtime().publish("alerts", None::<String>, 0);
+            state
+                .admin_realtime()
+                .publish(AdminResource::Alerts, None::<String>);
             Json(AlertRuleUpdateResponse {
                 rule: *detail,
                 audit_event_id,
@@ -1738,7 +1741,9 @@ pub(crate) async fn upsert_rule_override(
                     "Server database is unavailable",
                 );
             }
-            state.admin_realtime().publish("alerts", None::<String>, 0);
+            state
+                .admin_realtime()
+                .publish(AdminResource::Alerts, None::<String>);
             Json(RuleOverrideResponse {
                 rule_key,
                 version,
@@ -1908,7 +1913,9 @@ pub(crate) async fn delete_rule_override(
                     "Server database is unavailable",
                 );
             }
-            state.admin_realtime().publish("alerts", None::<String>, 0);
+            state
+                .admin_realtime()
+                .publish(AdminResource::Alerts, None::<String>);
             Json(RuleOverrideResponse {
                 rule_key,
                 version,
@@ -2597,7 +2604,9 @@ pub(crate) async fn acknowledge_incident(
             "Server database is unavailable",
         );
     }
-    state.admin_realtime().publish("alerts", None::<String>, 0);
+    state
+        .admin_realtime()
+        .publish(AdminResource::Alerts, None::<String>);
     Json(IncidentAcknowledgmentResponse {
         incident_id,
         acknowledgment: IncidentAcknowledgment {
@@ -2887,7 +2896,9 @@ pub(crate) async fn create_silence(
             "Server database is unavailable",
         );
     }
-    state.admin_realtime().publish("alerts", None::<String>, 0);
+    state
+        .admin_realtime()
+        .publish(AdminResource::Alerts, None::<String>);
     let mut silence = silence_dto((
         silence_id,
         body.matcher_kind,
@@ -3101,7 +3112,9 @@ pub(crate) async fn cancel_silence(
             "Server database is unavailable",
         );
     }
-    state.admin_realtime().publish("alerts", None::<String>, 0);
+    state
+        .admin_realtime()
+        .publish(AdminResource::Alerts, None::<String>);
     let mut dto = SilenceDto {
         silence_id,
         matcher_kind,
@@ -3418,7 +3431,9 @@ pub(crate) async fn create_maintenance_window(
             "Server database is unavailable",
         );
     }
-    state.admin_realtime().publish("alerts", None::<String>, 0);
+    state
+        .admin_realtime()
+        .publish(AdminResource::Alerts, None::<String>);
     let mut dto = MaintenanceDto {
         window_id,
         scope_kind: body.scope_kind,
@@ -3602,7 +3617,9 @@ pub(crate) async fn cancel_maintenance_window(
             "Server database is unavailable",
         );
     }
-    state.admin_realtime().publish("alerts", None::<String>, 0);
+    state
+        .admin_realtime()
+        .publish(AdminResource::Alerts, None::<String>);
     dto.cancelled_at = Some(now_text);
     dto.cancelled_by = Some(principal.0.user_id);
     dto.status = "cancelled".to_owned();

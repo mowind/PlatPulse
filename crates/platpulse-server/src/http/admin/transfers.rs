@@ -1,5 +1,6 @@
 //! Node Transfers.
 use super::*;
+use crate::http::realtime::AdminResource;
 
 /// Owner-authorized two-phase Node Transfer (design §4.6, issue #46). The
 /// typed status is Server-owned: `pending`, `completed`, `cancelled`,
@@ -582,12 +583,9 @@ pub(crate) async fn create_node_transfer(
             "server database is unavailable",
         );
     }
-    let revision = now_text.bytes().fold(0_u64, |acc, byte| {
-        acc.wrapping_mul(31).wrapping_add(byte as u64)
-    });
     state
         .admin_realtime()
-        .publish("node", Some(node_id), revision);
+        .publish(AdminResource::Node, Some(node_id));
     Json(NodeTransferMutationResponse {
         transfer: node_transfer_dto(row),
         request_id: request_id.0.to_string(),
@@ -824,7 +822,7 @@ pub(crate) async fn cancel_node_transfer(
     }
     state
         .admin_realtime()
-        .publish("node", Some(updated.node_id.clone()), 0);
+        .publish(AdminResource::Node, Some(updated.node_id.clone()));
     Json(NodeTransferMutationResponse {
         transfer: node_transfer_dto(updated),
         request_id: request_id.0.to_string(),

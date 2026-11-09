@@ -1,5 +1,6 @@
 //! Node visibility and Node metadata mutations.
 use super::*;
+use crate::http::realtime::{AdminResource, PublicResource};
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -134,14 +135,11 @@ pub(crate) async fn set_visibility(
             "server database is unavailable",
         );
     }
-    let revision = changed_at.bytes().fold(0_u64, |acc, byte| {
-        acc.wrapping_mul(31).wrapping_add(byte as u64)
-    });
     // Visibility is Admin-only metadata: the Public Projection filters on
     // lifecycle alone, so no Home reader has anything to refetch.
     state
         .admin_realtime()
-        .publish("node", Some(node_id.clone()), revision);
+        .publish(AdminResource::Node, Some(node_id.clone()));
     Json(VisibilityResponse {
         node_id,
         visibility: body.visibility,
@@ -295,18 +293,15 @@ pub(crate) async fn set_node_metadata(
             "server database is unavailable",
         );
     }
-    let revision = changed_at.bytes().fold(0_u64, |acc, byte| {
-        acc.wrapping_mul(31).wrapping_add(byte as u64)
-    });
     state
         .admin_realtime()
-        .publish("node", Some(node_id.clone()), revision);
+        .publish(AdminResource::Node, Some(node_id.clone()));
     state
         .public_realtime()
-        .publish("node", Some(node_id.clone()), revision);
+        .publish(PublicResource::Node, Some(node_id.clone()));
     state
         .public_realtime()
-        .publish("network", Some(network_key), revision);
+        .publish(PublicResource::Network, Some(network_key));
     Json(NodeMetadataResponse {
         node_id,
         display_name: body.display_name,

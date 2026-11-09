@@ -1,4 +1,5 @@
 //! The report handlers and the transactional ingestion of one AgentReport.
+use crate::http::realtime::{AdminResource, PublicResource};
 use std::collections::HashSet;
 use std::str::FromStr;
 
@@ -1380,25 +1381,23 @@ async fn ingest_report<I: ReportInventory>(
     // changes only when the report contains a Node observation.
     state
         .admin_realtime()
-        .publish("node", None::<String>, parsed.report_sequence);
+        .publish(AdminResource::Node, None::<String>);
     if inventory_changed || parsed.inventory.nodes().is_empty() {
         state
             .public_realtime()
-            .publish("node", None::<String>, parsed.report_sequence);
+            .publish(PublicResource::Node, None::<String>);
     }
     if !inventory_changed && !public_node_ids.is_empty() {
         for node_id in &public_node_ids {
             state
                 .public_realtime()
-                .publish("node", Some(node_id.clone()), parsed.report_sequence);
+                .publish(PublicResource::Node, Some(node_id.clone()));
         }
     }
     for network_key in &public_network_keys {
-        state.public_realtime().publish(
-            "network",
-            Some(network_key.clone()),
-            parsed.report_sequence,
-        );
+        state
+            .public_realtime()
+            .publish(PublicResource::Network, Some(network_key.clone()));
     }
     if peer_component_present {
         // A new Peer reference is a reason to resolve its country now; the
@@ -1406,22 +1405,20 @@ async fn ingest_report<I: ReportInventory>(
         state.notify_geo_backfill();
         state
             .admin_realtime()
-            .publish("peer", None::<String>, parsed.report_sequence);
+            .publish(AdminResource::Peer, None::<String>);
         state
             .admin_realtime()
-            .publish("geo", None::<String>, parsed.report_sequence);
+            .publish(AdminResource::Geo, None::<String>);
         for network_key in &public_network_keys {
-            state.public_realtime().publish(
-                "network",
-                Some(network_key.clone()),
-                parsed.report_sequence,
-            );
+            state
+                .public_realtime()
+                .publish(PublicResource::Network, Some(network_key.clone()));
         }
     }
     if alert_changes > 0 {
         state
             .admin_realtime()
-            .publish("alerts", None::<String>, parsed.report_sequence);
+            .publish(AdminResource::Alerts, None::<String>);
     }
     receipt_response(receipt)
 }
@@ -2021,7 +2018,7 @@ mod tests {
                 .admin_realtime()
                 .pending_events()
                 .iter()
-                .any(|event| event.resource == "agent"
+                .any(|event| event.wire_resource() == "agent"
                     && event.resource_id.as_deref() == Some(agent_id.as_str())),
             "a rejected report must invalidate the Admin view of its Agent"
         );

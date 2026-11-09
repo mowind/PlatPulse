@@ -40,7 +40,12 @@ use crate::public_projection::{BlockHistoryRange, PublicProjection, Unavailable}
     get,
     path = "/api/public/v1/events",
     tag = "public",
-    responses((status = 200, description = "Public invalidation stream (human-bound or Guest-bound when anonymous Home is enabled)"))
+    responses((
+        status = 200,
+        description = "Public invalidation stream (human-bound or Guest-bound when anonymous Home is enabled). Each `invalidation` or `reset` event carries one Invalidation Event as JSON data.",
+        content_type = "text/event-stream",
+        body = realtime::Invalidation<realtime::PublicResource>
+    ))
 )]
 pub(crate) async fn public_events(
     State(state): State<AppState>,

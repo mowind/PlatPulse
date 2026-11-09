@@ -16,6 +16,7 @@
 //! duplicate would release production history twice refuses a second open run
 //! outright.
 
+use crate::http::realtime::AdminResource;
 use serde_json::Value;
 use sqlx::AnyPool;
 use thiserror::Error;
@@ -594,7 +595,7 @@ pub async fn set_progress(
     .await?;
     state
         .admin_realtime()
-        .publish("operations", Some(operation_id), 1);
+        .publish(AdminResource::Operations, Some(operation_id));
     Ok(())
 }
 
@@ -679,12 +680,12 @@ pub async fn is_cancel_requested(
 /// and a completion Audit Event. Publishes `operations` plus the
 /// domain-specific resources so REST pages refetch (SSE never carries the
 /// payload itself).
-pub async fn finalize(
+pub(crate) async fn finalize(
     state: &AppState,
     operation_id: &str,
     status: &str,
     result: Option<&Value>,
-    publish_resources: &[&str],
+    publish_resources: &[AdminResource],
 ) -> Result<(), OperationError> {
     let now = crate::auth::format_rfc3339(crate::auth::now_utc());
     let sanitized_result = result.map(crate::redaction::redact_json_value);
@@ -717,9 +718,9 @@ pub async fn finalize(
     tx.commit().await?;
     state
         .admin_realtime()
-        .publish("operations", Some(operation_id), 1);
+        .publish(AdminResource::Operations, Some(operation_id));
     for resource in publish_resources {
-        state.admin_realtime().publish(*resource, None::<String>, 1);
+        state.admin_realtime().publish(*resource, None::<String>);
     }
     Ok(())
 }
@@ -801,7 +802,7 @@ pub async fn process_operations(state: &AppState) -> Result<usize, OperationErro
                     &operation_id,
                     STATUS_CANCELLED,
                     None,
-                    &["backups"],
+                    &[AdminResource::Backups],
                 )
                 .await?;
             } else {
@@ -817,7 +818,7 @@ pub async fn process_operations(state: &AppState) -> Result<usize, OperationErro
                     &operation_id,
                     STATUS_FAILED,
                     None,
-                    &["backups"],
+                    &[AdminResource::Backups],
                 )
                 .await?;
             }
@@ -838,7 +839,7 @@ pub async fn process_operations(state: &AppState) -> Result<usize, OperationErro
                 &operation_id,
                 STATUS_FAILED,
                 None,
-                &["operations"],
+                &[AdminResource::Operations],
             )
             .await;
         }

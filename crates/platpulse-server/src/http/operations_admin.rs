@@ -8,6 +8,7 @@
 //! safety-bounded and batched; backups expose sanitized metadata only;
 //! Doctor is read-only and never auto-fixes.
 
+use crate::http::realtime::{AdminResource, PublicResource};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -496,10 +497,10 @@ pub(crate) async fn update_history_window(
     }
     state
         .admin_realtime()
-        .publish("retention", None::<String>, audit_event_id as u64);
+        .publish(AdminResource::Retention, None::<String>);
     state
         .public_realtime()
-        .publish("collection", None::<String>, audit_event_id as u64);
+        .publish(PublicResource::Collection, None::<String>);
     match crate::retention::list_policies(state.db().pool()).await {
         Ok(policies) => policies
             .into_iter()
@@ -1019,7 +1020,7 @@ pub(crate) async fn cancel_operation(
     }
     state
         .admin_realtime()
-        .publish("operations", Some(&operation_id), 1);
+        .publish(AdminResource::Operations, Some(&operation_id));
     let detail = match load_operation_detail(state.db().pool(), &operation_id).await {
         Ok(Some(detail)) => detail,
         _ => {
@@ -1416,7 +1417,7 @@ pub(crate) async fn update_retention_policy(
     }
     state
         .admin_realtime()
-        .publish("retention", None::<String>, 1);
+        .publish(AdminResource::Retention, None::<String>);
     let policies = match crate::retention::list_policies(state.db().pool()).await {
         Ok(policies) => policies,
         Err(_) => {
@@ -1743,7 +1744,7 @@ async fn retention_run_response(
 ) -> Response {
     state
         .admin_realtime()
-        .publish("operations", Some(&operation_id), 1);
+        .publish(AdminResource::Operations, Some(&operation_id));
     match load_operation_detail(state.db().pool(), &operation_id).await {
         Ok(Some(operation)) => Json(RetentionRunResponse {
             operation,
@@ -2580,7 +2581,7 @@ async fn queue_operation(
     };
     state
         .admin_realtime()
-        .publish("operations", Some(&operation_id), 1);
+        .publish(AdminResource::Operations, Some(&operation_id));
     let detail = match load_operation_detail(state.db().pool(), &operation_id).await {
         Ok(Some(detail)) => detail,
         _ => {

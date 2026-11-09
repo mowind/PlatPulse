@@ -1,5 +1,6 @@
 //! Agent detail, Agent Attention acknowledgment, and Agent metadata.
 use super::*;
+use crate::http::realtime::AdminResource;
 
 /// Owner-only Agent detail: one full AgentDiagnostic (identity, liveness,
 /// boot/report state, credential state, Inventory, diagnostics).
@@ -133,7 +134,7 @@ pub(crate) async fn acknowledge_agent_attention(
             // Agent so open Admin sessions refetch the authoritative queue.
             state
                 .admin_realtime()
-                .publish("agent", Some(agent_id.clone()), 0);
+                .publish(AdminResource::Agent, Some(agent_id.clone()));
             Json(AgentAttentionAcknowledgmentResponse {
                 agent_id,
                 attention,
@@ -227,14 +228,9 @@ pub(crate) async fn set_agent_metadata(
         Ok(profile) => {
             // Post-commit Admin invalidation: another Owner's open view
             // refetches the authoritative projection; never optimistic.
-            let revision = crate::auth::format_rfc3339(crate::auth::now_utc())
-                .bytes()
-                .fold(0_u64, |acc, byte| {
-                    acc.wrapping_mul(31).wrapping_add(byte as u64)
-                });
             state
                 .admin_realtime()
-                .publish("agent", Some(agent_id.clone()), revision);
+                .publish(AdminResource::Agent, Some(agent_id.clone()));
             Json(AgentMetadataResponse {
                 agent_id,
                 display_name: profile.display_name,

@@ -413,7 +413,7 @@ mod tests {
                 .admin_realtime()
                 .pending_events()
                 .iter()
-                .map(|event| event.resource.as_str())
+                .map(|event| event.wire_resource())
                 .collect::<Vec<_>>(),
             vec!["node", "peer", "geo"]
         );
@@ -422,7 +422,7 @@ mod tests {
                 .public_realtime()
                 .pending_events()
                 .iter()
-                .map(|event| event.resource.as_str())
+                .map(|event| event.wire_resource())
                 .collect::<Vec<_>>(),
             vec!["node", "network"]
         );

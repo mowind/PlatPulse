@@ -1,5 +1,6 @@
 //! Geo provider status, selection, and refresh.
 use super::*;
+use crate::http::realtime::{AdminResource, PublicResource};
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -503,10 +504,10 @@ pub(crate) async fn update_geo_provider(
     let _ = crate::geo::cleanup_cache(state.db().pool(), &now, provider).await;
     state
         .admin_realtime()
-        .publish("geo", None::<String>, generation);
+        .publish(AdminResource::Geo, None::<String>);
     state
         .public_realtime()
-        .publish("geo", None::<String>, generation);
+        .publish(PublicResource::Geo, None::<String>);
 
     match geo_diagnostic(&state).await {
         Some(diagnostic) => Json(GeoProviderMutationResponse {

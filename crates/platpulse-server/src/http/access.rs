@@ -11,6 +11,7 @@
 //! credentials, session tokens, or raw network data; the Audit listing is
 //! allowlisted and its details are redacted by construction.
 
+use crate::http::realtime::{AdminResource, ResetReason};
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
@@ -297,7 +298,9 @@ pub(crate) async fn create_person(
     .await
     {
         Ok(user_id) => {
-            state.admin_realtime().publish("access", None::<String>, 0);
+            state
+                .admin_realtime()
+                .publish(AdminResource::Access, None::<String>);
             // The user row committed with zero Sessions; return the same
             // allowlisted DTO the listing would produce.
             Json(Person {
@@ -488,7 +491,9 @@ pub(crate) async fn set_person_role(
                     "server database is unavailable",
                 );
             }
-            state.admin_realtime().publish("access", None::<String>, 0);
+            state
+                .admin_realtime()
+                .publish(AdminResource::Access, None::<String>);
             match person_after_mutation(&state, &user_id).await {
                 Some(person) => Json(person).into_response(),
                 None => mutation_error(
@@ -626,7 +631,9 @@ pub(crate) async fn set_person_status(
                     "server database is unavailable",
                 );
             }
-            state.admin_realtime().publish("access", None::<String>, 0);
+            state
+                .admin_realtime()
+                .publish(AdminResource::Access, None::<String>);
             match person_after_mutation(&state, &user_id).await {
                 Some(person) => Json(person).into_response(),
                 None => mutation_error(
@@ -752,7 +759,9 @@ pub(crate) async fn reset_person_password(
                     "server database is unavailable",
                 );
             }
-            state.admin_realtime().publish("access", None::<String>, 0);
+            state
+                .admin_realtime()
+                .publish(AdminResource::Access, None::<String>);
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(None) => mutation_error(
@@ -941,7 +950,9 @@ pub(crate) async fn revoke_session(
                     "server database is unavailable",
                 );
             }
-            state.admin_realtime().publish("access", None::<String>, 0);
+            state
+                .admin_realtime()
+                .publish(AdminResource::Access, None::<String>);
             Json(RevokeSessionResponse {
                 session_id,
                 revoked_at,
@@ -1045,7 +1056,9 @@ pub(crate) async fn revoke_other_sessions(
                     "server database is unavailable",
                 );
             }
-            state.admin_realtime().publish("access", None::<String>, 0);
+            state
+                .admin_realtime()
+                .publish(AdminResource::Access, None::<String>);
             Json(RevokeOthersResponse {
                 revoked_count: count,
             })
@@ -1304,10 +1317,10 @@ pub(crate) async fn set_access_settings(
     }
     state
         .admin_realtime()
-        .publish("access", None::<String>, generation as u64);
+        .publish(AdminResource::Access, None::<String>);
     state
         .public_realtime()
-        .publish_reset("site_access_mode", generation as u64);
+        .publish_reset(ResetReason::SiteAccessMode);
     Json(AccessSettingsResponse {
         mode: mode.as_str().to_owned(),
         authorization_generation: generation,

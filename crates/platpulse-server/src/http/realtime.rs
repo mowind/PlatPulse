@@ -16,32 +16,149 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use tokio::sync::Notify;
 use tokio_stream::Stream;
+use utoipa::ToSchema;
 
 const EVENT_VERSION: u64 = 1;
 const DEFAULT_BUFFER_CAPACITY: usize = 256;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// A resource the Public stream can invalidate. Each names a set of Home
+/// queries the browser refetches; the Public hub cannot carry anything else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PublicResource {
+    Node,
+    Network,
+    Validator,
+    Geo,
+    RewardWallet,
+    /// Every Public projection, such as after a retention policy change.
+    Collection,
+}
+
+/// A resource the Admin stream can invalidate. Each names a set of Admin
+/// queries the browser refetches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AdminResource {
+    Node,
+    Peer,
+    Agent,
+    Geo,
+    Network,
+    Validator,
+    Access,
+    Alerts,
+    Notifications,
+    Operations,
+    Retention,
+    Backups,
+    Doctor,
+}
+
+/// Why a reset event (`reset: true`) tells the browser its cached state can
+/// no longer be patched by single invalidations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ResetReason {
+    /// The cursor missed events (buffer overflow, earlier Server process),
+    /// or a Node Purge or Agent removal took rows away.
+    Collection,
+    /// The Site Access Mode changed.
+    SiteAccessMode,
+    /// The Server is stopping; the stream closes after this event. Only
+    /// [`RealtimeHub::shutdown`] publishes it.
+    ServerShutdown,
+}
+
+/// The closed vocabulary of one hub. Implemented only by [`PublicResource`]
+/// and [`AdminResource`], so a hub cannot carry the other surface's names.
+pub(crate) trait RealtimeResource:
+    std::fmt::Debug + Copy + Eq + Serialize + ToSchema + Send + Sync + 'static
+{
+    /// OpenAPI schema of [`Invalidation::resource`]: a reference to this
+    /// vocabulary or to [`ResetReason`]. Derived generics would inline the
+    /// vocabulary, and the browser client needs it as its own named type.
+    fn event_resource_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::schema::OneOfBuilder::new()
+            .item(utoipa::openapi::Ref::from_schema_name(Self::name()))
+            .item(utoipa::openapi::Ref::from_schema_name(ResetReason::name()))
+            .description(Some(
+                "The resource to refetch, or the reset reason when `reset` is true.",
+            ))
+            .into()
+    }
+}
+
+impl RealtimeResource for PublicResource {}
+impl RealtimeResource for AdminResource {}
+
+/// The `resource` field of an Invalidation Event: the hub's own resource for
+/// an invalidation, the reset reason for a reset. Both serialize as the bare
+/// snake_case name, so the wire carries one string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub(crate) enum EventResource<R> {
+    Resource(R),
+    Reset(ResetReason),
+}
+
+/// One Invalidation Event (webui.md §6.3). REST stays authoritative: the event
+/// only names what to refetch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Invalidation {
+pub(crate) struct Invalidation<R: RealtimeResource> {
     pub version: u64,
+    /// The cursor a reconnect sends back as `Last-Event-ID`.
     pub event_id: u64,
-    pub resource: String,
+    #[schema(schema_with = R::event_resource_schema)]
+    pub resource: EventResource<R>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_id: Option<String>,
+    /// Always equal to `eventId`: the hub sequence is the one monotonic
+    /// revision of a stream.
     pub revision: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reset: Option<bool>,
 }
 
+impl<R: RealtimeResource> Invalidation<R> {
+    fn reset(event_id: u64, reason: ResetReason) -> Self {
+        Self {
+            version: EVENT_VERSION,
+            event_id,
+            resource: EventResource::Reset(reason),
+            resource_id: None,
+            revision: event_id,
+            reset: Some(true),
+        }
+    }
+
+    /// The last event a stream sends before it closes.
+    fn closes_stream(&self) -> bool {
+        self.resource == EventResource::Reset(ResetReason::ServerShutdown)
+    }
+}
+
+#[cfg(test)]
+impl<R: RealtimeResource> Invalidation<R> {
+    /// The `resource` string this event carries on the wire.
+    pub(crate) fn wire_resource(&self) -> String {
+        match serde_json::to_value(self.resource) {
+            Ok(serde_json::Value::String(name)) => name,
+            other => panic!("a realtime resource serializes as a string, got {other:?}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
-struct StoredEvent {
-    event: Invalidation,
+struct StoredEvent<R: RealtimeResource> {
+    event: Invalidation<R>,
 }
 
 #[derive(Debug)]
-struct HubState {
+struct HubState<R: RealtimeResource> {
     next_id: u64,
-    events: VecDeque<StoredEvent>,
+    events: VecDeque<StoredEvent<R>>,
     /// Highest event ID this hub can no longer replay: removed because the
     /// bounded buffer overflowed, or issued by an earlier Server process
     /// before this hub's sequence started. Coalescing may create ID gaps
@@ -51,30 +168,31 @@ struct HubState {
 }
 
 #[derive(Debug)]
-struct HubInner {
+struct HubInner<R: RealtimeResource> {
     capacity: usize,
-    state: Mutex<HubState>,
+    state: Mutex<HubState<R>>,
     notify: Notify,
     connections: AtomicU64,
 }
 
-/// A bounded invalidation stream. Cloning it shares the sequence and buffer.
+/// A bounded invalidation stream over one surface's resources. Cloning it
+/// shares the sequence and buffer.
 #[derive(Clone, Debug)]
-pub(crate) struct RealtimeHub {
-    inner: Arc<HubInner>,
+pub(crate) struct RealtimeHub<R: RealtimeResource> {
+    inner: Arc<HubInner<R>>,
 }
 
-struct ConnectionGuard {
-    inner: Arc<HubInner>,
+struct ConnectionGuard<R: RealtimeResource> {
+    inner: Arc<HubInner<R>>,
 }
 
-impl Drop for ConnectionGuard {
+impl<R: RealtimeResource> Drop for ConnectionGuard<R> {
     fn drop(&mut self) {
         self.inner.connections.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
-impl Default for RealtimeHub {
+impl<R: RealtimeResource> Default for RealtimeHub<R> {
     /// The serving hub. Its sequence starts at the wall clock so every ID it
     /// issues is above any ID an earlier process issued: the buffer is in
     /// memory, and an open tab reconnecting with a cursor from before a
@@ -127,7 +245,7 @@ async fn bound_session(
     }
 }
 
-impl RealtimeHub {
+impl<R: RealtimeResource> RealtimeHub<R> {
     #[cfg(test)]
     pub(crate) fn new(capacity: usize) -> Self {
         Self::starting_at(capacity, 0)
@@ -177,7 +295,7 @@ impl RealtimeHub {
             .next_id
     }
 
-    fn connection_guard(&self) -> ConnectionGuard {
+    fn connection_guard(&self) -> ConnectionGuard<R> {
         self.inner.connections.fetch_add(1, Ordering::Relaxed);
         ConnectionGuard {
             inner: Arc::clone(&self.inner),
@@ -198,23 +316,27 @@ impl RealtimeHub {
     }
 
     /// Publish an invalidation, coalescing the most recent event for the same
-    /// `(resource, resource_id)` key. `resource_id = None` is a collection
-    /// event and is intentionally used for Public privacy resets.
-    pub(crate) fn publish(
+    /// `(resource, resource_id)` key. `resource_id = None` invalidates every
+    /// item of the resource. Returns the event ID, which is also its revision.
+    pub(crate) fn publish(&self, resource: R, resource_id: Option<impl Into<String>>) -> u64 {
+        self.publish_inner(
+            EventResource::Resource(resource),
+            resource_id.map(Into::into),
+            false,
+        )
+    }
+
+    /// Publish a reset. It never carries a private Node ID.
+    pub(crate) fn publish_reset(&self, reason: ResetReason) -> u64 {
+        self.publish_inner(EventResource::Reset(reason), None, true)
+    }
+
+    fn publish_inner(
         &self,
-        resource: impl Into<String>,
-        resource_id: Option<impl Into<String>>,
-        _revision: u64,
+        resource: EventResource<R>,
+        resource_id: Option<String>,
+        reset: bool,
     ) -> u64 {
-        self.publish_inner(resource.into(), resource_id.map(Into::into), false)
-    }
-
-    /// Publish a collection-level reset. It never carries a private Node ID.
-    pub(crate) fn publish_reset(&self, resource: impl Into<String>, _revision: u64) -> u64 {
-        self.publish_inner(resource.into(), None, true)
-    }
-
-    fn publish_inner(&self, resource: String, resource_id: Option<String>, reset: bool) -> u64 {
         let mut state = self.inner.state.lock().expect("SSE hub mutex poisoned");
         if state.closed {
             return state.next_id;
@@ -226,9 +348,9 @@ impl RealtimeHub {
             event_id,
             resource,
             resource_id,
-            // Event IDs are the single monotonic revision for this hub. The
-            // caller's domain revision is useful for its own persistence but
-            // can regress or collide across Agents and mutation sources.
+            // Event IDs are the single monotonic revision for this hub; a
+            // domain revision can regress or collide across Agents and
+            // mutation sources.
             revision: event_id,
             reset: reset.then_some(true),
         };
@@ -251,7 +373,9 @@ impl RealtimeHub {
         id
     }
 
-    pub(crate) fn shutdown(&self, resource: &str) {
+    /// Publish the final `server_shutdown` reset and close the hub: every
+    /// stream ends after sending it, and later publishes are dropped.
+    pub(crate) fn shutdown(&self) {
         let mut state = self.inner.state.lock().expect("SSE hub mutex poisoned");
         if state.closed {
             return;
@@ -260,20 +384,13 @@ impl RealtimeHub {
         let event_id = state.next_id;
         state.events.clear();
         state.events.push_back(StoredEvent {
-            event: Invalidation {
-                version: EVENT_VERSION,
-                event_id,
-                resource: resource.to_owned(),
-                resource_id: None,
-                revision: event_id,
-                reset: Some(true),
-            },
+            event: Invalidation::reset(event_id, ResetReason::ServerShutdown),
         });
         state.closed = true;
         drop(state);
         self.inner.notify.notify_waiters();
     }
-    fn next_after(&self, cursor: &mut u64) -> Option<Invalidation> {
+    fn next_after(&self, cursor: &mut u64) -> Option<Invalidation<R>> {
         let state = self.inner.state.lock().expect("SSE hub mutex poisoned");
         if *cursor < state.dropped_through {
             // Only an actual bounded-buffer eviction, or a cursor from an
@@ -286,14 +403,7 @@ impl RealtimeHub {
                 .front()
                 .map_or(state.next_id, |stored| stored.event.event_id);
             *cursor = first;
-            return Some(Invalidation {
-                version: EVENT_VERSION,
-                event_id: first,
-                resource: "collection".to_owned(),
-                resource_id: None,
-                revision: first,
-                reset: Some(true),
-            });
+            return Some(Invalidation::reset(first, ResetReason::Collection));
         }
         let event = state
             .events
@@ -307,7 +417,7 @@ impl RealtimeHub {
     }
 
     #[cfg(test)]
-    pub(crate) fn pending_events(&self) -> Vec<Invalidation> {
+    pub(crate) fn pending_events(&self) -> Vec<Invalidation<R>> {
         self.inner
             .state
             .lock()
@@ -322,7 +432,7 @@ impl RealtimeHub {
     pub(crate) fn stream(
         &self,
         last_event_id: Option<u64>,
-    ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static + use<> {
+    ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static + use<R> {
         let (sender, receiver) = tokio::sync::mpsc::channel(16);
         let hub = self.clone();
         let mut cursor = hub.initial_cursor(last_event_id);
@@ -330,7 +440,7 @@ impl RealtimeHub {
             let _connection = hub.connection_guard();
             loop {
                 if let Some(invalidation) = hub.next_after(&mut cursor) {
-                    let closing = invalidation.resource == "server_shutdown";
+                    let closing = invalidation.closes_stream();
                     let data =
                         serde_json::to_string(&invalidation).expect("invalidation serializes");
                     if sender
@@ -365,14 +475,7 @@ impl RealtimeHub {
     /// by the Human- and Guest-bound streams so the two authorization
     /// paths cannot drift apart.
     fn reset_event() -> Result<Event, Infallible> {
-        let event = Invalidation {
-            version: EVENT_VERSION,
-            event_id: 0,
-            resource: "collection".to_owned(),
-            resource_id: None,
-            revision: 0,
-            reset: Some(true),
-        };
+        let event = Invalidation::<R>::reset(0, ResetReason::Collection);
         let data = serde_json::to_string(&event).expect("invalidation serializes");
         Ok(Event::default().event("reset").data(data))
     }
@@ -398,7 +501,7 @@ impl RealtimeHub {
         session_id: String,
         connected_role: String,
         session_expires_at: OffsetDateTime,
-    ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static + use<> {
+    ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static + use<R> {
         let (sender, receiver) = tokio::sync::mpsc::channel(16);
         let hub = self.clone();
         let mut cursor = hub.initial_cursor(last_event_id);
@@ -439,7 +542,7 @@ impl RealtimeHub {
                             BoundSession::Open => {}
                         }
                         if let Some(invalidation) = hub.next_after(&mut cursor) {
-                            let closing = invalidation.resource == "server_shutdown";
+                            let closing = invalidation.closes_stream();
                             let id = invalidation.event_id.to_string();
                             let data = serde_json::to_string(&invalidation).expect("invalidation serializes");
                             if sender.send(Ok(Event::default().id(id).event("invalidation").data(data))).await.is_err() { return true; }
@@ -462,7 +565,7 @@ impl RealtimeHub {
         &self,
         last_event_id: Option<u64>,
         db: std::sync::Arc<crate::database::ServerDatabase>,
-    ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static + use<> {
+    ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static + use<R> {
         let (sender, receiver) = tokio::sync::mpsc::channel(16);
         let hub = self.clone();
         let mut cursor = hub.initial_cursor(last_event_id);
@@ -487,7 +590,7 @@ impl RealtimeHub {
                             return true;
                         }
                         if let Some(invalidation) = hub.next_after(&mut cursor) {
-                            let closing = invalidation.resource == "server_shutdown";
+                            let closing = invalidation.closes_stream();
                             let id = invalidation.event_id.to_string();
                             let data = serde_json::to_string(&invalidation).expect("invalidation serializes");
                             if sender.send(Ok(Event::default().id(id).event("invalidation").data(data))).await.is_err() { return true; }
@@ -541,17 +644,17 @@ mod tests {
 
     #[tokio::test]
     async fn coalesces_and_replays_bounded_events() {
-        let hub = RealtimeHub::new(2);
-        hub.publish("node", Some("a"), 1);
-        hub.publish("node", Some("a"), 2);
+        let hub = RealtimeHub::<AdminResource>::new(2);
+        hub.publish(AdminResource::Node, Some("a"));
+        hub.publish(AdminResource::Node, Some("a"));
         let mut cursor = 0;
         let event = hub.next_after(&mut cursor).unwrap();
         assert_eq!(event.revision, 2);
         assert_eq!(event.reset, None);
         assert_eq!(event.event_id, 2);
 
-        hub.publish("node", Some("b"), 3);
-        hub.publish("node", Some("c"), 4);
+        hub.publish(AdminResource::Node, Some("b"));
+        hub.publish(AdminResource::Node, Some("c"));
         let mut cursor = 0;
         let reset = hub.next_after(&mut cursor).unwrap();
         assert_eq!(reset.reset, Some(true));
@@ -560,10 +663,10 @@ mod tests {
 
     #[test]
     fn coalesced_id_gaps_do_not_count_as_buffer_misses() {
-        let hub = RealtimeHub::new(2);
-        hub.publish("node", Some("a"), 1);
-        hub.publish("node", Some("a"), 2);
-        hub.publish("node", Some("a"), 3);
+        let hub = RealtimeHub::<AdminResource>::new(2);
+        hub.publish(AdminResource::Node, Some("a"));
+        hub.publish(AdminResource::Node, Some("a"));
+        hub.publish(AdminResource::Node, Some("a"));
         let mut cursor = 0;
         let event = hub.next_after(&mut cursor).unwrap();
         assert_eq!(event.revision, 3);
@@ -572,10 +675,10 @@ mod tests {
 
     #[test]
     fn an_evicted_event_requires_a_collection_reset() {
-        let hub = RealtimeHub::new(2);
-        hub.publish("node", Some("a"), 1);
-        hub.publish("node", Some("b"), 2);
-        hub.publish("node", Some("c"), 3);
+        let hub = RealtimeHub::<AdminResource>::new(2);
+        hub.publish(AdminResource::Node, Some("a"));
+        hub.publish(AdminResource::Node, Some("b"));
+        hub.publish(AdminResource::Node, Some("c"));
         let mut cursor = 0;
         let event = hub.next_after(&mut cursor).unwrap();
         assert_eq!(event.reset, Some(true));
@@ -584,16 +687,16 @@ mod tests {
 
     #[test]
     fn a_cursor_snapshot_replays_events_published_during_rest_query() {
-        let hub = RealtimeHub::new(8);
+        let hub = RealtimeHub::<AdminResource>::new(8);
         let cursor_at_rest_start = hub.current_id();
 
-        hub.publish("node", Some("node-a"), 1);
+        hub.publish(AdminResource::Node, Some("node-a"));
 
         let mut cursor = cursor_at_rest_start;
         let event = hub
             .next_after(&mut cursor)
             .expect("event after REST cursor");
-        assert_eq!(event.resource, "node");
+        assert_eq!(event.resource, EventResource::Resource(AdminResource::Node));
         assert_eq!(event.resource_id.as_deref(), Some("node-a"));
     }
 
@@ -605,8 +708,8 @@ mod tests {
     }
     #[tokio::test]
     async fn shutdown_emits_reset_and_closes_stream() {
-        let hub = RealtimeHub::new(4);
-        hub.shutdown("server_shutdown");
+        let hub = RealtimeHub::<AdminResource>::new(4);
+        hub.shutdown();
         let mut stream = Box::pin(hub.stream(Some(0)));
         let item = tokio::time::timeout(Duration::from_secs(1), stream.next())
             .await
@@ -623,8 +726,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_new_stream_skips_buffered_events_until_a_new_invalidation() {
-        let hub = RealtimeHub::new(4);
-        hub.publish_reset("site_access_mode", 1);
+        let hub = RealtimeHub::<AdminResource>::new(4);
+        hub.publish_reset(ResetReason::SiteAccessMode);
         let mut stream = Box::pin(hub.stream(None));
 
         assert!(
@@ -634,7 +737,7 @@ mod tests {
             "a fresh stream must not replay an old reset"
         );
 
-        hub.publish("network", Some("mainnet"), 2);
+        hub.publish(AdminResource::Network, Some("mainnet"));
         let item = tokio::time::timeout(Duration::from_secs(1), stream.next())
             .await
             .unwrap()
@@ -649,16 +752,16 @@ mod tests {
     /// silence until the new sequence happens to climb past it.
     #[test]
     fn a_cursor_from_an_earlier_server_process_is_answered_with_a_reset() {
-        let earlier = RealtimeHub::default();
+        let earlier = RealtimeHub::<AdminResource>::default();
         for node in 0..40 {
-            earlier.publish("node", Some(format!("node-{node}")), 0);
+            earlier.publish(AdminResource::Node, Some(format!("node-{node}")));
         }
         let kept_cursor = earlier.current_id();
-        earlier.shutdown("server_shutdown");
+        earlier.shutdown();
         // A restart takes far longer than the sequence's clock tick.
         std::thread::sleep(Duration::from_millis(2));
 
-        let restarted = RealtimeHub::default();
+        let restarted = RealtimeHub::<AdminResource>::default();
         // Nothing published yet: the stale cursor is answered right away.
         let mut cursor = kept_cursor;
         let event = restarted
@@ -667,7 +770,7 @@ mod tests {
         assert_eq!(event.reset, Some(true));
         assert_eq!(event.resource_id, None);
 
-        restarted.publish("network", Some("platon-mainnet"), 0);
+        restarted.publish(AdminResource::Network, Some("platon-mainnet"));
         let mut cursor = kept_cursor;
         let event = restarted
             .next_after(&mut cursor)
@@ -679,7 +782,7 @@ mod tests {
         // process's own cursor, which is ahead of the one it kept.
         assert!(restarted.current_id() > kept_cursor);
         let mut cursor = restarted.current_id();
-        restarted.publish("node", Some("node-0"), 0);
+        restarted.publish(AdminResource::Node, Some("node-0"));
         let event = restarted
             .next_after(&mut cursor)
             .expect("the new process's cursor replays its own events");
@@ -687,10 +790,42 @@ mod tests {
         assert_eq!(event.resource_id.as_deref(), Some("node-0"));
     }
 
+    /// The closed vocabulary changes the Rust types, never the wire: an open
+    /// tab keeps parsing the same JSON.
+    #[test]
+    fn events_keep_their_wire_shape() {
+        let hub = RealtimeHub::<PublicResource>::new(8);
+        hub.publish(PublicResource::RewardWallet, None::<String>);
+        hub.publish(PublicResource::Node, Some("node-a"));
+        hub.publish_reset(ResetReason::SiteAccessMode);
+        let wire = |hub: &RealtimeHub<PublicResource>| {
+            hub.pending_events()
+                .iter()
+                .map(|event| serde_json::to_value(event).unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            wire(&hub),
+            vec![
+                serde_json::json!({"version": 1, "eventId": 1, "resource": "reward_wallet", "revision": 1}),
+                serde_json::json!({"version": 1, "eventId": 2, "resource": "node", "resourceId": "node-a", "revision": 2}),
+                serde_json::json!({"version": 1, "eventId": 3, "resource": "site_access_mode", "revision": 3, "reset": true}),
+            ]
+        );
+
+        hub.shutdown();
+        assert_eq!(
+            wire(&hub),
+            vec![
+                serde_json::json!({"version": 1, "eventId": 4, "resource": "server_shutdown", "revision": 4, "reset": true})
+            ]
+        );
+    }
+
     #[test]
     fn reset_never_contains_a_resource_id() {
-        let hub = RealtimeHub::new(4);
-        hub.publish_reset("public", 9);
+        let hub = RealtimeHub::<AdminResource>::new(4);
+        hub.publish_reset(ResetReason::Collection);
         let mut cursor = 0;
         let event = hub.next_after(&mut cursor).unwrap();
         assert_eq!(event.reset, Some(true));
@@ -731,7 +866,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let hub = RealtimeHub::new(8);
+        let hub = RealtimeHub::<AdminResource>::new(8);
         let mut stream = Box::pin(hub.stream_with_session(
             None,
             Arc::clone(&db),
@@ -776,7 +911,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let hub = RealtimeHub::new(8);
+        let hub = RealtimeHub::<AdminResource>::new(8);
         let mut stream = Box::pin(hub.stream_with_session(
             None,
             Arc::clone(&db),
@@ -814,7 +949,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let hub = RealtimeHub::new(8);
+        let hub = RealtimeHub::<AdminResource>::new(8);
         let mut stream = Box::pin(hub.stream_with_session(
             None,
             Arc::clone(&db),
@@ -850,7 +985,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let hub = RealtimeHub::new(8);
+        let hub = RealtimeHub::<AdminResource>::new(8);
         let mut stream = Box::pin(hub.stream_with_session(
             None,
             Arc::clone(&db),
@@ -885,7 +1020,7 @@ mod tests {
         .execute(db.pool())
         .await
         .unwrap();
-        let hub = RealtimeHub::new(8);
+        let hub = RealtimeHub::<AdminResource>::new(8);
         let mut stream = Box::pin(hub.stream_with_guest(None, Arc::clone(&db)));
         sqlx::query(
             "UPDATE server_settings SET setting_value = 'private' WHERE setting_key = 'site_access_mode'",

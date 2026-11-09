@@ -22,6 +22,7 @@
 //! execute a preview the Server still accepts, so a stale policy version, a
 //! changed scope, or a moved cutoff can never delete against an unseen plan.
 
+use crate::http::realtime::AdminResource;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -1839,7 +1840,7 @@ pub async fn execute_step(
             operation_id,
             crate::operations::STATUS_FAILED,
             None,
-            &["retention"],
+            &[AdminResource::Retention],
         )
         .await;
         return Ok(());
@@ -1877,7 +1878,7 @@ pub async fn execute_step(
             operation_id,
             crate::operations::STATUS_CANCELLED,
             Some(&outcome),
-            &["retention"],
+            &[AdminResource::Retention],
         )
         .await?;
         return Ok(());
@@ -1904,7 +1905,7 @@ pub async fn execute_step(
                 operation_id,
                 crate::operations::STATUS_FAILED,
                 None,
-                &["retention"],
+                &[AdminResource::Retention],
             )
             .await;
             return Ok(());
@@ -1935,7 +1936,7 @@ pub async fn execute_step(
             operation_id,
             crate::operations::STATUS_FAILED,
             None,
-            &["retention"],
+            &[AdminResource::Retention],
         )
         .await;
         return Ok(());
@@ -1980,7 +1981,7 @@ pub async fn execute_step(
                 operation_id,
                 crate::operations::STATUS_FAILED,
                 None,
-                &["retention"],
+                &[AdminResource::Retention],
             )
             .await;
             return Ok(());
@@ -2074,7 +2075,14 @@ async fn finish_run(
     if let Some(preview_id) = params.get("previewId") {
         result["previewId"] = preview_id.clone();
     }
-    crate::operations::finalize(state, operation_id, status, Some(&result), &["retention"]).await?;
+    crate::operations::finalize(
+        state,
+        operation_id,
+        status,
+        Some(&result),
+        &[AdminResource::Retention],
+    )
+    .await?;
     Ok(())
 }
 

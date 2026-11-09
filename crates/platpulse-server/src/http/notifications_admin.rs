@@ -16,6 +16,7 @@
 //! handle: the Server pool has one connection, so pool queries inside a
 //! transaction would deadlock.
 
+use crate::http::realtime::AdminResource;
 use axum::body::Bytes;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -778,7 +779,7 @@ pub(crate) async fn retry_delivery(
     }
     state
         .admin_realtime()
-        .publish("notifications", None::<String>, 0);
+        .publish(AdminResource::Notifications, None::<String>);
     Json(DeliveryRetryResponse {
         delivery,
         audit_event_id,
@@ -941,7 +942,7 @@ pub(crate) async fn test_notification_channel(
     if !outcome.deduplicated {
         state
             .admin_realtime()
-            .publish("notifications", None::<String>, 0);
+            .publish(AdminResource::Notifications, None::<String>);
     }
     Json(ChannelTestResponse {
         event_id: outcome.event_id,
