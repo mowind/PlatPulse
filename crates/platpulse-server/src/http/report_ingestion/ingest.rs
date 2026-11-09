@@ -1729,6 +1729,34 @@ mod tests {
         assert_eq!(gaps().await, vec![(2, 3)]);
     }
 
+    /// A failed boot status read answers 503: it must not pass for an unseen
+    /// boot and turn a database failure into a competing-boot security event.
+    #[tokio::test]
+    pub(super) async fn a_failed_boot_status_read_is_unavailable_not_a_competing_boot() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        sqlx::query("ALTER TABLE agent_boots RENAME TO agent_boots_unavailable")
+            .execute(state.db().pool())
+            .await
+            .unwrap();
+
+        report.boot_id = "0195f2a1-0031-4031-8031-000000000031".parse().unwrap();
+        report.report_id = "0195f2a1-0032-4032-8032-000000000032".parse().unwrap();
+        let status = submit_status(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        let security_events: i64 =
+            sqlx::query_scalar("SELECT security_event_count FROM agents WHERE agent_id=$1")
+                .bind(&agent_id)
+                .fetch_one(state.db().pool())
+                .await
+                .unwrap();
+        assert_eq!(security_events, 0);
+    }
+
     #[tokio::test]
     pub(super) async fn boot_sequence_gaps_and_competing_boots_are_recorded_and_rejected() {
         let (_dir, state, agent_id) = state_with_agent().await;
