@@ -721,4 +721,85 @@ mod tests {
             "freshness falls back to the receipt instant: {component}"
         );
     }
+
+    /// Regression test for issue #397: an Agent graceful shutdown produces a
+    /// Closing report whose Nodes are copied from the last-good report but whose
+    /// Host was previously not merged. Without the fix, clock_skew.latest is
+    /// always None for a Closing report, so the Server falls back to the receipt
+    /// instant and stamps stale Node observations as current.
+    ///
+    /// This test submits a report observed two hours ago with a known skew, then
+    /// submits a Closing report that re-carries those Node observations (as
+    /// build_shutdown_report does) but whose Host carries the last-good clock_skew
+    /// (the fixed behaviour). The Server must still treat the Node as Stale after
+    /// the Closing.
+    #[tokio::test]
+    pub(super) async fn closing_report_with_last_good_skew_keeps_the_node_stale() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+
+        // First report: observed two hours ago, zero skew.  After ingestion the
+        // Node is Stale (observation instant = two hours ago).
+        let stale_report = report_observed(time::Duration::hours(-2), 0);
+        let stale_observed = report_instant(&stale_report);
+        assert_eq!(
+            submit(
+                &state,
+                &agent_id,
+                serde_json::to_vec(&stale_report).unwrap()
+            )
+            .await
+            .disposition,
+            ReceiptDisposition::Accepted
+        );
+        let node = public_home_node(&state, ISSUE_274_NODE).await;
+        assert_eq!(node["health"], "unknown", "pre-condition: {node}");
+        assert_eq!(node["currency"], "stale", "pre-condition: {node}");
+
+        // Build a Closing report that mirrors what a fixed build_shutdown_report
+        // produces: Nodes are copied verbatim from the last-good report, and the
+        // Host carries the last-good clock_skew (zero here).  The Closing itself
+        // is stamped now (generated_at = now, sync observation = two hours ago).
+        let mut closing = stale_report.clone();
+        // Advance report_id and sequence so the Server treats it as a new report.
+        closing["report_id"] = serde_json::json!("0195f2a1-0397-4397-8397-000000000001");
+        closing["report_sequence"] = serde_json::json!(2);
+        closing["boot_transition"] = serde_json::json!("closing");
+        // Restamp generated_at to now so the envelope is fresh; observation
+        // instants inside nodes stay two hours old, matching build_shutdown_report.
+        let now_text = crate::auth::format_rfc3339(crate::auth::now_utc());
+        closing["generated_at"] = serde_json::json!(now_text);
+        // Host clock_skew carries the last-good value (zero skew, status ok) —
+        // this is the fix: the Server can now correct the observation instants.
+        // (Zero skew means the stored instant equals the Agent-stamped instant,
+        // so the Node stays two hours old and remains Stale.)
+
+        assert_eq!(
+            submit(&state, &agent_id, serde_json::to_vec(&closing).unwrap())
+                .await
+                .disposition,
+            ReceiptDisposition::Accepted
+        );
+
+        // The observation instant for sync must still be the stale one: the Closing
+        // did not produce a new observation, only restated the last-good one.
+        let stored_after_closing = component_instant(&state, "sync").await.unwrap();
+        assert_eq!(
+            stored_after_closing, stale_observed,
+            "Closing must not move the observation instant forward"
+        );
+        assert!(
+            seconds_from_now(&stored_after_closing) < -7_000,
+            "the Node was observed two hours ago: {stored_after_closing}"
+        );
+
+        let node = public_home_node(&state, ISSUE_274_NODE).await;
+        assert_eq!(
+            node["health"], "unknown",
+            "Closing with stale observations must not flip the Node to Healthy: {node}"
+        );
+        assert_eq!(
+            node["currency"], "stale",
+            "Closing must not flip the Node to current: {node}"
+        );
+    }
 }

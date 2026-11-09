@@ -462,6 +462,84 @@ mod tests {
         );
     }
 
+    /// Issue #397: the last-good clock_skew from the most recent durable Report
+    /// must appear in a Closing report so the Server can correct its observation
+    /// instants instead of falling back to the receipt instant.
+    #[test]
+    fn build_shutdown_report_carries_clock_skew_from_last_good() {
+        use platpulse_core::component::{ComponentObservation, ComponentStatus};
+        use platpulse_core::{AgentReport, BootTransition};
+
+        // Build a minimal last-good report that carries a known clock_skew value.
+        let mut last_good: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let at: platpulse_core::Rfc3339 = "2026-08-12T09:00:00Z".parse().unwrap();
+        last_good.host.clock_skew = ComponentObservation {
+            status: ComponentStatus::Ok,
+            attempted_at: Some(at),
+            latest_observed_at: Some(at),
+            received_at: None,
+            state_revision: 1,
+            value_revision: 1,
+            latest: Some(3_600_000_i64), // +1 h in ms
+            error: None,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("agent.db");
+        let credential_path = dir.path().join("credential");
+        crate::credential::write_credential_file(
+            &credential_path,
+            &format!(
+                "pp_agent_{}_{}",
+                "0195f2a1-0011-4011-8011-000000000011",
+                "a".repeat(64)
+            ),
+        )
+        .unwrap();
+        let config_path = dir.path().join("agent.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "server_url=\"https://example.com\"\ncredential_file=\"{}\"\nstate_db=\"{}\"\ninventory_revision=1\nnodes=[{{node_id=\"0195f2a1-0014-4014-8014-000000000014\",network_key=\"platon-mainnet\",rpc_endpoint=\"ws://127.0.0.1:6790\"}}]\n",
+                credential_path.display(),
+                db_path.display()
+            ),
+        )
+        .unwrap();
+        let config = crate::config::AgentConfig::resolve(&config_path).unwrap();
+        let inventory = config.validated_inventory().unwrap().inventory;
+
+        let report = build_shutdown_report(
+            &config,
+            last_good.agent_id,
+            last_good.agent_epoch,
+            last_good.boot_id,
+            last_good.report_sequence + 1,
+            inventory,
+            Some(&last_good),
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.boot_transition,
+            BootTransition::Closing,
+            "transition must be set"
+        );
+        assert_eq!(
+            report.host.clock_skew.latest,
+            Some(3_600_000_i64),
+            "clock_skew.latest must be carried from last_good (issue #397)"
+        );
+        assert_eq!(
+            report.host.clock_skew.status,
+            ComponentStatus::Error,
+            "the error status stays; only the last-good value is preserved"
+        );
+    }
+
     #[tokio::test]
     async fn resolver_failure_preserves_queued_range_without_discarding_it() {
         struct Failure;
@@ -544,6 +622,27 @@ pub(crate) fn build_shutdown_report(
         ),
     )?;
     if let Some(last_good) = last_good {
+        // Issue #397: carry the last-good Host observations through a Closing
+        // report so the Server can use the last measured clock skew to correct
+        // observation instants. Without this, clock_skew.latest is always None
+        // for a graceful-shutdown or prepare-upgrade Closing, causing the Server
+        // to fall back to the receipt instant and stamp a stale Node as current.
+        crate::collector::preserve_last_good(
+            &mut report.host.clock_skew,
+            &last_good.host.clock_skew,
+        );
+        crate::collector::preserve_last_good(
+            &mut report.host.cpu_percent,
+            &last_good.host.cpu_percent,
+        );
+        crate::collector::preserve_last_good(&mut report.host.memory, &last_good.host.memory);
+        crate::collector::preserve_last_good(&mut report.host.load, &last_good.host.load);
+        crate::collector::preserve_last_good(&mut report.host.disk, &last_good.host.disk);
+        crate::collector::preserve_last_good(
+            &mut report.host.network_throughput,
+            &last_good.host.network_throughput,
+        );
+        crate::collector::preserve_last_good(&mut report.host.spool, &last_good.host.spool);
         for node in &mut report.nodes {
             if let Some(previous) = last_good
                 .nodes
