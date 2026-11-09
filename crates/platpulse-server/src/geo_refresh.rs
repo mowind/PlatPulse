@@ -37,6 +37,7 @@
 //! * The terminal state lives in this process only. A restart forgets the run
 //!   instead of reporting a stale "running" state forever.
 
+use crate::http::realtime::{AdminResource, PublicResource};
 use std::collections::{BTreeSet, VecDeque};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -538,8 +539,12 @@ fn clock() -> String {
 /// Publish one Geo invalidation to both the Admin and Public namespaces. The
 /// hub owns the monotonic event id; the run's own state is read from REST.
 fn publish_geo(state: &AppState) {
-    state.admin_realtime().publish("geo", None::<String>, 0);
-    state.public_realtime().publish("geo", None::<String>, 0);
+    state
+        .admin_realtime()
+        .publish(AdminResource::Geo, None::<String>);
+    state
+        .public_realtime()
+        .publish(PublicResource::Geo, None::<String>);
 }
 
 async fn run_refresh(state: AppState, prepared: PreparedRefresh) {

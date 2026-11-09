@@ -1,5 +1,6 @@
 //! Node Purge impact preview and purge.
 use super::*;
+use crate::http::realtime::{AdminResource, PublicResource, ResetReason};
 
 /// Owner-confirmed Node Purge request. The echoed Node ID is friction and a
 /// scope re-check, never the authorization boundary; the Server still
@@ -247,21 +248,19 @@ pub(crate) async fn purge_node(
             // A purge is a collection change for both namespaces. The Admin
             // event may name the Node; the Public reset never carries a
             // private Node ID.
-            let revision = outcome.deleted_at.bytes().fold(0_u64, |acc, byte| {
-                acc.wrapping_mul(31).wrapping_add(byte as u64)
-            });
             state
                 .admin_realtime()
-                .publish("node", Some(node_id.clone()), revision);
-            state.admin_realtime().publish_reset("collection", revision);
+                .publish(AdminResource::Node, Some(node_id.clone()));
+            state
+                .admin_realtime()
+                .publish_reset(ResetReason::Collection);
             state.public_realtime().publish(
-                "network",
+                PublicResource::Network,
                 Some(outcome.impact.target.network_key.clone()),
-                revision,
             );
             state
                 .public_realtime()
-                .publish_reset("collection", revision);
+                .publish_reset(ResetReason::Collection);
             Json(NodePurgeResponse {
                 node_id: outcome.impact.target.node_id,
                 deleted_at: outcome.deleted_at,

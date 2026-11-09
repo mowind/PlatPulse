@@ -2329,7 +2329,14 @@
         "operationId": "admin_events",
         "responses": {
           "200": {
-            "description": "Owner-authenticated Admin invalidation stream"
+            "description": "Owner-authenticated Admin invalidation stream. Each `invalidation` or `reset` event carries one Invalidation Event as JSON data.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Invalidation_AdminResource"
+                }
+              }
+            }
           }
         }
       }
@@ -7101,7 +7108,14 @@
         "operationId": "public_events",
         "responses": {
           "200": {
-            "description": "Public invalidation stream (human-bound or Guest-bound when anonymous Home is enabled)"
+            "description": "Public invalidation stream (human-bound or Guest-bound when anonymous Home is enabled). Each `invalidation` or `reset` event carries one Invalidation Event as JSON data.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Invalidation_PublicResource"
+                }
+              }
+            }
           }
         }
       }
@@ -9644,6 +9658,25 @@
             "description": "True when the range holds more buckets than the page limit returned."
           }
         }
+      },
+      "AdminResource": {
+        "type": "string",
+        "description": "A resource the Admin stream can invalidate. Each names a set of Admin\nqueries the browser refetches.",
+        "enum": [
+          "node",
+          "peer",
+          "agent",
+          "geo",
+          "network",
+          "validator",
+          "access",
+          "alerts",
+          "notifications",
+          "operations",
+          "retention",
+          "backups",
+          "doctor"
+        ]
       },
       "AdminStateEntry": {
         "type": "object",
@@ -14065,6 +14098,110 @@
           }
         }
       },
+      "Invalidation_AdminResource": {
+        "type": "object",
+        "description": "One Invalidation Event (webui.md §6.3). REST stays authoritative: the event\nonly names what to refetch.",
+        "required": [
+          "version",
+          "eventId",
+          "resource",
+          "revision"
+        ],
+        "properties": {
+          "eventId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The cursor a reconnect sends back as `Last-Event-ID`.",
+            "minimum": 0
+          },
+          "reset": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "resource": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AdminResource"
+              },
+              {
+                "$ref": "#/components/schemas/ResetReason"
+              }
+            ],
+            "description": "The resource to refetch, or the reset reason when `reset` is true."
+          },
+          "resourceId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Always equal to `eventId`: the hub sequence is the one monotonic\nrevision of a stream.",
+            "minimum": 0
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Invalidation_PublicResource": {
+        "type": "object",
+        "description": "One Invalidation Event (webui.md §6.3). REST stays authoritative: the event\nonly names what to refetch.",
+        "required": [
+          "version",
+          "eventId",
+          "resource",
+          "revision"
+        ],
+        "properties": {
+          "eventId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The cursor a reconnect sends back as `Last-Event-ID`.",
+            "minimum": 0
+          },
+          "reset": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "resource": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PublicResource"
+              },
+              {
+                "$ref": "#/components/schemas/ResetReason"
+              }
+            ],
+            "description": "The resource to refetch, or the reset reason when `reset` is true."
+          },
+          "resourceId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Always equal to `eventId`: the hub sequence is the one monotonic\nrevision of a stream.",
+            "minimum": 0
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "InvestigationAnswerPathResponse": {
         "type": "object",
         "description": "Where the evidence behind a source is answered by the Server.",
@@ -17497,6 +17634,18 @@
           }
         }
       },
+      "PublicResource": {
+        "type": "string",
+        "description": "A resource the Public stream can invalidate. Each names a set of Home\nqueries the browser refetches; the Public hub cannot carry anything else.",
+        "enum": [
+          "node",
+          "network",
+          "validator",
+          "geo",
+          "reward_wallet",
+          "collection"
+        ]
+      },
       "PublicRewardWallet": {
         "type": "object",
         "description": "The Reward Wallet Balance (CONTEXT.md): the fixed Reward Wallet's freely\navailable native balance as PlatScan reports it. One Network-independent\nfigure; neither the Home Network selection nor the list filters narrow it.",
@@ -18003,6 +18152,15 @@
             "type": "string"
           }
         }
+      },
+      "ResetReason": {
+        "type": "string",
+        "description": "Why a reset event (`reset: true`) tells the browser its cached state can\nno longer be patched by single invalidations.",
+        "enum": [
+          "collection",
+          "site_access_mode",
+          "server_shutdown"
+        ]
       },
       "RestoreSubmitRequest": {
         "type": "object",

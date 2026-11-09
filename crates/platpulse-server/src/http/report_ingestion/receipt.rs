@@ -1,6 +1,7 @@
 //! Receipt and rejection responses of Report Ingestion: the receipt envelopes,
 //! the stored receipt an exact replay returns, and the error responses.
 
+use crate::http::realtime::AdminResource;
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -264,11 +265,9 @@ pub(super) async fn store_rejected<I: ReportInventory>(
     // signal an already-open Agent page would keep showing the frozen Agent
     // with no explanation. The realtime layer coalesces same-resource events,
     // so a rejection every collection interval is not an event flood.
-    state.admin_realtime().publish(
-        "agent",
-        Some(report.agent_id.to_string()),
-        report.report_sequence,
-    );
+    state
+        .admin_realtime()
+        .publish(AdminResource::Agent, Some(report.agent_id.to_string()));
     receipt_response(receipt)
 }
 

@@ -6,6 +6,7 @@
 //! The result is stored on a `doctor_run` Operation so the previous
 //! diagnostic result survives a failed run.
 
+use crate::http::realtime::AdminResource;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -63,7 +64,7 @@ pub async fn run(
                 operation_id,
                 crate::operations::STATUS_FAILED,
                 None,
-                &["doctor"],
+                &[AdminResource::Doctor],
             )
             .await;
             return Ok(());
@@ -75,7 +76,7 @@ pub async fn run(
             operation_id,
             crate::operations::STATUS_CANCELLED,
             None,
-            &["doctor"],
+            &[AdminResource::Doctor],
         )
         .await?;
         return Ok(());
@@ -87,7 +88,14 @@ pub async fn run(
         crate::operations::STATUS_SUCCEEDED
     };
     let result = serde_json::json!({ "checks": checks });
-    crate::operations::finalize(state, operation_id, status, Some(&result), &["doctor"]).await?;
+    crate::operations::finalize(
+        state,
+        operation_id,
+        status,
+        Some(&result),
+        &[AdminResource::Doctor],
+    )
+    .await?;
     Ok(())
 }
 

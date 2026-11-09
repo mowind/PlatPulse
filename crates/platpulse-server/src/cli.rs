@@ -2,6 +2,7 @@
 //! `serve`. Binary crates keep a thin `main.rs`; all logic lives here so it
 //! can be exercised from tests.
 
+use crate::http::realtime::{AdminResource, PublicResource};
 use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -1294,10 +1295,12 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                         }
                     };
                     if reload_changed || before_geo != after_geo || cleanup_changed {
-                        geo_state.admin_realtime().publish("geo", None::<String>, 1);
+                        geo_state
+                            .admin_realtime()
+                            .publish(AdminResource::Geo, None::<String>);
                         geo_state
                             .public_realtime()
-                            .publish("geo", None::<String>, 1);
+                            .publish(PublicResource::Geo, None::<String>);
                     }
                 }
             }));
@@ -1373,7 +1376,7 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                         Ok(changes) if changes > 0 => {
                             sweep_state
                                 .admin_realtime()
-                                .publish("alerts", None::<String>, 1);
+                                .publish(AdminResource::Alerts, None::<String>);
                         }
                         Ok(_) => {}
                         Err(error) => {
@@ -1504,12 +1507,10 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                         Ok(summary) if summary.changed_associations() => {
                             provider_state
                                 .admin_realtime()
-                                .publish("validator", None::<String>, 1);
-                            provider_state.public_realtime().publish(
-                                "validator",
-                                None::<String>,
-                                1,
-                            );
+                                .publish(AdminResource::Validator, None::<String>);
+                            provider_state
+                                .public_realtime()
+                                .publish(PublicResource::Validator, None::<String>);
                         }
                         Ok(_) => {}
                         Err(error) => {
@@ -1533,35 +1534,28 @@ pub async fn run_serve(config: &ServerConfig) -> Result<(), Box<dyn std::error::
                             if summary.invalidations > 0 {
                                 for validator_id in &summary.invalidated_validator_ids {
                                     provider_state.admin_realtime().publish(
-                                        "validator",
+                                        AdminResource::Validator,
                                         Some(validator_id.clone()),
-                                        1,
                                     );
                                     provider_state.public_realtime().publish(
-                                        "validator",
+                                        PublicResource::Validator,
                                         Some(validator_id.clone()),
-                                        1,
                                     );
                                 }
                                 for network_key in &summary.invalidated_network_keys {
-                                    provider_state.admin_realtime().publish(
-                                        "network",
-                                        Some(network_key.clone()),
-                                        1,
-                                    );
+                                    provider_state
+                                        .admin_realtime()
+                                        .publish(AdminResource::Network, Some(network_key.clone()));
                                     provider_state.public_realtime().publish(
-                                        "network",
+                                        PublicResource::Network,
                                         Some(network_key.clone()),
-                                        1,
                                     );
                                 }
                             }
                             if summary.alert_invalidations > 0 {
-                                provider_state.admin_realtime().publish(
-                                    "alerts",
-                                    None::<String>,
-                                    1,
-                                );
+                                provider_state
+                                    .admin_realtime()
+                                    .publish(AdminResource::Alerts, None::<String>);
                             }
                         }
                         Ok(_) => {}

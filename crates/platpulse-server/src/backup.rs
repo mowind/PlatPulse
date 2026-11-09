@@ -11,6 +11,7 @@
 //! the Server and are never displayed. A failed create or verify preserves
 //! every previous artifact and the last successful state.
 
+use crate::http::realtime::AdminResource;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -571,7 +572,7 @@ pub async fn verify(state: &AppState, operation_id: &str) -> Result<(), BackupEr
             operation_id,
             crate::operations::STATUS_FAILED,
             None,
-            &["backups"],
+            &[AdminResource::Backups],
         )
         .await?;
         return Ok(());
@@ -589,7 +590,7 @@ pub async fn verify(state: &AppState, operation_id: &str) -> Result<(), BackupEr
             operation_id,
             crate::operations::STATUS_FAILED,
             None,
-            &["backups"],
+            &[AdminResource::Backups],
         )
         .await?;
         return Ok(());
@@ -616,7 +617,7 @@ pub async fn verify(state: &AppState, operation_id: &str) -> Result<(), BackupEr
             operation_id,
             crate::operations::STATUS_FAILED,
             None,
-            &["backups"],
+            &[AdminResource::Backups],
         )
         .await?;
         return Ok(());
@@ -640,7 +641,7 @@ pub async fn verify(state: &AppState, operation_id: &str) -> Result<(), BackupEr
             operation_id,
             crate::operations::STATUS_CANCELLED,
             None,
-            &["backups"],
+            &[AdminResource::Backups],
         )
         .await?;
         return Ok(());
@@ -688,7 +689,7 @@ pub async fn verify(state: &AppState, operation_id: &str) -> Result<(), BackupEr
         operation_id,
         operation_status,
         Some(&result),
-        &["backups"],
+        &[AdminResource::Backups],
     )
     .await?;
     Ok(())

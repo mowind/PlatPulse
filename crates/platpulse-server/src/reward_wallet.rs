@@ -15,6 +15,7 @@
 //! upstream errors go to the Server log only; the Public reading carries the
 //! category alone.
 
+use crate::http::realtime::PublicResource;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -41,9 +42,6 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A last-good balance older than three refresh cycles is stale.
 pub const STALE_AFTER: time::Duration = time::Duration::seconds(180);
-
-/// Public SSE invalidation resource published when the stored row changes.
-pub const REALTIME_RESOURCE: &str = "reward_wallet";
 
 /// `address/details` answers are a few kilobytes; anything far larger is not
 /// the response this refresher understands.
@@ -348,7 +346,7 @@ pub async fn refresh_once(
     if changed {
         state
             .public_realtime()
-            .publish(REALTIME_RESOURCE, None::<String>, 1);
+            .publish(PublicResource::RewardWallet, None::<String>);
     }
     Ok(changed)
 }
@@ -505,7 +503,10 @@ mod tests {
             .public_realtime()
             .pending_events()
             .iter()
-            .filter(|event| event.resource == REALTIME_RESOURCE)
+            .filter(|event| {
+                event.resource
+                    == crate::http::realtime::EventResource::Resource(PublicResource::RewardWallet)
+            })
             .count()
     }
 

@@ -23,6 +23,7 @@ pub(crate) mod report_ingestion;
 pub(crate) mod validators_admin;
 pub(crate) mod write_fence;
 
+use crate::http::realtime::{AdminResource, PublicResource};
 use ipnet::IpNet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -496,8 +497,8 @@ pub struct AppState {
     geo_wake: Arc<Notify>,
     external_geo: crate::geo_external::ExternalGeoPaths,
     geo_refresh: crate::geo_refresh::GeoRefreshRegistry,
-    pub(crate) public_realtime: RealtimeHub,
-    pub(crate) admin_realtime: RealtimeHub,
+    pub(crate) public_realtime: RealtimeHub<PublicResource>,
+    pub(crate) admin_realtime: RealtimeHub<AdminResource>,
     metrics: crate::metrics::MetricsRegistry,
     capacity: Arc<crate::capacity::CapacityProtection>,
     /// Serializes the read-then-write invariants that share a subject per
@@ -696,8 +697,8 @@ impl AppState {
     pub(crate) fn begin_shutdown(&self) {
         self.runtime.begin_shutdown();
         self.shutdown.notify_waiters();
-        self.public_realtime.shutdown("server_shutdown");
-        self.admin_realtime.shutdown("server_shutdown");
+        self.public_realtime.shutdown();
+        self.admin_realtime.shutdown();
     }
 
     pub(crate) fn shutdown_signal(&self) -> tokio::sync::futures::Notified<'_> {
@@ -751,11 +752,11 @@ impl AppState {
         self.runtime.mark_worker_heartbeat_for(worker_index);
     }
 
-    pub(crate) fn public_realtime(&self) -> RealtimeHub {
+    pub(crate) fn public_realtime(&self) -> RealtimeHub<PublicResource> {
         self.public_realtime.clone()
     }
 
-    pub(crate) fn admin_realtime(&self) -> RealtimeHub {
+    pub(crate) fn admin_realtime(&self) -> RealtimeHub<AdminResource> {
         self.admin_realtime.clone()
     }
 
@@ -3880,10 +3881,10 @@ mod tests {
         seed_owner(&state).await;
         let public_cursor = state
             .public_realtime()
-            .publish("networks", None::<String>, 0);
+            .publish(PublicResource::Network, None::<String>);
         let admin_cursor = state
             .admin_realtime()
-            .publish("overview", None::<String>, 0);
+            .publish(AdminResource::Node, None::<String>);
 
         let app = build_app(state);
         let cookie = login_cookie(app.clone())

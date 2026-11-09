@@ -1,5 +1,6 @@
 //! Agent Removal impact preview and removal.
 use super::*;
+use crate::http::realtime::{AdminResource, ResetReason};
 
 /// One Node an Agent authoritatively owns, listed in the removal confirmation
 /// so the Owner sees exactly which Nodes will be permanently purged.
@@ -265,16 +266,15 @@ pub(crate) async fn remove_agent(
     .await
     {
         Ok(crate::agent_removal::AgentRemovalOutcome::Removed(result)) => {
-            let revision = result.deleted_at.bytes().fold(0_u64, |acc, byte| {
-                acc.wrapping_mul(31).wrapping_add(byte as u64)
-            });
             state
                 .admin_realtime()
-                .publish("agent", Some(agent_id.clone()), revision);
-            state.admin_realtime().publish_reset("collection", revision);
+                .publish(AdminResource::Agent, Some(agent_id.clone()));
+            state
+                .admin_realtime()
+                .publish_reset(ResetReason::Collection);
             state
                 .public_realtime()
-                .publish_reset("collection", revision);
+                .publish_reset(ResetReason::Collection);
             // The Admin stream may name each purged Node so its view can
             // invalidate precisely. The Public stream gets only the
             // collection reset: a purged Node may be private, and the sibling
@@ -282,7 +282,7 @@ pub(crate) async fn remove_agent(
             for node in &result.purged_nodes {
                 state
                     .admin_realtime()
-                    .publish("node", Some(node.node_id.clone()), revision);
+                    .publish(AdminResource::Node, Some(node.node_id.clone()));
             }
             Json(agent_removal_response(*result)).into_response()
         }

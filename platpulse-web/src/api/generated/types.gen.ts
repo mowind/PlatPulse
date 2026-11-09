@@ -875,6 +875,12 @@ export type AdminPeerRange = {
 };
 
 /**
+ * A resource the Admin stream can invalidate. Each names a set of Admin
+ * queries the browser refetches.
+ */
+export type AdminResource = 'node' | 'peer' | 'agent' | 'geo' | 'network' | 'validator' | 'access' | 'alerts' | 'notifications' | 'operations' | 'retention' | 'backups' | 'doctor';
+
+/**
  * One recorded state of a Node component, with the timing evidence that
  * belongs to it.
  *
@@ -2671,6 +2677,52 @@ export type IncidentRangeResponse = {
 };
 
 /**
+ * One Invalidation Event (webui.md §6.3). REST stays authoritative: the event
+ * only names what to refetch.
+ */
+export type InvalidationAdminResource = {
+    /**
+     * The cursor a reconnect sends back as `Last-Event-ID`.
+     */
+    eventId: number;
+    reset?: boolean | null;
+    /**
+     * The resource to refetch, or the reset reason when `reset` is true.
+     */
+    resource: AdminResource | ResetReason;
+    resourceId?: string | null;
+    /**
+     * Always equal to `eventId`: the hub sequence is the one monotonic
+     * revision of a stream.
+     */
+    revision: number;
+    version: number;
+};
+
+/**
+ * One Invalidation Event (webui.md §6.3). REST stays authoritative: the event
+ * only names what to refetch.
+ */
+export type InvalidationPublicResource = {
+    /**
+     * The cursor a reconnect sends back as `Last-Event-ID`.
+     */
+    eventId: number;
+    reset?: boolean | null;
+    /**
+     * The resource to refetch, or the reset reason when `reset` is true.
+     */
+    resource: PublicResource | ResetReason;
+    resourceId?: string | null;
+    /**
+     * Always equal to `eventId`: the hub sequence is the one monotonic
+     * revision of a stream.
+     */
+    revision: number;
+    version: number;
+};
+
+/**
  * Where the evidence behind a source is answered by the Server.
  */
 export type InvestigationAnswerPathResponse = {
@@ -4223,6 +4275,12 @@ export type PublicPeerLagSummary = {
 };
 
 /**
+ * A resource the Public stream can invalidate. Each names a set of Home
+ * queries the browser refetches; the Public hub cannot carry anything else.
+ */
+export type PublicResource = 'node' | 'network' | 'validator' | 'geo' | 'reward_wallet' | 'collection';
+
+/**
  * The Reward Wallet Balance (CONTEXT.md): the fixed Reward Wallet's freely
  * available native balance as PlatScan reports it. One Network-independent
  * figure; neither the Home Network selection nor the list filters narrow it.
@@ -4520,6 +4578,12 @@ export type RequestIdBody = {
 export type ResetPasswordRequest = {
     password: string;
 };
+
+/**
+ * Why a reset event (`reset: true`) tells the browser its cached state can
+ * no longer be patched by single invalidations.
+ */
+export type ResetReason = 'collection' | 'site_access_mode' | 'server_shutdown';
 
 export type RestoreSubmitRequest = {
     artifactId: string;
@@ -6054,10 +6118,12 @@ export type AdminEventsData = {
 
 export type AdminEventsResponses = {
     /**
-     * Owner-authenticated Admin invalidation stream
+     * Owner-authenticated Admin invalidation stream. Each `invalidation` or `reset` event carries one Invalidation Event as JSON data.
      */
-    200: unknown;
+    200: InvalidationAdminResource;
 };
+
+export type AdminEventsResponse = AdminEventsResponses[keyof AdminEventsResponses];
 
 export type AdminGeoStatusData = {
     body?: never;
@@ -7918,10 +7984,12 @@ export type PublicEventsData = {
 
 export type PublicEventsResponses = {
     /**
-     * Public invalidation stream (human-bound or Guest-bound when anonymous Home is enabled)
+     * Public invalidation stream (human-bound or Guest-bound when anonymous Home is enabled). Each `invalidation` or `reset` event carries one Invalidation Event as JSON data.
      */
-    200: unknown;
+    200: InvalidationPublicResource;
 };
+
+export type PublicEventsResponse = PublicEventsResponses[keyof PublicEventsResponses];
 
 export type LoginHandlerData = {
     body: LoginRequest;

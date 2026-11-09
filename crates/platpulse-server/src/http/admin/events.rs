@@ -5,7 +5,12 @@ use super::*;
     get,
     path = "/api/admin/v1/events",
     tag = "admin",
-    responses((status = 200, description = "Owner-authenticated Admin invalidation stream"))
+    responses((
+        status = 200,
+        description = "Owner-authenticated Admin invalidation stream. Each `invalidation` or `reset` event carries one Invalidation Event as JSON data.",
+        content_type = "text/event-stream",
+        body = realtime::Invalidation<realtime::AdminResource>
+    ))
 )]
 pub(super) async fn admin_events(
     State(state): State<AppState>,

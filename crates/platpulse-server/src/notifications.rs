@@ -12,6 +12,7 @@
 //! never enter the database, DTOs, logs, or Audit rows; destinations and
 //! provider results are redacted by construction.
 
+use crate::http::realtime::AdminResource;
 use std::path::Path;
 use std::time::Duration;
 
@@ -973,7 +974,7 @@ pub async fn process_due_deliveries(
     if processed > 0 {
         state
             .admin_realtime()
-            .publish("notifications", None::<String>, processed as u64);
+            .publish(AdminResource::Notifications, None::<String>);
     }
     Ok(processed)
 }
@@ -1236,7 +1237,7 @@ pub async fn send_test_delivery(
         tx.commit().await.map_err(|_| TestSendError::Unavailable)?;
         state
             .admin_realtime()
-            .publish("notifications", None::<String>, 1);
+            .publish(AdminResource::Notifications, None::<String>);
     }
     let mut conn = state
         .db()

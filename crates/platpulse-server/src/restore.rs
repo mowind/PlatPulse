@@ -21,6 +21,7 @@
 //! into the restored database (as a `restore` Operation plus Audit Event),
 //! so the WebUI can present the new state after the Server restarts.
 
+use crate::http::realtime::AdminResource;
 #[cfg(test)]
 use std::fs::File;
 use std::fs::OpenOptions;
@@ -324,7 +325,7 @@ pub async fn execute(state: &AppState, operation_id: &str) -> Result<(), Restore
             operation_id,
             crate::operations::STATUS_CANCELLED,
             None,
-            &["operations", "backups"],
+            &[AdminResource::Operations, AdminResource::Backups],
         )
         .await?;
         return Ok(());
@@ -376,7 +377,7 @@ pub async fn execute(state: &AppState, operation_id: &str) -> Result<(), Restore
             operation_id,
             crate::operations::STATUS_CANCELLED,
             None,
-            &["operations", "backups"],
+            &[AdminResource::Operations, AdminResource::Backups],
         )
         .await?;
         return Ok(());
@@ -408,7 +409,7 @@ pub async fn execute(state: &AppState, operation_id: &str) -> Result<(), Restore
         operation_id,
         crate::operations::STATUS_FAILED,
         Some(&result),
-        &["operations", "backups"],
+        &[AdminResource::Operations, AdminResource::Backups],
     )
     .await?;
     Ok(())
@@ -426,7 +427,7 @@ async fn fail_operation(
         operation_id,
         crate::operations::STATUS_FAILED,
         None,
-        &["operations", "backups"],
+        &[AdminResource::Operations, AdminResource::Backups],
     )
     .await?;
     Ok(())

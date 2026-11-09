@@ -20,6 +20,7 @@
 //! so switching providers changes the destination and the field spelling but
 //! never the statistics, the retention rules, or the Peer record counts.
 
+use crate::http::realtime::{AdminResource, PublicResource};
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -383,15 +384,13 @@ pub async fn run_worker(state: AppState) {
         match run_pass(&state, &now).await {
             Ok(summary) if summary.changed() => {
                 // A completed background batch invalidates the country list
-                // through the existing realtime mechanism; the hub supplies
-                // the monotonic event revision.
-                let revision = state.geo_config().generation;
+                // through the existing realtime mechanism.
                 state
                     .admin_realtime()
-                    .publish("geo", None::<String>, revision);
+                    .publish(AdminResource::Geo, None::<String>);
                 state
                     .public_realtime()
-                    .publish("geo", None::<String>, revision);
+                    .publish(PublicResource::Geo, None::<String>);
             }
             Ok(_) => {}
             Err(error) => tracing::warn!(error = %error, "geo backfill deferred"),
