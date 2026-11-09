@@ -29,8 +29,6 @@ struct AgentRow {
     agent_epoch: i64,
     active_boot_id: Option<String>,
     active_boot_status: String,
-    previous_boot_id: Option<String>,
-    close_report_id: Option<String>,
     last_report_sequence: Option<i64>,
     last_inventory_revision: i64,
 }
@@ -326,7 +324,7 @@ async fn ingest_report<I: ReportInventory>(
     // predicate makes a late report fail exactly like an invalid credential,
     // so no later Inventory, retry, or restart can reconstruct its Nodes.
     let agent = match sqlx::query_as::<_, AgentRow>(
-        "SELECT agent_epoch, active_boot_id, active_boot_status, previous_boot_id, close_report_id, last_report_sequence, last_inventory_revision FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
+        "SELECT agent_epoch, active_boot_id, active_boot_status, last_report_sequence, last_inventory_revision FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
     )
     .bind(&auth.agent_id)
     .fetch_optional(&mut *tx)
@@ -367,7 +365,9 @@ async fn ingest_report<I: ReportInventory>(
         .await;
     }
 
-    let old_boot_status: Option<String> = sqlx::query_scalar(
+    // A failed read must not pass for "this boot was never seen": that would
+    // skip the closed-boot refusal below.
+    let old_boot_status: Option<String> = match sqlx::query_scalar(
         "SELECT status FROM agent_boots WHERE agent_id=$1 AND agent_epoch=$2 AND boot_id=$3",
     )
     .bind(&auth.agent_id)
@@ -375,10 +375,10 @@ async fn ingest_report<I: ReportInventory>(
     .bind(parsed.boot_id.to_string())
     .fetch_optional(&mut *tx)
     .await
-    .map_err(|_| ())
-    .ok()
-    .flatten();
-    let _boot_markers = (&agent.previous_boot_id, &agent.close_report_id);
+    {
+        Ok(status) => status,
+        Err(failure) => return storage_error(&request_id.0, "read boot status", &failure),
+    };
     let declared_revision = parsed.inventory.declared_revision();
     // Frozen v1: the Agent declares its own monotonically increasing revision.
     if let Some(declared) = declared_revision {
@@ -588,39 +588,11 @@ async fn ingest_report<I: ReportInventory>(
             .await;
         }
     }
-    if let Some(last) = agent.last_report_sequence
-        && parsed.boot_id.to_string() == agent.active_boot_id.as_deref().unwrap_or_default()
-        && parsed.report_sequence > (last as u64).saturating_add(1)
-    {
-        // Every statement in the ingestion transaction must succeed: a backend
-        // that aborts the transaction on a failed statement (ADR 0013) would
-        // otherwise fail the whole commit later with no clue why.
-        if let Err(failure) = sqlx::query("INSERT INTO report_sequence_gaps (agent_id, boot_id, from_sequence, to_sequence, created_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING")
-            .bind(&auth.agent_id)
-            .bind(parsed.boot_id.to_string())
-            .bind(last.saturating_add(1))
-            .bind(parsed.report_sequence.saturating_sub(1) as i64)
-            .bind(now().to_string())
-            .execute(&mut *tx)
-            .await
-        {
-            return storage_error(&request_id.0, "record report sequence gap", &failure);
-        }
-    }
-    let now_text = now().to_string();
-    // Every observation instant this Report contributes is read through the
-    // stamp: the Report's own measured skew turns Agent-clock instants into
-    // Server-clock ones, and an unmeasured skew falls back to the same-Report
-    // relative time received + (observed − generated_at) (ADR 0014, #398).
-    let stamp = ReportStamp::new(
-        &now_text,
-        parsed.host.clock_skew.latest,
-        parsed.generated_at,
-    );
-    let capabilities =
-        serde_json::to_string(&parsed.agent_capabilities).expect("capabilities serialize");
+    // Network admission is a whole-report verdict, so it is decided for every
+    // Node before the report writes anything: a sequence gap or a completed
+    // Transfer written ahead of it would be committed together with the
+    // rejection receipt.
     let mut node_admission = NodeAdmission::default();
-    let mut ownership_contradiction = false;
     for node in parsed.inventory.nodes() {
         // A purged Node ID is a permanent admission boundary (design §15.3,
         // ADR 0004, issue #170): the Owner already erased this Node's
@@ -676,6 +648,45 @@ async fn ingest_report<I: ReportInventory>(
                 &request_id.0,
             )
             .await;
+        }
+    }
+    // The report is admitted from here on; only per-Node refusals remain.
+    if let Some(last) = agent.last_report_sequence
+        && parsed.boot_id.to_string() == agent.active_boot_id.as_deref().unwrap_or_default()
+        && parsed.report_sequence > (last as u64).saturating_add(1)
+    {
+        // Every statement in the ingestion transaction must succeed: a backend
+        // that aborts the transaction on a failed statement (ADR 0013) would
+        // otherwise fail the whole commit later with no clue why.
+        if let Err(failure) = sqlx::query("INSERT INTO report_sequence_gaps (agent_id, boot_id, from_sequence, to_sequence, created_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING")
+            .bind(&auth.agent_id)
+            .bind(parsed.boot_id.to_string())
+            .bind(last.saturating_add(1))
+            .bind(parsed.report_sequence.saturating_sub(1) as i64)
+            .bind(now().to_string())
+            .execute(&mut *tx)
+            .await
+        {
+            return storage_error(&request_id.0, "record report sequence gap", &failure);
+        }
+    }
+    let now_text = now().to_string();
+    // Every observation instant this Report contributes is read through the
+    // stamp: the Report's own measured skew turns Agent-clock instants into
+    // Server-clock ones, and an unmeasured skew falls back to the same-Report
+    // relative time received + (observed − generated_at) (ADR 0014, #398).
+    let stamp = ReportStamp::new(
+        &now_text,
+        parsed.host.clock_skew.latest,
+        parsed.generated_at,
+    );
+    let capabilities =
+        serde_json::to_string(&parsed.agent_capabilities).expect("capabilities serialize");
+    let mut ownership_contradiction = false;
+    for node in parsed.inventory.nodes() {
+        if !node_admission.admits(node.node_id) {
+            // Purged in the Network admission pass above.
+            continue;
         }
         let owner =
             match sqlx::query_scalar::<_, String>("SELECT agent_id FROM nodes WHERE node_id = $1")
@@ -1678,6 +1689,44 @@ mod tests {
         let recovered = submit_v2(&reopened, &agent_id, body).await;
         assert_eq!(v2_acceptance(&recovered).revision, 1);
         assert_eq!(accepted_inventory_revision(&reopened, &agent_id).await, 1);
+    }
+
+    /// A rejected report records no sequence gap: the next accepted report
+    /// records the one gap that covers it, so Admin diagnostics count a single
+    /// missing range instead of two overlapping ones.
+    #[tokio::test]
+    pub(super) async fn a_rejected_report_records_no_sequence_gap() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        let mut report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+
+        let mut unknown_key = report.clone();
+        unknown_key.report_sequence = 3;
+        unknown_key.report_id = "0195f2a1-0029-4029-8029-000000000029".parse().unwrap();
+        unknown_key.inventory.revision = 2;
+        unknown_key.inventory.nodes[0].network_key = "platon-unregistered".parse().unwrap();
+        unknown_key.validate().unwrap();
+        let rejected = submit(&state, &agent_id, serde_json::to_vec(&unknown_key).unwrap()).await;
+        assert_eq!(rejected.disposition, ReceiptDisposition::Rejected);
+        let gaps = || async {
+            sqlx::query_as::<_, (i64, i64)>(
+                "SELECT from_sequence, to_sequence FROM report_sequence_gaps WHERE agent_id=$1 ORDER BY gap_id",
+            )
+            .bind(&agent_id)
+            .fetch_all(state.db().pool())
+            .await
+            .unwrap()
+        };
+        assert_eq!(gaps().await, Vec::<(i64, i64)>::new());
+
+        report.report_sequence = 4;
+        report.report_id = "0195f2a1-0030-4030-8030-000000000030".parse().unwrap();
+        let accepted = submit(&state, &agent_id, serde_json::to_vec(&report).unwrap()).await;
+        assert_eq!(accepted.disposition, ReceiptDisposition::Accepted);
+        assert_eq!(gaps().await, vec![(2, 3)]);
     }
 
     #[tokio::test]
