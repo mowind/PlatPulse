@@ -1,18 +1,16 @@
-import { QueryObserver } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { adminQueryClient } from './admin'
 import { client } from './generated/client.gen'
 import {
-  applySiteAccessSettings,
   fetchNetworks,
   fetchNodeMetrics,
   fetchRewardWallet,
-  invalidatePublicResource,
-  PUBLIC_INVALIDATION_COALESCE_MS,
   publicKeys,
   publicQueryClient,
+  publicRealtime,
   resetPublicCache,
 } from './public'
+import { INVALIDATION_COALESCE_MS } from './realtime'
 
 function response(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -25,8 +23,8 @@ afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
-  // Clear module-level coalescing state so a pending timer never leaks into
-  // the next test (resetPublicCache also cancels it).
+  // A reset clears the realtime channel, so a queued refetch never leaks into
+  // the next test.
   resetPublicCache(0)
   publicQueryClient.clear()
   adminQueryClient.clear()
@@ -55,22 +53,6 @@ describe('Public adapter and query namespace', () => {
     expect((request as Request).headers.get('X-PlatPulse-Access-Generation')).toBe('17')
   })
 
-  it('ignores an older SSE revision for the same resource', async () => {
-    vi.useFakeTimers()
-    const invalidate = vi.spyOn(publicQueryClient, 'invalidateQueries')
-
-    invalidatePublicResource('node', 'node-1', 9)
-    invalidatePublicResource('node', 'node-1', 8)
-    vi.advanceTimersByTime(PUBLIC_INVALIDATION_COALESCE_MS)
-
-    expect(invalidate).toHaveBeenCalledTimes(3)
-    expect(invalidate.mock.calls.map(([options]) => options)).toEqual([
-      { queryKey: [...publicKeys.node('node-1'), 0], exact: true, refetchType: 'active' },
-      { queryKey: [...publicKeys.history('node-1'), 0], exact: true, refetchType: 'active' },
-      { queryKey: [...publicKeys.metrics('node-1'), 0], exact: true, refetchType: 'active' },
-    ])
-  })
-
   it('asks for a longer Metric Window by its preset and for Live with no parameter', async () => {
     client.setConfig({ baseUrl: 'http://platpulse.test' })
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
@@ -84,34 +66,6 @@ describe('Public adapter and query namespace', () => {
     expect(urls).toEqual([
       'http://platpulse.test/api/public/v1/nodes/node-1/metrics',
       'http://platpulse.test/api/public/v1/nodes/node-1/metrics?window=24h',
-    ])
-  })
-
-  it('never lets an Invalidation Event wake a clock-refreshed Metric Window', () => {
-    vi.useFakeTimers()
-    const cache = publicQueryClient.getQueryCache()
-    const live = cache.build(publicQueryClient, { queryKey: [...publicKeys.metrics('node-1'), 0] })
-    const sevenDays = cache.build(publicQueryClient, {
-      queryKey: [...publicKeys.metricsWindow('node-1', '7d'), 0],
-      meta: { refresh: 'clock' },
-    })
-    invalidatePublicResource('collection', undefined, 21)
-    invalidatePublicResource('node', 'node-1', 22)
-    vi.advanceTimersByTime(PUBLIC_INVALIDATION_COALESCE_MS)
-    expect(live.state.isInvalidated).toBe(true)
-    expect(sevenDays.state.isInvalidated).toBe(false)
-  })
-
-  it('invalidates the Network list for an addressed Network resource', () => {
-    vi.useFakeTimers()
-    const invalidate = vi.spyOn(publicQueryClient, 'invalidateQueries')
-
-    invalidatePublicResource('network', 'network-a', 11)
-    vi.advanceTimersByTime(PUBLIC_INVALIDATION_COALESCE_MS)
-
-    expect(invalidate).toHaveBeenCalledTimes(1)
-    expect(invalidate.mock.calls.map(([options]) => options)).toEqual([
-      { queryKey: [...publicKeys.networks, 0], exact: true, refetchType: 'active' },
     ])
   })
 
@@ -131,89 +85,61 @@ describe('Public adapter and query namespace', () => {
     expect(wallet.balance).toBe('1')
   })
 
-  it('refetches only the Reward Wallet Balance for its own invalidation', () => {
+})
+
+describe('Public realtime adapter', () => {
+  const event = (body: unknown) => JSON.stringify(body)
+  const built = (queryKey: readonly unknown[]) =>
+    publicQueryClient.getQueryCache().build(publicQueryClient, { queryKey })
+
+  it('refetches the detail, history and Live metrics of an addressed Node', () => {
     vi.useFakeTimers()
-    const invalidate = vi.spyOn(publicQueryClient, 'invalidateQueries')
+    const reached = [
+      built([...publicKeys.node('node-1'), 0]),
+      built([...publicKeys.history('node-1'), 0]),
+      built([...publicKeys.metrics('node-1'), 0]),
+    ]
+    const untouched = [
+      built([...publicKeys.networks, 0]),
+      built([...publicKeys.node('node-2'), 0]),
+      built([...publicKeys.rewardWallet, 0]),
+    ]
 
-    invalidatePublicResource('reward_wallet', undefined, 3)
-    vi.advanceTimersByTime(PUBLIC_INVALIDATION_COALESCE_MS)
+    publicRealtime.receive(event({ resource: 'node', resourceId: 'node-1', eventId: 1 }), 0)
+    vi.advanceTimersByTime(INVALIDATION_COALESCE_MS)
 
-    expect(invalidate.mock.calls.map(([options]) => options)).toEqual([
-      { queryKey: [...publicKeys.rewardWallet, 0], exact: true, refetchType: 'active' },
-    ])
+    expect(reached.map((query) => query.state.isInvalidated)).toEqual([true, true, true])
+    expect(untouched.map((query) => query.state.isInvalidated)).toEqual([false, false, false])
   })
 
-  it('coalesces a burst of invalidations into one non-cancelling refetch', () => {
+  it.each([
+    ['network', publicKeys.networks],
+    ['reward_wallet', publicKeys.rewardWallet],
+  ] as const)('refetches only its own list for a %s event', (resource, key) => {
     vi.useFakeTimers()
-    const invalidate = vi.spyOn(publicQueryClient, 'invalidateQueries')
+    const own = built([...key, 0])
+    const node = built([...publicKeys.node('node-1'), 0])
 
-    for (let eventId = 1; eventId <= 25; eventId += 1) {
-      invalidatePublicResource('network', 'network-a', eventId)
-    }
+    publicRealtime.receive(event({ resource, eventId: 1 }), 0)
+    vi.advanceTimersByTime(INVALIDATION_COALESCE_MS)
 
-    // Nothing is fetched while the burst is still arriving: the in-flight
-    // REST read from the previous flush is never cancelled by the next event.
-    expect(invalidate).not.toHaveBeenCalled()
-    vi.advanceTimersByTime(PUBLIC_INVALIDATION_COALESCE_MS)
-    expect(invalidate).toHaveBeenCalledTimes(1)
-    expect(invalidate.mock.calls[0]?.[0]).toEqual({
-      queryKey: [...publicKeys.networks, 0],
-      exact: true,
-      refetchType: 'active',
-    })
-    expect(invalidate.mock.calls[0]?.[1]).toEqual({ cancelRefetch: false })
+    expect(own.state.isInvalidated).toBe(true)
+    expect(node.state.isInvalidated).toBe(false)
   })
 
-  it('reads again after a read that was already in flight when the event arrived', async () => {
-    vi.useFakeTimers()
-    const answers: Array<(value: string) => void> = []
-    const queryFn = vi.fn(() => new Promise<string>((resolve) => answers.push(resolve)))
-    const observer = new QueryObserver(publicQueryClient, { queryKey: [...publicKeys.networks, 0], queryFn })
-    const unsubscribe = observer.subscribe(() => {})
-    expect(queryFn).toHaveBeenCalledTimes(1)
-
-    // The change lands while the first read is still on the wire, so that
-    // read may answer from before it: the flush cannot satisfy the event by
-    // joining it.
-    invalidatePublicResource('network', 'network-a', 1)
-    await vi.advanceTimersByTimeAsync(PUBLIC_INVALIDATION_COALESCE_MS)
-    expect(queryFn).toHaveBeenCalledTimes(1)
-    answers[0]?.('before the change')
-    await vi.advanceTimersByTimeAsync(PUBLIC_INVALIDATION_COALESCE_MS)
-
-    expect(queryFn).toHaveBeenCalledTimes(2)
-    answers[1]?.('after the change')
-    await vi.advanceTimersByTimeAsync(PUBLIC_INVALIDATION_COALESCE_MS)
-    expect(observer.getCurrentResult().data).toBe('after the change')
-    // Once a read starts after the event, the event is answered: no third read.
-    expect(queryFn).toHaveBeenCalledTimes(2)
-    unsubscribe()
+  it('retires the Public cache for a reset on the invalidation stream', () => {
+    expect(publicRealtime.receive(event({ resource: 'site_access_mode', reset: true, eventId: 4 }), 0)).toBe('reset')
   })
 
-  it('drops queued invalidations when the namespace is reset', () => {
+  it('drops queued refetches when the namespace is reset', () => {
     vi.useFakeTimers()
     const invalidate = vi.spyOn(publicQueryClient, 'invalidateQueries')
+    built([...publicKeys.networks, 0])
 
-    invalidatePublicResource('network', 'network-a', 7)
+    publicRealtime.receive(event({ resource: 'network', eventId: 7 }), 0)
     resetPublicCache(8)
-    vi.advanceTimersByTime(PUBLIC_INVALIDATION_COALESCE_MS)
+    vi.advanceTimersByTime(INVALIDATION_COALESCE_MS)
 
     expect(invalidate).not.toHaveBeenCalled()
-  })
-
-  it('targets the authoritative Site Access generation after a reset', () => {
-    vi.useFakeTimers()
-    applySiteAccessSettings({ mode: 'public', authorizationGeneration: 42 })
-    resetPublicCache(99)
-    applySiteAccessSettings({ mode: 'public', authorizationGeneration: 42 })
-    const invalidate = vi.spyOn(publicQueryClient, 'invalidateQueries')
-
-    invalidatePublicResource('network', 'network-a', 12)
-    vi.advanceTimersByTime(PUBLIC_INVALIDATION_COALESCE_MS)
-
-    expect(invalidate.mock.calls[0]?.[0]).toMatchObject({
-      queryKey: [...publicKeys.networks, 42],
-      exact: true,
-    })
   })
 })
