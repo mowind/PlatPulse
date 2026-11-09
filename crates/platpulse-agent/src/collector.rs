@@ -575,7 +575,7 @@ pub fn collect_host(
 /// retaining the current attempt state and error. This is the Agent-side
 /// half of the Observation Envelope last-good contract; the Server applies
 /// the same rule again at its Current Projection boundary.
-fn preserve_last_good<T: Clone>(
+pub(crate) fn preserve_last_good<T: Clone>(
     current: &mut ComponentObservation<T>,
     previous: &ComponentObservation<T>,
 ) {
