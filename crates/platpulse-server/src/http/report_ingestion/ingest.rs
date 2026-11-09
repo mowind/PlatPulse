@@ -610,8 +610,13 @@ async fn ingest_report<I: ReportInventory>(
     let now_text = now().to_string();
     // Every observation instant this Report contributes is read through the
     // stamp: the Report's own measured skew turns Agent-clock instants into
-    // Server-clock ones, and the receipt instant stays the fallback (ADR 0014).
-    let stamp = ReportStamp::new(&now_text, parsed.host.clock_skew.latest);
+    // Server-clock ones, and an unmeasured skew falls back to the same-Report
+    // relative time received + (observed − generated_at) (ADR 0014, #398).
+    let stamp = ReportStamp::new(
+        &now_text,
+        parsed.host.clock_skew.latest,
+        parsed.generated_at,
+    );
     let capabilities =
         serde_json::to_string(&parsed.agent_capabilities).expect("capabilities serialize");
     let mut node_admission = NodeAdmission::default();

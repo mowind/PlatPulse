@@ -56,16 +56,28 @@ pub fn measured_skew(clock_skew_ms: Option<i64>) -> Option<i64> {
 ///
 /// `skew_ms` is the Report's own `host.clock_skew` reading, filtered through
 /// [`measured_skew`] here so the one rule for "this skew cannot be corrected
-/// by" lives in this function and cannot be forgotten by a caller. Returns
-/// `fallback` when the Report carries no observation instant or its measured
-/// skew is untrustworthy: the receipt instant is the only instant the Server
-/// can defend in that case.
+/// by" lives in this function and cannot be forgotten by a caller.
+///
+/// When the skew is **unmeasured** (`None`), the Server cannot correct the
+/// Agent instant by a skew it does not have, but it does know how long the
+/// Report took to arrive: `generated_at` is the Report's own generation
+/// instant, and `fallback` is the receipt instant, so the corrected instant
+/// is `fallback + (observed - generated_at)` — the observation placed on the
+/// Server clock at the same offset from receipt that it had from generation
+/// (ADR 0014, issue #398). This keeps a replayed Report's observations in the
+/// right order and far enough in the past to be Stale, instead of stamping
+/// them all at receipt time and making them look current.
+///
+/// Returns `fallback` when the Report carries no observation instant, when
+/// the skew is Clock Unreliable (present but too large), or when the
+/// calendar cannot hold the result.
 pub fn observation_instant(
     observed: Option<Rfc3339>,
     skew_ms: Option<i64>,
+    generated_at: Option<Rfc3339>,
     fallback: &str,
 ) -> String {
-    match (observed, measured_skew(skew_ms)) {
+    match (observed, skew_ms, measured_skew(skew_ms)) {
         // `observed` comes from the Agent, so the Server cannot assume it sits
         // comfortably inside the calendar: a Report may legally stamp
         // 9999-12-31T23:59:59Z, and correcting that by a millisecond overflows
@@ -73,11 +85,43 @@ pub fn observation_instant(
         // instant it cannot judge, so it falls back like an unmeasured skew.
         // The arithmetic also rounds to the second precision every stored
         // instant uses, because the rest of the Server compares them as strings.
-        (Some(observed), Some(skew)) => corrected_instant(observed, skew)
+        (Some(observed), _, Some(skew)) => corrected_instant(observed, skew)
             .map(crate::auth::format_rfc3339)
             .unwrap_or_else(|| fallback.to_owned()),
+        // Skew never measured: use the same-Report relative time to place the
+        // observation on the Server clock at the same offset from receipt that
+        // it had from generation. Falls back to receipt when the Report carries
+        // no generation instant or the calendar cannot hold the result.
+        (Some(observed), None, None) => relative_instant(observed, generated_at, fallback)
+            .unwrap_or_else(|| fallback.to_owned()),
+        // Clock Unreliable (skew present but too large) or no observation
+        // instant: the receipt instant is the only instant the Server can
+        // defend.
         _ => fallback.to_owned(),
     }
+}
+
+/// The Server-clock instant for an observation whose skew was never measured,
+/// using the Report's own elapsed time from observation to generation as a
+/// proxy for the skew the Server does not have (ADR 0014, issue #398).
+///
+/// `received_at + (observed - generated_at)` places the observation on the
+/// Server clock at the same offset from receipt that it had from generation.
+/// The result is clamped to the calendar and rounded to whole seconds, like
+/// [`corrected_instant`]. Returns `None` when `generated_at` is missing,
+/// `received_at` does not parse, or the calendar cannot hold the result.
+fn relative_instant(
+    observed: Rfc3339,
+    generated_at: Option<Rfc3339>,
+    received_at: &str,
+) -> Option<String> {
+    let generated = generated_at?;
+    let received = crate::auth::parse_rfc3339(received_at)?;
+    let offset = observed.as_datetime() - generated.as_datetime();
+    received
+        .checked_add(offset)
+        .and_then(|instant| instant.replace_nanosecond(0).ok())
+        .map(crate::auth::format_rfc3339)
 }
 
 /// The Server-clock instant to stamp a history fact with.
@@ -193,6 +237,7 @@ mod tests {
         let corrected = observation_instant(
             Some(instant("2026-08-12T09:03:00Z")),
             Some(180_000),
+            None,
             "2026-08-12T10:00:00Z",
         );
         assert_eq!(corrected, "2026-08-12T09:00:00Z");
@@ -200,6 +245,7 @@ mod tests {
         let corrected = observation_instant(
             Some(instant("2026-08-12T08:57:00Z")),
             Some(-180_000),
+            None,
             "2026-08-12T10:00:00Z",
         );
         assert_eq!(corrected, "2026-08-12T09:00:00Z");
@@ -217,6 +263,7 @@ mod tests {
             observation_instant(
                 Some(instant("2026-08-12T09:00:00Z")),
                 Some(320),
+                None,
                 "2026-08-12T10:00:00Z",
             ),
             "2026-08-12T09:00:00Z"
@@ -231,6 +278,7 @@ mod tests {
             observation_instant(
                 Some(instant("2026-08-12T09:00:00Z")),
                 Some(1_500),
+                None,
                 "2026-08-12T10:00:00Z",
             ),
             "2026-08-12T08:59:59Z"
@@ -260,6 +308,7 @@ mod tests {
             observation_instant(
                 Some(instant("2026-08-12T09:00:00Z")),
                 Some(skew),
+                None,
                 "2026-08-12T10:00:00Z"
             ),
             "2026-08-12T10:00:00Z"
@@ -267,18 +316,33 @@ mod tests {
     }
 
     #[test]
-    fn an_unmeasured_skew_or_missing_observation_falls_back_to_the_receipt_instant() {
+    fn an_unmeasured_skew_uses_relative_time_and_a_missing_observation_falls_back() {
+        // Skew unmeasured but generation instant available: the observation is
+        // placed at received + (observed − generated_at), not at receipt time.
+        // Agent generated at 10:00, observed 3 minutes earlier at 09:57,
+        // report received at 10:01 → corrected instant = 10:01 − 3 min = 09:58.
+        assert_eq!(
+            observation_instant(
+                Some(instant("2026-08-12T09:57:00Z")),
+                None,
+                Some(instant("2026-08-12T10:00:00Z")),
+                "2026-08-12T10:01:00Z",
+            ),
+            "2026-08-12T09:58:00Z"
+        );
+        // Skew unmeasured and no generation instant: fall back to receipt.
         let observed = Some(instant("2026-08-12T09:00:00Z"));
         assert_eq!(
-            observation_instant(observed, None, "2026-08-12T10:00:00Z"),
+            observation_instant(observed, None, None, "2026-08-12T10:00:00Z"),
+            "2026-08-12T10:00:00Z"
+        );
+        // Missing observation instant always falls back regardless of skew.
+        assert_eq!(
+            observation_instant(None, Some(0), None, "2026-08-12T10:00:00Z"),
             "2026-08-12T10:00:00Z"
         );
         assert_eq!(
-            observation_instant(None, Some(0), "2026-08-12T10:00:00Z"),
-            "2026-08-12T10:00:00Z"
-        );
-        assert_eq!(
-            observation_instant(None, None, "2026-08-12T10:00:00Z"),
+            observation_instant(None, None, None, "2026-08-12T10:00:00Z"),
             "2026-08-12T10:00:00Z"
         );
     }
@@ -291,9 +355,23 @@ mod tests {
             observation_instant(
                 Some(instant("9999-12-31T23:59:59Z")),
                 Some(-1_000),
+                None,
                 "2026-08-12T10:00:00Z"
             ),
             "2026-08-12T10:00:00Z"
+        );
+        // The relative-time path also falls back when the result overflows the
+        // calendar (received + offset exceeds the representable maximum).
+        // observed is 2 s ahead of generated_at (offset = +2 s); received is at
+        // 9999-12-31T23:59:58Z; result = 9999-12-31T24:00:00Z → falls back.
+        assert_eq!(
+            observation_instant(
+                Some(instant("9999-12-31T23:59:59Z")),
+                None,
+                Some(instant("9999-12-31T23:59:57Z")),
+                "9999-12-31T23:59:58Z",
+            ),
+            "9999-12-31T23:59:58Z"
         );
     }
 
