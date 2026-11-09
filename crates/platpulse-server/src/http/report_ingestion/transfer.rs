@@ -757,6 +757,63 @@ mod tests {
         assert_eq!(owner, source_agent);
     }
 
+    /// A whole-report rejection writes nothing but its receipt: when a later
+    /// Node of the report names an unregistered Network key, an earlier
+    /// Node's pending Transfer is neither completed nor resolved, and the
+    /// source keeps ownership.
+    #[tokio::test]
+    pub(super) async fn unknown_network_key_on_a_sibling_leaves_the_transfer_pending() {
+        let (_dir, state, source_agent, target_agent, node_id) =
+            state_with_source_and_target().await;
+        pending_transfer(&state, &node_id, &source_agent, &target_agent).await;
+        let source_report: AgentReport = serde_json::from_slice(include_bytes!(
+            "../../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        let mut declaration = target_declaration(&source_report, &target_agent, true, false);
+        let mut sibling = declaration.inventory.nodes[0].clone();
+        sibling.node_id = "0195f2a1-0036-4036-8036-000000000036".parse().unwrap();
+        sibling.network_key = "platon-unregistered".parse().unwrap();
+        sibling.rpc_endpoint = "ws://127.0.0.1:6791".parse().unwrap();
+        let mut sibling_observation = declaration.nodes[0].clone();
+        sibling_observation.node_id = sibling.node_id;
+        declaration.inventory.nodes.push(sibling);
+        declaration.nodes.push(sibling_observation);
+        declaration.validate().unwrap();
+
+        let receipt = submit(
+            &state,
+            &target_agent,
+            serde_json::to_vec(&declaration).unwrap(),
+        )
+        .await;
+        assert_eq!(receipt.disposition, ReceiptDisposition::Rejected);
+        assert_eq!(
+            receipt.rejections[0].code,
+            platpulse_core::RejectionCode::NetworkKeyUnknown
+        );
+        let owner: String = sqlx::query_scalar("SELECT agent_id FROM nodes WHERE node_id=$1")
+            .bind(node_id.to_string())
+            .fetch_one(state.db().pool())
+            .await
+            .unwrap();
+        assert_eq!(owner, source_agent);
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM node_transfers WHERE transfer_id='transfer-pending-1'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(status, "pending");
+        let audits: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM audit_events WHERE event_kind='node_transfer_completed'",
+        )
+        .fetch_one(state.db().pool())
+        .await
+        .unwrap();
+        assert_eq!(audits, 0);
+    }
+
     #[tokio::test]
     pub(super) async fn matching_sample_never_merges_history_for_ownership_rejected_node() {
         let (_dir, state, source_agent, target_agent, node_id) =
