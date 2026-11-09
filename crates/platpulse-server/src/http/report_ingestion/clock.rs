@@ -19,29 +19,38 @@ pub(super) fn received_instant(received_at: &str, generated_at: Rfc3339) -> Rfc3
     received_at.parse().unwrap_or(generated_at)
 }
 
-/// The two instants one Agent Report carries, as one value.
+/// The three instants one Agent Report carries, as one value.
 ///
 /// `received` is the Server's own instant: it answers Agent liveness,
 /// idempotency and audit, and nothing about when a Node was actually observed.
 /// `skew_ms` is the offset the same Report measured against Server time, which
 /// is what turns the Report's own observation instants into Server-clock
-/// instants (ADR 0014, issue #274). Every write that records "when was this
-/// observed" takes the corrected instant from here instead of the receipt
+/// instants (ADR 0014, issue #274). `generated_at` is the Agent's own
+/// generation instant, used as the relative-time anchor when the skew was
+/// never measured (ADR 0014, issue #398). Every write that records "when was
+/// this observed" takes the corrected instant from here instead of the receipt
 /// instant, so a replayed Report cannot look newly observed.
 #[derive(Clone, Copy)]
 pub(super) struct ReportStamp<'a> {
     received: &'a str,
     skew_ms: Option<i64>,
+    generated_at: Option<Rfc3339>,
 }
 
 impl<'a> ReportStamp<'a> {
     /// The Report's own `host.clock_skew` reading is kept as the Agent reported
     /// it: [`crate::observation_time::observation_instant`] is the one place that
-    /// decides whether it may be corrected by.
-    pub(super) fn new(received: &'a str, clock_skew_ms: Option<i64>) -> Self {
+    /// decides whether it may be corrected by. `generated_at` anchors the
+    /// relative-time fallback when the skew was never measured.
+    pub(super) fn new(
+        received: &'a str,
+        clock_skew_ms: Option<i64>,
+        generated_at: Rfc3339,
+    ) -> Self {
         Self {
             received,
             skew_ms: clock_skew_ms,
+            generated_at: Some(generated_at),
         }
     }
 
@@ -52,10 +61,18 @@ impl<'a> ReportStamp<'a> {
 
     /// The Server-clock instant at which `observed` happened.
     ///
-    /// An unmeasured or Clock Unreliable skew, and a Report that carries no
-    /// observation instant, both fall back to the receipt instant.
+    /// A measured skew corrects the Agent instant onto the Server clock.
+    /// A Clock Unreliable skew (present but too large) falls back to receipt.
+    /// An unmeasured skew uses the same-Report relative time: `received +
+    /// (observed − generated_at)` (ADR 0014, issue #398).
+    /// A missing observation instant falls back to receipt.
     pub(super) fn observed_at(&self, observed: Option<Rfc3339>) -> String {
-        crate::observation_time::observation_instant(observed, self.skew_ms, self.received)
+        crate::observation_time::observation_instant(
+            observed,
+            self.skew_ms,
+            self.generated_at,
+            self.received,
+        )
     }
 
     /// The Server-clock instant to stamp a history fact derived from `observed`.
@@ -800,6 +817,99 @@ mod tests {
         assert_eq!(
             node["currency"], "stale",
             "Closing must not flip the Node to current: {node}"
+        );
+    }
+
+    /// A Report helper that stamps component instants at `observation_offset` from
+    /// now but sets `generated_at` to now and `host.clock_skew` to an error state
+    /// with no measured value. This simulates a Report generated just now whose
+    /// components carry a last-good observation from `observation_offset` ago and
+    /// whose Agent could never measure its skew (ADR 0014, issue #398).
+    ///
+    /// The interesting case: generated_at ~ now, observed ~ now + observation_offset.
+    /// `relative_instant` computes received + (observed - generated_at) ~ now + offset,
+    /// so a negative offset places the stored instant in the past (stale).
+    fn report_without_skew(observation_offset: time::Duration) -> serde_json::Value {
+        let mut raw: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../../platpulse-core/tests/fixtures/report_v1_minimal.json"
+        ))
+        .unwrap();
+        // Shift all timestamps to observation_offset from now (observations are old).
+        restamp_fixture(&mut raw, now_utc() + observation_offset);
+        // Override generated_at to now: the Agent just built this report but is carrying
+        // the last-good observations from observation_offset ago.
+        raw["generated_at"] = serde_json::Value::String(format_rfc3339(now_utc()));
+        let observed = raw["nodes"][0]["chain"]["sync"]["latest_observed_at"].clone();
+        // Clock skew never measured: error status, no latest value.
+        // BoundedError is {"code": "...", "message": "..."}, and Option fields
+        // are omitted when None (skip_serializing_if = "Option::is_none").
+        raw["host"]["clock_skew"] = serde_json::json!({
+            "status": "error",
+            "attempted_at": raw["generated_at"].clone(),
+            "state_revision": 1,
+            "value_revision": 0,
+            "error": {
+                "code": "clock_skew_unavailable",
+                "message": "clock skew measurement not available"
+            }
+        });
+        // Add a consensus observation so the Node's freshness is not held back by it.
+        raw["nodes"][0]["chain"]["consensus"] = serde_json::json!({
+            "status": "ok",
+            "attempted_at": observed.clone(),
+            "latest_observed_at": observed.clone(),
+            "state_revision": 1,
+            "value_revision": 1,
+            "latest": {
+                "epoch": 100,
+                "view_number": 500,
+                "validator": false,
+                "highest_qc_block": 9007199254740993u64,
+                "highest_lock_block": 9007199254740992u64,
+                "highest_commit_block": 9007199254740991u64
+            }
+        });
+        raw
+    }
+
+    /// Acceptance of issue #398: when the skew was never measured the Server uses
+    /// the same-Report relative time (received + (observed - generated_at)) to
+    /// place the observation on the Server clock. A Report carrying a two-hour-old
+    /// last-good observation and no skew measurement should produce a Stale Node,
+    /// not a Current one.
+    ///
+    /// Before #398 the Server fell back to the receipt instant, so every such Node
+    /// looked Current regardless of how old the observation was.
+    #[tokio::test]
+    pub(super) async fn an_unmeasured_skew_uses_relative_time_to_keep_an_old_report_stale() {
+        let (_dir, state, agent_id) = state_with_agent().await;
+        // Report generated now; observations are from two hours ago (last-good carry).
+        // Skew was never measured.
+        let report = report_without_skew(time::Duration::hours(-2));
+        let _observed = report_instant(&report);
+        assert_eq!(
+            submit(&state, &agent_id, serde_json::to_vec(&report).unwrap())
+                .await
+                .disposition,
+            ReceiptDisposition::Accepted
+        );
+
+        let stored = component_instant(&state, "sync").await.unwrap();
+        assert!(
+            seconds_from_now(&stored) < -7_000,
+            "relative time places the observation ~2 h in the past: {stored}"
+        );
+
+        let node = public_home_node(&state, ISSUE_274_NODE).await;
+        assert_eq!(node["health"], "unknown", "{node}");
+        assert_eq!(node["healthReason"], "observations are stale");
+        assert_eq!(node["currency"], "stale", "{node}");
+        let as_of = node["currencyAsOf"]
+            .as_str()
+            .expect("every observation instant is known");
+        assert!(
+            seconds_from_now(as_of) < -7_000,
+            "the currency instant reflects the observation, not the receipt: {as_of}"
         );
     }
 }
