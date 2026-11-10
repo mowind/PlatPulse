@@ -1,5 +1,5 @@
 //! Receipt and rejection responses of Report Ingestion: the receipt envelopes,
-//! the stored receipt an exact replay returns, and the error responses.
+//! the receipt store with the exact replay it answers, and the error responses.
 
 use crate::http::realtime::AdminResource;
 use axum::Json;
@@ -217,6 +217,225 @@ pub(super) fn receipt_response(receipt: IngestReceipt) -> Response {
     receipt.into_response()
 }
 
+/// A failed statement of the report transaction: log it under the request,
+/// latch runtime corruption when the Storage Backend classifies it so, and
+/// answer with the storage error the operator can act on.
+pub(super) fn storage_failure(
+    state: &AppState,
+    request_id: &str,
+    operation: &str,
+    failure: &sqlx::Error,
+) -> Response {
+    state.note_database_error(failure);
+    storage_error(request_id, operation, failure)
+}
+
+/// The answer to a Report identity that already holds a Receipt.
+pub(super) enum Replay {
+    /// The stored Receipt, re-materialized under the request's protocol major.
+    Receipt(IngestReceipt),
+    /// The stored Report has different bytes under the same identity.
+    IdentityConflict,
+    /// Replay never bypasses the live Agent boundary: a removed Agent's
+    /// retained Receipt is not returned even when the immutable bytes match
+    /// (design 15.10.5, issue #192).
+    AgentRemoved,
+    /// The stored body does not decode under the request's protocol major.
+    Unreadable,
+}
+
+impl Replay {
+    pub(super) fn into_response(self, request_id: &str) -> Response {
+        match self {
+            Self::Receipt(receipt) => receipt_response(receipt),
+            Self::IdentityConflict => error(
+                request_id,
+                StatusCode::CONFLICT,
+                "report_identity_conflict",
+                "Report identity conflicts with a stored report",
+            ),
+            Self::AgentRemoved => error(
+                request_id,
+                StatusCode::UNAUTHORIZED,
+                "agent_auth_required",
+                "Agent credential is invalid",
+            ),
+            Self::Unreadable => error(
+                request_id,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "Stored receipt is unavailable",
+            ),
+        }
+    }
+}
+
+/// The exact replay of a stored Report identity, or `None` when the identity
+/// holds no Receipt yet.
+pub(super) async fn find_replay<I: ReportInventory>(
+    tx: &mut Transaction<'_, Any>,
+    agent_id: &str,
+    report_id: ReportId,
+    hash: &Sha256Hex,
+) -> Result<Option<Replay>, sqlx::Error> {
+    let stored = sqlx::query_as::<_, ReceiptRow>(
+        "SELECT report_body_sha256, receipt_body FROM agent_report_receipts WHERE report_id = $1",
+    )
+    .bind(report_id.to_string())
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(stored) = stored else {
+        return Ok(None);
+    };
+    if stored.report_body_sha256 != hash.to_string() {
+        return Ok(Some(Replay::IdentityConflict));
+    }
+    let live = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM agents WHERE agent_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(agent_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if live.is_none() {
+        return Ok(Some(Replay::AgentRemoved));
+    }
+    Ok(Some(
+        replay_receipt::<I>(&stored.receipt_body).map_or(Replay::Unreadable, Replay::Receipt),
+    ))
+}
+
+/// Durable Inventory evidence of a whole-report rejection (issue #181): which
+/// code refused the Report and what Inventory the Agent declared, so Admin
+/// never has to decode the receipt body, nor trust an Agent-reported
+/// diagnostic, to answer "is this Agent's latest ingestion attempt an
+/// Inventory rejection?".
+pub(super) struct RejectionEvidence {
+    code: Option<&'static str>,
+    inventory_revision: Option<i64>,
+    inventory_sha256: String,
+    inventory_protocol_major: i64,
+}
+
+impl RejectionEvidence {
+    /// A whole-report rejection decides by its first rejection.
+    pub(super) fn of<I: ReportInventory>(report: &AgentReport<I>, receipt: &IngestReceipt) -> Self {
+        Self {
+            code: receipt
+                .rejections()
+                .first()
+                .map(|rejection| rejection.code.as_str()),
+            inventory_revision: report
+                .inventory
+                .declared_revision()
+                .map(|revision| revision as i64),
+            inventory_sha256: report.inventory.accepted_sha256().to_string(),
+            // The Server-owned protocol major of the refused declaration. v2
+            // declares no revision, so the Admin diagnosis explains it from the
+            // accepted revision/fingerprint and this evidence instead of
+            // forging a removed Agent-supplied revision (issue #188).
+            inventory_protocol_major: I::protocol_version() as i64,
+        }
+    }
+}
+
+/// What storing one Report's Receipt decided.
+pub(super) enum StoreOutcome {
+    /// This attempt's Receipt is now the Report's Receipt.
+    Stored,
+    /// The Report identity already holds a Receipt, which answers this attempt.
+    Replay(Replay),
+    /// Another Report already holds this Boot's sequence.
+    SequenceTaken,
+}
+
+/// Store the Receipt of one Report, accepted or rejected.
+///
+/// The same immutable Report can be delivered twice at once (a sender deadline
+/// that expired while the first attempt was still committing, or a reconnect
+/// replay), and PostgreSQL admits two concurrent Reports of one Boot into this
+/// insert, so both unique keys of the table — `report_id` and
+/// `(agent_id, agent_epoch, boot_id, report_sequence)` — are the barriers an
+/// earlier read cannot be. A unique violation would abort the PostgreSQL
+/// transaction; `ON CONFLICT DO NOTHING` reports the loser as zero rows and
+/// leaves it usable to tell a replay from a taken sequence.
+pub(super) async fn store_receipt<I: ReportInventory>(
+    tx: &mut Transaction<'_, Any>,
+    report: &AgentReport<I>,
+    hash: &Sha256Hex,
+    receipt: &IngestReceipt,
+    received_at: &str,
+    evidence: Option<RejectionEvidence>,
+) -> Result<StoreOutcome, sqlx::Error> {
+    let (code, inventory_revision, inventory_sha256, inventory_protocol_major) = match evidence {
+        Some(evidence) => (
+            evidence.code,
+            evidence.inventory_revision,
+            Some(evidence.inventory_sha256),
+            Some(evidence.inventory_protocol_major),
+        ),
+        None => (None, None, None, None),
+    };
+    let agent_id = report.agent_id.to_string();
+    let inserted = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, rejection_code, inventory_revision, inventory_sha256, inventory_protocol_major) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT DO NOTHING")
+        .bind(report.report_id.to_string())
+        .bind(&agent_id)
+        .bind(report.agent_epoch as i64)
+        .bind(report.boot_id.to_string())
+        .bind(report.report_sequence as i64)
+        .bind(hash.to_string())
+        .bind(disposition_name(receipt.disposition()))
+        .bind(receipt.to_bytes())
+        .bind(received_at)
+        .bind(code)
+        .bind(inventory_revision)
+        .bind(inventory_sha256)
+        .bind(inventory_protocol_major)
+        .execute(&mut **tx)
+        .await?;
+    if inserted.rows_affected() == 1 {
+        return Ok(StoreOutcome::Stored);
+    }
+    Ok(
+        match find_replay::<I>(tx, &agent_id, report.report_id, hash).await? {
+            Some(replay) => StoreOutcome::Replay(replay),
+            None => StoreOutcome::SequenceTaken,
+        },
+    )
+}
+
+/// The one answer to a Report whose sequence another Report of its Boot
+/// already holds: a competing body is never silently accepted. The Report's
+/// own writes are discarded and the security event commits on a fresh
+/// transaction; a failure to record it is a storage failure, not a quiet 409.
+pub(super) async fn refuse_sequence_taken(
+    state: &AppState,
+    tx: Transaction<'_, Any>,
+    agent_id: &str,
+    request_id: &str,
+) -> Response {
+    if let Err(failure) = tx.rollback().await {
+        return storage_failure(state, request_id, "roll back conflicting report", &failure);
+    }
+    let mut event_tx = match crate::database::begin(state.db().pool()).await {
+        Ok(tx) => tx,
+        Err(failure) => {
+            return storage_failure(state, request_id, "begin security event", &failure);
+        }
+    };
+    if let Err(failure) = record_security_event(&mut event_tx, agent_id).await {
+        return storage_failure(state, request_id, "record security event", &failure);
+    }
+    if let Err(failure) = event_tx.commit().await {
+        return storage_failure(state, request_id, "commit security event", &failure);
+    }
+    error(
+        request_id,
+        StatusCode::CONFLICT,
+        "conflicting_boot",
+        "Boot sequence conflicts with a stored report",
+    )
+}
+
 pub(super) async fn store_rejected<I: ReportInventory>(
     state: &AppState,
     mut tx: Transaction<'_, Any>,
@@ -226,39 +445,30 @@ pub(super) async fn store_rejected<I: ReportInventory>(
     request_id: &str,
 ) -> Response {
     let receipt = into_ingest_receipt::<I>(receipt);
-    let stored = receipt.to_bytes();
-    let disposition = receipt.disposition();
-    // Durable Inventory evidence (issue #181): which code refused the report
-    // and what Inventory the Agent declared. Admin must never have to decode
-    // the receipt body, nor trust an Agent-reported diagnostic, to answer "is
-    // this Agent's latest ingestion attempt an Inventory rejection?". A
-    // whole-report rejection decides by its first rejection.
-    let rejection_code = receipt
-        .rejections()
-        .first()
-        .map(|rejection| rejection.code.as_str());
-    let result = sqlx::query("INSERT INTO agent_report_receipts (report_id, agent_id, agent_epoch, boot_id, report_sequence, report_body_sha256, disposition, receipt_body, received_at, rejection_code, inventory_revision, inventory_sha256, inventory_protocol_major) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
-        .bind(report.report_id.to_string()).bind(report.agent_id.to_string())
-        .bind(report.agent_epoch as i64).bind(report.boot_id.to_string())
-        .bind(report.report_sequence as i64).bind(hash.to_string())
-        .bind(disposition_name(disposition)).bind(&stored)
-        .bind(now().to_string())
-        .bind(rejection_code)
-        .bind(report.inventory.declared_revision().map(|revision| revision as i64))
-        .bind(report.inventory.accepted_sha256().to_string())
-        // The Server-owned protocol major of the refused declaration. v2
-        // declares no revision, so the Admin diagnosis explains it from the
-        // accepted revision/fingerprint and this evidence instead of forging a
-        // removed Agent-supplied revision (issue #188).
-        .bind(I::protocol_version() as i64)
-        .execute(&mut *tx).await;
-    if result.is_err() || tx.commit().await.is_err() {
-        return error(
-            request_id,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            "Server database is unavailable",
-        );
+    let evidence = RejectionEvidence::of(report, &receipt);
+    let received_at = now().to_string();
+    match store_receipt(
+        &mut tx,
+        report,
+        &hash,
+        &receipt,
+        &received_at,
+        Some(evidence),
+    )
+    .await
+    {
+        Ok(StoreOutcome::Stored) => {}
+        Ok(StoreOutcome::Replay(replay)) => return replay.into_response(request_id),
+        Ok(StoreOutcome::SequenceTaken) => {
+            return refuse_sequence_taken(state, tx, &report.agent_id.to_string(), request_id)
+                .await;
+        }
+        Err(failure) => {
+            return storage_failure(state, request_id, "store rejection receipt", &failure);
+        }
+    }
+    if let Err(failure) = tx.commit().await {
+        return storage_failure(state, request_id, "commit rejection receipt", &failure);
     }
     // A rejection writes no projection row, but it does change derived Admin
     // state: the Agent's Inventory rejection Attention Item. Without this
