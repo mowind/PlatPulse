@@ -449,7 +449,10 @@ pub(crate) async fn update_geo_provider(
     });
     // A provider that is not selected anymore keeps no raw-IP results: drop
     // them now instead of waiting for the maintenance tick.
-    let _ = crate::geo::cleanup_cache(state.db().pool(), &now, provider).await;
+    if let Err(error) = crate::geo::cleanup_cache(state.db().pool(), &now, provider).await {
+        state.note_database_error(&error);
+        tracing::error!(error = %error, "admin geo cache cleanup failed after provider change");
+    }
     state
         .admin_realtime()
         .publish(AdminResource::Geo, None::<String>);

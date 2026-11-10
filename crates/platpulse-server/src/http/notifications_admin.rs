@@ -247,9 +247,12 @@ async fn recorded_retry_replay(
     replay
 }
 
-/// A Server persistence failure during a mutation: the command did not take
-/// effect and the Owner may retry it with the same request id.
+/// A row the request ledger points at (the request itself, its Notification
+/// Delivery, or its Event) is missing: a broken ledger invariant, not an
+/// absent request. It answers 503 so the Owner reloads instead of treating
+/// the command as unknown.
 fn unavailable_error(request_id: &str) -> Response {
+    tracing::error!("recorded notification request ledger row is missing");
     mutation_error(
         request_id,
         StatusCode::SERVICE_UNAVAILABLE,
